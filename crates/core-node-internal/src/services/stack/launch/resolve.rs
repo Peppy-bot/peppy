@@ -699,7 +699,7 @@ pub(in crate::services::stack) async fn mint_doc_pins_of(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::stack::fixtures::{placements_with, test_root_pin};
+    use crate::services::stack::fixtures::{launch_of_robots, placements_with, test_root_pin};
     use daemon_config::launcher::{DeploymentInstance, DeploymentSource};
     use daemon_config::repository::EntryOrigin;
 
@@ -898,42 +898,6 @@ mod tests {
 
     // --- Placement of copies and of their parts ---
 
-    /// A launcher whose `robot` axis runs as copies: a robot is an arm, its
-    /// base, and a commander, a part its own axis brings. The file lists
-    /// the copy `bravo`.
-    fn robots() -> daemon_config::launcher::PreparedLauncher {
-        let document = r#"{
-            peppy_schema: "launcher/v1",
-            components: [
-                { name: "robot", cardinality: "zero_or_more", options: {
-                    arm: {
-                        deployments: [
-                            { source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },
-                            { commander: "pad" },
-                        ],
-                        components: [
-                            { name: "commander", options: {
-                                pad: { deployments: [
-                                    { source: { name: "pad", tag: "v1" }, instances: [
-                                        { instance_id: "commander_inst", links: { arm: "arm_inst" } }
-                                    ] }
-                                ] },
-                            } },
-                        ],
-                    },
-                } },
-            ],
-            deployments: [{ robot: "arm", instances: [{ instance_id: "bravo" }] }],
-        }"#;
-        let parsed = daemon_config::launcher::PeppyLauncherParser::from_content(document)
-            .expect("the launcher parses");
-        daemon_config::launcher::PreparedLauncher::load(
-            &parsed,
-            std::path::Path::new("robots.json5"),
-        )
-        .expect("it loads")
-    }
-
     /// The placements of a launch of `robots` with `words`, `joins` and
     /// `placement`, on the coordinator `cn-desk`.
     fn launch_placements(
@@ -941,22 +905,7 @@ mod tests {
         words: &[&str],
         joins: &[&str],
     ) -> LaunchPlacements {
-        let words: Vec<core_node_api::encoding::LaunchWord> =
-            words.iter().map(|word| word.parse().unwrap()).collect();
-        let joins: Vec<core_node_api::encoding::CopyReference> =
-            joins.iter().map(|join| join.parse().unwrap()).collect();
-        let prepared = robots();
-        let composed = prepared
-            .launch(&words, &joins)
-            .expect("the launch composes");
-        let goal = LaunchGoal::new(
-            LauncherOrigin::repository("robots"),
-            "launch-1",
-            core_node_api::encoding::StackBudgets::new(1, 1, 1, None),
-        )
-        .with_layout(placement, words, joins)
-        .expect("the layout holds");
-        resolve_placements(&composed, &goal, "cn-desk").expect("the placements resolve")
+        launch_of_robots(placement, words, joins).1
     }
 
     fn machine_of(placements: &LaunchPlacements, instance: &str) -> String {

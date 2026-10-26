@@ -46,6 +46,14 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
                     selections: vec!["commander=web@cn-gpu-box".parse().unwrap()],
                     set_members: Vec::new(),
                 }];
+                response.launch_copies = vec![CopyInfo {
+                    name: config::runtime::CopyName::new("bravo").unwrap(),
+                    option: "real".into(),
+                    core_node: config::runtime::CoreNodeName::new("cn-jetson-2").unwrap(),
+                    instance_ids: vec![config::runtime::Name::new("bravo_arm_inst").unwrap()],
+                    selections: Vec::new(),
+                    set_members: Vec::new(),
+                }];
                 Ok(response.encode().expect("encode StackListResponse"))
             })
             .await
@@ -121,6 +129,9 @@ async fn stack_list_parses_graph_and_includes_daemon_identity() {
         .collect();
     assert_eq!(selections, ["commander=web@cn-gpu-box"]);
     assert_eq!(result.copies[0].core_node.as_str(), CORE_NODE);
+    assert_eq!(result.launch_copies.len(), 1);
+    assert_eq!(result.launch_copies[0].name, "bravo");
+    assert_eq!(result.launch_copies[0].core_node.as_str(), "cn-jetson-2");
     let brain = result
         .graph
         .nodes

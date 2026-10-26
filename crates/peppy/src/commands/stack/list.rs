@@ -35,10 +35,14 @@ struct StackSection {
     /// reservation without a matching live launch is a machine every new
     /// launch bounces off, so it must be visible here.
     pub reservation: Option<LaunchIdentity>,
-    /// The copies joined onto this daemon's slice, as it reports them.
+    /// The copies on this daemon's stack, whoever added them, as it reports
+    /// them.
     pub copies: Vec<core_node_api::encoding::CopyInfo>,
     /// The join or the removal of a copy that holds this daemon's stack now.
     pub copy_change: Option<CopyChange>,
+    /// The copies the launch of this daemon's stack started, each as the
+    /// launch started it, as the daemon reports them.
+    pub launch_copies: Vec<core_node_api::encoding::CopyInfo>,
     pub outcome: std::result::Result<(Vec<SerializedNode>, Vec<SerializedEdge>), String>,
 }
 
@@ -154,6 +158,7 @@ async fn collect_sections(ctx: &Arc<AppContext>) -> Result<Vec<StackSection>> {
                     reservation: response.reservation,
                     copies: response.copies,
                     copy_change: response.copy_change,
+                    launch_copies: response.launch_copies,
                     outcome: crate::commands::parse_stack_graph(&response.graph_json)
                         .map(|mut graph| {
                             sort_graph(&mut graph.nodes, &mut graph.edges);
@@ -170,6 +175,7 @@ async fn collect_sections(ctx: &Arc<AppContext>) -> Result<Vec<StackSection>> {
                     reservation: None,
                     copies: Vec::new(),
                     copy_change: None,
+                    launch_copies: Vec::new(),
                     outcome: Err(error.to_string()),
                 },
             }
@@ -191,10 +197,10 @@ fn failed_names(sections: &[StackSection]) -> Vec<String> {
 }
 
 /// The report as one JSON document: one entry per core node carrying the
-/// section's identity facts, its `launch` and `reservation`, its `copies`
-/// and `copy_change`, and either
-/// the `stack` graph (`nodes` and `edges`, exactly as the daemon
-/// serialized them) or the query `error`; exactly one of the two is null.
+/// section's identity facts, its `launch` and `reservation`, its `copies`,
+/// `copy_change` and `launch_copies`, and either the `stack` graph (`nodes`
+/// and `edges`, exactly as the daemon serialized them) or the query
+/// `error`; exactly one of the two is null.
 fn render_stack_json(sections: &[StackSection]) -> String {
     let launch_json = |identity: &Option<LaunchIdentity>| match identity {
         Some(identity) => serde_json::json!({
@@ -222,6 +228,7 @@ fn render_stack_json(sections: &[StackSection]) -> String {
                 "reservation": launch_json(&section.reservation),
                 "copies": section.copies,
                 "copy_change": section.copy_change,
+                "launch_copies": section.launch_copies,
                 "stack": stack,
                 "error": error,
             })
@@ -355,29 +362,24 @@ fn write_launch_ownership(body: &mut String, section: &StackSection) {
     }
 }
 
-/// The copies joined onto the slice: each copy's option, machine and
-/// selections, its instances, and the set members it adds; then the join or
-/// the removal of a copy that holds the stack now. The selections are the
-/// words that add the copy again, joined by `,`, each placed part with its
-/// machine, so the text after the colon pastes into `--with`.
+/// The copies on the stack, whoever added them: each copy's option,
+/// machine and selections, its instances, and the set members it adds; then
+/// the join or the removal of a copy that holds the stack now; then, under
+/// `Launch copies`, each copy the launch started as the launch started it,
+/// in the order the daemon lists them. The selections are the words that
+/// add the copy again, joined by `,`, each placed part with its machine, so
+/// the text after the colon pastes into `--with`.
 fn write_copies(body: &mut String, section: &StackSection) {
     use std::fmt::Write as _;
 
-    if section.copies.is_empty() && section.copy_change.is_none() {
+    if section.copies.is_empty()
+        && section.copy_change.is_none()
+        && section.launch_copies.is_empty()
+    {
         return;
     }
     for copy in &section.copies {
-        let selection = if copy.selections.is_empty() {
-            String::new()
-        } else {
-            let words: Vec<String> = copy.selections.iter().map(ToString::to_string).collect();
-            format!(": {}", words.join(","))
-        };
-        let _ = writeln!(
-            body,
-            "Copy {} of {} on {}{selection}",
-            copy.name, copy.option, copy.core_node
-        );
+        let _ = writeln!(body, "Copy {}", copy_line(copy));
         let _ = writeln!(
             body,
             "  Instances: {}",
@@ -412,7 +414,28 @@ fn write_copies(body: &mut String, section: &StackSection) {
             change.name, change.option
         );
     }
+    if !section.launch_copies.is_empty() {
+        let _ = writeln!(body, "Launch copies");
+    }
+    for copy in &section.launch_copies {
+        let _ = writeln!(body, "  Launch copy {}", copy_line(copy));
+    }
     let _ = writeln!(body);
+}
+
+/// `{name} of {option} on {core_node}`, followed by `: ` and the copy's
+/// selections when it has any.
+fn copy_line(copy: &core_node_api::encoding::CopyInfo) -> String {
+    let selection = if copy.selections.is_empty() {
+        String::new()
+    } else {
+        let words: Vec<String> = copy.selections.iter().map(ToString::to_string).collect();
+        format!(": {}", words.join(","))
+    };
+    format!(
+        "{} of {} on {}{selection}",
+        copy.name, copy.option, copy.core_node
+    )
 }
 
 /// Encloses one core node's complete report in a panel. Nested table borders
@@ -1188,6 +1211,7 @@ mod tests {
             reservation: None,
             copies: Vec::new(),
             copy_change: None,
+            launch_copies: Vec::new(),
             outcome: Ok((
                 vec![serialized_node(core_node, "v1", NodeStage::Root, &[])],
                 Vec::new(),
@@ -1220,6 +1244,7 @@ mod tests {
             reservation: Some(LaunchIdentity::new("launch-2", "cn-coordinator")),
             copies: Vec::new(),
             copy_change: None,
+            launch_copies: Vec::new(),
             outcome: Err("query timed out".to_string()),
         };
 
@@ -1368,6 +1393,99 @@ mod tests {
             "a copy with no selection of its own ends at its machine:\n{out}"
         );
         assert!(!out.contains("the stack now"), "no change runs:\n{out}");
+        assert!(
+            !out.contains("Launch cop"),
+            "a stack with no launch copy prints no launch copies section:\n{out}"
+        );
+    }
+
+    /// The launch copies print after the copies, each in the form of a copy
+    /// line under `Launch copies`, as the daemon lists them, and `--json`
+    /// carries them under `launch_copies` in the form of `copies`.
+    #[test]
+    fn launch_copies_are_listed_after_the_copies_as_the_launch_started_them() {
+        let copy = |name: &str, option: &str, machine: &str, selections: &[&str]| {
+            core_node_api::encoding::CopyInfo {
+                name: config::runtime::CopyName::new(name).unwrap(),
+                option: option.to_string(),
+                core_node: config::runtime::CoreNodeName::new(machine).unwrap(),
+                instance_ids: vec![config::runtime::Name::new(format!("{name}_arm_inst")).unwrap()],
+                selections: selections
+                    .iter()
+                    .map(|selection| selection.parse().unwrap())
+                    .collect(),
+                set_members: Vec::new(),
+            }
+        };
+        let sections = vec![StackSection {
+            copies: vec![
+                copy("alpha", "openarm_v2", "jetson-1", &[]),
+                copy(
+                    "bravo",
+                    "openarm_sim",
+                    "jetson-2",
+                    &["brain=ai_brain_vla@cn-gpu-box"],
+                ),
+            ],
+            copy_change: Some(CopyChange {
+                action: CopyAction::Join,
+                name: config::runtime::CopyName::new("charlie").unwrap(),
+                option: "openarm_v2".to_string(),
+            }),
+            launch_copies: vec![
+                copy("alpha", "openarm_v2", "jetson-1", &[]),
+                copy(
+                    "bravo",
+                    "openarm_v2",
+                    "jetson-2",
+                    &["brain=ai_brain_vla@cn-gpu-box"],
+                ),
+            ],
+            ..successful_section("cn-coordinator", "robo-a")
+        }];
+        let out = format_stack_list(&sections, false, None);
+        let launch_copies = out
+            .find("│ Launch copies ")
+            .expect("the launch copies have their heading");
+        assert!(
+            launch_copies
+                > out
+                    .find("Copy charlie of openarm_v2 joins the stack now")
+                    .unwrap(),
+            "the launch copies come after the copies and the change:\n{out}"
+        );
+        let section = &out[launch_copies..];
+        let alpha = section
+            .find("│   Launch copy alpha of openarm_v2 on jetson-1 ")
+            .expect("a launch copy with no selection ends at its machine");
+        let bravo = section
+            .find("│   Launch copy bravo of openarm_v2 on jetson-2: brain=ai_brain_vla@cn-gpu-box ")
+            .expect("a launch copy line names its option, machine and selections");
+        assert!(alpha < bravo, "the daemon's order:\n{out}");
+
+        let json: serde_json::Value = serde_json::from_str(&render_stack_json(&sections)).unwrap();
+        assert_eq!(
+            json["core_nodes"][0]["launch_copies"],
+            serde_json::to_value(&sections[0].launch_copies).unwrap()
+        );
+        assert_eq!(
+            json["core_nodes"][0]["launch_copies"][1]["selections"],
+            serde_json::json!([
+                { "axis": "brain", "option": "ai_brain_vla", "core_node": "cn-gpu-box" },
+            ])
+        );
+
+        let removed_all = vec![StackSection {
+            launch_copies: vec![copy("alpha", "openarm_v2", "jetson-1", &[])],
+            ..successful_section("cn-coordinator", "robo-a")
+        }];
+        let out = format_stack_list(&removed_all, false, None);
+        assert!(
+            out.contains("│ Launch copies ")
+                && out.contains("│   Launch copy alpha of openarm_v2 on jetson-1 "),
+            "a launch whose every copy was removed still lists its launch copies:\n{out}"
+        );
+        assert!(!out.contains("│ Copy "), "{out}");
     }
 
     #[test]
@@ -1523,6 +1641,7 @@ mod tests {
             reservation: None,
             copies: Vec::new(),
             copy_change: None,
+            launch_copies: Vec::new(),
             outcome: Err("daemon disappeared".to_string()),
         }];
         let out = format_stack_list(&sections, false, None);

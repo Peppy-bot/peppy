@@ -749,6 +749,105 @@ async fn a_copy_the_file_deploys_launches_with_the_stack_and_removal_keeps_the_s
     assert_eq!(names, ["alpha", "bravo"]);
 }
 
+/// The launch copies are the copies the launch started, as it started them:
+/// the file's copy and the `--join` one, each on its machine, in name order.
+/// A removal, a join of the removed name under another option and a join of
+/// a third copy change the copies and leave the launch copies as they were;
+/// a reset empties them, and the next launch replaces them with its own.
+#[tokio::test]
+async fn the_launch_copies_stay_as_launched_through_joins_and_removals_until_reset() {
+    let started = start_core_node_with_mock_messenger().await;
+    let directory = tempdir().unwrap();
+    let robot = write_node_config(directory.path(), "named_robot", "v1", &["sleep", "300"]);
+    TestPackagesCache::new()
+        .fs_entry("named_robot", "v1", &robot)
+        .write(&started.peppy_dirs);
+    let launcher = directory.path().join("fleet.json5");
+    fs::write(&launcher, r#"{
+        peppy_schema: "launcher/v1",
+        deployments: [{ robot: "real", instances: [{ instance_id: "alpha" }] }],
+        components: [{ name: "robot", cardinality: "zero_or_more", options: {
+            real: { deployments: [{ source: { name: "named_robot", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }] },
+            spare: { deployments: [{ source: { name: "named_robot", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }] },
+        } }]
+    }"#).unwrap();
+    let mut responders = Vec::new();
+    for name in ["alpha", "bravo", "charlie"] {
+        responders
+            .extend(answer_readiness(&started, "named_robot", &format!("{name}_arm_inst")).await);
+    }
+    let launched = |name: &str| core_node_api::encoding::CopyInfo {
+        name: config::runtime::CopyName::new(name).unwrap(),
+        option: "real".to_owned(),
+        core_node: config::runtime::CoreNodeName::new(&started.core_node_name).unwrap(),
+        instance_ids: vec![Name::new(format!("{name}_arm_inst")).unwrap()],
+        selections: Vec::new(),
+        set_members: Vec::new(),
+    };
+    let launch_joining = |launch_id: &str, join: &str| {
+        fleet_launch(launcher.clone(), launch_id)
+            .with_layout(
+                core_node_api::encoding::PlacementSpec::default(),
+                Vec::new(),
+                vec![join.parse().unwrap()],
+            )
+            .expect("the layout holds")
+    };
+
+    let launch = launch_joining("launch-copies-test", "real:bravo");
+    execute(&started, &launch).await.assert_completed();
+    let list = participant_request(&started, &StackListRequest::new()).await;
+    assert_eq!(
+        list.launch_copies,
+        [launched("alpha"), launched("bravo")],
+        "the file's copy and the --join one, each on the coordinator"
+    );
+    assert_eq!(list.copies, list.launch_copies);
+
+    execute(&started, &remove_goal("bravo"))
+        .await
+        .assert_completed();
+    execute(&started, &robot_goal("bravo", "spare"))
+        .await
+        .assert_completed();
+    execute(&started, &robot_goal("charlie", "real"))
+        .await
+        .assert_completed();
+    let list = participant_request(&started, &StackListRequest::new()).await;
+    let on_stack: Vec<(&str, &str)> = list
+        .copies
+        .iter()
+        .map(|copy| (copy.name.as_str(), copy.option.as_str()))
+        .collect();
+    assert_eq!(
+        on_stack,
+        [("alpha", "real"), ("bravo", "spare"), ("charlie", "real")]
+    );
+    assert_eq!(
+        list.launch_copies,
+        [launched("alpha"), launched("bravo")],
+        "a removal and two joins leave the launch copies as the launch started them"
+    );
+
+    participant_request(&started, &core_node_api::encoding::StackResetRequest::new()).await;
+    let list = participant_request(&started, &StackListRequest::new()).await;
+    assert!(list.copies.is_empty(), "{:?}", list.copies);
+    assert!(
+        list.launch_copies.is_empty(),
+        "a reset drops the launch copies: {:?}",
+        list.launch_copies
+    );
+
+    let again = launch_joining("launch-copies-test-2", "real:charlie");
+    execute(&started, &again).await.assert_completed();
+    let list = participant_request(&started, &StackListRequest::new()).await;
+    assert_eq!(
+        list.launch_copies,
+        [launched("alpha"), launched("charlie")],
+        "the next launch replaces the launch copies with its own"
+    );
+}
+
 /// A fleet whose robot carries a tool axis of its own, the gripper unless
 /// selected otherwise, with `entry` written on the robot's option entry
 /// beside the copy `alpha` it lists.

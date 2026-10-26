@@ -1,7 +1,8 @@
 //! What this daemon remembers of the launch it coordinates: the launcher it
 //! composed, the plan it resolved, where each instance runs, the copies on
-//! the stack, and the clock and watchers the plan established. Every stack
-//! change reads it, changes it, and writes it back.
+//! the stack, the copies the launch started, and the clock and watchers the
+//! plan established. Every stack change reads it, changes it, and writes it
+//! back.
 
 use super::ChangeResult;
 use super::action::StackChangeContext;
@@ -12,6 +13,7 @@ use super::launch::{NodeKey, PlannedDeployment};
 use crate::services::federation::SliceOwnership;
 use crate::services::fleet::{Process, RobotProcesses};
 use config::runtime::{CopyName, CoreNodeName};
+use core_node_api::encoding::{AxisSelection, CopyInfo};
 use daemon_config::daemon_interface::fleet::{ChangeKind, FleetListing};
 use daemon_config::launcher::{
     ClockIncarnations, CopyRecord, DeploymentInstance, PeppyLauncher, Placements, PreparedLauncher,
@@ -21,7 +23,7 @@ use node_stack::NodeStack;
 use std::collections::BTreeMap;
 
 /// The launch this daemon coordinates: what it composed, where it runs,
-/// and the copies on it.
+/// the copies on it, and the copies it started.
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveLaunch {
     pub(super) launch_id: String,
@@ -43,6 +45,11 @@ pub(crate) struct ActiveLaunch {
     /// scoped option stages the trees the launch built.
     pub(super) resolved: Vec<PlannedDeployment>,
     pub(super) copies: BTreeMap<CopyName, StackCopy>,
+    /// The copies the launch started, each as the launch started it, with
+    /// its machine and the machine of each part as the launch placed them.
+    /// Joins and removals change `copies` and `placements` and leave these
+    /// as they are, so a listing names them until the record goes.
+    pub(super) launch_copies: BTreeMap<CopyName, CopyInfo>,
     /// The lifetime minted for each simulated domain this launch declares.
     /// A join reads them so it follows the domains already running instead of
     /// replacing the timelines under their consumers.
@@ -80,11 +87,21 @@ pub(super) struct StackCopy {
 impl StackCopy {
     /// The copy's filled own axes, each with the machine of its part when
     /// `placements` run that part away from the copy's machine.
-    pub(super) fn axis_selections(
-        &self,
-        placements: &Placements,
-    ) -> Vec<core_node_api::encoding::AxisSelection> {
+    pub(super) fn axis_selections(&self, placements: &Placements) -> Vec<AxisSelection> {
         self.record.axis_selections(placements, &self.core_node)
+    }
+
+    /// The copy as a listing gives it, with the machine of each part that
+    /// `placements` run away from the copy's machine.
+    fn info(&self, placements: &Placements) -> CopyInfo {
+        CopyInfo {
+            name: self.record.name.clone(),
+            option: self.record.option.clone(),
+            core_node: self.core_node.clone(),
+            instance_ids: self.record.instance_ids().cloned().collect(),
+            selections: self.axis_selections(placements),
+            set_members: self.record.set_members.clone(),
+        }
     }
 
     /// The selections as a listing and a join's line print them: the words
@@ -99,18 +116,18 @@ impl StackCopy {
 }
 
 impl ActiveLaunch {
-    pub(crate) fn copies(&self) -> Vec<core_node_api::encoding::CopyInfo> {
+    /// The copies on the stack as a listing gives them, in name order.
+    pub(crate) fn copies(&self) -> Vec<CopyInfo> {
         self.copies
             .values()
-            .map(|copy| core_node_api::encoding::CopyInfo {
-                name: copy.record.name.clone(),
-                option: copy.record.option.clone(),
-                core_node: copy.core_node.clone(),
-                instance_ids: copy.record.instance_ids().cloned().collect(),
-                selections: copy.axis_selections(&self.placements),
-                set_members: copy.record.set_members.clone(),
-            })
+            .map(|copy| copy.info(&self.placements))
             .collect()
+    }
+
+    /// The copies the launch started, each as the launch started it, in
+    /// name order.
+    pub(crate) fn launch_copies(&self) -> Vec<CopyInfo> {
+        self.launch_copies.values().cloned().collect()
     }
 
     pub(super) fn new(
@@ -131,6 +148,7 @@ impl ActiveLaunch {
             resolved: planned.clone(),
             planned,
             copies: BTreeMap::new(),
+            launch_copies: BTreeMap::new(),
             clocks: ClockIncarnations::new(),
             resolved_clocks: ResolvedClocks::default(),
             watchers: LifecycleWatchers::new(),
@@ -178,7 +196,9 @@ impl ActiveLaunch {
 
     /// Records the copies a launch started, each one's instances in the
     /// order they start, on the copy's machine `copy_core_nodes` gives it, or
-    /// on the coordinator when it names none.
+    /// on the coordinator when it names none, and keeps each as the launch
+    /// started it, with the machines the launch's placements give its
+    /// parts.
     pub(super) fn record_copies(
         &mut self,
         copies: Vec<CopyRecord>,
@@ -191,8 +211,11 @@ impl ActiveLaunch {
                 .cloned()
                 .unwrap_or_else(|| self.placements.coordinator_name().clone());
             let record = copy_in_start_order(copy, &self.planned, ordered);
-            let name = record.name.clone();
-            self.copies.insert(name, StackCopy { record, core_node });
+            let copy = StackCopy { record, core_node };
+            let name = copy.record.name.clone();
+            self.launch_copies
+                .insert(name.clone(), copy.info(&self.placements));
+            self.copies.insert(name, copy);
         }
     }
 
@@ -418,7 +441,7 @@ pub(super) fn copy_in_start_order(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::stack::fixtures::planned_deployment;
+    use crate::services::stack::fixtures::{placements_with, planned_deployment, robots};
     use daemon_config::launcher::CopyInstance;
 
     /// A copy of `alpha` owning the instances its fragment wrote as
@@ -489,6 +512,109 @@ mod tests {
         assert!(
             recorded(copy, &[]).is_empty(),
             "an instance whose node is unordered has no place to start"
+        );
+    }
+
+    /// The launch copies are the copies as the launch recorded them, the
+    /// file's copy and the `--join` one, each with its machine and the
+    /// machine of each part as the launch's placements gave them. A removal
+    /// and a join change the copies and the placements and leave the launch
+    /// copies as they were.
+    #[test]
+    fn the_launch_copies_keep_the_copies_as_the_launch_recorded_them() {
+        let words = ["alpha.pad@cn-gpu-box".parse().unwrap()];
+        let joins = ["arm:alpha@cn-jetson-1".parse().unwrap()];
+        let composed = robots()
+            .launch(&words, &joins)
+            .expect("the launch composes");
+        let on_jetson_2 = [
+            ("bravo_arm_inst", "cn-jetson-2"),
+            ("bravo_commander_inst", "cn-jetson-2"),
+        ];
+        let placements = placements_with(
+            "cn-desk",
+            &[
+                &on_jetson_2[..],
+                &[
+                    ("alpha_arm_inst", "cn-jetson-1"),
+                    ("alpha_commander_inst", "cn-gpu-box"),
+                ],
+            ]
+            .concat(),
+        );
+        let planned = vec![
+            planned_deployment("arm", &[("bravo_arm_inst", None), ("alpha_arm_inst", None)]),
+            planned_deployment(
+                "pad",
+                &[
+                    ("alpha_commander_inst", None),
+                    ("bravo_commander_inst", None),
+                ],
+            ),
+        ];
+        let ordered = [NodeKey::new("arm", "v1"), NodeKey::new("pad", "v1")];
+        let copy_core_nodes = BTreeMap::from([
+            (
+                CopyName::new("alpha").unwrap(),
+                CoreNodeName::new("cn-jetson-1").unwrap(),
+            ),
+            (
+                CopyName::new("bravo").unwrap(),
+                CoreNodeName::new("cn-jetson-2").unwrap(),
+            ),
+        ]);
+        let mut active = ActiveLaunch::new(
+            "launch-1",
+            robots(),
+            composed.launcher,
+            composed.selection,
+            placements,
+            planned,
+        );
+        active.record_copies(composed.report.copies, &ordered, &copy_core_nodes);
+
+        let launched = |name: &str, machine: &str, part: &str| CopyInfo {
+            name: CopyName::new(name).unwrap(),
+            option: "arm".to_owned(),
+            core_node: CoreNodeName::new(machine).unwrap(),
+            instance_ids: vec![
+                config::runtime::Name::new(format!("{name}_arm_inst")).unwrap(),
+                config::runtime::Name::new(format!("{name}_commander_inst")).unwrap(),
+            ],
+            selections: vec![part.parse().unwrap()],
+            set_members: Vec::new(),
+        };
+        let as_launched = BTreeMap::from([
+            (
+                CopyName::new("alpha").unwrap(),
+                launched("alpha", "cn-jetson-1", "commander=pad@cn-gpu-box"),
+            ),
+            (
+                CopyName::new("bravo").unwrap(),
+                launched("bravo", "cn-jetson-2", "commander=pad"),
+            ),
+        ]);
+        assert_eq!(
+            active.launch_copies, as_launched,
+            "the file's copy and the --join one, each part on its machine"
+        );
+        assert_eq!(
+            active.copies(),
+            as_launched.values().cloned().collect::<Vec<_>>(),
+            "the copies on the stack are the launch's"
+        );
+
+        // A removal of alpha, then a join: the join rebuilds the placements
+        // from the instances that run.
+        active.copies.remove(&CopyName::new("alpha").unwrap());
+        active.placements = placements_with("cn-desk", &on_jetson_2);
+        assert_eq!(
+            active.copies(),
+            vec![as_launched[&CopyName::new("bravo").unwrap()].clone()]
+        );
+        assert_eq!(
+            active.launch_copies, as_launched,
+            "a removal and a join leave the launch copies as the launch recorded them"
         );
     }
 }

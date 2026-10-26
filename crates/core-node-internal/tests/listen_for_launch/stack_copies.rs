@@ -2,9 +2,10 @@
 //! on the messaging layer: a client lists, joins and removes the copies of
 //! the options of its scope, and the daemon refuses a copy outside it.
 
-use super::copies::{execute, fleet_launch};
+use super::copies::{execute, fleet_launch, participant_request};
 use super::fleet::InterfaceClient;
 use super::*;
+use core_node_api::encoding::{PlacementSpec, StackListRequest};
 use daemon_config::daemon_interface::DaemonInterface;
 use peppy_codec::consumer::GoalOutcome;
 use serde_json::json;
@@ -15,8 +16,12 @@ const MANAGER: &str = "manager_inst";
 /// The fleet of these tests, written under a new directory: the manager,
 /// whose daemon target `stack` gives the option `real` and two copies at
 /// most, and the axis `robot`, whose options `real` and `other` deploy
-/// `named_robot` as the instance `arm_inst` of each copy.
-fn fleet_with_a_manager(started: &StartedCoreNode) -> (tempfile::TempDir, PathBuf) {
+/// `named_robot` as the instance `arm_inst` of each copy. The file lists
+/// the copies `file_copies`, each `(name, option)`.
+fn fleet_with_a_manager(
+    started: &StartedCoreNode,
+    file_copies: &[(&str, &str)],
+) -> (tempfile::TempDir, PathBuf) {
     let directory = tempdir().unwrap();
     let manager = write_node_config_with_options(
         directory.path(),
@@ -42,6 +47,12 @@ fn fleet_with_a_manager(started: &StartedCoreNode) -> (tempfile::TempDir, PathBu
         .write(&started.peppy_dirs);
     let robot = r#"{ deployments: [{ source: { name: "named_robot", tag: "v1" },
         instances: [{ instance_id: "arm_inst" }] }] }"#;
+    let file_copies: String = file_copies
+        .iter()
+        .map(|(name, option)| {
+            format!(r#", {{ robot: "{option}", instances: [{{ instance_id: "{name}" }}] }}"#)
+        })
+        .collect();
     let launcher = directory.path().join("fleet.json5");
     fs::write(
         &launcher,
@@ -53,7 +64,7 @@ fn fleet_with_a_manager(started: &StartedCoreNode) -> (tempfile::TempDir, PathBu
                 max_copies: 2,
                 options: [{{ option: "real", model: "named", description: "A named robot" }}],
             }} }} }}
-        ] }}],
+        ] }}{file_copies}],
         components: [{{ name: "robot", cardinality: "zero_or_more", options: {{
             real: {robot},
             other: {robot},
@@ -91,7 +102,7 @@ fn copies(listing: &serde_json::Value) -> Vec<&str> {
 #[tokio::test]
 async fn a_client_joins_and_removes_the_copies_of_its_scope() {
     let started = start_core_node_with_mock_messenger().await;
-    let (_directory, launcher) = fleet_with_a_manager(&started);
+    let (_directory, launcher) = fleet_with_a_manager(&started, &[]);
     let mut responders = answer_readiness(&started, "manager", MANAGER).await;
     responders.extend(answer_readiness(&started, "named_robot", "bravo_arm_inst").await);
     execute(&started, &fleet_launch(launcher, "stack-copies-test"))
@@ -149,4 +160,79 @@ async fn a_client_joins_and_removes_the_copies_of_its_scope() {
     );
     let listing = manager.call("list", json!({})).await.unwrap();
     assert!(copies(&listing).is_empty(), "the copy is off the stack");
+}
+
+/// The launch copies of the scope are the copies of its options that the
+/// launch started, the file's copy and the `--join` one, each in the shape
+/// of a `join` goal, in name order; the daemon keeps a launch copy of
+/// another option out of them. A removal leaves them as they are, and the
+/// item of the removed copy, sent as `join`, adds it again.
+#[tokio::test]
+async fn the_launch_copies_of_the_scope_are_join_goals_also_after_a_removal() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, launcher) =
+        fleet_with_a_manager(&started, &[("alpha", "real"), ("zulu", "other")]);
+    let mut responders = answer_readiness(&started, "manager", MANAGER).await;
+    for instance in ["alpha_arm_inst", "bravo_arm_inst", "zulu_arm_inst"] {
+        responders.extend(answer_readiness(&started, "named_robot", instance).await);
+    }
+    let launch = fleet_launch(launcher, "stack-copies-launch-test")
+        .with_layout(
+            PlacementSpec::default(),
+            Vec::new(),
+            vec!["real:bravo".parse().unwrap()],
+        )
+        .expect("the layout holds");
+    execute(&started, &launch).await.assert_completed();
+    let manager = InterfaceClient::of(&started, DaemonInterface::StackCopies, MANAGER).await;
+
+    let launched = json!([
+        join(&started, "alpha", "real"),
+        join(&started, "bravo", "real")
+    ]);
+    let listing = manager.call("list", json!({})).await.unwrap();
+    assert_eq!(
+        listing["launch_copies"], launched,
+        "the file's copy and the --join one of the scope's option, in name order: {listing}"
+    );
+    assert_eq!(copies(&listing), ["alpha", "bravo"]);
+    let raw = participant_request(&started, &StackListRequest::new()).await;
+    let kept: Vec<&str> = raw
+        .launch_copies
+        .iter()
+        .map(|copy| copy.name.as_str())
+        .collect();
+    assert_eq!(
+        kept,
+        ["alpha", "bravo", "zulu"],
+        "the daemon keeps the launch copy of every option"
+    );
+
+    let removed = manager
+        .send_goal("remove", json!({ "name": "bravo" }))
+        .await;
+    assert!(removed.refusal().is_none(), "{:?}", removed.refusal());
+    assert_eq!(
+        manager.end_of(&removed).await,
+        GoalOutcome::Completed(json!({}))
+    );
+    let listing = manager.call("list", json!({})).await.unwrap();
+    assert_eq!(copies(&listing), ["alpha"]);
+    assert_eq!(
+        listing["launch_copies"], launched,
+        "a removal leaves the launch copies as they are: {listing}"
+    );
+
+    let rejoined = manager
+        .send_goal("join", listing["launch_copies"][1].clone())
+        .await;
+    assert!(rejoined.refusal().is_none(), "{:?}", rejoined.refusal());
+    assert_eq!(
+        manager.end_of(&rejoined).await,
+        GoalOutcome::Completed(json!({})),
+        "the item of a launch copy adds it again"
+    );
+    let listing = manager.call("list", json!({})).await.unwrap();
+    assert_eq!(copies(&listing), ["alpha", "bravo"]);
+    assert_eq!(listing["launch_copies"], launched);
 }

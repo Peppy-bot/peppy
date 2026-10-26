@@ -136,9 +136,9 @@ fn a_listed_copy_gives_its_features_on_their_machines() {
         core_node: Some(CoreNodeName::new("cn-gpu").unwrap()),
     }];
     let listed = listed_copy(&scope(), &joined, true);
-    assert_eq!(listed.features.len(), 1);
-    assert_eq!(listed.features[0].feature, "ai_brain");
-    assert_eq!(listed.features[0].core_node, "cn-gpu");
+    assert_eq!(listed.copy.features.len(), 1);
+    assert_eq!(listed.copy.features[0].feature, "ai_brain");
+    assert_eq!(listed.copy.features[0].core_node, "cn-gpu");
     assert!(listed.running);
 }
 

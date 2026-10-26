@@ -25,9 +25,15 @@
       {
         // The options of the scope with their models and their features, the
         // machines of the federation now, the copies of these options on the
-        // stack, in name order, and the addition or removal of a copy of one
-        // of them that runs now. Each copy, without its `running`, is a valid
-        // `join` goal, which adds the same copy on the same machines.
+        // stack, in name order, the addition or removal of a copy of one of
+        // them that runs now, and the copies of them that the launch
+        // started. Each copy, without its `running`, and each launch copy is
+        // a valid `join` goal. For a copy that `join` added, the goal adds
+        // the same copy on the same machines. A copy that a word of the
+        // command line, or the copy's entry in the launcher, shaped with a
+        // part that no feature of the scope names, or with arguments or
+        // adjustments of its own, can come back different from the listed
+        // one.
         name: "list",
         response_message_format: {
           options: {
@@ -103,6 +109,35 @@
           },
           // The launcher of the stack.
           launcher: "string",
+          // The copies of the scope's options that the launch of the stack
+          // started, each as the launch started it, in name order, in the
+          // form of an item of `copies` without its `running`. They stay
+          // listed whether or not each one is on the stack now, from
+          // `peppy stack launch` until `peppy stack reset`, the next launch
+          // or the end of the daemon; `join` and `remove` do not change
+          // them.
+          launch_copies: {
+            $type: "array",
+            $items: {
+              $type: "object",
+              // The copy's name: the prefix of its instance ids.
+              name: "string",
+              // The launcher option the launch gave the copy.
+              option: "string",
+              // The machine the launch gave the copy, which runs its base.
+              core_node: "string",
+              // The features of the option the copy holds, in the scope's
+              // order, each with the machine the launch gave its part.
+              features: {
+                $type: "array",
+                $items: {
+                  $type: "object",
+                  feature: "string",
+                  core_node: "string",
+                },
+              },
+            },
+          },
         },
       },
     ],

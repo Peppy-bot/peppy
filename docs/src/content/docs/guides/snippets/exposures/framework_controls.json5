@@ -29,7 +29,7 @@
         {
           member: "list",
           tool: "stack.list",
-          description: "Report the robot options this stack can add with their features, the machines of the stack and this stack's machine, the robots of these options on the stack with their features and machines, the most robots it holds, and the addition or removal of a robot that runs now.",
+          description: "Report the robot options this stack can add with their features, the machines of the stack and this stack's machine, the robots of these options on the stack with their features and machines, the most robots it holds, and the addition or removal of a robot that runs now. launch_copies lists the robots of these options that the launch of this stack started, each as the launch started it, in the form of an item of copies without its running field: they stay listed whether or not each one is on the stack now, from the launch of the stack until its reset, the next launch or the end of this machine's daemon, and stack.join and stack.remove do not change them; the list is empty after a reset, until the next launch. Each item of launch_copies, and each item of copies with its running field left out, is a valid stack.join input: for a robot that stack.join added, it makes the same robot on the same machines; a robot that the command line added can differ from the robot that its item makes.",
           operation: "read_only",
           deadline_ms: 5000,
         },
