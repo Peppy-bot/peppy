@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::services::node::{ObservationCoordinator, teardown_all_instances};
+use crate::services::raw_calls::RawCallGate;
 use crate::services::response::into_service_answer;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{StackResetRequest, StackResetResponse};
@@ -52,6 +53,7 @@ pub fn stack_reset_timeout(shutdown_grace_secs: u64) -> std::time::Duration {
         + crate::services::node::teardown_timeout(grace)
 }
 
+#[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
 pub(crate) async fn listen_for_stack_reset(
     messenger: &MessengerHandle,
     core_node_node: &str,
@@ -60,6 +62,7 @@ pub(crate) async fn listen_for_stack_reset(
     node_stack: Arc<NodeStack>,
     observation: Arc<ObservationCoordinator>,
     ownership: Arc<crate::services::federation::SliceOwnership>,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -80,7 +83,7 @@ pub(crate) async fn listen_for_stack_reset(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(|context| {
+            .handle_requests(raw_calls.guard(ServiceId::StackReset.name(), |context| {
                 handle_stack_reset_request(
                     context,
                     messenger.clone(),
@@ -90,7 +93,7 @@ pub(crate) async fn listen_for_stack_reset(
                     Arc::clone(&observation),
                     Arc::clone(&ownership),
                 )
-            })
+            }))
             .await
             .map_err(Into::into)
     });
@@ -145,9 +148,11 @@ async fn handle_stack_reset_request_inner(
         observation,
     )
     .await;
-    // An emptied stack belongs to no launch. Clearing this also releases any
-    // reservation held over this machine, so a reset is a complete escape
-    // hatch rather than one that leaves the daemon refusing future launches.
+    // An emptied stack belongs to no launch, and holds no lease. Clearing
+    // this also releases any reservation held over this machine, so a reset
+    // is a complete escape hatch rather than one that leaves the daemon
+    // refusing future launches.
+    crate::services::stack::state::drop_active_launch(ownership, "the stack was reset");
     ownership.clear();
     StackResetResponse::new().encode().map_err(Into::into)
 }

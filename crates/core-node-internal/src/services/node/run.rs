@@ -11,6 +11,7 @@ use super::stop::{DoomedInstance, StopOutcome};
 use super::supervisor::{RestartTarget, RunOutcome, log_next_attempt, spawn_next_attempt};
 use super::{FeedbackLine, RelationshipCoordinators};
 use crate::Result;
+use crate::services::raw_calls::RawCallGate;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
 use config::failure_kind::PeppyFailureKind;
 use config::node::SetupTimeout;
@@ -323,6 +324,7 @@ pub async fn listen_for_node_run(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     config: NodeRunServiceConfig,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = expose_daemon_action(
         messenger,
@@ -352,7 +354,9 @@ pub async fn listen_for_node_run(
         gate: ConcurrencyGate::new(),
     };
 
-    let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
+    let handle = tokio::spawn(async move {
+        run_action_loop(action, ActionId::NodeRun, raw_calls, handler).await
+    });
 
     Ok(handle)
 }
@@ -948,6 +952,27 @@ async fn publish_node_run_feedback(publisher: &ActionFeedbackPublisher, line: Fe
     }
 }
 
+/// Binds each daemon target of `manifest`, a `depends_on.daemon` entry, to
+/// `daemon` under its per-boot instance id: the one producer of a daemon
+/// target, the daemon of the coordinator of the launch that started the
+/// instance, or the daemon that runs an instance of no launch. The daemon
+/// binds them itself on every path that starts an instance, a launch, a
+/// join, `peppy node run` and a restart, so a plan never names this
+/// producer, and a binding that a plan writes for a daemon target is
+/// replaced.
+fn bind_daemon_targets(
+    slot_bindings: &mut config::runtime::SlotBindings,
+    manifest: &config::node::Manifest,
+    daemon: config::runtime::ProducerRef,
+) {
+    for target in manifest.depends_on.iter().flat_map(|deps| &deps.daemon) {
+        slot_bindings.insert(
+            target.link_id.clone(),
+            config::runtime::BoundProducers::from(daemon.clone()),
+        );
+    }
+}
+
 /// Closes the add-to-start window.
 ///
 /// A federated coordinator validated this instance's whole plan (slots,
@@ -1353,6 +1378,23 @@ async fn process_node_run(
     {
         return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
     }
+
+    // The daemon of the coordinator serves the daemon interfaces of a
+    // launch; an instance of no launch reaches the daemon that runs it.
+    let stack_daemon = launch_id
+        .as_deref()
+        .and_then(|launch_id| ctx.action.slice_ownership.daemon_of_launch(launch_id))
+        .unwrap_or_else(|| {
+            config::runtime::ProducerRef::new(
+                &ctx.action.core_node_name,
+                &ctx.action.caller_instance_id,
+            )
+        });
+    bind_daemon_targets(
+        &mut runtime_config.node_instance.slot_bindings,
+        &node_config.manifest,
+        stack_daemon,
+    );
 
     // The policy of a new instance, resolved here for every path that starts
     // one: the goal's say against the node's own manifest. A respawn keeps
@@ -2953,6 +2995,48 @@ mod tests {
             }"#,
         )
         .expect("valid test node config")
+    }
+
+    /// The daemon binds each daemon target of the node to itself, in place
+    /// of whatever the plan names for it, and leaves every other slot as the
+    /// plan binds it.
+    #[test]
+    fn each_daemon_target_is_bound_to_the_daemon_that_runs_the_instance() {
+        let manifest: config::node::Manifest = serde_json5::from_str(
+            r#"{ name: "director", tag: "v1", depends_on: {
+                contracts: [{ name: "limb_motion", tag: "v1", link_id: "arm" }],
+                daemon: [
+                    { name: "fleet", tag: "v1", link_id: "fleet" },
+                    { name: "stack_copies", tag: "v1", link_id: "copies" },
+                ],
+            } }"#,
+        )
+        .expect("valid manifest");
+        let arm = config::runtime::BoundProducers::from(config::runtime::ProducerRef::new(
+            "robot_pc", "arm_inst",
+        ));
+        let mut slot_bindings = config::runtime::SlotBindings::from([
+            ("arm".to_owned(), arm.clone()),
+            (
+                "fleet".to_owned(),
+                config::runtime::BoundProducers::from(config::runtime::ProducerRef::new(
+                    "robot_pc", "arm_inst",
+                )),
+            ),
+        ]);
+        let daemon = config::runtime::ProducerRef::new("core_node", "core-node-boot");
+
+        bind_daemon_targets(&mut slot_bindings, &manifest, daemon.clone());
+
+        let bound_to_the_daemon = config::runtime::BoundProducers::from(daemon);
+        assert_eq!(
+            slot_bindings,
+            config::runtime::SlotBindings::from([
+                ("arm".to_owned(), arm),
+                ("copies".to_owned(), bound_to_the_daemon.clone()),
+                ("fleet".to_owned(), bound_to_the_daemon),
+            ])
+        );
     }
 
     /// The in-process launch path plans and spawns from the same entity, so

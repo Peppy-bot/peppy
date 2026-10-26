@@ -1,8 +1,9 @@
 use super::*;
 use crate::policy::{ImageCodec, OversizePolicy};
-use peppy_config_model::failure_kind::{
-    ContractAction, ContractFailureKinds, ContractMembers, ContractService,
+use peppy_config_model::contract_member::{
+    ContractAction, ContractMembers, ContractService, ContractTopic,
 };
+use peppy_config_model::failure_kind::ContractFailureKinds;
 use serde::Deserialize;
 use std::num::NonZeroU64;
 use std::path::Path;
@@ -21,7 +22,6 @@ const RECORDING_CONTRACT: &str =
 struct Fixture {
     sha256: ManifestFingerprint,
     manifest: ContractManifest,
-    topics: Vec<NativeEmittedTopic>,
     members: ContractMembers,
 }
 
@@ -42,7 +42,7 @@ struct ContractManifest {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct DocumentMembers {
-    topics: Vec<NativeEmittedTopic>,
+    topics: Vec<ContractTopic>,
     services: Vec<ContractService>,
     actions: Vec<ContractAction>,
 }
@@ -50,10 +50,11 @@ struct DocumentMembers {
 impl Fixture {
     fn members(&self) -> DeclaredMembers<'_> {
         DeclaredMembers {
-            topics: &self.topics,
+            topics: &self.members.topics,
             services: &self.members.services,
             actions: &self.members.actions,
             failure_kinds: &self.members.failure_kinds,
+            marks: &self.members.marks,
         }
     }
 
@@ -90,9 +91,9 @@ fn fixture(contract_json5: &str) -> Fixture {
     Fixture {
         sha256: ManifestFingerprint::of_bytes(contract_json5.as_bytes()),
         manifest: document.manifest,
-        topics: document.interfaces.topics,
         members: ContractMembers::new(
             document.failure_kinds,
+            document.interfaces.topics,
             document.interfaces.services,
             document.interfaces.actions,
         )

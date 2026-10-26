@@ -170,6 +170,11 @@ pub enum ToolCallError {
     /// The provider gave an error reply, with a failure kind and a message.
     /// The tool error carries the failure as structured content as well.
     Failed(ProviderFailure),
+    /// The stack refused the move: the daemon of the fleet refused the call
+    /// of a member that moves a robot, with a failure kind and a message,
+    /// and the call did not reach the provider. The tool error carries the
+    /// failure as structured content as well.
+    MoveRefused(ProviderFailure),
     /// The call failed for another reason, for example a transport error,
     /// a response that does not convert, or an error reply with a kind that
     /// the member does not declare.
@@ -182,6 +187,7 @@ impl fmt::Display for ToolCallError {
             Self::Unavailable(detail) => write!(f, "provider unavailable: {detail}"),
             Self::Deadline(detail) => write!(f, "deadline exceeded: {detail}"),
             Self::Failed(failure) => write!(f, "the provider gave an error reply: {failure}"),
+            Self::MoveRefused(failure) => write!(f, "the stack refused the move: {failure}"),
             Self::Error(detail) => write!(f, "call failed: {detail}"),
         }
     }

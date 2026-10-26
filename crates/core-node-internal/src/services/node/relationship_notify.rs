@@ -36,7 +36,18 @@
 //! already true. It is also why a node whose correctness depends on freshness
 //! owns a staleness watchdog rather than trusting the framework to notice a
 //! partition, which no notification can survive.
+//!
+//! # The fleet of this daemon
+//!
+//! Each start and each end of a process of this machine also goes to the
+//! fleet of the launch that this daemon coordinates
+//! ([`crate::services::fleet::note_process`]), which reads the software
+//! state of each robot from them. The coordinator of a launch watches each
+//! instance on another machine, so the daemon of that machine tells the
+//! coordinator each start and each end of its processes too.
 
+use crate::services::federation::SliceOwnership;
+use crate::services::fleet::note_process;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -135,6 +146,9 @@ pub(crate) struct RelationshipNotifier {
     /// `time`.
     reply_bound: Duration,
     time: TimeSource,
+    /// The launch this daemon coordinates, whose fleet reads the start and
+    /// the end of each process of this machine.
+    ownership: Arc<SliceOwnership>,
 }
 
 impl RelationshipNotifier {
@@ -145,6 +159,7 @@ impl RelationshipNotifier {
         pairing: Arc<PairingCoordinator>,
         reply_bound: Duration,
         time: TimeSource,
+        ownership: Arc<SliceOwnership>,
     ) -> Self {
         Self {
             messenger,
@@ -154,6 +169,7 @@ impl RelationshipNotifier {
             watchers: WatcherRegistry::default(),
             reply_bound,
             time,
+            ownership,
         }
     }
 
@@ -169,6 +185,7 @@ impl RelationshipNotifier {
     /// This is what makes a remote observer drop and redeclare its
     /// subscription across a source restart, exactly as a local one does.
     pub(crate) async fn announce_running(&self, instance_id: &str) {
+        note_process(&self.ownership, &self.core_node_name, instance_id, true);
         self.announce(instance_id, RelationshipEvent::ReachedRunning)
             .await;
     }
@@ -192,6 +209,7 @@ impl RelationshipNotifier {
         end: InstanceEnd,
         told: impl IntoIterator<Item = String>,
     ) {
+        note_process(&self.ownership, &self.core_node_name, instance_id, false);
         let recipients = WatcherRegistry::recipients_of(
             told,
             self.pairing.remote_peer_core_nodes(instance_id),

@@ -1,15 +1,15 @@
-//! Cap'n Proto schema generation for Peppy node message formats.
+//! Rust code generation for the Cap'n Proto schemas of Peppy node message
+//! formats.
 //!
-//! This crate compiles a [`config::node::MessageFormat`] into Cap'n Proto
-//! schema artifacts and Rust type mappings, and bundles the `capnp` compiler
-//! binary needed to do so (see `build.rs`; the binaries live in
-//! `peppy-shared/peppy-config-model/tools`). It lives outside `peppy-shared`
-//! because only crates of the `peppy` workspace (the code generator and
-//! `message-codec`) depend on it.
+//! [`MessageFormatMapper`] maps a [`config::node::MessageFormat`] to its
+//! schema artifacts: the schema text that `peppy-codec` renders, and the
+//! Rust type of each field, which this crate reads from the compile of the
+//! schema. [`compile_capnp`] compiles schema files into the Rust modules of
+//! a generated crate. Both run the Cap'n Proto compiler of `peppy-codec`
+//! (see [`peppy_codec::compiler`]). The crate lives outside `peppy-shared`
+//! because only the code generator of peppy depends on it.
 
-mod facade;
 mod types;
-pub mod wire_layout;
 
 pub use types::FunctionParam;
 
@@ -18,30 +18,73 @@ pub(crate) use config::ConfigError as Error;
 /// `peppy` keep their existing `ConfigError`-based error handling.
 pub type Result<T> = std::result::Result<T, config::ConfigError>;
 
-use capnp::message::ReaderOptions;
-use capnp::schema_capnp::{code_generator_request, field, node, type_};
-use capnp::serialize::{self, OwnedSegments};
+use capnp::schema_capnp::{field, node, type_};
+use capnpc::CompilerCommand;
 use capnpc::codegen::GeneratorContext;
 use capnpc::codegen_types::{Leaf, RustTypeInfo};
 use proc_macro2::{Ident, Span, TokenStream};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
-use tempfile::tempdir;
 
-use config::node::{ArraySchema, MessageFormat, PrimitiveSchema, SchemaType, TypeToken};
-use facade::CapnpFacade;
-use indexmap::IndexMap;
-use wire_layout::{SchemaNodes, StructLayout, join_path};
+use config::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
+use peppy_codec::schema::{MessageSchema, SchemaError, capnp_field_name, join_path};
 
-/// `output_dir` is the `src` directory of a Rust crate: the call writes a `capnp.rs` module and
-/// a `capnp/` directory with the generated files at its root.
+/// A failure of the schema functions of `peppy-codec`, as an error of this
+/// crate.
+fn schema_error(error: impl Into<SchemaError>) -> Error {
+    Error::Encoding(error.into().to_string())
+}
+
+/// Compiles the Cap'n Proto schemas `capnp_files` into Rust modules.
+/// `output_dir` is the `src` directory of a Rust crate: the call writes a
+/// `capnp.rs` module that declares every generated module, and a `capnp/`
+/// directory with the generated files.
 pub fn compile_capnp<P, O>(capnp_files: &[P], output_dir: O) -> Result<()>
 where
     P: AsRef<Path>,
     O: AsRef<Path>,
 {
-    CapnpFacade::new()?.compile_files(capnp_files, output_dir)
+    let capnp = peppy_codec::compiler::binary_path().map_err(schema_error)?;
+    let output_dir = output_dir.as_ref();
+    let capnp_output_dir = output_dir.join("capnp");
+    std::fs::create_dir_all(&capnp_output_dir)?;
+
+    let mut module_exports: Vec<String> = Vec::with_capacity(capnp_files.len());
+    for capnp_file in capnp_files {
+        let capnp_path = capnp_file.as_ref();
+
+        let mut command = CompilerCommand::new();
+        command.capnp_executable(&capnp);
+        command.output_path(&capnp_output_dir);
+        command.default_parent_module(vec!["capnp".to_string()]);
+
+        if let Some(parent) = capnp_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            command.src_prefix(parent);
+        }
+
+        command.file(capnp_path);
+
+        command
+            .run()
+            .map_err(|err| Error::Encoding(format!("failed to run capnp compiler: {err}")))?;
+
+        if let Some(module_name) = capnp_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(|name| format!("pub mod {}_capnp;", name))
+        {
+            module_exports.push(module_name);
+        }
+    }
+
+    module_exports.sort();
+    module_exports.dedup();
+
+    let capnp_rs_path = output_dir.join("capnp.rs");
+    let capnp_rs_content = module_exports.join("\n") + "\n";
+    std::fs::write(&capnp_rs_path, capnp_rs_content)?;
+    Ok(())
 }
 
 /// This struct turns a MessageFormat into a capnp proto and its associated Rust types
@@ -62,68 +105,32 @@ impl MessageFormatMapper {
     /// matching Rust type for each field.
     ///
     /// Despite the `map_` name this is **not** a pure transform: resolving the
-    /// Rust type mapping shells out to the Cap'n Proto compiler. The call
-    /// creates a temporary directory, writes the generated schema into it,
-    /// invokes the `capnp` binary, and reads back the code-generator request.
-    /// Expect filesystem I/O and a subprocess, not just in-memory work.
-    ///
-    /// The binary is resolved as `CAPNP_BINARY_PATH` (an explicit override for
-    /// development and testing) if set, otherwise the capnp that peppy ships and
-    /// extracts to `$PEPPY_HOME/bin` on first use. This defaults to
-    /// `~/.peppy/bin` in production and is not affected by the installer's
-    /// optional `PEPPY_BIN_DIR`. peppy never falls back to a system capnp on
-    /// `PATH`.
+    /// Rust type mapping runs the Cap'n Proto compiler of `peppy-codec` on the
+    /// schema (see [`peppy_codec::compiler`]) and reads back its code
+    /// generator request. Expect filesystem I/O and a subprocess, not just
+    /// in-memory work.
     pub fn map_message_format_to_capnpn(&self) -> Result<CapnpSchemaArtifacts> {
-        let schema = self.render_schema()?;
+        let schema = MessageSchema::render(&self.schema_name, &self.message_format);
         let type_mapping = self.compute_rust_type_mapping(&schema)?;
         Ok(CapnpSchemaArtifacts::new(
             self.message_format.clone(),
-            schema,
+            schema.text().to_string(),
             type_mapping,
         ))
     }
 
-    /// Lays out the message format on the wire: the schema is rendered and
-    /// compiled exactly as for code generation, and the compiler's field
-    /// placement is read back. Runs the same subprocess as
-    /// [`map_message_format_to_capnpn`](Self::map_message_format_to_capnpn).
-    pub fn wire_layout(&self) -> Result<StructLayout> {
-        let schema = self.render_schema()?;
-        let compiled = CompiledSchema::compile(&schema)?;
-        wire_layout::extract(compiled.request()?, &self.message_format.0)
-    }
+    fn compute_rust_type_mapping(&self, schema: &MessageSchema) -> Result<HashMap<String, String>> {
+        let compiled = schema.compile().map_err(schema_error)?;
+        let ctx = GeneratorContext::new(compiled.message())?;
 
-    fn render_schema(&self) -> Result<String> {
-        let mut generator = CapnpSchemaGenerator::default();
-        let mut schema = String::new();
-        let mut schema_id =
-            MessageFormatMapper::compute_schema_id(&self.schema_name, &self.message_format.0);
-        schema_id |= 1; // ensure odd
-        schema_id |= 1 << 63; // high bit set per capnp id recommendations
-
-        schema.push_str(&format!("@0x{schema_id:016x};\n"));
-        schema.push('\n');
-        schema.push_str(&generator.render_struct("Message", &self.message_format.0, 0)?);
-
-        if generator.timestamp_struct_needed {
-            schema.push('\n');
-            schema.push_str("struct Timestamp {\n  sec @0 :Int64;\n  nsec @1 :UInt32;\n}\n");
-        }
-        Ok(schema)
-    }
-
-    fn compute_rust_type_mapping(&self, schema: &str) -> Result<HashMap<String, String>> {
-        let compiled = CompiledSchema::compile(schema)?;
-        let ctx = GeneratorContext::new(&compiled.message)?;
-
-        let root_struct_id = SchemaNodes::from_request(ctx.request)?.root_message_id()?;
+        let root_struct_id = compiled.root_message_id().map_err(schema_error)?;
         let mut mapping = HashMap::new();
         let mut visited = HashSet::new();
         collect_struct_fields(&ctx, root_struct_id, "", &mut mapping, &mut visited)?;
 
         fn array_schema_to_rust_string(array: &ArraySchema) -> Option<String> {
             let token = array.items.as_ref().as_type_token()?;
-            let (_, rust_type) = type_token_strings(token);
+            let rust_type = rust_type_name(token);
             let rendered = match array.length {
                 Some(length) => format!("[{rust_type}; {length}]"),
                 None => format!("[{rust_type}]"),
@@ -146,7 +153,7 @@ impl MessageFormatMapper {
                     if let SchemaType::Object(object) = array.items.as_ref() {
                         let element_key = format!("{current_key}[]");
                         for (field_name, field_schema) in &object.fields {
-                            let sanitized = sanitize_field_name(field_name);
+                            let sanitized = capnp_field_name(field_name);
                             let next_key = join_path(&element_key, &sanitized);
                             override_array_types(&next_key, field_schema, mapping);
                         }
@@ -154,7 +161,7 @@ impl MessageFormatMapper {
                 }
                 SchemaType::Object(object) => {
                     for (field_name, field_schema) in &object.fields {
-                        let sanitized = sanitize_field_name(field_name);
+                        let sanitized = capnp_field_name(field_name);
                         let next_key = join_path(current_key, &sanitized);
                         override_array_types(&next_key, field_schema, mapping);
                     }
@@ -164,62 +171,11 @@ impl MessageFormatMapper {
         }
 
         for (field_name, schema) in &self.message_format.0 {
-            let sanitized = sanitize_field_name(field_name);
+            let sanitized = capnp_field_name(field_name);
             override_array_types(&sanitized, schema, &mut mapping);
         }
 
         Ok(mapping)
-    }
-
-    fn compute_schema_id(schema_name: &str, fields: &IndexMap<String, SchemaType>) -> u64 {
-        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-        const FNV_PRIME: u64 = 0x100000001b3;
-
-        fn update(mut hash: u64, bytes: &[u8]) -> u64 {
-            for byte in bytes {
-                hash ^= u64::from(*byte);
-                hash = hash.wrapping_mul(FNV_PRIME);
-            }
-            hash
-        }
-
-        fn hash_usize(hash: u64, value: usize) -> u64 {
-            update(hash, &(value as u64).to_le_bytes())
-        }
-
-        fn hash_schema(mut hash: u64, schema: &SchemaType) -> u64 {
-            match schema {
-                SchemaType::Type(token)
-                | SchemaType::Primitive(PrimitiveSchema { kind: token, .. }) => {
-                    hash = update(hash, b"type");
-                    let (capnp_discriminant, _) = type_token_strings(token);
-                    hash = update(hash, capnp_discriminant.as_bytes());
-                }
-                SchemaType::Array(array) => {
-                    hash = update(hash, b"array");
-                    hash = hash_schema(hash, array.items.as_ref());
-                    if let Some(len) = array.length {
-                        hash = hash_usize(hash, len);
-                    }
-                }
-                SchemaType::Object(object) => {
-                    hash = update(hash, b"object");
-                    hash = hash_fields(hash, &object.fields);
-                }
-            }
-            hash
-        }
-
-        fn hash_fields(mut hash: u64, fields: &IndexMap<String, SchemaType>) -> u64 {
-            for (key, value) in fields {
-                hash = update(hash, key.as_bytes());
-                hash = hash_schema(hash, value);
-            }
-            hash
-        }
-
-        let hash = update(FNV_OFFSET, schema_name.as_bytes());
-        hash_fields(hash, fields)
     }
 }
 
@@ -246,7 +202,7 @@ impl CapnpSchemaArtifacts {
         let mut params = Vec::with_capacity(self.message_format.0.len());
 
         for field_name in self.message_format.0.keys() {
-            let sanitized = sanitize_field_name(field_name);
+            let sanitized = capnp_field_name(field_name);
             let type_string = self.type_mapping.get(&sanitized).ok_or_else(|| {
             Error::Encoding(format!(
                 "missing type mapping for field `{sanitized}` while building function parameters"
@@ -279,240 +235,23 @@ impl CapnpSchemaArtifacts {
     }
 }
 
-/// The compiler's view of one rendered schema: the code generator request
-/// the `capnp` binary emits for it, read fully into memory.
-struct CompiledSchema {
-    message: capnp::message::Reader<OwnedSegments>,
-}
-
-impl CompiledSchema {
-    /// Writes the schema to a temporary directory, runs the bundled `capnp`
-    /// compiler on it and reads back the raw code generator request.
-    fn compile(schema: &str) -> Result<Self> {
-        let temp_dir = tempdir()?;
-        let schema_path = temp_dir.path().join("message.capnp");
-        std::fs::write(&schema_path, schema)?;
-        let request_path = temp_dir.path().join("code_generator_request.bin");
-
-        let capnp = CapnpFacade::new()?;
-        let mut command = capnpc::CompilerCommand::new();
-        command
-            .capnp_executable(capnp.binary_path())
-            .file(&schema_path)
-            .output_path(temp_dir.path())
-            .raw_code_generator_request_path(&request_path);
-
-        command.run()?;
-
-        let mut request_file = std::fs::File::open(&request_path)?;
-        let message = serialize::read_message(&mut request_file, ReaderOptions::new())?;
-        Ok(Self { message })
-    }
-
-    fn request(&self) -> Result<code_generator_request::Reader<'_>> {
-        Ok(self
-            .message
-            .get_root::<code_generator_request::Reader<'_>>()?)
-    }
-}
-
-#[derive(Default)]
-struct CapnpSchemaGenerator {
-    timestamp_struct_needed: bool,
-}
-
-impl CapnpSchemaGenerator {
-    fn render_struct(
-        &mut self,
-        struct_name: &str,
-        fields: &IndexMap<String, SchemaType>,
-        depth: usize,
-    ) -> Result<String> {
-        let indent = "  ".repeat(depth);
-        let mut buffer = String::new();
-        buffer.push_str(&format!("{indent}struct {struct_name} {{\n"));
-
-        let mut nested_defs = Vec::new();
-
-        for (index, (field_name, schema_type)) in fields.iter().enumerate() {
-            let sanitized_field = sanitize_field_name(field_name);
-            let field_indent = "  ".repeat(depth + 1);
-            let TypeResolution { type_name, nested } =
-                self.resolve_type(struct_name, &sanitized_field, schema_type, depth + 1)?;
-
-            buffer.push_str(&format!(
-                "{field_indent}{sanitized_field} @{index} :{type_name};\n"
-            ));
-
-            nested_defs.extend(nested);
-        }
-
-        if !nested_defs.is_empty() {
-            buffer.push('\n');
-            for nested in nested_defs {
-                buffer.push_str(&nested);
-            }
-        }
-
-        buffer.push_str(&format!("{indent}}}\n"));
-        Ok(buffer)
-    }
-
-    fn resolve_type(
-        &mut self,
-        parent_struct: &str,
-        field_name: &str,
-        schema: &SchemaType,
-        depth: usize,
-    ) -> Result<TypeResolution> {
-        match schema {
-            SchemaType::Type(token)
-            | SchemaType::Primitive(PrimitiveSchema { kind: token, .. }) => Ok(TypeResolution {
-                type_name: self.capnp_type_for_token(token).to_string(),
-                nested: Vec::new(),
-            }),
-            SchemaType::Array(array) => {
-                if matches!(array.items.as_ref().as_type_token(), Some(TypeToken::U8)) {
-                    return Ok(TypeResolution {
-                        type_name: "Data".to_string(),
-                        nested: Vec::new(),
-                    });
-                }
-
-                let mut item_resolution = self.resolve_type(
-                    parent_struct,
-                    &format!("{field_name}_item"),
-                    array.items.as_ref(),
-                    depth,
-                )?;
-                let nested = std::mem::take(&mut item_resolution.nested);
-
-                Ok(TypeResolution {
-                    type_name: format!("List({})", item_resolution.type_name),
-                    nested,
-                })
-            }
-            SchemaType::Object(object) => {
-                let struct_name = self.nested_struct_name(parent_struct, field_name);
-                let nested = self.render_struct(&struct_name, &object.fields, depth)?;
-
-                Ok(TypeResolution {
-                    type_name: struct_name.clone(),
-                    nested: vec![nested],
-                })
-            }
-        }
-    }
-
-    fn nested_struct_name(&self, parent_struct: &str, field_name: &str) -> String {
-        let mut name = to_pascal_case(field_name);
-        if name.is_empty() {
-            name = format!("{parent_struct}Field");
-        }
-
-        if name.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
-            name.insert(0, '_');
-        }
-
-        name
-    }
-
-    fn capnp_type_for_token(&mut self, token: &TypeToken) -> &'static str {
-        if *token == TypeToken::Time {
-            self.timestamp_struct_needed = true;
-        }
-        capnp_type_name(token)
-    }
-}
-
-/// The Cap'n Proto type a token is rendered as. `time` names the file-level
-/// `Timestamp` struct the renderer appends when any field uses it.
-pub(crate) fn capnp_type_name(token: &TypeToken) -> &'static str {
+/// The Rust type of a token in the generated function parameters.
+fn rust_type_name(token: &TypeToken) -> &'static str {
     match token {
-        TypeToken::Bool => "Bool",
-        TypeToken::String => "Text",
-        TypeToken::Bytes => "Data",
-        TypeToken::Time => "Timestamp",
-        TypeToken::U8 => "UInt8",
-        TypeToken::U16 => "UInt16",
-        TypeToken::U32 => "UInt32",
-        TypeToken::U64 => "UInt64",
-        TypeToken::I8 => "Int8",
-        TypeToken::I16 => "Int16",
-        TypeToken::I32 => "Int32",
-        TypeToken::I64 => "Int64",
-        TypeToken::F32 => "Float32",
-        TypeToken::F64 => "Float64",
-    }
-}
-
-struct TypeResolution {
-    type_name: String,
-    nested: Vec<String>,
-}
-
-pub(crate) fn sanitize_field_name(input: &str) -> String {
-    let mut output = to_pascal_case(input);
-    if output.is_empty() {
-        output.push_str("Field");
-    }
-
-    let mut chars = output.chars();
-    let mut camel = String::with_capacity(output.len());
-    if let Some(first) = chars.next() {
-        camel.push(first.to_ascii_lowercase());
-        camel.extend(chars);
-    }
-
-    if camel.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
-        camel.insert(0, '_');
-    }
-
-    if camel.is_empty() {
-        "_field".to_string()
-    } else {
-        camel
-    }
-}
-
-fn to_pascal_case(input: &str) -> String {
-    let mut result = String::new();
-
-    for segment in input
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|s| !s.is_empty())
-    {
-        let mut chars = segment.chars();
-        if let Some(first) = chars.next() {
-            result.push(first.to_ascii_uppercase());
-            for ch in chars {
-                result.push(ch.to_ascii_lowercase());
-            }
-        }
-    }
-
-    result
-}
-
-/// Returns both the canonical Cap'n Proto discriminant string and the Rust-facing type string
-/// for a given `TypeToken`. The first element is used when hashing schema identifiers, while the
-/// second drives the Rust type mapping overrides.
-fn type_token_strings(token: &TypeToken) -> (&'static str, &'static str) {
-    match token {
-        TypeToken::Bool => ("bool", "bool"),
-        TypeToken::String => ("string", "String"),
-        TypeToken::Bytes => ("bytes", "Vec<u8>"),
-        TypeToken::Time => ("timestamp", "std::time::SystemTime"),
-        TypeToken::U8 => ("u8", "u8"),
-        TypeToken::U16 => ("u16", "u16"),
-        TypeToken::U32 => ("u32", "u32"),
-        TypeToken::U64 => ("u64", "u64"),
-        TypeToken::I8 => ("i8", "i8"),
-        TypeToken::I16 => ("i16", "i16"),
-        TypeToken::I32 => ("i32", "i32"),
-        TypeToken::I64 => ("i64", "i64"),
-        TypeToken::F32 => ("f32", "f32"),
-        TypeToken::F64 => ("f64", "f64"),
+        TypeToken::Bool => "bool",
+        TypeToken::String => "String",
+        TypeToken::Bytes => "Vec<u8>",
+        TypeToken::Time => "std::time::SystemTime",
+        TypeToken::U8 => "u8",
+        TypeToken::U16 => "u16",
+        TypeToken::U32 => "u32",
+        TypeToken::U64 => "u64",
+        TypeToken::I8 => "i8",
+        TypeToken::I16 => "i16",
+        TypeToken::I32 => "i32",
+        TypeToken::I64 => "i64",
+        TypeToken::F32 => "f32",
+        TypeToken::F64 => "f64",
     }
 }
 
@@ -836,84 +575,6 @@ mod tests {
             param_map.get("labels"),
             Some(&canonicalize_literal("[String; 3]")),
             "labels should map to a fixed-size array of Strings"
-        );
-    }
-
-    #[test]
-    fn different_schema_names_produce_different_ids() {
-        let format: MessageFormat = serde_json5::from_str(
-            r#"
-            {
-              arm_id: "u16",
-              desired_position: {
-                $type: "array",
-                $items: "i32"
-              }
-            }
-            "#,
-        )
-        .expect("valid format");
-
-        let schema_a = MessageFormatMapper::new("move_right_arm_goal_request", format.clone())
-            .map_message_format_to_capnpn()
-            .expect("schema a");
-        let schema_b = MessageFormatMapper::new("move_left_arm_goal_request", format)
-            .map_message_format_to_capnpn()
-            .expect("schema b");
-
-        let id_a = schema_a
-            .encoding_schema()
-            .lines()
-            .next()
-            .expect("first line");
-        let id_b = schema_b
-            .encoding_schema()
-            .lines()
-            .next()
-            .expect("first line");
-
-        assert_ne!(
-            id_a, id_b,
-            "identical field structures with different names must produce different schema IDs"
-        );
-    }
-
-    #[test]
-    fn same_name_and_fields_produce_same_id() {
-        let format: MessageFormat = serde_json5::from_str(
-            r#"
-            {
-              arm_id: "u16",
-              desired_position: {
-                $type: "array",
-                $items: "i32"
-              }
-            }
-            "#,
-        )
-        .expect("valid format");
-
-        let schema_a = MessageFormatMapper::new("move_arm_goal_request", format.clone())
-            .map_message_format_to_capnpn()
-            .expect("schema a");
-        let schema_b = MessageFormatMapper::new("move_arm_goal_request", format)
-            .map_message_format_to_capnpn()
-            .expect("schema b");
-
-        let id_a = schema_a
-            .encoding_schema()
-            .lines()
-            .next()
-            .expect("first line");
-        let id_b = schema_b
-            .encoding_schema()
-            .lines()
-            .next()
-            .expect("first line");
-
-        assert_eq!(
-            id_a, id_b,
-            "same name and fields must produce identical schema IDs"
         );
     }
 

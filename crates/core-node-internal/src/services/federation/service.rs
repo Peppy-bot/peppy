@@ -17,8 +17,10 @@
 
 use super::{ReservationLifetime, ReserveOutcome, SliceOwnership};
 use crate::Result;
+use crate::services::fleet::note_process;
 use crate::services::node::RelationshipCoordinators;
 use crate::services::node::gate::StackHold;
+use crate::services::raw_calls::RawCallGate;
 use crate::services::response::failure;
 use crate::services::stack::LocalMounts;
 use config::failure_kind::PeppyFailureKind;
@@ -59,6 +61,9 @@ pub(crate) struct FederationServiceContext {
     /// Cancelled on daemon shutdown so a coordinator-presence watch does not
     /// outlive the daemon generation that spawned it.
     pub(crate) shutdown_token: CancellationToken,
+    /// Refuses each federation request from an instance of the stack: only
+    /// a daemon sends one.
+    pub(crate) raw_calls: RawCallGate,
 }
 
 /// Declares the listener for one federation endpoint.
@@ -84,11 +89,12 @@ macro_rules! federation_endpoint {
             .await?;
 
             Ok(tokio::spawn(async move {
+                let raw_calls = context.raw_calls.clone();
                 endpoint
-                    .handle_requests(|request| {
+                    .handle_requests(raw_calls.guard($service.name(), |request| {
                         let context = context.clone();
                         async move { $inner(&request, &context).await }
-                    })
+                    }))
                     .await
                     .map_err(Into::into)
             }))
@@ -492,7 +498,10 @@ async fn slice_begin_inner(
             context.relationships.observation(),
         )
         .await;
-        *context.ownership.active.lock() = None;
+        crate::services::stack::state::drop_active_launch(
+            &context.ownership,
+            "a launch of another coordinator took this machine",
+        );
     }
 
     // Record the slice BEFORE the coordinator dispatches a single node to it.
@@ -500,9 +509,10 @@ async fn slice_begin_inner(
     // launch that dies halfway must still be findable by `stack reset
     // --federated`: recording only on success would leave exactly the wreckage
     // that needs cleaning up as the one state nobody can find.
-    context
-        .ownership
-        .record_slice(LaunchIdentity::new(decoded.launch_id.clone(), coordinator));
+    context.ownership.record_slice(
+        LaunchIdentity::new(decoded.launch_id.clone(), coordinator),
+        request.message().instance_id(),
+    );
 
     // Recorded first, prepared second: the slice is already this launch's, so a
     // machine that cannot provide a bind source is a refusal the coordinator
@@ -611,6 +621,12 @@ async fn notify_inner(
         // redeclares its subscription across a remote restart exactly as it
         // does across a local one.
         RelationshipEvent::ReachedRunning => {
+            note_process(
+                &context.ownership,
+                &decoded.instance.core_node,
+                &decoded.instance.instance_id,
+                true,
+            );
             context
                 .relationships
                 .observation()
@@ -627,6 +643,12 @@ async fn notify_inner(
         // one that exited keeps them for either endpoint's restart.
         RelationshipEvent::Ended(end) => {
             let instance = &decoded.instance;
+            note_process(
+                &context.ownership,
+                &instance.core_node,
+                &instance.instance_id,
+                false,
+            );
             context
                 .relationships
                 .observation()

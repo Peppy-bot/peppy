@@ -9,8 +9,8 @@
 //! provider generator. Those moves live here.
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
-use daemon_config::contract::PeppyContract;
 use generator::{ContractOrigin, LanguageGenerator};
+use peppy_codec::contract::PeppyContract;
 use rmcp::model::{
     ClientCapabilities, ClientConfig, DetailedTask, GetTaskParams, ProtocolVersion,
     UpdateTaskParams,

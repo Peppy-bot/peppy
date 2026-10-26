@@ -7,9 +7,9 @@ use crate::services::repo::cache as repo_cache;
 use config::node::{InterfaceKind, RefinementProblem, refined_ref};
 use config::{ContractCoverageMismatch, RefinementMismatch};
 use daemon_config::consts::PeppyDirs;
-use daemon_config::contract::RefinedMember;
 use generator::{ConsumedActionMessage, ContractOrigin, DeploymentInterface};
 use node_stack::NodeStack;
+use peppy_codec::contract::RefinedMember;
 use std::collections::{HashMap, HashSet};
 
 /// The full peppygen interface set for one node, in one call: consumed
@@ -81,8 +81,10 @@ struct ResolvedDependencies {
     /// `link_id`: without the documents of an add, each entry resolves by the
     /// local rules, so an entry with a sha256 pin and one without can resolve
     /// to two contents of one `(name, tag)`. `resolve_contract_doc` handles
-    /// SHA-pin matching and on-disk drift detection per load.
-    contract_docs: HashMap<String, daemon_config::contract::PeppyContract>,
+    /// SHA-pin matching and on-disk drift detection per load. A
+    /// `depends_on.daemon` entry holds the document of its daemon interface,
+    /// compiled into peppy.
+    contract_docs: HashMap<String, peppy_codec::contract::PeppyContract>,
 }
 
 /// Collects consumed interfaces from a node config and resolves their message
@@ -137,6 +139,10 @@ fn collect_consumed_interfaces(
                     on_feedback,
                 )?;
                 deps.contract_docs.insert(link_id.clone(), parsed);
+            }
+            DependencyKind::Daemon => {
+                deps.contract_docs
+                    .insert(link_id.clone(), daemon_interface_doc(link_id, entry)?);
             }
         }
     }
@@ -286,7 +292,7 @@ impl ResolvedDependencies {
         lookup_name: &str,
         extract_from_node: impl FnOnce(&DependencyOfferings, &str) -> Option<T>,
         extract_from_contract: impl FnOnce(
-            &daemon_config::contract::PeppyContract,
+            &peppy_codec::contract::PeppyContract,
             &str,
         ) -> Option<Result<T, Vec<RefinementProblem>>>,
     ) -> std::result::Result<Option<(T, generator::DependencyContext)>, String> {
@@ -314,11 +320,15 @@ impl ResolvedDependencies {
                     ),
                 )))
             }
-            DependencyKind::Contract => {
+            kind @ (DependencyKind::Contract | DependencyKind::Daemon) => {
+                let document = match kind {
+                    DependencyKind::Daemon => "daemon interface",
+                    _ => "contract",
+                };
                 let parsed = self.contract_docs.get(link_id).ok_or_else(|| {
                     format!(
                         "`{section}` entry `{lookup_name}` references link_id `{link_id}`, \
-                         whose contract `{}:{}` failed to resolve",
+                         whose {document} `{}:{}` failed to resolve",
                         entry.name, entry.tag
                     )
                 })?;
@@ -326,7 +336,7 @@ impl ResolvedDependencies {
                     .ok_or_else(|| {
                         format!(
                             "`{section}` entry `{lookup_name}` (link_id `{link_id}`) names no \
-                             member of contract `{}:{}`",
+                             member of {document} `{}:{}`",
                             entry.name, entry.tag
                         )
                     })?
@@ -392,6 +402,24 @@ mod action_message_tests {
     }
 }
 
+/// The document of the daemon interface that the daemon target `link_id`
+/// names, as compiled into peppy: never a document of the contract cache. A
+/// target that names an interface this peppy does not serve is refused with
+/// the message of the registry.
+fn daemon_interface_doc(
+    link_id: &str,
+    entry: &DependencyLookupEntry,
+) -> std::result::Result<peppy_codec::contract::PeppyContract, String> {
+    let target = config::node::DaemonTargetDependency {
+        name: config::runtime::Name::new(&entry.name).map_err(|e| e.to_string())?,
+        tag: entry.tag.clone(),
+        link_id: link_id.to_owned(),
+    };
+    daemon_config::daemon_interface::DaemonInterface::of_target(&target)
+        .map(|interface| interface.document().clone())
+        .map_err(|error| format!("daemon target `{link_id}`: {error}"))
+}
+
 /// Loads a `PeppyContract` document from the local contract cache for
 /// `(name, tag)`, verifying both the SHA pin (when set) and on-disk drift
 /// against the cached fingerprint, or takes it from the `documents` an add
@@ -406,10 +434,9 @@ pub(crate) fn resolve_contract_doc(
     sha256_pin: Option<&str>,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<daemon_config::contract::PeppyContract, String> {
+) -> std::result::Result<peppy_codec::contract::PeppyContract, String> {
     let parse = |content: &str| {
-        daemon_config::contract::PeppyContractParser::from_content(content)
-            .map_err(|e| e.to_string())
+        peppy_codec::contract::PeppyContractParser::from_content(content).map_err(|e| e.to_string())
     };
 
     // The documents an add read by their pins fix the bytes: this machine's
@@ -520,7 +547,7 @@ fn resolve_implements(
         &str,
         (
             &config::node::ImplementsEntry,
-            daemon_config::contract::PeppyContract,
+            peppy_codec::contract::PeppyContract,
         ),
     > = HashMap::new();
     for slot in &manifest.implements {
@@ -683,7 +710,7 @@ fn resolve_implements(
 }
 
 /// The first kind under which a contract declares a member named `name`.
-fn member_kind(doc: &daemon_config::contract::PeppyContract, name: &str) -> Option<InterfaceKind> {
+fn member_kind(doc: &peppy_codec::contract::PeppyContract, name: &str) -> Option<InterfaceKind> {
     if doc.interfaces.topics.iter().any(|t| t.name == name) {
         Some(InterfaceKind::Topic)
     } else if doc.interfaces.services.iter().any(|s| s.name == name) {
@@ -2165,6 +2192,220 @@ mod implements_tests {
         assert!(
             out.is_empty(),
             "a contract-backed-only name must not resolve through a node dep"
+        );
+    }
+}
+
+#[cfg(test)]
+mod daemon_target_tests {
+    //! Exercises the consumed side of a daemon target: a `depends_on.daemon`
+    //! slot resolves to the document of its daemon interface as compiled
+    //! into peppy, whatever the contract cache and the documents of an add
+    //! hold, and its members resolve as the members of a contract slot do.
+
+    use super::*;
+    use crate::services::repo::cache::test_support::peppy_dirs_with_cache;
+    use config::failure_kind::MemberSection;
+    use config::node::{Interfaces, Manifest};
+    use daemon_config::daemon_interface::DaemonInterface;
+    use generator::InterfaceVariant;
+    use tempfile::TempDir;
+
+    /// A manifest whose daemon target `fleet` names `name:tag`.
+    fn director(name_and_tag: &str) -> Manifest {
+        serde_json5::from_str(&format!(
+            r#"{{ name: "director", tag: "v1", depends_on: {{
+                daemon: [{{ {name_and_tag}, link_id: "fleet" }}]
+            }} }}"#
+        ))
+        .expect("manifest parses")
+    }
+
+    /// `list` and `take` of `fleet:v1`, and its action `lease`.
+    fn lease_holder() -> Interfaces {
+        serde_json5::from_str(
+            r#"{
+                services: { consumes: [
+                    { link_id: "fleet", name: "list" },
+                    { link_id: "fleet", name: "take" },
+                ] },
+                actions: { consumes: [{ link_id: "fleet", name: "lease" }] },
+            }"#,
+        )
+        .expect("interfaces parse")
+    }
+
+    /// A contract cache that holds a document named `fleet:v1` whose one
+    /// service is `list`, with another response: a daemon target never
+    /// reads it.
+    fn cache_with_a_fleet_contract(dir: &std::path::Path) -> (TempDir, PeppyDirs) {
+        let body = r#"{
+            peppy_schema: "contract/v1",
+            manifest: { name: "fleet", tag: "v1" },
+            interfaces: { services: [{ name: "list", response_message_format: { other: "u8" } }] },
+        }"#;
+        let path = dir.join("fleet_v1.json5");
+        std::fs::write(&path, body).expect("write the contract");
+        peppy_dirs_with_cache(&[repo_cache::ContractCacheEntry {
+            contract_name: daemon_config::repository::ItemName::parse("fleet").unwrap(),
+            tag: daemon_config::repository::ItemTag::parse("v1").unwrap(),
+            sha256: daemon_config::repository::ManifestFingerprint::of_bytes(body.as_bytes()),
+            origin: repo_cache::EntryOrigin::Fs { path },
+            repo_id: 0,
+        }])
+    }
+
+    /// The consumed members of a daemon target take their formats and their
+    /// failure kinds from the compiled-in document of its interface, and
+    /// address the daemon as the provider of `fleet:v1`, on a sync with the
+    /// local caches and on an add with its documents alike.
+    #[test]
+    fn a_daemon_target_resolves_the_compiled_in_document_of_its_interface() {
+        let tmp = TempDir::new().unwrap();
+        let (_cache, dirs) = cache_with_a_fleet_contract(tmp.path());
+        let manifest = director(r#"name: "fleet", tag: "v1""#);
+        let document = DaemonInterface::Fleet.document();
+        let added =
+            crate::services::node::pins::ManifestDocuments::read(&dirs, &[], &manifest, &|_| {})
+                .expect("a daemon target names no document that an add pins");
+
+        for documents in [None, Some(&added)] {
+            let out = collect_consumed_interfaces(
+                &manifest,
+                &lease_holder(),
+                |_, _| None,
+                &dirs,
+                documents,
+                &|_| {},
+            )
+            .expect("the members of fleet:v1 resolve");
+            assert_eq!(out.len(), 3, "{out:?}");
+            for interface in &out {
+                let (name, dependency) = match interface.interface() {
+                    InterfaceVariant::ConsumedService {
+                        service,
+                        request_format,
+                        response_format,
+                        dependency,
+                    } => {
+                        let declared = document
+                            .interfaces
+                            .services
+                            .iter()
+                            .find(|member| member.name == service.name)
+                            .expect("a member of the document");
+                        assert_eq!(
+                            (request_format, response_format),
+                            (
+                                &declared.request_message_format.clone().unwrap_or_default(),
+                                &declared.response_message_format.clone().unwrap_or_default(),
+                            ),
+                            "`{}` takes the formats of the compiled-in document",
+                            service.name
+                        );
+                        (service.name.as_str(), dependency)
+                    }
+                    InterfaceVariant::ConsumedAction {
+                        action,
+                        messages,
+                        dependency,
+                    } => {
+                        assert!(
+                            messages.feedback.is_some(),
+                            "the feedback of `lease` comes from the document"
+                        );
+                        (action.name.as_str(), dependency)
+                    }
+                    other => panic!("expected a consumed member, got {other:?}"),
+                };
+                let origin = dependency
+                    .origin
+                    .as_ref()
+                    .expect("a daemon target addresses its producer as a contract provider");
+                assert_eq!(
+                    (
+                        origin.link_id.as_str(),
+                        origin.contract_name.as_str(),
+                        origin.contract_tag.as_str()
+                    ),
+                    ("fleet", "fleet", "v1"),
+                    "{name}"
+                );
+                assert_eq!(dependency.cardinality, config::node::Cardinality::One);
+            }
+            let take = out
+                .iter()
+                .find_map(|interface| match interface.interface() {
+                    InterfaceVariant::ConsumedService {
+                        service,
+                        dependency,
+                        ..
+                    } if service.name == "take" => Some(dependency),
+                    _ => None,
+                })
+                .expect("take resolves");
+            let kinds = take.member_failure_kinds(MemberSection::Service, "take");
+            assert!(
+                kinds.allows("halted") && kinds.allows("leased"),
+                "take gives the failure kinds of fleet:v1 that it lists"
+            );
+        }
+    }
+
+    /// A daemon target that names an interface this peppy does not serve is
+    /// refused with the message of the registry, never looked up in the
+    /// contract cache.
+    #[test]
+    fn a_daemon_target_of_an_unserved_interface_is_refused() {
+        let tmp = TempDir::new().unwrap();
+        let (_cache, dirs) = cache_with_a_fleet_contract(tmp.path());
+        for (name_and_tag, expected) in [
+            (
+                r#"name: "fleet", tag: "v2""#,
+                "daemon target `fleet`: daemon interface `fleet:v2` is not one this peppy \
+                 serves; it serves `fleet` at tag `v1` only",
+            ),
+            (
+                r#"name: "robots", tag: "v1""#,
+                "daemon target `fleet`: daemon interface `robots:v1` is not one this peppy \
+                 serves; it serves `stack_copies:v1`, `fleet:v1`",
+            ),
+        ] {
+            let err = collect_consumed_interfaces(
+                &director(name_and_tag),
+                &lease_holder(),
+                |_, _| None,
+                &dirs,
+                None,
+                &|_| {},
+            )
+            .expect_err("the interface is refused");
+            assert!(err.contains(expected), "`{expected}` is not in: {err}");
+        }
+    }
+
+    /// A consumed entry naming no member of the daemon interface is refused
+    /// and names the interface.
+    #[test]
+    fn a_consumed_entry_absent_from_the_daemon_interface_is_rejected() {
+        let dirs = PeppyDirs::new(TempDir::new().unwrap().path().to_path_buf());
+        let interfaces: Interfaces = serde_json5::from_str(
+            r#"{ services: { consumes: [{ link_id: "fleet", name: "take_all" }] } }"#,
+        )
+        .expect("interfaces parse");
+        let err = collect_consumed_interfaces(
+            &director(r#"name: "fleet", tag: "v1""#),
+            &interfaces,
+            |_, _| None,
+            &dirs,
+            None,
+            &|_| {},
+        )
+        .expect_err("a name absent from the interface must not be dropped");
+        assert_eq!(
+            err,
+            "`services.consumes` entry `take_all` (link_id `fleet`) names no member of daemon \
+             interface `fleet:v1`"
         );
     }
 }

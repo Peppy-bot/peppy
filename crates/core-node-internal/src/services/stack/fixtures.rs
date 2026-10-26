@@ -1,6 +1,7 @@
 //! Planned deployments and placements the stack's unit tests share, so every
 //! module tests against the one spelling of a pin, a node and a machine map.
 
+use super::ActiveLaunch;
 use super::launch::PlannedDeployment;
 use config::AnyType;
 use config::runtime::{CoreNodeName, Name};
@@ -77,7 +78,7 @@ pub(super) fn planned_container_deployment(
         closure_pins: Vec::new(),
         pin_manifests: Vec::new(),
         addressing: MemberAddressing::WholeSet,
-        targets: daemon_config::mcp_deployment::DeploymentTargets::default(),
+        targets: daemon_config::launcher::DeploymentTargets::default(),
     }
 }
 
@@ -148,4 +149,72 @@ pub(super) fn graph_holding(instances: &[(&str, InstanceState)]) -> SerializedNo
         }],
         edges: Vec::new(),
     }
+}
+
+/// A launch `launch-1` whose flat plan runs `instances`, each `(id,
+/// machine)`, on the coordinator `cn-desk` and the machines they name, in
+/// start order, with no copy.
+pub(in crate::services) fn active_launch_running(instances: &[(&str, &str)]) -> ActiveLaunch {
+    let deployments: Vec<String> = instances
+        .iter()
+        .map(|(id, _)| {
+            format!(
+                r#"{{ source: {{ name: "{id}_node", tag: "v1" }}, instances: [{{ instance_id: "{id}" }}] }}"#
+            )
+        })
+        .collect();
+    let document = format!(
+        r#"{{ peppy_schema: "launcher/v1", deployments: [{}] }}"#,
+        deployments.join(", ")
+    );
+    let flat = daemon_config::launcher::PeppyLauncherParser::from_content(&document)
+        .expect("the plan parses");
+    let prepared =
+        daemon_config::launcher::PreparedLauncher::load(&flat, std::path::Path::new("x.json5"))
+            .expect("it loads");
+    let placements = placements_with(
+        "cn-desk",
+        &instances
+            .iter()
+            .filter(|(_, machine)| *machine != "cn-desk")
+            .copied()
+            .collect::<Vec<_>>(),
+    );
+    let planned = instances
+        .iter()
+        .map(|(id, _)| planned_deployment(&format!("{id}_node"), &[(id, None)]))
+        .collect();
+    ActiveLaunch::new(
+        "launch-1",
+        prepared,
+        flat,
+        Default::default(),
+        placements,
+        planned,
+    )
+}
+
+/// The launch of [`active_launch_running`] with one instance, `instance_id`
+/// on `cn-desk`, whose node has the daemon targets `targets`: each with the
+/// interface that it names and the scope that the launch gives it.
+pub(in crate::services) fn active_launch_with_daemon_targets(
+    instance_id: &str,
+    targets: &[(
+        &str,
+        daemon_config::daemon_interface::DaemonInterface,
+        serde_json::Value,
+    )],
+) -> ActiveLaunch {
+    let mut active = active_launch_running(&[(instance_id, "cn-desk")]);
+    let planned = &mut active.planned[0];
+    for (target, interface, scope) in targets {
+        planned
+            .targets
+            .daemon
+            .insert((*target).to_owned(), *interface);
+        planned.deployment.instances[0]
+            .daemon_scopes
+            .insert((*target).to_owned(), scope.clone());
+    }
+    active
 }

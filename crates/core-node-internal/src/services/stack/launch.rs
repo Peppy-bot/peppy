@@ -194,9 +194,20 @@ pub(super) struct PlannedDeployment {
     /// How this deployment's node reads the sets its slots hold, which the
     /// binding validator holds the launcher to.
     pub(super) addressing: daemon_config::launcher::MemberAddressing,
-    /// The targets the exposures of a built-in MCP deployment serve, which
-    /// the launch checks of daemon scopes read; empty for a node.
-    pub(super) targets: daemon_config::mcp_deployment::DeploymentTargets,
+    /// The targets of the deployment, which the launch checks of daemon
+    /// scopes read: those of the exposures of a built-in MCP deployment, or
+    /// the slots and daemon targets of a node's manifest.
+    pub(super) targets: daemon_config::launcher::DeploymentTargets,
+}
+
+/// The id of each instance of `planned`.
+pub(super) fn planned_instance_ids(
+    planned: &[PlannedDeployment],
+) -> impl Iterator<Item = &config::runtime::Name> {
+    planned
+        .iter()
+        .flat_map(|planned| &planned.deployment.instances)
+        .map(|instance| &instance.instance_id)
 }
 
 /// The launch checks of daemon scopes over a planned stack: every scope
@@ -320,7 +331,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // A launch that starts nothing records the launcher and stops: its
     // copies arrive by stack join. A build of it has nothing to build.
     if planned.is_empty() {
-        teardown_and_reset_stack(&ctx).await;
+        teardown_and_reset_stack(&ctx, "a launch replaced the stack").await;
         if builds_only {
             publish_stdout(
                 &ctx,
@@ -330,9 +341,13 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             .await;
             return ChangeEnd::without_node_logs(Ok(LaunchResult::default()));
         }
-        ctx.slice_ownership
-            .record_slice(LaunchIdentity::new(&goal.launch_id, &ctx.bound_core_node));
-        *ctx.slice_ownership.active.lock() = Some(
+        ctx.slice_ownership.record_slice(
+            LaunchIdentity::new(&goal.launch_id, &ctx.bound_core_node),
+            &ctx.core_instance_id,
+        );
+        super::state::commit_active_launch(
+            &ctx.slice_ownership,
+            &ctx.node_stack,
             ActiveLaunch::new(
                 &goal.launch_id,
                 prepared,
@@ -341,7 +356,8 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
                 placements,
                 planned,
             )
-            .with_clocks(clocks, incarnations),
+            .with_clocks(clocks, incarnations)
+            .with_launcher(goal.launcher_origin.label()),
         );
         publish_stdout(
             &ctx,
@@ -418,7 +434,11 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     if !builds_only {
         announce_clock_domains(&ctx, &clocks).await;
     }
-    let watchers = match lifecycle_watchers(&planned_observations, &placements) {
+    let watchers = match lifecycle_watchers(
+        &planned_observations,
+        &placements,
+        planned_instance_ids(&planned),
+    ) {
         Ok(watchers) => watchers,
         Err(reason) => {
             publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
@@ -483,14 +503,16 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         federated::clear_participant_slices(&ctx, &refusal.holders_among(&participants)).await;
         return ChangeEnd::stopped(release_and_fail(change.reserved, refusal.failure).await);
     }
-    teardown_and_reset_stack(&ctx).await;
+    teardown_and_reset_stack(&ctx, "a launch replaced the stack").await;
 
     // Record which launch this daemon's slice belongs to, so the slice is
     // self-describing from here on and `stack reset` / a relaunch can
     // rediscover the whole launch by query. Each participant recorded its own
     // when it began its slice.
-    ctx.slice_ownership
-        .record_slice(LaunchIdentity::new(&goal.launch_id, &ctx.bound_core_node));
+    ctx.slice_ownership.record_slice(
+        LaunchIdentity::new(&goal.launch_id, &ctx.bound_core_node),
+        &ctx.core_instance_id,
+    );
 
     let mut active = ActiveLaunch::new(
         &goal.launch_id,
@@ -502,8 +524,20 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     )
     .with_clocks(clocks.clone(), incarnations)
     .with_watchers(watchers)
-    .with_joinable_resolutions(&joinable_builds);
+    .with_joinable_resolutions(&joinable_builds)
+    .with_launcher(goal.launcher_origin.label());
     active.record_copies(copies, &ordered, &copy_core_nodes);
+    let watchers = active.watchers.clone();
+    let restart = active.flat.framework.restart;
+    // The launcher record is what `stack join` and `stack remove` act on, and
+    // what the daemon interfaces read: the scope of each daemon target, the
+    // robots and their leases. It holds the launch from the commit point on,
+    // so an instance that calls the daemon while the launch starts the next
+    // ones is in it. A failure of the launch drops it as it tears the stack
+    // down. After a build nothing runs for a copy to join.
+    if !builds_only {
+        super::state::commit_active_launch(&ctx.slice_ownership, &ctx.node_stack, active);
+    }
     let phase = PhaseGoal {
         launch_id: goal.launch_id.clone(),
         rebuild: goal.rebuild,
@@ -585,10 +619,10 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             &resolved_slot_bindings,
             &planned_pairings,
             &planned_observations,
-            &active.watchers,
+            &watchers,
             &placements,
             &clocks,
-            active.flat.framework.restart,
+            restart,
         )
         .await
     }
@@ -607,12 +641,12 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         };
     }
 
-    // The launcher record is what `stack join` and `stack remove` act on;
-    // after a build nothing runs for a copy to join.
+    // The nodes of the launch now hold the documents that the fleet listing
+    // gives.
     let summary = if builds_only {
         "Build complete; no instance started"
     } else {
-        *ctx.slice_ownership.active.lock() = Some(active);
+        super::state::refresh_launch_listing(&ctx.slice_ownership, &ctx.node_stack);
         "Launch complete"
     };
     publish_stdout(&ctx, summary, LaunchFeedbackStep::LauncherStep).await;

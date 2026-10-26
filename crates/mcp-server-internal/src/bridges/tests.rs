@@ -8,15 +8,15 @@
 
 use super::{
     AfterCancel, Binding, FeedbackStep, GoalFollow, PreparedTask, PreparedTool, Silence, Turn,
-    after_cancel, call_service, drive_goal, next_turn, service_call_error,
+    after_cancel, call_service, drive_goal, next_turn, service_call_error, went_silent,
 };
 use crate::test_support::{PausedRuntime, ScriptedSurface};
 use config::failure_kind::{
     ContractFailureKinds, FailureKindName, MemberFailureKinds, PeppyFailureKind,
 };
 use config::node::MessageFormat;
-use message_codec::MessageCodec;
-use message_codec::consumer::{
+use peppy_codec::MessageCodec;
+use peppy_codec::consumer::{
     ActionClient, ConsumerError, ConsumerIdentity, MemberBinding, ServiceClient,
 };
 use peppy_mcp_catalog::GoalBound;
@@ -107,7 +107,7 @@ async fn mesh(has_feedback: bool) -> (Mesh, MockActionServerCore) {
 
 fn codec(label: &str, format: Value) -> MessageCodec {
     let format: MessageFormat = serde_json::from_value(format).expect("the format parses");
-    MessageCodec::new(label, format).expect("the format lays out")
+    MessageCodec::new(label, &format).expect("the format lays out")
 }
 
 /// The result of the gripper action: the width the gripper reached.
@@ -166,6 +166,7 @@ fn prepared_task(mesh: &Mesh, feedback: Option<MessageCodec>) -> PreparedTask {
             gripper_failure_kinds(),
         ),
         feedback_bound: DEFAULT_FEEDBACK_BOUND,
+        moves_robot: false,
     }
 }
 
@@ -198,6 +199,7 @@ async fn drive(
         &mesh.producer,
         json!({}),
         surface,
+        None,
     )
     .await
 }
@@ -228,6 +230,7 @@ fn drive_paused(mesh: &Mesh, task: PreparedTask, surface: Arc<ScriptedSurface>) 
                 &producer,
                 json!({}),
                 surface.as_ref(),
+                None,
             )
             .await
         },
@@ -829,6 +832,7 @@ async fn a_slow_client_makes_the_goal_overflow_and_the_call_fail_with_the_loss()
                 &producer,
                 json!({}),
                 surface.as_ref(),
+                None,
             )
             .await
         }
@@ -883,6 +887,7 @@ fn prepared_tool(contract: &SenderTarget) -> PreparedTool {
             gripper_failure_kinds(),
         ),
         deadline: DEADLINE,
+        moves_robot: false,
     }
 }
 
@@ -1099,5 +1104,24 @@ fn a_cancel_the_provider_cannot_act_on_ends_the_follow_saying_why() {
         Err(ActionExit::Error(format!(
             "a cancel was sent and failed: {error}"
         )))
+    );
+}
+
+/// A silent goal says what the endpoint does with it: a goal that moves a
+/// robot is followed on, and every other goal gets the cancel.
+#[test]
+fn a_silent_goal_says_whether_the_endpoint_follows_it_on() {
+    let message = |followed_on| match went_silent(Duration::from_secs(1), false, followed_on) {
+        ActionExit::Error(message) => message,
+        other => panic!("an error, got {other:?}"),
+    };
+    assert_eq!(
+        message(false),
+        "no progress within 1000 ms; the endpoint stopped following the goal and cancelled it"
+    );
+    assert_eq!(
+        message(true),
+        "no progress within 1000 ms; the goal moves a robot, so the endpoint follows it on until \
+         it ends, and cancels it at a halt of the stack"
     );
 }

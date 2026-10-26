@@ -5,7 +5,8 @@
 //! pass is the single place that sees every instance of the plan at once, so it
 //! owns the rules that need the whole picture rather than one family:
 //!   - a `links` key naming no declared slot in any family is
-//!     [`ParsingError::LinkUnknownSlot`];
+//!     [`ParsingError::LinkUnknownSlot`], and one naming a daemon target,
+//!     which the daemon binds itself, is [`ParsingError::LinkToDaemonTarget`];
 //!   - a `{ vacant: "<why>" }` value on a slot the node's own manifest does not
 //!     declare emptiable is [`ParsingError::LinkVacantInvalid`]. Vacancy is a
 //!     two-sided contract: the manifest says a slot MAY run empty
@@ -118,6 +119,17 @@ fn validate_link_slots(items: &[BindingValidationItem<'_>]) -> Vec<ParsingError>
             let owner_id = instance.instance_id.as_str();
 
             for (link, value) in &instance.links {
+                if depends_on
+                    .daemon
+                    .iter()
+                    .any(|target| target.link_id == *link)
+                {
+                    errors.push(ParsingError::LinkToDaemonTarget {
+                        owner_instance_id: owner_id.to_string(),
+                        link: link.clone(),
+                    });
+                    continue;
+                }
                 let Some(kind) = slots.kind_of(link) else {
                     errors.push(ParsingError::LinkUnknownSlot(Box::new(LinkUnknownSlot {
                         owner_instance_id: owner_id.to_string(),
@@ -330,6 +342,36 @@ mod tests {
         assert_eq!(info.link, "ghost_slot");
         // All three families are listed, sorted.
         assert_eq!(info.declared_link_ids, "arm, main, watch");
+    }
+
+    /// A daemon target is a slot of the manifest that the daemon binds
+    /// itself: a link to it is refused by name, whatever its value.
+    #[test]
+    fn a_link_to_a_daemon_target_is_refused() {
+        let instances = parse_instances(
+            r#"[{
+                instance_id: "director1",
+                links: { fleet: "prod1", main: "prod1" }
+            }]"#,
+        );
+        let depends_on = parse_depends_on(
+            r#"{
+                nodes: [{ name: "camera", tag: "v1", link_id: "main" }],
+                daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }]
+            }"#,
+        );
+        let messages: Vec<String> = validate_link_slots(&[item(&instances, Some(&depends_on))])
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                "link `fleet` on instance `director1` names daemon target `fleet`, which takes no \
+              link: the daemon that runs the instance serves it, and a launcher gives the target \
+              a scope in `daemon_scopes` instead"
+            ]
+        );
     }
 
     #[test]

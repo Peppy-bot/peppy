@@ -107,7 +107,7 @@ impl SeededHome {
             .iter()
             .enumerate()
             .map(|(index, content)| {
-                let document = daemon_config::contract::PeppyContractParser::from_content(content)
+                let document = peppy_codec::contract::PeppyContractParser::from_content(content)
                     .expect("contract parses");
                 let path = docs.join(format!("contract_{index}.json5"));
                 std::fs::write(&path, content).expect("write contract");
@@ -285,10 +285,10 @@ fn a_daemon_target_resolves_no_contract() {
     assert_eq!(contract_pins, ["contract `rgb_camera:v1`"]);
     assert_eq!(
         mixed.plan.targets.daemon.keys().collect::<Vec<_>>(),
-        ["stack"]
+        ["fleet", "stack"]
     );
     assert_eq!(
-        mixed.plan.targets.contract.iter().collect::<Vec<_>>(),
+        mixed.plan.targets.linked.iter().collect::<Vec<_>>(),
         ["front_camera"]
     );
 
@@ -309,7 +309,7 @@ fn a_daemon_target_resolves_no_contract() {
         resolve_exposure_documents(&home.dirs, &references(&["framework_controls"]), &quiet)
             .expect("the document resolves");
     assert_eq!(
-        daemon_config::mcp_deployment::DeploymentTargets::of(&documents).expect("served"),
+        daemon_config::launcher::DeploymentTargets::of_exposures(&documents).expect("served"),
         alone.plan.targets
     );
 }

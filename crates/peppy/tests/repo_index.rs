@@ -724,7 +724,10 @@ mod exposures {
         assert_eq!(catalog["contracts"], serde_json::json!([]));
         assert_eq!(
             catalog["daemon_targets"],
-            serde_json::json!([{ "target": "stack", "name": "stack_copies", "tag": "v1" }])
+            serde_json::json!([
+                { "target": "stack", "name": "stack_copies", "tag": "v1" },
+                { "target": "fleet", "name": "fleet", "tag": "v1" },
+            ])
         );
         let join = catalog["tasks"]
             .as_array()

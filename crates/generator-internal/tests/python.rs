@@ -1,3 +1,5 @@
+#[path = "support/daemon_target_fixtures.rs"]
+mod daemon_target_fixtures;
 #[path = "helpers.rs"]
 mod helpers;
 #[path = "support/implements_fixtures.rs"]
@@ -7,12 +9,16 @@ mod implements_fixtures;
 mod actions_communication;
 #[path = "python/actions_implements.rs"]
 mod actions_implements;
+#[path = "python/codec_api.rs"]
+mod codec_api;
 #[path = "python/consumed_services_dedup.rs"]
 mod consumed_services_dedup;
 #[path = "python/consumed_topics_dedup.rs"]
 mod consumed_topics_dedup;
 #[path = "python/consumed_topics_distinct_formats.rs"]
 mod consumed_topics_distinct_formats;
+#[path = "python/daemon_target_client.rs"]
+mod daemon_target_client;
 #[path = "python/failure_kinds.rs"]
 mod failure_kinds;
 #[path = "python/generate_lib.rs"]

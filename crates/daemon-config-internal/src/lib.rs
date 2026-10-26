@@ -4,10 +4,9 @@
 //!
 //! This crate owns the config formats only the peppy daemon and CLI read or
 //! write: launcher documents (`peppy_schema: "launcher/v1"`) and their
-//! deployment sources, contract documents (`contract/v1`), MCP exposure
-//! documents (`mcp_exposure/v1`) and the daemon interfaces they can name, the
-//! global daemon config `peppy_config.json5` with its comment-preserving
-//! completion, the [`atomic_write::publish_atomic`] staging helper, the
+//! deployment sources, MCP exposure documents (`mcp_exposure/v1`) and the
+//! daemon interfaces they can name, the global daemon config
+//! `peppy_config.json5` with its comment-preserving completion, the
 //! owner-only file modes of [`fs_perms`], the [`local_host::is_local`] test,
 //! and the [`consts::PeppyDirs`] filesystem-layout helper with the
 //! process-global [`consts::set_app_env`] dev/prod root switch (a set-once
@@ -15,10 +14,13 @@
 //!
 //! It builds on the shared `config` crate (`peppy-config-model`), which keeps
 //! the wire-facing tier consumed by nodes and `peppylib`: the `peppy.json5`
-//! node config model, runtime configs, fingerprints, workspace namespaces, and
-//! schema tags. Types crossing that boundary (`config::runtime::Name`,
-//! `config::node` manifest types, `config::peppy_config::SubscriberBufferConfig`) are
-//! used directly from `config` so each has exactly one definition.
+//! node config model, runtime configs, fingerprints, workspace namespaces,
+//! schema tags and the `atomic_write` staging helper; and on the shared
+//! `peppy-codec` crate, which parses contract documents (`contract/v1`).
+//! Types crossing that boundary (`config::runtime::Name`, `config::node`
+//! manifest types, `config::peppy_config::SubscriberBufferConfig`,
+//! `peppy_codec::contract::PeppyContract`) are used directly from their
+//! crate so each has exactly one definition.
 
 mod error;
 mod parsing;
@@ -29,9 +31,7 @@ mod parsing;
 /// preserved.
 #[path = "."]
 mod internal {
-    pub mod atomic_write;
     pub mod consts;
-    pub mod contract;
     pub mod daemon_interface;
     pub mod env;
     pub mod fs_perms;
@@ -51,11 +51,6 @@ pub use error::{
     BindingTargetMismatch, DuplicateInstanceIdAcrossStack, Error as DaemonConfigError,
     LinkUnknownSlot, ParsingError, SlotKind, format_bulleted, format_quoted_list,
 };
-
-// -- atomic_write --
-pub mod atomic_write {
-    pub use crate::internal::atomic_write::publish_atomic;
-}
 
 // -- env --
 pub mod env {
@@ -78,10 +73,10 @@ pub mod local_host {
 pub mod consts {
     pub use crate::internal::consts::{
         AppEnv, CREDENTIALS_FILE, DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_PYTHON_BASE_IMAGE,
-        DEFAULT_RUST_BASE_IMAGE, PEPPY_GIT_TAG, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR,
-        PEPPY_VERSION, PEPPYLIB_OUTPUT_PATH, PLATFORM_SELECTION_FILE, PeppyDirs, PeppyRoot,
-        REPOSITORY_INDEX_FILE, RootLifetime, non_empty_env_path, peppy_build, peppy_root,
-        peppy_root_dir, set_app_env,
+        DEFAULT_RUST_BASE_IMAGE, PEPPY_CODEC_OUTPUT_PATH, PEPPY_GIT_TAG,
+        PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR, PEPPY_VERSION, PEPPYLIB_OUTPUT_PATH,
+        PLATFORM_SELECTION_FILE, PeppyDirs, PeppyRoot, REPOSITORY_INDEX_FILE, RootLifetime,
+        non_empty_env_path, peppy_build, peppy_root, peppy_root_dir, set_app_env,
     };
 }
 
@@ -104,26 +99,20 @@ pub mod peppy_config {
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
-        AlreadyPairedSlots, AppliedChange, BindingValidationItem, ClockIncarnations, ComponentAxis,
-        ComposedJoin, ComposedLaunch, CompositionError, CompositionReport, CopyInstance,
-        CopyMembership, CopyRecord, DaemonScopeError, DaemonScopeRefusals, Deployment,
-        DeploymentInstance, DeploymentSource, ExternallyCoveredSlots, FrameworkOverrides,
-        JoinRequest, JoinableNode, JoinableNodes, LauncherFragmentParser, LinkTargets, LinkValue,
-        MemberAddressing, OptionSpec, PairingValidationItem, PartMachines, PartRefusal,
-        PeppyLauncher, PeppyLauncherParser, Placements, PlannedObservation, PlannedPairEndpoint,
-        PlannedPairing, PreparedLauncher, ResolvedClocks, RunningStack, SETS_READ_WHOLE,
-        ScopeCheck, Selection, SkipReason, SkippedAdjustment, TrialCopy, TrialStack, UnitSelection,
-        VacantReason, WALL_CLOCK, WrittenWord, check_composition, check_daemon_scopes,
-        instance_restart, mint_incarnation, participant_vacancies, resolve_clocks, resolve_restart,
-        restart_request_of, split_link_target, validate_bindings, validate_clock_connections,
-        validate_link_plan, validate_pairings,
-    };
-}
-
-// -- contract --
-pub mod contract {
-    pub use crate::internal::contract::{
-        Interfaces, Manifest, PeppyContract, PeppyContractParser, RefinedMember,
+        AlreadyPairedSlots, AppliedChange, AxisRole, BindingValidationItem, ClockIncarnations,
+        ComponentAxis, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport,
+        CopyInstance, CopyMembership, CopyRecord, DaemonScopeError, DaemonScopeRefusals,
+        Deployment, DeploymentInstance, DeploymentSource, DeploymentTargets,
+        ExternallyCoveredSlots, FrameworkOverrides, JoinRequest, JoinableNode, JoinableNodes,
+        LauncherFragmentParser, LinkTargets, LinkValue, MemberAddressing, OptionSpec,
+        PairingValidationItem, PartMachines, PartRefusal, PeppyLauncher, PeppyLauncherParser,
+        Placements, PlannedObservation, PlannedPairEndpoint, PlannedPairing, PreparedLauncher,
+        ResolvedClocks, RunningStack, SETS_READ_WHOLE, ScopeCheck, Selection, SkipReason,
+        SkippedAdjustment, TrialCopy, TrialStack, UnitSelection, VacantReason, WALL_CLOCK,
+        WrittenWord, check_composition, check_daemon_scopes, instance_restart, mint_incarnation,
+        participant_vacancies, resolve_clocks, resolve_restart, restart_request_of,
+        split_link_target, validate_bindings, validate_clock_connections, validate_link_plan,
+        validate_pairings,
     };
 }
 
@@ -135,8 +124,13 @@ pub mod daemon_interface {
     pub use crate::internal::daemon_interface::{
         DaemonInterface, DaemonScope, Description, MAX_DESCRIPTION_CHARS, MAX_FEATURES,
         PlacedFeature, ScopedFeature, ScopedOption, StackCopiesMember, StackCopiesScope,
-        UnservedInterface, served_interfaces,
+        TargetScope, UnservedInterface, served_interfaces, served_targets,
     };
+
+    /// `fleet:v1`: its members, its scope and its messages.
+    pub mod fleet {
+        pub use crate::internal::daemon_interface::fleet::*;
+    }
 }
 
 // -- mcp_exposure --
@@ -146,22 +140,20 @@ pub mod mcp_exposure {
         FreshnessPolicy, GoalBound, ImageCodec, ImageFieldMap, ImageRepresentation, JpegQuality,
         MaxHz, McpExposure, OversizePolicy, PeppyMcpExposureParser, PinnedContractRef, PublicName,
         RestrictBounds, ServerIdentity, ServiceExposure, ServiceOperation, TargetSource,
-        TopicExposure, UpdatePolicy,
+        TopicExposure, UpdatePolicy, declared_members,
     };
 }
 
 // -- mcp_deployment --
 //
 // The built-in MCP server as a deployment: the identity and manifest the
-// daemon synthesizes from a set of exposures, the slot-merging rules, the
-// targets the launcher fills or scopes, and the spec file the daemon hands
-// `peppy mcp serve`.
+// daemon synthesizes from a set of exposures, the slot-merging rules and the
+// spec file the daemon hands `peppy mcp serve`.
 pub mod mcp_deployment {
     pub use crate::internal::mcp_deployment::{
-        BUILT_IN_TAG, DEFAULT_PORT, DeploymentTargets, ExposureViolations, McpDeploymentError,
-        McpDeploymentPlan, McpServeSpec, PORT_PARAMETER, Pinned, PinnedContract, PinnedExposure,
-        RUN_COMMAND, SPEC_ENV_VAR, SourceConflict, built_in_identity, endpoint_label,
-        plan_deployment,
+        BUILT_IN_TAG, DEFAULT_PORT, ExposureViolations, McpDeploymentError, McpDeploymentPlan,
+        McpServeSpec, PORT_PARAMETER, Pinned, PinnedContract, PinnedExposure, RUN_COMMAND,
+        SPEC_ENV_VAR, SourceConflict, built_in_identity, endpoint_label, plan_deployment,
     };
 }
 

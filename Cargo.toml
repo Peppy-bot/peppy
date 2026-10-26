@@ -54,6 +54,7 @@ config-test-support = { path = "peppy-shared/config-test-support" }
 build-helpers = { path = "peppy-shared/build-helpers" }
 peppy-mcp-catalog = { path = "peppy-shared/peppy-mcp-catalog" }
 peppy-mcp-runtime = { path = "peppy-shared/peppy-mcp-runtime" }
+peppy-codec = { path = "peppy-shared/peppy-codec" }
 
 # Internal workspace crates (members under `crates/`). Centralized here so each
 # member references them with `{ workspace = true }` instead of repeating a
@@ -67,7 +68,6 @@ daemon-config = { path = "crates/daemon-config-internal" }
 encoding = { path = "crates/encoding-internal" }
 generator = { path = "crates/generator-internal" }
 mcp-test-support = { path = "crates/mcp-test-support" }
-message-codec = { path = "crates/message-codec-internal" }
 mcp-server = { path = "crates/mcp-server-internal" }
 latency-report = { path = "crates/latency-report" }
 log-export = { path = "crates/log-export-internal" }

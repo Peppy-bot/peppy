@@ -106,6 +106,24 @@ pub async fn start_core_node_with_mock_messenger_on(data_dir: TempDir) -> Starte
     .await
 }
 
+/// Boots the core node on a mock messenger with a wait for the ready signal
+/// of a started node that is out of reach: a launch waits for each instance
+/// until the test answers its ready probe.
+pub async fn start_core_node_with_mock_messenger_and_no_ready_bound() -> StartedCoreNode {
+    let data_dir = new_test_data_dir();
+    let peppy_dirs = PeppyDirs::new(data_dir.path());
+    let mut arguments = default_node_arguments();
+    arguments.node_startup_timeout = OUT_OF_REACH;
+    start_core_node_with_messenger(
+        create_mock_messenger().await,
+        arguments,
+        Some(data_dir),
+        peppy_dirs,
+        daemon_config::peppy_config::PeppyConfig::default(),
+    )
+    .await
+}
+
 /// A data root for [`start_core_node_with_mock_messenger_on`], under the
 /// same test root as every other starter's.
 pub fn new_test_data_dir() -> TempDir {

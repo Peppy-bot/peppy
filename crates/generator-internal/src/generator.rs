@@ -45,18 +45,23 @@ use types::{DeploymentInterface, LanguageGenerator};
 /// Beyond writing the library at `node_dir/.peppy/libs/peppygen`, this function:
 /// - creates `node_dir/.peppy/` and the `peppygen` output directory;
 /// - **(Rust only)** creates or updates the node's own `node_dir/Cargo.toml`, adding/overwriting
-///   the `peppygen` and `peppylib` path dependencies (overwriting any stale paths);
+///   the `peppygen` and `peppylib` path dependencies (overwriting any stale paths), and the
+///   `peppy-codec` path dependency when the manifest sets `execution.codec_api: true` (removing
+///   it otherwise);
 /// - **(Rust only)** deploys five vendored crates (`peppylib`, `peppy-messaging-interface`,
 ///   `config`, `core-node-api`, `build-helpers`) into `node_dir/.peppy/libs/` (a sibling of
-///   `peppygen`), either as symlinks into a host-wide shared cache or as physical copies, per
-///   `deploy_mode`; Python generation ignores `deploy_mode`;
+///   `peppygen`), and the two crates of the codec API (`peppy-codec`, `peppy-mcp-catalog`)
+///   when the manifest asks for it, either as symlinks into a host-wide shared cache or as
+///   physical copies, per `deploy_mode`; Python generation ignores `deploy_mode`;
 /// - **(Rust only)** populates that **host-wide shared crate cache** under `peppy_dirs` (using
 ///   file locking and a per-process staging dir); cache entries are keyed by content-hash +
 ///   crate version and are not pruned;
 /// - **(Python only)** deploys the standalone peppylib Python project (the wrappers and the
 ///   native extension of the host, or of Linux when the node runs in a container) at
 ///   `node_dir/.peppy/libs/peppylib`, copied from a lock-protected host-wide cache under
-///   `peppy_dirs`, and runs ruff over the generated library;
+///   `peppy_dirs`, with the module `peppylib.codec` and the Cap'n Proto compiler of the node's
+///   platform when the manifest sets `execution.codec_api: true`, and runs ruff over the
+///   generated library;
 /// - writes the config fingerprint `…/peppygen/peppy.json5.sha256` and, for the node's own
 ///   source tree, `node_dir/.peppy/git.hash`, but **only after** generation succeeds, so a
 ///   failed run leaves neither behind.
@@ -107,6 +112,7 @@ pub fn generate_peppygen_lib(
     fs::create_dir_all(&output_dir)?;
 
     let execution = node_config.execution;
+    let codec_api = common::CodecApi::of_manifest(execution.codec_api);
 
     match language {
         PeppygenLanguage::Rust => {
@@ -116,6 +122,7 @@ pub fn generate_peppygen_lib(
                 node_config.manifest.name.as_str(),
                 node_config.manifest.tag.as_str(),
             );
+            rust_generator.set_codec_api(codec_api);
             generate_with_backend(
                 rust_generator,
                 &interfaces,
@@ -124,7 +131,7 @@ pub fn generate_peppygen_lib(
                 deploy_mode,
             )?;
             // Create or update the node's Cargo.toml with peppygen dependency
-            ensure_node_cargo_toml(node_dir, node_config.manifest.name.as_str())?;
+            ensure_node_cargo_toml(node_dir, node_config.manifest.name.as_str(), codec_api)?;
         }
         PeppygenLanguage::Python => {
             let mut python_generator = PythonGenerator::new();
@@ -135,6 +142,7 @@ pub fn generate_peppygen_lib(
                 node_config.manifest.name.as_str(),
                 node_config.manifest.tag.as_str(),
             );
+            python_generator.set_codec_api(codec_api);
             generate_with_backend(
                 python_generator,
                 &interfaces,
@@ -200,11 +208,17 @@ where
     backend.build(output_dir, peppy_dirs, deploy_mode)
 }
 
-/// Creates or updates the node's Cargo.toml with the peppygen and peppylib dependencies.
+/// Creates or updates the node's Cargo.toml with the peppygen and peppylib dependencies,
+/// and the peppy-codec dependency of a node that asks for the codec API.
 ///
 /// If the Cargo.toml doesn't exist, it creates a new one with the node name.
-/// If it exists, it ensures both dependencies are present while preserving formatting.
-fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
+/// If it exists, it ensures the dependencies are present while preserving formatting, and
+/// removes the peppy-codec dependency of a node that does not ask for the codec API.
+fn ensure_node_cargo_toml(
+    node_dir: &Path,
+    node_name: &str,
+    codec_api: common::CodecApi,
+) -> Result<()> {
     use toml_edit::{DocumentMut, Item, Table, value};
 
     let cargo_toml_path = node_dir.join("Cargo.toml");
@@ -246,6 +260,16 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
         "peppylib",
         daemon_config::consts::PEPPYLIB_OUTPUT_PATH,
     );
+    match codec_api {
+        common::CodecApi::Asked => set_path_dependency(
+            dependencies,
+            PEPPY_CODEC_CRATE,
+            daemon_config::consts::PEPPY_CODEC_OUTPUT_PATH,
+        ),
+        common::CodecApi::NotAsked => {
+            dependencies.remove(PEPPY_CODEC_CRATE);
+        }
+    }
 
     // The generated test surfaces (`peppygen::mock` / `peppygen::fixtures`)
     // compile only under peppygen's `testing` feature, enabled from the
@@ -264,6 +288,9 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
 
     Ok(())
 }
+
+/// The name of the crate of the codec API in the Cargo.toml of a node.
+const PEPPY_CODEC_CRATE: &str = "peppy-codec";
 
 /// The `key` dependency table of a Cargo.toml, appended empty when absent.
 /// Cargo accepts a standard table or an inline one. Any other value cannot
@@ -373,7 +400,8 @@ mod tests {
         let cargo_toml_path = node_dir.join("Cargo.toml");
         assert!(!cargo_toml_path.exists());
 
-        ensure_node_cargo_toml(node_dir, "my_test_node").expect("should succeed");
+        ensure_node_cargo_toml(node_dir, "my_test_node", common::CodecApi::NotAsked)
+            .expect("should succeed");
 
         assert!(cargo_toml_path.exists(), "Cargo.toml should be created");
 
@@ -404,7 +432,8 @@ mod tests {
         "#;
         fs::write(&cargo_toml_path, existing_content).expect("failed to write existing Cargo.toml");
 
-        ensure_node_cargo_toml(node_dir, "existing_node").expect("should succeed");
+        ensure_node_cargo_toml(node_dir, "existing_node", common::CodecApi::NotAsked)
+            .expect("should succeed");
 
         let contents = fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
         let doc: Value = toml::from_str(&contents).expect("should be valid TOML");
@@ -436,7 +465,8 @@ mod tests {
         "#;
         fs::write(&cargo_toml_path, existing_content).expect("failed to write existing Cargo.toml");
 
-        ensure_node_cargo_toml(node_dir, "inline_node").expect("should succeed");
+        ensure_node_cargo_toml(node_dir, "inline_node", common::CodecApi::NotAsked)
+            .expect("should succeed");
 
         let contents = fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
         let doc: Value = toml::from_str(&contents).expect("should be valid TOML");
@@ -469,7 +499,7 @@ mod tests {
         "#;
         fs::write(&cargo_toml_path, existing_content).expect("failed to write existing Cargo.toml");
 
-        let error = ensure_node_cargo_toml(node_dir, "broken_node")
+        let error = ensure_node_cargo_toml(node_dir, "broken_node", common::CodecApi::NotAsked)
             .expect_err("a non-table dependencies value must be refused");
         assert!(
             error
@@ -482,6 +512,39 @@ mod tests {
             existing_content,
             "a refused Cargo.toml must be left untouched"
         );
+    }
+
+    /// A node that asks for the codec API gets a path dependency on
+    /// `peppy-codec`; a node that stops asking loses it, and its other
+    /// dependencies stay.
+    #[test]
+    fn ensure_node_cargo_toml_gives_peppy_codec_only_to_a_node_that_asks() {
+        let temp_dir = TempDir::new().expect("failed to create temp directory");
+        let node_dir = temp_dir.path();
+        let cargo_toml_path = node_dir.join("Cargo.toml");
+        let read = || -> Value {
+            toml::from_str(&fs::read_to_string(&cargo_toml_path).expect("readable"))
+                .expect("should be valid TOML")
+        };
+
+        ensure_node_cargo_toml(node_dir, "codec_node", common::CodecApi::Asked)
+            .expect("should succeed");
+        let asking = read();
+        assert_eq!(
+            string_at(&asking, &["dependencies", "peppy-codec", "path"]),
+            daemon_config::consts::PEPPY_CODEC_OUTPUT_PATH
+        );
+        assert_peppy_path_dependencies(&asking);
+
+        ensure_node_cargo_toml(node_dir, "codec_node", common::CodecApi::NotAsked)
+            .expect("should succeed");
+        let silent = read();
+        assert!(
+            silent["dependencies"].get("peppy-codec").is_none(),
+            "a node that does not ask has no peppy-codec"
+        );
+        assert_peppy_path_dependencies(&silent);
+        assert_testing_dev_dependency(&silent);
     }
 
     #[test]
@@ -507,7 +570,12 @@ mod tests {
         "#;
         fs::write(&cargo_toml_path, existing_content).expect("failed to write existing Cargo.toml");
 
-        ensure_node_cargo_toml(node_dir, "node_with_stale_paths").expect("should succeed");
+        ensure_node_cargo_toml(
+            node_dir,
+            "node_with_stale_paths",
+            common::CodecApi::NotAsked,
+        )
+        .expect("should succeed");
 
         let contents = fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
         let doc: Value = toml::from_str(&contents).expect("should be valid TOML");

@@ -16,9 +16,9 @@ use super::json_lines::{is_closed_by_reader, write_json_line};
 use crate::commands::action_poll::{CtrlC, Interrupts};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use config::node::{InterfaceKind, MessageFormat, NativeEmittedTopic};
-use message_codec::MessageCodec;
-use message_codec::consumer::{ConsumerIdentity, MemberBinding, TopicConsumer};
+use config::node::{InterfaceKind, NativeEmittedTopic};
+use peppy_codec::MessageCodec;
+use peppy_codec::consumer::{ConsumerIdentity, MemberBinding, TopicConsumer};
 use peppylib::messaging::{MessengerHandle, ProducerRef};
 use std::io::Write;
 use std::sync::Arc;
@@ -106,9 +106,8 @@ impl TopicEcho {
                 selected.member.kind()
             )));
         };
-        let no_fields = MessageFormat::default();
-        let format = topic.message_format.as_ref().unwrap_or(&no_fields);
-        let codec = selected.codec("topic", format)?;
+        let codec = MessageCodec::of_topic(&selected.codec_label(), topic)
+            .map_err(|error| selected.codec_error(error))?;
         Ok(Self {
             name,
             topic: topic.clone(),

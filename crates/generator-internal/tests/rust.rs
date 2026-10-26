@@ -1,3 +1,5 @@
+#[path = "support/daemon_target_fixtures.rs"]
+mod daemon_target_fixtures;
 #[path = "helpers.rs"]
 mod helpers;
 #[path = "support/implements_fixtures.rs"]
@@ -7,6 +9,8 @@ mod implements_fixtures;
 mod actions_communication;
 #[path = "rust/actions_implements.rs"]
 mod actions_implements;
+#[path = "rust/codec_api.rs"]
+mod codec_api;
 #[path = "rust/codec_wire.rs"]
 mod codec_wire;
 #[path = "rust/consumed_services_dedup.rs"]
@@ -15,6 +19,8 @@ mod consumed_services_dedup;
 mod consumed_topics_dedup;
 #[path = "rust/consumed_topics_distinct_formats.rs"]
 mod consumed_topics_distinct_formats;
+#[path = "rust/daemon_target_client.rs"]
+mod daemon_target_client;
 #[path = "rust/generate_lib.rs"]
 mod generate_lib;
 #[path = "rust/multi_binding_communication.rs"]

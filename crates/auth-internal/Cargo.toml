@@ -6,7 +6,7 @@ edition.workspace = true
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
-config = { workspace = true }
+config = { workspace = true, features = ["atomic_write"] }
 daemon-config = { workspace = true }
 json5-pretty = { workspace = true }
 pmi = { workspace = true, features = ["zenoh"] }

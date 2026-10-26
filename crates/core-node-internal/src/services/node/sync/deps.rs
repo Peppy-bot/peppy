@@ -135,12 +135,15 @@ pub(crate) async fn materialize_repo_deps(
 
 /// Discriminator carried by [`DependencyLookupEntry`] so the resolver knows
 /// whether a `link_id` resolves to a `depends_on.nodes` entry (load
-/// offerings from the producer node config) or a `depends_on.contracts`
-/// entry (load the contract directly from the contract cache).
+/// offerings from the producer node config), a `depends_on.contracts`
+/// entry (load the contract directly from the contract cache) or a
+/// `depends_on.daemon` entry (take the document of the daemon interface
+/// compiled into peppy).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DependencyKind {
     Node,
     Contract,
+    Daemon,
 }
 
 /// Resolved `(name, tag, kind, cardinality)` for a single dependency
@@ -158,9 +161,9 @@ pub(crate) struct DependencyLookupEntry {
 }
 
 /// Builds a lookup from `link_id` → [`DependencyLookupEntry`] using the
-/// node's `depends_on.nodes` and `depends_on.contracts`. Parse-time
-/// validation has already guaranteed uniqueness of `link_id` across both
-/// lists, so no entry overwrites another.
+/// node's `depends_on.nodes`, `depends_on.contracts` and `depends_on.daemon`.
+/// Parse-time validation has already guaranteed uniqueness of `link_id`
+/// across the lists, so no entry overwrites another.
 pub(super) fn build_dependency_lookup(
     manifest: &config::node::Manifest,
 ) -> std::collections::HashMap<String, DependencyLookupEntry> {
@@ -189,6 +192,18 @@ pub(super) fn build_dependency_lookup(
                 sha256: contract.sha256.clone(),
                 kind: DependencyKind::Contract,
                 cardinality: contract.cardinality,
+            },
+        );
+    }
+    for target in &depends_on.daemon {
+        out.insert(
+            target.link_id.clone(),
+            DependencyLookupEntry {
+                name: target.name.as_str().to_string(),
+                tag: target.tag.clone(),
+                sha256: None,
+                kind: DependencyKind::Daemon,
+                cardinality: config::node::DaemonTargetDependency::CARDINALITY,
             },
         );
     }

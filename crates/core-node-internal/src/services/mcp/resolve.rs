@@ -125,7 +125,7 @@ fn resolve_exposure_document_pairs(
 
 /// The exposure documents a launcher lists, resolved and parsed with no
 /// contract: what the targets of a deployment
-/// ([`daemon_config::mcp_deployment::DeploymentTargets`]) are read from, so
+/// ([`daemon_config::launcher::DeploymentTargets`]) are read from, so
 /// the launch checks of daemon scopes hold with no contract and no node in
 /// this machine's caches.
 pub fn resolve_exposure_documents(

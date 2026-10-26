@@ -34,6 +34,7 @@ sys.modules["peppylib._peppylib.messaging.services"] = _peppylib.messaging.servi
 sys.modules["peppylib._peppylib.messaging.actions"] = _peppylib.messaging.actions
 sys.modules["peppylib._peppylib.services"] = _peppylib.services
 sys.modules["peppylib._peppylib.core_node"] = _peppylib.core_node
+sys.modules["peppylib._peppylib.codec"] = _peppylib.codec
 
 # Expose as attribute for `from peppylib import messaging`
 messaging = _peppylib.messaging

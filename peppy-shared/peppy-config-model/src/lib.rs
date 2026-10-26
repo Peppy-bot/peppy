@@ -5,15 +5,17 @@
 //! This crate owns the wire-facing config tier every peppy surface builds
 //! on: the `peppy.json5` node config model, the runtime configs shipped to
 //! spawned nodes, codegen fingerprints, workspace namespaces, and the schema
-//! tags identifying each document shape. (Cap'n Proto schema generation for a
-//! [`node::MessageFormat`] lives in the separate `encoding` crate; the
-//! daemon-side documents, launcher files, interface documents,
-//! `peppy_config.json5`, and the `PeppyDirs` filesystem layout, live in the
-//! peppy `daemon-config` crate, which builds on this one.)
+//! tags identifying each document shape, and, with the `atomic_write`
+//! feature, the `atomic_write` staging helper. (The Cap'n Proto schema of a
+//! [`node::MessageFormat`] and the parser of contract documents live in the
+//! `peppy-codec` crate; the daemon-side documents, launcher files, interface
+//! documents, `peppy_config.json5`, and the `PeppyDirs` filesystem layout,
+//! live in the peppy `daemon-config` crate, which builds on this one.)
 //!
-//! Boundaries: it performs no I/O beyond reading/writing config files and
-//! fingerprints, holds no process-global state, and requires no global
-//! init; every type is built through an explicit parser/constructor.
+//! Boundaries: it performs no I/O beyond reading/writing config files,
+//! fingerprints and the files that `atomic_write::publish_atomic` stages,
+//! holds no process-global state, and requires no global init; every type
+//! is built through an explicit parser/constructor.
 
 mod common;
 mod error;
@@ -25,22 +27,27 @@ mod parsing;
 /// each module keeps its file directly under `src/`.
 #[path = "."]
 mod internal {
+    #[cfg(feature = "atomic_write")]
+    pub mod atomic_write;
     pub mod consts;
+    pub mod contract_member;
     pub mod failure_kind;
     pub mod fingerprint;
+    pub mod mark;
     pub mod namespace;
     pub mod node;
     pub mod peppy_config;
     pub mod repo_node_id;
     pub mod runtime;
     pub mod schema;
+    pub(crate) mod word_name;
 }
 
 // -- common --
 pub use common::{
     AnyType, DefaultValue, NodeArguments, NodeArgumentsError, ParameterSchema, ParameterSpec,
     TypeMismatch, apply_parameter_defaults, resolve_argument_path, type_token_name,
-    validate_node_arguments,
+    validate_named_items, validate_node_arguments,
 };
 
 // -- error --
@@ -49,6 +56,12 @@ pub use error::{
     MissingInterface, PairingCoverageMismatch, ParsingError, RefinementMismatch,
     deserialize_json5_with_structured_errors, write_joined,
 };
+
+// -- atomic_write --
+#[cfg(feature = "atomic_write")]
+pub mod atomic_write {
+    pub use crate::internal::atomic_write::publish_atomic;
+}
 
 // -- consts --
 pub mod consts {
@@ -60,12 +73,26 @@ pub mod consts {
     };
 }
 
+// -- contract_member --
+pub mod contract_member {
+    pub use crate::internal::contract_member::{
+        ContractAction, ContractMarks, ContractMembers, ContractService, ContractTopic,
+    };
+}
+
 // -- failure_kind --
 pub mod failure_kind {
     pub use crate::internal::failure_kind::{
-        ContractAction, ContractFailureKinds, ContractKinds, ContractMembers, ContractService,
-        FailureKindName, InvalidContractFailureKinds, InvalidFailureKindName, InvalidMemberKinds,
-        MemberFailureKinds, MemberSection, PeppyFailureKind,
+        ContractFailureKinds, ContractKinds, FailureKindName, InvalidContractFailureKinds,
+        InvalidFailureKindName, InvalidMemberKinds, MemberFailureKinds, MemberSection,
+        PeppyFailureKind,
+    };
+}
+
+// -- mark --
+pub mod mark {
+    pub use crate::internal::mark::{
+        EnumValues, InvalidEnumValues, InvalidMarkName, InvalidMarks, MOVES_ROBOT, MarkName, Marks,
     };
 }
 
@@ -87,12 +114,12 @@ pub mod node {
     pub use crate::internal::node::{
         ActionInterfaces, ActionRefinement, ActionTopicEndpoint, ArrayKind, ArraySchema,
         Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig,
-        ContractImplementationEdge, DependencySpec, DependsOn, DocumentKind, DocumentReference,
-        EmittedTopic, EndpointDeclaration, EndpointDeclarations, EndpointKind, EndpointLabel,
-        Execution, ExposedAction, ExposedService, FieldRefinement, FormatRefinement,
-        FormatRuleViolation, GoalServiceEndpoint, ImplementsEntry, InterfaceKind, Interfaces,
-        LinkedAction, LinkedEntry, LinkedMember, LinkedService, LinkedTopic, MAX_RETENTION_DEPTH,
-        Manifest, MaxRestartsWithNever, MessageFormat, MessageSizeEstimate,
+        ContractImplementationEdge, DaemonTargetDependency, DependencySpec, DependsOn,
+        DocumentKind, DocumentReference, EmittedTopic, EndpointDeclaration, EndpointDeclarations,
+        EndpointKind, EndpointLabel, Execution, ExposedAction, ExposedService, FieldRefinement,
+        FormatRefinement, FormatRuleViolation, GoalServiceEndpoint, ImplementsEntry, InterfaceKind,
+        Interfaces, LinkedAction, LinkedEntry, LinkedMember, LinkedService, LinkedTopic,
+        MAX_RETENTION_DEPTH, Manifest, MaxRestartsWithNever, MessageFormat, MessageSizeEstimate,
         MissingDependencyPolicy, NativeEmittedTopic, NativeExposedAction, NativeExposedService,
         NodeConfig, NodeConfigParser, NodeDependency, NodeFramework, ObjectKind, ObjectSchema,
         PairingObserverDependency, PairingParticipantDependency, PeppygenLanguage, PrimitiveSchema,

@@ -20,6 +20,7 @@ use super::{
     resolve_local_archive_source, sanitize_repo_path,
 };
 use crate::Result;
+use crate::services::raw_calls::RawCallGate;
 use crate::source_url::SourceUrl;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
@@ -61,6 +62,7 @@ pub async fn listen_for_node_add(
     peppy_dirs: PeppyDirs,
     relationships: super::RelationshipCoordinators,
     slice_ownership: Arc<crate::services::federation::SliceOwnership>,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = expose_daemon_action(
         messenger,
@@ -84,7 +86,9 @@ pub async fn listen_for_node_add(
         slice_ownership,
     };
 
-    let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
+    let handle = tokio::spawn(async move {
+        run_action_loop(action, ActionId::NodeAdd, raw_calls, handler).await
+    });
 
     Ok(handle)
 }

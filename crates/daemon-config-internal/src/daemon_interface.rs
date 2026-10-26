@@ -1,24 +1,24 @@
 //! The daemon interfaces this peppy serves: the registry that the exposure
-//! checks, the derived node, the hub check and the server read.
+//! checks, the derived node, the hub check, the daemon and its clients read.
 //!
 //! A daemon interface is a document in the contract format, compiled into
-//! peppy. No node implements it and nothing on the messaging layer answers
-//! it: it gives a function of the peppy daemon a public shape for MCP
-//! clients, and the server's daemon bridge fills in the rest of the call.
-//! peppy serves one tag of each interface. Each entry of the registry holds
-//! the interface's document, the type of the scope a launcher gives a target
-//! that names it, the narrowing of its published schema by a scope, and the
-//! checks a launch runs on a scope.
+//! peppy. No node implements it: the peppy daemon serves it on the messaging
+//! layer, as a provider of the contract, and checks each call against the
+//! scope of its sender. peppy serves one tag of each interface. Each entry
+//! of the registry holds the interface's document, the type of the scope a
+//! launcher gives a target that names it, the narrowing of its published
+//! schema by a scope, and the checks a launch runs on a scope.
 
+pub mod fleet;
 mod stack_copies;
 
-use crate::internal::contract::{PeppyContract, PeppyContractParser};
-use crate::internal::launcher::{JoinableNodes, PreparedLauncher, UnitSelection};
-use peppy_mcp_catalog::{
-    DaemonInterfaceRef, DeclaredMembers, ExposureBundle, McpExposure, ResolvedInterface,
-};
+use crate::internal::launcher::{JoinableNodes, PreparedLauncher, UnitSelection, VacantReason};
+use config::node::{DaemonTargetDependency, DependsOn};
+use peppy_codec::contract::{PeppyContract, PeppyContractParser};
+use peppy_mcp_catalog::{DaemonInterfaceRef, ExposureBundle, McpExposure, ResolvedInterface};
 use std::sync::LazyLock;
 
+use fleet::FleetScope;
 pub use stack_copies::{
     Description, MAX_DESCRIPTION_CHARS, MAX_FEATURES, PlacedFeature, ScopedFeature, ScopedOption,
     StackCopiesMember, StackCopiesScope,
@@ -30,6 +30,9 @@ pub enum DaemonInterface {
     /// `stack_copies`: list the copies of the running launch, add one,
     /// remove one.
     StackCopies,
+    /// `fleet`: the fleet listing and its changes, the leases of the robots,
+    /// the move check and the halt of the stack.
+    Fleet,
 }
 
 static STACK_COPIES_DOCUMENT: LazyLock<PeppyContract> = LazyLock::new(|| {
@@ -37,21 +40,27 @@ static STACK_COPIES_DOCUMENT: LazyLock<PeppyContract> = LazyLock::new(|| {
         .expect("the compiled-in `stack_copies` document parses as a contract")
 });
 
+static FLEET_DOCUMENT: LazyLock<PeppyContract> = LazyLock::new(|| {
+    PeppyContractParser::from_content(fleet::DOCUMENT)
+        .expect("the compiled-in `fleet` document parses as a contract")
+});
+
 impl DaemonInterface {
     /// Every interface this peppy serves.
-    pub const ALL: [Self; 1] = [Self::StackCopies];
+    pub const ALL: [Self; 2] = [Self::StackCopies, Self::Fleet];
 
     /// The name a target's `daemon` reference names the interface by.
     pub fn name(self) -> &'static str {
         match self {
             Self::StackCopies => "stack_copies",
+            Self::Fleet => "fleet",
         }
     }
 
     /// The one tag of the interface this peppy serves.
     pub fn tag(self) -> &'static str {
         match self {
-            Self::StackCopies => "v1",
+            Self::StackCopies | Self::Fleet => "v1",
         }
     }
 
@@ -64,6 +73,7 @@ impl DaemonInterface {
     pub fn document_text(self) -> &'static str {
         match self {
             Self::StackCopies => stack_copies::DOCUMENT,
+            Self::Fleet => fleet::DOCUMENT,
         }
     }
 
@@ -71,22 +81,17 @@ impl DaemonInterface {
     pub fn document(self) -> &'static PeppyContract {
         match self {
             Self::StackCopies => &STACK_COPIES_DOCUMENT,
+            Self::Fleet => &FLEET_DOCUMENT,
         }
     }
 
     /// The interface as the catalog validates an exposure against it: its
     /// identity beside its members.
     pub fn resolved(self) -> ResolvedInterface<'static> {
-        let interfaces = &self.document().interfaces;
         ResolvedInterface {
             name: self.name(),
             tag: self.tag(),
-            members: DeclaredMembers {
-                topics: &interfaces.topics,
-                services: &interfaces.services,
-                actions: &interfaces.actions,
-                failure_kinds: &self.document().failure_kinds,
-            },
+            members: crate::internal::mcp_exposure::declared_members(self.document()),
         }
     }
 
@@ -112,6 +117,15 @@ impl DaemonInterface {
         Ok(interface)
     }
 
+    /// The interface that a `depends_on.daemon` entry of a node names, when
+    /// this peppy serves it at the named tag.
+    pub fn of_target(target: &DaemonTargetDependency) -> Result<Self, UnservedInterface> {
+        Self::served(&DaemonInterfaceRef {
+            name: target.name.clone(),
+            tag: target.tag.clone(),
+        })
+    }
+
     /// Parses a scope a launcher gives a target that names this interface
     /// into the interface's scope type, which holds the scope's rules.
     pub fn parse_scope(self, value: &serde_json::Value) -> Result<DaemonScope, String> {
@@ -119,8 +133,47 @@ impl DaemonInterface {
             Self::StackCopies => {
                 parse_value::<StackCopiesScope>(value).map(DaemonScope::StackCopies)
             }
+            Self::Fleet => parse_value::<FleetScope>(value).map(DaemonScope::Fleet),
         }
     }
+}
+
+/// What a launcher gives one daemon target: a scope of the interface the
+/// target names, or a vacancy, `{ vacant: "<why>" }`, which leaves the target
+/// unserved: the server serves none of its entries, and the daemon grants
+/// its client nothing through it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetScope {
+    Scoped(DaemonScope),
+    Vacant(VacantReason),
+}
+
+impl DaemonInterface {
+    /// Parses what a launcher gives a target that names this interface: a
+    /// vacancy, or a scope of this interface ([`Self::parse_scope`]).
+    pub fn parse_target_scope(self, value: &serde_json::Value) -> Result<TargetScope, String> {
+        match vacancy(value)? {
+            Some(reason) => Ok(TargetScope::Vacant(reason)),
+            None => self.parse_scope(value).map(TargetScope::Scoped),
+        }
+    }
+}
+
+/// The reason of `value` when it is a vacancy, an object whose one key is
+/// `vacant`; `None` for any other value.
+fn vacancy(value: &serde_json::Value) -> Result<Option<VacantReason>, String> {
+    let Some(fields) = value.as_object() else {
+        return Ok(None);
+    };
+    let (Some(reason), 1) = (fields.get("vacant"), fields.len()) else {
+        return Ok(None);
+    };
+    let Some(reason) = reason.as_str() else {
+        return Err("`vacant` takes the reason the target stays unserved, as a string".to_owned());
+    };
+    VacantReason::new(reason)
+        .map(Some)
+        .map_err(|_| "`vacant` needs a reason: say why the target stays unserved".to_owned())
 }
 
 /// Every interface this peppy serves, as a refusal lists them.
@@ -168,15 +221,48 @@ pub enum UnservedInterface {
 pub fn served_interfaces(
     exposure: &McpExposure,
 ) -> Result<Vec<(String, DaemonInterface)>, Vec<String>> {
+    collect_served(
+        exposure
+            .surface
+            .targets()
+            .into_iter()
+            .filter_map(|(target, selection, _)| {
+                let reference = selection.source.daemon()?;
+                Some((
+                    target.clone(),
+                    DaemonInterface::served(reference)
+                        .map_err(|error| format!("target `{target}`: {error}")),
+                ))
+            }),
+    )
+}
+
+/// The daemon interface of each daemon target of a node, by its link_id, in
+/// the order of `depends_on.daemon`, resolved through the registry, or one
+/// refusal per target that names an interface this peppy does not serve.
+pub fn served_targets(
+    depends_on: &DependsOn,
+) -> Result<Vec<(String, DaemonInterface)>, Vec<String>> {
+    collect_served(depends_on.daemon.iter().map(|target| {
+        (
+            target.link_id.clone(),
+            DaemonInterface::of_target(target)
+                .map_err(|error| format!("daemon target `{}`: {error}", target.link_id)),
+        )
+    }))
+}
+
+/// Every served target of `resolved`, or every refusal when one target or
+/// more names an interface this peppy does not serve.
+fn collect_served(
+    resolved: impl Iterator<Item = (String, Result<DaemonInterface, String>)>,
+) -> Result<Vec<(String, DaemonInterface)>, Vec<String>> {
     let mut served = Vec::new();
     let mut refusals = Vec::new();
-    for (target, selection, _) in exposure.surface.targets() {
-        let Some(reference) = selection.source.daemon() else {
-            continue;
-        };
-        match DaemonInterface::served(reference) {
-            Ok(interface) => served.push((target.clone(), interface)),
-            Err(error) => refusals.push(format!("target `{target}`: {error}")),
+    for (target, interface) in resolved {
+        match interface {
+            Ok(interface) => served.push((target, interface)),
+            Err(refusal) => refusals.push(refusal),
         }
     }
     if refusals.is_empty() {
@@ -191,6 +277,7 @@ pub fn served_interfaces(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonScope {
     StackCopies(StackCopiesScope),
+    Fleet(FleetScope),
 }
 
 impl DaemonScope {
@@ -198,6 +285,7 @@ impl DaemonScope {
     pub fn interface(&self) -> DaemonInterface {
         match self {
             Self::StackCopies(_) => DaemonInterface::StackCopies,
+            Self::Fleet(_) => DaemonInterface::Fleet,
         }
     }
 
@@ -212,16 +300,22 @@ impl DaemonScope {
     ) -> Result<JoinableNodes, Vec<String>> {
         match self {
             Self::StackCopies(scope) => scope.check_launch(prepared, selection),
+            // A fleet scope names members of the interface alone, so every
+            // launcher holds it, and a member brings no node to join.
+            Self::Fleet(_) => Ok(JoinableNodes::default()),
         }
     }
 
-    /// Narrows the published input schemas of the tool and task entries of
-    /// `bundle` that daemon target `target` serves to what this scope
-    /// allows, so the runtime refuses input outside the scope before a call
-    /// reaches the daemon. Entries of other targets keep their schemas.
+    /// Narrows the tool and task entries of `bundle` that daemon target
+    /// `target` serves to what this scope allows, so the runtime refuses
+    /// input outside the scope before a call reaches the daemon: a
+    /// `stack_copies` scope narrows their input schemas, and a fleet scope
+    /// leaves out each entry of a member that it does not give. Entries of
+    /// other targets stay as they are.
     pub fn narrow(&self, bundle: &mut ExposureBundle, target: &str) {
         match self {
             Self::StackCopies(scope) => scope.narrow(bundle, target),
+            Self::Fleet(scope) => scope.narrow(bundle, target),
         }
     }
 }

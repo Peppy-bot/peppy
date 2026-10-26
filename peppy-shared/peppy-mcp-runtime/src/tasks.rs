@@ -38,6 +38,10 @@ pub enum ActionExit {
     /// The goal ran and failed, with a failure kind and a message. It ends
     /// as a refused goal does.
     Failed(ProviderFailure),
+    /// The stack refused the move: the daemon of the fleet refused the goal
+    /// on a member that moves a robot, with a failure kind and a message,
+    /// and the goal was not sent. It ends as a refused goal does.
+    MoveRefused(ProviderFailure),
     /// The Peppy action ended cancelled, whoever cancelled it: the client,
     /// or the provider on its own. A call answers with a tool error that
     /// carries the provider's result; a task ends `cancelled`, and its
@@ -58,7 +62,9 @@ impl ActionExit {
     /// that the provider refused or failed.
     pub(crate) fn call_failure(&self) -> Option<CallFailure<'_>> {
         let (outcome, failure) = match self {
-            Self::Refused(failure) => (FailureOutcome::Refused, failure),
+            Self::Refused(failure) | Self::MoveRefused(failure) => {
+                (FailureOutcome::Refused, failure)
+            }
             Self::Failed(failure) => (FailureOutcome::Failed, failure),
             Self::Cancelled(_) | Self::Error(_) => return None,
         };
@@ -74,6 +80,7 @@ impl std::fmt::Display for ActionExit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Refused(failure) => write!(f, "the provider refused the goal: {failure}"),
+            Self::MoveRefused(failure) => write!(f, "the stack refused the move: {failure}"),
             Self::Failed(failure) => write!(f, "the provider failed the goal: {failure}"),
             Self::Cancelled(goal) => write!(f, "{goal}"),
             Self::Error(detail) => write!(f, "the action failed: {detail}"),

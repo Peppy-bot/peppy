@@ -10,6 +10,10 @@ peppy-mcp-catalog = { path = "../peppy-mcp-catalog" }
 # The failure kind a provider gives, which a tool error and the call record
 # carry.
 peppy-config-model = { path = "../peppy-config-model" }
+# The canonical JSON value rules of message formats (`value`), which the
+# record of calls applies to its times. The compiler that the crate embeds
+# by default is of no use here.
+peppy-codec = { path = "../peppy-codec", default-features = false }
 # The official MCP SDK: protocol model, 2026-07-28 lifecycle, and the
 # Streamable HTTP server transport. Default features are dropped to leave the
 # proc macros out; tools and resources here are built dynamically from the

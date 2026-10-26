@@ -1,9 +1,10 @@
-use crate::internal::contract::{Manifest, validate_named_items};
+use config::validate_named_items;
 use config::{
     node::{MessageFormat, NativeEmittedTopic, QoSProfile, TopicRetention},
     runtime::Name,
     schema::PeppySchema,
 };
+use peppy_codec::contract::Manifest;
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer},

@@ -7,10 +7,77 @@ use serde_json::json;
 /// `stack`, that names `stack_copies:v1`.
 pub(crate) const FRAMEWORK_CONTROLS: &str = include_str!("fixtures/framework_controls.json5");
 
+/// Every interface this peppy serves, as the catalog resolves them.
+fn every_interface() -> Vec<ResolvedInterface<'static>> {
+    DaemonInterface::ALL
+        .into_iter()
+        .map(DaemonInterface::resolved)
+        .collect()
+}
+
 fn reference(name: &str, tag: &str) -> DaemonInterfaceRef {
     DaemonInterfaceRef {
         name: config::runtime::Name::new(name).expect("a name"),
         tag: tag.to_owned(),
+    }
+}
+
+/// Every message format of every compiled-in document holds the rules that
+/// each consumer of a format applies, the code generators and the public MCP
+/// schema mapping included: a generated client of a daemon target is built
+/// from these documents.
+#[test]
+fn every_message_format_of_a_compiled_in_document_holds_the_format_rules() {
+    for interface in DaemonInterface::ALL {
+        let interfaces = &interface.document().interfaces;
+        let services = interfaces.services.iter().flat_map(|service| {
+            [
+                (&service.name, service.request_message_format.as_ref()),
+                (&service.name, service.response_message_format.as_ref()),
+            ]
+        });
+        let actions = interfaces.actions.iter().flat_map(|action| {
+            let goal = action.goal_service.as_ref();
+            [
+                (
+                    &action.name,
+                    goal.and_then(|goal| goal.request_message_format.as_ref()),
+                ),
+                (
+                    &action.name,
+                    goal.and_then(|goal| goal.response_message_format.as_ref()),
+                ),
+                (
+                    &action.name,
+                    action
+                        .feedback_topic
+                        .as_ref()
+                        .map(|feedback| &feedback.message_format),
+                ),
+                (
+                    &action.name,
+                    action
+                        .result_service
+                        .as_ref()
+                        .and_then(|result| result.response_message_format.as_ref()),
+                ),
+            ]
+        });
+        let topics = interfaces
+            .topics
+            .iter()
+            .map(|topic| (&topic.name, topic.message_format.as_ref()));
+        for (member, format) in services.chain(actions).chain(topics) {
+            let Some(format) = format else {
+                continue;
+            };
+            format
+                .check_reserved_field_names()
+                .and_then(|()| format.check_fixed_length_array_items())
+                .unwrap_or_else(|violation| {
+                    panic!("{} `{member}`: {violation}", interface.label())
+                });
+        }
     }
 }
 
@@ -96,15 +163,27 @@ fn stack_copies_declares_the_kinds_of_the_daemon_beyond_peppy() {
         .map(|kind| (kind.name(), kind.meaning()))
         .collect();
     assert_eq!(declared, daemon_own);
-    assert_eq!(declared, [("busy", DaemonFailureKind::Busy.meaning())]);
+    assert_eq!(
+        declared,
+        [
+            ("busy", DaemonFailureKind::Busy.meaning()),
+            ("halted", DaemonFailureKind::Halted.meaning()),
+            ("leased", DaemonFailureKind::Leased.meaning()),
+        ]
+    );
 
-    // `join` and `remove` give every kind of the daemon; `list` gives the
-    // kinds of peppy only.
+    // `join` gives every kind of the daemon, `remove` each one but halted:
+    // the halt refuses a lease, and a removal takes no lease. `list` gives
+    // the kinds of peppy only.
     let join = kinds.of(MemberSection::Action, "join");
     let remove = kinds.of(MemberSection::Action, "remove");
     for kind in DaemonFailureKind::ALL {
         assert!(join.allows(kind.name()), "{kind}");
-        assert!(remove.allows(kind.name()), "{kind}");
+        assert_eq!(
+            remove.allows(kind.name()),
+            kind != DaemonFailureKind::Halted,
+            "{kind}"
+        );
     }
     assert_eq!(
         kinds.of(MemberSection::Service, "list"),
@@ -115,9 +194,8 @@ fn stack_copies_declares_the_kinds_of_the_daemon_beyond_peppy() {
     // exposure to these kinds.
     let exposure =
         PeppyMcpExposureParser::from_content(FRAMEWORK_CONTROLS).expect("the fixture parses");
-    let validated =
-        build_exposure_bundle(&exposure, &[], &[DaemonInterface::StackCopies.resolved()])
-            .expect("the fixture validates against the interface");
+    let validated = build_exposure_bundle(&exposure, &[], &every_interface())
+        .expect("the fixture validates against the interface");
     let bound: Vec<(&str, &MemberFailureKinds)> = validated
         .tasks()
         .map(|(entry, bound)| (entry.name.as_str(), &bound.failure_kinds))
@@ -130,6 +208,10 @@ fn the_registry_serves_one_tag_of_each_interface() {
     assert_eq!(
         DaemonInterface::served(&reference("stack_copies", "v1")),
         Ok(DaemonInterface::StackCopies)
+    );
+    assert_eq!(
+        DaemonInterface::served(&reference("fleet", "v1")),
+        Ok(DaemonInterface::Fleet)
     );
 
     let error =
@@ -146,7 +228,7 @@ fn the_registry_serves_one_tag_of_each_interface() {
     assert_eq!(
         error.to_string(),
         "daemon interface `node_controls:v1` is not one this peppy serves; it serves \
-         `stack_copies:v1`"
+         `stack_copies:v1`, `fleet:v1`"
     );
 }
 
@@ -156,7 +238,10 @@ fn the_daemon_targets_of_an_exposure_resolve_through_the_registry() {
         PeppyMcpExposureParser::from_content(FRAMEWORK_CONTROLS).expect("the fixture parses");
     assert_eq!(
         served_interfaces(&exposure),
-        Ok(vec![("stack".to_owned(), DaemonInterface::StackCopies)])
+        Ok(vec![
+            ("stack".to_owned(), DaemonInterface::StackCopies),
+            ("fleet".to_owned(), DaemonInterface::Fleet),
+        ])
     );
 
     let unserved = PeppyMcpExposureParser::from_content(&FRAMEWORK_CONTROLS.replace(
@@ -178,6 +263,7 @@ fn the_daemon_targets_of_an_exposure_resolve_through_the_registry() {
 fn scope(value: serde_json::Value) -> Result<StackCopiesScope, String> {
     match DaemonInterface::StackCopies.parse_scope(&value)? {
         DaemonScope::StackCopies(scope) => Ok(scope),
+        DaemonScope::Fleet(_) => panic!("the stack_copies interface parses a stack_copies scope"),
     }
 }
 
@@ -482,7 +568,7 @@ fn the_features_of_an_option_hold_their_rules() {
 fn framework_controls_bundle() -> ExposureBundle {
     let exposure =
         PeppyMcpExposureParser::from_content(FRAMEWORK_CONTROLS).expect("the fixture parses");
-    build_exposure_bundle(&exposure, &[], &[DaemonInterface::StackCopies.resolved()])
+    build_exposure_bundle(&exposure, &[], &every_interface())
         .expect("the fixture validates against the interface")
         .bundle
 }
@@ -504,6 +590,40 @@ fn narrowed_bundle(value: serde_json::Value) -> ExposureBundle {
         .expect("parses")
         .narrow(&mut bundle, "stack");
     bundle
+}
+
+/// A fleet scope leaves out the tools of the members that it does not give,
+/// and keeps every entry of another target.
+#[test]
+fn a_fleet_scope_serves_the_tools_of_the_members_that_it_gives() {
+    let mut bundle = framework_controls_bundle();
+    let tools = |bundle: &ExposureBundle| -> Vec<String> {
+        bundle.tools.iter().map(|tool| tool.name.clone()).collect()
+    };
+    let derived = tools(&bundle);
+    assert!(derived.contains(&"fleet.clear_halt".to_owned()));
+    DaemonInterface::Fleet
+        .parse_scope(&json!({ "members": ["list", "halt"] }))
+        .expect("parses")
+        .narrow(&mut bundle, "fleet");
+    let narrowed = tools(&bundle);
+    assert!(
+        !narrowed.contains(&"fleet.clear_halt".to_owned()),
+        "{narrowed:?}"
+    );
+    assert_eq!(
+        narrowed,
+        derived
+            .into_iter()
+            .filter(|tool| tool != "fleet.clear_halt")
+            .collect::<Vec<_>>(),
+        "every other tool stays"
+    );
+    assert_eq!(
+        bundle.tasks.len(),
+        framework_controls_bundle().tasks.len(),
+        "the tasks of the stack target stay"
+    );
 }
 
 #[test]
@@ -689,7 +809,7 @@ fn the_runtime_validator_refuses_input_outside_the_narrowed_schema() {
         "no field outside the interface's goal"
     );
 
-    // A listed copy has the shape of a join goal.
+    // A listed copy, without its `running`, has the shape of a join goal.
     let listed = json!({
         "name": "delta",
         "option": "openarm_sim",

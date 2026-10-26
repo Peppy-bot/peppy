@@ -3,6 +3,7 @@ pub mod clock;
 mod colors;
 mod confirm;
 pub mod container;
+pub mod fleet;
 pub mod info;
 pub mod mcp;
 mod menu;
@@ -33,7 +34,7 @@ use crate::{
 /// process advertises a presence of its own generation with it, so two
 /// processes are two senders: the daemon ends the goals of a process that
 /// stops, and of no other.
-pub(crate) const CALLER_INSTANCE_ID: &str = "peppy-cli";
+pub(crate) const CALLER_INSTANCE_ID: &str = core_node_api::names::COMMAND_LINE_INSTANCE_ID;
 
 /// The error of a request to the daemon that did not give its response,
 /// `doing` naming the request ("Failed to add repository"): the daemon's

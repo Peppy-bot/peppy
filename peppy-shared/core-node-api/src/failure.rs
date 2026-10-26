@@ -2,8 +2,9 @@
 //! failed daemon goal, and of the error reply of a daemon service.
 //!
 //! The daemon gives a kind from a closed set: the kinds of peppy
-//! ([`PeppyFailureKind`]) and the kind of its own, [`DaemonFailureKind::Busy`],
-//! as a contract adds kinds of its own to the kinds of peppy. The daemon and
+//! ([`PeppyFailureKind`]) and the kinds of its own ([`DaemonFailureKind::Busy`],
+//! [`DaemonFailureKind::Halted`] and [`DaemonFailureKind::Leased`]), as a
+//! contract adds kinds of its own to the kinds of peppy. The daemon and
 //! each of its clients share this set. A client reads the kind of a daemon
 //! reply into it once ([`DaemonFailure::parse`]): a kind outside the set is
 //! an error, never a failure of another kind.
@@ -20,17 +21,26 @@ pub enum DaemonFailureKind {
     /// that reserved the daemon, a repository refresh or a benchmark. The
     /// same request can succeed once that work ends.
     Busy,
+    /// The stack is halted: the daemon refuses a lease, so a join by a lease
+    /// holder, until the halt ends.
+    Halted,
+    /// Another client holds the lease of the robot: the daemon refuses a
+    /// join under its name and its removal by another client.
+    Leased,
 }
 
 impl DaemonFailureKind {
-    /// Every kind of the daemon: the kinds of peppy, then `busy`.
-    pub const ALL: [Self; 6] = [
+    /// Every kind of the daemon: the kinds of peppy, then the kinds of its
+    /// own.
+    pub const ALL: [Self; 8] = [
         Self::Peppy(PeppyFailureKind::AttemptFailed),
         Self::Peppy(PeppyFailureKind::Timeout),
         Self::Peppy(PeppyFailureKind::PreconditionFailed),
         Self::Peppy(PeppyFailureKind::ResourceUnavailable),
         Self::Peppy(PeppyFailureKind::Rejected),
         Self::Busy,
+        Self::Halted,
+        Self::Leased,
     ];
 
     /// The name of the kind on the wire and in documents.
@@ -38,6 +48,8 @@ impl DaemonFailureKind {
         match self {
             Self::Peppy(kind) => kind.name(),
             Self::Busy => "busy",
+            Self::Halted => "halted",
+            Self::Leased => "leased",
         }
     }
 
@@ -48,6 +60,11 @@ impl DaemonFailureKind {
             Self::Busy => {
                 "Other work runs on the daemon; the same request can succeed once that work \
                  ends"
+            }
+            Self::Halted => "The stack is halted",
+            Self::Leased => {
+                "Another client holds the lease of the robot; the message names the holder and \
+                 the lease name"
             }
         }
     }
@@ -69,8 +86,10 @@ impl From<DaemonFailureKind> for FailureKindName {
     fn from(kind: DaemonFailureKind) -> Self {
         match kind {
             DaemonFailureKind::Peppy(kind) => kind.into(),
-            DaemonFailureKind::Busy => FailureKindName::parse(kind.name())
-                .expect("each kind of the daemon is a valid failure kind name"),
+            DaemonFailureKind::Busy | DaemonFailureKind::Halted | DaemonFailureKind::Leased => {
+                FailureKindName::parse(kind.name())
+                    .expect("each kind of the daemon is a valid failure kind name")
+            }
         }
     }
 }

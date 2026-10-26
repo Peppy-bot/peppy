@@ -3,7 +3,7 @@ use super::composition::{
     OptionDeployment, SelectionConstraint,
 };
 use crate::error::StructuredError;
-use crate::internal::contract::validate_named_items;
+use config::validate_named_items;
 use config::{
     AnyType,
     consts::DEFAULT_LINK_ID_SENTINEL,

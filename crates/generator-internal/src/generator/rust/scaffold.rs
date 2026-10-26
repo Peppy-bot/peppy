@@ -1,8 +1,8 @@
 use super::identifiers::rust_identifier_or;
 use crate::generator::common::{
-    CrateDeployMode, EmbeddedBuildHelpers, EmbeddedConfig, EmbeddedCoreNodeApi,
-    EmbeddedPeppyMessagingInterface, EmbeddedPeppylib, WorkspacePackageMetadata,
-    copy_dir_recursive, populate_cache_dir_once,
+    CodecApi, CrateDeployMode, EmbeddedBuildHelpers, EmbeddedConfig, EmbeddedCoreNodeApi,
+    EmbeddedPeppyCodec, EmbeddedPeppyMcpCatalog, EmbeddedPeppyMessagingInterface, EmbeddedPeppylib,
+    WorkspacePackageMetadata, copy_dir_recursive, populate_cache_dir_once,
 };
 use crate::{
     error::{Error, Result},
@@ -31,6 +31,7 @@ pub fn add_peppylib_dependencies(
     to_path: impl AsRef<Path>,
     peppy_dirs: &daemon_config::consts::PeppyDirs,
     deploy_mode: CrateDeployMode,
+    codec_api: CodecApi,
 ) -> Result<()> {
     let to_path = to_path.as_ref();
     let libs_dir = to_path.parent().ok_or_else(|| {
@@ -40,7 +41,7 @@ pub fn add_peppylib_dependencies(
         ))
     })?;
 
-    deploy_rust_crates_to_shared_cache(libs_dir, peppy_dirs, deploy_mode)?;
+    deploy_rust_crates_to_shared_cache(libs_dir, peppy_dirs, deploy_mode, codec_api)?;
     generate_lib_structure(to_path, "../peppylib")?;
 
     Ok(())
@@ -162,16 +163,19 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
         // is vendored into `.peppy/libs/peppylib` (lib name already `peppylib`).
         // Rename the package back to `peppylib` so every generated node's
         // `peppylib = { path = ".peppy/libs/peppylib" }` resolves unchanged.
-        if package.get("name").and_then(|n| n.as_str()) == Some("peppylib-rs") {
-            package.insert("name", value("peppylib"));
+        if package.get("name").and_then(|n| n.as_str()) == Some(PEPPYLIB_SOURCE_NAME) {
+            package.insert("name", value(PEPPYLIB_VENDORED_NAME));
         }
     }
 
     // Vendored crates never run their own tests, and their dev-dependencies
     // can break resolution in the flat layout (peppylib-rs's cyclic
     // self-dev-dependency stops resolving once the package is renamed to
-    // `peppylib`). Strip them, including target-specific tables.
+    // `peppylib`). Strip them, including target-specific tables, and the
+    // test and bench targets, whose sources the vendored copy leaves out.
     doc.remove("dev-dependencies");
+    doc.remove("test");
+    doc.remove("bench");
     if let Some(targets) = doc.get_mut("target").and_then(|t| t.as_table_mut()) {
         let target_keys: Vec<String> = targets.iter().map(|(key, _)| key.to_string()).collect();
         for key in target_keys {
@@ -199,22 +203,39 @@ fn inherits_from_workspace(package: &toml_edit::Table, key: &str) -> bool {
         == Some(true)
 }
 
-/// One crate of the vendored `.peppy/libs` cache: its directory there, and
-/// the hash and copy steps of its embedded files.
+/// One crate of the vendored `.peppy/libs` cache: its directory there, the
+/// hash and copy steps of its embedded files, and the nodes that get it.
 struct VendoredCrate {
     dir_name: &'static str,
     hash_into: fn(&mut Sha256, &str),
     copy_into: fn(&str, &Path, &WorkspacePackageMetadata) -> Result<()>,
+    only_with_codec_api: bool,
 }
 
 impl VendoredCrate {
-    /// The vendored crate whose files `E` embeds, laid out under `dir_name`.
+    /// The vendored crate whose files `E` embeds, laid out under `dir_name`,
+    /// which every node gets.
     const fn embedded<E: Embed>(dir_name: &'static str) -> Self {
         Self {
             dir_name,
             hash_into: hash_embedded_crate::<E>,
             copy_into: copy_embedded_crate::<E>,
+            only_with_codec_api: false,
         }
+    }
+
+    /// The vendored crate whose files `E` embeds, laid out under `dir_name`,
+    /// which only a node that asks for the codec API gets.
+    const fn embedded_for_codec_api<E: Embed>(dir_name: &'static str) -> Self {
+        Self {
+            only_with_codec_api: true,
+            ..Self::embedded::<E>(dir_name)
+        }
+    }
+
+    /// Whether a node with `codec_api` gets the crate.
+    fn is_given_to(&self, codec_api: CodecApi) -> bool {
+        !self.only_with_codec_api || codec_api == CodecApi::Asked
     }
 }
 
@@ -224,49 +245,67 @@ impl VendoredCrate {
 /// `../<crate>` so it resolves in the flat cache however the source manifest
 /// spells the way to its sibling. The source crates live in the sealed
 /// `peppy-shared` tree, so a sibling is all such a path can name.
-const VENDORED_CRATES: [VendoredCrate; 5] = [
+const VENDORED_CRATES: [VendoredCrate; 7] = [
     VendoredCrate::embedded::<EmbeddedPeppylib>("peppylib"),
     VendoredCrate::embedded::<EmbeddedPeppyMessagingInterface>("peppy-messaging-interface"),
     VendoredCrate::embedded::<EmbeddedConfig>("peppy-config-model"),
     VendoredCrate::embedded::<EmbeddedCoreNodeApi>("core-node-api"),
     VendoredCrate::embedded::<EmbeddedBuildHelpers>("build-helpers"),
+    VendoredCrate::embedded_for_codec_api::<EmbeddedPeppyCodec>("peppy-codec"),
+    VendoredCrate::embedded_for_codec_api::<EmbeddedPeppyMcpCatalog>("peppy-mcp-catalog"),
 ];
 
+/// The name of `peppylib` in `peppy-shared`, as its package and as its
+/// directory: the vendored layout names it [`PEPPYLIB_VENDORED_NAME`].
+const PEPPYLIB_SOURCE_NAME: &str = "peppylib-rs";
+/// The name of `peppylib` in the vendored layout, as its package and as its
+/// directory: the name every generated node depends on (its lib name is
+/// `peppylib` in both layouts).
+const PEPPYLIB_VENDORED_NAME: &str = "peppylib";
+
 /// Returns the flattened `../<crate>` path for `current` if its final component
-/// names a vendored sibling crate, otherwise `None` (leave it untouched).
+/// names a vendored sibling crate, or the `peppy-shared` directory of one,
+/// otherwise `None` (leave it untouched).
 fn flatten_vendored_path(current: &str) -> Option<String> {
     let final_component = current.rsplit('/').next().unwrap_or(current);
+    let vendored_name = match final_component {
+        PEPPYLIB_SOURCE_NAME => PEPPYLIB_VENDORED_NAME,
+        name => name,
+    };
     VENDORED_CRATES
         .iter()
-        .any(|vendored| vendored.dir_name == final_component)
-        .then(|| format!("../{final_component}"))
+        .any(|vendored| vendored.dir_name == vendored_name)
+        .then(|| format!("../{vendored_name}"))
 }
 
 /// Rewrites every intra-vendor `path` dependency of the `[dependencies]` and
 /// `[build-dependencies]` tables in `doc` to a flat sibling so the deployed
-/// flat-cache layout resolves. Registry deps and non-vendored path deps are left
-/// alone; `features` and other keys on the dependency are preserved. Idempotent
-/// on manifests whose paths are already flat. The dev-dependencies are not
-/// rewritten: [`localize_cargo_toml`] strips them first.
+/// flat-cache layout resolves, and a dependency on the package `peppylib-rs`
+/// to the vendored package `peppylib`. Registry deps and non-vendored path
+/// deps are left alone; `features` and other keys on the dependency are
+/// preserved. Idempotent on manifests whose paths are already flat. The
+/// dev-dependencies are not rewritten: [`localize_cargo_toml`] strips them
+/// first.
 fn normalize_vendored_path_deps(doc: &mut DocumentMut) {
     for table_name in ["dependencies", "build-dependencies"] {
         let Some(deps) = doc.get_mut(table_name).and_then(|t| t.as_table_mut()) else {
             continue;
         };
         for (_dep_name, item) in deps.iter_mut() {
-            // Inline form: `dep = { path = "...", features = [...] }`.
-            if let Some(inline) = item.as_inline_table_mut() {
-                if let Some(path_val) = inline.get_mut("path")
-                    && let Some(flat) = path_val.as_str().and_then(flatten_vendored_path)
-                {
-                    *path_val = flat.as_str().into();
-                }
-            // Full-table form: `[dependencies.dep]\npath = "..."`.
-            } else if let Some(table) = item.as_table_mut()
-                && let Some(path_item) = table.get_mut("path")
-                && let Some(flat) = path_item.as_str().and_then(flatten_vendored_path)
+            // The inline form `dep = { path = "..." }` and the full-table form
+            // `[dependencies.dep]` alike.
+            let Some(dependency) = item.as_table_like_mut() else {
+                continue;
+            };
+            if let Some(path) = dependency.get_mut("path")
+                && let Some(flat) = path.as_str().and_then(flatten_vendored_path)
             {
-                *path_item = value(flat);
+                *path = value(flat);
+            }
+            if let Some(package) = dependency.get_mut("package")
+                && package.as_str() == Some(PEPPYLIB_SOURCE_NAME)
+            {
+                *package = value(PEPPYLIB_VENDORED_NAME);
             }
         }
     }
@@ -377,6 +416,7 @@ fn deploy_rust_crates_to_shared_cache(
     node_libs_dir: &Path,
     peppy_dirs: &daemon_config::consts::PeppyDirs,
     deploy_mode: CrateDeployMode,
+    codec_api: CodecApi,
 ) -> Result<()> {
     let cache_key = vendored_crates_cache_key();
     let cache_dir = peppy_dirs.rust_libs_cache_dir(&cache_key);
@@ -389,13 +429,19 @@ fn deploy_rust_crates_to_shared_cache(
         Ok(())
     })?;
 
-    // Link or copy every vendored crate into node_libs_dir.
-    // All are needed because the crates reference each other via relative sibling
-    // paths (e.g., peppylib has `config = { package = "peppy-config-model", path = "../peppy-config-model" }` and
-    // build-dependencies), and Cargo resolves these paths relative to the symlink
-    // location, not the target.
+    // Link or copy every vendored crate that the node gets into node_libs_dir,
+    // and remove the others that an earlier generation gave it. All crates
+    // of the node are needed because the crates reference each other via
+    // relative sibling paths (e.g., peppylib has `config = { package =
+    // "peppy-config-model", path = "../peppy-config-model" }` and
+    // build-dependencies), and Cargo resolves these paths relative to the
+    // symlink location, not the target.
     for vendored in &VENDORED_CRATES {
         let dest = node_libs_dir.join(vendored.dir_name);
+        if !vendored.is_given_to(codec_api) {
+            remove_vendored_crate(&dest)?;
+            continue;
+        }
         let source = cache_dir.join(vendored.dir_name);
 
         match deploy_mode {
@@ -404,6 +450,18 @@ fn deploy_rust_crates_to_shared_cache(
         }
     }
 
+    Ok(())
+}
+
+/// Removes the vendored crate at `dest`, a symlink or a directory, when it is
+/// there.
+fn remove_vendored_crate(dest: &Path) -> Result<()> {
+    match dest.symlink_metadata() {
+        Ok(meta) if meta.file_type().is_symlink() => fs::remove_file(dest)?,
+        Ok(_) => fs::remove_dir_all(dest)?,
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     Ok(())
 }
 
@@ -638,7 +696,9 @@ mod tests {
             ),
             ("../core-node-api", Some("../core-node-api")),
             ("build-helpers", Some("../build-helpers")),
-            ("../peppylib-rs", None),
+            ("../peppy-codec", Some("../peppy-codec")),
+            ("../peppy-mcp-catalog", Some("../peppy-mcp-catalog")),
+            ("../peppylib-rs", Some("../peppylib")),
             ("../some-other-crate", None),
         ];
         for (path, expected) in cases {
@@ -671,6 +731,7 @@ mod tests {
                 &node_libs_dir,
                 &peppy_dirs,
                 CrateDeployMode::Symlink,
+                CodecApi::Asked,
             )
             .unwrap();
         }
@@ -692,8 +753,13 @@ mod tests {
         let peppy_dirs = daemon_config::consts::PeppyDirs::new(root.path().join("peppy"));
         let node_libs_dir = node_libs_dir_with_stale_entries(root.path());
 
-        deploy_rust_crates_to_shared_cache(&node_libs_dir, &peppy_dirs, CrateDeployMode::Copy)
-            .unwrap();
+        deploy_rust_crates_to_shared_cache(
+            &node_libs_dir,
+            &peppy_dirs,
+            CrateDeployMode::Copy,
+            CodecApi::Asked,
+        )
+        .unwrap();
 
         for vendored in &VENDORED_CRATES {
             let dest = node_libs_dir.join(vendored.dir_name);
@@ -702,6 +768,55 @@ mod tests {
             assert!(dest.join("Cargo.toml").is_file(), "{}", vendored.dir_name);
         }
         assert!(!node_libs_dir.join("peppylib").join("stale").exists());
+    }
+
+    /// Only a node that asks for the codec API gets the codec crates, and a
+    /// node that stops asking loses the copies of an earlier generation.
+    #[test]
+    fn the_codec_crates_reach_only_a_node_that_asks_for_the_codec_api() {
+        let root = tempfile::TempDir::new().unwrap();
+        let peppy_dirs = daemon_config::consts::PeppyDirs::new(root.path().join("peppy"));
+        let node_libs_dir = root.path().join("node").join("libs");
+        fs::create_dir_all(&node_libs_dir).unwrap();
+        let codec_crates = ["peppy-codec", "peppy-mcp-catalog"];
+
+        for deploy_mode in [CrateDeployMode::Symlink, CrateDeployMode::Copy] {
+            deploy_rust_crates_to_shared_cache(
+                &node_libs_dir,
+                &peppy_dirs,
+                deploy_mode,
+                CodecApi::Asked,
+            )
+            .unwrap();
+            for name in codec_crates {
+                assert!(
+                    node_libs_dir.join(name).join("Cargo.toml").is_file(),
+                    "{name}"
+                );
+            }
+            let codec_manifest =
+                fs::read_to_string(node_libs_dir.join("peppy-codec").join("Cargo.toml")).unwrap();
+            assert!(!codec_manifest.contains("[[bench]]"), "{codec_manifest}");
+            assert!(
+                !node_libs_dir.join("peppy-codec").join("tests").exists(),
+                "the tests of the codec stay out of a node"
+            );
+
+            deploy_rust_crates_to_shared_cache(
+                &node_libs_dir,
+                &peppy_dirs,
+                deploy_mode,
+                CodecApi::NotAsked,
+            )
+            .unwrap();
+            for name in codec_crates {
+                assert!(
+                    node_libs_dir.join(name).symlink_metadata().is_err(),
+                    "{name} stays after the node stops asking"
+                );
+            }
+            assert!(node_libs_dir.join("peppylib").join("Cargo.toml").is_file());
+        }
     }
 
     const TEST_METADATA: WorkspacePackageMetadata = WorkspacePackageMetadata {
@@ -787,6 +902,7 @@ mod tests {
 
             [dependencies]
             peppy-config-model = { path = "../../peppy-shared/peppy-config-model", features = ["schema"] }
+            peppylib = { package = "peppylib-rs", path = "../peppylib-rs" }
             serde = "1"
 
             [dependencies.peppy-messaging-interface]
@@ -818,6 +934,15 @@ mod tests {
             Some(1)
         );
         assert_eq!(dependencies["serde"].as_str(), Some("1"));
+        assert_eq!(
+            dependencies["peppylib"]["path"].as_str(),
+            Some("../peppylib")
+        );
+        assert_eq!(
+            dependencies["peppylib"]["package"].as_str(),
+            Some("peppylib"),
+            "the vendored layout names the package of peppylib-rs `peppylib`"
+        );
         assert_eq!(
             dependencies["peppy-messaging-interface"]["path"].as_str(),
             Some("../peppy-messaging-interface")

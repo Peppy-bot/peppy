@@ -8,7 +8,7 @@ use tracing::{error, warn};
 
 use daemon_config::consts::{AppEnv, PEPPY_VERSION, PeppyDirs, RootLifetime};
 use peppy::{
-    commands::{Command, clock, container, info, mcp, node, platform, repo, service, stack},
+    commands::{Command, clock, container, fleet, info, mcp, node, platform, repo, service, stack},
     context::AppContext,
 };
 
@@ -58,6 +58,11 @@ enum Commands {
         #[command(subcommand)]
         command: stack::StackCommands,
     },
+    /// The robots of the stack, their leases and the halt
+    Fleet {
+        #[command(subcommand)]
+        command: fleet::FleetCommands,
+    },
     /// Clock domains: what simulated time this federation is running
     Clock {
         #[command(subcommand)]
@@ -98,6 +103,9 @@ fn main() {
         AppEnv::Prod
     };
     daemon_config::consts::set_app_env(env);
+    // The codec writes the Cap'n Proto compiler that peppy carries into the
+    // `bin` directory of the data root of this build.
+    peppy_codec::compiler::extract_into(daemon_config::consts::PeppyDirs::default().bin_dir());
 
     let cli = Cli::parse();
     let log_style = if cfg!(debug_assertions)
@@ -132,6 +140,7 @@ fn main() {
         Commands::Service { command } => service::ServiceCommand { command }.execute(&app_ctx),
         Commands::Node { command } => node::NodeCommand { command }.execute(&app_ctx),
         Commands::Stack { command } => stack::StackCommand { command }.execute(&app_ctx),
+        Commands::Fleet { command } => fleet::FleetCommand { command }.execute(&app_ctx),
         Commands::Clock { command } => clock::ClockCommand { command }.execute(&app_ctx),
         Commands::Container { command } => {
             container::ContainerCommand { command }.execute(&app_ctx)

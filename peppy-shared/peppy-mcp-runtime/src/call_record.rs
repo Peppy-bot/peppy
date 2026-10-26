@@ -9,11 +9,11 @@
 //! The record keeps time on a wall clock of its own, also on an endpoint
 //! whose clock is simulated time.
 
-use crate::bridge::time_to_rfc3339;
 use crate::clock::Clock;
 use crate::failure::{CallFailure, FailureOutcome};
 use crate::server::{read_only_annotations, serialized_len};
 use crate::tasks::ActionExit;
+use peppy_codec::value::time_to_rfc3339;
 use rmcp::model::{Implementation, JsonObject, Tool, object};
 use serde::Serialize;
 use serde_json::{Value, json};

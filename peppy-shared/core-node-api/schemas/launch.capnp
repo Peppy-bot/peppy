@@ -171,6 +171,16 @@ struct StackJoinGoal {
     nodeBuildIdleTimeoutSecs @5 :UInt64;
     nodeRunIdleTimeoutSecs @6 :UInt64;
     maxTimeoutSecs @7 :UInt64;
+    # The client of a daemon interface that a daemon sends the goal for, or
+    # absent when the sender of the goal asks for itself. The leases of the
+    # robots read it in place of the sender.
+    client @8 :GoalClient;
+}
+
+# The client of a daemon interface that a daemon sends a stack goal for.
+struct GoalClient {
+    coreNode @0 :Text;
+    instanceId @1 :Text;
 }
 
 # One argument of one of the copy's instances, given a new value.
@@ -184,6 +194,9 @@ struct ArgumentOverride {
 # Stop and remove the instances of one copy, by the name `stack join` gave it.
 struct StackRemoveGoal {
     name @0 :Text;
+    # The client of a daemon interface that a daemon sends the goal for, as
+    # StackJoinGoal.client.
+    client @1 :GoalClient;
 }
 
 # The goal response of an accepted stack goal. The daemon refuses a goal in

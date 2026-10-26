@@ -65,7 +65,7 @@ pub(crate) fn save<T: Serialize + Versioned>(path: &Path, document: &T) -> Resul
 /// writes is a secret or sits next to one under `conf/`, and the explicit
 /// chmod keeps the mode whatever mode the staging file is created with.
 pub(crate) fn publish(path: &Path, content: &str) -> Result<()> {
-    daemon_config::atomic_write::publish_atomic(path, |tmp| {
+    config::atomic_write::publish_atomic(path, |tmp| {
         std::fs::write(tmp, content)?;
         restrict_file(tmp)
     })?;

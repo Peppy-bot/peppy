@@ -6,7 +6,7 @@ edition.workspace = true
 
 [dependencies]
 pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
-config = { workspace = true }
+config = { workspace = true, features = ["atomic_write"] }
 daemon-config = { workspace = true }
 log-export = { workspace = true }
 node-stack = { workspace = true }
@@ -20,6 +20,14 @@ json5-pretty = { workspace = true }
 # check validates with; the daemon derives it when it registers the server
 # and when `peppy mcp catalog` asks.
 peppy-mcp-catalog = { workspace = true }
+# The run-time codec the daemon reads and writes the messages of its daemon
+# interfaces with, from their compiled-in documents, and the parser of
+# contract documents, which the node sync, the repository index and the MCP
+# checks read pinned contracts with.
+peppy-codec = { workspace = true }
+# The goal path the provider of `stack_copies:v1` sends its stack changes to
+# its own daemon on.
+stack-goal = { workspace = true }
 bytes = "1.10"
 chrono = "0.4"
 hostname = "0.4"
@@ -80,6 +88,10 @@ config = { workspace = true, features = ["fingerprint_test_helpers"] }
 config-test-support = { workspace = true, features = ["git_fixtures"] }
 tempfile = "3.10"
 tokio = { version = "1", features = ["full", "test-util"] }
+# `peppylib::testing`: the ephemeral router and the mock cores of the unit
+# tests of the daemon interfaces, which stand in for the daemon's own stack
+# goals.
+peppylib = { workspace = true, features = ["testing"] }
 rstest = { workspace = true }
 httptest = "0.16.3"
 tracing-subscriber = "0.3"

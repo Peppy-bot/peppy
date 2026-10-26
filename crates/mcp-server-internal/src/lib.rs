@@ -8,18 +8,22 @@
 //! daemon planned (its contract slots filled by the launcher's `links`, or
 //! by the robots of the stack on a per-robot surface), and serves each
 //! exposure at `/<name>/<tag>/mcp` on one loopback port. The tools of a
-//! daemon target call the daemon that started the process, within the scope
-//! the launch gave the target.
+//! daemon target call the daemon that serves its interface, within the
+//! scope the launch gave the target, and each call of a member that moves a
+//! robot keeps the fleet rules of the stack ([`MoveRules`], which `peppy
+//! node call` keeps too).
 //!
-//! Message conversion is the runtime codec of `message-codec`: the layout
+//! Message conversion is the runtime codec of `peppy-codec`: the layout
 //! generated nodes use, laid out from each contract's `message_format`
 //! when the process starts.
 
 mod bridges;
-mod daemon_bridge;
+mod daemon_scopes;
 mod fleet;
+mod moves;
 mod serve;
 #[cfg(test)]
 mod test_support;
 
+pub use moves::{FleetStop, MarkedGoal, MoveClearance, MoveRefused, MoveRules};
 pub use serve::{ServeError, serve};

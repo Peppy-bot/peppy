@@ -21,6 +21,8 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 [dev-dependencies]
+# The parser of contract documents, for the contract snippets.
+peppy-codec = { workspace = true }
 # Used by tests/snippet_configs.rs to walk the docs snippets and peek each
 # file's `peppy_schema` tag before dispatching to the matching `config` parser.
 walkdir = "2.5"

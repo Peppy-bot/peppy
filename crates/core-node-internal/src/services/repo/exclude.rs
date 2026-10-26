@@ -1,4 +1,5 @@
 use crate::Result;
+use crate::services::raw_calls::RawCallGate;
 use crate::services::repo::refresh::reindex_after_change;
 use crate::services::repo::{
     EXCLUDED_REPOS_FILE, has_entry_with_identity, normalize_repo_entries, parse_repo_entry,
@@ -25,6 +26,7 @@ pub async fn listen_for_repo_exclude(
     instance_id: &str,
     node_name: &str,
     peppy_dirs: PeppyDirs,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -37,9 +39,11 @@ pub async fn listen_for_repo_exclude(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(move |context| {
-                handle_repo_exclude_request(context, peppy_dirs.clone())
-            })
+            .handle_requests(
+                raw_calls.guard(ServiceId::RepoExclude.name(), move |context| {
+                    handle_repo_exclude_request(context, peppy_dirs.clone())
+                }),
+            )
             .await
             .map_err(Into::into)
     });

@@ -10,16 +10,17 @@ use crate::context::DaemonConnection;
 use crate::error::Error;
 use config::RefinementMismatch;
 use config::failure_kind::{MemberFailureKinds, MemberSection};
+use config::mark::Marks;
 use config::node::{
-    InterfaceKind, LinkedMember, MessageFormat, NativeEmittedTopic, NativeExposedAction,
-    NativeExposedService, NodeConfig, NodeConfigParser, refined,
+    InterfaceKind, LinkedMember, NativeEmittedTopic, NativeExposedAction, NativeExposedService,
+    NodeConfig, NodeConfigParser, refined,
 };
 use core_node_api::encoding::InstanceDocumentsRequest;
 use core_node_api::encoding::{InstanceDocuments, PinnedDocument};
-use daemon_config::contract::{PeppyContract, PeppyContractParser, RefinedMember};
 use daemon_config::pairing::{PeppyPairing, PeppyPairingParser};
-use message_codec::MessageCodec;
-use message_codec::consumer::ConsumerIdentity;
+use peppy_codec::CodecError;
+use peppy_codec::consumer::ConsumerIdentity;
+use peppy_codec::contract::{PeppyContract, PeppyContractParser, RefinedMember};
 use peppylib::messaging::{ProducerRef, SenderTarget};
 use serde::Serialize;
 use serde::ser::{SerializeSeq, Serializer};
@@ -123,6 +124,9 @@ pub(crate) struct ServiceMember {
     /// of peppy.
     #[serde(serialize_with = "contract_kinds")]
     pub failure_kinds: MemberFailureKinds,
+    /// The marks of the member in its contract, such as `moves_robot`.
+    #[serde(skip_serializing_if = "Marks::is_empty")]
+    pub marks: Marks,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,6 +137,9 @@ pub(crate) struct ActionMember {
     /// peppy.
     #[serde(serialize_with = "contract_kinds")]
     pub failure_kinds: MemberFailureKinds,
+    /// The marks of the member in its contract, such as `moves_robot`.
+    #[serde(skip_serializing_if = "Marks::is_empty")]
+    pub marks: Marks,
 }
 
 /// The kinds of the contract that a member gives, each with its meaning, in
@@ -159,6 +166,15 @@ fn contract_kinds<S: Serializer>(
 }
 
 impl Member {
+    /// Whether the member has the mark `moves_robot` in its contract.
+    pub fn moves_robot(&self) -> bool {
+        match self {
+            Member::Topic(_) => false,
+            Member::Service(service) => service.marks.moves_robot(),
+            Member::Action(action) => action.marks.moves_robot(),
+        }
+    }
+
     pub fn name(&self) -> &str {
         match self {
             Member::Topic(topic) => &topic.name,
@@ -202,15 +218,20 @@ pub(crate) struct SelectedMember<'a> {
 }
 
 impl SelectedMember<'_> {
-    /// The codec of the message side `side` of the member, laid out from
-    /// `format`, the format of the pinned manifest.
-    pub fn codec(&self, side: &str, format: &MessageFormat) -> crate::error::Result<MessageCodec> {
-        let label: String = format!("{}_{side}", self.full_name)
+    /// The label of the codecs of the member, which seeds the file id of
+    /// the schema of each side: its full name, with `_` in place of each
+    /// character that is not ASCII alphanumeric.
+    pub fn codec_label(&self) -> String {
+        self.full_name
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-            .collect();
-        MessageCodec::new(&label, format.clone())
-            .map_err(|error| Error::ExecutionFailed(format!("`{}`: {error}", self.full_name)))
+            .collect()
+    }
+
+    /// The error of a codec of the member that does not lay out from the
+    /// format of the pinned manifest.
+    pub fn codec_error(&self, error: CodecError) -> Error {
+        Error::ExecutionFailed(format!("`{}`: {error}", self.full_name))
     }
 }
 
@@ -535,14 +556,17 @@ impl Builder<'_> {
                 )
             })?;
         let kinds = &contract.failure_kinds;
+        let marks = &contract.marks;
         Ok(match refined {
             RefinedMember::Topic(topic) => Member::Topic(topic),
             RefinedMember::Service(service) => Member::Service(ServiceMember {
                 failure_kinds: kinds.of(MemberSection::Service, &service.name),
+                marks: marks.of(InterfaceKind::Service, &service.name),
                 service,
             }),
             RefinedMember::Action(action) => Member::Action(ActionMember {
                 failure_kinds: kinds.of(MemberSection::Action, &action.name),
+                marks: marks.of(InterfaceKind::Action, &action.name),
                 action: *action,
             }),
         })
@@ -557,12 +581,14 @@ impl Builder<'_> {
             Member::Service(ServiceMember {
                 service: service.clone(),
                 failure_kinds: MemberFailureKinds::peppy_only(),
+                marks: Marks::default(),
             })
         });
         let actions = interfaces.native_action_exposes().map(|action| {
             Member::Action(ActionMember {
                 action: action.clone(),
                 failure_kinds: MemberFailureKinds::peppy_only(),
+                marks: Marks::default(),
             })
         });
         topics.chain(services).chain(actions).collect()

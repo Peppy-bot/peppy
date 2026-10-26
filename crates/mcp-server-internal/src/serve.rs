@@ -1,15 +1,16 @@
 //! The process: load the spec, plan the deployment, lay the codecs out,
 //! then run as a node and serve.
 
-use crate::bridges::{self, PreparedExposure, PreparedTask, PreparedTool};
-use crate::daemon_bridge::{DaemonBridges, DaemonScopes, OwnDaemon};
+use crate::bridges::{self, PreparedExposure, PreparedTask, PreparedTool, Route};
+use crate::daemon_scopes::DaemonScopes;
 use crate::fleet;
+use crate::moves::MoveRules;
 use daemon_config::daemon_interface::DaemonInterface;
 use daemon_config::mcp_deployment::{
     McpDeploymentError, McpDeploymentPlan, McpServeSpec, PORT_PARAMETER, SPEC_ENV_VAR,
     endpoint_label, plan_deployment,
 };
-use message_codec::consumer::ConsumerIdentity;
+use peppy_codec::consumer::ConsumerIdentity;
 use peppy_mcp_catalog::BundleSurface;
 use peppy_mcp_runtime::{Clock, ExposureServer, ExposureServerBuilder, ExposureSet, FleetHandle};
 use peppylib::runtime::{EndpointBinding, NodeBuilder, NodeRunner, bind_preferred};
@@ -33,7 +34,7 @@ pub enum ServeError {
     #[error("cannot lay out the wire format of {member}: {source}")]
     Codec {
         member: String,
-        source: message_codec::CodecError,
+        source: peppy_codec::CodecError,
     },
     #[error(
         "tool `{tool}` is bounded by its progress, and its action declares no feedback message to \
@@ -47,16 +48,8 @@ pub enum ServeError {
     DaemonResource { resource: String, target: String },
     #[error("target `{target}` names a daemon interface this server does not serve: {reason}")]
     UnservedDaemonInterface { target: String, reason: String },
-    #[error(
-        "tool `{tool}` selects member `{member}` of {interface}, which this server does not \
-         bridge as {kind}"
-    )]
-    UnbridgedDaemonMember {
-        tool: String,
-        member: String,
-        interface: String,
-        kind: &'static str,
-    },
+    #[error("the server cannot call fleet:v1: {0}")]
+    FleetClient(#[from] peppy_codec::consumer::MemberError),
     #[error(
         "the daemon targets cannot be served:{problems}\nA launch and a join check every scope \
          before they start the server; a server started another way, for example with `peppy \
@@ -108,29 +101,31 @@ pub fn serve() -> Result<(), ServeError> {
         config: manifest,
         exposures: validated,
         targets,
+        fleet_slot,
         ..
     } = plan_deployment(&exposures, &contracts)?;
     let prepared = bridges::prepare(validated)?;
     NodeBuilder::<ServeArguments>::new()
         .with_manifest(manifest)
         .run(move |arguments, node_runner| async move {
-            run(arguments, node_runner, prepared, targets.daemon)
+            run(arguments, node_runner, prepared, targets.daemon, fleet_slot)
                 .await
                 .map_err(|error| peppylib::PeppyError::Io(std::io::Error::other(error.to_string())))
         })?;
     Ok(())
 }
 
-/// The node's setup: the scope of each daemon target, bridges to the
-/// producers of each contract target and to the daemon, one server per
-/// exposure, the listener, and the pumps that feed the resources.
-/// `daemon_targets` are the daemon targets of the deployment, with the
-/// interface each one names.
+/// The node's setup: the scope of each daemon target, the fleet rules, the
+/// bridges to the producers of each target, one server per exposure, the
+/// listener, and the pumps that feed the resources. `daemon_targets` are
+/// the daemon targets of the deployment, with the interface each one names,
+/// and `fleet_slot` the slot of `fleet:v1` that the fleet rules ask.
 async fn run(
     arguments: ServeArguments,
     node_runner: Arc<NodeRunner>,
     prepared: Vec<PreparedExposure>,
     daemon_targets: BTreeMap<String, DaemonInterface>,
+    fleet_slot: String,
 ) -> Result<(), ServeError> {
     let port = arguments.port;
 
@@ -141,7 +136,6 @@ async fn run(
         &daemon_targets,
         node_runner.daemon_scopes(),
     )?;
-    let daemon = DaemonBridges::new(OwnDaemon::of(&node_runner), scopes);
 
     // The daemon's clock, sim time included, governs freshness and rate
     // gating; `0` while a sim clock has not ticked yet reads as "stale".
@@ -154,13 +148,23 @@ async fn run(
         core_node: node_runner.processor().bound_core_node().to_owned(),
         instance_id: node_runner.processor().bound_instance_id().to_owned(),
     };
+    let rules = MoveRules::new(
+        node_runner.messenger().clone(),
+        identity.clone(),
+        node_runner
+            .processor()
+            .sole_bound_producer(&fleet_slot)
+            .clone(),
+    )?;
+    let route = Route::of_node(&node_runner, identity, rules);
 
     let mut servers = Vec::with_capacity(prepared.len());
     let mut pumps = Vec::new();
     let mut followers = Vec::new();
     let mut announcements = Vec::with_capacity(prepared.len());
     for mut exposure in prepared {
-        daemon.narrow(&mut exposure.bundle);
+        scopes.narrow(&mut exposure.bundle);
+        exposure.drop_unpublished_entries();
         announcements.push((
             endpoint_label(
                 &exposure.bundle.exposure.name,
@@ -183,14 +187,8 @@ async fn run(
             exposure.bundle.exposure.name, exposure.bundle.exposure.tag
         );
         let mut builder = ExposureServer::builder(exposure.bundle).with_clock(clock.clone());
-        builder = register_tools(builder, exposure.tools, &node_runner, &identity);
-        builder = register_tasks(builder, exposure.tasks, &node_runner, &identity);
-        for tool in &exposure.daemon_tools {
-            builder = builder.with_tool(tool.name.clone(), daemon.tool(tool)?);
-        }
-        for task in &exposure.daemon_tasks {
-            builder = builder.with_task(task.name.clone(), daemon.task(task)?);
-        }
+        builder = register_tools(builder, exposure.tools, &route);
+        builder = register_tasks(builder, exposure.tasks, &route);
         if per_robot {
             let node_runner = Arc::clone(&node_runner);
             let targets = targets.clone();
@@ -293,51 +291,43 @@ async fn run(
     Ok(())
 }
 
-/// Registers a handler per tool of a contract target on `builder`: each
-/// call reaches the tool's service through the node, as `identity`.
-fn register_tools(
+/// Registers a handler per tool on `builder`: each call reaches the tool's
+/// service on `route`.
+pub(crate) fn register_tools(
     mut builder: ExposureServerBuilder,
     tools: Vec<PreparedTool>,
-    node_runner: &Arc<NodeRunner>,
-    identity: &ConsumerIdentity,
+    route: &Route,
 ) -> ExposureServerBuilder {
     for tool in tools {
         let tool = Arc::new(tool);
         let name = tool.name.clone();
-        let node_runner = Arc::clone(node_runner);
-        let identity = identity.clone();
+        let route = route.clone();
         builder = builder.with_tool(name, move |call: peppy_mcp_runtime::ToolCall| {
             let tool = Arc::clone(&tool);
-            let node_runner = Arc::clone(&node_runner);
-            let identity = identity.clone();
-            async move { bridges::call_tool(&tool, &node_runner, &identity, call).await }
+            let route = route.clone();
+            async move { bridges::call_tool(&tool, &route, call).await }
         });
     }
     builder
 }
 
-/// Registers a handler per task of a contract target on `builder`: each
-/// call drives a goal of the task's action through the node, as `identity`.
-fn register_tasks(
+/// Registers a handler per task on `builder`: each call drives a goal of
+/// the task's action on `route`.
+pub(crate) fn register_tasks(
     mut builder: ExposureServerBuilder,
     tasks: Vec<PreparedTask>,
-    node_runner: &Arc<NodeRunner>,
-    identity: &ConsumerIdentity,
+    route: &Route,
 ) -> ExposureServerBuilder {
     for task in tasks {
         let task = Arc::new(task);
         let name = task.name.clone();
-        let node_runner = Arc::clone(node_runner);
-        let identity = identity.clone();
+        let route = route.clone();
         builder = builder.with_task(
             name,
             move |call: peppy_mcp_runtime::ToolCall, context: peppy_mcp_runtime::ActionContext| {
                 let task = Arc::clone(&task);
-                let node_runner = Arc::clone(&node_runner);
-                let identity = identity.clone();
-                async move {
-                    bridges::run_task(&task, &node_runner, &identity, call, context).await
-                }
+                let route = route.clone();
+                async move { bridges::run_task(&task, &route, call, context).await }
             },
         );
     }

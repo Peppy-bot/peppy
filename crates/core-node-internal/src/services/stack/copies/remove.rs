@@ -12,6 +12,7 @@
 use super::super::action::StackChangeContext;
 use super::super::launch::feedback::{publish_stdout, publish_warning};
 use super::super::launch::orchestrate::{ValidatedPlan, validate_and_order_dependencies};
+use super::super::launch::planned_instance_ids;
 use super::super::launch::preflight::preflight_change;
 use super::super::launch::watchers::{LifecycleWatchers, lifecycle_watchers, watchers_replacing};
 use super::super::launch::{PlannedDeployment, federated};
@@ -38,6 +39,7 @@ use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchResult, ParticipantInstancesRemoveRequest, StackListResponse,
     StackRemoveGoal,
 };
+use daemon_config::daemon_interface::fleet::ChangeKind;
 use daemon_config::launcher::{CompositionError, CopyMembership, DeploymentInstance, Placements};
 use peppylib::core_node::transport::poll;
 use peppylib::messaging::Failure;
@@ -64,9 +66,11 @@ pub(in crate::services::stack) async fn remove(
     goal: StackRemoveGoal,
     ctx: StackChangeContext,
 ) -> ChangeEnd {
-    let outcome = change_active_launch(&ctx, async |active| {
-        remove_inner(&goal.name, active, &ctx).await
-    })
+    let outcome = change_active_launch(
+        &ctx,
+        async |active| remove_inner(&goal.name, active, &ctx).await,
+        |book| book.note(ChangeKind::Removal, goal.name.as_str()),
+    )
     .await;
     ChangeEnd::without_node_logs(outcome.map(|()| LaunchResult::default()))
 }
@@ -132,7 +136,12 @@ async fn remove_inner(
     )
     .await
     .map_err(rejected)?;
-    let watchers = lifecycle_watchers(&observations, &active.placements).map_err(rejected)?;
+    let watchers = lifecycle_watchers(
+        &observations,
+        &active.placements,
+        planned_instance_ids(&remaining_planned),
+    )
+    .map_err(rejected)?;
     let repointed = watchers_replacing(&active.watchers, &watchers);
     let live = live_machines(ctx, &active.placements).await?;
     // The machines the removal acts on: the copy's own, those of the sources
@@ -851,40 +860,6 @@ mod tests {
         instances: &[(&str, &str)],
         copy_instances: &[&str],
     ) -> (ActiveLaunch, StackCopy) {
-        let deployments: Vec<String> = instances
-            .iter()
-            .map(|(id, _)| {
-                format!(
-                    r#"{{ source: {{ name: "{id}_node", tag: "v1" }}, instances: [{{ instance_id: "{id}" }}] }}"#
-                )
-            })
-            .collect();
-        let document = format!(
-            r#"{{ peppy_schema: "launcher/v1", deployments: [{}] }}"#,
-            deployments.join(", ")
-        );
-        let flat = daemon_config::launcher::PeppyLauncherParser::from_content(&document)
-            .expect("the plan parses");
-        let prepared =
-            daemon_config::launcher::PreparedLauncher::load(&flat, std::path::Path::new("x.json5"))
-                .expect("it loads");
-        let placements = crate::services::stack::fixtures::placements_with(
-            "cn-desk",
-            &instances
-                .iter()
-                .filter(|(_, machine)| *machine != "cn-desk")
-                .copied()
-                .collect::<Vec<_>>(),
-        );
-        let planned = instances
-            .iter()
-            .map(|(id, _)| {
-                crate::services::stack::fixtures::planned_deployment(
-                    &format!("{id}_node"),
-                    &[(id, None)],
-                )
-            })
-            .collect();
         let name = CopyName::new("alpha").unwrap();
         let copy = StackCopy {
             record: CopyRecord {
@@ -904,14 +879,7 @@ mod tests {
             },
             core_node: config::runtime::CoreNodeName::new("cn-desk").unwrap(),
         };
-        let active = ActiveLaunch::new(
-            "launch-1",
-            prepared,
-            flat,
-            Default::default(),
-            placements,
-            planned,
-        );
+        let active = crate::services::stack::fixtures::active_launch_running(instances);
         (active, copy)
     }
 

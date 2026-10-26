@@ -12,6 +12,7 @@ publish = false
 config = { workspace = true }
 config-test-support = { workspace = true }
 daemon-config = { workspace = true }
+peppy-codec = { workspace = true }
 generator = { workspace = true }
 # The `server` feature is what makes the client capability builder
 # available, mirroring how the e2e crates get it via `peppy-mcp-runtime`.

@@ -9,7 +9,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-config = { workspace = true }
+config = { workspace = true, features = ["atomic_write"] }
 # `FORBIDDEN_ENV_KEYS`, the protocol policy both sides of the core-node wire
 # enforce on environment variables. `env::check_env_var` applies it where a
 # launcher's `env_vars` are parsed so a rejected key is reported against the
@@ -21,9 +21,6 @@ serde_json5 = "0.2"
 serde_path_to_error = "0.1"
 thiserror = "2.0"
 tracing = "0.1"
-# Production dependency: `atomic_write::publish_atomic` stages through
-# `NamedTempFile` siblings.
-tempfile = "3"
 # Home-directory resolution for the production `PeppyDirs` root.
 dirs = "7"
 # Compile-time string concatenation so the bundled peppy_config template
@@ -35,6 +32,9 @@ url = "2"
 # size handling, operation kinds) shared with the exposure bundle format and
 # the MCP server runtime; the document model re-exports it.
 peppy-mcp-catalog = { workspace = true }
+# The parser of contract documents, which the daemon interfaces, the MCP
+# deployments and the pairing manifests build on.
+peppy-codec = { workspace = true }
 
 [features]
 # `PackagesBaseUrl::loopback_http_for_tests`, for the tests of downstream
@@ -42,6 +42,7 @@ peppy-mcp-catalog = { workspace = true }
 test-support = []
 
 [dev-dependencies]
+tempfile = "3"
 # The validator the MCP server runtime compiles a tool's input schema with
 # (`jsonschema::validator_for`, default features off there too), so the
 # tests of a daemon interface's schema narrowing judge input the way the

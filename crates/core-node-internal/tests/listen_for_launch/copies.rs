@@ -26,7 +26,7 @@ async fn participant_answer<R: core_node_api::ServiceRequest>(
 
 /// The response of the daemon to `request`, sent as the coordinator. Panics
 /// on an error reply.
-async fn participant_request<R: core_node_api::ServiceRequest>(
+pub(super) async fn participant_request<R: core_node_api::ServiceRequest>(
     started: &StartedCoreNode,
     request: &R,
 ) -> R::Response {
@@ -53,7 +53,10 @@ where
         .unwrap_or_else(|| panic!("{} failed without an error reply: {error}", R::ID.name()))
 }
 
-async fn execute(started: &StartedCoreNode, goal: &impl core_node_api::ActionGoal) -> StackGoalEnd {
+pub(super) async fn execute(
+    started: &StartedCoreNode,
+    goal: &impl core_node_api::ActionGoal,
+) -> StackGoalEnd {
     execute_reporting(started, goal).await.0
 }
 
@@ -110,7 +113,7 @@ async fn refusal(started: &StartedCoreNode, goal: &impl core_node_api::ActionGoa
 }
 
 /// A join of a copy `name` of `option`, under budgets no test reaches.
-fn robot_goal(name: &str, option: &str) -> StackJoinGoal {
+pub(super) fn robot_goal(name: &str, option: &str) -> StackJoinGoal {
     StackJoinGoal::new(
         format!("{option}:{name}").parse().unwrap(),
         unreached_budgets(),
@@ -123,7 +126,7 @@ fn remove_goal(name: &str) -> StackRemoveGoal {
 
 /// A launch of the fleet `launcher` under `launch_id`, under budgets no test
 /// reaches.
-fn fleet_launch(launcher: PathBuf, launch_id: &str) -> LaunchGoal {
+pub(super) fn fleet_launch(launcher: PathBuf, launch_id: &str) -> LaunchGoal {
     LaunchGoal::new(LauncherOrigin::Fs(launcher), launch_id, unreached_budgets())
 }
 

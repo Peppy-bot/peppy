@@ -23,19 +23,28 @@
 //! with code 130: its process ends, so the provider cancels the goal of a
 //! sender that is gone. A Ctrl-C while a service call waits for its response
 //! ends the command at once with code 130.
+//!
+//! A member with the mark `moves_robot` keeps the fleet rules of the stack,
+//! as an MCP server does ([`MoveRules`]): the command asks the daemon of the
+//! fleet whether it may call the member, and refuses the call with the
+//! failure kind and the message of a refusal, with the code of a refusal.
+//! While its goal on such a member runs, the command follows the changes of
+//! the fleet, and at a halt it cancels the goal as at a Ctrl-C.
 
 use super::interfaces::{Member, MemberAddress, SelectedMember};
 use super::json_lines::write_json_line;
 use super::request::MessageArguments;
 use crate::commands::action_poll::{CtrlC, Interrupts};
+use crate::commands::fleet::fleet_daemon;
 use crate::context::AppContext;
 use crate::error::{CallEnd, Error, Result};
-use config::node::{InterfaceKind, MessageFormat};
-use message_codec::consumer::{
+use config::node::InterfaceKind;
+use mcp_server::{MarkedGoal, MoveClearance, MoveRefused, MoveRules};
+use peppy_codec::ConversionError;
+use peppy_codec::consumer::{
     ActionClient, ConsumerError, ConsumerIdentity, GoalHandle, GoalOutcome, MemberBinding,
     ServiceClient,
 };
-use message_codec::{ConversionError, payload_format};
 use peppylib::PeppyError;
 use peppylib::messaging::{
     CancelState, DEFAULT_FEEDBACK_BOUND, Failure, MessengerHandle, ProducerRef,
@@ -101,8 +110,25 @@ pub async fn call_writing(
         .map_err(Error::ExecutionFailed)?;
     let call = MemberCall::new(&selected, &params.message)?;
     let caller = super::interfaces::command_line_caller(&conn);
-    call.run(conn.messenger, &caller, &mut CtrlC::listen(), out)
-        .await
+    let rules = if call.moves_robot {
+        let rules = MoveRules::new(
+            conn.messenger.clone(),
+            caller.clone(),
+            fleet_daemon(&conn).await?,
+        )
+        .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
+        Some(rules)
+    } else {
+        None
+    };
+    call.run(
+        conn.messenger,
+        &caller,
+        rules.as_ref(),
+        &mut CtrlC::listen(),
+        out,
+    )
+    .await
 }
 
 /// One call of a service or an action of an instance, ready to send: the
@@ -114,16 +140,13 @@ pub(crate) struct MemberCall {
     producer: ProducerRef,
     message: Value,
     client: CallClient,
+    /// Whether the member has the mark `moves_robot`.
+    moves_robot: bool,
 }
 
 enum CallClient {
     Service(ServiceClient),
-    /// `reports_feedback`: the action declares a feedback message, whose
-    /// stream the provider closes at the end of a goal.
-    Action {
-        client: ActionClient,
-        reports_feedback: bool,
-    },
+    Action(ActionClient),
 }
 
 impl MemberCall {
@@ -134,52 +157,28 @@ impl MemberCall {
         let MemberAddress::Interface { target } = &selected.address else {
             return Err(topic_is_not_called(&name));
         };
-        let codec = |side: &str, format: Option<&MessageFormat>| {
-            payload_format(format)
-                .map(|format| selected.codec(side, format))
-                .transpose()
-        };
+        let label = selected.codec_label();
         let (client, message_format) = match selected.member {
             Member::Service(service) => {
-                let request = service.service.request_message_format.as_ref();
-                let client = ServiceClient::new(
-                    codec("request", request)?,
-                    codec("response", service.service.response_message_format.as_ref())?,
+                let client = ServiceClient::of_service(
+                    &label,
+                    &service.service,
                     service.failure_kinds.clone(),
-                );
+                )
+                .map_err(|error| selected.codec_error(error))?;
+                let request = service.service.request_message_format.as_ref();
                 (CallClient::Service(client), request)
             }
             Member::Action(action) => {
-                let action_shape = &action.action;
-                let goal = action_shape
+                let client =
+                    ActionClient::of_action(&label, &action.action, action.failure_kinds.clone())
+                        .map_err(|error| selected.codec_error(error))?;
+                let goal = action
+                    .action
                     .goal_service
                     .as_ref()
                     .and_then(|goal| goal.request_message_format.as_ref());
-                let feedback = codec(
-                    "feedback",
-                    action_shape
-                        .feedback_topic
-                        .as_ref()
-                        .map(|feedback| &feedback.message_format),
-                )?;
-                let reports_feedback = feedback.is_some();
-                let client = ActionClient::new(
-                    codec("goal", goal)?,
-                    feedback,
-                    codec(
-                        "result",
-                        action_shape
-                            .result_service
-                            .as_ref()
-                            .and_then(|result| result.response_message_format.as_ref()),
-                    )?,
-                    action.failure_kinds.clone(),
-                );
-                let client = CallClient::Action {
-                    client,
-                    reports_feedback,
-                };
-                (client, goal)
+                (CallClient::Action(client), goal)
             }
             Member::Topic(_) => return Err(topic_is_not_called(&name)),
         };
@@ -192,6 +191,7 @@ impl MemberCall {
                 member: selected.member.name().to_owned(),
             },
             producer: selected.producer.clone(),
+            moves_robot: selected.member.moves_robot(),
             name,
             message,
             client,
@@ -199,29 +199,58 @@ impl MemberCall {
     }
 
     /// Sends the call as `caller` and follows it to its end, writing its
-    /// lines to `out`; `interrupts` gives the Ctrl-C presses.
+    /// lines to `out`; `interrupts` gives the Ctrl-C presses. `rules` are the
+    /// fleet rules that a call of a member that moves a robot keeps.
     pub async fn run(
         &self,
         messenger: &MessengerHandle,
         caller: &ConsumerIdentity,
+        rules: Option<&MoveRules>,
         interrupts: &mut impl Interrupts,
         out: &mut impl Write,
     ) -> Result<()> {
+        let clearance = match rules {
+            Some(rules) => Some((rules, self.check_move(rules, out).await?)),
+            None => None,
+        };
         match &self.client {
             CallClient::Service(client) => {
                 self.call_service(client, messenger, caller, interrupts, out)
                     .await
             }
-            CallClient::Action {
-                client,
-                reports_feedback,
-            } => {
+            CallClient::Action(client) => {
                 let mut goal = self.send_goal(client, messenger, caller, out).await?;
+                let marked =
+                    clearance.map(|(rules, clearance)| rules.follow_marked_goal(clearance));
                 let outcome = self
-                    .follow(&mut goal, *reports_feedback, messenger, interrupts, out)
+                    .follow(
+                        &mut goal,
+                        client.reports_feedback(),
+                        messenger,
+                        marked.as_ref(),
+                        interrupts,
+                        out,
+                    )
                     .await?;
                 self.report_outcome(outcome, out)
             }
+        }
+    }
+
+    /// Asks the daemon of the fleet whether the command may call the member
+    /// on its instance: a refusal ends the call with the kind and the message
+    /// of the daemon.
+    async fn check_move(&self, rules: &MoveRules, out: &mut impl Write) -> Result<MoveClearance> {
+        match rules.check(&self.producer).await {
+            Ok(clearance) => Ok(clearance),
+            Err(MoveRefused::Refused(refusal)) => Err(self.refusal(
+                &Failure::new(refusal.kind().clone(), refusal.message()),
+                out,
+            )?),
+            Err(MoveRefused::Unanswered(message)) => Err(Error::ExecutionFailed(format!(
+                "`{}` moves a robot, and {message}",
+                self.name
+            ))),
         }
     }
 
@@ -309,21 +338,37 @@ impl MemberCall {
     }
 
     /// Follows the goal to its end: writes each feedback message, sends the
-    /// provider a cancel at the first Ctrl-C, and stops at the second.
+    /// provider a cancel at the first Ctrl-C or when the fleet rules stop the
+    /// goal (`marked`: a halt, or the end of the follow of the changes), and
+    /// stops at the second Ctrl-C.
     async fn follow(
         &self,
         goal: &mut GoalHandle,
         reports_feedback: bool,
         messenger: &MessengerHandle,
+        marked: Option<&MarkedGoal>,
         interrupts: &mut impl Interrupts,
         out: &mut impl Write,
     ) -> Result<std::result::Result<GoalOutcome, ConsumerError>> {
         let mut feedback_open = reports_feedback;
         let mut cancel: Option<JoinHandle<std::result::Result<CancelState, ConsumerError>>> = None;
         let mut cancel_sent = false;
+        let fleet_stop = async {
+            match marked {
+                Some(marked) => marked.must_stop().await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::pin!(fleet_stop);
         loop {
             let step = tokio::select! {
                 biased;
+                stop = &mut fleet_stop, if !cancel_sent => {
+                    cancel_sent = true;
+                    warn!("Cancelling the goal of `{}`: {stop}", self.name);
+                    cancel = Some(tokio::spawn(goal.cancel_request(messenger, CANCEL_TIMEOUT)));
+                    continue;
+                }
                 () = interrupts.next() => {
                     if cancel_sent {
                         return Err(Error::Interrupted(format!(
@@ -600,6 +645,8 @@ mod tests {
         Presses, next_goal, presses, presses_on_demand,
     };
     use config::failure_kind::FailureKindName;
+    use daemon_config::daemon_interface::DaemonInterface;
+    use daemon_config::daemon_interface::fleet::{ChangeKind, FleetChange, FleetListing};
     use peppylib::Payload;
     use peppylib::messaging::{
         CancelCause, ConcurrentAction, GoalContext, NonEmptyPayload, SenderTarget, ServiceAnswer,
@@ -722,7 +769,185 @@ mod tests {
         presses: &mut Presses,
         out: &mut Vec<u8>,
     ) -> Result<()> {
-        call.run(messenger, &caller(), presses, out).await
+        call.run(messenger, &caller(), None, presses, out).await
+    }
+
+    /// The per-boot instance id of the daemon of the fleet.
+    const FLEET_DAEMON: &str = "core-boot";
+
+    fn fleet() -> SenderTarget {
+        SenderTarget::contract("fleet", "v1").expect("a target")
+    }
+
+    /// The codec of one side of a member of `fleet:v1`.
+    fn fleet_codec(format: Option<&config::node::MessageFormat>) -> peppy_codec::MessageCodec {
+        peppy_codec::MessageCodec::of_payload("test_fleet", format)
+            .expect("the format lays out")
+            .expect("the side has a format")
+    }
+
+    /// The fleet rules of the command, against the daemon of the fleet on
+    /// the mock messaging.
+    fn fleet_rules(messenger: &MessengerHandle) -> MoveRules {
+        MoveRules::new(
+            messenger.clone(),
+            caller(),
+            ProducerRef::new(CORE_NODE, FLEET_DAEMON),
+        )
+        .expect("the codecs of fleet:v1 lay out")
+    }
+
+    /// The `check_move` of the daemon of the fleet, which answers each
+    /// request with `answer`.
+    async fn serve_fleet_check_move(messenger: &MessengerHandle, answer: Value) {
+        let document = DaemonInterface::Fleet.document();
+        let response = fleet_codec(
+            document
+                .service("check_move")
+                .and_then(|service| service.response_message_format.as_ref()),
+        );
+        let mut endpoint =
+            ServiceMessenger::listen(messenger, CORE_NODE, FLEET_DAEMON, fleet(), "check_move")
+                .await
+                .expect("the service listens");
+        let answer = Payload::from(response.encode(&answer).expect("the answer encodes"));
+        tokio::spawn(async move {
+            let _ = endpoint
+                .handle_requests(|_context| {
+                    let answer = answer.clone();
+                    async move { Ok(answer) }
+                })
+                .await;
+        });
+    }
+
+    /// One feedback of `changes`: a listing that gives a halt, at a later
+    /// revision than the move check of the call.
+    fn halted_listing() -> NonEmptyPayload {
+        let document = DaemonInterface::Fleet.document();
+        let feedback = fleet_codec(
+            document
+                .action("changes")
+                .and_then(|action| action.feedback_topic.as_ref())
+                .map(|feedback| &feedback.message_format),
+        );
+        let change = serde_json::to_value(FleetChange {
+            change: ChangeKind::HaltStart,
+            robot: String::new(),
+            revision: 2,
+            listing: FleetListing {
+                halted: true,
+                halted_by: "`peppy-cli` on `robot-7`".to_owned(),
+                ..FleetListing::default()
+            },
+        })
+        .expect("a change serializes");
+        NonEmptyPayload::try_new(Payload::from(
+            feedback.encode(&change).expect("the change encodes"),
+        ))
+        .expect("an encoded message is never empty")
+    }
+
+    /// A call of a member that moves a robot, which the daemon of the fleet
+    /// refuses, sends nothing to the provider and ends refused with the kind
+    /// and the message of the daemon, and exit code 3.
+    #[tokio::test]
+    async fn a_marked_call_that_the_fleet_refuses_ends_refused_with_exit_code_3() {
+        let messenger = mock_messenger().await;
+        serve_fleet_check_move(
+            &messenger,
+            json!({
+                "refusal": {
+                    "failure_kind": "leased",
+                    "message": "`director_inst` leases `alpha` for the run `tidy`",
+                },
+                "revision": "1",
+            }),
+        )
+        .await;
+        let call = member_call("move_to", &[JOINTS]);
+        let mut out = Vec::new();
+
+        let error = call
+            .run(
+                &messenger,
+                &caller(),
+                Some(&fleet_rules(&messenger)),
+                &mut presses(0),
+                &mut out,
+            )
+            .await
+            .expect_err("the daemon refuses the move");
+
+        assert_eq!(error.exit_code(), CallEnd::Refused.exit_code());
+        assert_eq!(
+            lines(&out),
+            [json!({
+                "outcome": "refused",
+                "failure_kind": "leased",
+                "message": "`director_inst` leases `alpha` for the run `tidy`",
+            })]
+        );
+    }
+
+    /// While its goal on a member that moves a robot runs, the command
+    /// follows the changes of the fleet, and at a halt it sends the provider
+    /// a cancel and follows the goal to the end the provider gives it.
+    #[tokio::test]
+    async fn a_halt_cancels_the_goal_of_a_marked_member() {
+        let messenger = mock_messenger().await;
+        serve_fleet_check_move(&messenger, json!({ "revision": "1" })).await;
+        let mut changes = ConcurrentAction::expose(
+            &messenger,
+            CORE_NODE,
+            FLEET_DAEMON,
+            fleet(),
+            "changes",
+            true,
+        )
+        .await
+        .expect("the daemon serves changes");
+        let mut engine = move_to_provider(&messenger).await;
+        let call = member_call("move_to", &[JOINTS]);
+        let rules = fleet_rules(&messenger);
+        let caller = caller();
+        let mut presses = presses(0);
+        let mut out = Vec::new();
+
+        let (ended, ()) = tokio::join!(
+            call.run(&messenger, &caller, Some(&rules), &mut presses, &mut out),
+            async {
+                let context = accept_move_to(&mut engine).await;
+                let follow = next_goal(&mut changes)
+                    .await
+                    .accept(Payload::new())
+                    .await
+                    .expect("the daemon admits the follow");
+                follow
+                    .publish_feedback(halted_listing())
+                    .await
+                    .expect("the daemon gives the halt");
+                context.cancel_signal().await;
+                context
+                    .complete_cancelled(
+                        "stopped at the halt",
+                        payload(RESULT, json!({"reached": false})),
+                    )
+                    .await
+                    .expect("the goal ends cancelled");
+            }
+        );
+
+        let error = ended.expect_err("the halt cancelled the goal");
+        assert_eq!(error.exit_code(), CallEnd::Cancelled.exit_code());
+        assert_eq!(
+            lines(&out),
+            [json!({
+                "outcome": "cancelled",
+                "reason": "stopped at the halt",
+                "result": {"reached": false},
+            })]
+        );
     }
 
     const JOINTS: &str = "joints=[0.1, 0.2, 0.3]";

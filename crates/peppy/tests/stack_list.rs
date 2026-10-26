@@ -67,6 +67,7 @@ fn make_consumer_depend_on_provider(
             cardinality: config::node::Cardinality::One,
         }],
         contracts: vec![],
+        daemon: vec![],
         pairings: vec![],
         pairing_observers: vec![],
     });

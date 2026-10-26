@@ -240,9 +240,9 @@ pub(in crate::services::stack) async fn fail_and_clear_stack(
             format!("{} stopped at a cancel: {}", ctx.action, failure.message())
         }
     };
-    publish_error(ctx, line, LaunchFeedbackStep::LauncherStep).await;
+    publish_error(ctx, line.clone(), LaunchFeedbackStep::LauncherStep).await;
 
-    teardown_and_reset_stack(ctx).await;
+    teardown_and_reset_stack(ctx, &line).await;
     // Every machine this launch touched gets the same treatment, and is named
     // while it happens. A federated failure that cleaned up only the
     // coordinator would leave half a topology running on machines the operator
@@ -530,14 +530,18 @@ fn topological_sort(
     Ok(ordered)
 }
 
-/// Stops the currently-running stack and clears it.
+/// Stops the currently-running stack and clears it, and drops the record of
+/// its launch for `cause`, which ends every lease.
 ///
 /// Cooperatively shuts down every running instance, force-killing the process
 /// group of any straggler, before dropping them from the stack, so a relaunch
 /// never orphans the previous stack's processes. Also reused by the launch
 /// failure path to tear down a partial new stack. Infallible.
-pub(in crate::services::stack) async fn teardown_and_reset_stack(ctx: &StackChangeContext) {
-    *ctx.slice_ownership.active.lock() = None;
+pub(in crate::services::stack) async fn teardown_and_reset_stack(
+    ctx: &StackChangeContext,
+    cause: &str,
+) {
+    crate::services::stack::state::drop_active_launch(&ctx.slice_ownership, cause);
     publish_stdout(
         ctx,
         "Stopping current node stack",

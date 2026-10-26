@@ -4,6 +4,8 @@ use std::sync::OnceLock;
 /// The peppy output directory relative to node_dir (contains generated libraries).
 pub const PEPPY_OUTPUT_DIR: &str = ".peppy";
 pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppylib";
+/// The crate of the codec API in a Rust node that asks for it.
+pub const PEPPY_CODEC_OUTPUT_PATH: &str = ".peppy/libs/peppy-codec";
 /// Filename of the CLI's cached OAuth credentials, stored under `~/.peppy/conf`
 /// (i.e. `conf_dir().join(CREDENTIALS_FILE)`). Written `0600` by the `peppy
 /// login` flow; never committed and never world-readable.
@@ -217,6 +219,14 @@ impl PeppyDirs {
     /// runtime directory.
     pub fn bin_dir(&self) -> PathBuf {
         self.root.join("bin")
+    }
+
+    /// The halt of the stack, while the stack is halted: the daemon writes
+    /// it at `fleet.halt` and removes it at `fleet.clear_halt`, so the halt
+    /// stays after a restart of the daemon, and a clear of a per-boot root
+    /// keeps it.
+    pub fn fleet_halt_path(&self) -> PathBuf {
+        self.root.join("fleet_halt.json5")
     }
 
     /// Path to the stack log: each instance that ends as `finished` or

@@ -118,11 +118,32 @@ pub struct ComponentAxis {
     /// written, before a copy's name prefixes them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provides: Vec<Name>,
+    /// What the axis is to a robot whose option declares it, when the
+    /// launcher says: the option of a copy on its robot commander axis is
+    /// the robot commander of that robot, which the fleet listing gives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<AxisRole>,
+}
+
+/// The role an axis declaration gives its axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AxisRole {
+    /// The axis whose option is the robot commander of a robot: a node that
+    /// drives one robot of its own outside the leases, such as a leader arm
+    /// or the browser panel. Its option `none` gives no robot commander.
+    RobotCommander,
 }
 
 impl ComponentAxis {
     pub fn as_str(&self) -> &str {
         &self.name
+    }
+
+    /// Whether the axis is the robot commander axis of the options that
+    /// declare it.
+    pub fn is_robot_commander_axis(&self) -> bool {
+        self.role == Some(AxisRole::RobotCommander)
     }
 }
 
@@ -140,6 +161,8 @@ impl<'de> Deserialize<'de> for ComponentAxis {
             cardinality: ComponentCardinality,
             #[serde(default)]
             provides: Vec<Name>,
+            #[serde(default)]
+            role: Option<AxisRole>,
             #[serde(default, deserialize_with = "written")]
             components: Option<de::IgnoredAny>,
         }
@@ -160,6 +183,7 @@ impl<'de> Deserialize<'de> for ComponentAxis {
             options,
             cardinality: raw.cardinality,
             provides: raw.provides,
+            role: raw.role,
         })
     }
 }
@@ -1228,6 +1252,25 @@ pub(crate) fn validate_axes(axes: &[ComponentAxis], scope: AxisScope) -> Result<
                 axis.cardinality.as_str()
             ));
         }
+        if axis.is_robot_commander_axis() && axis.cardinality.is_repeatable() {
+            return Err(format!(
+                "axis `{}` runs as copies and declares `role: \"robot_commander\"`; the robot \
+                 commander axis is an axis of a robot's option, which a robot fills once",
+                axis.name
+            ));
+        }
+    }
+    let commander_axes: Vec<&str> = axes
+        .iter()
+        .filter(|axis| axis.is_robot_commander_axis())
+        .map(ComponentAxis::as_str)
+        .collect();
+    if commander_axes.len() > 1 {
+        return Err(format!(
+            "axes {} each declare `role: \"robot_commander\"`; a robot has one robot commander \
+             axis",
+            crate::error::format_quoted_list(&commander_axes)
+        ));
     }
 
     // A bare `--with` word resolves against option names, so an axis name
@@ -1747,6 +1790,48 @@ mod tests {
         let error = parse_option(r#"{ fragments: null, deployments: [] }"#)
             .expect_err("null names no file");
         assert!(error.contains("expected a sequence"), "got: {error}");
+    }
+
+    /// An axis of a robot's option can carry the robot commander role,
+    /// which a body gives at most one of its axes, and never an axis that
+    /// runs as copies.
+    #[test]
+    fn a_body_marks_at_most_one_robot_commander_axis() {
+        let body = parse_option(
+            r#"{ components: [
+                { name: "robot_commander", role: "robot_commander",
+                  options: { none: "none.json5", web_commander: "web.json5" } },
+                { name: "recorder", cardinality: "zero_or_one", options: { rec: "rec.json5" } },
+            ] }"#,
+        )
+        .expect("one marked axis parses")
+        .body
+        .expect("an inline body");
+        let marked: Vec<&str> = body
+            .components
+            .iter()
+            .filter(|axis| axis.is_robot_commander_axis())
+            .map(ComponentAxis::as_str)
+            .collect();
+        assert_eq!(marked, ["robot_commander"]);
+
+        let error = parse_option(
+            r#"{ components: [
+                { name: "lead", role: "robot_commander", options: { a: "a.json5" } },
+                { name: "panel", role: "robot_commander", options: { b: "b.json5" } },
+            ] }"#,
+        )
+        .expect_err("two marked axes");
+        assert!(
+            error.contains("a robot has one robot commander axis"),
+            "got: {error}"
+        );
+
+        let error = parse_option(
+            r#"{ components: [{ name: "lead", role: "leader", options: { a: "a.json5" } }] }"#,
+        )
+        .expect_err("an unknown role");
+        assert!(error.contains("unknown variant `leader`"), "got: {error}");
     }
 
     #[test]

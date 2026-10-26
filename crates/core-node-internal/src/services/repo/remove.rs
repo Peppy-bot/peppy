@@ -1,4 +1,5 @@
 use crate::Result;
+use crate::services::raw_calls::RawCallGate;
 use crate::services::repo::cache::repositories_list_path;
 use crate::services::repo::refresh::{read_or_create_repos, reindex_after_change};
 use crate::services::repo::{repo_entry_id, write_repo_entries};
@@ -20,6 +21,7 @@ pub async fn listen_for_repo_remove(
     instance_id: &str,
     node_name: &str,
     peppy_dirs: PeppyDirs,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -32,7 +34,11 @@ pub async fn listen_for_repo_remove(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(move |context| handle_repo_remove_request(context, peppy_dirs.clone()))
+            .handle_requests(
+                raw_calls.guard(ServiceId::RepoRemove.name(), move |context| {
+                    handle_repo_remove_request(context, peppy_dirs.clone())
+                }),
+            )
             .await
             .map_err(Into::into)
     });

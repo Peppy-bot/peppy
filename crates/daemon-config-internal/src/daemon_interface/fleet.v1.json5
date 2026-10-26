@@ -1,0 +1,503 @@
+// The fleet of the stack: its robots, the leases that give one client the
+// right to move one robot, and the halt of the whole stack. The peppy daemon
+// that coordinates the stack serves this interface, and no node implements
+// it. The daemon target of each instance of the stack reaches that daemon; a
+// daemon that runs the slice of a launch that another machine coordinates
+// refuses each call with precondition_failed and names the coordinator. The
+// scope that a launcher gives a target of this interface names the members
+// that its client may call; `lease` brings `take`, `release`, `offer`, `open`
+// and `close`. `check_move` answers every client.
+//
+// A robot is a copy of the stack, a device included: the fleet listing gives
+// it under the name of its copy. A client is named by its instance and the
+// machine of that instance. Only a node whose `lease` goal runs holds leases.
+// A lease ends at its release, at a halt, and when its holder is gone: the
+// process of the holder ends, or its `lease` goal ends. A lease that its
+// holder received goes back to its giver instead, or ends when the giver is
+// gone. No client takes the lease of a robot while a removal of it runs. A
+// new launch and a stack reset end every lease and offer.
+//
+// Each change of the fleet counts one revision of it: `changes` gives the
+// revision of each change, and `check_move` the revision that its answer
+// reads, so a client orders an answer and a change.
+//
+// The leases and the halt bind only the clients that ask the daemon before
+// they move a robot. They prevent conflicts between clients. They are not a
+// safety function: the emergency stop of the robots stays in their certified
+// layers.
+{
+  peppy_schema: "contract/v1",
+  manifest: { name: "fleet", tag: "v1" },
+  failure_kinds: {
+    halted: "The stack is halted",
+    leased: "Another client holds the lease of the robot; the message names the holder and the lease name",
+    not_leased: "The asker holds no lease of the robot; the message says how its lease ended",
+  },
+  interfaces: {
+    services: [
+      {
+        // The fleet listing.
+        name: "list",
+        response_message_format: {
+          // The release tag of a release build of peppy, else `unknown`.
+          version: "string",
+          // The machine of the daemon that coordinates the stack.
+          core_node: "string",
+          // The launcher of the stack; empty when no launch runs.
+          launcher: "string",
+          // Whether the stack is halted, and the client that halted it.
+          halted: "bool",
+          halted_by: "string",
+          // Each robot of the stack, in name order.
+          robots: {
+            $type: "array",
+            $items: {
+              $type: "object",
+              // The name of the copy of the robot.
+              name: "string",
+              // The launcher option of the copy.
+              option: "string",
+              // The machine of the copy, which runs its base.
+              core_node: "string",
+              // simulated when every instance of the copy reads the clock
+              // of a simulation, else physical.
+              kind: { $type: "string", $enum: ["simulated", "physical"] },
+              // The clock that the robot reads: `wall`, or the simulated
+              // domain that every instance of the copy reads.
+              clock: "string",
+              // running when every instance of the copy runs.
+              software: { $type: "string", $enum: ["running", "stopped"] },
+              // The option of the copy on the axis that the launcher marks
+              // as the robot commander axis; empty when that option is
+              // `none`, or when no axis has the mark.
+              robot_commander: "string",
+              // Each instance of the copy: its name in the copy, the id that
+              // the stack runs it under (`instance`), its machine and its
+              // node.
+              instances: {
+                $type: "array",
+                $items: {
+                  $type: "object",
+                  name: "string",
+                  instance: "string",
+                  core_node: "string",
+                  node: "string",
+                  node_tag: "string",
+                },
+              },
+              // Each contract that an instance of the copy implements, with
+              // the sha256 of its pinned document and the name in the copy
+              // of each instance that implements it.
+              contracts: {
+                $type: "array",
+                $items: {
+                  $type: "object",
+                  name: "string",
+                  tag: "string",
+                  sha256: "string",
+                  instances: { $type: "array", $items: "string" },
+                },
+              },
+            },
+          },
+          // Each lease, in robot name order. A lease stays when its robot
+          // leaves the stack, until its release.
+          leases: {
+            $type: "array",
+            $items: {
+              $type: "object",
+              // The robot of the lease.
+              robot: "string",
+              // The instance that holds the lease and its machine.
+              holder: "string",
+              holder_core_node: "string",
+              // The name that the holder gave the lease, such as the name of
+              // a run.
+              name: "string",
+              // Whether the holder opened the lease: any client may move the
+              // robot while it is open.
+              open: "bool",
+              // The instance that gave the lease to its holder and its
+              // machine; empty for a lease that its holder took.
+              giver: "string",
+              giver_core_node: "string",
+              // The instance that the holder offers the lease to and its
+              // machine; empty when no offer runs.
+              receiver: "string",
+              receiver_core_node: "string",
+            },
+          },
+          // Each option and feature that a stack_copies scope of the launch
+          // names, with the contracts that its instances implement.
+          options: {
+            $type: "array",
+            $items: {
+              $type: "object",
+              option: "string",
+              // simulated when every instance that the option and its
+              // features can bring reads the clock of a simulation.
+              kind: { $type: "string", $enum: ["simulated", "physical"] },
+              contracts: {
+                $type: "array",
+                $items: { $type: "object", name: "string", tag: "string", sha256: "string" },
+              },
+              features: {
+                $type: "array",
+                $items: {
+                  $type: "object",
+                  feature: "string",
+                  // The contracts that the feature adds to the option.
+                  contracts: {
+                    $type: "array",
+                    $items: { $type: "object", name: "string", tag: "string", sha256: "string" },
+                  },
+                },
+              },
+            },
+          },
+          // The pinned document of each contract that `options` names, as
+          // written, comments included.
+          documents: {
+            $type: "array",
+            $items: {
+              $type: "object",
+              name: "string",
+              tag: "string",
+              sha256: "string",
+              document: "string",
+            },
+          },
+          // Each node of the stack, with the pinned manifest and the commit
+          // of each machine that runs it, and its instances.
+          nodes: {
+            $type: "array",
+            $items: {
+              $type: "object",
+              name: "string",
+              tag: "string",
+              machines: {
+                $type: "array",
+                $items: {
+                  $type: "object",
+                  core_node: "string",
+                  // The sha256 of the pinned manifest that the machine runs.
+                  manifest_sha256: "string",
+                  // The commit of the node that the daemon of the machine
+                  // built; empty for a node with no commit, such as one from
+                  // a local directory.
+                  commit: "string",
+                },
+              },
+              instances: {
+                $type: "array",
+                $items: {
+                  $type: "object",
+                  instance: "string",
+                  core_node: "string",
+                  // The robot of the instance; empty for an instance outside
+                  // any copy.
+                  robot: "string",
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        // A pinned document of the contract cache of the daemon, as written.
+        // Refused with rejected when the daemon holds no document of that
+        // name, tag and sha256.
+        name: "contract",
+        request_message_format: { name: "string", tag: "string", sha256: "string" },
+        response_message_format: { document: "string" },
+      },
+      {
+        // Takes the lease of a robot for the sender, under a name that a
+        // refusal gives to other clients. Refused with halted during a halt,
+        // with leased when another client holds the lease and did not offer
+        // it to the sender, and with precondition_failed when no `lease` goal
+        // of the sender runs and while a removal of the robot runs. A lease
+        // that its holder offered to the sender changes holder in one step.
+        // The call returns once the daemon records the lease.
+        name: "take",
+        request_message_format: { robot: "string", name: "string" },
+        failure_kinds: ["halted", "leased"],
+      },
+      {
+        // Releases a lease of the sender. A lease that the sender received
+        // goes back to its giver. Refused with not_leased when the sender
+        // holds no lease of the robot. The call returns once the daemon
+        // records the release.
+        name: "release",
+        request_message_format: { robot: "string" },
+        failure_kinds: ["not_leased"],
+      },
+      {
+        // Offers leases of the sender to another node, named by its
+        // instance. Each lease stays its own, and the fleet listing gives
+        // the receiver of each offer once the call returns. Refused with
+        // halted during a halt, with not_leased when the sender holds no
+        // lease of a robot, and with precondition_failed for a lease that
+        // the sender received: a receiver does not offer a lease again. An
+        // offer ends at the take, at a release by the giver, at the end of
+        // the lease, at an offer of the same lease to another receiver, and
+        // when the giver or the receiver is gone. An offer of a lease to the
+        // receiver that it is offered to already changes nothing.
+        name: "offer",
+        request_message_format: {
+          robots: { $type: "array", $items: "string" },
+          receiver: "string",
+        },
+        failure_kinds: ["halted", "not_leased"],
+      },
+      {
+        // Opens a lease of the sender: while it is open, any client may move
+        // the robot, and the sender keeps the lease. Refused with halted
+        // during a halt and with not_leased when the sender holds no lease
+        // of the robot.
+        name: "open",
+        request_message_format: { robot: "string" },
+        failure_kinds: ["halted", "not_leased"],
+      },
+      {
+        // Closes a lease of the sender that it opened. Refused with
+        // not_leased when the sender holds no lease of the robot.
+        name: "close",
+        request_message_format: { robot: "string" },
+        failure_kinds: ["not_leased"],
+      },
+      {
+        // Whether the sender may move a robot or change the state of a
+        // device, before a call of a member with the mark moves_robot: on
+        // the robot of the instance that it calls, or on a robot of the
+        // listing by its name. Exactly one of instance and robot is given.
+        // During a halt it refuses every call. On an instance outside any
+        // copy it allows every call. Otherwise it allows any client on a
+        // robot whose lease is open, a lease holder on the robots that it
+        // leases, and a client that is not a lease holder on a robot with no
+        // lease. A refusal gives the failure kind and the message that the
+        // client refuses its call with. While a goal on such a member runs,
+        // the client cancels it at a halt that `changes` gives under a later
+        // revision than the answer.
+        name: "check_move",
+        request_message_format: {
+          instance: { $type: "string", $optional: true },
+          robot: { $type: "string", $optional: true },
+        },
+        response_message_format: {
+          // Absent when the client may move the robot.
+          refusal: {
+            $type: "object",
+            $optional: true,
+            failure_kind: { $type: "string", $enum: ["halted", "leased", "not_leased"] },
+            message: "string",
+          },
+          // The revision of the fleet that the answer reads.
+          revision: "u64",
+        },
+      },
+      {
+        // Halts the stack, with no wait for the clients: the daemon ends
+        // every lease with no give-back, refuses every lease and every move
+        // until clear_halt, and then writes the halt to disk, so it stays
+        // after a restart of the daemon. Each lease holder, MCP server and
+        // `peppy node call` cancels its goals on members with the mark
+        // moves_robot. A halt that the daemon does not write to disk holds
+        // all the same, and the call fails with attempt_failed: that halt
+        // ends at a restart of the daemon, and a next halt writes it again.
+        // A second halt changes nothing else.
+        name: "halt",
+      },
+      {
+        // Ends the halt. It starts nothing again: each client takes its
+        // leases again. Without a halt it changes nothing. Refused with
+        // attempt_failed when the daemon cannot remove the halt from disk:
+        // the stack then stays halted.
+        name: "clear_halt",
+      },
+    ],
+    actions: [
+      {
+        // Follows the fleet: the first feedback gives the listing, and each
+        // next feedback one change, in order, with the listing after it.
+        // The goal runs until its client cancels it. Each MCP server of
+        // peppy can call it with no scope.
+        name: "changes",
+        feedback_topic: {
+          qos_profile: "reliable",
+          message_format: {
+            change: {
+              $type: "string",
+              $enum: [
+                "listing",
+                "join",
+                "removal",
+                "software_stop",
+                "software_start",
+                "lease_start",
+                "lease_end",
+                "lease_open",
+                "lease_close",
+                "offer_start",
+                "offer_end",
+                "holder_change",
+                "halt_start",
+                "halt_end",
+              ],
+            },
+            // The robot of the change; empty for listing, halt_start and
+            // halt_end.
+            robot: "string",
+            // The revision of the fleet that the change made; for listing,
+            // the revision of the listing.
+            revision: "u64",
+            // The fleet listing after the change, as `list` gives it.
+            listing: {
+              $type: "object",
+              version: "string",
+              core_node: "string",
+              launcher: "string",
+              halted: "bool",
+              halted_by: "string",
+              robots: {
+                $type: "array",
+                $items: {
+                  $type: "object",
+                  name: "string",
+                  option: "string",
+                  core_node: "string",
+                  kind: { $type: "string", $enum: ["simulated", "physical"] },
+                  clock: "string",
+                  software: { $type: "string", $enum: ["running", "stopped"] },
+                  robot_commander: "string",
+                  instances: {
+                    $type: "array",
+                    $items: {
+                      $type: "object",
+                      name: "string",
+                      instance: "string",
+                      core_node: "string",
+                      node: "string",
+                      node_tag: "string",
+                    },
+                  },
+                  contracts: {
+                    $type: "array",
+                    $items: {
+                      $type: "object",
+                      name: "string",
+                      tag: "string",
+                      sha256: "string",
+                      instances: { $type: "array", $items: "string" },
+                    },
+                  },
+                },
+              },
+              leases: {
+                $type: "array",
+                $items: {
+                  $type: "object",
+                  robot: "string",
+                  holder: "string",
+                  holder_core_node: "string",
+                  name: "string",
+                  open: "bool",
+                  giver: "string",
+                  giver_core_node: "string",
+                  receiver: "string",
+                  receiver_core_node: "string",
+                },
+              },
+              options: {
+                $type: "array",
+                $items: {
+                  $type: "object",
+                  option: "string",
+                  kind: { $type: "string", $enum: ["simulated", "physical"] },
+                  contracts: {
+                    $type: "array",
+                    $items: { $type: "object", name: "string", tag: "string", sha256: "string" },
+                  },
+                  features: {
+                    $type: "array",
+                    $items: {
+                      $type: "object",
+                      feature: "string",
+                      contracts: {
+                        $type: "array",
+                        $items: { $type: "object", name: "string", tag: "string", sha256: "string" },
+                      },
+                    },
+                  },
+                },
+              },
+              documents: {
+                $type: "array",
+                $items: {
+                  $type: "object",
+                  name: "string",
+                  tag: "string",
+                  sha256: "string",
+                  document: "string",
+                },
+              },
+              nodes: {
+                $type: "array",
+                $items: {
+                  $type: "object",
+                  name: "string",
+                  tag: "string",
+                  machines: {
+                    $type: "array",
+                    $items: {
+                      $type: "object",
+                      core_node: "string",
+                      manifest_sha256: "string",
+                      commit: "string",
+                    },
+                  },
+                  instances: {
+                    $type: "array",
+                    $items: {
+                      $type: "object",
+                      instance: "string",
+                      core_node: "string",
+                      robot: "string",
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        // The goal of a lease holder: while it runs, its sender holds
+        // leases. Its feedback gives each offer to the sender and each end
+        // of an offer to it, and each end or give-back of a lease of the
+        // sender. The goal runs until its client cancels it or is gone;
+        // then every lease of the sender ends or goes back to its giver.
+        // Refused with precondition_failed while another `lease` goal of the
+        // same process runs. A new `lease` goal of a restarted process ends
+        // the goal of the process before it.
+        name: "lease",
+        feedback_topic: {
+          qos_profile: "reliable",
+          message_format: {
+            event: {
+              $type: "string",
+              $enum: ["offer", "offer_end", "lease_end", "lease_back"],
+            },
+            robot: "string",
+            // The giver of an offer or of a lease that came back, and its
+            // machine; empty for the end of a lease that the sender took.
+            giver: "string",
+            giver_core_node: "string",
+            // Why the offer or the lease ended, or came back.
+            cause: "string",
+          },
+        },
+      },
+    ],
+  },
+}

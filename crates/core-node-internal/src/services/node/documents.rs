@@ -1,6 +1,8 @@
 //! The `instance_documents` service: the pinned documents of one instance,
 //! the manifest the stack holds and the contract and pairing documents its
-//! code was generated from, as the entity of its node keeps them.
+//! code was generated from, as the entity of its node keeps them, with the
+//! document of each daemon interface its daemon targets name, as compiled
+//! into peppy.
 
 use crate::Result;
 use crate::services::response::failure;
@@ -10,6 +12,7 @@ use config::runtime::Name;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{self, InstanceDocuments, InstanceDocumentsRequest};
 use core_node_api::names;
+use daemon_config::daemon_interface::DaemonInterface;
 use daemon_config::repository::{PinKind, PinnedDocument};
 use node_stack::NodeStack;
 use peppylib::messaging::{Failure, SenderTarget, ServiceAnswer, ServiceRequestContext};
@@ -90,7 +93,10 @@ fn answer(
 
 /// The documents of an instance of the node with `config`, whose entity
 /// keeps `documents`: the manifest as the stack holds it, then the contract
-/// documents and the pairing documents, each in the order of `documents`.
+/// documents in the order of `documents` followed by the document of each
+/// daemon target in the order of `depends_on.daemon`, and the pairing
+/// documents in the order of `documents`. The document of a daemon target
+/// ships with peppy, so the entity keeps no pin of it.
 fn instance_documents(
     core_node: &str,
     instance_id: &str,
@@ -124,6 +130,24 @@ fn instance_documents(
                 ));
             }
         }
+    }
+    for target in config
+        .manifest
+        .depends_on
+        .iter()
+        .flat_map(|deps| &deps.daemon)
+    {
+        let interface = DaemonInterface::of_target(target).map_err(|error| {
+            failure(
+                PeppyFailureKind::AttemptFailed,
+                format!("daemon target `{}`: {error}", target.link_id),
+            )
+        })?;
+        contracts.push(encoding::PinnedDocument::new(
+            interface.name(),
+            interface.tag(),
+            interface.document_text().to_owned(),
+        ));
     }
     Ok(InstanceDocuments {
         core_node: core_node.to_owned(),
@@ -205,5 +229,46 @@ mod tests {
         );
         assert_eq!(documents.contracts, [sent(&limb_motion), sent(&camera)]);
         assert_eq!(documents.pairings, [sent(&arm_link)]);
+    }
+
+    /// The document of each daemon target comes after the pinned contract
+    /// documents, as compiled into peppy, under the name and tag of its
+    /// interface.
+    #[test]
+    fn the_documents_of_an_instance_give_the_document_of_each_daemon_target() {
+        let config = NodeConfigParser::from_content(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "director", tag: "v1", depends_on: {
+                    contracts: [{ name: "limb_motion", tag: "v1", link_id: "arm" }],
+                    daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }],
+                } },
+                interfaces: { actions: { consumes: [{ link_id: "fleet", name: "lease" }] } },
+                execution: { language: "rust", run_cmd: ["./bin"] },
+            }"#,
+        )
+        .expect("the manifest parses");
+        let limb_motion = document(PinKind::Contract, "limb_motion");
+
+        let documents = instance_documents(
+            "robot",
+            "director_inst",
+            &config,
+            std::slice::from_ref(&limb_motion),
+        )
+        .expect("the documents are in hand");
+
+        assert_eq!(
+            documents.contracts,
+            [
+                sent(&limb_motion),
+                encoding::PinnedDocument::new(
+                    "fleet",
+                    "v1",
+                    DaemonInterface::Fleet.document_text().to_owned(),
+                ),
+            ]
+        );
+        assert!(documents.pairings.is_empty());
     }
 }

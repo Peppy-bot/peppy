@@ -165,6 +165,14 @@ A second Ctrl+C exits at once, with 130. The process of the command ends, so the
 
 A service cannot be cancelled: a Ctrl+C while the command waits for a response exits at once, with 130.
 
+### Members that move a robot
+
+For a member with the mark `moves_robot` (see [Marks](/advanced_guides/contract_implementation/#marks)), the command keeps the fleet rules of the stack, as an MCP server does (see [Robot leases and the halt](/advanced_guides/fleet/)). It has no scope: it acts for the person or the program that runs it.
+
+- Before it sends the call, the command asks `check_move` of the daemon of the coordinator of the stack, on the instance that it calls. When the daemon refuses the move, the command sends nothing to the provider, prints a `refused` line with the `failure_kind` (`halted`, `leased` or `not_leased`) and the `message` of the daemon, and exits with 3. For example, a person at the robot who sends an arm home gets a refusal while a run leases that robot.
+- While its goal on such a member runs, the command follows the changes of the fleet. At a halt it sends the provider a cancel, as at a first Ctrl+C, and follows the goal to its end.
+- With `--core-node`, the command reads the stack listing of the daemon that it targets, and asks the daemon of the coordinator of its launch.
+
 ## `peppy node echo`
 
 ```sh
@@ -194,7 +202,7 @@ The commands that send the daemon a goal give an exit status for each end of the
 | 0 | The goal completed |
 | 1 | An error of the command, for example a budget that ran out |
 | 2 | The command line does not parse |
-| 3 | The daemon refused the goal, or answered a request with an error reply |
+| 3 | The daemon refused the goal, or answered a request with an error reply. A join or a removal that a lease refuses gives the failure kind `leased` |
 | 4 | The goal failed |
 | 5 | The goal was cancelled |
 | 6 | The daemon abandoned the goal |

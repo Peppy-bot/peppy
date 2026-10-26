@@ -2,13 +2,14 @@
 //! `echo` and `describe` read, and the mock messaging they run on.
 //!
 //! The node `arm:v1` implements `limb_motion:v1` through the slot `motion`,
-//! refining the goal of `move_to` to three joints; it declares a service and
+//! refining the goal of `move_to`, which moves the robot, to three joints; it
+//! declares a service and
 //! a topic of its own, and emits `joint_states` through its `arm_link:v1`
 //! pairing slot `controller`, where it plays `arm`.
 
 use core_node_api::encoding::{InstanceDocuments, PinnedDocument};
-use message_codec::MessageCodec;
-use message_codec::consumer::ConsumerIdentity;
+use peppy_codec::MessageCodec;
+use peppy_codec::consumer::ConsumerIdentity;
 use peppylib::{MessengerHandle, Payload};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use serde_json::Value;
@@ -87,6 +88,7 @@ pub(crate) const LIMB_MOTION: &str = r#"{
                 feedback_topic: { message_format: { progress: "f64" } },
                 result_service: { response_message_format: { reached: "bool" } },
                 failure_kinds: ["unreachable"],
+                marks: ["moves_robot"],
             },
         ],
     },
@@ -133,7 +135,7 @@ pub(crate) fn caller() -> ConsumerIdentity {
 
 /// The codec of the message format `format`, written as JSON5.
 pub(crate) fn codec(format: &str) -> MessageCodec {
-    MessageCodec::new("test", serde_json5::from_str(format).expect("a format"))
+    MessageCodec::new("test", &serde_json5::from_str(format).expect("a format"))
         .expect("the format lays out")
 }
 

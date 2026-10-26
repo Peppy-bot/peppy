@@ -120,7 +120,8 @@ pub struct InstanceDocuments {
     /// the node's name and tag.
     pub manifest: PinnedDocument,
     /// Each contract document the manifest names, in `manifest.implements`
-    /// order, then `depends_on.contracts` order.
+    /// order, then `depends_on.contracts` order, then the document of each
+    /// daemon interface in `depends_on.daemon` order.
     pub contracts: Vec<PinnedDocument>,
     /// Each pairing document the manifest names, in `depends_on.pairings`
     /// order, then `depends_on.pairing_observers` order.

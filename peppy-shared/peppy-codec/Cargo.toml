@@ -1,0 +1,66 @@
+# The codec API of peppy: the parser of contract documents, the run-time
+# codec between canonical JSON and the wire bytes of any message format,
+# and the clients of any topic, service and action that use it, with no
+# generated code. The MCP server of peppy, the generic commands of the
+# `peppy` binary and each node whose manifest asks for the codec API use
+# it.
+[package]
+name = "peppy-codec"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "The codec API of peppy: the parser of contracts, the run-time codec and its clients"
+
+[features]
+default = ["embedded-compiler"]
+# Embeds the Cap'n Proto compiler of the build target in the crate, which
+# the codec extracts at run time (see `compiler`). The peppylib of Python
+# builds without it: peppy deploys the compiler beside the peppylib of each
+# Python node whose manifest asks for the codec API.
+embedded-compiler = []
+
+[dependencies]
+# `atomic_write`: the codec publishes the compiler it extracts through
+# `publish_atomic`.
+config = { package = "peppy-config-model", path = "../peppy-config-model", features = [
+    "atomic_write",
+] }
+# The messaging session, the raw topic/service/action clients and the
+# `time` conversions generated nodes share.
+peppylib = { package = "peppylib-rs", path = "../peppylib-rs" }
+# The canonical forms of 64-bit integers that the published schemas of the
+# exposure format carry, which `value` applies to the values.
+peppy-mcp-catalog = { path = "../peppy-mcp-catalog" }
+# `unaligned`: messages are decoded in place from the transport's buffer,
+# which carries no alignment guarantee.
+capnp = { version = "0.27", features = ["unaligned"] }
+# Runs the Cap'n Proto compiler on the schema of a message format.
+capnpc = "0.27"
+indexmap = "2.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_json5 = "0.2"
+thiserror = "2.0"
+base64 = "0.23"
+# The digest in the name of the extracted compiler.
+sha2 = "0.11"
+# The directories of the schema compiles.
+tempfile = "3"
+# The home directory, for the default directory of the extracted compiler.
+dirs = "7"
+
+[build-dependencies]
+# Locates the compiler to embed for the build target, and compiles the
+# fixture schemas under `tests/fixtures` into typed accessors for the typed
+# round-trip test.
+build-helpers = { path = "../build-helpers" }
+capnpc = "0.27"
+
+[dev-dependencies]
+# The JPEG encoder the frame benchmark measures the codec against: the
+# same crate and feature set the MCP runtime transcodes snapshots with.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+[[bench]]
+name = "frames"
+harness = false

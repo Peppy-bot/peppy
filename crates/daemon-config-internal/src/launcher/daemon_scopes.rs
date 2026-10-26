@@ -1,14 +1,17 @@
-//! The launch checks of daemon scopes: every instance that serves a daemon
+//! The launch checks of daemon scopes: every instance that has a daemon
 //! target gives each one a scope that parses into its interface's type and
-//! holds against the launcher, runs on the coordinator, and links none of
-//! them; no other instance declares a scope.
+//! holds against the launcher, runs on the coordinator outside every copy,
+//! links none of them and has at most one of each interface; no other
+//! instance declares a scope.
 //!
-//! When a launcher is read, a scope is a free value, because only the
-//! resolution of the exposure deployments knows which targets are daemon
-//! targets. The launch, each join and `peppy stack resolve` run these checks
-//! once that resolution is done and before anything starts. They read the
-//! flat launcher and the targets of the exposure documents alone, so `peppy
-//! stack resolve` runs them with a cold nodes cache too.
+//! An instance has the daemon targets of its deployment: those of the
+//! exposures of a built-in MCP deployment, and those that the manifest of a
+//! node lists in `depends_on.daemon`. When a launcher is read, a scope is a
+//! free value, because only the resolution of the deployments knows which
+//! targets are daemon targets. The launch, each join and `peppy stack
+//! resolve` run these checks once that resolution is done and before
+//! anything starts. They read the flat launcher and the targets of each
+//! deployment alone.
 //!
 //! The launch and `peppy stack resolve` also hold each scope against the
 //! launcher and the stack selection ([`ScopeCheck::Launch`]), which gives the
@@ -19,33 +22,68 @@
 use super::compose::{CopyMembership, PreparedLauncher, UnitSelection};
 use super::joinable::JoinableNodes;
 use super::types::Deployment;
-use crate::internal::daemon_interface::DaemonInterface;
-use crate::internal::mcp_deployment::DeploymentTargets;
+use crate::internal::daemon_interface::{DaemonInterface, TargetScope, served_targets};
+use config::node::Manifest;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The targets of one deployment, by name: each target that the launcher's
+/// `links` fill, and each daemon target with the interface this peppy serves
+/// for it, which takes no link and which the launcher scopes with
+/// `daemon_scopes`. For a built-in MCP deployment, the targets of its
+/// exposures ([`DeploymentTargets::of_exposures`]); for a node, its slots
+/// ([`DeploymentTargets::of_node`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeploymentTargets {
+    pub linked: BTreeSet<String>,
+    pub daemon: BTreeMap<String, DaemonInterface>,
+}
+
+impl DeploymentTargets {
+    /// The targets of a node whose manifest is `manifest`: each slot of its
+    /// `depends_on`, and each daemon target, a `depends_on.daemon` entry,
+    /// named by its link_id. Every daemon target must name an interface this
+    /// peppy serves at the tag it names; every one that does not is reported
+    /// at once.
+    pub fn of_node(manifest: &Manifest) -> Result<Self, Vec<String>> {
+        let Some(depends_on) = &manifest.depends_on else {
+            return Ok(Self::default());
+        };
+        let daemon: BTreeMap<String, DaemonInterface> =
+            served_targets(depends_on)?.into_iter().collect();
+        let linked = depends_on
+            .link_ids()
+            .filter(|link_id| !daemon.contains_key(*link_id))
+            .map(str::to_owned)
+            .collect();
+        Ok(Self { linked, daemon })
+    }
+}
 
 /// One reason the daemon scopes of a launch do not hold.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DaemonScopeError {
     #[error(
-        "instance `{instance}` declares `daemon_scopes`, but it serves no daemon target; a scope \
-         belongs to an instance of an exposure deployment whose target names `daemon: {{ name, \
-         tag }}`"
+        "instance `{instance}` declares `daemon_scopes`, but it has no daemon target; a scope \
+         belongs to an instance of a node whose manifest lists `depends_on.daemon`, or of an \
+         exposure deployment whose target names `daemon: {{ name, tag }}`"
     )]
     ScopesWithoutDaemonTarget { instance: String },
     #[error(
-        "`daemon_scopes.{key}` of instance `{instance}` names no daemon target of its \
-         exposures{}; its daemon targets: {daemon_targets}",
-        contract_hint(.key, *.contract_target)
+        "`daemon_scopes.{key}` of instance `{instance}` names none of its daemon targets{}; its \
+         daemon targets: {daemon_targets}",
+        linked_hint(.key, *.linked_target)
     )]
     UnknownScopeKey {
         instance: String,
         key: String,
-        contract_target: bool,
+        linked_target: bool,
         daemon_targets: String,
     },
     #[error(
         "daemon target `{daemon_target}` ({interface}) of instance `{instance}` has no scope; \
          give it one in the instance's `daemon_scopes`, or with a `set_daemon_scopes` \
-         adjustment on `{instance}` in the launcher"
+         adjustment on `{instance}` in the launcher, or leave it unserved with \
+         `{{ vacant: \"<why>\" }}`"
     )]
     MissingScope {
         instance: String,
@@ -73,8 +111,8 @@ pub enum DaemonScopeError {
         reason: String,
     },
     #[error(
-        "instance `{instance}` serves daemon target `{daemon_target}` and declares `core_node: \
-         \"{core_node}\"`; an instance that serves a daemon target runs on the coordinator, the \
+        "instance `{instance}` has daemon target `{daemon_target}` and declares `core_node: \
+         \"{core_node}\"`; an instance with a daemon target runs on the coordinator, the \
          daemon whose stack it reads and changes, so remove `core_node`"
     )]
     PlacedOffCoordinator {
@@ -83,9 +121,9 @@ pub enum DaemonScopeError {
         core_node: String,
     },
     #[error(
-        "instance `{instance}` of copy `{copy}` serves daemon target `{daemon_target}`; an \
-         instance that serves a daemon target runs on the coordinator and belongs to the stack, \
-         so deploy it outside the options of an axis that runs as copies"
+        "instance `{instance}` of copy `{copy}` has daemon target `{daemon_target}`; an \
+         instance with a daemon target runs on the coordinator and belongs to the stack, so \
+         deploy it outside the options of an axis that runs as copies"
     )]
     InCopy {
         instance: String,
@@ -94,18 +132,29 @@ pub enum DaemonScopeError {
     },
     #[error(
         "`links.{daemon_target}` of instance `{instance}` names daemon target \
-         `{daemon_target}`, which takes no link: the daemon that started the server serves it, \
+         `{daemon_target}`, which takes no link: the daemon that runs the instance serves it, \
          and the target takes a scope instead, in `daemon_scopes` or with `set_daemon_scopes`"
     )]
     LinkToDaemonTarget {
         instance: String,
         daemon_target: String,
     },
+    #[error(
+        "instance `{instance}` has daemon targets {daemon_targets} of one interface, \
+         `{interface}`; a call names no daemon target, so the daemon reads each call of an \
+         interface against the one scope of that interface that its sender has: give the \
+         instance one daemon target of each interface"
+    )]
+    TargetsOfOneInterface {
+        instance: String,
+        interface: String,
+        daemon_targets: String,
+    },
 }
 
-fn contract_hint(key: &str, contract_target: bool) -> String {
-    if contract_target {
-        format!(" (`{key}` is a contract target, which takes `links`)")
+fn linked_hint(key: &str, linked_target: bool) -> String {
+    if linked_target {
+        format!(" (`{key}` takes `links`, not a scope)")
     } else {
         String::new()
     }
@@ -139,8 +188,8 @@ struct ScopeVerdicts {
 }
 
 /// Checks the daemon scopes of the flat launcher whose deployments
-/// `deployments` lists, each beside the targets its exposures serve (empty
-/// for a node deployment). `prepared` is the launcher the stack was composed
+/// `deployments` lists, each beside its targets. `prepared` is the launcher
+/// the stack was composed
 /// from, which a scope's own checks read (the options of the axes that run
 /// as copies and the copies they compose, for `stack_copies`); `copies`
 /// tells which instances belong to a copy. Every refusal is reported at
@@ -201,6 +250,8 @@ fn check_instance(
         });
     }
 
+    refusals.extend(targets_of_one_interface(id, targets));
+
     for daemon_target in instance
         .links
         .keys()
@@ -220,7 +271,7 @@ fn check_instance(
         refusals.push(DaemonScopeError::UnknownScopeKey {
             instance: id.to_owned(),
             key: key.clone(),
-            contract_target: targets.contract.contains(key),
+            linked_target: targets.linked.contains(key),
             daemon_targets: crate::error::format_quoted_list(targets.daemon.keys()),
         });
     }
@@ -238,9 +289,35 @@ fn check_instance(
     }
 }
 
-/// One daemon target's scope: present, parsed into its interface's type,
-/// and, at a launch, held to the interface's checks against the launcher,
-/// whose joinable nodes join those of the other scopes.
+/// One refusal for each interface that two daemon targets of `targets` or
+/// more name, on the instance `instance`.
+fn targets_of_one_interface(
+    instance: &str,
+    targets: &DeploymentTargets,
+) -> impl Iterator<Item = DaemonScopeError> {
+    let mut by_interface: BTreeMap<DaemonInterface, Vec<&str>> = BTreeMap::new();
+    for (daemon_target, interface) in &targets.daemon {
+        by_interface
+            .entry(*interface)
+            .or_default()
+            .push(daemon_target);
+    }
+    by_interface
+        .into_iter()
+        .filter(|(_, daemon_targets)| daemon_targets.len() > 1)
+        .map(
+            move |(interface, daemon_targets)| DaemonScopeError::TargetsOfOneInterface {
+                instance: instance.to_owned(),
+                interface: interface.label(),
+                daemon_targets: crate::error::format_quoted_list(daemon_targets),
+            },
+        )
+}
+
+/// One daemon target's scope: present, a vacancy or parsed into its
+/// interface's type, and, at a launch, held to the interface's checks
+/// against the launcher, whose joinable nodes join those of the other
+/// scopes.
 fn check_scope(
     prepared: &PreparedLauncher,
     instance: &str,
@@ -259,8 +336,11 @@ fn check_scope(
         });
         return;
     };
-    let parsed = match interface.parse_scope(scope) {
-        Ok(parsed) => parsed,
+    let parsed = match interface.parse_target_scope(scope) {
+        Ok(TargetScope::Scoped(parsed)) => parsed,
+        // A vacant target is served to no client, so nothing of the
+        // launcher holds it, and it brings no node to join.
+        Ok(TargetScope::Vacant(_)) => return,
         Err(reason) => {
             refusals.push(DaemonScopeError::InvalidScope {
                 instance: instance.to_owned(),

@@ -33,7 +33,6 @@ use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::runtime::CopyName;
 use core_node_api::encoding::CopyReference;
 use daemon_config::consts::PeppyDirs;
-use daemon_config::contract::PeppyContractParser;
 use daemon_config::mcp_deployment::SPEC_ENV_VAR;
 use daemon_config::repository::ManifestFingerprint;
 use generator::{ContractOrigin, LanguageGenerator};
@@ -43,6 +42,7 @@ use mcp_test_support::{
 };
 use peppy::commands::repo::{RepoCommand, RepoCommands};
 use peppy::test_support::CACHED_BUILD_REUSE_PREFIX;
+use peppy_codec::contract::PeppyContractParser;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ClientConfig, ErrorCode,
     GetTaskParams, ProgressNotificationParam, ProtocolVersion, ReadResourceRequestParams,
@@ -3266,7 +3266,7 @@ fn featured_framework_launcher(port: u16) -> String {
                                          description: "A second recorder of the same episodes" }}] }},
                         {{ option: "recorder_robot", model: "recorder", description: "A robot that records episodes" }},
                     ],
-                }} }},
+                }}, fleet: {{ members: ["list", "halt", "clear_halt"] }} }},
             }},
         ],
     }}"#
@@ -3307,7 +3307,7 @@ fn framework_launcher(port: u16) -> String {
                         {{ option: "recorder_robot", model: "recorder", description: "A robot that records episodes" }},
                         {{ option: "broken_robot", model: "broken", description: "A robot whose software cannot start" }},
                     ],
-                }} }},
+                }}, fleet: {{ members: ["list", "halt", "clear_halt"] }} }},
             }},
         ],
     }}"#
@@ -3379,8 +3379,24 @@ async fn call(
         .unwrap_or_else(|error| panic!("{tool} answers: {error}"))
 }
 
-/// The messages of one call's progress notifications, in their order: the
-/// call whose progress says `first`, once `complete` holds of its messages.
+/// One progress message of a stack change, the JSON of its `{ step, line }`
+/// feedback, as `step: line`; any other message as it is.
+fn change_line(message: &str) -> String {
+    serde_json::from_str::<Value>(message)
+        .ok()
+        .and_then(|feedback| {
+            Some(format!(
+                "{}: {}",
+                feedback["step"].as_str()?,
+                feedback["line"].as_str()?
+            ))
+        })
+        .unwrap_or_else(|| message.to_owned())
+}
+
+/// The messages of one call's progress notifications, in their order, each
+/// as [`change_line`] reads it: the call whose progress says `first`, once
+/// `complete` holds of its messages.
 async fn progress_of(
     progress: &mut tokio::sync::watch::Receiver<Vec<ProgressNotificationParam>>,
     first: &str,
@@ -3389,7 +3405,7 @@ async fn progress_of(
     let call_progress = |received: &[ProgressNotificationParam]| {
         let token = received
             .iter()
-            .find(|params| params.message.as_deref() == Some(first))?
+            .find(|params| params.message.as_deref().map(change_line).as_deref() == Some(first))?
             .progress_token
             .clone();
         let mut ours: Vec<&ProgressNotificationParam> = received
@@ -3399,7 +3415,7 @@ async fn progress_of(
         ours.sort_by(|left, right| left.progress.total_cmp(&right.progress));
         let messages: Vec<String> = ours
             .iter()
-            .map(|params| params.message.clone().unwrap_or_default())
+            .map(|params| change_line(params.message.as_deref().unwrap_or_default()))
             .collect();
         complete(&messages).then_some(messages)
     };
@@ -3442,11 +3458,27 @@ fn tool_error_text(result: &rmcp::model::CallToolResult) -> String {
 }
 
 /// The copies `stack.list` reports, as it gives them.
+/// The copies `stack.list` reports, each without its `running`, which is
+/// true: the join goal of each.
 async fn listed_items(client: &FrameworkClient) -> Vec<Value> {
     structured(client, "stack.list").await["copies"]
         .as_array()
         .expect("copies")
-        .clone()
+        .iter()
+        .map(|copy| {
+            let mut item = copy.clone();
+            let running = item
+                .as_object_mut()
+                .expect("a copy is an object")
+                .remove("running");
+            assert_eq!(
+                running,
+                Some(json!(true)),
+                "the software of the copy runs: {copy}"
+            );
+            item
+        })
+        .collect()
 }
 
 /// The names of the copies `stack.list` reports.
@@ -3485,8 +3517,10 @@ async fn a_client_adds_robots_with_features_on_the_machines_it_names() {
         listed["options"],
         json!([
             { "option": "featured_robot", "model": "featured", "description": "A robot that records episodes",
-              "features": [{ "feature": "spare", "description": "A second recorder of the same episodes" }] },
-            { "option": "recorder_robot", "model": "recorder", "description": "A robot that records episodes", "features": [] },
+              "features": [{ "feature": "spare", "description": "A second recorder of the same episodes" }],
+              "kind": "physical" },
+            { "option": "recorder_robot", "model": "recorder", "description": "A robot that records episodes",
+              "features": [], "kind": "physical" },
         ])
     );
 
@@ -3606,6 +3640,9 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
     assert_eq!(
         names,
         [
+            "fleet.clear_halt",
+            "fleet.halt",
+            "fleet.list",
             "stack.join",
             "stack.list",
             "stack.recent_calls",
@@ -3622,17 +3659,30 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
         join_schema["properties"]["option"]["enum"],
         json!(["recorder_robot", "broken_robot"])
     );
-    let listed = structured(&client, "stack.list").await;
+    let mut listed = structured(&client, "stack.list").await;
     let this = listed["this_core_node"]
         .as_str()
         .expect("this machine")
         .to_owned();
+    let launcher = listed
+        .as_object_mut()
+        .expect("the listing is an object")
+        .remove("launcher");
+    assert!(
+        launcher
+            .as_ref()
+            .and_then(Value::as_str)
+            .is_some_and(|launcher| !launcher.is_empty()),
+        "the listing names the launcher: {launcher:?}"
+    );
     assert_eq!(
         listed,
         json!({
             "options": [
-                { "option": "recorder_robot", "model": "recorder", "description": "A robot that records episodes", "features": [] },
-                { "option": "broken_robot", "model": "broken", "description": "A robot whose software cannot start", "features": [] },
+                { "option": "recorder_robot", "model": "recorder", "description": "A robot that records episodes",
+                  "features": [], "kind": "physical" },
+                { "option": "broken_robot", "model": "broken", "description": "A robot whose software cannot start",
+                  "features": [], "kind": "physical" },
             ],
             "core_nodes": [this],
             "this_core_node": this,
@@ -3681,8 +3731,8 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
     assert_eq!(
         tool_error_text(&at_limit),
         "the provider refused the goal: precondition_failed: the stack holds 2 copies of the \
-         options recorder_robot and broken_robot (alpha, bravo), the most the scope of this \
-         endpoint allows; remove one first"
+         options recorder_robot and broken_robot (alpha, bravo), the most the scope allows; \
+         remove one first"
     );
     let in_use = client
         .call_tool(
@@ -3875,7 +3925,7 @@ fn joinable_launcher(port: u16) -> String {
                                          description: "A camera beside the recorder" }}] }},
                         {{ option: "recorder_robot", model: "recorder", description: "A robot that records episodes" }},
                     ],
-                }} }},
+                }}, fleet: {{ members: ["list", "halt", "clear_halt"] }} }},
             }},
         ],
     }}"#

@@ -25,6 +25,7 @@ use crate::services::action_loop::{
 use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::resolve_contract_doc;
+use crate::services::raw_calls::RawCallGate;
 use config::node::{
     DependsOn, MessageSizeEstimate, NodeConfig, QoSProfile, estimate_serialized_size,
     node_implements,
@@ -78,6 +79,7 @@ pub(crate) async fn listen_for_stack_benchmark(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = expose_daemon_action(
         messenger,
@@ -99,7 +101,9 @@ pub(crate) async fn listen_for_stack_benchmark(
         gate: ConcurrencyGate::new(),
     };
 
-    let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
+    let handle = tokio::spawn(async move {
+        run_action_loop(action, ActionId::StackBenchmark, raw_calls, handler).await
+    });
     Ok(handle)
 }
 
@@ -399,7 +403,7 @@ fn enumerate_edges(configs: &[NodeConfig]) -> Vec<Edge> {
 /// Contract documents resolved once per `(contract_name, contract_tag)` and
 /// shared across the QoS and probe-size passes of one benchmark run. A `None`
 /// entry records a resolution failure so it is not retried.
-type ContractDocCache = HashMap<(String, String), Option<daemon_config::contract::PeppyContract>>;
+type ContractDocCache = HashMap<(String, String), Option<peppy_codec::contract::PeppyContract>>;
 
 /// Fill in topic QoS for contract-implementation edges from the contract
 /// document. A contract-backed entry carries no inline QoS, so it lives in
@@ -552,7 +556,7 @@ fn formats_from_node(
 /// Request/response size estimates for an interface declared in a contract.
 /// Same response-side convention for topics as [`formats_from_node`].
 fn formats_from_contract(
-    doc: Option<&daemon_config::contract::PeppyContract>,
+    doc: Option<&peppy_codec::contract::PeppyContract>,
     kind: InterfaceKind,
     name: &str,
 ) -> (Option<MessageSizeEstimate>, Option<MessageSizeEstimate>) {
@@ -1363,7 +1367,7 @@ mod tests {
 
     #[test]
     fn formats_from_contract_sizes_topic_message_on_response_side() {
-        let doc = daemon_config::contract::PeppyContractParser::from_content(
+        let doc = peppy_codec::contract::PeppyContractParser::from_content(
             r#"{
                 peppy_schema: "contract/v1",
                 manifest: { name: "uvc_camera", tag: "v1" },
