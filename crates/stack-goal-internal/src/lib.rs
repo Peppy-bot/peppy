@@ -2,11 +2,11 @@
 //! cancel it and read how it ended, and the default budgets of a goal that
 //! adds nodes.
 //! `peppy stack launch`, `build`, `join` and `remove` drive their goals
-//! through it, and so does the daemon's provider of `stack_copies:v1`, which
-//! sends the joins and the removals of its clients to its own daemon. Each
-//! caller keeps what is its own: the CLI its terminal output, its watchdog
-//! and its listing of the log files, the provider the feedback and the end
-//! that it gives each client.
+//! through it, and so does the daemon's provider of `robot_membership:v1`,
+//! which sends the joins and the removals of its clients to its own daemon.
+//! Each caller keeps what is its own: the CLI its terminal output, its
+//! watchdog and its listing of the log files, the provider the feedback and
+//! the end that it gives each client.
 //!
 //! # The goal path
 //!

@@ -27,7 +27,7 @@
           // the target's name. The instance has no `core_node`: an instance
           // that serves a daemon target runs on the coordinator.
           daemon_scopes: {
-            // The members of fleet:v1 that the endpoint calls: a client
+            // The members of robot_leases:v1 that the endpoint calls: a client
             // lists the fleet and halts the stack. Without `clear_halt`, the
             // endpoint serves no fleet.clear_halt, and the halt ends with
             // `peppy fleet clear-halt`.

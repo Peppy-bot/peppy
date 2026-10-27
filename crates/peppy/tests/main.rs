@@ -30,7 +30,7 @@ mod repo_remove;
 mod repo_search;
 mod service_install;
 mod service_serve;
-mod stack_copies;
+mod stack_join;
 mod stack_launch;
 mod stack_list;
 mod stack_reset;

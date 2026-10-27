@@ -1107,7 +1107,7 @@ impl Stack {
     }
 
     /// Stages `framework_controls:v1`, whose one target names the daemon
-    /// interface `stack_copies:v1`, and `broken_recorder:v1`, a recorder
+    /// interface `robot_membership:v1`, and `broken_recorder:v1`, a recorder
     /// whose process exits before it is ready, into the hub, and refreshes
     /// the daemon's caches from it.
     fn stage_framework_controls(&self) {
@@ -3175,7 +3175,7 @@ async fn a_join_filling_a_once_per_robot_target_twice_is_refused() {
 // --- A daemon target: the copies of the stack over MCP.
 
 /// The design's `framework/framework_controls.json5`: one fixed target,
-/// `stack`, that names the daemon interface `stack_copies:v1`.
+/// `stack`, that names the daemon interface `robot_membership:v1`.
 const FRAMEWORK_CONTROLS: &str = include_str!(
     "../../daemon-config-internal/src/daemon_interface/fixtures/framework_controls.json5"
 );
@@ -4152,7 +4152,7 @@ fn ready_with_no_instance() -> ListedNode {
     }
 }
 
-/// A launch with a `stack_copies` scope adds and builds on the coordinator
+/// A launch with a `robot_membership` scope adds and builds on the coordinator
 /// every node of every feature set of every scoped option, starts none of
 /// them, and leaves them `Ready` with no instance. A later join of each
 /// option, with and without the feature, over MCP or from the command line,
@@ -4335,7 +4335,7 @@ async fn a_node_the_launch_runs_and_a_join_brings_is_built_once() {
     joinable.stack.reset();
 }
 
-/// A launch of a launcher with no `stack_copies` scope builds nothing more
+/// A launch of a launcher with no `robot_membership` scope builds nothing more
 /// than the nodes it runs: here the selection deploys no framework endpoint.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_launch_with_no_scope_builds_no_joinable_node() {

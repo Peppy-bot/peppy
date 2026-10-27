@@ -101,12 +101,12 @@ fn instance<'a>(flat: &'a PeppyLauncher, id: &str) -> &'a DeploymentInstance {
 }
 
 /// The manifest of `director:v1`: a node with the daemon target `fleet` of
-/// `fleet:v1` beside the contract slot `arm`.
+/// `robot_leases:v1` beside the contract slot `arm`.
 const DIRECTOR: &str = r#"{
     peppy_schema: "node/v1",
     manifest: { name: "director", tag: "v1", depends_on: {
         contracts: [{ name: "limb_motion", tag: "v1", link_id: "arm" }],
-        daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }],
+        daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }],
     } },
     interfaces: {
         services: { consumes: [{ link_id: "fleet", name: "list" }] },
@@ -119,7 +119,7 @@ const DIRECTOR: &str = r#"{
 /// them.
 fn director_targets() -> DeploymentTargets {
     let config = NodeConfigParser::from_content(DIRECTOR).expect("the director parses");
-    DeploymentTargets::of_node(&config.manifest).expect("this peppy serves fleet:v1")
+    DeploymentTargets::of_node(&config.manifest).expect("this peppy serves robot_leases:v1")
 }
 
 /// The targets the resolution of each deployment would report: the
@@ -139,12 +139,12 @@ fn targets_of(deployment: &Deployment) -> DeploymentTargets {
             "framework_controls" => {
                 targets
                     .daemon
-                    .insert("stack".to_owned(), DaemonInterface::StackCopies);
+                    .insert("stack".to_owned(), DaemonInterface::RobotMembership);
             }
             "copies_controls" => {
                 targets
                     .daemon
-                    .insert("copies".to_owned(), DaemonInterface::StackCopies);
+                    .insert("copies".to_owned(), DaemonInterface::RobotMembership);
             }
             "camera" => {
                 targets.linked.insert("front_camera".to_owned());
@@ -573,7 +573,7 @@ fn every_daemon_target_takes_a_scope() {
         [DaemonScopeError::MissingScope {
             instance: "mcp_inst".to_owned(),
             daemon_target: "stack".to_owned(),
-            interface: "stack_copies:v1".to_owned(),
+            interface: "robot_membership:v1".to_owned(),
         }]
     );
     let message = refused[0].to_string();
@@ -628,15 +628,15 @@ fn a_scope_parses_into_its_interfaces_type() {
     let message = refused[0].to_string();
     assert!(
         message.starts_with(
-            "the scope of daemon target `stack` (stack_copies:v1) on instance `mcp_inst` does not \
-             parse:"
+            "the scope of daemon target `stack` (robot_membership:v1) on instance `mcp_inst` does \
+             not parse:"
         ) && message.contains("`max_copies` is a whole number from 1 to 65535, got 0"),
         "{message}"
     );
 }
 
 #[test]
-fn a_stack_copies_scope_names_options_of_an_axis_that_runs_as_copies() {
+fn a_robot_membership_scope_names_options_of_an_axis_that_runs_as_copies() {
     let prepared = load(&simulation_mcp(
         r#"{ target: "framework_controls_inst",
              set_daemon_scopes: { stack: { max_copies: 4, options: [
@@ -649,7 +649,7 @@ fn a_stack_copies_scope_names_options_of_an_axis_that_runs_as_copies() {
     assert_eq!(refused.len(), 1, "{refused:?}");
     assert_eq!(
         refused[0].to_string(),
-        "the scope of daemon target `stack` (stack_copies:v1) on instance \
+        "the scope of daemon target `stack` (robot_membership:v1) on instance \
          `framework_controls_inst` does not hold against the launcher: `robot_control` is not an \
          option of an axis this launcher runs as copies; the copies it can add:\n  - robot: \
          `openarm_sim`, `so101_sim`"
@@ -668,12 +668,12 @@ fn a_stack_copies_scope_names_options_of_an_axis_that_runs_as_copies() {
     assert_eq!(
         messages,
         [
-            "the scope of daemon target `stack` (stack_copies:v1) on instance `mcp_inst` does not \
-          hold against the launcher: this launcher declares no axis that runs as copies \
-          (`zero_or_more` or `one_or_more`), so no option of a `stack_copies` scope can be \
-          added; a flat launcher, such as the one `peppy stack resolve` prints, declares no \
-          axis at all: launch the launcher it was resolved from, or take the instance that \
-          serves this target out of the flat file"
+            "the scope of daemon target `stack` (robot_membership:v1) on instance `mcp_inst` does \
+          not hold against the launcher: this launcher declares no axis that runs as copies \
+          (`zero_or_more` or `one_or_more`), so no option of a `robot_membership` scope can be \
+          added; a flat launcher, such as the one `peppy stack resolve` prints, declares no axis \
+          at all: launch the launcher it was resolved from, or take the instance that serves this \
+          target out of the flat file"
         ]
     );
 }
@@ -735,7 +735,7 @@ fn an_instance_that_serves_a_daemon_target_runs_on_the_coordinator() {
         refused.contains(&DaemonScopeError::MissingScope {
             instance: "delta_endpoint_inst".to_owned(),
             daemon_target: "stack".to_owned(),
-            interface: "stack_copies:v1".to_owned(),
+            interface: "robot_membership:v1".to_owned(),
         }),
         "{refused:?}"
     );
@@ -811,24 +811,24 @@ fn the_targets_of_a_node_are_read_from_its_manifest() {
     let targets = director_targets();
     assert_eq!(
         targets.daemon.into_iter().collect::<Vec<_>>(),
-        [("fleet".to_owned(), DaemonInterface::Fleet)]
+        [("fleet".to_owned(), DaemonInterface::RobotLeases)]
     );
     assert_eq!(targets.linked.into_iter().collect::<Vec<_>>(), ["arm"]);
 
     for (tag_and_name, expected) in [
         (
-            r#"name: "fleet", tag: "v2""#,
-            "daemon target `fleet`: daemon interface `fleet:v2` is not one this peppy serves; it \
-             serves `fleet` at tag `v1` only",
+            r#"name: "robot_leases", tag: "v2""#,
+            "daemon target `fleet`: daemon interface `robot_leases:v2` is not one this peppy \
+             serves; it serves `robot_leases` at tag `v1` only",
         ),
         (
             r#"name: "robots", tag: "v1""#,
             "daemon target `fleet`: daemon interface `robots:v1` is not one this peppy serves; \
-             it serves `stack_copies:v1`, `fleet:v1`",
+             it serves `robot_membership:v1`, `robot_leases:v1`",
         ),
     ] {
         let config = NodeConfigParser::from_content(
-            &DIRECTOR.replace(r#"name: "fleet", tag: "v1""#, tag_and_name),
+            &DIRECTOR.replace(r#"name: "robot_leases", tag: "v1""#, tag_and_name),
         )
         .expect("the manifest parses");
         let refusals =
@@ -865,7 +865,7 @@ fn the_daemon_target_of_a_node_takes_a_scope_or_a_vacancy() {
         assert_eq!(
             joinable,
             JoinableNodes::default(),
-            "a fleet scope brings no node"
+            "a robot_leases scope brings no node"
         );
     }
 }
@@ -881,7 +881,7 @@ fn the_daemon_target_of_a_node_is_held_to_every_rule() {
         [DaemonScopeError::MissingScope {
             instance: "director_inst".to_owned(),
             daemon_target: "fleet".to_owned(),
-            interface: "fleet:v1".to_owned(),
+            interface: "robot_leases:v1".to_owned(),
         }]
     );
 
@@ -916,8 +916,8 @@ fn the_daemon_target_of_a_node_is_held_to_every_rule() {
     let message = refused[3].to_string();
     assert!(
         message.starts_with(
-            "the scope of daemon target `fleet` (fleet:v1) on instance `director_inst` does not \
-             parse:"
+            "the scope of daemon target `fleet` (robot_leases:v1) on instance `director_inst` does \
+             not parse:"
         ) && message.contains("`members` names no member"),
         "{message}"
     );
@@ -987,14 +987,14 @@ fn an_instance_has_one_daemon_target_of_each_interface() {
         refused,
         [DaemonScopeError::TargetsOfOneInterface {
             instance: "mcp_inst".to_owned(),
-            interface: "stack_copies:v1".to_owned(),
+            interface: "robot_membership:v1".to_owned(),
             daemon_targets: "`copies`, `stack`".to_owned(),
         }]
     );
     assert_eq!(
         refused[0].to_string(),
         "instance `mcp_inst` has daemon targets `copies`, `stack` of one interface, \
-         `stack_copies:v1`; a call names no daemon target, so the daemon reads each call of an \
+         `robot_membership:v1`; a call names no daemon target, so the daemon reads each call of an \
          interface against the one scope of that interface that its sender has: give the \
          instance one daemon target of each interface"
     );

@@ -13,7 +13,7 @@ use crate::bridges::{
 use crate::test_support::ScriptedSurface;
 use config::failure_kind::{FailureKindName, MemberFailureKinds, PeppyFailureKind};
 use daemon_config::daemon_interface::DaemonInterface;
-use daemon_config::daemon_interface::fleet::{ChangeKind, FleetChange, FleetListing};
+use daemon_config::daemon_interface::robot_leases::{ChangeKind, FleetChange, FleetListing};
 use peppy_codec::MessageCodec;
 use peppy_codec::consumer::{ActionClient, ConsumerIdentity, MemberBinding, ServiceClient};
 use peppy_mcp_runtime::{
@@ -52,8 +52,8 @@ struct Mesh {
     arm: MockActionServerCore,
 }
 
-fn fleet_contract() -> SenderTarget {
-    SenderTarget::contract("fleet", "v1").expect("a valid contract identity")
+fn robot_leases_contract() -> SenderTarget {
+    SenderTarget::contract("robot_leases", "v1").expect("a valid contract identity")
 }
 
 fn arm_contract() -> SenderTarget {
@@ -67,15 +67,20 @@ async fn mesh() -> Mesh {
     let daemon = router.connect().await.expect("the daemon connects");
     let arm_session = router.connect().await.expect("the arm connects");
     let server = router.connect().await.expect("the server connects");
-    let check_move =
-        MockServiceCore::listen(&daemon, CORE_NODE, DAEMON, fleet_contract(), "check_move")
-            .await
-            .expect("the daemon serves check_move");
+    let check_move = MockServiceCore::listen(
+        &daemon,
+        CORE_NODE,
+        DAEMON,
+        robot_leases_contract(),
+        "check_move",
+    )
+    .await
+    .expect("the daemon serves check_move");
     let changes = MockActionServerCore::expose(
         &daemon,
         CORE_NODE,
         DAEMON,
-        fleet_contract(),
+        robot_leases_contract(),
         "changes",
         true,
     )
@@ -96,7 +101,7 @@ async fn mesh() -> Mesh {
         &server,
         CORE_NODE,
         SERVER,
-        fleet_contract(),
+        robot_leases_contract(),
         "check_move",
         &daemon_producer,
         READINESS_TIMEOUT,
@@ -107,7 +112,7 @@ async fn mesh() -> Mesh {
         &server,
         CORE_NODE,
         SERVER,
-        fleet_contract(),
+        robot_leases_contract(),
         "changes",
         &daemon_producer,
         READINESS_TIMEOUT,
@@ -152,12 +157,12 @@ fn rules(mesh: &Mesh) -> MoveRules {
         identity(),
         ProducerRef::new(CORE_NODE, DAEMON),
     )
-    .expect("the codecs of fleet:v1 lay out")
+    .expect("the codecs of robot_leases:v1 lay out")
 }
 
-/// The codec of one side of a member of `fleet:v1`.
-fn fleet_codec(member: &str, side: &str) -> MessageCodec {
-    let document = DaemonInterface::Fleet.document();
+/// The codec of one side of a member of `robot_leases:v1`.
+fn robot_leases_codec(member: &str, side: &str) -> MessageCodec {
+    let document = DaemonInterface::RobotLeases.document();
     let format = match side {
         "response" => document
             .service(member)
@@ -188,7 +193,7 @@ fn check_move_answer(refusal: Option<(&str, &str)>, revision: u64) -> Payload {
         }
     };
     Payload::from(
-        fleet_codec("check_move", "response")
+        robot_leases_codec("check_move", "response")
             .encode(&value)
             .expect("the answer fits the format"),
     )
@@ -209,7 +214,7 @@ fn change(kind: ChangeKind, halted_by: Option<&str>, revision: u64) -> NonEmptyP
     })
     .expect("a change serializes");
     NonEmptyPayload::try_new(Payload::from(
-        fleet_codec("changes", "feedback")
+        robot_leases_codec("changes", "feedback")
             .encode(&value)
             .expect("the change fits the format"),
     ))
@@ -308,7 +313,7 @@ async fn a_marked_call_goes_on_only_when_the_daemon_allows_it() {
     assert_eq!(rules.check(&arm_producer()).await, Ok(cleared_at(7)));
     let asked = &mesh.check_move.captured()[0];
     assert_eq!(
-        fleet_codec("check_move", "request")
+        robot_leases_codec("check_move", "request")
             .decode(asked.message.payload_bytes().as_ref())
             .expect("the request decodes"),
         json!({ "instance": ARM }),
@@ -624,7 +629,7 @@ async fn a_lost_follow_stops_its_goals_and_the_next_goal_follows_again() {
         .expect("the next goal follows the changes again")
         .refuse(Failure::new(
             PeppyFailureKind::Rejected,
-            "framework_controls_inst has no `fleet` target",
+            "framework_controls_inst has no `robot_leases` target",
         ))
         .await
         .expect("the daemon refuses the follow");

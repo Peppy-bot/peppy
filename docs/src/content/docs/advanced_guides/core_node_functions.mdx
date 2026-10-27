@@ -17,7 +17,7 @@ Every Peppy stack has a **core node** that tracks which nodes have been added, w
 
 Both take a `NodeRunner`, the same handle your node receives from `NodeBuilder::new().run(...)` (see the [services guide](/advanced_guides/services/) for a typical setup).
 
-A node also calls the daemon interfaces of peppy, such as the fleet listing and the leases of `fleet:v1`, through the [daemon targets](#daemon-targets) of its manifest, with the client that `peppygen` generates for them.
+A node also calls the daemon interfaces of peppy, such as the fleet listing and the leases of `robot_leases:v1`, through the [daemon targets](#daemon-targets) of its manifest, with the client that `peppygen` generates for them.
 
 ## When to use these
 
@@ -215,7 +215,7 @@ Both `info` and `stack.list` default to a 10-second timeout. Pass an explicit ti
 
 ## Daemon targets
 
-A node calls a **daemon interface**, an interface that the peppy daemon serves and no node implements, through a **daemon target** of its manifest. A daemon interface is a document in the contract format that is compiled into `peppy`. [The interfaces peppy serves](/advanced_guides/mcp/#the-interfaces-peppy-serves) lists them. For example, `fleet:v1` holds the fleet listing, the leases of the robots and the halt of the stack (see [Robot leases and the halt](/advanced_guides/fleet/)).
+A node calls a **daemon interface**, an interface that the peppy daemon serves and no node implements, through a **daemon target** of its manifest. A daemon interface is a document in the contract format that is compiled into `peppy`. [The interfaces peppy serves](/advanced_guides/mcp/#the-interfaces-peppy-serves) lists them. For example, `robot_leases:v1` holds the fleet listing, the leases of the robots and the halt of the stack (see [Robot leases and the halt](/advanced_guides/fleet/)).
 
 ### Declaring a daemon target
 
@@ -230,7 +230,7 @@ A node calls a **daemon interface**, an interface that the peppy daemon serves a
         name: "lease_holder",
         tag: "v1",
         depends_on: {
-          daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }],
+          daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }],
         },
       },
       interfaces: {
@@ -260,7 +260,7 @@ A node calls a **daemon interface**, an interface that the peppy daemon serves a
         name: "lease_holder",
         tag: "v1",
         depends_on: {
-          daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }],
+          daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }],
         },
       },
       interfaces: {
@@ -293,7 +293,7 @@ The add and the sync of the node read the members of the interface from the docu
 
 ### The client of a daemon target
 
-The generator writes the client of each consumed member as for a contract slot, under the `link_id` of the target: `consumed_services/<link_id>/<member>` and `consumed_actions/<link_id>/<member>`. `bound_producer()` gives the daemon, and each call goes to the daemon as the provider of the interface. Each member gives the failure kinds of the interface that it lists, beside the kinds of peppy: `take` of `fleet:v1` gives `halted` and `leased`.
+The generator writes the client of each consumed member as for a contract slot, under the `link_id` of the target: `consumed_services/<link_id>/<member>` and `consumed_actions/<link_id>/<member>`. `bound_producer()` gives the daemon, and each call goes to the daemon as the provider of the interface. Each member gives the failure kinds of the interface that it lists, beside the kinds of peppy: `take` of `robot_leases:v1` gives `halted` and `leased`.
 
 <Tabs>
   <TabItem label="Python">
@@ -364,11 +364,11 @@ The generator writes the client of each consumed member as for a contract slot, 
   </TabItem>
 </Tabs>
 
-A long goal of an interface, such as `changes` and `lease` of `fleet:v1`, runs until its client cancels it. The handle of the goal keeps every feedback message until the client reads it, up to the feedback bound of `fire_goal`. A client that reads the feedback and falls behind by more messages than its bound cancels the goal, and its next read gives the loss as an error (see [Receiving feedback](/advanced_guides/actions/#receiving-feedback)).
+A long goal of an interface, such as `changes` and `lease` of `robot_leases:v1`, runs until its client cancels it. The handle of the goal keeps every feedback message until the client reads it, up to the feedback bound of `fire_goal`. A client that reads the feedback and falls behind by more messages than its bound cancels the goal, and its next read gives the loss as an error (see [Receiving feedback](/advanced_guides/actions/#receiving-feedback)).
 
 ### Scoping a daemon target
 
-The launcher gives each daemon target of an instance a scope in the [`daemon_scopes`](/guides/launch_files/#daemon_scopes-optional) of the instance, keyed by the `link_id` of the target, or with a `set_daemon_scopes` adjustment on the instance. `{ vacant: "<why>" }` leaves the target unserved. A `fleet` scope names the members of `fleet:v1` that the client may call: `members` names at least one of `list`, `contract`, `changes`, `lease`, `check_move`, `halt` and `clear_halt`, each once, and `lease` brings `take`, `release`, `offer`, `open` and `close`.
+The launcher gives each daemon target of an instance a scope in the [`daemon_scopes`](/guides/launch_files/#daemon_scopes-optional) of the instance, keyed by the `link_id` of the target, or with a `set_daemon_scopes` adjustment on the instance. `{ vacant: "<why>" }` leaves the target unserved. A `robot_leases` scope names the members of `robot_leases:v1` that the client may call: `members` names at least one of `list`, `contract`, `changes`, `lease`, `check_move`, `halt` and `clear_halt`, each once, and `lease` brings `take`, `release`, `offer`, `open` and `close`.
 
 ```json5 title="peppy_launcher.json5"
 {

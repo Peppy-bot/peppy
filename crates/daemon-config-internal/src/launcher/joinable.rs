@@ -1,9 +1,9 @@
 //! The joinable nodes of a launch: every node that a join of an option of a
-//! `stack_copies` scope can bring. The launch checks of the scope compose one
-//! trial copy of each feature set of each scoped option over the bare stack,
-//! and the nodes of these copies are the joinable nodes. The nodes of a copy
-//! do not depend on the other copies of the stack, so the set is exact and
-//! closed when the launch starts.
+//! `robot_membership` scope can bring. The launch checks of the scope compose
+//! one trial copy of each feature set of each scoped option over the bare
+//! stack, and the nodes of these copies are the joinable nodes. The nodes of
+//! a copy do not depend on the other copies of the stack, so the set is exact
+//! and closed when the launch starts.
 
 use super::types::{Deployment, DeploymentSource};
 use config::runtime::Name;

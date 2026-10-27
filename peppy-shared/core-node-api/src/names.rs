@@ -14,15 +14,16 @@ pub const CORE_NODE_TAG: &str = "core";
 /// or program that runs it, once the key of the command line proves the call.
 pub const COMMAND_LINE_INSTANCE_ID: &str = "peppy-cli";
 
-/// The daemon interface `stack_copies`, as `(name, tag)`.
-pub const STACK_COPIES_INTERFACE: (&str, &str) = ("stack_copies", "v1");
+/// The daemon interface `robot_membership`, as `(name, tag)`.
+pub const ROBOT_MEMBERSHIP_INTERFACE: (&str, &str) = ("robot_membership", "v1");
 
-/// The daemon interface `fleet`, as `(name, tag)`.
-pub const FLEET_INTERFACE: (&str, &str) = ("fleet", "v1");
+/// The daemon interface `robot_leases`, as `(name, tag)`.
+pub const ROBOT_LEASES_INTERFACE: (&str, &str) = ("robot_leases", "v1");
 
 /// Every daemon interface that a daemon serves, as `(name, tag)`. A call of a
 /// member of one of them goes to a daemon, so its sender signs it.
-pub const DAEMON_INTERFACES: [(&str, &str); 2] = [STACK_COPIES_INTERFACE, FLEET_INTERFACE];
+pub const DAEMON_INTERFACES: [(&str, &str); 2] =
+    [ROBOT_MEMBERSHIP_INTERFACE, ROBOT_LEASES_INTERFACE];
 
 /// Whether the contract `name` at `tag` is a daemon interface.
 pub fn is_daemon_interface(name: &str, tag: &str) -> bool {

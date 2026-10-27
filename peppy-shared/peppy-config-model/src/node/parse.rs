@@ -2599,8 +2599,8 @@ mod tests {
         )
     }
 
-    /// The members of `fleet:v1` that a lease holder calls, consumed through
-    /// the daemon target `fleet`.
+    /// The members of `robot_leases:v1` that a lease holder calls, consumed
+    /// through the daemon target `fleet`.
     const FLEET_LEASE_HOLDER: &str = r#"{
         services: { consumes: [
             { link_id: "fleet", name: "list" },
@@ -2615,7 +2615,7 @@ mod tests {
     #[test]
     fn a_daemon_target_parses_and_its_members_are_consumed_through_its_link_id() {
         let config = NodeConfigParser::from_content(&daemon_target_node(
-            r#"{ daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }] }"#,
+            r#"{ daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }] }"#,
             FLEET_LEASE_HOLDER,
         ))
         .expect("a node with a daemon target parses");
@@ -2623,7 +2623,7 @@ mod tests {
         assert_eq!(
             depends_on.daemon,
             [crate::node::DaemonTargetDependency {
-                name: crate::runtime::Name::new("fleet").unwrap(),
+                name: crate::runtime::Name::new("robot_leases").unwrap(),
                 tag: "v1".to_owned(),
                 link_id: "fleet".to_owned(),
             }]
@@ -2658,24 +2658,26 @@ mod tests {
         for (entry, expected) in [
             (
                 format!(
-                    r#"{{ name: "fleet", tag: "v1", link_id: "fleet", sha256: "{}" }}"#,
+                    r#"{{ name: "robot_leases", tag: "v1", link_id: "fleet", sha256: "{}" }}"#,
                     "0".repeat(64)
                 ),
                 "Daemon target `fleet` in depends_on.daemon carries `sha256`; the document of a \
                  daemon interface is compiled into peppy and is never pinned, so remove `sha256`",
             ),
             (
-                r#"{ name: "fleet", tag: "v1", link_id: "fleet", cardinality: "one" }"#.to_owned(),
+                r#"{ name: "robot_leases", tag: "v1", link_id: "fleet", cardinality: "one" }"#
+                    .to_owned(),
                 "Daemon target `fleet` in depends_on.daemon carries `cardinality`; the daemon \
                  that runs the instance is the one producer of a daemon target, so remove \
                  `cardinality`",
             ),
             (
-                r#"{ name: "fleet", tag: "v1", link_id: "fleet", role: "holder" }"#.to_owned(),
+                r#"{ name: "robot_leases", tag: "v1", link_id: "fleet", role: "holder" }"#
+                    .to_owned(),
                 "unknown field `role`",
             ),
             (
-                r#"{ name: "fleet", link_id: "fleet" }"#.to_owned(),
+                r#"{ name: "robot_leases", link_id: "fleet" }"#.to_owned(),
                 "missing field `tag`",
             ),
         ] {
@@ -2700,7 +2702,7 @@ mod tests {
         ] {
             let error = parse_error(&daemon_target_node(
                 &format!(
-                    r#"{{ daemon: [{{ name: "fleet", tag: "v1", link_id: "fleet" }}], {other} }}"#
+                    r#"{{ daemon: [{{ name: "robot_leases", tag: "v1", link_id: "fleet" }}], {other} }}"#
                 ),
                 FLEET_LEASE_HOLDER,
             ));
@@ -2715,7 +2717,7 @@ mod tests {
                 manifest: {{
                     name: "director", tag: "v1",
                     implements: [{{ name: "fleet_view", tag: "v1", link_id: "fleet" }}],
-                    depends_on: {{ daemon: [{{ name: "fleet", tag: "v1", link_id: "fleet" }}] }},
+                    depends_on: {{ daemon: [{{ name: "robot_leases", tag: "v1", link_id: "fleet" }}] }},
                 }},
                 interfaces: {FLEET_LEASE_HOLDER},
                 execution: {{ language: "rust", run_cmd: ["./bin"] }},
@@ -2733,8 +2735,8 @@ mod tests {
     fn two_daemon_targets_of_one_interface_are_refused() {
         let error = parse_error(&daemon_target_node(
             r#"{ daemon: [
-                { name: "fleet", tag: "v1", link_id: "fleet" },
-                { name: "fleet", tag: "v2", link_id: "other_fleet" },
+                { name: "robot_leases", tag: "v1", link_id: "fleet" },
+                { name: "robot_leases", tag: "v2", link_id: "other_fleet" },
             ] }"#,
             FLEET_LEASE_HOLDER,
         ));
@@ -2742,7 +2744,7 @@ mod tests {
             matches!(
                 &error,
                 ParsingError::DuplicateDaemonInterface { name, first, second }
-                    if name == "fleet" && first == "fleet" && second == "other_fleet"
+                    if name == "robot_leases" && first == "fleet" && second == "other_fleet"
             ),
             "expected DuplicateDaemonInterface, got: {error:?}"
         );
@@ -2754,7 +2756,7 @@ mod tests {
     #[test]
     fn a_daemon_target_is_consumed_and_never_produced() {
         let error = parse_error(&daemon_target_node(
-            r#"{ daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }] }"#,
+            r#"{ daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }] }"#,
             r#"{ services: { exposes: [{ link_id: "fleet", name: "list" }] } }"#,
         ));
         assert!(
@@ -2767,7 +2769,7 @@ mod tests {
         );
 
         let config = NodeConfigParser::from_content(&daemon_target_node(
-            r#"{ daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }] }"#,
+            r#"{ daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }] }"#,
             r#"{ services: { consumes: [{ link_id: "fleets", name: "list" }] } }"#,
         ))
         .expect("an undeclared consumed link_id is a dependency error, not a parse error");

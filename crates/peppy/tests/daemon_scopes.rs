@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The design's `framework/framework_controls.json5`, kept beside the
-/// registry of the daemon interfaces whose `stack_copies:v1` it names.
+/// registry of the daemon interfaces whose `robot_membership:v1` it names.
 const FRAMEWORK_CONTROLS: &str = include_str!(
     "../../daemon-config-internal/src/daemon_interface/fixtures/framework_controls.json5"
 );
@@ -24,7 +24,7 @@ const SCOPE: &str = r#"{
 }"#;
 
 /// A peppy home whose exposure cache holds `framework_controls:v1`,
-/// `unserved_controls:v1`, the same document naming a tag of `stack_copies`
+/// `unserved_controls:v1`, the same document naming a tag of `robot_membership`
 /// this peppy does not serve, and `pinned_controls:v1`, the same document
 /// pinning its daemon target with a `sha256`, which does not parse. Its nodes
 /// and contracts caches are empty, and it holds no `absent_controls:v1`.
@@ -43,8 +43,8 @@ fn cold_home() -> (PeppyDirs, tempfile::TempDir) {
                 r#"name: "unserved_controls""#,
             )
             .replace(
-                r#"daemon: { name: "stack_copies", tag: "v1" }"#,
-                r#"daemon: { name: "stack_copies", tag: "v2" }"#,
+                r#"daemon: { name: "robot_membership", tag: "v1" }"#,
+                r#"daemon: { name: "robot_membership", tag: "v2" }"#,
             ),
     )
     .expect("exposure");
@@ -57,9 +57,9 @@ fn cold_home() -> (PeppyDirs, tempfile::TempDir) {
                 r#"name: "pinned_controls""#,
             )
             .replace(
-                r#"daemon: { name: "stack_copies", tag: "v1" }"#,
+                r#"daemon: { name: "robot_membership", tag: "v1" }"#,
                 &format!(
-                    r#"daemon: {{ name: "stack_copies", tag: "v1", sha256: "{}" }}"#,
+                    r#"daemon: {{ name: "robot_membership", tag: "v1", sha256: "{}" }}"#,
                     "0".repeat(64)
                 ),
             ),
@@ -178,9 +178,9 @@ fn a_scoped_daemon_target_resolves_with_a_cold_nodes_cache() {
 }
 
 /// The flat launcher `peppy stack resolve` prints keeps the scope and drops
-/// the axes, so no option of a `stack_copies` scope runs as copies there: the
-/// flat file is refused, as its launch refuses it, and the refusal says why
-/// and what to launch instead.
+/// the axes, so no option of a `robot_membership` scope runs as copies there:
+/// the flat file is refused, as its launch refuses it, and the refusal says
+/// why and what to launch instead.
 #[test]
 fn the_flat_launcher_of_a_scoped_launcher_is_refused_and_says_why() {
     let (dirs, root) = cold_home();
@@ -219,7 +219,7 @@ fn a_daemon_target_without_a_scope_is_refused() {
     assert!(
         error.contains("the flat launcher breaks daemon scope rules a launch would reject")
             && error.contains(
-                "daemon target `stack` (stack_copies:v1) of instance `framework_controls_inst` \
+                "daemon target `stack` (robot_membership:v1) of instance `framework_controls_inst` \
                  has no scope"
             ),
         "{error}"
@@ -345,8 +345,8 @@ fn a_daemon_interface_this_peppy_does_not_serve_is_refused_by_resolve() {
     assert!(
         error.contains("would be refused at launch")
             && error.contains(
-                "target `stack`: daemon interface `stack_copies:v2` is not one this peppy \
-                 serves; it serves `stack_copies` at tag `v1` only"
+                "target `stack`: daemon interface `robot_membership:v2` is not one this peppy \
+                 serves; it serves `robot_membership` at tag `v1` only"
             ),
         "{error}"
     );
@@ -417,8 +417,9 @@ fn an_exposure_document_that_does_not_parse_fails_resolve() {
     assert!(
         error.contains("deployment exposures [pinned_controls:v1] would be refused at launch")
             && error.contains("exposure `pinned_controls:v1` does not parse")
-            && error
-                .contains("target `stack` pins daemon interface `stack_copies:v1` with `sha256`"),
+            && error.contains(
+                "target `stack` pins daemon interface `robot_membership:v1` with `sha256`"
+            ),
         "{error}"
     );
 }
@@ -522,7 +523,7 @@ fn resolve_holds_the_features_of_a_scope_to_the_launch_checks() {
 }
 
 /// The deployment of `director:v1`, a node whose manifest names the daemon
-/// target `fleet` of `fleet:v1`.
+/// target `fleet` of `robot_leases:v1`.
 const DIRECTOR_DEPLOYMENT: &str =
     r#"{ source: { name: "director", tag: "v1" }, instances: [{ instance_id: "director_inst" }] }"#;
 
@@ -536,7 +537,7 @@ fn cache_director(root: &Path) {
         r#"{
             peppy_schema: "node/v1",
             manifest: { name: "director", tag: "v1", depends_on: {
-                daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }],
+                daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }],
             } },
             interfaces: { actions: { consumes: [{ link_id: "fleet", name: "lease" }] } },
             execution: { language: "rust", run_cmd: ["./director"] },
@@ -574,7 +575,9 @@ fn the_daemon_target_of_a_cached_node_is_checked_and_an_uncached_one_is_reported
         launcher_with(root.path(), ENDPOINT, &scoped(SCOPE), DIRECTOR_DEPLOYMENT),
     );
     assert!(
-        error.contains("daemon target `fleet` (fleet:v1) of instance `director_inst` has no scope"),
+        error.contains(
+            "daemon target `fleet` (robot_leases:v1) of instance `director_inst` has no scope"
+        ),
         "{error}"
     );
 

@@ -5,7 +5,7 @@ sidebar:
   order: 23
 ---
 
-A daemon reads the sender of each call to its raw services, its raw actions and its daemon interfaces (`fleet:v1` and `stack_copies:v1`). It checks the [scopes](/advanced_guides/fleet/#scopes-and-raw-calls) of the daemon targets, the raw-call rules and the rights of the command line against the sender that the call proves, not against the instance id and the machine that the call gives. A node cannot call a daemon under the id of another client, such as `peppy-cli` or a lease holder.
+A daemon reads the sender of each call to its raw services, its raw actions and its daemon interfaces (`robot_leases:v1` and `robot_membership:v1`). It checks the [scopes](/advanced_guides/fleet/#scopes-and-raw-calls) of the daemon targets, the raw-call rules and the rights of the command line against the sender that the call proves, not against the instance id and the machine that the call gives. A node cannot call a daemon under the id of another client, such as `peppy-cli` or a lease holder.
 
 ## Keys
 

@@ -1,8 +1,8 @@
 //! A Rust node with a daemon target gets a client of its daemon interface:
-//! the generator writes the consumed members of `fleet:v1` as for a consumed
-//! contract slot, each addressing the daemon as the provider of the contract
-//! through the `one` slot of the target, and the node that calls them
-//! compiles.
+//! the generator writes the consumed members of `robot_leases:v1` as for a
+//! consumed contract slot, each addressing the daemon as the provider of the
+//! contract through the `one` slot of the target, and the node that calls
+//! them compiles.
 
 use crate::daemon_target_fixtures::{
     ACTION, LINK_ID, SERVICES, lease_holder_interfaces, lease_holder_manifest,
@@ -91,7 +91,7 @@ fn a_rust_node_with_a_daemon_target_gets_a_client_of_its_interface() {
             &[
                 &format!("const LINK_ID: &str = \"{LINK_ID}\";"),
                 "SenderTarget::contract(",
-                "\"fleet\"",
+                "\"robot_leases\"",
                 "pub fn bound_producer(",
             ],
         );

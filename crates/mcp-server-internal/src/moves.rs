@@ -1,18 +1,19 @@
 //! The fleet rules of the server for each member with the mark
 //! `moves_robot`.
 //!
-//! Before each call of such a member, the server asks `fleet.check_move` of
-//! the daemon that serves the fleet of the stack, and refuses the call with
-//! the failure kind and the message of a refusal ([`MoveRules::check`]). An
-//! allowed move gives the revision of the fleet that the check read
-//! ([`MoveClearance`]). While a goal on such a member runs, the server
-//! follows `fleet.changes` ([`MoveRules::follow_marked_goal`]), and cancels
-//! each of these goals as their client does ([`MarkedSurface`]) at a halt
-//! that a change of a later revision than its check gives, and when the
-//! follow of the changes ends before the server stops it: a server that
-//! cannot see a halt runs no such goal ([`FleetStop`]). The server follows
-//! such a goal until it ends, also after the client of its call stopped
-//! waiting for it ([`follow_unwaited_goal`]).
+//! Before each call of such a member, the server asks
+//! `robot_leases.check_move` of the daemon that serves the fleet of the
+//! stack, and refuses the call with the failure kind and the message of a
+//! refusal ([`MoveRules::check`]). An allowed move gives the revision of the
+//! fleet that the check read ([`MoveClearance`]). While a goal on such a
+//! member runs, the server follows `robot_leases.changes`
+//! ([`MoveRules::follow_marked_goal`]), and cancels each of these goals as
+//! their client does ([`MarkedSurface`]) at a halt that a change of a later
+//! revision than its check gives, and when the follow of the changes ends
+//! before the server stops it: a server that cannot see a halt runs no such
+//! goal ([`FleetStop`]). The server follows such a goal until it ends, also
+//! after the client of its call stopped waiting for it
+//! ([`follow_unwaited_goal`]).
 
 #[cfg(test)]
 mod tests;
@@ -21,8 +22,8 @@ use crate::bridges::TaskSurface;
 use crate::serve::ServeError;
 use config::failure_kind::FailureKindName;
 use daemon_config::daemon_interface::DaemonInterface;
-use daemon_config::daemon_interface::fleet::{
-    CheckMoveRequest, CheckMoveResponse, FleetChange, FleetMember,
+use daemon_config::daemon_interface::robot_leases::{
+    CheckMoveRequest, CheckMoveResponse, FleetChange, RobotLeasesMember,
 };
 use peppy_codec::consumer::{
     ActionClient, ConsumerError, ConsumerIdentity, GoalHandle, MemberBinding, ServiceClient,
@@ -175,9 +176,9 @@ impl MoveRules {
         identity: ConsumerIdentity,
         fleet: ProducerRef,
     ) -> Result<Self, ServeError> {
-        let document = DaemonInterface::Fleet.document();
-        let check_move = FleetMember::CheckMove.name();
-        let changes = FleetMember::Changes.name();
+        let document = DaemonInterface::RobotLeases.document();
+        let check_move = RobotLeasesMember::CheckMove.name();
+        let changes = RobotLeasesMember::Changes.name();
         Ok(Self {
             inner: Arc::new(Inner {
                 messenger,

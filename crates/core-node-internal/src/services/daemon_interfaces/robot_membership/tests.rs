@@ -3,7 +3,7 @@ mod provider;
 use super::*;
 use core_node_api::encoding::AxisSelection;
 
-fn scope() -> StackCopiesScope {
+fn scope() -> RobotMembershipScope {
     serde_json::from_value(serde_json::json!({
         "max_copies": 2,
         "options": [

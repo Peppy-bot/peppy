@@ -1,6 +1,6 @@
 # The one way to send a stack goal to a daemon, follow it and read its
 # result, with the default budgets of a goal that adds nodes. The CLI and the
-# daemon's provider of `stack_copies:v1` both use it, so it depends on
+# daemon's provider of `robot_membership:v1` both use it, so it depends on
 # neither.
 [package]
 name = "stack-goal"

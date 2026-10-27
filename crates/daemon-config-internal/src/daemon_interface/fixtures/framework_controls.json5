@@ -1,15 +1,15 @@
 // The peppy framework that runs the robots, as one MCP surface: the calls
 // that change the stack of nodes and its halt, not the world and not the
 // motion of a robot. Its two targets name daemon interfaces: stack names
-// stack_copies:v1, the copies of the launch, and fleet names fleet:v1, the
-// fleet of the stack, its leases and its halt. The peppy daemon that started
-// the server serves them, and no node implements them. The launcher scopes
-// each target. The scope of stack gives the robot options a client may add,
-// the robot model and the description of each, the features of each with
-// their descriptions, and the most robots of these options the stack holds,
-// or leaves the target vacant, and the server then serves no stack tool. So
-// the document names no robot model, no option and no feature. The scope of
-// fleet names the members its client may call, of list, halt and
+// robot_membership:v1, the copies of the launch, and fleet names
+// robot_leases:v1, the fleet of the stack, its leases and its halt. The peppy
+// daemon that started the server serves them, and no node implements them.
+// The launcher scopes each target. The scope of stack gives the robot options
+// a client may add, the robot model and the description of each, the features
+// of each with their descriptions, and the most robots of these options the
+// stack holds, or leaves the target vacant, and the server then serves no
+// stack tool. So the document names no robot model, no option and no feature.
+// The scope of fleet names the members its client may call, of list, halt and
 // clear_halt, and the server serves the tools of these members alone: a
 // launcher that keeps the clearance of a halt with the command line leaves
 // clear_halt out.
@@ -20,7 +20,7 @@
 // robot's robot_initializer ends its start only once the simulation stands
 // it.
 //
-// The document selects list, halt and clear_halt of fleet:v1. The other
+// The document selects list, halt and clear_halt of robot_leases:v1. The other
 // members, the contract documents, the leases, the move check and the
 // changes of the fleet, are for programs. A halt is not a motion: it moves
 // no robot, and it stops the clients that ask the daemon before they move a
@@ -51,7 +51,7 @@
     // The copies of the launch, served by the peppy daemon within the
     // launcher's scope; a vacant scope leaves the target unserved.
     stack: {
-      daemon: { name: "stack_copies", tag: "v1" },
+      daemon: { name: "robot_membership", tag: "v1" },
       services: [
         {
           member: "list",
@@ -81,7 +81,7 @@
     // The fleet of the stack and its halt, served by the peppy daemon
     // within the launcher's scope.
     fleet: {
-      daemon: { name: "fleet", tag: "v1" },
+      daemon: { name: "robot_leases", tag: "v1" },
       services: [
         {
           member: "list",

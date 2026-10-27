@@ -72,7 +72,7 @@ pub enum CopyAction {
 }
 
 impl CopyAction {
-    /// The action as `stack_copies` names its member: `join` or `remove`.
+    /// The action as `robot_membership` names its member: `join` or `remove`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Join => "join",

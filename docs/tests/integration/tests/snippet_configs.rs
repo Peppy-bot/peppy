@@ -11,7 +11,7 @@
 
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
-use daemon_config::daemon_interface::StackCopiesScope;
+use daemon_config::daemon_interface::RobotMembershipScope;
 use daemon_config::launcher::{LauncherFragmentParser, PeppyLauncherParser};
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use daemon_config::pairing::PeppyPairingParser;
@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 
 const SNIPPETS_ROOT: &str = "docs/src/content/docs/guides/snippets";
 
-/// The launcher snippet whose `stack_copies` scope the launch files guide and
-/// the MCP guide show.
+/// The launcher snippet whose `robot_membership` scope the launch files guide
+/// and the MCP guide show.
 const FRAMEWORK_CONTROLS_LAUNCHER: &str = "launchers/mcp_framework_controls.json5";
 
 /// Walk `root` recursively and collect every peppy document.
@@ -135,7 +135,7 @@ fn docs_snippet_configs_parse() {
 /// interface, as a launch parses it, with the options and the features the
 /// guides describe.
 #[test]
-fn docs_stack_copies_scope_parses() {
+fn docs_robot_membership_scope_parses() {
     let path = workspace_root()
         .join(SNIPPETS_ROOT)
         .join(FRAMEWORK_CONTROLS_LAUNCHER);
@@ -148,9 +148,9 @@ fn docs_stack_copies_scope_parses() {
         .find_map(|instance| instance.daemon_scopes.get("stack"))
         .unwrap_or_else(|| panic!("{} gives no scope to target `stack`", path.display()));
 
-    let scope = StackCopiesScope::deserialize(scope).unwrap_or_else(|error| {
+    let scope = RobotMembershipScope::deserialize(scope).unwrap_or_else(|error| {
         panic!(
-            "the `stack_copies` scope of {} does not parse: {error}",
+            "the `robot_membership` scope of {} does not parse: {error}",
             path.display()
         )
     });

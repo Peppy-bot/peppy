@@ -86,7 +86,7 @@ pub enum StackCommands {
     /// `launcher/v1` document goes to stdout, so it doubles as the escape
     /// hatch (flatten, hand-edit, launch the flat file), while the
     /// resolution report goes to stderr. A flat document declares no axis,
-    /// so the launch of one that keeps a `stack_copies` scope refuses it.
+    /// so the launch of one that keeps a `robot_membership` scope refuses it.
     Resolve {
         /// The launcher to resolve: a repository launcher's name, or a path
         /// to a `launcher/v1` file.
@@ -157,7 +157,7 @@ pub struct LauncherArgs {
     pub rebuild: bool,
     /// Resolve and build only the nodes the launch runs. Without it, the
     /// launch also builds on this daemon each node that a join of an
-    /// option of a `stack_copies` scope can bring, so that such a join
+    /// option of a `robot_membership` scope can bring, so that such a join
     /// here builds nothing.
     #[arg(long)]
     pub no_prebuild: bool,

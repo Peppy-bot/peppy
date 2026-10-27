@@ -1,10 +1,10 @@
 //! The daemon interfaces on the messaging layer. The daemon serves
-//! `stack_copies:v1` and `fleet:v1` as the provider of each contract, under
-//! its own producer address: every service and action of the compiled-in
-//! document of each interface. It reads and writes each message with the
-//! run-time codec of the document, the codec that generated nodes match
-//! byte for byte, so a generated client, the MCP server of peppy and the
-//! command line call these interfaces as they call any contract.
+//! `robot_membership:v1` and `robot_leases:v1` as the provider of each
+//! contract, under its own producer address: every service and action of the
+//! compiled-in document of each interface. It reads and writes each message
+//! with the run-time codec of the document, the codec that generated nodes
+//! match byte for byte, so a generated client, the MCP server of peppy and
+//! the command line call these interfaces as they call any contract.
 //!
 //! The daemon checks each call against the scope of its sender
 //! ([`caller::Caller`]): the command line has no scope and calls every
@@ -21,8 +21,8 @@
 
 mod caller;
 mod codecs;
-mod fleet_members;
-mod stack_copies;
+mod robot_leases;
+mod robot_membership;
 
 pub(crate) use caller::Caller;
 use codecs::{Codecs, Side};
@@ -61,7 +61,7 @@ pub(crate) struct InterfaceContext {
     pub(crate) node_stack: Arc<NodeStack>,
     pub(crate) slice_ownership: Arc<SliceOwnership>,
     codecs: Arc<Codecs>,
-    stack_copies: Arc<stack_copies::StackCopies>,
+    robot_membership: Arc<robot_membership::RobotMembership>,
 }
 
 impl InterfaceContext {
@@ -79,7 +79,7 @@ impl InterfaceContext {
             node_stack,
             slice_ownership,
             codecs: Arc::default(),
-            stack_copies: Arc::default(),
+            robot_membership: Arc::default(),
         }
     }
 
@@ -249,8 +249,8 @@ async fn answer_service(
         return Err(refusal);
     }
     match interface {
-        DaemonInterface::Fleet => fleet_members::answer(ctx, member, request).await,
-        DaemonInterface::StackCopies => stack_copies::answer(ctx, member, request).await,
+        DaemonInterface::RobotLeases => robot_leases::answer(ctx, member, request).await,
+        DaemonInterface::RobotMembership => robot_membership::answer(ctx, member, request).await,
     }
 }
 
@@ -274,7 +274,7 @@ async fn serve_action(
         reports_feedback,
     )
     .await?;
-    if interface == DaemonInterface::StackCopies {
+    if interface == DaemonInterface::RobotMembership {
         // A stack change goes on through a router restart, as each stack
         // goal of the daemon does.
         action.set_sender_grace(crate::services::DAEMON_SENDER_GRACE);
@@ -291,9 +291,11 @@ async fn serve_action(
                     return;
                 }
                 match interface {
-                    DaemonInterface::Fleet => fleet_members::run_goal(&ctx, &member, pending).await,
-                    DaemonInterface::StackCopies => {
-                        stack_copies::run_goal(&ctx, &member, pending).await;
+                    DaemonInterface::RobotLeases => {
+                        robot_leases::run_goal(&ctx, &member, pending).await
+                    }
+                    DaemonInterface::RobotMembership => {
+                        robot_membership::run_goal(&ctx, &member, pending).await;
                     }
                 }
             });

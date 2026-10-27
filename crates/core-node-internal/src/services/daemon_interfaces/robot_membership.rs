@@ -1,6 +1,6 @@
-//! The provider of `stack_copies:v1`: `list`, `join` and `remove` of the
+//! The provider of `robot_membership:v1`: `list`, `join` and `remove` of the
 //! copies of the running launch, within the scope of the sender's
-//! `stack_copies` target.
+//! `robot_membership` target.
 //!
 //! - `list` answers:
 //!   - `options`: the scope's options with their models, descriptions,
@@ -57,9 +57,9 @@ use core_node_api::encoding::{
     StackRemoveGoal,
 };
 use core_node_api::{DaemonFailure, DaemonFailureKind};
-use daemon_config::daemon_interface::fleet::RobotKind;
+use daemon_config::daemon_interface::robot_leases::RobotKind;
 use daemon_config::daemon_interface::{
-    DaemonInterface, DaemonScope, ScopedOption, StackCopiesMember, StackCopiesScope,
+    DaemonInterface, DaemonScope, RobotMembershipMember, RobotMembershipScope, ScopedOption,
 };
 use peppylib::messaging::{
     Failure, GoalContext, NonEmptyPayload, PendingGoal, ServiceAnswer, ServiceRequestContext,
@@ -76,19 +76,19 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-const STACK_COPIES: DaemonInterface = DaemonInterface::StackCopies;
+const ROBOT_MEMBERSHIP: DaemonInterface = DaemonInterface::RobotMembership;
 
 /// How long `list` waits for the presence of the live machines.
 const PRESENCE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The reason of the `busy` refusal of a `join` while another `join` of
-/// `stack_copies:v1` runs on this daemon.
+/// `robot_membership:v1` runs on this daemon.
 const JOIN_BUSY_REASON: &str =
-    "a `join` of stack_copies:v1 is in progress on this daemon; wait for it to finish";
+    "a `join` of robot_membership:v1 is in progress on this daemon; wait for it to finish";
 
 /// The locks of the provider.
 #[derive(Default)]
-pub(super) struct StackCopies {
+pub(super) struct RobotMembership {
     /// Held by a `join` from before it reads the stack until the daemon's
     /// work on it ends.
     joins: Arc<Mutex<()>>,
@@ -172,19 +172,20 @@ struct ChangeLine {
 }
 
 /// The sender that the check of the session verified, with its
-/// `stack_copies` scope, or the refusal of a sender with none.
+/// `robot_membership` scope, or the refusal of a sender with none.
 fn scope_of(
     ctx: &InterfaceContext,
     verified: Option<&VerifiedCaller>,
-) -> Result<(ClientRef, StackCopiesScope), Failure> {
+) -> Result<(ClientRef, RobotMembershipScope), Failure> {
     let (caller, sender) = ctx.caller(verified)?;
-    match caller.scope(STACK_COPIES) {
-        Some(DaemonScope::StackCopies(scope)) => Ok((sender, scope.clone())),
+    match caller.scope(ROBOT_MEMBERSHIP) {
+        Some(DaemonScope::RobotMembership(scope)) => Ok((sender, scope.clone())),
         _ => Err(failure(
             PeppyFailureKind::Rejected,
             format!(
-                "{sender} has no `stack_copies` target with a scope; a launcher gives the scope \
-                 of a daemon target of stack_copies:v1 in the `daemon_scopes` of the instance"
+                "{sender} has no `robot_membership` target with a scope; a launcher gives the \
+                 scope of a daemon target of robot_membership:v1 in the `daemon_scopes` of the \
+                 instance"
             ),
         )),
     }
@@ -196,16 +197,16 @@ pub(super) async fn answer(
     member: &str,
     request: &ServiceRequestContext,
 ) -> ServiceAnswer {
-    if StackCopiesMember::named(member) != Some(StackCopiesMember::List) {
+    if RobotMembershipMember::named(member) != Some(RobotMembershipMember::List) {
         return Err(failure(
             PeppyFailureKind::Rejected,
-            format!("`{member}` is not a service of stack_copies:v1"),
+            format!("`{member}` is not a service of robot_membership:v1"),
         ));
     }
     let (_, scope) = scope_of(ctx, request.verified_caller())?;
-    drop(ctx.stack_copies.admission.lock().await);
+    drop(ctx.robot_membership.admission.lock().await);
     let machines = ctx.live_machines(PRESENCE_TIMEOUT).await?;
-    let fleet = super::fleet_members::fleet_listing(ctx);
+    let fleet = super::robot_leases::fleet_listing(ctx);
     let (copies, launch_copies, change) = {
         let active = ctx.slice_ownership.active.lock();
         let (copies, launch_copies) = active
@@ -228,7 +229,8 @@ pub(super) async fn answer(
     let runs = |name: &str| {
         fleet.robots.iter().any(|robot| {
             robot.name == name
-                && robot.software == daemon_config::daemon_interface::fleet::SoftwareState::Running
+                && robot.software
+                    == daemon_config::daemon_interface::robot_leases::SoftwareState::Running
         })
     };
     let response = ListResponse {
@@ -270,7 +272,7 @@ pub(super) async fn answer(
             .map(|copy| join_input(&scope, copy))
             .collect(),
     };
-    ctx.encode(STACK_COPIES, member, Side::Response, &response)
+    ctx.encode(ROBOT_MEMBERSHIP, member, Side::Response, &response)
 }
 
 /// Runs one goal of `join` or `remove`.
@@ -279,13 +281,13 @@ pub(super) async fn run_goal(ctx: &InterfaceContext, member: &str, pending: Pend
         Ok(scoped) => scoped,
         Err(refusal) => return refuse(pending, refusal).await,
     };
-    match StackCopiesMember::named(member) {
-        Some(StackCopiesMember::Join) => join(ctx, &scope, sender, pending).await,
-        Some(StackCopiesMember::Remove) => remove(ctx, &scope, sender, pending).await,
+    match RobotMembershipMember::named(member) {
+        Some(RobotMembershipMember::Join) => join(ctx, &scope, sender, pending).await,
+        Some(RobotMembershipMember::Remove) => remove(ctx, &scope, sender, pending).await,
         _ => {
             let refusal = failure(
                 PeppyFailureKind::Rejected,
-                format!("`{member}` is not an action of stack_copies:v1"),
+                format!("`{member}` is not an action of robot_membership:v1"),
             );
             refuse(pending, refusal).await;
         }
@@ -311,24 +313,26 @@ fn goal_client(sender: &ClientRef) -> GoalClient {
 
 async fn join(
     ctx: &InterfaceContext,
-    scope: &StackCopiesScope,
+    scope: &RobotMembershipScope,
     sender: ClientRef,
     pending: PendingGoal,
 ) {
-    let name = StackCopiesMember::Join.name();
-    let input: JoinInput = match ctx.decode(STACK_COPIES, name, Side::Goal, pending.request_bytes())
-    {
-        Ok(input) => input,
-        Err(refusal) => return refuse(pending, refusal).await,
-    };
+    let name = RobotMembershipMember::Join.name();
+    let input: JoinInput =
+        match ctx.decode(ROBOT_MEMBERSHIP, name, Side::Goal, pending.request_bytes()) {
+            Ok(input) => input,
+            Err(refusal) => return refuse(pending, refusal).await,
+        };
     let (copy, words) = match typed_join(scope, &ctx.core_node, &input) {
         Ok(join) => join,
         Err(reason) => return refuse(pending, failure(PeppyFailureKind::Rejected, reason)).await,
     };
-    let Ok(lock) = Arc::clone(&ctx.stack_copies.joins).try_lock_owned() else {
+    let Ok(lock) = Arc::clone(&ctx.robot_membership.joins).try_lock_owned() else {
         return refuse(pending, failure(DaemonFailureKind::Busy, JOIN_BUSY_REASON)).await;
     };
-    let admission = Arc::clone(&ctx.stack_copies.admission).lock_owned().await;
+    let admission = Arc::clone(&ctx.robot_membership.admission)
+        .lock_owned()
+        .await;
     let change = Change::Addition {
         name: copy.name.clone(),
         option: copy.option.clone(),
@@ -360,13 +364,13 @@ async fn join(
 
 async fn remove(
     ctx: &InterfaceContext,
-    scope: &StackCopiesScope,
+    scope: &RobotMembershipScope,
     sender: ClientRef,
     pending: PendingGoal,
 ) {
-    let name = StackCopiesMember::Remove.name();
+    let name = RobotMembershipMember::Remove.name();
     let input: RemoveInput =
-        match ctx.decode(STACK_COPIES, name, Side::Goal, pending.request_bytes()) {
+        match ctx.decode(ROBOT_MEMBERSHIP, name, Side::Goal, pending.request_bytes()) {
             Ok(input) => input,
             Err(refusal) => return refuse(pending, refusal).await,
         };
@@ -510,8 +514,8 @@ async fn publish_line(ctx: &InterfaceContext, goal: &GoalContext, step: &str, li
     };
     let encoded = ctx
         .encode(
-            STACK_COPIES,
-            StackCopiesMember::Join.name(),
+            ROBOT_MEMBERSHIP,
+            RobotMembershipMember::Join.name(),
             Side::Feedback,
             &feedback,
         )
@@ -588,7 +592,7 @@ impl Change {
 
 /// The scoped option `option` names.
 fn scoped_option<'a>(
-    scope: &'a StackCopiesScope,
+    scope: &'a RobotMembershipScope,
     option: &str,
 ) -> Result<&'a ScopedOption, String> {
     scope.option(option).ok_or_else(|| {
@@ -604,7 +608,7 @@ fn scoped_option<'a>(
 /// one, `this`, is the coordinator, and a feature on the copy's machine
 /// names no machine, so its part runs with the copy's base.
 fn typed_join(
-    scope: &StackCopiesScope,
+    scope: &RobotMembershipScope,
     this: &str,
     input: &JoinInput,
 ) -> Result<(CopyReference, Vec<SelectionWord>), String> {
@@ -649,7 +653,7 @@ fn typed_join(
 }
 
 /// Whether `option` is an option of the scope.
-fn in_scope(scope: &StackCopiesScope, option: &str) -> bool {
+fn in_scope(scope: &RobotMembershipScope, option: &str) -> bool {
     scope.option(option).is_some()
 }
 
@@ -672,7 +676,7 @@ fn unknown_feature(entry: &ScopedOption, feature: &str) -> String {
 
 /// One copy as `list` gives it, in the shape of a `join` goal, with whether
 /// its software runs.
-fn listed_copy(scope: &StackCopiesScope, copy: &CopyInfo, running: bool) -> ListedCopy {
+fn listed_copy(scope: &RobotMembershipScope, copy: &CopyInfo, running: bool) -> ListedCopy {
     ListedCopy {
         copy: join_input(scope, copy),
         running,
@@ -682,7 +686,7 @@ fn listed_copy(scope: &StackCopiesScope, copy: &CopyInfo, running: bool) -> List
 /// One copy in the shape of a `join` goal: its name, its option, its
 /// machine, and the features of its option that its selections hold, each
 /// with the machine of its part.
-fn join_input(scope: &StackCopiesScope, copy: &CopyInfo) -> JoinInput {
+fn join_input(scope: &RobotMembershipScope, copy: &CopyInfo) -> JoinInput {
     let features = scope
         .option(&copy.option)
         .map(|entry| entry.features_in(&copy.selections))
@@ -706,7 +710,7 @@ fn join_input(scope: &StackCopiesScope, copy: &CopyInfo) -> JoinInput {
 }
 
 /// The copies of the scope's options, in name order.
-fn scoped_copies<'a>(scope: &StackCopiesScope, copies: &'a [CopyInfo]) -> Vec<&'a CopyInfo> {
+fn scoped_copies<'a>(scope: &RobotMembershipScope, copies: &'a [CopyInfo]) -> Vec<&'a CopyInfo> {
     let mut scoped: Vec<&CopyInfo> = copies
         .iter()
         .filter(|copy| in_scope(scope, &copy.option))
@@ -718,7 +722,7 @@ fn scoped_copies<'a>(scope: &StackCopiesScope, copies: &'a [CopyInfo]) -> Vec<&'
 /// A name a copy on the stack has, of any option, and a stack that holds
 /// `max_copies` copies of the scope's options or more, are refused.
 fn refuse_join(
-    scope: &StackCopiesScope,
+    scope: &RobotMembershipScope,
     copies: &[CopyInfo],
     name: &CopyName,
 ) -> Result<(), String> {
@@ -742,7 +746,7 @@ fn refuse_join(
 
 /// `remove` removes a copy of a scoped option only.
 fn refuse_removal(
-    scope: &StackCopiesScope,
+    scope: &RobotMembershipScope,
     copies: &[CopyInfo],
     name: &CopyName,
 ) -> Result<(), String> {
@@ -760,7 +764,7 @@ fn refuse_removal(
 
 /// The scope's options as a message names them: "option so101_sim",
 /// "options openarm_sim and so101_sim".
-fn options_phrase(scope: &StackCopiesScope) -> String {
+fn options_phrase(scope: &RobotMembershipScope) -> String {
     let options: Vec<&str> = scope
         .options()
         .iter()

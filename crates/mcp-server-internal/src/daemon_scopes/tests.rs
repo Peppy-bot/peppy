@@ -47,8 +47,8 @@ fn simulation_scope() -> Value {
 
 fn targets() -> BTreeMap<String, DaemonInterface> {
     BTreeMap::from([
-        ("stack".to_owned(), DaemonInterface::StackCopies),
-        ("fleet".to_owned(), DaemonInterface::Fleet),
+        ("stack".to_owned(), DaemonInterface::RobotMembership),
+        ("fleet".to_owned(), DaemonInterface::RobotLeases),
     ])
 }
 
@@ -73,7 +73,7 @@ fn scope_refusal(scopes: &BTreeMap<String, Value>) -> String {
 fn a_server_without_a_scope_does_not_start() {
     assert_eq!(
         scope_refusal(&scopes(&[("fleet", json!({ "members": ["list"] }))])),
-        "the daemon targets cannot be served:\n  - daemon target `stack` (stack_copies:v1) has \
+        "the daemon targets cannot be served:\n  - daemon target `stack` (robot_membership:v1) has \
          no scope; give it one in the `daemon_scopes` of instance `framework_controls_inst`, or \
          with a `set_daemon_scopes` adjustment on `framework_controls_inst` in the launcher\nA \
          launch and a join check every scope before they start the server; a server started \
@@ -92,11 +92,11 @@ fn a_server_with_a_bad_scope_does_not_start() {
         ("recorder", json!({})),
     ]));
     for expected in [
-        "\n  - the scope of daemon target `stack` (stack_copies:v1) does not parse: `options` \
+        "\n  - the scope of daemon target `stack` (robot_membership:v1) does not parse: `options` \
          names no option",
         "; correct it in the `daemon_scopes` of instance `framework_controls_inst`, or in the \
          `set_daemon_scopes` adjustment on `framework_controls_inst` in the launcher",
-        "\n  - the scope of daemon target `fleet` (fleet:v1) does not parse",
+        "\n  - the scope of daemon target `fleet` (robot_leases:v1) does not parse",
         "\n  - `daemon_scopes.recorder` of instance `framework_controls_inst` names no daemon \
          target of this server; its daemon targets: `fleet`, `stack`",
     ] {
@@ -142,8 +142,8 @@ async fn framework_controls_endpoint(
         &document,
         &[],
         &[
-            DaemonInterface::StackCopies.resolved(),
-            DaemonInterface::Fleet.resolved(),
+            DaemonInterface::RobotMembership.resolved(),
+            DaemonInterface::RobotLeases.resolved(),
         ],
     )
     .expect("the fixture validates against the interfaces");
@@ -185,12 +185,13 @@ async fn the_entries_of_a_daemon_target_reach_the_daemon_within_their_scope() {
         .expect("the ephemeral router starts");
     let daemon_session = router.connect().await.expect("the daemon connects");
     let server = router.connect().await.expect("the server connects");
-    let stack_copies = SenderTarget::contract("stack_copies", "v1").expect("a valid identity");
+    let robot_membership =
+        SenderTarget::contract("robot_membership", "v1").expect("a valid identity");
     let list = MockServiceCore::listen(
         &daemon_session,
         CORE_NODE,
         DAEMON,
-        stack_copies.clone(),
+        robot_membership.clone(),
         "list",
     )
     .await
@@ -199,7 +200,7 @@ async fn the_entries_of_a_daemon_target_reach_the_daemon_within_their_scope() {
         &server,
         CORE_NODE,
         SERVER_INSTANCE,
-        stack_copies,
+        robot_membership,
         "list",
         &ProducerRef::new(CORE_NODE, DAEMON),
         READINESS_TIMEOUT,

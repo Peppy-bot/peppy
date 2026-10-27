@@ -2339,24 +2339,24 @@ mod tests {
         )
     }
 
-    const STACK_COPIES: &str = r#"daemon: { name: "stack_copies", tag: "v1" },"#;
+    const ROBOT_MEMBERSHIP: &str = r#"daemon: { name: "robot_membership", tag: "v1" },"#;
 
     #[test]
     fn a_daemon_target_names_an_interface_by_name_and_tag() {
-        let exposure = parse(&daemon_document(STACK_COPIES)).expect("parses");
+        let exposure = parse(&daemon_document(ROBOT_MEMBERSHIP)).expect("parses");
         let stack = &targets_of(&exposure)["stack"];
         let interface = stack.source.daemon().expect("a daemon target");
-        assert_eq!(interface.to_string(), "stack_copies:v1");
+        assert_eq!(interface.to_string(), "robot_membership:v1");
         assert_eq!(stack.source.contract(), None);
         assert_eq!(
             stack.source.to_string(),
-            "daemon interface `stack_copies:v1`"
+            "daemon interface `robot_membership:v1`"
         );
 
         let serialized = serde_json::to_value(&exposure).expect("serializes");
         assert_eq!(
             serialized["targets"]["stack"]["daemon"],
-            serde_json::json!({ "name": "stack_copies", "tag": "v1" }),
+            serde_json::json!({ "name": "robot_membership", "tag": "v1" }),
             "the reference is written back with no pin and no contract"
         );
         assert!(serialized["targets"]["stack"].get("contract").is_none());
@@ -2367,7 +2367,7 @@ mod tests {
     #[test]
     fn a_target_names_exactly_one_source() {
         let both = parse_err(&daemon_document(&format!(
-            r#"{STACK_COPIES} contract: {{ name: "rgb_camera", tag: "v1" }},"#
+            r#"{ROBOT_MEMBERSHIP} contract: {{ name: "rgb_camera", tag: "v1" }},"#
         )));
         assert!(
             both.contains("target `stack` names both `contract` and `daemon`"),
@@ -2385,15 +2385,16 @@ mod tests {
     #[test]
     fn a_daemon_target_is_never_pinned() {
         let err = parse_err(&daemon_document(&format!(
-            r#"daemon: {{ name: "stack_copies", tag: "v1", sha256: "{RGB_SHA}" }},"#
+            r#"daemon: {{ name: "robot_membership", tag: "v1", sha256: "{RGB_SHA}" }},"#
         )));
         assert!(
-            err.contains("target `stack` pins daemon interface `stack_copies:v1` with `sha256`")
-                && err.contains("compiled into peppy and is never pinned"),
+            err.contains(
+                "target `stack` pins daemon interface `robot_membership:v1` with `sha256`"
+            ) && err.contains("compiled into peppy and is never pinned"),
             "{err}"
         );
         let err = parse_err(&daemon_document(
-            r#"daemon: { name: "stack_copies", tag: "v1", version: 2 },"#,
+            r#"daemon: { name: "robot_membership", tag: "v1", version: 2 },"#,
         ));
         assert!(err.contains("version"), "{err}");
     }
@@ -2402,12 +2403,12 @@ mod tests {
     fn a_daemon_target_sits_on_a_fixed_surface_only() {
         let doc = per_robot(ROBOTS).replace(
             r#"contract: { name: "robot_status", tag: "v1" },"#,
-            STACK_COPIES,
+            ROBOT_MEMBERSHIP,
         );
         let err = parse_err(&doc);
         assert!(
             err.contains(
-                "target `status` names daemon interface `stack_copies:v1` on a per-robot surface"
+                "target `status` names daemon interface `robot_membership:v1` on a per-robot surface"
             ) && err.contains("routed by `robot`")
                 && err.contains("belongs in an exposure without `robots`"),
             "{err}"
@@ -2416,10 +2417,10 @@ mod tests {
 
     #[test]
     fn the_member_rules_hold_for_a_daemon_target() {
-        let empty = with_targets(&format!("stack: {{ {STACK_COPIES} }},"));
+        let empty = with_targets(&format!("stack: {{ {ROBOT_MEMBERSHIP} }},"));
         assert!(parse_err(&empty).contains("target `stack` selects no members"));
 
-        let twice = daemon_document(STACK_COPIES).replace(
+        let twice = daemon_document(ROBOT_MEMBERSHIP).replace(
             "services: [",
             r#"services: [
                         {
@@ -2435,7 +2436,7 @@ mod tests {
                 .contains("target `stack` selects service member `list` more than once")
         );
 
-        let record = daemon_document(STACK_COPIES).replace(
+        let record = daemon_document(ROBOT_MEMBERSHIP).replace(
             "targets: {",
             r#"call_record: { tool: "stack.list", description: "The calls.", keep: 10 },
             targets: {"#,

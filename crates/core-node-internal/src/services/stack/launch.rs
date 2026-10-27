@@ -301,7 +301,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
 
     // Step 2a: The resolution knows which targets are daemon targets, so
     // every scope is parsed into its interface's type here, before anything
-    // starts. A `stack_copies` scope that holds gives the nodes a join of
+    // starts. A `robot_membership` scope that holds gives the nodes a join of
     // its options can bring.
     let joinable = match check_planned_daemon_scopes(
         &prepared,

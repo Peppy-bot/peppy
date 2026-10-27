@@ -1,8 +1,8 @@
-//! The members of `fleet:v1`, as the daemon serves them: the fleet listing
-//! and its changes, the pinned documents, the leases, the move check and the
-//! halt. Every rule of the leases and the halt is in the book of the fleet
-//! ([`crate::services::fleet::FleetBook`]); this module reads each call,
-//! checks it against the scope of its sender, and runs it on the book.
+//! The members of `robot_leases:v1`, as the daemon serves them: the fleet
+//! listing and its changes, the pinned documents, the leases, the move check
+//! and the halt. Every rule of the leases and the halt is in the book of the
+//! fleet ([`crate::services::fleet::FleetBook`]); this module reads each
+//! call, checks it against the scope of its sender, and runs it on the book.
 
 use super::codecs::Side;
 use super::{Caller, InterfaceContext, end_goal, refuse};
@@ -10,9 +10,9 @@ use crate::services::fleet::{ClientRef, FleetBook, Following, Refusal};
 use crate::services::response::failure;
 use crate::services::stack::fleet_listing::pinned_document;
 use config::failure_kind::PeppyFailureKind;
-use daemon_config::daemon_interface::fleet::{
+use daemon_config::daemon_interface::robot_leases::{
     ChangeKind, CheckMoveRequest, CheckMoveResponse, ContractRequest, ContractResponse,
-    FleetListing, FleetMember, MoveTarget, OfferRequest, RobotRequest, TakeRequest,
+    FleetListing, MoveTarget, OfferRequest, RobotLeasesMember, RobotRequest, TakeRequest,
 };
 use daemon_config::daemon_interface::{DaemonInterface, DaemonScope};
 use peppylib::messaging::{
@@ -21,19 +21,24 @@ use peppylib::messaging::{
 use peppylib::types::Payload;
 use serde::Serialize;
 
-const FLEET: DaemonInterface = DaemonInterface::Fleet;
+const ROBOT_LEASES: DaemonInterface = DaemonInterface::RobotLeases;
 
 /// Whether `caller` may call `member`: the command line calls every member,
 /// `check_move` answers every sender, `changes` answers each MCP server of
-/// peppy, and an instance calls what the scope of its `fleet` target gives.
-fn authorize(caller: &Caller, member: FleetMember, sender: &ClientRef) -> Result<(), Failure> {
-    if member == FleetMember::CheckMove || matches!(caller, Caller::CommandLine) {
+/// peppy, and an instance calls what the scope of its `robot_leases` target
+/// gives.
+fn authorize(
+    caller: &Caller,
+    member: RobotLeasesMember,
+    sender: &ClientRef,
+) -> Result<(), Failure> {
+    if member == RobotLeasesMember::CheckMove || matches!(caller, Caller::CommandLine) {
         return Ok(());
     }
-    if member == FleetMember::Changes && caller.is_mcp_server() {
+    if member == RobotLeasesMember::Changes && caller.is_mcp_server() {
         return Ok(());
     }
-    if let Some(DaemonScope::Fleet(scope)) = caller.scope(FLEET)
+    if let Some(DaemonScope::RobotLeases(scope)) = caller.scope(ROBOT_LEASES)
         && scope.allows(member)
     {
         return Ok(());
@@ -41,23 +46,23 @@ fn authorize(caller: &Caller, member: FleetMember, sender: &ClientRef) -> Result
     Err(failure(
         PeppyFailureKind::Rejected,
         format!(
-            "{sender} has no `fleet` target whose scope gives `{}`; a launcher gives the scope \
-             of a daemon target of fleet:v1 in the `daemon_scopes` of the instance",
+            "{sender} has no `robot_leases` target whose scope gives `{}`; a launcher gives the \
+             scope of a daemon target of robot_leases:v1 in the `daemon_scopes` of the instance",
             member.name()
         ),
     ))
 }
 
-/// Answers one request of a service of `fleet:v1`.
+/// Answers one request of a service of `robot_leases:v1`.
 pub(super) async fn answer(
     ctx: &InterfaceContext,
     member: &str,
     request: &ServiceRequestContext,
 ) -> ServiceAnswer {
-    let Some(member) = FleetMember::named(member) else {
+    let Some(member) = RobotLeasesMember::named(member) else {
         return Err(failure(
             PeppyFailureKind::Rejected,
-            format!("`{member}` is not a member of fleet:v1"),
+            format!("`{member}` is not a member of robot_leases:v1"),
         ));
     };
     let (caller, sender) = ctx.caller(request.verified_caller())?;
@@ -65,12 +70,12 @@ pub(super) async fn answer(
     let bytes = request.message().payload_bytes();
     let name = member.name();
     match member {
-        FleetMember::List => {
+        RobotLeasesMember::List => {
             let listing = fleet_listing(ctx);
-            ctx.encode(FLEET, name, Side::Response, &listing)
+            ctx.encode(ROBOT_LEASES, name, Side::Response, &listing)
         }
-        FleetMember::Contract => {
-            let request: ContractRequest = ctx.decode(FLEET, name, Side::Request, &bytes)?;
+        RobotLeasesMember::Contract => {
+            let request: ContractRequest = ctx.decode(ROBOT_LEASES, name, Side::Request, &bytes)?;
             let document = pinned_document(
                 &ctx.node_stack,
                 &request.name,
@@ -86,50 +91,56 @@ pub(super) async fn answer(
                     ),
                 )
             })?;
-            ctx.encode(FLEET, name, Side::Response, &ContractResponse { document })
+            ctx.encode(
+                ROBOT_LEASES,
+                name,
+                Side::Response,
+                &ContractResponse { document },
+            )
         }
-        FleetMember::Take => {
-            let request: TakeRequest = ctx.decode(FLEET, name, Side::Request, &bytes)?;
+        RobotLeasesMember::Take => {
+            let request: TakeRequest = ctx.decode(ROBOT_LEASES, name, Side::Request, &bytes)?;
             take(ctx, &sender, &request).map_err(Refusal::into_failure)?;
             Ok(Payload::new())
         }
-        FleetMember::Release => {
-            let request: RobotRequest = ctx.decode(FLEET, name, Side::Request, &bytes)?;
+        RobotLeasesMember::Release => {
+            let request: RobotRequest = ctx.decode(ROBOT_LEASES, name, Side::Request, &bytes)?;
             ctx.slice_ownership
                 .fleet
                 .with(|book| book.release(&sender, &request.robot))
                 .map_err(Refusal::into_failure)?;
             Ok(Payload::new())
         }
-        FleetMember::Offer => {
-            let request: OfferRequest = ctx.decode(FLEET, name, Side::Request, &bytes)?;
+        RobotLeasesMember::Offer => {
+            let request: OfferRequest = ctx.decode(ROBOT_LEASES, name, Side::Request, &bytes)?;
             offer(ctx, &sender, &request).map_err(Refusal::into_failure)?;
             Ok(Payload::new())
         }
-        FleetMember::Open => {
-            let request: RobotRequest = ctx.decode(FLEET, name, Side::Request, &bytes)?;
+        RobotLeasesMember::Open => {
+            let request: RobotRequest = ctx.decode(ROBOT_LEASES, name, Side::Request, &bytes)?;
             ctx.slice_ownership
                 .fleet
                 .with(|book| book.open(&sender, &request.robot))
                 .map_err(Refusal::into_failure)?;
             Ok(Payload::new())
         }
-        FleetMember::Close => {
-            let request: RobotRequest = ctx.decode(FLEET, name, Side::Request, &bytes)?;
+        RobotLeasesMember::Close => {
+            let request: RobotRequest = ctx.decode(ROBOT_LEASES, name, Side::Request, &bytes)?;
             ctx.slice_ownership
                 .fleet
                 .with(|book| book.close(&sender, &request.robot))
                 .map_err(Refusal::into_failure)?;
             Ok(Payload::new())
         }
-        FleetMember::CheckMove => {
-            let request: CheckMoveRequest = ctx.decode(FLEET, name, Side::Request, &bytes)?;
+        RobotLeasesMember::CheckMove => {
+            let request: CheckMoveRequest =
+                ctx.decode(ROBOT_LEASES, name, Side::Request, &bytes)?;
             let target = MoveTarget::try_from(request)
                 .map_err(|reason| failure(PeppyFailureKind::Rejected, reason))?;
             let response = check_move(ctx, &sender, &target);
-            ctx.encode(FLEET, name, Side::Response, &response)
+            ctx.encode(ROBOT_LEASES, name, Side::Response, &response)
         }
-        FleetMember::Halt => {
+        RobotLeasesMember::Halt => {
             ctx.slice_ownership
                 .fleet
                 .halt(&sender.to_string())
@@ -145,7 +156,7 @@ pub(super) async fn answer(
                 })?;
             Ok(Payload::new())
         }
-        FleetMember::ClearHalt => {
+        RobotLeasesMember::ClearHalt => {
             ctx.slice_ownership.fleet.clear_halt().map_err(|error| {
                 failure(
                     PeppyFailureKind::AttemptFailed,
@@ -154,9 +165,9 @@ pub(super) async fn answer(
             })?;
             Ok(Payload::new())
         }
-        FleetMember::Changes | FleetMember::Lease => Err(failure(
+        RobotLeasesMember::Changes | RobotLeasesMember::Lease => Err(failure(
             PeppyFailureKind::Rejected,
-            format!("`{name}` of fleet:v1 is an action"),
+            format!("`{name}` of robot_leases:v1 is an action"),
         )),
     }
 }
@@ -227,7 +238,7 @@ fn check_move(
         .with(|book| book.check_move(sender, robot.as_deref()))
 }
 
-/// Runs one goal of an action of `fleet:v1`.
+/// Runs one goal of an action of `robot_leases:v1`.
 pub(super) async fn run_goal(ctx: &InterfaceContext, member: &str, pending: PendingGoal) {
     let (caller, sender) = match ctx.caller(pending.verified_caller()) {
         Ok(verified) => verified,
@@ -236,12 +247,12 @@ pub(super) async fn run_goal(ctx: &InterfaceContext, member: &str, pending: Pend
             return;
         }
     };
-    let member = match FleetMember::named(member) {
-        Some(member @ (FleetMember::Changes | FleetMember::Lease)) => member,
+    let member = match RobotLeasesMember::named(member) {
+        Some(member @ (RobotLeasesMember::Changes | RobotLeasesMember::Lease)) => member,
         _ => {
             let refusal = failure(
                 PeppyFailureKind::Rejected,
-                format!("`{member}` is not an action of fleet:v1"),
+                format!("`{member}` is not an action of robot_leases:v1"),
             );
             refuse(pending, refusal).await;
             return;
@@ -252,7 +263,7 @@ pub(super) async fn run_goal(ctx: &InterfaceContext, member: &str, pending: Pend
         return;
     }
     match member {
-        FleetMember::Changes => follow_changes(ctx, pending).await,
+        RobotLeasesMember::Changes => follow_changes(ctx, pending).await,
         _ => hold_leases(ctx, sender, pending).await,
     }
 }
@@ -265,7 +276,7 @@ async fn publish<T: serde::Serialize>(
     feedback: &T,
 ) -> Result<(), String> {
     let payload = ctx
-        .encode(FLEET, member, Side::Feedback, feedback)
+        .encode(ROBOT_LEASES, member, Side::Feedback, feedback)
         .map_err(|error| error.to_string())?;
     let payload = NonEmptyPayload::try_new(payload).map_err(|error| error.to_string())?;
     goal.publish_feedback(payload)
@@ -279,7 +290,7 @@ async fn publish<T: serde::Serialize>(
 struct ChangeFeedback<'a> {
     change: ChangeKind,
     robot: &'a str,
-    #[serde(with = "daemon_config::daemon_interface::fleet::decimal_u64")]
+    #[serde(with = "daemon_config::daemon_interface::robot_leases::decimal_u64")]
     revision: u64,
     listing: &'a FleetListing,
 }
@@ -302,7 +313,7 @@ async fn follow_changes(ctx: &InterfaceContext, pending: PendingGoal) {
             return;
         }
     };
-    let name = FleetMember::Changes.name();
+    let name = RobotLeasesMember::Changes.name();
     let first = ChangeFeedback {
         change: ChangeKind::Listing,
         robot: "",
@@ -367,7 +378,7 @@ async fn hold_leases(ctx: &InterfaceContext, client: ClientRef, pending: Pending
         }
     };
     let mut events = holding.events;
-    let name = FleetMember::Lease.name();
+    let name = RobotLeasesMember::Lease.name();
     let reason = loop {
         tokio::select! {
             biased;

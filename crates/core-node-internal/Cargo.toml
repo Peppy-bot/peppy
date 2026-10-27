@@ -25,7 +25,7 @@ peppy-mcp-catalog = { workspace = true }
 # contract documents, which the node sync, the repository index and the MCP
 # checks read pinned contracts with.
 peppy-codec = { workspace = true }
-# The goal path the provider of `stack_copies:v1` sends its stack changes to
+# The goal path the provider of `robot_membership:v1` sends its stack changes to
 # its own daemon on.
 stack-goal = { workspace = true }
 bytes = "1.10"

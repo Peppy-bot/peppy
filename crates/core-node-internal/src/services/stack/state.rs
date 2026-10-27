@@ -14,7 +14,7 @@ use crate::services::federation::SliceOwnership;
 use crate::services::fleet::{Process, RobotProcesses};
 use config::runtime::{CopyName, CoreNodeName};
 use core_node_api::encoding::{AxisSelection, CopyInfo};
-use daemon_config::daemon_interface::fleet::{ChangeKind, FleetListing};
+use daemon_config::daemon_interface::robot_leases::{ChangeKind, FleetListing};
 use daemon_config::launcher::{
     ClockIncarnations, CopyRecord, DeploymentInstance, PeppyLauncher, Placements, PreparedLauncher,
     ResolvedClocks, UnitSelection,

@@ -39,7 +39,7 @@ use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchResult, ParticipantInstancesRemoveRequest, StackListResponse,
     StackRemoveGoal,
 };
-use daemon_config::daemon_interface::fleet::ChangeKind;
+use daemon_config::daemon_interface::robot_leases::ChangeKind;
 use daemon_config::launcher::{CompositionError, CopyMembership, DeploymentInstance, Placements};
 use peppylib::core_node::transport::poll;
 use peppylib::messaging::Failure;

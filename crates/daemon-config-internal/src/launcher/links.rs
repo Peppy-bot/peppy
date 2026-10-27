@@ -357,7 +357,7 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 nodes: [{ name: "camera", tag: "v1", link_id: "main" }],
-                daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }]
+                daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }]
             }"#,
         );
         let messages: Vec<String> = validate_link_slots(&[item(&instances, Some(&depends_on))])

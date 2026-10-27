@@ -1,10 +1,10 @@
-//! The part of the fleet listing of `fleet:v1` that the record of the launch
-//! gives ([`launch_listing`]): each robot of the launch this daemon
+//! The part of the fleet listing of `robot_leases:v1` that the record of the
+//! launch gives ([`launch_listing`]): each robot of the launch this daemon
 //! coordinates with its kind, its clock, its robot commander, its instances
 //! and its contracts; the contracts of each option and feature that a
-//! `stack_copies` scope of the launch names, with their pinned documents as
-//! the nodes of the stack hold them; and each node with the manifest and the
-//! commit that each machine runs.
+//! `robot_membership` scope of the launch names, with their pinned documents
+//! as the nodes of the stack hold them; and each node with the manifest and
+//! the commit that each machine runs.
 //!
 //! The daemon reads it each time it writes the record of the launch, and
 //! gives it to the book of the fleet, which adds the halt, the leases and
@@ -15,7 +15,7 @@
 use super::state::ActiveLaunch;
 use config::runtime::ClockBinding;
 use daemon_config::consts::peppy_build;
-use daemon_config::daemon_interface::fleet::{
+use daemon_config::daemon_interface::robot_leases::{
     ContractPin, FleetDocument, FleetFeature, FleetInstance, FleetListing, FleetNode, FleetOption,
     FleetRobot, NodeInstance, NodeMachine, RobotContract, RobotKind, SoftwareState,
 };
@@ -172,20 +172,20 @@ fn implemented_contracts(
         .collect()
 }
 
-/// The options of every `stack_copies` scope that the launch gives, each
+/// The options of every `robot_membership` scope that the launch gives, each
 /// once, in the order the scopes list them.
 pub(crate) fn scopes_of_launch(active: &ActiveLaunch) -> Vec<ScopedOption> {
     let mut options: Vec<ScopedOption> = Vec::new();
     for planned in &active.planned {
         for (target, interface) in &planned.targets.daemon {
-            if *interface != DaemonInterface::StackCopies {
+            if *interface != DaemonInterface::RobotMembership {
                 continue;
             }
             for instance in &planned.deployment.instances {
                 let Some(value) = instance.daemon_scopes.get(target) else {
                     continue;
                 };
-                let Ok(TargetScope::Scoped(DaemonScope::StackCopies(scope))) =
+                let Ok(TargetScope::Scoped(DaemonScope::RobotMembership(scope))) =
                     interface.parse_target_scope(value)
                 else {
                     continue;
@@ -201,7 +201,7 @@ pub(crate) fn scopes_of_launch(active: &ActiveLaunch) -> Vec<ScopedOption> {
     options
 }
 
-/// The contracts and the kind of each option of a `stack_copies` scope of
+/// The contracts and the kind of each option of a `robot_membership` scope of
 /// the launch, with the contracts that each of its features adds.
 fn scoped_options(active: &ActiveLaunch) -> Vec<FleetOption> {
     let Ok(trials) = active.prepared.trial_stack(&active.selection) else {

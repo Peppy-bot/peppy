@@ -1,4 +1,4 @@
-//! The provider of `stack_copies:v1` against a fake daemon: an ephemeral
+//! The provider of `robot_membership:v1` against a fake daemon: an ephemeral
 //! router, the provider served as the daemon serves it, a fake core node
 //! that runs `stack_join` and `stack_remove` on peppylib's production goal
 //! engine, under the producer address of the daemon, and a client that
@@ -88,14 +88,14 @@ fn provider() -> ProducerRef {
     ProducerRef::new(CORE_NODE, DAEMON)
 }
 
-fn stack_copies() -> SenderTarget {
-    SenderTarget::contract("stack_copies", "v1").expect("a contract identity")
+fn robot_membership() -> SenderTarget {
+    SenderTarget::contract("robot_membership", "v1").expect("a contract identity")
 }
 
 async fn mesh() -> Mesh {
     mesh_of(active_launch_with_daemon_targets(
         MANAGER,
-        &[("stack", DaemonInterface::StackCopies, scope())],
+        &[("stack", DaemonInterface::RobotMembership, scope())],
     ))
     .await
 }
@@ -181,7 +181,7 @@ async fn mesh_of(active: ActiveLaunch) -> Mesh {
             &client,
             CORE_NODE,
             MANAGER,
-            stack_copies(),
+            robot_membership(),
             action,
             &provider(),
             READINESS_TIMEOUT,
@@ -193,7 +193,7 @@ async fn mesh_of(active: ActiveLaunch) -> Mesh {
         &client,
         CORE_NODE,
         MANAGER,
-        stack_copies(),
+        robot_membership(),
         "list",
         &provider(),
         READINESS_TIMEOUT,
@@ -212,7 +212,7 @@ async fn mesh_of(active: ActiveLaunch) -> Mesh {
     }
 }
 
-/// Sends the goal `goal` of the action `member` of `stack_copies:v1` to the
+/// Sends the goal `goal` of the action `member` of `robot_membership:v1` to the
 /// provider on `client`, as `instance_id`.
 async fn send_as(
     client: &MessengerHandle,
@@ -220,7 +220,7 @@ async fn send_as(
     member: &str,
     goal: Value,
 ) -> GoalHandle {
-    let document = DaemonInterface::StackCopies.document();
+    let document = DaemonInterface::RobotMembership.document();
     ActionClient::of_contract(document, member)
         .expect("the interface declares the action")
         .fire_goal(
@@ -241,7 +241,7 @@ async fn send_as(
 
 /// The answer of `list` to the manager.
 async fn list(mesh: &Mesh) -> Value {
-    let document = DaemonInterface::StackCopies.document();
+    let document = DaemonInterface::RobotMembership.document();
     ServiceClient::of_contract(document, "list")
         .expect("the interface declares the service")
         .call(
@@ -268,7 +268,7 @@ async fn next_join_on(join: &mut MockActionServerCore) -> peppylib::testing::Moc
 }
 
 impl Mesh {
-    /// Sends the goal `goal` of the action `member` of `stack_copies:v1` to
+    /// Sends the goal `goal` of the action `member` of `robot_membership:v1` to
     /// the provider, as `instance_id`.
     async fn send_as(&self, instance_id: &str, member: &str, goal: Value) -> GoalHandle {
         send_as(&self.client, instance_id, member, goal).await
@@ -543,7 +543,7 @@ async fn a_change_with_no_end_fails_the_goal_and_frees_the_lock() {
     join_succeeds(&mut mesh, "charlie").await;
 }
 
-/// The provider refuses a sender with no `stack_copies` target before
+/// The provider refuses a sender with no `robot_membership` target before
 /// anything reaches the daemon.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_sender_with_no_scope_is_refused() {
@@ -556,7 +556,7 @@ async fn a_sender_with_no_scope_is_refused() {
     assert!(
         refusal
             .message()
-            .contains("has no `stack_copies` target with a scope"),
+            .contains("has no `robot_membership` target with a scope"),
         "{}",
         refusal.message()
     );
@@ -660,7 +660,7 @@ async fn list_gives_the_launch_copies_of_the_scope_as_join_goals() {
     let launched = with_launched_copies(
         active_launch_with_daemon_targets(
             MANAGER,
-            &[("stack", DaemonInterface::StackCopies, scope)],
+            &[("stack", DaemonInterface::RobotMembership, scope)],
         ),
         &["alpha.ai_brain_vla@cn-gpu-box", "charlie.ai_brain_vla"],
         &["arm:alpha@cn-jetson-1", "spare:zulu", "arm:charlie"],
