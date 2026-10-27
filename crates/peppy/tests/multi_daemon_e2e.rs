@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use config::consts::{PEPPY_CONFIG_ENV, PEPPY_HOME_ENV};
@@ -237,11 +238,18 @@ fn require_success(output: ExecOutput, operation: &str) -> String {
 const CONTAINER_MACHINE_CERTIFICATES: &str = "/opt/peppy-machine";
 
 /// The directory of the machine certificates of the suite on the host, which
-/// every daemon container mounts: the CA of the suite, `ca.crt`, and the
-/// certificate and the key of each core node that a test runs.
+/// every daemon container mounts: a directory for each core node that a test
+/// runs, with the certificate and the key of that core node and the CA of the
+/// suite, `ca.crt`.
 struct MachineCertificates {
     ca: auth::test_support::TestMachineCa,
     directory: tempfile::TempDir,
+    /// The files of each core node, written once for the suite. Tests that
+    /// run at the same time start daemons of the same core node, so a second
+    /// write could leave the certificate of one write beside the key of
+    /// another, and a daemon that boots then signs with a key that its
+    /// certificate does not name.
+    written: Mutex<BTreeMap<String, auth::test_support::MachineFiles>>,
 }
 
 fn machine_certificates() -> &'static MachineCertificates {
@@ -253,6 +261,7 @@ fn machine_certificates() -> &'static MachineCertificates {
         MachineCertificates {
             ca: auth::test_support::TestMachineCa::root("multi-daemon e2e CA"),
             directory,
+            written: Mutex::default(),
         }
     })
 }
@@ -261,11 +270,22 @@ fn machine_certificates() -> &'static MachineCertificates {
 /// as the daemon container of that core node reads it.
 fn machine_certificate_of(core_node: &str) -> MachineCertificatePaths {
     let certificates = machine_certificates();
-    let files = certificates
-        .ca
-        .write_machine(certificates.directory.path(), core_node);
+    let mut written = certificates
+        .written
+        .lock()
+        .expect("no test panics while it writes a machine certificate");
+    let files = written.entry(core_node.to_owned()).or_insert_with(|| {
+        let directory = certificates.directory.path().join(core_node);
+        std::fs::create_dir(&directory).expect("a directory for the machine certificate");
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755))
+            .expect("the containers read the machine certificate");
+        certificates.ca.write_machine(&directory, core_node)
+    });
     let in_container = |path: &Path| {
-        Path::new(CONTAINER_MACHINE_CERTIFICATES).join(path.file_name().expect("a file name"))
+        let relative = path
+            .strip_prefix(certificates.directory.path())
+            .expect("a file of the directory of the machine certificates");
+        Path::new(CONTAINER_MACHINE_CERTIFICATES).join(relative)
     };
     MachineCertificatePaths {
         trust_anchor: in_container(&files.trust_anchor),
