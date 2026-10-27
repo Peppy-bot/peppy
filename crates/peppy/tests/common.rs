@@ -29,8 +29,9 @@ pub fn assert_daemon_failure(
     );
 }
 
-/// The caller a test names itself in a request to the daemon.
-pub const CALLER_INSTANCE_ID: &str = "peppy-test";
+/// The caller a test names itself in a request to the daemon: the command
+/// line, whose key [`ServeCommandEmulation::command_line_handle`] signs with.
+pub const CALLER_INSTANCE_ID: &str = core_node_api::names::COMMAND_LINE_INSTANCE_ID;
 
 /// How long a `stack list` request may take before a test gives up on it.
 const STACK_LIST_TIMEOUT: Duration = Duration::from_secs(5);

@@ -103,6 +103,13 @@ impl StartedCoreNode {
     /// certificate of the CA of the federation, as the daemons of the other
     /// machines do.
     pub fn remote_handle(&self, core_node: &str) -> MessengerHandle {
+        self.remote_handle_as(core_node, super::CALLER_INSTANCE_ID)
+    }
+
+    /// The session that calls the daemon as the client `instance_id` of the
+    /// machine `core_node` of its federation, whose boot endorses the key of
+    /// that client with a certificate of the CA of the federation.
+    pub fn remote_handle_as(&self, core_node: &str, instance_id: &str) -> MessengerHandle {
         let directory = tempfile::tempdir().expect("a directory for a machine certificate");
         let files = self.machine_ca.write_machine(directory.path(), core_node);
         let machine = MachineCertificate::of_operator(
@@ -119,7 +126,7 @@ impl StartedCoreNode {
             &boot.public_key(),
         );
         let client = pmi::ClientKey::generate();
-        let proof = credential.client_proof(super::CALLER_INSTANCE_ID, &client.public_key(), &boot);
+        let proof = credential.client_proof(instance_id, &client.public_key(), &boot);
         let signer = pmi::ClientCredential::new(client, Some(proof)).into_signer();
         MessengerHandle::from_shared(Arc::clone(&self.shared_messenger)).signing_calls_with(signer)
     }

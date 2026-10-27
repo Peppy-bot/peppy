@@ -1535,7 +1535,10 @@ mod tests {
             );
         }
         let (_tmp, peppy_dirs, _) = dirs_with_config("{ machine_certificate: null }");
-        assert_eq!(load_or_create(&peppy_dirs).unwrap().machine_certificate, None);
+        assert_eq!(
+            load_or_create(&peppy_dirs).unwrap().machine_certificate,
+            None
+        );
     }
 
     #[test]

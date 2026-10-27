@@ -62,10 +62,32 @@ impl<'a> InterfaceClient<'a> {
         }
     }
 
-    /// The session that sends as the instance of this client, signing with
-    /// the key of its current process.
+    /// A client of `fleet:v1` that sends as `instance_id` of the machine
+    /// `core_node` of the federation, with a key that the certificate of
+    /// that machine proves.
+    async fn from_machine(
+        started: &'a StartedCoreNode,
+        core_node: &str,
+        instance_id: &str,
+    ) -> FleetClient<'a> {
+        let mut client = Self::sending_as(started, instance_id).await;
+        client.identity.core_node = core_node.to_owned();
+        client
+    }
+
+    /// The session that sends as the instance of this client: on the
+    /// machine of the daemon, it signs with the key of the current process
+    /// of the instance; on another machine, with a key that the certificate
+    /// of that machine proves.
     pub(super) fn handle(&self) -> MessengerHandle {
-        self.started.handle_of(&self.identity.instance_id)
+        let ConsumerIdentity {
+            core_node,
+            instance_id,
+        } = &self.identity;
+        if *core_node == self.started.core_node_name {
+            return self.started.handle_of(instance_id);
+        }
+        self.started.remote_handle_as(core_node, instance_id)
     }
 
     /// The answer of the service `member` to `request`.
@@ -737,6 +759,33 @@ async fn the_daemon_refuses_its_raw_calls_that_change_the_stack_from_its_instanc
     )
     .await
     .expect("a node of the stack reads the stack listing");
+}
+
+/// The coordinator takes a call of an instance as that instance only from
+/// the machine where the launch places it: another machine of the
+/// federation that gives the id of the director, with a key that its own
+/// certificate proves, gets no scope.
+#[tokio::test]
+async fn another_machine_gets_no_scope_of_an_instance_that_this_machine_runs() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, _responders) =
+        launched_with_alpha(&started, r#"{ members: ["list"] }"#, "fleet-machine-test").await;
+
+    FleetClient::sending_as(&started, DIRECTOR)
+        .await
+        .listing()
+        .await;
+
+    let impostor = FleetClient::from_machine(&started, "cn-other", DIRECTOR).await;
+    let refusal = impostor.refusal(FleetMember::List, json!({})).await;
+    assert_eq!(refusal.kind().as_str(), "rejected");
+    assert!(
+        refusal
+            .message()
+            .contains("has no `fleet` target whose scope gives `list`"),
+        "{}",
+        refusal.message()
+    );
 }
 
 /// A halt that a daemon before this one wrote keeps the stack halted from

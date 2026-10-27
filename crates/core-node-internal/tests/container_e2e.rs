@@ -258,7 +258,10 @@ mod container_e2e_tests {
         let conf_file = started.peppy_dirs.conf_dir().join("data_root_view_e2e.txt");
         std::fs::create_dir_all(started.peppy_dirs.conf_dir()).expect("conf dir");
         std::fs::write(&conf_file, "conf").expect("a file of the configuration directory");
-        assert!(command_line_key.exists(), "the daemon wrote the key of the command line");
+        assert!(
+            command_line_key.exists(),
+            "the daemon wrote the key of the command line"
+        );
 
         let source_dir = tempfile::tempdir().expect("source dir");
         write_peppy_json5(
@@ -270,7 +273,9 @@ mod container_e2e_tests {
             }"#,
         );
         let seen = |label: &str, path: &str| {
-            format!("    if [ -r {path} ]; then echo \"{label}: read\"; else echo \"{label}: hidden\"; fi\n")
+            format!(
+                "    if [ -r {path} ]; then echo \"{label}: read\"; else echo \"{label}: hidden\"; fi\n"
+            )
         };
         let runscript = [
             "    key=$(sed -n 's/.*\"credential\":\"\\([^\"]*\\)\".*/\\1/p' \"$PEPPY_RUNTIME_CONFIG\")\n".to_owned(),
@@ -286,7 +291,9 @@ mod container_e2e_tests {
         .concat();
         std::fs::write(
             source_dir.path().join("apptainer.def"),
-            format!("Bootstrap: docker\nFrom: {DEFAULT_ALPINE_BASE_IMAGE}\n\n%runscript\n{runscript}"),
+            format!(
+                "Bootstrap: docker\nFrom: {DEFAULT_ALPINE_BASE_IMAGE}\n\n%runscript\n{runscript}"
+            ),
         )
         .expect("write apptainer.def");
 
@@ -332,7 +339,11 @@ mod container_e2e_tests {
             )
             .await
         });
-        let view_file = started.peppy_dirs.instances_dir().join(INSTANCE_ID).join("view.txt");
+        let view_file = started
+            .peppy_dirs
+            .instances_dir()
+            .join(INSTANCE_ID)
+            .join("view.txt");
         let view = common::poll_until(
             Duration::from_secs(120),
             "the container node writes what it sees of the data root",
