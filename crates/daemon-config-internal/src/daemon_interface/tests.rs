@@ -582,6 +582,45 @@ fn task_schema<'a>(bundle: &'a ExposureBundle, tool: &str) -> &'a serde_json::Va
         .input_schema
 }
 
+fn tool_output_schema<'a>(bundle: &'a ExposureBundle, tool: &str) -> &'a serde_json::Value {
+    &bundle
+        .tools
+        .iter()
+        .find(|entry| entry.name == tool)
+        .unwrap_or_else(|| panic!("no tool `{tool}`"))
+        .output_schema
+}
+
+/// `list` answers `launch_copies` in the form of `copies` without its
+/// `running`: the published item schema of `copies` with `running` left out
+/// is the item schema of `launch_copies`, so an item of `launch_copies` is
+/// a `join` goal as it is.
+#[test]
+fn the_launch_copies_of_list_take_the_form_of_its_copies_without_running() {
+    let bundle = framework_controls_bundle();
+    let list = tool_output_schema(&bundle, "stack.list");
+    let mut copies = list["properties"]["copies"].clone();
+    assert_eq!(copies["type"], "array", "{list}");
+    let item = copies["items"].as_object_mut().expect("an item schema");
+    let running = item["properties"]
+        .as_object_mut()
+        .expect("the item's properties")
+        .shift_remove("running");
+    assert_eq!(running, Some(json!({ "type": "boolean" })), "{list}");
+    item["required"]
+        .as_array_mut()
+        .expect("the item's required list")
+        .retain(|field| field != "running");
+    assert_eq!(list["properties"]["launch_copies"], copies, "{list}");
+    assert!(
+        list["required"]
+            .as_array()
+            .expect("a required list")
+            .contains(&json!("launch_copies")),
+        "{list}"
+    );
+}
+
 /// The framework bundle with `value`'s scope narrowing its target.
 fn narrowed_bundle(value: serde_json::Value) -> ExposureBundle {
     let mut bundle = framework_controls_bundle();
@@ -809,7 +848,8 @@ fn the_runtime_validator_refuses_input_outside_the_narrowed_schema() {
         "no field outside the interface's goal"
     );
 
-    // A listed copy, without its `running`, has the shape of a join goal.
+    // A listed copy, of `copies` without its `running` or of `launch_copies`,
+    // has the shape of a join goal.
     let listed = json!({
         "name": "delta",
         "option": "openarm_sim",

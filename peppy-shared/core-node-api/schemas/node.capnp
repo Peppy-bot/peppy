@@ -60,6 +60,10 @@ struct StackListResponse {
         join @11 :ChangedCopy;
         remove @12 :ChangedCopy;
     }
+    # The copies the launch of this stack started, each as the launch started
+    # it, in name order. A join or a removal leaves them as they are; a
+    # reset, the next launch and the end of the daemon drop them.
+    launchCopies @13 :List(CopyInfo);
 }
 
 # The copy that a join adds or that a removal removes.

@@ -63,6 +63,16 @@ async def test_stack_list_parses_graph_and_includes_daemon_identity(tmp_path):
             ],
         }
     ]
+    launch_copies = [
+        {
+            "name": "bravo",
+            "option": "real",
+            "core_node": "cn-jetson-2",
+            "instance_ids": ["bravo_arm_inst"],
+            "selections": [],
+            "set_members": [],
+        }
+    ]
     copy_change = {"action": "join", "name": "bravo", "option": "so101_sim"}
     response = StackListResponse(
         graph_json,
@@ -70,10 +80,12 @@ async def test_stack_list_parses_graph_and_includes_daemon_identity(tmp_path):
         "gen-1",
         "robo-a",
         copies,
+        launch_copies,
         shutdown_grace_secs=11,
         copy_change=copy_change,
     )
     assert response.copies == copies
+    assert response.launch_copies == launch_copies
     assert response.shutdown_grace_secs == 11
     assert response.copy_change == copy_change
     response_bytes = response.encode()
@@ -84,6 +96,7 @@ async def test_stack_list_parses_graph_and_includes_daemon_identity(tmp_path):
 
     graph = result.graph
     assert result.copies == copies
+    assert result.launch_copies == launch_copies
     assert result.shutdown_grace_secs == 11
     assert result.copy_change == copy_change
     assert [n["name"] for n in graph["nodes"]] == ["brain", "sensor"]
@@ -136,6 +149,7 @@ async def _stack_list_with_mixed_state(tmp_path):
         "gen-1",
         "robo-a",
         copies=[],
+        launch_copies=[],
         shutdown_grace_secs=5,
     ).encode()
     return await call_against_stub_service(

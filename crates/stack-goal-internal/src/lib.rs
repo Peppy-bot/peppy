@@ -2,10 +2,11 @@
 //! cancel it and read how it ended, and the default budgets of a goal that
 //! adds nodes.
 //! `peppy stack launch`, `build`, `join` and `remove` drive their goals
-//! through it, and so does the daemon bridge of the built-in MCP server. Each
+//! through it, and so does the daemon's provider of `stack_copies:v1`, which
+//! sends the joins and the removals of its clients to its own daemon. Each
 //! caller keeps what is its own: the CLI its terminal output, its watchdog
-//! and its listing of the log files, the bridge its MCP texts and its
-//! progress window.
+//! and its listing of the log files, the provider the feedback and the end
+//! that it gives each client.
 //!
 //! # The goal path
 //!
@@ -43,10 +44,6 @@
 //! The daemon ends the goals of a sender that is gone: a process that sent a
 //! goal and stops cancels it, with the reason "its sender is gone".
 //!
-//! [`list_copies`] reads the copies of the stack along the same route, with
-//! the name, the option, the machine and the selections of each, and the
-//! join or the removal of a copy that holds the stack.
-//!
 //! # Budgets
 //!
 //! [`DEFAULT_BUDGETS`] are the budgets of a launch, a build or a join whose
@@ -61,11 +58,11 @@
 //!
 //! # A node that adds a copy to its own stack
 //!
-//! The daemon bridge of the MCP server runs as a node on the coordinator, so
-//! it sends its goals to the daemon it is bound to. A join of a copy on the
-//! coordinator with no word, no argument and no environment, under the
-//! default budgets, relayed as `{step}: {line}`, with a cancel and a silence
-//! window of the caller's own:
+//! A node sends its goals to the daemon it is bound to along
+//! [`DaemonRoute::own_daemon`]. A join of a copy on the coordinator with no
+//! word, no argument and no environment, under the default budgets, relayed
+//! as `{step}: {line}`, with a cancel and a silence window of the caller's
+//! own:
 //!
 //! ```no_run
 //! use std::time::Duration;
@@ -137,7 +134,6 @@
 
 mod budgets;
 mod goal;
-mod list;
 
 pub use budgets::{
     DAEMON_RESPONSE_GRACE, DEFAULT_BUDGETS, DEFAULT_BUILD_IDLE_TIMEOUT_SECS, silence_window,
@@ -146,4 +142,3 @@ pub use goal::{
     CancelError, DaemonRoute, FollowError, RunningStackGoal, SendError, StackGoal, StackGoalEnd,
     StackGoalEvent, StackGoalOutcome, send,
 };
-pub use list::{StackCopies, list_copies};

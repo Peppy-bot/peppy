@@ -154,8 +154,8 @@ pub struct StackListResponse {
     /// `stack list` and discoverable by `stack reset --federated`, including
     /// one whose launch died before populating a slice.
     pub reservation: Option<LaunchIdentity>,
-    /// The copies the launch recorded on this daemon, each with the option it
-    /// copies, its machine, its selections and its instances.
+    /// The copies on this daemon's stack, whoever added them, each with the
+    /// option it copies, its machine, its selections and its instances.
     pub copies: Vec<CopyInfo>,
     /// The cooperative shutdown grace this daemon is configured with, which
     /// a destructive request's budget is derived from. An absent field reads
@@ -164,6 +164,10 @@ pub struct StackListResponse {
     /// The join or the removal of a copy that holds this daemon's stack now.
     /// `None` while no change runs, and while any other change runs.
     pub copy_change: Option<CopyChange>,
+    /// The copies the launch of this stack started, each as the launch
+    /// started it, in name order. A join or a removal leaves them as they
+    /// are; a reset, the next launch and the end of the daemon drop them.
+    pub launch_copies: Vec<CopyInfo>,
 }
 
 /// Which launch a slice belongs to, and who drove it.
@@ -192,6 +196,7 @@ impl StackListResponse {
         Self {
             graph_json: graph_json.into(),
             copies: Vec::new(),
+            launch_copies: Vec::new(),
             shutdown_grace_secs: config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
             core_node: core_node.into(),
             instance_id: instance_id.into(),
@@ -231,39 +236,18 @@ impl StackListResponse {
             response.set_core_node(&self.core_node);
             response.set_instance_id(&self.instance_id);
             response.set_host_name(&self.host_name);
-            let mut copies = response
-                .reborrow()
-                .init_copies(capnp_list_len(self.copies.len(), "copies")?);
-            for (index, copy) in self.copies.iter().enumerate() {
-                let mut wire = copies.reborrow().get(index as u32);
-                wire.set_name(copy.name.as_str());
-                wire.set_option(&copy.option);
-                wire.set_core_node(copy.core_node.as_str());
-                write_text_list(
-                    wire.reborrow().init_instance_ids(capnp_list_len(
-                        copy.instance_ids.len(),
-                        "instance_ids",
-                    )?),
-                    &copy.instance_ids,
-                );
-                let mut selections = wire
+            write_copies(
+                response
                     .reborrow()
-                    .init_selections(capnp_list_len(copy.selections.len(), "selections")?);
-                for (selection_index, selection) in copy.selections.iter().enumerate() {
-                    write_axis_selection(
-                        selections.reborrow().get(selection_index as u32),
-                        selection,
-                    );
-                }
-                let mut set_members =
-                    wire.init_set_members(capnp_list_len(copy.set_members.len(), "set_members")?);
-                for (entry_index, set_member) in copy.set_members.iter().enumerate() {
-                    let mut entry = set_members.reborrow().get(entry_index as u32);
-                    entry.set_instance_id(set_member.instance_id.as_str());
-                    entry.set_link_id(&set_member.link_id);
-                    entry.set_target(&set_member.target);
-                }
-            }
+                    .init_copies(capnp_list_len(self.copies.len(), "copies")?),
+                &self.copies,
+            )?;
+            write_copies(
+                response
+                    .reborrow()
+                    .init_launch_copies(capnp_list_len(self.launch_copies.len(), "launch_copies")?),
+                &self.launch_copies,
+            )?;
             let mut launch = response.reborrow().init_launch();
             match &self.launch {
                 Some(identity) => write_identity(launch.init_identity(), identity),
@@ -323,11 +307,8 @@ impl StackListResponse {
         Ok(Self {
             graph_json: response.get_graph_json()?.to_str()?.to_owned(),
             shutdown_grace_secs: response.get_shutdown_grace_secs(),
-            copies: response
-                .get_copies()?
-                .iter()
-                .map(decode_copy)
-                .collect::<Result<_>>()?,
+            copies: decode_copies(response.get_copies()?, "copies")?,
+            launch_copies: decode_copies(response.get_launch_copies()?, "launch_copies")?,
             core_node: response.get_core_node()?.to_str()?.to_owned(),
             instance_id: response.get_instance_id()?.to_str()?.to_owned(),
             host_name: response.get_host_name()?.to_str()?.to_owned(),
@@ -338,39 +319,91 @@ impl StackListResponse {
     }
 }
 
-/// Decodes one wire copy, refusing a blank or invalid field of the copy or of
-/// any of its set members.
-fn decode_copy(copy: node_capnp::copy_info::Reader<'_>) -> Result<CopyInfo> {
+/// Writes `copies` into `list`, a wire list sized to hold them.
+fn write_copies(
+    mut list: capnp::struct_list::Builder<'_, node_capnp::copy_info::Owned>,
+    copies: &[CopyInfo],
+) -> Result<()> {
+    for (index, copy) in copies.iter().enumerate() {
+        let mut wire = list.reborrow().get(index as u32);
+        wire.set_name(copy.name.as_str());
+        wire.set_option(&copy.option);
+        wire.set_core_node(copy.core_node.as_str());
+        write_text_list(
+            wire.reborrow()
+                .init_instance_ids(capnp_list_len(copy.instance_ids.len(), "instance_ids")?),
+            &copy.instance_ids,
+        );
+        let mut selections = wire
+            .reborrow()
+            .init_selections(capnp_list_len(copy.selections.len(), "selections")?);
+        for (selection_index, selection) in copy.selections.iter().enumerate() {
+            write_axis_selection(selections.reborrow().get(selection_index as u32), selection);
+        }
+        let mut set_members =
+            wire.init_set_members(capnp_list_len(copy.set_members.len(), "set_members")?);
+        for (entry_index, set_member) in copy.set_members.iter().enumerate() {
+            let mut entry = set_members.reborrow().get(entry_index as u32);
+            entry.set_instance_id(set_member.instance_id.as_str());
+            entry.set_link_id(&set_member.link_id);
+            entry.set_target(&set_member.target);
+        }
+    }
+    Ok(())
+}
+
+/// Decodes the wire list `field` of copies, refusing a blank or invalid
+/// field of any copy, named under `field`.
+fn decode_copies(
+    list: capnp::struct_list::Reader<'_, node_capnp::copy_info::Owned>,
+    field: &str,
+) -> Result<Vec<CopyInfo>> {
+    list.iter().map(|copy| decode_copy(copy, field)).collect()
+}
+
+/// Decodes one wire copy of the list `field`, refusing a blank or invalid
+/// field of the copy or of any of its set members.
+fn decode_copy(copy: node_capnp::copy_info::Reader<'_>, field: &str) -> Result<CopyInfo> {
     Ok(CopyInfo {
-        name: read_copy_name(copy.get_name()?.to_str()?, "copies.name")?,
-        core_node: read_core_node_name(copy.get_core_node()?.to_str()?, "copies.core_node")?,
-        instance_ids: read_name_list(copy.get_instance_ids()?, "copies.instance_ids")?,
+        name: read_copy_name(copy.get_name()?.to_str()?, &format!("{field}.name"))?,
+        core_node: read_core_node_name(
+            copy.get_core_node()?.to_str()?,
+            &format!("{field}.core_node"),
+        )?,
+        instance_ids: read_name_list(copy.get_instance_ids()?, &format!("{field}.instance_ids"))?,
         selections: copy
             .get_selections()?
             .iter()
             .enumerate()
             .map(|(index, selection)| {
-                read_axis_selection(selection, &format!("copies.selections[{index}]"))
+                read_axis_selection(selection, &format!("{field}.selections[{index}]"))
             })
             .collect::<Result<_>>()?,
-        option: required_text(copy.get_option()?.to_str()?, "copies.option")?,
+        option: required_text(copy.get_option()?.to_str()?, &format!("{field}.option"))?,
         set_members: copy
             .get_set_members()?
             .iter()
-            .map(decode_set_member)
+            .map(|entry| decode_set_member(entry, field))
             .collect::<Result<_>>()?,
     })
 }
 
-/// Decodes one member a copy added to a set slot; every field is required.
-fn decode_set_member(entry: node_capnp::set_member::Reader<'_>) -> Result<SetMember> {
+/// Decodes one member a copy of the list `field` added to a set slot; every
+/// field is required.
+fn decode_set_member(entry: node_capnp::set_member::Reader<'_>, field: &str) -> Result<SetMember> {
     Ok(SetMember {
         instance_id: read_name(
             entry.get_instance_id()?.to_str()?,
-            "copies.set_members.instance_id",
+            &format!("{field}.set_members.instance_id"),
         )?,
-        link_id: required_text(entry.get_link_id()?.to_str()?, "copies.set_members.link_id")?,
-        target: required_text(entry.get_target()?.to_str()?, "copies.set_members.target")?,
+        link_id: required_text(
+            entry.get_link_id()?.to_str()?,
+            &format!("{field}.set_members.link_id"),
+        )?,
+        target: required_text(
+            entry.get_target()?.to_str()?,
+            &format!("{field}.set_members.target"),
+        )?,
     })
 }
 
@@ -565,6 +598,49 @@ mod tests {
                 "{name} {option} {core_node} {instance_id}"
             );
         }
+    }
+
+    /// The launch copies travel beside the copies, as given, and a launch
+    /// copy with a blank field is refused at the wire boundary under
+    /// `launch_copies`.
+    #[test]
+    fn response_round_trips_the_launch_copies_apart_from_the_copies() {
+        let copy = |name: &str, machine: &str, selections: &[&str]| CopyInfo {
+            name: CopyName::new(name).unwrap(),
+            option: "openarm_v2".into(),
+            core_node: CoreNodeName::new(machine).unwrap(),
+            instance_ids: vec![Name::new(format!("{name}_arm_inst")).unwrap()],
+            selections: selections
+                .iter()
+                .map(|selection| selection.parse().unwrap())
+                .collect(),
+            set_members: Vec::new(),
+        };
+        let mut response = StackListResponse::new("{}", "cn-atlas", "generation_1", "atlas");
+        response.copies = vec![copy(
+            "alpha",
+            "jetson-1",
+            &["brain=ai_brain_vla@cn-gpu-box"],
+        )];
+        response.launch_copies = vec![
+            copy("bravo", "jetson-2", &[]),
+            copy("alpha", "jetson-1", &["brain=ai_brain_vla@cn-gpu-box"]),
+        ];
+        let decoded = StackListResponse::decode(&response.encode().unwrap()).unwrap();
+        assert_eq!(decoded, response);
+
+        let mut builder = Builder::new_default();
+        let mut wire = builder.init_root::<node_capnp::stack_list_response::Builder>();
+        let mut member = wire.reborrow().init_launch_copies(1).get(0);
+        member.set_name("");
+        member.set_option("openarm_v2");
+        member.set_core_node("jetson-1");
+        let error = StackListResponse::decode(&encode_message(&builder).unwrap())
+            .expect_err("a blank launch copy name must fail");
+        assert!(
+            error.to_string().contains("launch_copies.name"),
+            "got: {error}"
+        );
     }
 
     /// A set member with a blank or invalid field, or a selection whose axis

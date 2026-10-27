@@ -3557,6 +3557,11 @@ async fn a_client_adds_robots_with_features_on_the_machines_it_names() {
             json!({ "name": "bravo", "option": "featured_robot", "core_node": this, "features": [] }),
         ]
     );
+    assert_eq!(
+        structured(&client, "stack.list").await["launch_copies"],
+        json!([]),
+        "a join adds no launch copy"
+    );
 
     // --- A listed robot is the goal that adds it again.
     let removed = call(&client, "stack.remove", json!({ "name": "alpha" })).await;
@@ -3688,6 +3693,7 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
             "this_core_node": this,
             "copies": [],
             "max_copies": 2,
+            "launch_copies": [],
         })
     );
     let goal = |name: &str, option: &str| json!({ "name": name, "option": option, "core_node": this, "features": [] });

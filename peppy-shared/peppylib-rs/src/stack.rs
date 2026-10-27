@@ -25,6 +25,9 @@ pub struct StackList {
     /// The join or the removal of a copy that holds the serving daemon's
     /// stack now. A copy that joins is in `copies` only once its join ends.
     pub copy_change: Option<CopyChange>,
+    /// The copies the launch of the serving daemon's stack started, each as
+    /// the launch started it. A join or a removal leaves them as they are.
+    pub launch_copies: Vec<CopyInfo>,
     /// The cooperative shutdown grace the serving daemon is configured with,
     /// which a caller sizes a destructive request's budget from.
     pub shutdown_grace_secs: u64,
@@ -54,6 +57,7 @@ pub async fn list(
         graph,
         copies: response.copies,
         copy_change: response.copy_change,
+        launch_copies: response.launch_copies,
         shutdown_grace_secs: response.shutdown_grace_secs,
         core_node: response.core_node,
         instance_id: response.instance_id,

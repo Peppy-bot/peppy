@@ -146,21 +146,25 @@ pub struct PyStackListResponse {
 
 #[pymethods]
 impl PyStackListResponse {
-    /// The graph, the daemon's identity, the copies it hosts, its shutdown
-    /// grace, and the copy change that holds its stack, if any.
+    /// The graph, the daemon's identity, the copies it hosts, the copies its
+    /// launch started, its shutdown grace, and the copy change that holds its
+    /// stack, if any.
     #[new]
-    #[pyo3(signature = (graph_json, core_node, instance_id, host_name, copies, shutdown_grace_secs, copy_change=None))]
+    #[pyo3(signature = (graph_json, core_node, instance_id, host_name, copies, launch_copies, shutdown_grace_secs, copy_change=None))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         graph_json: String,
         core_node: String,
         instance_id: String,
         host_name: String,
         copies: &Bound<'_, PyAny>,
+        launch_copies: &Bound<'_, PyAny>,
         shutdown_grace_secs: u64,
         copy_change: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let mut inner = StackListResponse::new(graph_json, core_node, instance_id, host_name);
         inner.copies = pythonize::depythonize(copies)?;
+        inner.launch_copies = pythonize::depythonize(launch_copies)?;
         inner.shutdown_grace_secs = shutdown_grace_secs;
         inner.copy_change = copy_change.map(pythonize::depythonize).transpose()?;
         Ok(Self { inner })
@@ -169,6 +173,11 @@ impl PyStackListResponse {
     #[getter]
     fn copies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         Ok(pythonize(py, &self.inner.copies)?)
+    }
+
+    #[getter]
+    fn launch_copies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        Ok(pythonize(py, &self.inner.launch_copies)?)
     }
 
     #[getter]
@@ -235,6 +244,14 @@ impl PyStackList {
     #[getter]
     fn copy_change<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         Ok(pythonize(py, &self.inner.copy_change)?)
+    }
+
+    /// The copies the launch of the serving daemon's stack started, each as
+    /// the launch started it, in the form of `copies`. A join or a removal
+    /// leaves them as they are.
+    #[getter]
+    fn launch_copies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        Ok(pythonize(py, &self.inner.launch_copies)?)
     }
 
     #[getter]

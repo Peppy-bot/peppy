@@ -1,15 +1,21 @@
-//! Planned deployments and placements the stack's unit tests share, so every
-//! module tests against the one spelling of a pin, a node and a machine map.
+//! Planned deployments, placements and launches the stack's unit tests
+//! share, so every module tests against the one spelling of a pin, a node, a
+//! machine map and a launcher of copies.
 
 use super::ActiveLaunch;
-use super::launch::PlannedDeployment;
+use super::launch::resolve::{LaunchPlacements, resolve_placements};
+use super::launch::{NodeKey, PlannedDeployment};
 use config::AnyType;
-use config::runtime::{CoreNodeName, Name};
+use config::runtime::{CopyName, CoreNodeName, Name};
+use core_node_api::encoding::{
+    CopyReference, LaunchGoal, LaunchWord, LauncherOrigin, PlacementSpec, StackBudgets,
+};
 use core_node_api::{
     InstanceState, NodeStage, SerializedInstance, SerializedNode, SerializedNodeGraph,
 };
 use daemon_config::launcher::{
-    Deployment, DeploymentInstance, DeploymentSource, MemberAddressing, Placements,
+    ComposedLaunch, Deployment, DeploymentInstance, DeploymentSource, MemberAddressing, Placements,
+    PreparedLauncher,
 };
 use daemon_config::repository::{
     DeploymentRoot, EntryOrigin, GitCommit, ItemName, ItemTag, ManifestFingerprint, PinKind,
@@ -151,6 +157,73 @@ pub(super) fn graph_holding(instances: &[(&str, InstanceState)]) -> SerializedNo
     }
 }
 
+/// A launcher whose `robot` axis runs as copies of `arm` and `spare`. An
+/// `arm` is an arm, its base, a commander, a part its own axis `commander`
+/// brings, and a brain, a part its own axis `brain` brings when a word
+/// selects `ai_brain_vla`. A `spare` is an arm alone. The file lists the copy
+/// `bravo` of `arm`.
+pub(super) fn robots() -> PreparedLauncher {
+    let document = r#"{
+        peppy_schema: "launcher/v1",
+        components: [
+            { name: "robot", cardinality: "zero_or_more", options: {
+                arm: {
+                    deployments: [
+                        { source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },
+                        { commander: "pad" },
+                    ],
+                    components: [
+                        { name: "commander", options: {
+                            pad: { deployments: [
+                                { source: { name: "pad", tag: "v1" }, instances: [
+                                    { instance_id: "commander_inst", links: { arm: "arm_inst" } }
+                                ] }
+                            ] },
+                        } },
+                        { name: "brain", cardinality: "zero_or_one", options: {
+                            ai_brain_vla: { deployments: [
+                                { source: { name: "vla", tag: "v1" }, instances: [{ instance_id: "brain_inst" }] }
+                            ] },
+                        } },
+                    ],
+                },
+                spare: { deployments: [
+                    { source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },
+                ] },
+            } },
+        ],
+        deployments: [{ robot: "arm", instances: [{ instance_id: "bravo" }] }],
+    }"#;
+    let parsed = daemon_config::launcher::PeppyLauncherParser::from_content(document)
+        .expect("the launcher parses");
+    PreparedLauncher::load(&parsed, std::path::Path::new("robots.json5")).expect("it loads")
+}
+
+/// The launch of [`robots`] on the coordinator `cn-desk` with the copy
+/// words `words`, the joins `joins` and `placement`: what it composes, and
+/// the machine of each instance and of each copy.
+pub(in crate::services::stack) fn launch_of_robots(
+    placement: PlacementSpec,
+    words: &[&str],
+    joins: &[&str],
+) -> (ComposedLaunch, LaunchPlacements) {
+    let words: Vec<LaunchWord> = words.iter().map(|word| word.parse().unwrap()).collect();
+    let joins: Vec<CopyReference> = joins.iter().map(|join| join.parse().unwrap()).collect();
+    let composed = robots()
+        .launch(&words, &joins)
+        .expect("the launch composes");
+    let goal = LaunchGoal::new(
+        LauncherOrigin::repository("robots"),
+        "launch-1",
+        StackBudgets::new(1, 1, 1, None),
+    )
+    .with_layout(placement, words, joins)
+    .expect("the layout holds");
+    let placements =
+        resolve_placements(&composed, &goal, "cn-desk").expect("the placements resolve");
+    (composed, placements)
+}
+
 /// A launch `launch-1` whose flat plan runs `instances`, each `(id,
 /// machine)`, on the coordinator `cn-desk` and the machines they name, in
 /// start order, with no copy.
@@ -215,6 +288,50 @@ pub(in crate::services) fn active_launch_with_daemon_targets(
         planned.deployment.instances[0]
             .daemon_scopes
             .insert((*target).to_owned(), scope.clone());
+    }
+    active
+}
+
+/// `active`, which runs on `cn-desk` alone, after the launch of [`robots`]
+/// with the copy words `words` and the joins `joins` recorded the copies it
+/// starts, each on its machine with each part on the machine its word gives
+/// it, and after a removal took each of `removed` off the stack.
+pub(in crate::services) fn with_launched_copies(
+    mut active: ActiveLaunch,
+    words: &[&str],
+    joins: &[&str],
+    removed: &[&str],
+) -> ActiveLaunch {
+    assert!(
+        active.placements.coordinator() == "cn-desk" && !active.placements.is_federated(),
+        "the placements of the launch replace those of `active`"
+    );
+    let (composed, launched) = launch_of_robots(PlacementSpec::default(), words, joins);
+    let planned: Vec<PlannedDeployment> = composed
+        .launcher
+        .deployments
+        .iter()
+        .map(|deployment| {
+            let DeploymentSource::Node { name, .. } = &deployment.source else {
+                panic!("a copy of `robots` runs nodes");
+            };
+            let instances: Vec<(&str, Option<&str>)> = deployment
+                .instances
+                .iter()
+                .map(|instance| (instance.instance_id.as_str(), None))
+                .collect();
+            planned_deployment(name, &instances)
+        })
+        .collect();
+    let ordered: Vec<NodeKey> = planned
+        .iter()
+        .map(|item| NodeKey::new(&item.node_name, &item.node_tag))
+        .collect();
+    active.planned.extend(planned);
+    active.placements = launched.placements;
+    active.record_copies(composed.report.copies, &ordered, &launched.copy_core_nodes);
+    for name in removed {
+        active.copies.remove(&CopyName::new(*name).unwrap());
     }
     active
 }

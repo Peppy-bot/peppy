@@ -100,6 +100,7 @@ fn handle_stack_list_request_inner(
     response.shutdown_grace_secs = node_stack.shutdown_grace().as_secs();
     if let Some(active) = ownership.active.lock().as_ref() {
         response.copies = active.copies();
+        response.launch_copies = active.launch_copies();
     }
     if let Some(launch) = ownership.slice() {
         response = response.with_launch(launch);

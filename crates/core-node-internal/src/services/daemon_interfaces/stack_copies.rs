@@ -2,12 +2,21 @@
 //! copies of the running launch, within the scope of the sender's
 //! `stack_copies` target.
 //!
-//! - `list` answers the scope's options with their models, descriptions,
-//!   features and kinds, the machines of the federation now, this machine,
-//!   the copies whose option is in the scope, in name order, each with its
-//!   machine, the features its selections hold with the machine of each, and
-//!   whether its software runs, `max_copies`, the `change` that runs now when
-//!   it adds or removes a copy of a scoped option, and the launcher.
+//! - `list` answers:
+//!   - `options`: the scope's options with their models, descriptions,
+//!     features and kinds;
+//!   - `core_nodes`: the machines of the federation now;
+//!   - `this_core_node`: this machine;
+//!   - `copies`: the copies whose option is in the scope, in name order,
+//!     each with its machine, the features its selections hold with the
+//!     machine of each, and whether its software runs;
+//!   - `max_copies`: the most copies of the scope's options on the stack;
+//!   - `change`: the change that runs now when it adds or removes a copy of
+//!     a scoped option;
+//!   - `launcher`: the launcher of the stack;
+//!   - `launch_copies`: the copies of the scope's options that the launch
+//!     started, in name order, each as the launch started it, in the form
+//!     of `copies` without `running`.
 //! - `join` parses the goal into a typed join: the name as a copy name, the
 //!   option as a scoped option, each machine as a core node name, and each
 //!   feature as a feature of the option, named once (refused `rejected`).
@@ -87,8 +96,10 @@ pub(super) struct StackCopies {
     admission: Arc<Mutex<()>>,
 }
 
-/// The goal of `join`.
-#[derive(Deserialize)]
+/// The goal of `join`: a copy as a join adds it. Each item of
+/// `launch_copies` has this form, and each item of `copies` has it with its
+/// `running`.
+#[derive(Deserialize, Serialize)]
 struct JoinInput {
     name: String,
     option: String,
@@ -120,6 +131,7 @@ struct ListResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     change: Option<ListedChange>,
     launcher: String,
+    launch_copies: Vec<JoinInput>,
 }
 
 #[derive(Serialize)]
@@ -139,10 +151,8 @@ struct ListedFeature {
 
 #[derive(Serialize)]
 struct ListedCopy {
-    name: String,
-    option: String,
-    core_node: String,
-    features: Vec<FeatureInput>,
+    #[serde(flatten)]
+    copy: JoinInput,
     running: bool,
 }
 
@@ -193,13 +203,17 @@ pub(super) async fn answer(
     drop(ctx.stack_copies.admission.lock().await);
     let machines = ctx.live_machines(PRESENCE_TIMEOUT).await?;
     let fleet = super::fleet_members::fleet_listing(ctx);
-    let (copies, change) = {
+    let (copies, launch_copies, change) = {
         let active = ctx.slice_ownership.active.lock();
-        let copies = active
+        let (copies, launch_copies) = active
             .as_ref()
-            .map(|active| active.copies())
+            .map(|active| (active.copies(), active.launch_copies()))
             .unwrap_or_default();
-        (copies, ctx.slice_ownership.stack.copy_change())
+        (
+            copies,
+            launch_copies,
+            ctx.slice_ownership.stack.copy_change(),
+        )
     };
     let kind_of = |option: &str| {
         fleet
@@ -248,6 +262,10 @@ pub(super) async fn answer(
                 option: change.option,
             }),
         launcher: fleet.launcher,
+        launch_copies: scoped_copies(&scope, &launch_copies)
+            .into_iter()
+            .map(|copy| join_input(&scope, copy))
+            .collect(),
     };
     ctx.encode(STACK_COPIES, member, Side::Response, &response)
 }
@@ -653,6 +671,16 @@ fn unknown_feature(entry: &ScopedOption, feature: &str) -> String {
 /// One copy as `list` gives it, in the shape of a `join` goal, with whether
 /// its software runs.
 fn listed_copy(scope: &StackCopiesScope, copy: &CopyInfo, running: bool) -> ListedCopy {
+    ListedCopy {
+        copy: join_input(scope, copy),
+        running,
+    }
+}
+
+/// One copy in the shape of a `join` goal: its name, its option, its
+/// machine, and the features of its option that its selections hold, each
+/// with the machine of its part.
+fn join_input(scope: &StackCopiesScope, copy: &CopyInfo) -> JoinInput {
     let features = scope
         .option(&copy.option)
         .map(|entry| entry.features_in(&copy.selections))
@@ -667,12 +695,11 @@ fn listed_copy(scope: &StackCopiesScope, copy: &CopyInfo, running: bool) -> List
                 .to_owned(),
         })
         .collect();
-    ListedCopy {
+    JoinInput {
         name: copy.name.as_str().to_owned(),
         option: copy.option.clone(),
         core_node: copy.core_node.as_str().to_owned(),
         features,
-        running,
     }
 }
 

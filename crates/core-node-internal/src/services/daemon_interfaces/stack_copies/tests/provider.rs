@@ -10,7 +10,8 @@
 use super::super::{JOIN_BUSY_REASON, undo_unaccepted};
 use crate::services::daemon_interfaces::{InterfaceContext, serve};
 use crate::services::federation::SliceOwnership;
-use crate::services::stack::fixtures::active_launch_with_daemon_targets;
+use crate::services::stack::ActiveLaunch;
+use crate::services::stack::fixtures::{active_launch_with_daemon_targets, with_launched_copies};
 use config::failure_kind::PeppyFailureKind;
 use config::runtime::{CopyName, Name};
 use core_node_api::encoding::{
@@ -22,13 +23,14 @@ use core_node_api::{ActionGoal, DaemonFailureKind};
 use daemon_config::daemon_interface::DaemonInterface;
 use node_stack::NodeStack;
 use peppy_codec::consumer::{
-    ActionClient, ConsumerIdentity, GoalHandle, GoalOutcome, MemberBinding,
+    ActionClient, ConsumerIdentity, GoalHandle, GoalOutcome, MemberBinding, ServiceClient,
 };
 use peppylib::messaging::{
     DEFAULT_FEEDBACK_BOUND, Failure, GoalContext, MessengerHandle, ProducerRef, SenderTarget,
 };
 use peppylib::testing::{
     EphemeralRouter, MockActionServerCore, READINESS_TIMEOUT, wait_action_reachable,
+    wait_service_reachable,
 };
 use peppylib::types::Payload;
 use serde_json::{Value, json};
@@ -89,6 +91,16 @@ fn stack_copies() -> SenderTarget {
 }
 
 async fn mesh() -> Mesh {
+    mesh_of(active_launch_with_daemon_targets(
+        MANAGER,
+        &[("stack", DaemonInterface::StackCopies, scope())],
+    ))
+    .await
+}
+
+/// The mesh of [`mesh`] with `active` as the launch that the daemon
+/// coordinates.
+async fn mesh_of(active: ActiveLaunch) -> Mesh {
     let router = EphemeralRouter::start()
         .await
         .expect("the ephemeral router starts");
@@ -104,10 +116,7 @@ async fn mesh() -> Mesh {
         directory.path(),
     ));
     let ownership = SliceOwnership::new(CORE_NODE);
-    *ownership.active.lock() = Some(active_launch_with_daemon_targets(
-        MANAGER,
-        &[("stack", DaemonInterface::StackCopies, scope())],
-    ));
+    *ownership.active.lock() = Some(active);
 
     let core_node = SenderTarget::node(CORE_NODE, CORE_NODE_TAG).expect("a core node identity");
     let mut changes = Vec::new();
@@ -161,6 +170,17 @@ async fn mesh() -> Mesh {
         .await
         .expect("the provider becomes reachable");
     }
+    wait_service_reachable(
+        &client,
+        CORE_NODE,
+        MANAGER,
+        stack_copies(),
+        "list",
+        &provider(),
+        READINESS_TIMEOUT,
+    )
+    .await
+    .expect("the provider's list becomes reachable");
     Mesh {
         client,
         daemon,
@@ -198,6 +218,26 @@ async fn send_as(
         )
         .await
         .expect("the goal reaches the provider")
+}
+
+/// The answer of `list` to the manager.
+async fn list(mesh: &Mesh) -> Value {
+    let document = DaemonInterface::StackCopies.document();
+    ServiceClient::of_contract(document, "list")
+        .expect("the interface declares the service")
+        .call(
+            &mesh.client,
+            &ConsumerIdentity {
+                core_node: CORE_NODE.to_owned(),
+                instance_id: MANAGER.to_owned(),
+            },
+            &MemberBinding::of_contract(document, "list").expect("a binding"),
+            &provider(),
+            &json!({}),
+            READINESS_TIMEOUT,
+        )
+        .await
+        .expect("the daemon lists the copies")
 }
 
 /// The stack join that the provider sends next, as `join`, the fake stack
@@ -582,4 +622,60 @@ async fn a_change_whose_goal_was_not_taken_is_cancelled_and_followed_to_its_end(
     follow
         .await
         .expect("the follow ends once the daemon ended the change");
+}
+
+/// `list` gives the launch copies of the scope's options in name order,
+/// each in the shape of a `join` goal with each feature on the machine the
+/// launch gave its part, one that a removal took off the stack included, and
+/// leaves out a launch copy of another option.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn list_gives_the_launch_copies_of_the_scope_as_join_goals() {
+    let scope = json!({
+        "max_copies": 4,
+        "options": [{
+            "option": "arm", "model": "arm", "description": "An arm.",
+            "features": [{ "feature": "ai_brain", "axis": "brain", "option": "ai_brain_vla",
+                           "description": "A brain that drives the arm." }],
+        }],
+    });
+    let launched = with_launched_copies(
+        active_launch_with_daemon_targets(
+            MANAGER,
+            &[("stack", DaemonInterface::StackCopies, scope)],
+        ),
+        &["alpha.ai_brain_vla@cn-gpu-box", "charlie.ai_brain_vla"],
+        &["arm:alpha@cn-jetson-1", "spare:zulu", "arm:charlie"],
+        &["alpha"],
+    );
+    let mesh = mesh_of(launched).await;
+    let listing = list(&mesh).await;
+    let item = |name: &str, machine: &str, features: Value| {
+        json!({
+            "name": name,
+            "option": "arm",
+            "core_node": machine,
+            "features": features,
+        })
+    };
+    let brain_on = |machine: &str| json!([{ "feature": "ai_brain", "core_node": machine }]);
+    let bravo = item("bravo", CORE_NODE, json!([]));
+    let charlie = item("charlie", CORE_NODE, brain_on(CORE_NODE));
+    let running = |mut copy: Value| {
+        copy["running"] = json!(false);
+        copy
+    };
+    assert_eq!(
+        listing["copies"],
+        json!([running(bravo.clone()), running(charlie.clone())]),
+        "{listing}"
+    );
+    assert_eq!(
+        listing["launch_copies"],
+        json!([
+            item("alpha", "cn-jetson-1", brain_on("cn-gpu-box")),
+            bravo,
+            charlie
+        ]),
+        "{listing}"
+    );
 }
