@@ -1315,6 +1315,23 @@ impl NodeStack {
         self.shared.read().instance_state(instance_id)
     }
 
+    /// The key file of the process the instance `instance_id` runs, or
+    /// starts once the spawn has forked it: the key that the process signs
+    /// its calls to the daemon with. `None` when no instance has the id,
+    /// before the fork, and once its process is gone.
+    pub fn live_credential(&self, instance_id: &str) -> Option<std::path::PathBuf> {
+        self.shared
+            .read()
+            .tracked(instance_id, |tracked| {
+                tracked.instance.live_incarnation()?;
+                tracked
+                    .instance
+                    .credential_path()
+                    .map(std::path::Path::to_path_buf)
+            })
+            .flatten()
+    }
+
     /// The incarnation of the process the instance `instance_id` runs, or
     /// starts once the spawn has forked it; `None` when no instance has the
     /// id, before the fork, and once its process is gone.

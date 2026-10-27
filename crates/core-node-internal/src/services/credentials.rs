@@ -54,8 +54,10 @@ pub(crate) struct DaemonKeys {
     machine: Option<(MachineCertificate, BootCredential)>,
     /// The key of the command line, once the daemon wrote its key file.
     command_line: Mutex<Option<ClientPublicKey>>,
-    /// The key of each instance, from its last start.
-    instances: Mutex<HashMap<String, ClientPublicKey>>,
+    /// The public key of each key file of an instance that is on disk: the
+    /// key of a start lives as long as its file, which the process of that
+    /// start owns.
+    instances: Mutex<HashMap<PathBuf, ClientPublicKey>>,
     /// The serial of the next key file of an instance.
     next_key_serial: AtomicU64,
 }
@@ -158,17 +160,19 @@ impl DaemonKeys {
         Ok(())
     }
 
-    /// Writes a new key file for this start of the instance `instance_id`,
-    /// and records its key as the key of the instance.
+    /// Writes a new key file for a start of the instance `instance_id`, and
+    /// records its key. The daemon takes the key once the process of that
+    /// start runs (see [`NodeStack::live_credential`]). The keys whose files
+    /// went with their process go from the record.
     pub(crate) fn issue_instance_key(&self, instance_id: &str) -> std::io::Result<IssuedKey> {
         let key = ClientKey::generate();
         let public_key = key.public_key();
         let serial = self.next_key_serial.fetch_add(1, Ordering::Relaxed);
         let path = self.peppy_dirs.instance_key_path(instance_id, serial);
         self.credential_of(instance_id, key).write(&path)?;
-        self.instances
-            .lock()
-            .insert(instance_id.to_owned(), public_key);
+        let mut instances = self.instances.lock();
+        instances.retain(|file, _| file.exists());
+        instances.insert(path.clone(), public_key);
         Ok(IssuedKey { path })
     }
 
@@ -183,7 +187,8 @@ impl DaemonKeys {
 
     /// The key and the kind of the client `instance_id` of this machine,
     /// when this daemon gave it a key: the daemon itself under the instance
-    /// id of its boot, the command line, or an instance whose process runs.
+    /// id of its boot, the command line, or an instance whose process runs,
+    /// with the key of the spawn of that process.
     fn local_key(
         &self,
         instance_id: &str,
@@ -198,10 +203,10 @@ impl DaemonKeys {
                 .lock()
                 .map(|key| (key, CallerKind::CommandLine));
         }
-        node_stack.live_incarnation(instance_id)?;
+        let key_file = node_stack.live_credential(instance_id)?;
         self.instances
             .lock()
-            .get(instance_id)
+            .get(&key_file)
             .map(|key| (*key, CallerKind::Instance))
     }
 }

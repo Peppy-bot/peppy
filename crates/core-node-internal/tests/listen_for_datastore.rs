@@ -352,6 +352,38 @@ async fn a_new_instance_under_the_owners_id_does_not_inherit_its_key() {
     datastore_store(&started, DRIVER_KEY, b"anyone", "text/plain").await;
 }
 
+/// A second start under the id of a running instance is refused, and the
+/// daemon still takes the calls of the running process with the key of its
+/// own start: the key file that the refused start wrote is not its key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_second_start_leaves_the_key_of_the_running_process() {
+    const OWNER: &str = "running_inst";
+    let started = start_core_node_with_mock_messenger().await;
+    let _dir = add_owner_node(&started).await;
+    let _mocks = mocks(&started, OWNER_NODE, OWNER).await;
+    let pid = run(&started, OWNER_NODE, OWNER, RestartRequest::default()).await;
+
+    let second = common::run_plan(
+        &started,
+        OWNER_NODE,
+        common::default_instance_plan(OWNER),
+        RestartRequest::default(),
+    )
+    .await
+    .expect("the second start is answered");
+    assert!(
+        second.refusal().message().contains("already exists"),
+        "a second start under a running id is refused"
+    );
+
+    assert_eq!(
+        store_driver_key_exclusively(&started, OWNER).await,
+        DatastoreStoreExclusiveResponse::Stored,
+        "the running process still calls with the key of its own start"
+    );
+    core_node::test_support::signal_process(pid, "-9");
+}
+
 /// Runs an owner under `restart` on a daemon restarting with `backoff`, has it
 /// store [`DRIVER_KEY`] exclusively, ends its process with `signal`, waits for
 /// the instance to reach `ended`, then stores the key as another writer: the
