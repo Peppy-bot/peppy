@@ -25,8 +25,8 @@ const ROBOT_LEASES: DaemonInterface = DaemonInterface::RobotLeases;
 
 /// Whether `caller` may call `member`: the command line calls every member,
 /// `check_move` answers every sender, `changes` answers each MCP server of
-/// peppy, and an instance calls what the scope of its `robot_leases` target
-/// gives.
+/// peppy, and an instance calls what the scope of its daemon target of
+/// `robot_leases:v1` gives.
 fn authorize(
     caller: &Caller,
     member: RobotLeasesMember,
@@ -46,8 +46,9 @@ fn authorize(
     Err(failure(
         PeppyFailureKind::Rejected,
         format!(
-            "{sender} has no `robot_leases` target whose scope gives `{}`; a launcher gives the \
-             scope of a daemon target of robot_leases:v1 in the `daemon_scopes` of the instance",
+            "{sender} has no daemon target of robot_leases:v1 whose scope gives `{}`; a launcher \
+             gives the scope of each daemon target in the `daemon_scopes` of the instance, keyed \
+             by the `link_id` of the target",
             member.name()
         ),
     ))

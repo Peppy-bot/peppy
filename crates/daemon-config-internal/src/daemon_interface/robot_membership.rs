@@ -99,10 +99,11 @@ impl Description {
     }
 }
 
-/// The scope of a `robot_membership` target: the launcher options a client may
-/// add, each once and with its robot model, a description and the features
-/// it offers, and the most copies of these options the stack holds. Parsing
-/// holds every rule, so a value of this type is a scope the server can use.
+/// The scope of a daemon target of `robot_membership:v1`: the launcher
+/// options a client may add, each once and with its robot model, a
+/// description and the features it offers, and the most copies of these
+/// options the stack holds. Parsing holds every rule, so a value of this type
+/// is a scope the server can use.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "RawRobotMembershipScope")]
 pub struct RobotMembershipScope {

@@ -9,7 +9,7 @@
 
 use super::super::{JOIN_BUSY_REASON, undo_unaccepted};
 use crate::services::credentials::testing::{KnownKeys, client_key};
-use crate::services::daemon_interfaces::{InterfaceContext, serve};
+use crate::services::daemon_interfaces::{InterfaceContext, serve, target_of};
 use crate::services::federation::SliceOwnership;
 use crate::services::stack::ActiveLaunch;
 use crate::services::stack::fixtures::{active_launch_with_daemon_targets, with_launched_copies};
@@ -89,7 +89,7 @@ fn provider() -> ProducerRef {
 }
 
 fn robot_membership() -> SenderTarget {
-    SenderTarget::contract("robot_membership", "v1").expect("a contract identity")
+    target_of(DaemonInterface::RobotMembership).expect("a contract identity")
 }
 
 async fn mesh() -> Mesh {
@@ -543,8 +543,8 @@ async fn a_change_with_no_end_fails_the_goal_and_frees_the_lock() {
     join_succeeds(&mut mesh, "charlie").await;
 }
 
-/// The provider refuses a sender with no `robot_membership` target before
-/// anything reaches the daemon.
+/// The provider refuses a sender with no daemon target of
+/// `robot_membership:v1` before anything reaches the daemon.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_sender_with_no_scope_is_refused() {
     let mut mesh = mesh().await;
@@ -556,7 +556,7 @@ async fn a_sender_with_no_scope_is_refused() {
     assert!(
         refusal
             .message()
-            .contains("has no `robot_membership` target with a scope"),
+            .contains("has no daemon target of robot_membership:v1 with a scope"),
         "{}",
         refusal.message()
     );

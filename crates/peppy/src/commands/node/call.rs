@@ -776,7 +776,8 @@ mod tests {
     const FLEET_DAEMON: &str = "core-boot";
 
     fn robot_leases() -> SenderTarget {
-        SenderTarget::contract("robot_leases", "v1").expect("a target")
+        let interface = DaemonInterface::RobotLeases;
+        SenderTarget::contract(interface.name(), interface.tag()).expect("a target")
     }
 
     /// The codec of one side of a member of `robot_leases:v1`.

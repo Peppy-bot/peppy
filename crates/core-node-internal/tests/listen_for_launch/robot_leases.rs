@@ -396,7 +396,7 @@ async fn the_fleet_lists_each_robot_and_the_halt_refuses_every_move_until_cleare
     assert!(
         refusal
             .message()
-            .contains("has no `robot_leases` target whose scope gives `halt`"),
+            .contains("has no daemon target of robot_leases:v1 whose scope gives `halt`"),
         "{}",
         refusal.message()
     );
@@ -788,7 +788,7 @@ async fn another_machine_gets_no_scope_of_an_instance_that_this_machine_runs() {
     assert!(
         refusal
             .message()
-            .contains("has no `robot_leases` target whose scope gives `list`"),
+            .contains("has no daemon target of robot_leases:v1 whose scope gives `list`"),
         "{}",
         refusal.message()
     );

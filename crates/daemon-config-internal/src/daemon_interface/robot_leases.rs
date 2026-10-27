@@ -111,7 +111,8 @@ impl ScopedRobotLeasesMember {
     }
 }
 
-/// The scope of a `robot_leases` target: the members that its client may call.
+/// The scope of a daemon target of `robot_leases:v1`: the members that its
+/// client may call.
 /// `lease` brings the services of a lease holder (`take`, `release`,
 /// `offer`, `open` and `close`), and `check_move` answers every client with
 /// or without a scope.

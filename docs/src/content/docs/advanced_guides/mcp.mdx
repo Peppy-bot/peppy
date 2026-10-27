@@ -157,7 +157,7 @@ Beside the kinds of peppy, `robot_membership:v1` declares three failure kinds in
 
 #### Scopes
 
-The launcher gives each daemon target its scope with [`daemon_scopes`](/guides/launch_files/#daemon_scopes-optional) on the instance, or with a `set_daemon_scopes` adjustment. The launch parses every scope into the type of its interface before anything starts. The scope of a `robot_membership` target is the value under its target's name:
+The launcher gives each daemon target its scope with [`daemon_scopes`](/guides/launch_files/#daemon_scopes-optional) on the instance, or with a `set_daemon_scopes` adjustment. The launch parses every scope into the type of its interface before anything starts. The scope of a daemon target of `robot_membership:v1` is the value under its target's name:
 
 <Code code={frameworkControlsLauncher} lang="json5" title="launchers/mcp_framework_controls.json5" />
 

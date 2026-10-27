@@ -353,7 +353,7 @@ The launch, each join and [`peppy stack resolve`](#auditing-a-composed-launch) p
 - `daemon_scopes` on an instance that has no daemon target;
 - a scope key that is not a daemon target of the instance; the refusal says so when the key is a target or a slot that takes `links`;
 - a daemon target with no scope;
-- a scope that does not parse into the type of its interface, for example a [`robot_membership` scope](/advanced_guides/mcp/#scopes) with no option, with an option that names no `model`, with `max_copies` 0, with `features: []`, or with two features of one option on the same axis, or a [`fleet` scope](/advanced_guides/core_node_functions/#scoping-a-daemon-target) with no member or with a member named twice;
+- a scope that does not parse into the type of its interface, for example a [`robot_membership` scope](/advanced_guides/mcp/#scopes) with no option, with an option that names no `model`, with `max_copies` 0, with `features: []`, or with two features of one option on the same axis, or a [`robot_leases` scope](/advanced_guides/core_node_functions/#scoping-a-daemon-target) with no member or with a member named twice;
 - an instance with a daemon target that does not run on the coordinator: one that declares `core_node`, or one of a copy;
 - a `links` key that names a daemon target: the refusal says that the target takes a scope;
 - an instance with two daemon targets of one interface: a call names no target, so a call of an interface goes with the one scope of that interface that the instance has.

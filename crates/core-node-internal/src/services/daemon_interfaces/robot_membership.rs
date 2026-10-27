@@ -1,6 +1,6 @@
 //! The provider of `robot_membership:v1`: `list`, `join` and `remove` of the
-//! copies of the running launch, within the scope of the sender's
-//! `robot_membership` target.
+//! copies of the running launch, within the scope of the sender's daemon
+//! target of `robot_membership:v1`.
 //!
 //! - `list` answers:
 //!   - `options`: the scope's options with their models, descriptions,
@@ -183,9 +183,9 @@ fn scope_of(
         _ => Err(failure(
             PeppyFailureKind::Rejected,
             format!(
-                "{sender} has no `robot_membership` target with a scope; a launcher gives the \
-                 scope of a daemon target of robot_membership:v1 in the `daemon_scopes` of the \
-                 instance"
+                "{sender} has no daemon target of robot_membership:v1 with a scope; a launcher \
+                 gives the scope of each daemon target in the `daemon_scopes` of the instance, \
+                 keyed by the `link_id` of the target"
             ),
         )),
     }

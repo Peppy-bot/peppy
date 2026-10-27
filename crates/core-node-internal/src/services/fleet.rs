@@ -160,7 +160,7 @@ impl Refusal {
     /// goal.
     pub(crate) fn into_failure(self) -> Failure {
         match self.kind {
-            RefusalKind::Fleet(kind) => Failure::new(kind, self.message),
+            RefusalKind::RobotLeases(kind) => Failure::new(kind, self.message),
             RefusalKind::PreconditionFailed => {
                 Failure::new(PeppyFailureKind::PreconditionFailed, self.message)
             }
@@ -172,13 +172,13 @@ impl Refusal {
     /// a join or a removal that a lease or the halt refuses.
     pub(crate) fn into_daemon_failure(self) -> Failure {
         let kind = match self.kind {
-            RefusalKind::Fleet(RobotLeasesFailureKind::Halted) => {
+            RefusalKind::RobotLeases(RobotLeasesFailureKind::Halted) => {
                 core_node_api::DaemonFailureKind::Halted
             }
-            RefusalKind::Fleet(RobotLeasesFailureKind::Leased) => {
+            RefusalKind::RobotLeases(RobotLeasesFailureKind::Leased) => {
                 core_node_api::DaemonFailureKind::Leased
             }
-            RefusalKind::Fleet(RobotLeasesFailureKind::NotLeased)
+            RefusalKind::RobotLeases(RobotLeasesFailureKind::NotLeased)
             | RefusalKind::PreconditionFailed => PeppyFailureKind::PreconditionFailed.into(),
             RefusalKind::Rejected => PeppyFailureKind::Rejected.into(),
         };

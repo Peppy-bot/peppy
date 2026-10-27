@@ -185,8 +185,9 @@ async fn the_entries_of_a_daemon_target_reach_the_daemon_within_their_scope() {
         .expect("the ephemeral router starts");
     let daemon_session = router.connect().await.expect("the daemon connects");
     let server = router.connect().await.expect("the server connects");
+    let interface = DaemonInterface::RobotMembership;
     let robot_membership =
-        SenderTarget::contract("robot_membership", "v1").expect("a valid identity");
+        SenderTarget::contract(interface.name(), interface.tag()).expect("a valid identity");
     let list = MockServiceCore::listen(
         &daemon_session,
         CORE_NODE,

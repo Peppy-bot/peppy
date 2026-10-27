@@ -1106,10 +1106,10 @@ impl Stack {
         }
     }
 
-    /// Stages `framework_controls:v1`, whose one target names the daemon
-    /// interface `robot_membership:v1`, and `broken_recorder:v1`, a recorder
-    /// whose process exits before it is ready, into the hub, and refreshes
-    /// the daemon's caches from it.
+    /// Stages `framework_controls:v1`, whose targets name the daemon
+    /// interfaces `robot_membership:v1` and `robot_leases:v1`, and
+    /// `broken_recorder:v1`, a recorder whose process exits before it is
+    /// ready, into the hub, and refreshes the daemon's caches from it.
     fn stage_framework_controls(&self) {
         let hub = self.hub.path();
         fs::write(
@@ -3174,8 +3174,9 @@ async fn a_join_filling_a_once_per_robot_target_twice_is_refused() {
 
 // --- A daemon target: the copies of the stack over MCP.
 
-/// The design's `framework/framework_controls.json5`: one fixed target,
-/// `stack`, that names the daemon interface `robot_membership:v1`.
+/// The design's `framework/framework_controls.json5`: two daemon targets,
+/// `stack`, that names `robot_membership:v1`, and `fleet`, that names
+/// `robot_leases:v1`.
 const FRAMEWORK_CONTROLS: &str = include_str!(
     "../../daemon-config-internal/src/daemon_interface/fixtures/framework_controls.json5"
 );

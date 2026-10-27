@@ -62,21 +62,21 @@ pub(crate) struct Refusal {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RefusalKind {
-    Fleet(RobotLeasesFailureKind),
+    RobotLeases(RobotLeasesFailureKind),
     PreconditionFailed,
     Rejected,
 }
 
 impl From<MoveRefusal> for Refusal {
     fn from(refusal: MoveRefusal) -> Self {
-        Self::fleet(refusal.failure_kind, refusal.message)
+        Self::robot_leases(refusal.failure_kind, refusal.message)
     }
 }
 
 impl Refusal {
-    fn fleet(kind: RobotLeasesFailureKind, message: impl Into<String>) -> Self {
+    fn robot_leases(kind: RobotLeasesFailureKind, message: impl Into<String>) -> Self {
         Self {
-            kind: RefusalKind::Fleet(kind),
+            kind: RefusalKind::RobotLeases(kind),
             message: message.into(),
         }
     }
@@ -537,7 +537,7 @@ impl FleetBook {
     fn not_halted(&self, what: &str) -> Result<(), Refusal> {
         match &self.halt {
             None => Ok(()),
-            Some(by) => Err(Refusal::fleet(
+            Some(by) => Err(Refusal::robot_leases(
                 RobotLeasesFailureKind::Halted,
                 format!(
                     "the stack is halted (by {by}), so {what} is refused until the halt is cleared"

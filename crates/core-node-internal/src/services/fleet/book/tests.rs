@@ -69,7 +69,7 @@ fn a_leased_robot_refuses_another_client_and_names_the_holder() {
         .expect_err("leased");
     assert_eq!(
         kind(&refusal),
-        RefusalKind::Fleet(RobotLeasesFailureKind::Leased)
+        RefusalKind::RobotLeases(RobotLeasesFailureKind::Leased)
     );
     assert!(
         refusal.message.contains("`run` on `cn-one`")
@@ -105,7 +105,7 @@ fn a_transfer_goes_in_two_steps_with_no_gap_and_comes_back_at_the_release() {
         .expect_err("leased");
     assert_eq!(
         kind(&refusal),
-        RefusalKind::Fleet(RobotLeasesFailureKind::Leased)
+        RefusalKind::RobotLeases(RobotLeasesFailureKind::Leased)
     );
 
     book.take(&client("skill"), "alpha", "grab")
@@ -296,7 +296,7 @@ fn the_halt_ends_every_lease_with_no_give_back_and_refuses_leases_until_cleared(
     ] {
         assert_eq!(
             kind(&refusal),
-            RefusalKind::Fleet(RobotLeasesFailureKind::Halted)
+            RefusalKind::RobotLeases(RobotLeasesFailureKind::Halted)
         );
     }
     book.check_join(Some(&client("chat")), "gamma")
@@ -343,7 +343,7 @@ fn a_join_and_a_removal_follow_the_leases() {
         .expect_err("a join under a leased name");
     assert_eq!(
         kind(&refusal),
-        RefusalKind::Fleet(RobotLeasesFailureKind::Leased)
+        RefusalKind::RobotLeases(RobotLeasesFailureKind::Leased)
     );
     book.check_join(Some(&client("director")), "alpha")
         .expect("the holder joins its leased robot again");
@@ -367,7 +367,7 @@ fn a_join_and_a_removal_follow_the_leases() {
         .expect_err("the command line removes no leased robot");
     assert_eq!(
         kind(&refusal),
-        RefusalKind::Fleet(RobotLeasesFailureKind::Leased)
+        RefusalKind::RobotLeases(RobotLeasesFailureKind::Leased)
     );
     book.check_removal(Some(&client("director")), "alpha")
         .expect("the holder removes its robot");
@@ -426,7 +426,7 @@ fn an_open_close_or_release_of_a_lease_that_the_client_does_not_hold_is_refused(
     ] {
         assert_eq!(
             kind(&refusal),
-            RefusalKind::Fleet(RobotLeasesFailureKind::NotLeased)
+            RefusalKind::RobotLeases(RobotLeasesFailureKind::NotLeased)
         );
     }
 }
@@ -598,7 +598,7 @@ fn an_offer_to_another_receiver_ends_the_offer_before_it() {
         .expect_err("the first receiver no longer has the offer");
     assert_eq!(
         kind(&refusal),
-        RefusalKind::Fleet(RobotLeasesFailureKind::Leased)
+        RefusalKind::RobotLeases(RobotLeasesFailureKind::Leased)
     );
     book.take(&client("second"), "alpha", "grab")
         .expect("the second receiver takes");
@@ -629,7 +629,7 @@ fn no_client_takes_the_lease_of_a_robot_while_a_removal_of_it_runs() {
         .expect_err("another client leases the robot");
     assert_eq!(
         kind(&refusal),
-        RefusalKind::Fleet(RobotLeasesFailureKind::Leased)
+        RefusalKind::RobotLeases(RobotLeasesFailureKind::Leased)
     );
     book.begin_removal(Some(&client("skill")), "alpha")
         .expect("the holder removes its robot");

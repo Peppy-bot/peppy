@@ -3,8 +3,9 @@ use crate::internal::mcp_exposure::PeppyMcpExposureParser;
 use peppy_mcp_catalog::{ExposureBundle, build_exposure_bundle};
 use serde_json::json;
 
-/// The design's `framework/framework_controls.json5`: one fixed target,
-/// `stack`, that names `robot_membership:v1`.
+/// The design's `framework/framework_controls.json5`: two daemon targets,
+/// `stack`, that names `robot_membership:v1`, and `fleet`, that names
+/// `robot_leases:v1`.
 pub(crate) const FRAMEWORK_CONTROLS: &str = include_str!("fixtures/framework_controls.json5");
 
 /// Every interface this peppy serves, as the catalog resolves them.

@@ -53,7 +53,8 @@ struct Mesh {
 }
 
 fn robot_leases_contract() -> SenderTarget {
-    SenderTarget::contract("robot_leases", "v1").expect("a valid contract identity")
+    let interface = DaemonInterface::RobotLeases;
+    SenderTarget::contract(interface.name(), interface.tag()).expect("a valid contract identity")
 }
 
 fn arm_contract() -> SenderTarget {
@@ -629,7 +630,7 @@ async fn a_lost_follow_stops_its_goals_and_the_next_goal_follows_again() {
         .expect("the next goal follows the changes again")
         .refuse(Failure::new(
             PeppyFailureKind::Rejected,
-            "framework_controls_inst has no `robot_leases` target",
+            "framework_controls_inst has no daemon target of robot_leases:v1",
         ))
         .await
         .expect("the daemon refuses the follow");
