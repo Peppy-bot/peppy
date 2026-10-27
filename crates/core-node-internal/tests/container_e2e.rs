@@ -234,6 +234,127 @@ mod container_e2e_tests {
         );
     }
 
+    /// End-to-end test: a container node sees its own working directory,
+    /// runtime config and key file of the data root, and nothing else of it:
+    /// not the key of the command line, not the runtime config of another
+    /// instance, not the configuration directory. Its runscript writes what
+    /// it sees into its working directory, which the test reads while the
+    /// start waits for a ready signal that this node never gives.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_container_node_sees_its_own_files_of_the_data_root_alone() {
+        const NODE_NAME: &str = "data_root_view_e2e_node";
+        const NODE_TAG: &str = "v1";
+        const INSTANCE_ID: &str = "data_root_view_e2e_instance";
+
+        let started = start_core_node_with_real_messenger_and_timeouts(
+            Duration::from_secs(120),
+            setup_budget(120),
+        )
+        .await;
+        let command_line_key = started.peppy_dirs.command_line_key_path();
+        let other_runtime_config = started.peppy_dirs.runtime_config_dir().join("other.json5");
+        std::fs::create_dir_all(started.peppy_dirs.runtime_config_dir()).expect("runtime dir");
+        std::fs::write(&other_runtime_config, "{}").expect("the config of another instance");
+        let conf_file = started.peppy_dirs.conf_dir().join("data_root_view_e2e.txt");
+        std::fs::create_dir_all(started.peppy_dirs.conf_dir()).expect("conf dir");
+        std::fs::write(&conf_file, "conf").expect("a file of the configuration directory");
+        assert!(command_line_key.exists(), "the daemon wrote the key of the command line");
+
+        let source_dir = tempfile::tempdir().expect("source dir");
+        write_peppy_json5(
+            source_dir.path(),
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "data_root_view_e2e_node", tag: "v1" },
+                execution: { language: "rust", container: { def_file: "apptainer.def" } }
+            }"#,
+        );
+        let seen = |label: &str, path: &str| {
+            format!("    if [ -r {path} ]; then echo \"{label}: read\"; else echo \"{label}: hidden\"; fi\n")
+        };
+        let runscript = [
+            "    key=$(sed -n 's/.*\"credential\":\"\\([^\"]*\\)\".*/\\1/p' \"$PEPPY_RUNTIME_CONFIG\")\n".to_owned(),
+            "    {\n".to_owned(),
+            seen("own runtime config", "\"$PEPPY_RUNTIME_CONFIG\""),
+            seen("own key", "\"$key\""),
+            seen("command line key", &command_line_key.display().to_string()),
+            seen("other runtime config", &other_runtime_config.display().to_string()),
+            seen("conf", &conf_file.display().to_string()),
+            "    } > view.tmp && mv view.tmp view.txt\n".to_owned(),
+            "    sleep 600\n".to_owned(),
+        ]
+        .concat();
+        std::fs::write(
+            source_dir.path().join("apptainer.def"),
+            format!("Bootstrap: docker\nFrom: {DEFAULT_ALPINE_BASE_IMAGE}\n\n%runscript\n{runscript}"),
+        )
+        .expect("write apptainer.def");
+
+        send_node_add_and_wait(
+            &started.caller_handle,
+            &started.core_node_name,
+            source_dir.path(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+            None,
+        )
+        .await
+        .expect("node_add request should complete")
+        .completed();
+        send_logged_node_build(
+            &started,
+            NODE_NAME,
+            NODE_TAG,
+            Duration::from_secs(30),
+            Duration::from_secs(600),
+            None,
+        )
+        .await
+        .end
+        .completed();
+
+        // The start waits for a ready signal that this node never gives; the
+        // runscript has written what it sees before then.
+        let caller = started.caller_handle.clone();
+        let core_node_name = started.core_node_name.clone();
+        let run: JoinHandle<_> = tokio::spawn(async move {
+            send_node_run_and_wait(
+                &caller,
+                &core_node_name,
+                common::default_instance_plan(INSTANCE_ID),
+                NODE_NAME,
+                NODE_TAG,
+                &NodeRunTestTimeouts {
+                    goal: Duration::from_secs(30),
+                    result: Duration::from_secs(300),
+                },
+                None,
+            )
+            .await
+        });
+        let view_file = started.peppy_dirs.instances_dir().join(INSTANCE_ID).join("view.txt");
+        let view = common::poll_until(
+            Duration::from_secs(120),
+            "the container node writes what it sees of the data root",
+            || std::fs::read_to_string(&view_file).ok(),
+        )
+        .await;
+        run.abort();
+
+        for (label, expected) in [
+            ("own runtime config", "read"),
+            ("own key", "read"),
+            ("command line key", "hidden"),
+            ("other runtime config", "hidden"),
+            ("conf", "hidden"),
+        ] {
+            assert!(
+                view.contains(&format!("{label}: {expected}")),
+                "{label} is {expected} in the container:\n{view}"
+            );
+        }
+    }
+
     /// End-to-end test: a Python container build runs with the uv cache. The
     /// `%post` sees the variables of the Python profile, sees the uv cache
     /// directory of the host through the bind, and writes into the cache of

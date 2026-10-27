@@ -36,13 +36,23 @@ static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Used by [`assemble_command`] and [`build_container_command`] to materialize
 /// the runtime config that the spawned child reads via the
 /// `PEPPY_RUNTIME_CONFIG` environment variable.
+/// Writes the runtime config of a spawn to a file of its own, which only the
+/// user of the daemon reads (mode 0600) from its creation on.
 fn write_runtime_config_temp(peppy_dirs: &PeppyDirs, json5: &str) -> std::io::Result<PathBuf> {
+    use std::io::Write as _;
+
     let runtime_dir = peppy_dirs.runtime_config_dir();
     std::fs::create_dir_all(&runtime_dir)?;
     let counter = RUNTIME_CONFIG_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     let runtime_config_path = runtime_dir.join(format!("runtime_config_{pid}_{counter}.json5"));
-    std::fs::write(&runtime_config_path, json5)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options
+        .open(&runtime_config_path)?
+        .write_all(json5.as_bytes())?;
     Ok(runtime_config_path)
 }
 
@@ -943,6 +953,17 @@ mod tests {
                 "stderr {stderr:?}"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_runtime_config_file_is_read_by_the_user_of_the_daemon_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let path = write_runtime_config_temp(&PeppyDirs::new(root.path()), "{}").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

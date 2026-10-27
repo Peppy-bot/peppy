@@ -8,7 +8,7 @@
 //! diverging this one.
 
 use crate::call_proof::{CallProof, CallProofDecodeError, SignedCall};
-use crate::types::{ClientPresence, CoreNodePresence, PresenceScope};
+use crate::types::{ClientPresence, CoreNodePresence, Payload, PresenceScope};
 use crate::wire::{
     ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, PairingRecipient, Segment, SenderTarget,
     ServiceKind, ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
@@ -278,14 +278,14 @@ impl ZenohWireFormat {
         namespace: &str,
         selector: &str,
         kind: ServiceQueryKind,
-        payload: &[u8],
+        payload: &Payload,
     ) -> bytes::Bytes {
         let proof = sender.signing().map(|signing| {
             signing.prove(&SignedCall {
                 namespace,
                 key_expr: selector,
                 kind,
-                payload,
+                payload: payload.as_bytes().as_ref(),
             })
         });
         ServiceQueryAttachment { kind, proof }.encode()

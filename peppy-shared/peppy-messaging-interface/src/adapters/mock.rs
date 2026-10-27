@@ -321,7 +321,7 @@ impl MessengerBackend for MockAdapter {
             MOCK_NAMESPACE,
             &selector,
             kind,
-            payload.as_bytes().as_ref(),
+            &payload,
         );
         let timeout = service_query_lifetime(timeout);
 

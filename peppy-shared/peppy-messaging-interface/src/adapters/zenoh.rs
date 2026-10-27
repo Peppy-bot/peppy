@@ -875,7 +875,7 @@ impl MessengerBackend for ZenohAdapter {
             self.session_namespace(),
             &selector,
             kind,
-            payload.as_bytes().as_ref(),
+            &payload,
         );
 
         // The zenoh-side `.timeout(...)` is the query's wire lifetime, not
