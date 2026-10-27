@@ -1147,6 +1147,80 @@ mod zenoh_tests {
         }
     }
 
+    /// The receiver of a signed call verifies its proof against the key
+    /// expression and the namespace that its own session reads: zenoh takes
+    /// the namespace off the key expression of an inbound query, so the
+    /// receiver reads the selector that the caller signed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_namespaced_receiver_verifies_the_proof_of_a_signed_call() {
+        use pmi::{
+            CallReceiver, CallSigning, ClientCredential, ClientKey, SenderTarget, ServiceKind,
+            ServiceQueryKind, ServiceWireReceiver, ServiceWireSender,
+        };
+        use std::sync::Arc;
+
+        let _lock = ZENOH_SERIAL.lock().await;
+        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("router");
+        let host = instance.host.clone();
+        let port = instance.port;
+        let target = SenderTarget::node("cn-desk", "core").expect("target");
+
+        let daemon = open_namespaced(&host, port, "workspace-a").await;
+        let queryable = daemon
+            .listen_service(
+                &ServiceWireReceiver::new(
+                    "cn-desk",
+                    "brave-otter-1234",
+                    target.clone(),
+                    "stack_reset",
+                    ServiceKind::Service,
+                )
+                .expect("receiver"),
+            )
+            .await
+            .expect("listen");
+        let client = open_namespaced(&host, port, "workspace-a").await;
+        wait_for_subscriber_discovery().await;
+
+        let signer = ClientCredential::new(ClientKey::generate(), None).into_signer();
+        let key = signer.public_key();
+        let sender = ServiceWireSender::new(
+            "cn-desk",
+            "peppy-cli",
+            None,
+            target,
+            "stack_reset",
+            ServiceKind::Service,
+        )
+        .expect("sender")
+        .signed(CallSigning::new(
+            Arc::new(signer),
+            CallReceiver::ThisMachine,
+        ));
+        let _replies = client
+            .call_service(
+                &sender,
+                Payload::from_bytes(Bytes::from_static(b"reset")),
+                ServiceQueryKind::UserRequest,
+                Some(RECV_TIMEOUT),
+            )
+            .await
+            .expect("call");
+
+        let incoming = crate::common::next_request(&queryable, "the signed call").await;
+        assert_eq!(incoming.namespace, "workspace-a");
+        assert!(
+            !incoming.key_expr.starts_with("workspace-a"),
+            "the receiver reads the key expression without the namespace: {}",
+            incoming.key_expr
+        );
+        let payload = incoming.payload.as_bytes();
+        let proof = incoming.proof.as_ref().expect("the call carries its proof");
+        assert!(proof.verifies(&key, &incoming.signed_call(&payload)));
+    }
+
     /// Session namespaces apply to liveliness declarations and queries just as
     /// they do ordinary pub/sub keys. Each workspace therefore enumerates
     /// only its own core-node tokens even when sessions share one router.

@@ -721,6 +721,10 @@ async fn a_crash_under_on_failure_respawns_under_the_same_id() {
         .runtime_config_path()
         .expect("a running instance has a runtime config")
         .to_path_buf();
+    let first_key = first_slot
+        .credential_path()
+        .expect("a running instance has a key file")
+        .to_path_buf();
 
     // The first process dies unhealthy, so only the flip gives the next one
     // a healthy flag until its own monitor's first probe writes one.
@@ -761,6 +765,15 @@ async fn a_crash_under_on_failure_respawns_under_the_same_id() {
     assert!(
         !first_config.exists(),
         "the first process's config is removed"
+    );
+    let second_key = second_slot
+        .credential_path()
+        .expect("the new process has a key file");
+    assert_ne!(second_key, first_key.as_path(), "a new key file");
+    assert!(second_key.exists(), "the new process's key file is there");
+    assert!(
+        !first_key.exists(),
+        "the first process's key file is removed"
     );
 
     let lines = lines_for(&started, ID);
@@ -810,7 +823,8 @@ async fn a_crash_under_on_failure_respawns_under_the_same_id() {
         "both processes run the same command:\n{first_log}\n{second_log}"
     );
     // Both processes start from the same runtime config, arguments, slots
-    // and clock alike, and the same environment.
+    // and clock alike, and the same environment; each start has a key file
+    // of its own.
     let dump_path = |pid: u32, extension: &str| dumps.path().join(format!("{pid}.{extension}"));
     let config_of = |pid: u32| -> serde_json::Value {
         poll_file(&dump_path(pid, "json5"), |text| {
@@ -823,13 +837,24 @@ async fn a_crash_under_on_failure_respawns_under_the_same_id() {
             text.ends_with('\n').then(|| text.trim().to_owned())
         })
     };
-    let first_config = config_of(first_pid);
+    let mut first_config = config_of(first_pid);
     assert_eq!(
         first_config["node_instance"]["arguments"]["speed"],
         serde_json::json!(3),
         "{first_config}"
     );
-    assert_eq!(config_of(second_pid), first_config);
+    let mut second_config = config_of(second_pid);
+    let first_key = first_config["credential"].take();
+    let second_key = second_config["credential"].take();
+    assert!(
+        first_key.is_string() && second_key.is_string(),
+        "{first_key} {second_key}"
+    );
+    assert_ne!(
+        first_key, second_key,
+        "each start has a key file of its own"
+    );
+    assert_eq!(second_config, first_config);
     assert_eq!(env_of(first_pid), "steady");
     assert_eq!(env_of(second_pid), env_of(first_pid));
 
@@ -2968,7 +2993,7 @@ async fn participant<R: core_node_api::ServiceRequest>(
 ) -> Result<R::Response, Failure> {
     poll(
         request,
-        &started.caller_handle,
+        &started.remote_handle("coordinator"),
         "coordinator",
         CALLER_INSTANCE_ID,
         &started.core_node_name,
@@ -4211,7 +4236,7 @@ async fn ask_pair(
 ) -> Verdict {
     poll(
         request,
-        &started.caller_handle,
+        &started.remote_handle(WATCHER),
         WATCHER,
         CALLER_INSTANCE_ID,
         &started.core_node_name,
@@ -5085,7 +5110,7 @@ async fn peer_daemon_asking_back(
 ) -> (Mock, Arc<std::sync::Mutex<Option<Verdict>>>) {
     let answered = Arc::new(std::sync::Mutex::new(None));
     let ask_back = pair_commit_from_watcher(started, instance_id, true);
-    let messenger = started.caller_handle.clone();
+    let messenger = started.remote_handle(WATCHER);
     let core_node_name = started.core_node_name.clone();
     let recorder = Arc::clone(&answered);
     let mock = peer_daemon_service(
@@ -5206,7 +5231,7 @@ async fn peer_ended(
     use core_node_api::encoding::{RelationshipEvent, RelationshipNotification};
     poll(
         &RelationshipNotification::new(peer, WATCHER, RelationshipEvent::Ended(end)),
-        &started.caller_handle,
+        &started.remote_handle(WATCHER),
         WATCHER,
         CALLER_INSTANCE_ID,
         &started.core_node_name,

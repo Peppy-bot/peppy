@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::adapters::mock::MockAdapter;
+use crate::call_proof::{CallReceiver, CallSigning, ClientCredential, ClientKey, ClientPublicKey};
 use crate::wire::WirePeer;
 use crate::wire::test_support::{node, seg};
 use crate::wire::{Segment, SenderTarget};
@@ -33,6 +34,7 @@ fn pairing(name: &str, tag: &str) -> SenderTarget {
 fn user_request_attachment_bytes() -> bytes::Bytes {
     ServiceQueryAttachment {
         kind: ServiceQueryKind::UserRequest,
+        proof: None,
     }
     .encode()
 }
@@ -616,6 +618,7 @@ fn sample_service_sender(kind: ServiceKind) -> ServiceWireSender {
         to_target: node("robot_arm", "v1"),
         to_service_name: seg("ping"),
         kind,
+        signing: None,
     }
 }
 
@@ -810,6 +813,7 @@ fn parse_inbound_query_surfaces_probe_kind_from_attachment() {
     let query = "*/caller_core/*/caller_inst/service/node/robot_arm/v1/*/ping";
     let probe_attachment = ServiceQueryAttachment {
         kind: ServiceQueryKind::Probe,
+        proof: None,
     }
     .encode();
     let parsed = ZenohWireFormat::parse_inbound_query(&receiver, query, &probe_attachment)
@@ -1209,6 +1213,7 @@ fn service_get_selector_distinguishes_node_and_contract_with_same_name_tag() {
         to_target: node("placeholder", "v1"),
         to_service_name: seg("ping"),
         kind: ServiceKind::Service,
+        signing: None,
     };
     let mut as_node = base.clone();
     as_node.to_target = node("widget", "v1");
@@ -1430,11 +1435,112 @@ fn topic_attachment_unknown_byte_decodes_as_primary() {
 #[test]
 fn service_query_attachment_roundtrips_every_kind() {
     for kind in [ServiceQueryKind::UserRequest, ServiceQueryKind::Probe] {
-        let attachment = ServiceQueryAttachment { kind };
+        let attachment = ServiceQueryAttachment { kind, proof: None };
         let decoded = ServiceQueryAttachment::decode(attachment.encode().as_ref())
             .expect("encoded attachment decodes");
-        assert_eq!(decoded.kind, kind);
+        assert_eq!(decoded, attachment);
     }
+}
+
+/// The producer that `sample_service_sender` calls.
+fn sample_sender_producer() -> ServiceWireReceiver {
+    ServiceWireReceiver::new(
+        "target_core",
+        "target_inst",
+        node("robot_arm", "v1"),
+        "ping",
+        ServiceKind::Service,
+    )
+    .expect("valid producer of the sample sender")
+}
+
+/// A sender of `sample_service_sender`'s call that signs it for `receiver`.
+fn signed_sender(receiver: CallReceiver) -> (ServiceWireSender, ClientPublicKey) {
+    let signer = ClientCredential::new(
+        ClientKey::generate(),
+        Some(bytes::Bytes::from_static(b"machine proof")),
+    )
+    .into_signer();
+    let key = signer.public_key();
+    let sender = sample_service_sender(ServiceKind::Service)
+        .signed(CallSigning::new(std::sync::Arc::new(signer), receiver));
+    (sender, key)
+}
+
+#[test]
+fn a_signed_call_carries_a_proof_that_the_receiver_verifies_against_the_key_expression_it_reads() {
+    let (sender, key) = signed_sender(CallReceiver::OtherMachine);
+    let selector = ZenohWireFormat::service_get_selector(&sender);
+    let attachment = ZenohWireFormat::service_get_selector_attachment(
+        &sender,
+        "ws-a",
+        &selector,
+        ServiceQueryKind::UserRequest,
+        &crate::Payload::from_bytes(bytes::Bytes::from_static(b"payload")),
+    );
+
+    let receiver = sample_sender_producer();
+    let parsed = ZenohWireFormat::parse_inbound_query(&receiver, &selector, &attachment)
+        .expect("a signed query parses");
+    let proof = parsed.proof.expect("the query carries its proof");
+    let call = |namespace, payload| SignedCall {
+        namespace,
+        key_expr: &selector,
+        kind: ServiceQueryKind::UserRequest,
+        payload,
+    };
+    assert!(proof.verifies(&key, &call("ws-a", b"payload")));
+    assert!(
+        !proof.verifies(&key, &call("ws-b", b"payload")),
+        "another namespace"
+    );
+    assert!(
+        !proof.verifies(&key, &call("ws-a", b"other")),
+        "another payload"
+    );
+    assert_eq!(
+        proof.machine_proof().map(|bytes| bytes.as_ref()),
+        Some(&b"machine proof"[..])
+    );
+}
+
+#[test]
+fn an_unsigned_call_carries_no_proof() {
+    let sender = sample_service_sender(ServiceKind::Service);
+    let selector = ZenohWireFormat::service_get_selector(&sender);
+    let attachment = ZenohWireFormat::service_get_selector_attachment(
+        &sender,
+        "ws-a",
+        &selector,
+        ServiceQueryKind::UserRequest,
+        &crate::Payload::from_bytes(bytes::Bytes::from_static(b"payload")),
+    );
+    assert_eq!(
+        attachment.as_ref(),
+        user_request_attachment_bytes().as_ref()
+    );
+    let receiver = sample_sender_producer();
+    let parsed = ZenohWireFormat::parse_inbound_query(&receiver, &selector, &attachment)
+        .expect("an unsigned query parses");
+    assert_eq!(parsed.proof, None);
+}
+
+#[test]
+fn service_query_attachment_decode_rejects_a_proof_that_does_not_decode() {
+    let (sender, _) = signed_sender(CallReceiver::ThisMachine);
+    let selector = ZenohWireFormat::service_get_selector(&sender);
+    let attachment = ZenohWireFormat::service_get_selector_attachment(
+        &sender,
+        "ws-a",
+        &selector,
+        ServiceQueryKind::UserRequest,
+        &crate::Payload::from_bytes(bytes::Bytes::new()),
+    );
+    let cut = &attachment[..attachment.len() - 1];
+    assert!(matches!(
+        ServiceQueryAttachment::decode(cut),
+        Err(ZenohWireParseError::CallProof(_))
+    ));
 }
 
 #[test]
@@ -1524,6 +1630,7 @@ fn claim_accepts_wildcard_link_id() {
         caller_inst: "caller_inst".to_string(),
         link_id: SINGLE_CHUNK_WILDCARD.to_string(),
         kind: ServiceQueryKind::UserRequest,
+        proof: None,
     };
     assert_eq!(parsed.claim(), Some("_"));
 }
@@ -1535,6 +1642,7 @@ fn claim_accepts_default_link_id_literal() {
         caller_inst: "caller_inst".to_string(),
         link_id: "_".to_string(),
         kind: ServiceQueryKind::UserRequest,
+        proof: None,
     };
     assert_eq!(parsed.claim(), Some("_"));
 }
@@ -1548,6 +1656,7 @@ fn claim_rejects_other_literals_defensively() {
         caller_inst: "caller_inst".to_string(),
         link_id: "wrist_left".to_string(),
         kind: ServiceQueryKind::UserRequest,
+        proof: None,
     };
     assert!(parsed.claim().is_none());
 }

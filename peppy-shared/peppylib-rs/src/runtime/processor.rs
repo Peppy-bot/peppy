@@ -329,6 +329,12 @@ impl Processor {
         &self.runtime_config.discovery
     }
 
+    /// The key file that this instance signs its calls to a daemon with;
+    /// `None` for a node that runs standalone.
+    pub(crate) fn credential(&self) -> Option<&Path> {
+        self.runtime_config.credential.as_deref()
+    }
+
     /// Grace period this node's daemon-liveness watchdog waits, after the
     /// daemon's heartbeat goes silent, before shutting the node down. Resolved
     /// by the daemon from `peppy_config.json5` and shipped in the runtime

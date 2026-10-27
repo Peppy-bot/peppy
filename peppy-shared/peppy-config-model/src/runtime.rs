@@ -704,6 +704,12 @@ pub struct RuntimeConfig {
     /// parses.
     #[serde(default, skip_serializing_if = "LifecycleRuntimeConfig::is_default")]
     pub lifecycle: LifecycleRuntimeConfig,
+    /// The key file of the instance: the key that the instance signs its
+    /// calls to a daemon with, which the daemon that spawned it wrote for this
+    /// start of the instance. A daemon refuses an unsigned call, so a node
+    /// with no key file runs standalone, with no daemon to call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<PathBuf>,
 }
 
 impl RuntimeConfig {
@@ -726,7 +732,15 @@ impl RuntimeConfig {
             bound_core_node_instance_id: Name::new(bound_core_node_instance_id.into())?,
             discovery: DiscoveryConfig::default(),
             lifecycle: LifecycleRuntimeConfig::default(),
+            credential: None,
         })
+    }
+
+    /// This configuration, naming `credential` as the key file of the
+    /// instance.
+    pub fn with_credential(mut self, credential: PathBuf) -> Self {
+        self.credential = Some(credential);
+        self
     }
 
     /// This function is typically invoked by the `peppy` program

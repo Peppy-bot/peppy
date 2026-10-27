@@ -58,6 +58,7 @@ pub fn enrollment() -> Enrollment {
         peer_key: "/peer/peer.key".into(),
         peer_certificate: "/peer/peer.crt".into(),
         trust_anchor: "/peer/ca.crt".into(),
+        issuer_chain: "/peer/chain.crt".into(),
     }
 }
 
@@ -82,27 +83,26 @@ pub fn leaf() -> String {
     leaf_pem(ISSUED_AT, EXPIRES_AT)
 }
 
-/// Enrolls the machine under `dirs` with `document` and `leaf_pem` as its
-/// certificate, with placeholder PEM material for the rest, as `peppy
-/// platform enroll` would have.
-pub fn write_enrollment_with_leaf(dirs: &PeppyDirs, document: EnrollmentDocument, leaf_pem: &str) {
+/// Enrolls the machine under `dirs` with `document`, as `peppy platform
+/// enroll` would have: a leaf for [`PEER_NAME`] valid from [`ISSUED_AT`] to
+/// [`EXPIRES_AT`] with its key, from an issuer of its own under a CA of the
+/// project, as the platform issues it.
+pub fn write_enrollment(dirs: &PeppyDirs, document: EnrollmentDocument) {
+    let project = TestMachineCa::root("project CA");
+    let issuer = project.issuer("issuer of the peer");
+    let (leaf_pem, key_pem) = issuer.leaf_pem(PEER_NAME, ISSUED_AT, EXPIRES_AT);
     let bundle = EnrollmentBundle {
-        peer_key_pem: secret("key".into()),
+        peer_key_pem: secret(key_pem),
         issued: IssuedMaterial {
             document,
-            certificate: CertificateValidity::parse_pem(leaf_pem).expect("a certificate"),
-            peer_certificate_pem: leaf_pem.into(),
-            trust_anchor_pem: "ca".into(),
-            chain_pem: "chain".into(),
+            certificate: CertificateValidity::parse_pem(&leaf_pem).expect("a certificate"),
+            peer_certificate_pem: leaf_pem,
+            trust_anchor_pem: project.trust_anchor_pem(),
+            chain_pem: issuer.chain_pem(),
             platform_zenoh_config: "{}".into(),
         },
     };
     save(dirs, &bundle).expect("write the enrollment");
-}
-
-/// [`write_enrollment_with_leaf`] with [`leaf`].
-pub fn write_enrollment(dirs: &PeppyDirs, document: EnrollmentDocument) {
-    write_enrollment_with_leaf(dirs, document, &leaf());
 }
 
 /// One peer of a router as the platform lists it.
@@ -163,4 +163,110 @@ pub fn problem(kind: ProblemKind, status: u16) -> Problem {
         retry_after_secs: None,
         pending_removals: None,
     }
+}
+
+/// A CA that mints the machine certificates of a test federation: the CA of
+/// an operator, or the CA of a project of the platform with an issuer under
+/// it.
+pub struct TestMachineCa {
+    issuer: rcgen::CertifiedIssuer<'static, rcgen::KeyPair>,
+    /// The certificates above `issuer`, nearest first: empty for a root.
+    above: Vec<String>,
+}
+
+/// The files of a machine certificate: the leaf then the certificates above
+/// it, its private key, and the CA that the machines of the federation trust.
+#[derive(Debug, Clone)]
+pub struct MachineFiles {
+    pub certificate: std::path::PathBuf,
+    pub private_key: std::path::PathBuf,
+    pub trust_anchor: std::path::PathBuf,
+}
+
+impl TestMachineCa {
+    /// A root CA named `name`.
+    pub fn root(name: &str) -> Self {
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).expect("a key");
+        let issuer = rcgen::CertifiedIssuer::self_signed(ca_params(name), key).expect("a root CA");
+        Self {
+            issuer,
+            above: Vec::new(),
+        }
+    }
+
+    /// An issuing CA named `name` under this CA, as the platform gives each
+    /// peer of a project its own issuer under the CA of the project.
+    pub fn issuer(&self, name: &str) -> Self {
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).expect("a key");
+        let issuer = rcgen::CertifiedIssuer::signed_by(ca_params(name), key, &self.issuer)
+            .expect("an issuing CA");
+        let mut above = vec![self.issuer.pem()];
+        above.extend(self.above.iter().cloned());
+        Self { issuer, above }
+    }
+
+    /// The certificate of the root of this CA, PEM: the one that the machines
+    /// of the federation trust.
+    pub fn trust_anchor_pem(&self) -> String {
+        self.above
+            .last()
+            .cloned()
+            .unwrap_or_else(|| self.issuer.pem())
+    }
+
+    /// A leaf for client authentication whose common name is `common_name`,
+    /// valid from `not_before` to `not_after` (unix seconds), and its key, PEM.
+    pub fn leaf_pem(&self, common_name: &str, not_before: i64, not_after: i64) -> (String, String) {
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("no names");
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, common_name);
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+        params.not_before =
+            time::OffsetDateTime::from_unix_timestamp(not_before).expect("a date in range");
+        params.not_after =
+            time::OffsetDateTime::from_unix_timestamp(not_after).expect("a date in range");
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).expect("a key");
+        let leaf = params.signed_by(&key, &self.issuer).expect("a leaf");
+        (leaf.pem(), key.serialize_pem())
+    }
+
+    /// The certificates above a leaf of this CA, nearest first, PEM.
+    pub fn chain_pem(&self) -> String {
+        let mut chain = vec![self.issuer.pem()];
+        chain.extend(self.above.iter().cloned());
+        chain.concat()
+    }
+
+    /// Writes, in `directory`, the machine certificate of `common_name`
+    /// (valid from [`ISSUED_AT`] to [`EXPIRES_AT`]) with the chain above it,
+    /// its key, and the CA, and gives their paths.
+    pub fn write_machine(&self, directory: &std::path::Path, common_name: &str) -> MachineFiles {
+        let (leaf, key) = self.leaf_pem(common_name, ISSUED_AT, EXPIRES_AT);
+        let files = MachineFiles {
+            certificate: directory.join(format!("{common_name}.crt")),
+            private_key: directory.join(format!("{common_name}.key")),
+            trust_anchor: directory.join("ca.crt"),
+        };
+        std::fs::write(&files.certificate, format!("{leaf}{}", self.chain_pem()))
+            .expect("write the machine certificate");
+        std::fs::write(&files.private_key, key).expect("write the machine key");
+        std::fs::write(&files.trust_anchor, self.trust_anchor_pem()).expect("write the CA");
+        files
+    }
+}
+
+fn ca_params(name: &str) -> rcgen::CertificateParams {
+    let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("no names");
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, name);
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.key_usages = vec![
+        rcgen::KeyUsagePurpose::KeyCertSign,
+        rcgen::KeyUsagePurpose::DigitalSignature,
+    ];
+    params.not_before = time::OffsetDateTime::from_unix_timestamp(ISSUED_AT).expect("a date");
+    params.not_after = time::OffsetDateTime::from_unix_timestamp(EXPIRES_AT).expect("a date");
+    params
 }

@@ -253,11 +253,6 @@ impl ActiveLaunch {
         })
     }
 
-    /// Whether `instance_id` is an instance of this launch.
-    pub(crate) fn has_instance(&self, instance_id: &str) -> bool {
-        self.planned_instance(instance_id).is_some()
-    }
-
     /// The instance `instance_id` of this launch, with the deployment that
     /// plans it.
     fn planned_instance(

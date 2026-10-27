@@ -306,6 +306,7 @@ fn daemon_state(namespace: &str, router_id: Option<&str>) -> DaemonState {
         30,
         config::namespace::Namespace::parse(namespace).expect("valid namespace"),
         router_id.map(|id| pmi::RouterId::parse(id).expect("valid router id")),
+        "/peppy/credentials/command_line.key".into(),
     )
 }
 

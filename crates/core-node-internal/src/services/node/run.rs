@@ -11,6 +11,7 @@ use super::stop::{DoomedInstance, StopOutcome};
 use super::supervisor::{RestartTarget, RunOutcome, log_next_attempt, spawn_next_attempt};
 use super::{FeedbackLine, RelationshipCoordinators};
 use crate::Result;
+use crate::services::credentials::DaemonKeys;
 use crate::services::raw_calls::RawCallGate;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
 use config::failure_kind::PeppyFailureKind;
@@ -224,6 +225,9 @@ pub struct DaemonDefaults {
     /// a started instance's endpoints expand against: the system's interfaces
     /// in production, a fixed list under test.
     pub host_addresses: HostAddressSource,
+    /// The keys of this daemon, which give each start of an instance the key
+    /// file that the instance signs its calls to a daemon with.
+    pub(crate) keys: Arc<DaemonKeys>,
 }
 
 impl DaemonDefaults {
@@ -232,10 +236,11 @@ impl DaemonDefaults {
     /// spawned nodes) plus the daemon's resolved `namespace`, which comes
     /// from the credentials rather than from `peppy_config`, and the source
     /// of the host addresses its instances' endpoints expand against.
-    pub fn from_peppy_config(
+    pub(crate) fn from_peppy_config(
         config: &PeppyConfig,
         namespace: config::namespace::Namespace,
         host_addresses: HostAddressSource,
+        keys: Arc<DaemonKeys>,
     ) -> Self {
         Self {
             gossip: config.zenoh.gossip(),
@@ -244,6 +249,7 @@ impl DaemonDefaults {
             shutdown_grace_secs: config.lifecycle.shutdown_grace_secs,
             namespace,
             host_addresses,
+            keys,
         }
     }
 }
@@ -1548,6 +1554,7 @@ async fn process_node_run(
         &runtime_config.node_instance.arguments,
     )
     .and_then(expand_home_in_mount_specs)
+    .and_then(|paths| refuse_data_root_mounts(paths, ctx.action.peppy_dirs.root()))
     {
         Ok(paths) => paths,
         Err(msg) => {
@@ -1660,8 +1667,24 @@ async fn process_node_run(
         .observation()
         .seed_for_spawn(&planned_observations);
 
+    // The key file of this start of the instance: the instance signs its calls
+    // to a daemon with it, and a daemon refuses an unsigned call.
+    let issued_key = match ctx
+        .action
+        .daemon_defaults
+        .keys
+        .issue_instance_key(instance_id_str)
+    {
+        Ok(issued) => issued,
+        Err(e) => {
+            let msg = format!("Failed to write the key file of the instance: {e}");
+            return refuse(&ctx, PeppyFailureKind::AttemptFailed, msg);
+        }
+    };
+    launch_config.credential = Some(issued_key.path.clone());
+
     // Serialize once, after every mutation (synthesized defaults, topology + buffer
-    // sizes, the gateway rewrite, and the observation seeds), so the spawned
+    // sizes, the gateway rewrite, the observation seeds and the key file), so the spawned
     // process receives the fully-resolved runtime config. Only `launch_config` is
     // serialized: `runtime_config` stays in its pre-defaulting state, which is what
     // the rest of this function goes on reading.
@@ -1719,6 +1742,7 @@ async fn process_node_run(
         },
         env_vars: &env_vars,
         mount_paths_resolved: &resolved_mount_paths,
+        credential: &issued_key.path,
         peppy_dirs: &ctx.action.peppy_dirs,
         output_sinks: node_stack::OutputSinks {
             announcer: Announcer::new(ctx.announcer.log().clone(), internal_feedback_tx.clone()),
@@ -1731,6 +1755,7 @@ async fn process_node_run(
     if cancel_token.is_cancelled() {
         let msg = "cancelled before node process spawn".to_string();
         ctx.announcer.log().error(&msg);
+        let _ = std::fs::remove_file(&issued_key.path);
         feedback.close(instance_id_str, false).await;
         return RunOutcome::Cancelled(msg);
     }
@@ -2157,6 +2182,21 @@ fn expand_home_in_mount_specs(specs: Vec<String>) -> std::result::Result<Vec<Str
         .into_iter()
         .map(|spec| containers::expand_home_in_mount_spec(&spec))
         .collect()
+}
+
+/// `specs`, unless the source of one touches `data_root`: a container node
+/// does not see the data root, which holds the keys of the clients of the
+/// daemon.
+pub(crate) fn refuse_data_root_mounts(
+    specs: Vec<String>,
+    data_root: &std::path::Path,
+) -> std::result::Result<Vec<String>, String> {
+    match specs.iter().find_map(|spec| {
+        containers::data_root_mount_rejection(containers::mount_spec_source(spec), data_root)
+    }) {
+        Some(rejection) => Err(rejection),
+        None => Ok(specs),
+    }
 }
 
 /// Replaces `${parameters:...}` tokens in mount paths with actual argument values.
@@ -3141,6 +3181,7 @@ mod tests {
             shutdown_grace_secs: 17,
             namespace: config::namespace::Namespace::local(),
             host_addresses: Some(Vec::new()),
+            keys: DaemonKeys::unwritten(),
         }
     }
 
@@ -3233,6 +3274,7 @@ mod tests {
             &config,
             config::namespace::Namespace::local(),
             Some(Vec::new()),
+            DaemonKeys::unwritten(),
         );
 
         assert!(!defaults.gossip);

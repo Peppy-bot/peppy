@@ -13,6 +13,7 @@
 #![deny(unsafe_code)]
 
 mod adapters;
+mod call_proof;
 mod declared;
 mod error;
 mod failure;
@@ -30,6 +31,11 @@ mod zenohd;
 /// Defined in `config::namespace`; re-exported here so
 /// callers that drive pmi's session constructors (e.g. peppylib) can name it
 /// through pmi alone.
+pub use call_proof::{
+    CallProof, CallProofDecodeError, CallReceiver, CallSigner, CallSigning, ClientCredential,
+    ClientKey, ClientPublicKey, CredentialError, NONCE_LEN, PUBLIC_KEY_LEN, SIGNATURE_LEN,
+    SignedCall, unix_millis,
+};
 pub use config::namespace::Namespace;
 /// The full `(core_node, instance_id)` producer wire address taken by the
 /// sender constructors. Defined in `config` (the serialized layer); re-exported

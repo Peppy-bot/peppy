@@ -1,3 +1,4 @@
+use super::call_check::{CallCheck, ReceivedCall, VerifiedCaller};
 use super::discovery::{budget_left_after_discovery, discover_producer};
 use super::{MessengerHandle, generate_short_id};
 use crate::error::{Error, Result};
@@ -5,8 +6,8 @@ use crate::messaging::ProducerRef;
 use crate::runtime::{TaskHandle, spawn};
 use crate::types::{Message, Payload};
 use pmi::{
-    Failure, Messenger, ResponseToken, SenderTarget, ServiceKind, ServiceQueryKind,
-    ServiceQueryable, ServiceWireReceiver, ServiceWireSender, TopicMessage,
+    Failure, IncomingRequest, Messenger, ResponseToken, SenderTarget, ServiceKind,
+    ServiceQueryKind, ServiceQueryable, ServiceWireReceiver, ServiceWireSender, TopicMessage,
 };
 use std::{fmt, sync::Arc};
 use tokio::{
@@ -128,17 +129,47 @@ impl ServiceTarget<'_> {
 /// `queryable.rx`) lives in the session's queryable registry, so once every
 /// strong reference to the messenger drops the session disappears and the
 /// channel closes mid-flight.
+///
+/// `call_check` is the check of the session that exposed the endpoint: when
+/// it has one, the endpoint runs it on each request before any handler reads
+/// the request, and answers a refused request with the failure of the check.
 pub struct ServiceEndpoint {
     queryable: ServiceQueryable,
     _messenger: Arc<Mutex<Messenger>>,
+    call_check: Option<Arc<dyn CallCheck>>,
 }
 
 impl ServiceEndpoint {
-    pub(crate) fn new(messenger: Arc<Mutex<Messenger>>, queryable: ServiceQueryable) -> Self {
+    pub(crate) fn new(
+        messenger: Arc<Mutex<Messenger>>,
+        queryable: ServiceQueryable,
+        call_check: Option<Arc<dyn CallCheck>>,
+    ) -> Self {
         Self {
             queryable,
             _messenger: messenger,
+            call_check,
         }
+    }
+
+    /// The verdict of the check of the endpoint on `incoming`: `Ok(None)`
+    /// when the endpoint has no check.
+    fn verify(
+        &self,
+        incoming: &IncomingRequest,
+    ) -> std::result::Result<Option<VerifiedCaller>, Failure> {
+        let Some(check) = &self.call_check else {
+            return Ok(None);
+        };
+        let payload = incoming.payload.as_bytes();
+        check
+            .verify(&ReceivedCall {
+                caller_core_node: &incoming.caller_core,
+                caller_instance_id: &incoming.caller_inst,
+                signed: incoming.signed_call(&payload),
+                proof: incoming.proof.as_ref(),
+            })
+            .map(Some)
     }
 }
 
@@ -282,6 +313,21 @@ impl ServiceEndpoint {
                     continue;
                 }
                 ServiceQueryKind::UserRequest => {
+                    let verified_caller = match self.verify(&incoming) {
+                        Ok(verified_caller) => verified_caller,
+                        Err(refusal) => {
+                            warn!(
+                                caller_core_node = %incoming.caller_core,
+                                caller_instance_id = %incoming.caller_inst,
+                                %refusal,
+                                "refusing a call whose sender does not prove itself"
+                            );
+                            if let Err(err) = incoming.token.respond_failure(&refusal).await {
+                                warn!(%err, "the refusal of a call did not reach its sender");
+                            }
+                            continue;
+                        }
+                    };
                     let topic_message = TopicMessage::from_parts(
                         incoming.caller_core,
                         incoming.caller_inst,
@@ -289,8 +335,9 @@ impl ServiceEndpoint {
                     );
 
                     let request_id = generate_short_id("request");
-                    let context =
+                    let mut context =
                         ServiceRequestContext::new(topic_message, request_id, incoming.link_id);
+                    context.verified_caller = verified_caller;
                     return Ok((context, incoming.token));
                 }
             }
@@ -306,6 +353,9 @@ pub struct ServiceRequestContext {
     /// goal handlers can scope per-goal feedback under the link_id the
     /// consumer actually targeted.
     link_id: String,
+    /// The caller that the check of the endpoint verified; `None` on an
+    /// endpoint with no check.
+    pub(crate) verified_caller: Option<VerifiedCaller>,
 }
 
 impl ServiceRequestContext {
@@ -314,7 +364,15 @@ impl ServiceRequestContext {
             message: Message(message),
             request_id,
             link_id,
+            verified_caller: None,
         }
+    }
+
+    /// The caller that the check of the endpoint verified: the sender that
+    /// the call proves. `None` on an endpoint whose session has no check,
+    /// where the sender is the one that the call gives.
+    pub fn verified_caller(&self) -> Option<&VerifiedCaller> {
+        self.verified_caller.as_ref()
     }
 
     pub fn message(&self) -> &Message {

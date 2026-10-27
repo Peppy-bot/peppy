@@ -5,6 +5,7 @@ use core_node::{
 };
 use daemon::state::DaemonState;
 use daemon_config::consts::PeppyDirs;
+use peppylib::MessengerHandle;
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -236,6 +237,32 @@ enum MessengerInstance {
 /// The core node name of an emulated daemon that a test does not name.
 const DEFAULT_CORE_NODE_NAME: &str = "test-core-node";
 
+/// The CA of the machines of the emulated daemons. Each emulated daemon
+/// proves its machine with a certificate of this CA, so the daemons that
+/// share one router take the calls of the command line of each other, as
+/// the machines of a federation do.
+fn emulated_machines_ca() -> &'static auth::test_support::TestMachineCa {
+    static CA: std::sync::OnceLock<auth::test_support::TestMachineCa> = std::sync::OnceLock::new();
+    CA.get_or_init(|| auth::test_support::TestMachineCa::root("emulated machines CA"))
+}
+
+/// The machine certificate of the emulated daemon `core_node`, written to
+/// the `machine` directory of its data root `root`.
+fn emulated_machine_certificate(
+    core_node: &str,
+    root: &Path,
+) -> auth::machine_proof::MachineCertificate {
+    let directory = root.join("machine");
+    std::fs::create_dir_all(&directory).expect("a directory for the machine certificate");
+    let files = emulated_machines_ca().write_machine(&directory, core_node);
+    auth::machine_proof::MachineCertificate::of_operator(
+        &files.certificate,
+        &files.private_key,
+        &files.trust_anchor,
+    )
+    .expect("the machine certificate reads")
+}
+
 /// The core node arguments the emulation runs with: a restart backoff that
 /// parks every restart, and a health monitor that kills nothing.
 pub fn default_arguments() -> CoreNodeArguments {
@@ -449,6 +476,7 @@ impl ServeCommandEmulation {
             namespace: config::namespace::Namespace::local(),
             shutdown_token: shutdown_token.clone(),
             log_exporter: log_export::LogExporter::disabled(),
+            machine_certificate: Some(emulated_machine_certificate(core_node_name, &root)),
         });
         let core_node_name = core_node.node_name().to_string();
         let slice_ownership = core_node.slice_ownership();
@@ -481,6 +509,7 @@ impl ServeCommandEmulation {
             config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
             config::namespace::Namespace::local(),
             None,
+            PeppyDirs::new(&root).command_line_key_path(),
         );
         DaemonState::write_to(&daemon_state_path, &daemon_state)
             .expect("failed to write daemon state");
@@ -507,6 +536,16 @@ impl ServeCommandEmulation {
 
     pub fn messenger(&self) -> Arc<TokioMutex<Messenger>> {
         Arc::clone(&self.shared_messenger)
+    }
+
+    /// The session that calls the daemon as the command line, signing with
+    /// the key of the command line that the daemon wrote at its boot.
+    pub fn command_line_handle(&self) -> MessengerHandle {
+        let signer =
+            pmi::ClientCredential::read(&PeppyDirs::new(&self.root).command_line_key_path())
+                .expect("the daemon wrote the key of the command line")
+                .into_signer();
+        MessengerHandle::from_shared(self.messenger()).signing_calls_with(signer)
     }
 
     pub fn temp_dir(&self) -> &Path {

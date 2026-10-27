@@ -839,6 +839,7 @@ impl MessengerBackend for ZenohAdapter {
         // `*` selector double-deliver via `QueryTarget::All`.
         let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv);
         let recv_clone = recv.clone();
+        let namespace = self.session_namespace().to_owned();
         // Probe replies are spawned onto the listener's runtime: the zenoh
         // callback runs on a zenoh worker thread that must not block, and
         // `listen_service` always executes inside the consumer's tokio
@@ -848,7 +849,7 @@ impl MessengerBackend for ZenohAdapter {
             .declare_queryable(&declare_keyexpr)
             .complete(true)
             .callback(move |query| {
-                process_inbound_query(query, &recv_clone, &tx, &rt);
+                process_inbound_query(query, &recv_clone, &namespace, &tx, &rt);
             })
             .await
             .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
@@ -866,10 +867,16 @@ impl MessengerBackend for ZenohAdapter {
         let session = self.open_session()?;
         let selector = ZenohWireFormat::service_get_selector(sender);
         // Mandatory query attachment: carries the request kind (UserRequest
-        // vs Probe). The producer refuses queries with no attachment, so a
-        // caller without one sees ServiceUnreachable instead of a request
-        // misclassified as a default.
-        let attachment = ZenohWireFormat::service_get_selector_attachment(kind);
+        // vs Probe), and the proof of a signed call. The producer refuses
+        // queries with no attachment, so a caller without one sees
+        // ServiceUnreachable instead of a request misclassified as a default.
+        let attachment = ZenohWireFormat::service_get_selector_attachment(
+            sender,
+            self.session_namespace(),
+            &selector,
+            kind,
+            &payload,
+        );
 
         // The zenoh-side `.timeout(...)` is the query's wire lifetime, not
         // the caller's deadline; see `service_query_lifetime`.
@@ -1215,6 +1222,15 @@ impl ZenohAdapter {
             .ok_or_else(Error::session_not_initialized)
     }
 
+    /// The namespace of the session, which the proof of a signed call covers:
+    /// empty for a session with no namespace.
+    fn session_namespace(&self) -> &str {
+        self.client_config
+            .namespace
+            .as_ref()
+            .map_or("", Namespace::as_str)
+    }
+
     fn declared_topics(
         &self,
     ) -> std::sync::MutexGuard<'_, DeclaredTopics<Arc<RetainingPublisher>>> {
@@ -1536,6 +1552,7 @@ fn declare_retaining_publisher(
 fn process_inbound_query(
     query: zenoh::query::Query,
     recv: &ServiceWireReceiver,
+    namespace: &str,
     tx: &flume::Sender<IncomingRequest>,
     rt: &tokio::runtime::Handle,
 ) {
@@ -1571,6 +1588,9 @@ fn process_inbound_query(
         &parsed.caller_core,
         &parsed.caller_inst,
     );
+    // zenoh removes the namespace of the session from the key expression of
+    // an inbound query, so this is the selector that its caller built.
+    let key_expr = query.key_expr().as_str().to_owned();
 
     let payload = match query.payload() {
         Some(zb) => Payload::from_zbytes(zb.clone()),
@@ -1603,6 +1623,9 @@ fn process_inbound_query(
         link_id: chosen_link_id.to_string(),
         caller_core: parsed.caller_core,
         caller_inst: parsed.caller_inst,
+        key_expr,
+        namespace: namespace.to_owned(),
+        proof: parsed.proof,
         token,
     };
 

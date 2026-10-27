@@ -812,6 +812,7 @@ mod tests {
             5,
             config::namespace::Namespace::local(),
             router_id.map(|id| pmi::RouterId::parse(id).unwrap()),
+            "/peppy/credentials/command_line.key".into(),
         )
     }
 

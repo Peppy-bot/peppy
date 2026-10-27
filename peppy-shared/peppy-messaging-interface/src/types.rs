@@ -1,4 +1,5 @@
 use super::adapters::mock::{MockAdapter, MockPublisher};
+use super::call_proof::{CallProof, SignedCall};
 use super::error::Result;
 use super::failure::Failure;
 use super::wire::zenoh_format::{ServiceReplyAttachment, ZenohWireFormat};
@@ -791,7 +792,28 @@ pub struct IncomingRequest {
     pub caller_core: String,
     /// Caller's `instance_id` segment, parsed from the inbound query selector.
     pub caller_inst: String,
+    /// The key expression of the query, without the namespace: what the
+    /// signature of a signed call covers, with the namespace, the kind and
+    /// the payload.
+    pub key_expr: String,
+    /// The namespace of the session that received the query.
+    pub namespace: String,
+    /// The proof of the sender, when the call is signed.
+    pub proof: Option<CallProof>,
     pub token: ResponseToken,
+}
+
+impl IncomingRequest {
+    /// What the proof of this request signs, over `payload`, the bytes of
+    /// its payload.
+    pub fn signed_call<'a>(&'a self, payload: &'a [u8]) -> SignedCall<'a> {
+        SignedCall {
+            namespace: &self.namespace,
+            key_expr: &self.key_expr,
+            kind: self.kind,
+            payload,
+        }
+    }
 }
 
 /// Opaque handle that lets the responder send replies back to a specific

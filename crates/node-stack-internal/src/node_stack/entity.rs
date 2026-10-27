@@ -33,8 +33,9 @@ use super::build_steps::{
 use super::pairing::{PlannedPair, SlotAddr};
 use super::pypi_mirror;
 use super::run_steps::{
-    SpawnCommand, SpawnContainerInputs, build_built_in_command, build_container_command,
-    build_process_command, create_instance_dir, extract_node_archive, kill_and_collect_error,
+    SpawnCommand, SpawnContainerInputs, TempFileGuard, build_built_in_command,
+    build_container_command, build_process_command, create_instance_dir, extract_node_archive,
+    kill_and_collect_error,
 };
 use super::supervision::{
     Attempt, ExitRecord, FirstStart, HealthKill, KeptRelations, ProcessClaim, Registrations,
@@ -318,6 +319,11 @@ pub struct StartContext<'a> {
     /// (against runtime arguments and the blocked-source policy). Container
     /// nodes only.
     pub mount_paths_resolved: &'a [String],
+    /// The key file that the daemon wrote for this start of the instance,
+    /// which its runtime config names. From here on the start owns it: it
+    /// goes with the runtime config file of the process, and a container
+    /// sees it alone of the credentials of the daemon.
+    pub credential: &'a Path,
     /// Resolved peppy directory layout. Used for `runtime_config_dir()` and
     /// `instances_dir()`.
     pub peppy_dirs: &'a PeppyDirs,
@@ -372,13 +378,30 @@ impl OutputSinks {
     }
 }
 
+/// The files that one spawn of an instance writes for its process: its
+/// runtime config and its key file. Both live as long as that process, and
+/// go together when it ends or its start fails.
+#[derive(Debug, Clone)]
+pub(crate) struct SpawnFiles {
+    pub(crate) runtime_config: PathBuf,
+    pub(crate) credential: PathBuf,
+}
+
+impl SpawnFiles {
+    /// Removes both files, best-effort: a file already gone is no error.
+    pub(crate) fn remove(&self) {
+        let _ = std::fs::remove_file(&self.runtime_config);
+        let _ = std::fs::remove_file(&self.credential);
+    }
+}
+
 /// State handed back from [`NodeEntity::prepare_and_spawn`]. The caller owns
 /// it across `.await` boundaries (so it must be `Send`) and passes it to
 /// either [`NodeEntity::commit_started`] or [`NodeEntity::abort_started`].
 #[derive(Debug)]
 pub struct StartedInstanceCtx {
     pub(crate) instance_dir: PathBuf,
-    pub(crate) runtime_config_path: PathBuf,
+    pub(crate) spawn_files: SpawnFiles,
     pub(crate) stderr_buffer: StderrTail,
     pub(crate) output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
     /// The process's group, led by the pid recorded at spawn. A startup
@@ -980,21 +1003,24 @@ impl NodeEntity {
         starts_for_run || awaits_its_restart
     }
 
-    /// Records the spawned child's `pid` on the still-`Starting` instance
-    /// `instance_id`. Called by [`Self::prepare_and_spawn`] while the entity
-    /// write lock is already held, in the SAME critical section as the fork,
-    /// so a daemon teardown snapshot can never observe a live child whose pid
-    /// is not yet force-killable. A no-op if the entity is no longer `Ready`
-    /// or the instance is gone, which cannot happen while the `Starting`
-    /// instance is registered: `push_config`/`remove_config` both refuse a
-    /// non-empty instances list under this same entity write lock, so the
-    /// entity is neither replaced nor detached for the lifetime of the start.
-    fn record_starting_pid(&mut self, instance_id: &Name, pid: u32) {
+    /// Records the spawned child's `pid` and the files of its spawn on the
+    /// still-`Starting` instance `instance_id`. Called by
+    /// [`Self::prepare_and_spawn`] while the entity write lock is already
+    /// held, in the SAME critical section as the fork, so a daemon teardown
+    /// snapshot can never observe a live child whose pid is not yet
+    /// force-killable, and the daemon takes the calls of the child with the
+    /// key file of its spawn from its first call on. A no-op if the entity is
+    /// no longer `Ready` or the instance is gone, which cannot happen while
+    /// the `Starting` instance is registered: `push_config`/`remove_config`
+    /// both refuse a non-empty instances list under this same entity write
+    /// lock, so the entity is neither replaced nor detached for the lifetime
+    /// of the start.
+    fn record_starting_process(&mut self, instance_id: &Name, pid: u32, spawn_files: SpawnFiles) {
         if let Some(inst) = self
             .instance_mut(instance_id.as_str())
             .filter(|inst| inst.state() == InstanceState::Starting)
         {
-            inst.set_starting_pid(pid);
+            inst.set_starting_process(pid, spawn_files);
         }
     }
 
@@ -1033,6 +1059,10 @@ impl NodeEntity {
         handle: &Arc<RwLock<NodeEntity>>,
         ctx: StartContext<'_>,
     ) -> Result<(Child, StartedInstanceCtx)> {
+        // The key file goes away on every return before the spawn hands it
+        // to the started instance.
+        let mut credential_guard = TempFileGuard::new(ctx.credential.to_path_buf());
+
         // ---- Phase 1: register the Starting instance under a brief write lock ----
         let (node_name, node_tag, node_config, artifact, start_generation) = {
             let mut guard = handle.write();
@@ -1137,7 +1167,7 @@ impl NodeEntity {
         // returned command is forked under the entity write lock in Phase 3b.
         let SpawnCommand {
             mut command,
-            runtime_config_path,
+            runtime_config_path: runtime_config,
             description: spawn_description,
         } = match (&artifact, node_config.execution.container.as_ref()) {
             (Artifact::BuiltIn(launch), _) => build_built_in_command(
@@ -1163,6 +1193,7 @@ impl NodeEntity {
                     working_dir: &instance_dir,
                     instance_id: instance_id_str,
                     runtime_config_json5: ctx.runtime_config_json5,
+                    credential: ctx.credential,
                     env_vars: ctx.env_vars,
                     mount_paths: ctx.mount_paths_resolved,
                     apptainer_run_extra_args,
@@ -1205,6 +1236,10 @@ impl NodeEntity {
         // for the lifetime of the start.
         // A stop that claimed the slot since its flip ends the start here,
         // under the same lock as the fork, so nothing forks for it.
+        let spawn_files = SpawnFiles {
+            runtime_config,
+            credential: ctx.credential.to_path_buf(),
+        };
         let spawned = {
             let mut guard = handle.write();
             let claimed = guard
@@ -1222,7 +1257,7 @@ impl NodeEntity {
                         let pid = child
                             .id()
                             .ok_or_else(|| std::io::Error::other("the process has no pid"))?;
-                        guard.record_starting_pid(ctx.instance_id, pid);
+                        guard.record_starting_process(ctx.instance_id, pid, spawn_files.clone());
                         Ok((child, pid))
                     })
                     .map_err(|e| Error::StartFailed {
@@ -1234,9 +1269,10 @@ impl NodeEntity {
         };
         let (mut child, pid) = spawned.inspect_err(|_| {
             let _ = std::fs::remove_dir_all(&instance_dir);
-            let _ = std::fs::remove_file(&runtime_config_path);
+            spawn_files.remove();
             Self::undo_start(handle, ctx.instance_id);
         })?;
+        credential_guard.defuse();
 
         // ---- Phase 4: wire output streaming ----
         let stderr_buffer = StderrTail::new();
@@ -1263,7 +1299,7 @@ impl NodeEntity {
             child,
             StartedInstanceCtx {
                 instance_dir,
-                runtime_config_path,
+                spawn_files,
                 stderr_buffer,
                 output_reader_handles,
                 group: ProcessGroup { pid, is_container },
@@ -1317,7 +1353,7 @@ impl NodeEntity {
         // (failure) without partial moves.
         let StartedInstanceCtx {
             instance_dir,
-            runtime_config_path,
+            spawn_files,
             generation: start_generation,
             group,
             ..
@@ -1329,7 +1365,6 @@ impl NodeEntity {
             start_generation,
             &instance_id,
             &instance_dir,
-            &runtime_config_path,
             endpoints,
             now,
         );
@@ -1341,7 +1376,7 @@ impl NodeEntity {
             // before returning so nothing orphans.
             kill_start(&mut child, group, instance_id.as_str()).await;
             let _ = std::fs::remove_dir_all(&instance_dir);
-            let _ = std::fs::remove_file(&runtime_config_path);
+            spawn_files.remove();
             return Err(error);
         }
 
@@ -1363,7 +1398,6 @@ impl NodeEntity {
         start_generation: u64,
         instance_id: &Name,
         instance_dir: &Path,
-        runtime_config_path: &Path,
         endpoints: Vec<InstanceEndpoint>,
         now: Instant,
     ) -> Result<()> {
@@ -1391,10 +1425,7 @@ impl NodeEntity {
         if instance.state() != InstanceState::Starting {
             return Err(refuse("Running", "Running"));
         }
-        instance.set_running(
-            instance_dir.to_path_buf(),
-            runtime_config_path.to_path_buf(),
-        );
+        instance.set_running(instance_dir.to_path_buf());
         instance.set_endpoints(endpoints);
         instance.record_running(now);
         Ok(())
@@ -1426,7 +1457,7 @@ impl NodeEntity {
     ) -> String {
         let StartedInstanceCtx {
             instance_dir,
-            runtime_config_path,
+            spawn_files,
             stderr_buffer,
             output_reader_handles,
             group,
@@ -1445,10 +1476,10 @@ impl NodeEntity {
         .await;
 
         // Best-effort cleanup of the on-disk instance directory and the
-        // runtime config temp file. Once the child has been killed and the
-        // readers drained, nothing else holds file descriptors into them.
+        // files of the spawn. Once the child has been killed and the readers
+        // drained, nothing else holds file descriptors into them.
         let _ = std::fs::remove_dir_all(&instance_dir);
-        let _ = std::fs::remove_file(&runtime_config_path);
+        spawn_files.remove();
 
         // Generation guard: only touch the entity's instances list if it is
         // still the same entity we registered against. A concurrent
@@ -1984,8 +2015,8 @@ fn remove_instance_files(removed: &TrackedNodeInstance) {
     if let Some(dir) = removed.instance_dir() {
         let _ = std::fs::remove_dir_all(dir);
     }
-    if let Some(path) = removed.runtime_config_path() {
-        let _ = std::fs::remove_file(path);
+    if let Some(files) = &removed.spawn_files {
+        files.remove();
     }
 }
 
@@ -2011,10 +2042,11 @@ pub struct TrackedNodeInstance {
     /// `Running` instance so `stop_instance` can clean it up. `None` for
     /// snapshot-restored or test-fixture instances.
     instance_dir: Option<PathBuf>,
-    /// On-disk runtime config temp file created by `write_runtime_config_temp`.
-    /// Persisted so it can be removed when the instance stops or aborts. `None`
-    /// for snapshot-restored or test-fixture instances.
-    runtime_config_path: Option<PathBuf>,
+    /// The runtime config temp file created by `write_runtime_config_temp`
+    /// and the key file of the process. Persisted so they can be removed
+    /// when the instance stops or aborts. `None` for snapshot-restored or
+    /// test-fixture instances.
+    spawn_files: Option<SpawnFiles>,
     /// The run log of the latest start, `<instance_id>_<timestamp>.log`: the
     /// current or last process's, or a restart attempt's that failed before
     /// its spawn. `peppy node info` reports it. `None` for the core node's own
@@ -2090,7 +2122,7 @@ impl TrackedNodeInstance {
             state,
             incarnation: next_incarnation(),
             instance_dir: None,
-            runtime_config_path: None,
+            spawn_files: None,
             run_log_path: None,
             slot_bindings,
             clock: config::runtime::ClockBinding::Wall,
@@ -2350,7 +2382,16 @@ impl TrackedNodeInstance {
     /// Returns the on-disk runtime config temp file recorded during start,
     /// if any.
     pub fn runtime_config_path(&self) -> Option<&Path> {
-        self.runtime_config_path.as_deref()
+        self.spawn_files
+            .as_ref()
+            .map(|files| files.runtime_config.as_path())
+    }
+
+    /// Returns the key file of the process recorded during start, if any.
+    pub fn credential_path(&self) -> Option<&Path> {
+        self.spawn_files
+            .as_ref()
+            .map(|files| files.credential.as_path())
     }
 
     /// The run log of the latest start (the current or last process's, or a
@@ -2360,21 +2401,22 @@ impl TrackedNodeInstance {
     }
 
     /// Same-module mutator used by `NodeEntity::commit_started` to flip a
-    /// `Starting` instance to `Running` and record the on-disk paths produced
-    /// by `prepare_and_spawn`. The pid stays as recorded at spawn. Not
-    /// exported.
-    fn set_running(&mut self, instance_dir: PathBuf, runtime_config_path: PathBuf) {
+    /// `Starting` instance to `Running` and record the instance directory
+    /// produced by `prepare_and_spawn`. The pid and the spawn files stay as
+    /// recorded at spawn. Not exported.
+    fn set_running(&mut self, instance_dir: PathBuf) {
         self.state = InstanceState::Running;
         self.instance_dir = Some(instance_dir);
-        self.runtime_config_path = Some(runtime_config_path);
     }
 
-    /// Same-module mutator that records the spawned child's pid on an instance
-    /// still in `Starting`, ahead of `commit_started` flipping it to `Running`
-    /// via `set_running`. Lets a daemon teardown during the start window reach
-    /// the child's process group. Not exported.
-    fn set_starting_pid(&mut self, pid: u32) {
+    /// Same-module mutator that records the spawned child's pid and the files
+    /// of its spawn on an instance still in `Starting`, ahead of
+    /// `commit_started` flipping it to `Running` via `set_running`. Lets a
+    /// daemon teardown during the start window reach the child's process
+    /// group, and the daemon read the key file of the child. Not exported.
+    fn set_starting_process(&mut self, pid: u32, spawn_files: SpawnFiles) {
         self.pid = Some(pid);
+        self.spawn_files = Some(spawn_files);
     }
 
     /// Same-module mutator used by `NodeEntity::mark_instance_exited` once the
@@ -2474,8 +2516,8 @@ impl TrackedNodeInstance {
         self.endpoints.clear();
         self.supervision.next_start = None;
         self.healthy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        if let Some(path) = self.runtime_config_path.take() {
-            let _ = std::fs::remove_file(path);
+        if let Some(files) = self.spawn_files.take() {
+            files.remove();
         }
     }
 
@@ -2485,6 +2527,7 @@ impl TrackedNodeInstance {
     fn revert_respawn(&mut self) {
         self.state = InstanceState::Restarting;
         self.pid = None;
+        self.spawn_files = None;
     }
 
     /// Same-module mutator used by `NodeEntity::commit_starting_instance` once the
@@ -2508,6 +2551,14 @@ mod tests {
     use config::node::ResolvedRestart;
     use std::collections::BTreeMap;
     use tokio::sync::mpsc;
+
+    /// The files of a fixture spawn, which no test reads.
+    fn fixture_spawn_files() -> SpawnFiles {
+        SpawnFiles {
+            runtime_config: PathBuf::from("/nonexistent/runtime_config.json5"),
+            credential: PathBuf::from("/nonexistent/instance.key"),
+        }
+    }
 
     fn sensor_config() -> NodeConfig {
         serde_json5::from_str::<NodeConfig>(
@@ -2883,7 +2934,7 @@ mod tests {
                     restart,
                     ..FirstStart::fixture(id, "sensor", "v1")
                 });
-        instance.set_starting_pid(PID);
+        instance.set_starting_process(PID, fixture_spawn_files());
         instance.record_running(Instant::now());
         instance.supervision.attempt = attempt;
         instance
@@ -2897,7 +2948,7 @@ mod tests {
         let id = Name::new("removed-1").unwrap();
         let mut running =
             TrackedNodeInstance::new(id.clone(), InstanceState::Running, BTreeMap::new());
-        running.set_starting_pid(PID);
+        running.set_starting_process(PID, fixture_spawn_files());
         let handle = ready_entity_with(running);
         assert_eq!(
             handle.read().claim_process(&id, PID + 1),
@@ -3103,7 +3154,7 @@ mod tests {
 
         let id = Name::new("abandoned-1").unwrap();
         let mut forked = respawning(&id);
-        forked.set_starting_pid(PID);
+        forked.set_starting_process(PID, fixture_spawn_files());
         let handle = ready_entity_with(forked);
         let own_goal = handle.read().instances()[0]
             .supervision()
@@ -3142,7 +3193,7 @@ mod tests {
 
         let claimed = Name::new("abandoned-2").unwrap();
         let mut forked = respawning(&claimed);
-        forked.set_starting_pid(PID);
+        forked.set_starting_process(PID, fixture_spawn_files());
         forked.mark_stopping();
         let handle = ready_entity_with(forked);
         assert_eq!(
@@ -3171,7 +3222,7 @@ mod tests {
         let later = Name::new("abandoned-later").unwrap();
         let mut forked = respawning(&later);
         forked.supervision.restart_count = 1;
-        forked.set_starting_pid(PID);
+        forked.set_starting_process(PID, fixture_spawn_files());
         let handle = ready_entity_with(forked);
         assert_eq!(
             NodeEntity::abandoned_start_group(&handle, &later, &respawn_run(&handle, 0)),
@@ -3215,7 +3266,7 @@ mod tests {
 
         let replaced = Name::new("abandoned-replaced").unwrap();
         let mut forked = respawning(&replaced);
-        forked.set_starting_pid(PID);
+        forked.set_starting_process(PID, fixture_spawn_files());
         let handle = ready_entity_with(forked);
         let earlier_instance = StartRun::Respawn {
             goal: Arc::clone(&FirstStart::fixture(&replaced, "sensor", "v1").goal),
@@ -3238,7 +3289,7 @@ mod tests {
 
         let container = Name::new("abandoned-4").unwrap();
         let mut forked = respawning(&container);
-        forked.set_starting_pid(PID);
+        forked.set_starting_process(PID, fixture_spawn_files());
         let handle = entity_of(container_sensor_config(), vec![forked]);
         assert_eq!(
             NodeEntity::abandoned_start_group(&handle, &container, &respawn_run(&handle, 0)),
@@ -3252,7 +3303,7 @@ mod tests {
         let mut starting =
             TrackedNodeInstance::new(first.clone(), InstanceState::Starting, BTreeMap::new())
                 .with_first_start(first_start);
-        starting.set_starting_pid(PID);
+        starting.set_starting_process(PID, fixture_spawn_files());
         let handle = ready_entity_with(starting);
         let another_goal = Arc::clone(&FirstStart::fixture(&first, "sensor", "v1").goal);
         for other_run in [
@@ -3381,11 +3432,14 @@ mod tests {
             BTreeMap::new(),
         )
         .with_first_start(FirstStart::fixture(instance_id, "sensor", "v1"));
-        starting.set_starting_pid(pid);
+        starting.set_starting_process(pid, fixture_spawn_files());
         instances.push(starting);
         StartedInstanceCtx {
             instance_dir: instance_dir.to_path_buf(),
-            runtime_config_path: instance_dir.join("peppy_runtime.json5"),
+            spawn_files: SpawnFiles {
+                runtime_config: instance_dir.join("peppy_runtime.json5"),
+                credential: instance_dir.join("instance.key"),
+            },
             stderr_buffer: StderrTail::new(),
             output_reader_handles: Vec::new(),
             group: ProcessGroup {
@@ -3409,6 +3463,8 @@ mod tests {
         std::fs::create_dir_all(&instance_dir).expect("instance dir");
         let runtime_config_path = peppy_root.join(format!("runtime_config_{instance_id}.json5"));
         std::fs::write(&runtime_config_path, "{}").expect("runtime config file");
+        let credential = peppy_root.join(format!("{instance_id}.key"));
+        std::fs::write(&credential, "{}").expect("key file");
         let child = tokio::process::Command::new("sleep")
             .arg("5")
             .spawn()
@@ -3421,7 +3477,10 @@ mod tests {
             child,
             StartedInstanceCtx {
                 instance_dir,
-                runtime_config_path,
+                spawn_files: SpawnFiles {
+                    runtime_config: runtime_config_path,
+                    credential,
+                },
                 stderr_buffer: StderrTail::new(),
                 output_reader_handles: Vec::new(),
                 group,
@@ -3443,7 +3502,7 @@ mod tests {
         let peppy_root = tempfile::tempdir().expect("peppy_root tempdir");
         let (child, started_ctx) = sleeping_start(peppy_root.path(), "sensor_inst", generation);
         let instance_dir = started_ctx.instance_dir.clone();
-        let runtime_config_path = started_ctx.runtime_config_path.clone();
+        let spawn_files = started_ctx.spawn_files.clone();
 
         let error = NodeEntity::commit_started(
             handle,
@@ -3479,8 +3538,12 @@ mod tests {
             "a refused commit removes the instance dir"
         );
         assert!(
-            !runtime_config_path.exists(),
+            !spawn_files.runtime_config.exists(),
             "a refused commit removes the runtime config file"
+        );
+        assert!(
+            !spawn_files.credential.exists(),
+            "a refused commit removes the key file"
         );
     }
 
@@ -3721,7 +3784,7 @@ mod tests {
         let id = Name::new("one-shot-1").unwrap();
         let mut instance =
             TrackedNodeInstance::new(id.clone(), InstanceState::Running, BTreeMap::new());
-        instance.set_starting_pid(PID);
+        instance.set_starting_process(PID, fixture_spawn_files());
         let handle = ready_entity_with(instance);
 
         let taken = Registrations {
@@ -3780,7 +3843,7 @@ mod tests {
         let id = Name::new("crash-1").unwrap();
         let mut instance =
             TrackedNodeInstance::new(id.clone(), InstanceState::Running, BTreeMap::new());
-        instance.set_starting_pid(PID);
+        instance.set_starting_process(PID, fixture_spawn_files());
         let handle = ready_entity_with(instance);
 
         let taken = Registrations {
@@ -4017,7 +4080,7 @@ mod tests {
         let mut instance =
             TrackedNodeInstance::new(id.clone(), InstanceState::Running, BTreeMap::new());
         // A pid, so only the claim keeps the health monitor's kill away.
-        instance.set_starting_pid(PID);
+        instance.set_starting_process(PID, fixture_spawn_files());
         // A stop path has claimed this instance; the watcher must not relabel
         // the intentional exit as a self-exit.
         instance.mark_stopping();
@@ -4106,6 +4169,7 @@ mod tests {
                 spawn: SpawnTarget::Respawn,
                 env_vars: &[],
                 mount_paths_resolved: &[],
+                credential: std::path::Path::new("no-such.key"),
                 peppy_dirs,
                 output_sinks: OutputSinks {
                     announcer: Announcer::new(scratch_log(), feedback_tx.clone()),
@@ -4167,7 +4231,7 @@ mod tests {
                 panic!("from_snapshot builds a Ready entity")
             };
             instances[0].begin_respawn();
-            instances[0].set_starting_pid(9);
+            instances[0].set_starting_process(9, fixture_spawn_files());
         }
         assert_eq!(
             handle.read().instances()[0].state(),
@@ -4305,7 +4369,7 @@ mod tests {
         let restart = Name::new("restart-9").unwrap();
         let mut respawned =
             TrackedNodeInstance::new(running.clone(), InstanceState::Running, BTreeMap::new());
-        respawned.set_starting_pid(42);
+        respawned.set_starting_process(42, fixture_spawn_files());
         let mut restart_start = waiting_instance(&restart);
         restart_start.begin_respawn();
         let handle = ready_entity_with_all(vec![
@@ -4413,7 +4477,7 @@ mod tests {
             None,
             "a start that has not forked its process"
         );
-        starting.set_starting_pid(PID);
+        starting.set_starting_process(PID, fixture_spawn_files());
         assert!(starting.live_incarnation().is_some(), "a forked start");
         for state in [
             InstanceState::Restarting,
@@ -4444,7 +4508,7 @@ mod tests {
             None,
             "a restart has no process before its fork"
         );
-        slot.set_starting_pid(PID);
+        slot.set_starting_process(PID, fixture_spawn_files());
         let restarted = slot.live_incarnation().expect("a forked restart is live");
         assert!(restarted > exited, "the restart's process is newer");
         slot.revert_respawn();

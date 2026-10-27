@@ -123,6 +123,13 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
   // only. A line that prints no level is always exported.
   otlp_min_severity: null,
 
+  // The certificate of this machine from a CA of the operator of its federation,
+  // or null. The daemons of a federation prove their calls to each other with
+  // it; null uses the platform certificate of an enrolled machine. Absolute
+  // paths, example: { trust_anchor: "/etc/peppy/ca.crt", certificate:
+  // "/etc/peppy/machine.crt", private_key: "/etc/peppy/machine.key" }.
+  machine_certificate: null,
+
   // Backend resource-server URL the `peppy platform` commands talk to. Baked in
   // at compile time (the dev backend in debug builds, prod in release);
   // --api-url / PEPPY_API_URL override it at runtime.
@@ -179,7 +186,7 @@ The managed knobs exist only because Peppy controls that router process. Under `
 
 The setting is local by construction, which is why it carries the `local_nodes_` prefix: each node seeds gossip discovery from the local router, so a peer session only ever discovers, and forms direct links with, sessions co-located on this machine. Traffic to and from nodes on other machines always relays through the local router and its link to the project's cloud router (see [Platform](/advanced_guides/platform/#enrolling)), whichever topology you pick.
 
-In `"peer"` mode a session binds a wildcard listener (`0.0.0.0` on an ephemeral port) so Zenoh can advertise the host's routable interface addresses for those direct links; that listener is therefore reachable from the network, not confined to loopback. This widens an existing exposure class rather than opening a new one: the Zenoh transport is unauthenticated, and the managed router's own listener already binds `0.0.0.0`. Only `"router"` mode leaves a session with no listener at all, because with gossip off nothing needs to advertise a dialable address, so pick it for a deployment that must not accept inbound peer links.
+In `"peer"` mode a session binds a wildcard listener (`0.0.0.0` on an ephemeral port) so Zenoh can advertise the host's routable interface addresses for those direct links; that listener is therefore reachable from the network, not confined to loopback. This widens an existing exposure class rather than opening a new one: the Zenoh transport is unauthenticated, and the managed router's own listener already binds `0.0.0.0`. The calls to a daemon carry the signature of their sender, which the daemon verifies, so a program on the network cannot call a daemon as one of its clients (see [The senders of the calls to a daemon](/advanced_guides/call_senders/)); topics and the calls between nodes carry no signature. Only `"router"` mode leaves a session with no listener at all, because with gossip off nothing needs to advertise a dialable address, so pick it for a deployment that must not accept inbound peer links.
 
 [Container nodes](/advanced_guides/containers/) that live in a separate network namespace (such as the Lima VM peppy uses on macOS) always take the router path, regardless of this setting: gossip cannot establish direct links across the namespace boundary.
 
@@ -225,6 +232,20 @@ zenohd -l tcp/0.0.0.0:7448
 At startup, Peppy requires a responsive Zenoh router at the configured endpoint. Nothing listening is a startup error; a non-Zenoh service at the address is a distinct startup error. Peppy observes a responsive router's health but never kills it on daemon exit, restarts it after a failure, or changes its configuration to federate it to the cloud router. The operator controls the router's lifecycle and federation. If it becomes unresponsive while the daemon is running, the watchdog logs a prominent warning but leaves it alone; sessions reconnect automatically after the operator restores it.
 
 `peppy platform enroll` and `unenroll` leave external federation untouched and print a note instead of poking the daemon. They do not restart the daemon; an enrollment change reaches its sessions on the next manual daemon restart. `PEPPY_MESSAGING_PORT` configures the listener for Peppy's managed router, while external mode uses the port written in `zenoh.external.endpoint`.
+
+## `machine_certificate`: the certificate of the machine
+
+The daemons of a federation prove their calls to each other with the certificates of their machines (see [Machines of a federation](/advanced_guides/call_senders/#machines-of-a-federation)). An enrolled machine uses the certificate of its enrollment and needs nothing here. A federation that the operator forms, through an operator-run router (`zenoh.external`) or through a router configuration that the operator pins, uses a CA of the operator: give the daemon of each machine its certificate.
+
+```json5
+machine_certificate: {
+  trust_anchor: "/etc/peppy/ca.crt",
+  certificate: "/etc/peppy/machine.crt",
+  private_key: "/etc/peppy/machine.key",
+},
+```
+
+Each path is absolute. `trust_anchor` is the CA, in PEM: the daemon checks the certificates of the other machines against it. `certificate` is the certificate of this machine, in PEM, then the certificates above it; its common name is the core node of this machine, and it allows client authentication when it names the extended key usages. `private_key` is its PKCS#8 private key, in PEM: ECDSA P-256, ECDSA P-384, Ed25519 or RSA. Keep the key where the container nodes do not mount it. A certificate that does not read stops the start of the daemon. `null` uses the platform certificate of an enrolled machine; a daemon with no certificate takes no call of another machine.
 
 ## `lifecycle`: grace periods
 
@@ -276,6 +297,7 @@ The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 | `zenoh.managed.subscriber_buffers.standard_buffer_size` | `128` | `> 0` | Local Peppy subscriber queue capacity (messages) for standard-QoS topics; also sizes service request/reply queues. |
 | `zenoh.managed.subscriber_buffers.high_throughput_buffer_size` | `1024` | `> 0` | Local Peppy subscriber queue capacity (messages) for high-throughput-QoS topics such as sensor-data streams. |
 | `zenoh.external.endpoint` | No default | Required inside `external`; `tcp/<dial-host>:<port>`; no wildcard host | Network endpoint of the operator-run router. Peppy dials it without changing its federation or managing its lifecycle. |
+| `machine_certificate` | `null` (the platform certificate of an enrolled machine) | `null`, or a block of the absolute paths `trust_anchor`, `certificate` and `private_key` | The certificate of this machine from a CA of the operator, which proves the calls of this machine to the daemons of the other machines and gives the CA that the daemon checks their calls against. |
 | `lifecycle.daemon_grace_secs` | `180` | `>= 30` | Seconds without a daemon heartbeat before a spawned node self-terminates (unclean daemon death only). |
 | `lifecycle.shutdown_grace_secs` | `5` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit (plus a fixed runtime-teardown allowance) before force-killing. |
 | `pypi_mirror` | `null` (PyPI) | `null`, or an `https` URL whose path ends with `packages/`, with no credentials, query, or fragment | Packages base URL of the PyPI mirror Python builds download the PyPI files of their `uv.lock` from; a file the mirror does not have comes from PyPI. |

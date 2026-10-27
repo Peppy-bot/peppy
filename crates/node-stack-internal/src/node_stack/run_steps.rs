@@ -36,13 +36,23 @@ static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Used by [`assemble_command`] and [`build_container_command`] to materialize
 /// the runtime config that the spawned child reads via the
 /// `PEPPY_RUNTIME_CONFIG` environment variable.
+/// Writes the runtime config of a spawn to a file of its own, which only the
+/// user of the daemon reads (mode 0600) from its creation on.
 fn write_runtime_config_temp(peppy_dirs: &PeppyDirs, json5: &str) -> std::io::Result<PathBuf> {
+    use std::io::Write as _;
+
     let runtime_dir = peppy_dirs.runtime_config_dir();
     std::fs::create_dir_all(&runtime_dir)?;
     let counter = RUNTIME_CONFIG_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     let runtime_config_path = runtime_dir.join(format!("runtime_config_{pid}_{counter}.json5"));
-    std::fs::write(&runtime_config_path, json5)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options
+        .open(&runtime_config_path)?
+        .write_all(json5.as_bytes())?;
     Ok(runtime_config_path)
 }
 
@@ -316,47 +326,88 @@ impl ContainerBind {
     }
 }
 
-/// Collect all bind mounts needed for a container node.
-///
-/// Always includes the runtime config file as the first entry so it is
-/// accessible inside the container regardless of Apptainer's `$HOME` auto-bind
-/// behavior (which may not cover `~/.peppy/` when running inside a Lima VM).
-fn collect_container_binds(
-    runtime_config_path: &Path,
-    mount_paths: &[String],
-) -> Vec<ContainerBind> {
-    let mut binds = Vec::with_capacity(1 + mount_paths.len());
+/// The directory, in the working directory of a container node, that the
+/// container mounts over the data root: empty at the spawn, so the container
+/// sees nothing of the data root but the files bound over it.
+const DATA_ROOT_MASK_DIR: &str = ".peppy-data-root";
 
-    // Runtime config must always be bound into the container.
-    binds.push(ContainerBind {
-        src: runtime_config_path.to_string_lossy().into_owned(),
-        dest: None,
-        opts: None,
-    });
+/// What a container node sees of the data root: an empty directory over it,
+/// then, over that, its own working directory, runtime config and key file.
+/// The data root holds the keys of every client of the daemon and the
+/// machine certificate; a container sees its own key alone.
+struct DataRootView<'a> {
+    data_root: &'a Path,
+    mask: PathBuf,
+    working_dir: &'a Path,
+    runtime_config: &'a Path,
+    credential: &'a Path,
+}
 
-    // User-specified mount paths (format: "host:container[:opts]")
-    for m in mount_paths {
-        let parts: Vec<&str> = m.splitn(3, ':').collect();
-        binds.push(match parts.len() {
-            1 => ContainerBind {
-                src: parts[0].into(),
-                dest: None,
-                opts: None,
-            },
-            2 => ContainerBind {
-                src: parts[0].into(),
-                dest: Some(parts[1].into()),
-                opts: None,
-            },
-            _ => ContainerBind {
-                src: parts[0].into(),
-                dest: Some(parts[1].into()),
-                opts: Some(parts[2].into()),
-            },
-        });
+impl<'a> DataRootView<'a> {
+    fn new(
+        data_root: &'a Path,
+        working_dir: &'a Path,
+        runtime_config: &'a Path,
+        credential: &'a Path,
+    ) -> Self {
+        Self {
+            data_root,
+            mask: working_dir.join(DATA_ROOT_MASK_DIR),
+            working_dir,
+            runtime_config,
+            credential,
+        }
     }
 
-    binds
+    /// The binds of the view, in the order the container mounts them: the
+    /// empty directory over the data root first, so the binds after it go
+    /// over it.
+    fn binds(&self) -> Vec<ContainerBind> {
+        let at_its_path = |path: &Path| ContainerBind {
+            src: path.to_string_lossy().into_owned(),
+            dest: None,
+            opts: None,
+        };
+        vec![
+            ContainerBind {
+                src: self.mask.to_string_lossy().into_owned(),
+                dest: Some(self.data_root.to_string_lossy().into_owned()),
+                opts: None,
+            },
+            at_its_path(self.working_dir),
+            at_its_path(self.runtime_config),
+            at_its_path(self.credential),
+        ]
+    }
+}
+
+/// The binds of the mounts that the node declares (format
+/// `host[:container[:opts]]`), which the container mounts after the view of
+/// the data root.
+fn node_mount_binds(mount_paths: &[String]) -> Vec<ContainerBind> {
+    mount_paths
+        .iter()
+        .map(|m| {
+            let parts: Vec<&str> = m.splitn(3, ':').collect();
+            match parts.len() {
+                1 => ContainerBind {
+                    src: parts[0].into(),
+                    dest: None,
+                    opts: None,
+                },
+                2 => ContainerBind {
+                    src: parts[0].into(),
+                    dest: Some(parts[1].into()),
+                    opts: None,
+                },
+                _ => ContainerBind {
+                    src: parts[0].into(),
+                    dest: Some(parts[1].into()),
+                    opts: Some(parts[2].into()),
+                },
+            }
+        })
+        .collect()
 }
 
 /// Inputs for [`build_container_command`].
@@ -369,6 +420,9 @@ pub(super) struct SpawnContainerInputs<'a> {
     /// `kill_guest_process_group`.
     pub instance_id: &'a str,
     pub runtime_config_json5: &'a str,
+    /// The key file of this start, which the container sees alone of the
+    /// credentials of the daemon.
+    pub credential: &'a Path,
     pub env_vars: &'a [(String, String)],
     pub mount_paths: &'a [String],
     pub apptainer_run_extra_args: &'a [String],
@@ -395,6 +449,7 @@ pub(super) async fn build_container_command(
         working_dir,
         instance_id,
         runtime_config_json5,
+        credential,
         env_vars,
         mount_paths,
         apptainer_run_extra_args,
@@ -422,11 +477,25 @@ pub(super) async fn build_container_command(
         .to_str()
         .ok_or_else(|| std::io::Error::other("SIF path is not valid UTF-8"))?;
 
-    // Collect all bind mounts (runtime config + user-specified mount_paths).
-    let binds = collect_container_binds(&runtime_config_path, mount_paths);
+    // The view of the data root that the container gets, then the mounts
+    // that its node declares. The directory over the data root is empty at
+    // each spawn: the container runtime writes the mount points of the files
+    // bound over it into it.
+    let view = DataRootView::new(
+        peppy_dirs.root(),
+        working_dir,
+        &runtime_config_path,
+        credential,
+    );
+    if view.mask.exists() {
+        std::fs::remove_dir_all(&view.mask)?;
+    }
+    std::fs::create_dir_all(&view.mask)?;
+    let view_binds = view.binds();
+    let node_binds = node_mount_binds(mount_paths);
 
-    // Ensure user-specified bind mount sources exist on the host.
-    // Skip binds[0] (runtime config file); its parent dir is already created above.
+    // Ensure the sources of the mounts of the node exist on the host. The
+    // files of the view exist already.
     //
     // Behaviour:
     //   - If the path already exists, leave it alone (it may be a file,
@@ -438,12 +507,12 @@ pub(super) async fn build_container_command(
     //     directories Just Work, and emit a loud warning to the per-instance
     //     start log for every auto-create: a silent mkdir would turn a file
     //     bind typo into an empty directory that nobody notices.
-    ensure_bind_sources(&binds[1..], announcer)?;
+    ensure_bind_sources(&node_binds, announcer)?;
 
     // Ensure host paths outside $HOME are accessible in the Lima VM. The
-    // peppy data root is always included: the SIF image, the instance
-    // working dir, and the runtime config (binds[0]) all live under it, and
-    // it sits outside `$HOME` when `PEPPY_HOME` puts it there.
+    // peppy data root is always included: the SIF image and every file of
+    // the view live under it, and it sits outside `$HOME` when `PEPPY_HOME`
+    // puts it there.
     // `ensure_host_mounts` filters home-relative paths and is a no-op on the
     // native (Linux) backend. Runs on the blocking pool because a first-time
     // mount registration restarts the Lima VM.
@@ -453,8 +522,7 @@ pub(super) async fn build_container_command(
         .ok_or_else(|| std::io::Error::other("peppy root path is not valid UTF-8"))?
         .to_owned();
     let mut src_paths: Vec<String> = vec![peppy_root];
-    // Skip binds[0] (runtime config); it's under the peppy root added above.
-    src_paths.extend(binds[1..].iter().map(|b| b.src.clone()));
+    src_paths.extend(node_binds.iter().map(|b| b.src.clone()));
     let apptainer = tokio::task::spawn_blocking(move || {
         let refs: Vec<&str> = src_paths.iter().map(String::as_str).collect();
         apptainer.ensure_host_mounts(&refs).map(|()| apptainer)
@@ -506,13 +574,14 @@ pub(super) async fn build_container_command(
         .ok_or_else(|| std::io::Error::other("runtime config path is not valid UTF-8"))?;
     apptainer_cmd = apptainer_cmd.apptainer_env(RUNTIME_CONFIG_VAR_NAME, runtime_config_str);
 
-    // Add all bind mounts (runtime config + user-specified).
+    // Add all bind mounts: the view of the data root, then the mounts of the
+    // node.
     // Device passthrough mounts are skipped: Apptainer applies `nodev` to
     // --bind mounts which blocks device-node access. Host devices are
     // already available inside the container via `mount dev = yes` in
     // apptainer.conf. Remapped device mounts (e.g.
     // /dev/video0:/dev/my_video0) still need an explicit --bind.
-    for bind in &binds {
+    for bind in view_binds.iter().chain(&node_binds) {
         if bind.is_device_passthrough() {
             continue;
         }
@@ -581,19 +650,19 @@ fn ensure_bind_sources(binds: &[ContainerBind], announcer: &Announcer) -> std::i
 }
 
 /// Drop guard that removes a temp file unless explicitly defused. Used by
-/// the start-steps spawners to make sure a freshly-written
-/// `runtime_config_*.json5` is cleaned up if any later step fails before
+/// the start steps to make sure a freshly-written `runtime_config_*.json5`,
+/// or the key file of a start, is cleaned up if any later step fails before
 /// ownership can be transferred to `StartedInstanceCtx`.
-struct TempFileGuard {
+pub(super) struct TempFileGuard {
     path: Option<PathBuf>,
 }
 
 impl TempFileGuard {
-    fn new(path: PathBuf) -> Self {
+    pub(super) fn new(path: PathBuf) -> Self {
         Self { path: Some(path) }
     }
 
-    fn defuse(&mut self) {
+    pub(super) fn defuse(&mut self) {
         self.path = None;
     }
 }
@@ -886,42 +955,67 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
-    fn collect_container_binds_always_includes_runtime_config() {
-        let rc = PathBuf::from("/home/user/.peppy/runtime/runtime_config_99_0.json5");
-        let binds = collect_container_binds(&rc, &[]);
-
-        assert_eq!(binds.len(), 1);
-        assert_eq!(
-            binds[0].src,
-            "/home/user/.peppy/runtime/runtime_config_99_0.json5"
-        );
-        assert!(binds[0].dest.is_none());
-        assert!(binds[0].opts.is_none());
+    fn a_runtime_config_file_is_read_by_the_user_of_the_daemon_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let path = write_runtime_config_temp(&PeppyDirs::new(root.path()), "{}").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]
-    fn collect_container_binds_includes_user_mounts() {
-        let rc = PathBuf::from("/home/user/.peppy/runtime/rc.json5");
+    fn the_view_of_the_data_root_masks_it_then_binds_the_files_of_the_instance_over_it() {
+        let view = DataRootView::new(
+            Path::new("/home/user/.peppy"),
+            Path::new("/home/user/.peppy/instances/arm_inst"),
+            Path::new("/home/user/.peppy/runtime/runtime_config_99_0.json5"),
+            Path::new("/home/user/.peppy/credentials/instances/arm_inst_3.key"),
+        );
+        let binds: Vec<(String, Option<String>)> = view
+            .binds()
+            .into_iter()
+            .map(|bind| (bind.src, bind.dest))
+            .collect();
+        assert_eq!(
+            binds,
+            vec![
+                (
+                    "/home/user/.peppy/instances/arm_inst/.peppy-data-root".to_owned(),
+                    Some("/home/user/.peppy".to_owned())
+                ),
+                ("/home/user/.peppy/instances/arm_inst".to_owned(), None),
+                (
+                    "/home/user/.peppy/runtime/runtime_config_99_0.json5".to_owned(),
+                    None
+                ),
+                (
+                    "/home/user/.peppy/credentials/instances/arm_inst_3.key".to_owned(),
+                    None
+                ),
+            ],
+            "the empty directory over the data root comes first, so the files go over it"
+        );
+    }
+
+    #[test]
+    fn node_mount_binds_read_each_form_of_a_mount() {
         let user_mounts = vec![
             "/data/input:/container/input:ro".to_string(),
             "/dev/ttyUSB0".to_string(),
         ];
 
-        let binds = collect_container_binds(&rc, &user_mounts);
+        let binds = node_mount_binds(&user_mounts);
 
-        assert_eq!(binds.len(), 3);
-        // First entry is always the runtime config
-        assert_eq!(binds[0].src, "/home/user/.peppy/runtime/rc.json5");
-        assert!(binds[0].dest.is_none());
-        assert!(binds[0].opts.is_none());
-        // User mounts follow
-        assert_eq!(binds[1].src, "/data/input");
-        assert_eq!(binds[1].dest.as_deref(), Some("/container/input"));
-        assert_eq!(binds[1].opts.as_deref(), Some("ro"));
-        assert_eq!(binds[2].src, "/dev/ttyUSB0");
-        assert!(binds[2].dest.is_none());
-        assert!(binds[2].opts.is_none());
+        assert_eq!(binds.len(), 2);
+        assert_eq!(binds[0].src, "/data/input");
+        assert_eq!(binds[0].dest.as_deref(), Some("/container/input"));
+        assert_eq!(binds[0].opts.as_deref(), Some("ro"));
+        assert_eq!(binds[1].src, "/dev/ttyUSB0");
+        assert!(binds[1].dest.is_none());
+        assert!(binds[1].opts.is_none());
     }
 
     /// Sends on its channel when the task that owns it is dropped, so a test

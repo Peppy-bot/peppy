@@ -368,7 +368,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
         flags: true,
     };
     run_instance_async(
-        &messenger_handle,
+        &local.command_line_handle(),
         "z-local",
         provider_name,
         "v1",
@@ -399,7 +399,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
             .expect("one producer is a valid binding set"),
     );
     run_instance_async(
-        &messenger_handle,
+        &remote.command_line_handle(),
         "a-remote",
         consumer_name,
         "v1",
@@ -646,7 +646,7 @@ async fn stack_list_renders_instance_endpoints_with_kind_and_label() {
     .expect("node endpoints service should start");
 
     run_instance_async(
-        &node_messenger,
+        &serve.command_line_handle(),
         &core_node_name,
         node_name,
         "v1",

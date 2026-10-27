@@ -2871,6 +2871,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 name = "pmi"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "build-helpers",
  "bytes",
  "derive_more",
@@ -2878,12 +2879,14 @@ dependencies = [
  "libc",
  "peppy-config-model",
  "rand 0.10.3",
+ "ring",
  "rustls-native-certs",
  "rustls-pemfile",
  "serde",
  "serde_json",
  "serde_json5",
  "tempfile",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
  "tracing",

@@ -7,7 +7,8 @@
 //! different wire form (MQTT, DDS, etc.), add a sibling module rather than
 //! diverging this one.
 
-use crate::types::{ClientPresence, CoreNodePresence, PresenceScope};
+use crate::call_proof::{CallProof, CallProofDecodeError, SignedCall};
+use crate::types::{ClientPresence, CoreNodePresence, Payload, PresenceScope};
 use crate::wire::{
     ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, PairingRecipient, Segment, SenderTarget,
     ServiceKind, ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
@@ -263,14 +264,31 @@ impl ZenohWireFormat {
             caller_inst,
             link_id,
             kind: attachment.kind,
+            proof: attachment.proof,
         })
     }
 
     /// Caller-side attachment bytes for a service query. Carries the request
     /// kind (UserRequest vs Probe) so probes can be discriminated from real
-    /// requests without smuggling sentinels through the payload.
-    pub(crate) fn service_get_selector_attachment(kind: ServiceQueryKind) -> bytes::Bytes {
-        ServiceQueryAttachment { kind }.encode()
+    /// requests without smuggling sentinels through the payload, and the
+    /// proof of a call that `sender` signs: its signature covers `namespace`,
+    /// `selector`, `kind` and `payload`.
+    pub(crate) fn service_get_selector_attachment(
+        sender: &ServiceWireSender,
+        namespace: &str,
+        selector: &str,
+        kind: ServiceQueryKind,
+        payload: &Payload,
+    ) -> bytes::Bytes {
+        let proof = sender.signing().map(|signing| {
+            signing.prove(&SignedCall {
+                namespace,
+                key_expr: selector,
+                kind,
+                payload: payload.as_bytes().as_ref(),
+            })
+        });
+        ServiceQueryAttachment { kind, proof }.encode()
     }
 
     // ─── Actions ──────────────────────────────────────────────────────────
@@ -556,7 +574,7 @@ pub enum ServiceQueryKind {
 }
 
 impl ServiceQueryKind {
-    fn as_byte(self) -> u8 {
+    pub(crate) fn as_byte(self) -> u8 {
         match self {
             Self::UserRequest => 0x00,
             Self::Probe => 0x01,
@@ -574,26 +592,34 @@ impl ServiceQueryKind {
 
 /// Service / action query attachment carrying the request kind so the
 /// producer can discriminate user requests from discovery probes without
-/// smuggling sentinels through the payload.
+/// smuggling sentinels through the payload, and the proof of the sender of a
+/// signed call.
 ///
 /// Wire layout (mandatory on every service query):
 /// - byte 0: magic + version, `0x03`. A query with another first byte is
 ///   refused.
 /// - byte 1: kind discriminator (see [`ServiceQueryKind::as_byte`]).
+/// - the bytes after it, when the call is signed: its [`CallProof`].
 ///
-/// Decode is strict: a missing attachment, wrong magic, or unknown kind
-/// byte is reported as a [`ZenohWireParseError`] so mid-rollout schema
-/// skew surfaces loudly instead of as silent misclassification.
+/// Decode is strict: a missing attachment, wrong magic, unknown kind byte or
+/// a proof that does not decode is reported as a [`ZenohWireParseError`] so
+/// mid-rollout schema skew surfaces loudly instead of as silent
+/// misclassification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ServiceQueryAttachment {
     pub(crate) kind: ServiceQueryKind,
+    pub(crate) proof: Option<CallProof>,
 }
 
 impl ServiceQueryAttachment {
     pub(crate) const MAGIC_V3: u8 = 0x03;
 
     pub(crate) fn encode(&self) -> bytes::Bytes {
-        bytes::Bytes::from(vec![Self::MAGIC_V3, self.kind.as_byte()])
+        let mut bytes = vec![Self::MAGIC_V3, self.kind.as_byte()];
+        if let Some(proof) = &self.proof {
+            proof.encode_into(&mut bytes);
+        }
+        bytes::Bytes::from(bytes)
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, ZenohWireParseError> {
@@ -611,7 +637,11 @@ impl ServiceQueryAttachment {
             .ok_or(ZenohWireParseError::TruncatedServiceQueryAttachment)?;
         let kind = ServiceQueryKind::from_byte(kind_byte)
             .ok_or(ZenohWireParseError::UnknownServiceQueryKind(kind_byte))?;
-        Ok(Self { kind })
+        let proof = match &bytes[2..] {
+            [] => None,
+            proof => Some(CallProof::decode(proof).map_err(ZenohWireParseError::CallProof)?),
+        };
+        Ok(Self { kind, proof })
     }
 }
 
@@ -713,6 +743,8 @@ pub(crate) struct ParsedInboundQuery {
     /// Whether this query is a real user request or a discovery probe.
     /// Decoded from the mandatory query attachment.
     pub(crate) kind: ServiceQueryKind,
+    /// The proof of the sender, when the call is signed.
+    pub(crate) proof: Option<CallProof>,
 }
 
 impl ParsedInboundQuery {
@@ -758,6 +790,8 @@ pub(crate) enum ZenohWireParseError {
     },
     TruncatedServiceQueryAttachment,
     UnknownServiceQueryKind(u8),
+    /// The proof of the call after the query kind does not decode.
+    CallProof(CallProofDecodeError),
     /// Service reply arrived with no attachment. Treated as a malformed
     /// reply and dropped: the consumer's poll loop ignores it and the
     /// usual timeout / unreachable path applies.
@@ -807,6 +841,7 @@ impl fmt::Display for ZenohWireParseError {
             Self::UnknownServiceQueryKind(byte) => {
                 write!(f, "unknown service query kind discriminator: {byte:#04x}")
             }
+            Self::CallProof(error) => write!(f, "service query attachment: {error}"),
             Self::MissingServiceReplyAttachment => {
                 write!(f, "service reply arrived with no attachment")
             }

@@ -8,8 +8,10 @@
 //!   nothing above it, so the cloud router closes the link at the leaf's own
 //!   expiry. Its validity is what the renewal is scheduled from.
 //! * `ca.crt`: the project CA the cloud router's certificate chains to.
-//! * `chain.crt`: the leaf's issuing chain, for `openssl verify`. The daemon
-//!   does not read it.
+//! * `chain.crt`: the leaf's issuing chain, the issuer of the peer and then
+//!   the project CA. The daemon gives it with the leaf to the daemons of the
+//!   other machines of the project, which check the leaf against their own
+//!   `ca.crt` through it ([`crate::machine_proof`]).
 //! * `zenohd.platform.json5`: the peer config the platform rendered, kept for
 //!   inspection only. The daemon renders its own config from the document.
 //!
@@ -197,6 +199,8 @@ pub struct Enrollment {
     pub peer_key: PathBuf,
     pub peer_certificate: PathBuf,
     pub trust_anchor: PathBuf,
+    /// The chain above the leaf: the issuer of the peer, then the project CA.
+    pub issuer_chain: PathBuf,
 }
 
 impl Enrollment {
@@ -308,7 +312,7 @@ fn document_path(dirs: &PeppyDirs) -> PathBuf {
 
 /// Loads this machine's enrollment. `Ok(None)` when `enrollment.json5` is
 /// absent (not enrolled). An error when it is present but unreadable, of
-/// another version, missing any of its three PEM files, or with a leaf that is
+/// another version, missing any of its four PEM files, or with a leaf that is
 /// not a certificate; every message names `peppy platform enroll` as the
 /// remedy.
 pub fn load(dirs: &PeppyDirs) -> Result<Option<Enrollment>> {
@@ -337,6 +341,7 @@ pub fn load(dirs: &PeppyDirs) -> Result<Option<Enrollment>> {
         peer_key: material(PEER_KEY_FILE)?,
         peer_certificate,
         trust_anchor: material(TRUST_ANCHOR_FILE)?,
+        issuer_chain: material(CHAIN_FILE)?,
         document,
         certificate,
     }))

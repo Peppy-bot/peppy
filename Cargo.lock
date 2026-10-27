@@ -311,6 +311,8 @@ name = "auth"
 version = "0.0.1"
 dependencies = [
  "auth",
+ "base64 0.22.1",
+ "bytes",
  "chrono",
  "daemon-config",
  "httpmock",
@@ -318,6 +320,9 @@ dependencies = [
  "peppy-config-model",
  "pmi",
  "rcgen",
+ "ring",
+ "rustls-pki-types",
+ "rustls-webpki",
  "secrecy 0.10.3",
  "serde",
  "serde_json",
@@ -897,6 +902,7 @@ name = "core-node"
 version = "0.0.1"
 dependencies = [
  "askama",
+ "auth",
  "build-helpers",
  "bytes",
  "chrono",
@@ -4020,6 +4026,7 @@ dependencies = [
 name = "pmi"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "build-helpers",
  "bytes",
  "derive_more",
@@ -4027,11 +4034,13 @@ dependencies = [
  "libc",
  "peppy-config-model",
  "rand 0.10.3",
+ "ring",
  "rustls-native-certs",
  "rustls-pemfile",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
  "tracing",

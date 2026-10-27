@@ -2,6 +2,7 @@
 
 use super::poll::AbortOnDrop;
 use super::test_node_target;
+use auth::machine_proof::MachineCertificate;
 use config::consts::DEFAULT_MESSAGING_HOST;
 use config::node::SetupTimeout;
 use core_node::test_support::parked_restart_backoff;
@@ -16,6 +17,7 @@ use peppylib::runtime::spawn;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::future::Future;
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -53,11 +55,85 @@ pub struct StartedCoreNode {
     /// Which launch holds the daemon and the gate its stack is changed under,
     /// so a test holds the stack or reserves the daemon as a change does.
     pub slice_ownership: Arc<SliceOwnership>,
+    /// Writes the key file of each instance that the harness spawns itself.
+    pub instance_keys: core_node::InstanceKeys,
+    /// The key file of each instance that the harness spawned, which a test
+    /// signs with when it calls the daemon as that instance.
+    pub instance_key_files: std::sync::Mutex<std::collections::HashMap<String, PathBuf>>,
+    /// The CA of the federation of the daemon, which mints the certificates
+    /// of the other machines that a test calls the daemon as.
+    pub machine_ca: Arc<auth::test_support::TestMachineCa>,
     /// `Some` for the default random-root starters (dropped with the test).
     /// `None` when the peppy root is a stable path the caller manages (see
     /// [`start_core_node_with_mock_messenger_outside_home`]).
     _data_dir: Option<TempDir>,
 }
+
+impl StartedCoreNode {
+    /// The session that calls the daemon as `instance_id`: the command line,
+    /// with the handle of the harness, or an instance that the harness or the
+    /// daemon started, signing with the key that the daemon wrote for its
+    /// process. Any other id signs with the key of the command line, which
+    /// the daemon refuses for that id.
+    pub fn handle_of(&self, instance_id: &str) -> MessengerHandle {
+        let spawned = self
+            .instance_key_files
+            .lock()
+            .expect("the key files are not poisoned")
+            .get(instance_id)
+            .cloned();
+        let started = || {
+            let name = config::runtime::Name::new(instance_id).ok()?;
+            self.node_stack
+                .find_instance_any_state(&name)?
+                .credential_path()
+                .map(std::path::Path::to_path_buf)
+        };
+        let Some(key_file) = spawned.or_else(started) else {
+            return self.caller_handle.clone();
+        };
+        let signer = pmi::ClientCredential::read(&key_file)
+            .expect("the key file of a spawned instance reads")
+            .into_signer();
+        MessengerHandle::from_shared(Arc::clone(&self.shared_messenger)).signing_calls_with(signer)
+    }
+
+    /// The session that calls the daemon as the command line of the machine
+    /// `core_node` of its federation, which proves its key with a
+    /// certificate of the CA of the federation, as the daemons of the other
+    /// machines do.
+    pub fn remote_handle(&self, core_node: &str) -> MessengerHandle {
+        self.remote_handle_as(core_node, super::CALLER_INSTANCE_ID)
+    }
+
+    /// The session that calls the daemon as the client `instance_id` of the
+    /// machine `core_node` of its federation, whose boot endorses the key of
+    /// that client with a certificate of the CA of the federation.
+    pub fn remote_handle_as(&self, core_node: &str, instance_id: &str) -> MessengerHandle {
+        let directory = tempfile::tempdir().expect("a directory for a machine certificate");
+        let files = self.machine_ca.write_machine(directory.path(), core_node);
+        let machine = MachineCertificate::of_operator(
+            &files.certificate,
+            &files.private_key,
+            &files.trust_anchor,
+        )
+        .expect("the machine certificate reads");
+        let boot = pmi::ClientKey::generate();
+        let credential = machine.boot_credential(
+            config::namespace::Namespace::local().as_str(),
+            core_node,
+            &format!("{core_node}-boot"),
+            &boot.public_key(),
+        );
+        let client = pmi::ClientKey::generate();
+        let proof = credential.client_proof(instance_id, &client.public_key(), &boot);
+        let signer = pmi::ClientCredential::new(client, Some(proof)).into_signer();
+        MessengerHandle::from_shared(Arc::clone(&self.shared_messenger)).signing_calls_with(signer)
+    }
+}
+
+/// The name of the daemon of the tests.
+pub const TEST_CORE_NODE: &str = "test_core_node";
 
 /// How long the test daemon waits for a started node's ready signal.
 pub const NODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -455,12 +531,25 @@ async fn start_core_node(
     peppy_config: daemon_config::peppy_config::PeppyConfig,
     log_exporter: log_export::LogExporter,
 ) -> StartedCoreNode {
-    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let root_dir = std::env::current_dir().expect("failed to get current directory");
     let shutdown_token = tokio_util::sync::CancellationToken::new();
+    // The daemon of the test belongs to a federation whose CA the test holds,
+    // so a test can call it as a client of another machine of the federation.
+    let machine_ca = Arc::new(auth::test_support::TestMachineCa::root(
+        "test federation CA",
+    ));
+    let machine_directory = peppy_dirs.root().join("machine");
+    std::fs::create_dir_all(&machine_directory).expect("the machine certificate directory");
+    let files = machine_ca.write_machine(&machine_directory, TEST_CORE_NODE);
+    let machine_certificate = MachineCertificate::of_operator(
+        &files.certificate,
+        &files.private_key,
+        &files.trust_anchor,
+    )
+    .expect("the machine certificate of the test daemon reads");
     let core_node = CoreNode::new(CoreNodeConfig {
         messenger: Arc::clone(&shared_messenger),
-        node_name: Some("test_core_node".to_string()),
+        node_name: Some(TEST_CORE_NODE.to_string()),
         arguments: node_arguments,
         host_addresses: Some(core_node::test_host_addresses()),
         root_dir,
@@ -469,17 +558,25 @@ async fn start_core_node(
         namespace: config::namespace::Namespace::local(),
         shutdown_token: shutdown_token.clone(),
         log_exporter,
+        machine_certificate: Some(machine_certificate),
     });
     let core_node_name = core_node.node_name().to_string();
     let core_node_tag = core_node.node_config().manifest.tag.clone();
     let node_stack = core_node.node_stack().clone();
     let slice_ownership = core_node.slice_ownership();
+    let instance_keys = core_node.instance_keys();
 
     // `start_with_ready` reports once every service is registered, so a test
     // can send requests as soon as this returns.
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let task = spawn(async move { core_node.start_with_ready(Some(ready_tx)).await });
     ready_rx.await.expect("core node ready signal failed");
+    // The daemon wrote the key of its command line at its start: the tests
+    // call it as its command line.
+    let command_line = pmi::ClientCredential::read(&peppy_dirs.command_line_key_path())
+        .expect("the daemon writes the key of its command line at its start");
+    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger))
+        .signing_calls_with(command_line.into_signer());
 
     StartedCoreNode {
         shared_messenger,
@@ -491,6 +588,9 @@ async fn start_core_node(
         task: AbortOnDrop(task),
         shutdown_token,
         slice_ownership,
+        instance_keys,
+        instance_key_files: std::sync::Mutex::new(std::collections::HashMap::new()),
+        machine_ca,
         _data_dir: data_dir,
     }
 }
@@ -597,6 +697,17 @@ async fn prepare_and_spawn_on_ready_entity(
         .expect("entity to spawn should exist");
     let (output_sinks, feedback_drain, run_log_path) =
         make_real_output_sinks(&started.peppy_dirs, name, tag, instance_id);
+    // The daemon writes the key file of the start, so a test calls it as the
+    // instance with that key.
+    let credential = started
+        .instance_keys
+        .issue(instance_id.as_str())
+        .expect("the daemon writes the key file of the instance");
+    started
+        .instance_key_files
+        .lock()
+        .expect("the key files are not poisoned")
+        .insert(instance_id.as_str().to_owned(), credential.clone());
 
     let (child, started_ctx) = node_stack::NodeEntity::prepare_and_spawn(
         &handle,
@@ -612,6 +723,7 @@ async fn prepare_and_spawn_on_ready_entity(
             spawn: new_spawn(instance_id, name, tag),
             env_vars: &[],
             mount_paths_resolved: &[],
+            credential: &credential,
             peppy_dirs: &started.peppy_dirs,
             output_sinks,
         },

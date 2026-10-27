@@ -23,8 +23,17 @@ tracing = "0.1"
 ureq = { version = "3.1", features = ["platform-verifier"] }
 url = "2"
 # Reads the validity of the peer's leaf certificate, which the renewal is
-# scheduled from.
+# scheduled from, and the common name of a machine certificate.
 x509-parser = "0.18"
+# The machine proofs (`machine_proof`): the boot statement signed with the key
+# of the machine certificate, and the check of a certificate chain of another
+# machine against the CA of this one. All three are in the build already
+# (zenoh's TLS links, the platform verifier of `ureq`).
+ring = "0.17"
+rustls-pki-types = "1"
+rustls-webpki = { version = "0.103", default-features = false, features = ["ring", "std"] }
+base64 = "0.22"
+bytes = "1"
 # Only for the `test-support` fixtures, which mint a leaf with set dates.
 time = { version = "0.3", optional = true }
 

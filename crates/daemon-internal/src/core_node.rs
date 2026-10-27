@@ -142,6 +142,7 @@ impl CoreNodeRunner {
         serve_teardown_token: CancellationToken,
         core_node_done: watch::Sender<bool>,
         log_export: LogExport,
+        machine_certificate: Option<auth::machine_proof::MachineCertificate>,
     ) -> Self {
         let node_arguments = CoreNodeArguments {
             node_startup_timeout,
@@ -177,6 +178,7 @@ impl CoreNodeRunner {
             namespace,
             shutdown_token: shutdown_token.clone(),
             log_exporter: log_export.exporter(),
+            machine_certificate,
         });
         Self {
             core_node,

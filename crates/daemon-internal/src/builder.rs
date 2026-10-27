@@ -7,10 +7,11 @@ use super::serve::{CompositeCommand, Serve};
 use crate::error::{Error, Result};
 use crate::log_export::LogExport;
 use crate::state::DaemonState;
+use auth::machine_proof::MachineCertificate;
 use auth::{Enrollment, FederationIdentity};
 use config::namespace::Namespace;
 use daemon_config::consts::PeppyDirs;
-use daemon_config::peppy_config::PeppyConfig;
+use daemon_config::peppy_config::{MachineCertificatePaths, PeppyConfig};
 use pmi::Messenger;
 use pmi::MessengerAdapter;
 use pmi::MockAdapter;
@@ -53,6 +54,12 @@ pub struct ServeCommandBuilder {
     /// renews the peer certificate, with a managed router and with an
     /// operator-run one: the certificate of the peer expires in both.
     identity: FederationIdentity,
+    /// The certificate of this machine, resolved in
+    /// [`with_messaging_router`](Self::with_messaging_router): the one that
+    /// the operator gives in `machine_certificate`, else the platform
+    /// certificate of the enrollment. `None`: the core node takes no
+    /// call of another machine.
+    machine_certificate: Option<MachineCertificate>,
     /// The managed zenoh router of this generation, set by
     /// [`with_messaging_router`](Self::with_messaging_router). `None` for an
     /// external router (the operator owns its identity and its federation) and
@@ -109,6 +116,7 @@ impl ServeCommandBuilder {
             // The identity of the mock/other engines, which read no enrollment;
             // the zenoh path overwrites this in `with_messaging_router`.
             identity: FederationIdentity::of(None),
+            machine_certificate: None,
             managed_router: None,
             teardown_token: CancellationToken::new(),
         }
@@ -196,6 +204,10 @@ impl ServeCommandBuilder {
             ))
         })?;
         self.identity = FederationIdentity::of(enrollment.as_ref());
+        self.machine_certificate = machine_certificate_of(
+            self.peppy_config.machine_certificate.as_ref(),
+            enrollment.as_ref(),
+        )?;
 
         let gossip = self.peppy_config.zenoh.gossip();
         let external_endpoint = self
@@ -318,6 +330,7 @@ impl ServeCommandBuilder {
             self.teardown_token.clone(),
             messaging.core_node_done_tx,
             log_export,
+            self.machine_certificate,
         );
 
         // Write the daemon state file with the core node name. The
@@ -336,6 +349,7 @@ impl ServeCommandBuilder {
                 self.managed_router
                     .as_ref()
                     .map(|router| router.router_id.clone()),
+                self.peppy_dirs.command_line_key_path(),
             )
         };
         let state_path = DaemonState::state_file_in(self.peppy_dirs.root());
@@ -418,6 +432,37 @@ impl ServeCommandBuilder {
 /// the full locator (including an operator-configured host and port) the single
 /// source used by [`ServeCommandBuilder::build`]. A backend with no locator
 /// (the mock) records the default loopback host and the messenger's port.
+/// The certificate of this machine: the one that the operator gives, else the
+/// platform certificate of `enrollment`, else none. A certificate that does
+/// not read fails the start of the daemon, as a broken enrollment does.
+fn machine_certificate_of(
+    operator: Option<&MachineCertificatePaths>,
+    enrollment: Option<&Enrollment>,
+) -> Result<Option<MachineCertificate>> {
+    let certificate = match (operator, enrollment) {
+        (Some(paths), _) => MachineCertificate::of_operator(
+            &paths.certificate,
+            &paths.private_key,
+            &paths.trust_anchor,
+        )
+        .map_err(|error| {
+            Error::ExecutionFailed(format!(
+                "could not read the machine_certificate of the peppy config: {error}"
+            ))
+        })?,
+        (None, Some(enrollment)) => {
+            MachineCertificate::of_enrollment(enrollment).map_err(|error| {
+                Error::ExecutionFailed(format!(
+                    "could not read the platform certificate of this machine: {error}; run \
+                     `peppy platform enroll` again"
+                ))
+            })?
+        }
+        (None, None) => return Ok(None),
+    };
+    Ok(Some(certificate))
+}
+
 fn daemon_state_for_messenger(
     messenger: &Messenger,
     core_node_name: &str,
@@ -425,6 +470,7 @@ fn daemon_state_for_messenger(
     shutdown_grace_secs: u64,
     namespace: Namespace,
     router_id: Option<RouterId>,
+    command_line_key: PathBuf,
 ) -> DaemonState {
     let (messaging_host, messaging_port) = messenger
         .messaging_locator()
@@ -443,6 +489,7 @@ fn daemon_state_for_messenger(
         shutdown_grace_secs,
         namespace,
         router_id,
+        command_line_key,
     )
 }
 
@@ -597,6 +644,7 @@ mod tests {
                 .managed_router
                 .as_ref()
                 .map(|router| router.router_id.clone()),
+            "/peppy/credentials/command_line.key".into(),
         );
         assert_eq!(state.messaging_host, "zenoh-router.regression.test");
         assert_eq!(state.messaging_port, 17555);

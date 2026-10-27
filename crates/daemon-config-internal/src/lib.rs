@@ -91,8 +91,9 @@ pub mod per_boot_root {
 pub mod peppy_config {
     pub use crate::internal::peppy_config::{
         DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_API_URL, ExternalZenohConfig, LifecycleConfig,
-        LocalNodesTopology, ManagedZenohConfig, OtlpEndpoint, OtlpMinSeverity, PackagesBaseUrl,
-        PeppyConfig, ResourceServers, Severity, ZenohConfig, load_or_create,
+        LocalNodesTopology, MachineCertificatePaths, ManagedZenohConfig, OtlpEndpoint,
+        OtlpMinSeverity, PackagesBaseUrl, PeppyConfig, ResourceServers, Severity, ZenohConfig,
+        load_or_create,
     };
 }
 

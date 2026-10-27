@@ -1345,7 +1345,6 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
 #[test]
 fn node_add_build_force_supersedes_inflight_build() {
     let (rt, serve, node_ctx, node_dir) = setup();
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
     let node_name = "test_add_force_build_node";
@@ -1414,7 +1413,7 @@ fn node_add_build_force_supersedes_inflight_build() {
     // Kick off the in-flight build in the background, on the same code path
     // `peppy node build` uses.
     let first_build = {
-        let messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+        let messenger = serve.command_line_handle();
         let core_node_name = core_node_name.clone();
         let node_name = node_name.to_string();
         rt.spawn(async move {

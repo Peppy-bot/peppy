@@ -53,6 +53,7 @@ mod document;
 pub mod enrollment;
 mod error;
 pub mod http;
+pub mod machine_proof;
 pub mod profile;
 mod refresh;
 pub mod renewal;

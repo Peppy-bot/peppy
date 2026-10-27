@@ -368,10 +368,9 @@ fn node_info_returns_not_in_stack_when_node_not_in_stack() {
     let serve = rt
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
-    let caller_handle = peppylib::MessengerHandle::from_shared(shared_messenger);
+    let caller_handle = serve.command_line_handle();
 
     // Capture daemon-side logs to assert that the negative lookup emits no
     // service-handler ERROR.

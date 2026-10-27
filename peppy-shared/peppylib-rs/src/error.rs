@@ -350,6 +350,11 @@ pub enum Error {
     #[error("invalid messenger configuration: {0}")]
     ConfigurationError(String),
 
+    /// The key file that the runtime configuration names was not read, so
+    /// the node cannot sign its calls to its daemon.
+    #[error("the node cannot sign its calls to its daemon: {0}")]
+    Credential(#[from] pmi::CredentialError),
+
     // --- Runner
     #[error("failed to build blocking runtime for `{context}`")]
     RuntimeInitialization {

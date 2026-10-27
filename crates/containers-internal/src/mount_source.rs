@@ -149,9 +149,98 @@ fn expand_home_in_mount_spec_with(
     Ok(format!("{expanded_src}{}", &spec[src.len()..]))
 }
 
+/// Why the container mount source `src` cannot be bound, as it touches the
+/// data root of peppy `data_root`: it is the data root, a path in it, or a
+/// directory that holds it. `None` when it does not touch it.
+///
+/// A container node does not see the data root, which holds the keys that
+/// the clients of the daemon sign their calls with and the machine
+/// certificate. A mount that touches it would show those keys to the node.
+/// Both paths are compared as the host resolves them (symbolic links
+/// followed) when they exist, else after `.` and `..` are removed.
+pub fn data_root_mount_rejection(src: &str, data_root: &Path) -> Option<String> {
+    let source = resolved(Path::new(src));
+    let root = resolved(data_root);
+    let relation = if source.starts_with(&root) {
+        "is in"
+    } else if root.starts_with(&source) {
+        "holds"
+    } else {
+        return None;
+    };
+    Some(format!(
+        "the container mount source `{src}` {relation} the data root of peppy `{}`: a \
+         container node does not see the data root, which holds the keys of the clients of \
+         the daemon",
+        data_root.display()
+    ))
+}
+
+/// `path` as the host resolves it when it exists, else with `.` and `..`
+/// removed.
+fn resolved(path: &Path) -> std::path::PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    let mut normalized = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other),
+        }
+    }
+    normalized
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mount_that_is_in_or_holds_the_data_root_is_refused() {
+        let root = Path::new("/home/user/.peppy");
+        for (src, relation) in [
+            ("/home/user/.peppy", "is in"),
+            ("/home/user/.peppy/credentials", "is in"),
+            ("/home/user/.peppy/../.peppy/conf/peer", "is in"),
+            ("/home/user", "holds"),
+            ("/home/user/", "holds"),
+            ("/", "holds"),
+        ] {
+            let rejection = data_root_mount_rejection(src, root)
+                .unwrap_or_else(|| panic!("`{src}` touches the data root"));
+            assert!(
+                rejection.contains(&format!("`{src}` {relation} the data root")),
+                "{rejection}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mount_beside_the_data_root_is_bound() {
+        let root = Path::new("/home/user/.peppy");
+        for src in [
+            "/home/user/.cache/isaac-sim",
+            "/home/user/.peppy-other",
+            "/dev/video0",
+            "/run/user",
+        ] {
+            assert_eq!(data_root_mount_rejection(src, root), None, "{src}");
+        }
+    }
+
+    #[test]
+    fn a_symbolic_link_to_the_data_root_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("peppy");
+        std::fs::create_dir(&root).unwrap();
+        let link = directory.path().join("link");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        assert!(data_root_mount_rejection(link.to_str().unwrap(), &root).is_some());
+    }
 
     /// The carve-out is a prefix test over whole trees, not an exact-path
     /// match: a node binding `/run/user/1000/pipewire-0` must be covered just
