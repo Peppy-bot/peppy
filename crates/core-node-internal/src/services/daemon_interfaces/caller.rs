@@ -2,8 +2,8 @@
 //! read it.
 
 use crate::services::federation::SliceOwnership;
-use core_node_api::names::COMMAND_LINE_INSTANCE_ID;
 use daemon_config::daemon_interface::{DaemonInterface, DaemonScope, TargetScope};
+use peppylib::messaging::{CallerKind, VerifiedCaller};
 
 /// Who sends a call.
 #[derive(Debug, Clone)]
@@ -11,26 +11,31 @@ pub(crate) enum Caller {
     /// The command line: it acts for the person or program that runs it,
     /// and has no scope.
     CommandLine,
-    /// An instance of the launch that this daemon coordinates, with the
-    /// scope of each daemon target it serves, and whether it is a built-in
-    /// MCP server.
+    /// An instance of the launch that this daemon coordinates, on the machine
+    /// where the launch places it, with the scope of each daemon target it
+    /// serves, and whether it is a built-in MCP server.
     Instance {
         mcp_server: bool,
         scopes: Vec<DaemonScope>,
     },
-    /// Any other sender: no scope.
+    /// Any other sender, such as a daemon or an instance of no launch of
+    /// this daemon: no scope.
     Other,
 }
 
 impl Caller {
-    /// The caller that sends as `instance_id`.
-    pub(crate) fn of(ownership: &SliceOwnership, instance_id: &str) -> Self {
-        if instance_id == COMMAND_LINE_INSTANCE_ID {
-            return Self::CommandLine;
+    /// The caller that `verified` is, as the launch of `ownership` reads it.
+    pub(crate) fn of(ownership: &SliceOwnership, verified: &VerifiedCaller) -> Self {
+        match verified.kind() {
+            CallerKind::CommandLine => return Self::CommandLine,
+            CallerKind::Daemon => return Self::Other,
+            CallerKind::Instance => {}
         }
+        let instance_id = verified.instance_id();
         let active = ownership.active.lock();
         let Some(targets) = active
             .as_ref()
+            .filter(|active| active.machine_of(instance_id) == Some(verified.core_node()))
             .and_then(|active| active.daemon_targets_of(instance_id))
         else {
             return Self::Other;

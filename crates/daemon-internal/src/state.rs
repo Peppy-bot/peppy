@@ -44,9 +44,15 @@ pub struct DaemonState {
     /// the mock engine. `peppy platform enroll` reads it, with `namespace`, to
     /// tell the rebuilt generation from the one it poked.
     pub router_id: Option<pmi::RouterId>,
+    /// The key file of the command line, which the daemon wrote at its boot:
+    /// the CLI signs each call to a daemon with it, as the daemon refuses an
+    /// unsigned call. The field is required: missing persisted state fails at
+    /// read.
+    pub command_line_key: PathBuf,
 }
 
 impl DaemonState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         core_node_name: impl Into<String>,
         messaging_host: impl Into<String>,
@@ -55,6 +61,7 @@ impl DaemonState {
         shutdown_grace_secs: u64,
         namespace: config::namespace::Namespace,
         router_id: Option<pmi::RouterId>,
+        command_line_key: PathBuf,
     ) -> Self {
         Self {
             core_node_name: core_node_name.into(),
@@ -65,6 +72,7 @@ impl DaemonState {
             shutdown_grace_secs,
             namespace,
             router_id,
+            command_line_key,
         }
     }
 
@@ -164,6 +172,7 @@ mod tests {
             shutdown_grace_secs: 5,
             namespace: config::namespace::Namespace::local(),
             router_id: Some(pmi::RouterId::parse("7f3a9c1e").unwrap()),
+            command_line_key: "/peppy/credentials/command_line.key".into(),
         };
         DaemonState::write_to(&path, &original).expect("write");
 
@@ -179,6 +188,10 @@ mod tests {
             read.router_id,
             Some(pmi::RouterId::parse("7f3a9c1e").unwrap())
         );
+        assert_eq!(
+            read.command_line_key,
+            std::path::Path::new("/peppy/credentials/command_line.key")
+        );
         assert!(read.has_federation_control());
     }
 
@@ -191,6 +204,7 @@ mod tests {
             5,
             config::namespace::Namespace::parse(namespace).unwrap(),
             router_id.map(|id| pmi::RouterId::parse(id).unwrap()),
+            "/peppy/credentials/command_line.key".into(),
         )
     }
 

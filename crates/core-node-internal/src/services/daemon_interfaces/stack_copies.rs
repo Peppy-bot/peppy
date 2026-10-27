@@ -54,6 +54,7 @@ use daemon_config::daemon_interface::{
 };
 use peppylib::messaging::{
     Failure, GoalContext, NonEmptyPayload, PendingGoal, ServiceAnswer, ServiceRequestContext,
+    VerifiedCaller,
 };
 use peppylib::types::Payload;
 use serde::{Deserialize, Serialize};
@@ -160,11 +161,15 @@ struct ChangeLine {
     line: String,
 }
 
-/// The `stack_copies` scope of the sender, or the refusal of a sender with
-/// none.
-fn scope_of(ctx: &InterfaceContext, sender: &ClientRef) -> Result<StackCopiesScope, Failure> {
-    match ctx.caller(&sender.instance_id).scope(STACK_COPIES) {
-        Some(DaemonScope::StackCopies(scope)) => Ok(scope.clone()),
+/// The sender that the check of the session verified, with its
+/// `stack_copies` scope, or the refusal of a sender with none.
+fn scope_of(
+    ctx: &InterfaceContext,
+    verified: Option<&VerifiedCaller>,
+) -> Result<(ClientRef, StackCopiesScope), Failure> {
+    let (caller, sender) = ctx.caller(verified)?;
+    match caller.scope(STACK_COPIES) {
+        Some(DaemonScope::StackCopies(scope)) => Ok((sender, scope.clone())),
         _ => Err(failure(
             PeppyFailureKind::Rejected,
             format!(
@@ -187,9 +192,7 @@ pub(super) async fn answer(
             format!("`{member}` is not a service of stack_copies:v1"),
         ));
     }
-    let message = request.message();
-    let sender = ClientRef::new(message.core_node(), message.instance_id());
-    let scope = scope_of(ctx, &sender)?;
+    let (_, scope) = scope_of(ctx, request.verified_caller())?;
     drop(ctx.stack_copies.admission.lock().await);
     let machines = ctx.live_machines(PRESENCE_TIMEOUT).await?;
     let fleet = super::fleet_members::fleet_listing(ctx);
@@ -254,9 +257,8 @@ pub(super) async fn answer(
 
 /// Runs one goal of `join` or `remove`.
 pub(super) async fn run_goal(ctx: &InterfaceContext, member: &str, pending: PendingGoal) {
-    let sender = ClientRef::new(pending.core_node(), pending.instance_id());
-    let scope = match scope_of(ctx, &sender) {
-        Ok(scope) => scope,
+    let (sender, scope) = match scope_of(ctx, pending.verified_caller()) {
+        Ok(scoped) => scoped,
         Err(refusal) => return refuse(pending, refusal).await,
     };
     match StackCopiesMember::named(member) {

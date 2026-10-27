@@ -798,6 +798,7 @@ mod tests {
         PeppyConfig {
             zenoh: ZenohConfig::External(ExternalZenohConfig {
                 endpoint: "tcp/router.example:7447".to_string(),
+                machine_certificate: None,
             }),
             ..PeppyConfig::default()
         }
@@ -812,6 +813,7 @@ mod tests {
             5,
             config::namespace::Namespace::local(),
             router_id.map(|id| pmi::RouterId::parse(id).unwrap()),
+            "/peppy/credentials/command_line.key".into(),
         )
     }
 

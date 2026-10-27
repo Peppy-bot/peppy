@@ -66,7 +66,7 @@ pub async fn poll_core_node_as<R: ServiceRequest>(
 ) -> peppylib::PeppyResult<R::Response> {
     peppylib::core_node::transport::poll(
         request,
-        &started.caller_handle,
+        &started.handle_of(caller_instance_id),
         &started.core_node_name,
         caller_instance_id,
         &started.core_node_name,

@@ -1490,8 +1490,14 @@ fn a_signed_call_carries_a_proof_that_the_receiver_verifies_against_the_key_expr
         payload,
     };
     assert!(proof.verifies(&key, &call("ws-a", b"payload")));
-    assert!(!proof.verifies(&key, &call("ws-b", b"payload")), "another namespace");
-    assert!(!proof.verifies(&key, &call("ws-a", b"other")), "another payload");
+    assert!(
+        !proof.verifies(&key, &call("ws-b", b"payload")),
+        "another namespace"
+    );
+    assert!(
+        !proof.verifies(&key, &call("ws-a", b"other")),
+        "another payload"
+    );
     assert_eq!(
         proof.machine_proof().map(|bytes| bytes.as_ref()),
         Some(&b"machine proof"[..])
@@ -1509,7 +1515,10 @@ fn an_unsigned_call_carries_no_proof() {
         ServiceQueryKind::UserRequest,
         b"payload",
     );
-    assert_eq!(attachment.as_ref(), user_request_attachment_bytes().as_ref());
+    assert_eq!(
+        attachment.as_ref(),
+        user_request_attachment_bytes().as_ref()
+    );
     let receiver = sample_sender_producer();
     let parsed = ZenohWireFormat::parse_inbound_query(&receiver, &selector, &attachment)
         .expect("an unsigned query parses");

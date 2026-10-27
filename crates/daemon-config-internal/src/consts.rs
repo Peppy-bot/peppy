@@ -160,6 +160,34 @@ impl PeppyDirs {
         self.root.join("logs").join("launch")
     }
 
+    /// The keys that the clients of the daemon sign their calls to it with,
+    /// which only the user of the daemon reads (mode 0700): the key of the
+    /// command line and the key of each instance that runs. A container node
+    /// does not see the data root, and sees its own key alone.
+    pub fn credentials_dir(&self) -> PathBuf {
+        self.root.join("credentials")
+    }
+
+    /// The key file of the command line, which the daemon makes at its first
+    /// boot and endorses at each boot.
+    pub fn command_line_key_path(&self) -> PathBuf {
+        self.credentials_dir().join("command_line.key")
+    }
+
+    /// The directory of the key files of the instances that run.
+    pub fn instance_keys_dir(&self) -> PathBuf {
+        self.credentials_dir().join("instances")
+    }
+
+    /// The key file of the start `serial` of the instance `instance_id`,
+    /// which the daemon writes at that start and removes when its process
+    /// ends. Each start has a file of its own, so the end of one process
+    /// never removes the key of the next.
+    pub fn instance_key_path(&self, instance_id: &str, serial: u64) -> PathBuf {
+        self.instance_keys_dir()
+            .join(format!("{instance_id}_{serial}.key"))
+    }
+
     /// Runtime configuration directory.
     pub fn runtime_config_dir(&self) -> PathBuf {
         self.root.join("runtime")

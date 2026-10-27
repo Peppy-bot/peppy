@@ -33,8 +33,9 @@ use super::build_steps::{
 use super::pairing::{PlannedPair, SlotAddr};
 use super::pypi_mirror;
 use super::run_steps::{
-    SpawnCommand, SpawnContainerInputs, build_built_in_command, build_container_command,
-    build_process_command, create_instance_dir, extract_node_archive, kill_and_collect_error,
+    SpawnCommand, SpawnContainerInputs, TempFileGuard, build_built_in_command,
+    build_container_command, build_process_command, create_instance_dir, extract_node_archive,
+    kill_and_collect_error,
 };
 use super::supervision::{
     Attempt, ExitRecord, FirstStart, HealthKill, KeptRelations, ProcessClaim, Registrations,
@@ -318,6 +319,11 @@ pub struct StartContext<'a> {
     /// (against runtime arguments and the blocked-source policy). Container
     /// nodes only.
     pub mount_paths_resolved: &'a [String],
+    /// The key file that the daemon wrote for this start of the instance,
+    /// which its runtime config names. From here on the start owns it: it
+    /// goes with the runtime config file of the process, and a container
+    /// sees it alone of the credentials of the daemon.
+    pub credential: &'a Path,
     /// Resolved peppy directory layout. Used for `runtime_config_dir()` and
     /// `instances_dir()`.
     pub peppy_dirs: &'a PeppyDirs,
@@ -372,13 +378,30 @@ impl OutputSinks {
     }
 }
 
+/// The files that one spawn of an instance writes for its process: its
+/// runtime config and its key file. Both live as long as that process, and
+/// go together when it ends or its start fails.
+#[derive(Debug, Clone)]
+pub(crate) struct SpawnFiles {
+    pub(crate) runtime_config: PathBuf,
+    pub(crate) credential: PathBuf,
+}
+
+impl SpawnFiles {
+    /// Removes both files, best-effort: a file already gone is no error.
+    pub(crate) fn remove(&self) {
+        let _ = std::fs::remove_file(&self.runtime_config);
+        let _ = std::fs::remove_file(&self.credential);
+    }
+}
+
 /// State handed back from [`NodeEntity::prepare_and_spawn`]. The caller owns
 /// it across `.await` boundaries (so it must be `Send`) and passes it to
 /// either [`NodeEntity::commit_started`] or [`NodeEntity::abort_started`].
 #[derive(Debug)]
 pub struct StartedInstanceCtx {
     pub(crate) instance_dir: PathBuf,
-    pub(crate) runtime_config_path: PathBuf,
+    pub(crate) spawn_files: SpawnFiles,
     pub(crate) stderr_buffer: StderrTail,
     pub(crate) output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
     /// The process's group, led by the pid recorded at spawn. A startup
@@ -1033,6 +1056,10 @@ impl NodeEntity {
         handle: &Arc<RwLock<NodeEntity>>,
         ctx: StartContext<'_>,
     ) -> Result<(Child, StartedInstanceCtx)> {
+        // The key file goes away on every return before the spawn hands it
+        // to the started instance.
+        let mut credential_guard = TempFileGuard::new(ctx.credential.to_path_buf());
+
         // ---- Phase 1: register the Starting instance under a brief write lock ----
         let (node_name, node_tag, node_config, artifact, start_generation) = {
             let mut guard = handle.write();
@@ -1137,7 +1164,7 @@ impl NodeEntity {
         // returned command is forked under the entity write lock in Phase 3b.
         let SpawnCommand {
             mut command,
-            runtime_config_path,
+            runtime_config_path: runtime_config,
             description: spawn_description,
         } = match (&artifact, node_config.execution.container.as_ref()) {
             (Artifact::BuiltIn(launch), _) => build_built_in_command(
@@ -1163,6 +1190,7 @@ impl NodeEntity {
                     working_dir: &instance_dir,
                     instance_id: instance_id_str,
                     runtime_config_json5: ctx.runtime_config_json5,
+                    credential: ctx.credential,
                     env_vars: ctx.env_vars,
                     mount_paths: ctx.mount_paths_resolved,
                     apptainer_run_extra_args,
@@ -1232,11 +1260,16 @@ impl NodeEntity {
                     })
             }
         };
+        let spawn_files = SpawnFiles {
+            runtime_config,
+            credential: ctx.credential.to_path_buf(),
+        };
         let (mut child, pid) = spawned.inspect_err(|_| {
             let _ = std::fs::remove_dir_all(&instance_dir);
-            let _ = std::fs::remove_file(&runtime_config_path);
+            spawn_files.remove();
             Self::undo_start(handle, ctx.instance_id);
         })?;
+        credential_guard.defuse();
 
         // ---- Phase 4: wire output streaming ----
         let stderr_buffer = StderrTail::new();
@@ -1263,7 +1296,7 @@ impl NodeEntity {
             child,
             StartedInstanceCtx {
                 instance_dir,
-                runtime_config_path,
+                spawn_files,
                 stderr_buffer,
                 output_reader_handles,
                 group: ProcessGroup { pid, is_container },
@@ -1317,7 +1350,7 @@ impl NodeEntity {
         // (failure) without partial moves.
         let StartedInstanceCtx {
             instance_dir,
-            runtime_config_path,
+            spawn_files,
             generation: start_generation,
             group,
             ..
@@ -1329,7 +1362,7 @@ impl NodeEntity {
             start_generation,
             &instance_id,
             &instance_dir,
-            &runtime_config_path,
+            &spawn_files,
             endpoints,
             now,
         );
@@ -1341,7 +1374,7 @@ impl NodeEntity {
             // before returning so nothing orphans.
             kill_start(&mut child, group, instance_id.as_str()).await;
             let _ = std::fs::remove_dir_all(&instance_dir);
-            let _ = std::fs::remove_file(&runtime_config_path);
+            spawn_files.remove();
             return Err(error);
         }
 
@@ -1363,7 +1396,7 @@ impl NodeEntity {
         start_generation: u64,
         instance_id: &Name,
         instance_dir: &Path,
-        runtime_config_path: &Path,
+        spawn_files: &SpawnFiles,
         endpoints: Vec<InstanceEndpoint>,
         now: Instant,
     ) -> Result<()> {
@@ -1391,10 +1424,7 @@ impl NodeEntity {
         if instance.state() != InstanceState::Starting {
             return Err(refuse("Running", "Running"));
         }
-        instance.set_running(
-            instance_dir.to_path_buf(),
-            runtime_config_path.to_path_buf(),
-        );
+        instance.set_running(instance_dir.to_path_buf(), spawn_files.clone());
         instance.set_endpoints(endpoints);
         instance.record_running(now);
         Ok(())
@@ -1426,7 +1456,7 @@ impl NodeEntity {
     ) -> String {
         let StartedInstanceCtx {
             instance_dir,
-            runtime_config_path,
+            spawn_files,
             stderr_buffer,
             output_reader_handles,
             group,
@@ -1445,10 +1475,10 @@ impl NodeEntity {
         .await;
 
         // Best-effort cleanup of the on-disk instance directory and the
-        // runtime config temp file. Once the child has been killed and the
-        // readers drained, nothing else holds file descriptors into them.
+        // files of the spawn. Once the child has been killed and the readers
+        // drained, nothing else holds file descriptors into them.
         let _ = std::fs::remove_dir_all(&instance_dir);
-        let _ = std::fs::remove_file(&runtime_config_path);
+        spawn_files.remove();
 
         // Generation guard: only touch the entity's instances list if it is
         // still the same entity we registered against. A concurrent
@@ -1984,8 +2014,8 @@ fn remove_instance_files(removed: &TrackedNodeInstance) {
     if let Some(dir) = removed.instance_dir() {
         let _ = std::fs::remove_dir_all(dir);
     }
-    if let Some(path) = removed.runtime_config_path() {
-        let _ = std::fs::remove_file(path);
+    if let Some(files) = &removed.spawn_files {
+        files.remove();
     }
 }
 
@@ -2011,10 +2041,11 @@ pub struct TrackedNodeInstance {
     /// `Running` instance so `stop_instance` can clean it up. `None` for
     /// snapshot-restored or test-fixture instances.
     instance_dir: Option<PathBuf>,
-    /// On-disk runtime config temp file created by `write_runtime_config_temp`.
-    /// Persisted so it can be removed when the instance stops or aborts. `None`
-    /// for snapshot-restored or test-fixture instances.
-    runtime_config_path: Option<PathBuf>,
+    /// The runtime config temp file created by `write_runtime_config_temp`
+    /// and the key file of the process. Persisted so they can be removed
+    /// when the instance stops or aborts. `None` for snapshot-restored or
+    /// test-fixture instances.
+    spawn_files: Option<SpawnFiles>,
     /// The run log of the latest start, `<instance_id>_<timestamp>.log`: the
     /// current or last process's, or a restart attempt's that failed before
     /// its spawn. `peppy node info` reports it. `None` for the core node's own
@@ -2090,7 +2121,7 @@ impl TrackedNodeInstance {
             state,
             incarnation: next_incarnation(),
             instance_dir: None,
-            runtime_config_path: None,
+            spawn_files: None,
             run_log_path: None,
             slot_bindings,
             clock: config::runtime::ClockBinding::Wall,
@@ -2350,7 +2381,16 @@ impl TrackedNodeInstance {
     /// Returns the on-disk runtime config temp file recorded during start,
     /// if any.
     pub fn runtime_config_path(&self) -> Option<&Path> {
-        self.runtime_config_path.as_deref()
+        self.spawn_files
+            .as_ref()
+            .map(|files| files.runtime_config.as_path())
+    }
+
+    /// Returns the key file of the process recorded during start, if any.
+    pub fn credential_path(&self) -> Option<&Path> {
+        self.spawn_files
+            .as_ref()
+            .map(|files| files.credential.as_path())
     }
 
     /// The run log of the latest start (the current or last process's, or a
@@ -2363,10 +2403,10 @@ impl TrackedNodeInstance {
     /// `Starting` instance to `Running` and record the on-disk paths produced
     /// by `prepare_and_spawn`. The pid stays as recorded at spawn. Not
     /// exported.
-    fn set_running(&mut self, instance_dir: PathBuf, runtime_config_path: PathBuf) {
+    fn set_running(&mut self, instance_dir: PathBuf, spawn_files: SpawnFiles) {
         self.state = InstanceState::Running;
         self.instance_dir = Some(instance_dir);
-        self.runtime_config_path = Some(runtime_config_path);
+        self.spawn_files = Some(spawn_files);
     }
 
     /// Same-module mutator that records the spawned child's pid on an instance
@@ -2474,8 +2514,8 @@ impl TrackedNodeInstance {
         self.endpoints.clear();
         self.supervision.next_start = None;
         self.healthy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        if let Some(path) = self.runtime_config_path.take() {
-            let _ = std::fs::remove_file(path);
+        if let Some(files) = self.spawn_files.take() {
+            files.remove();
         }
     }
 
@@ -3385,7 +3425,10 @@ mod tests {
         instances.push(starting);
         StartedInstanceCtx {
             instance_dir: instance_dir.to_path_buf(),
-            runtime_config_path: instance_dir.join("peppy_runtime.json5"),
+            spawn_files: SpawnFiles {
+                runtime_config: instance_dir.join("peppy_runtime.json5"),
+                credential: instance_dir.join("instance.key"),
+            },
             stderr_buffer: StderrTail::new(),
             output_reader_handles: Vec::new(),
             group: ProcessGroup {
@@ -3409,6 +3452,8 @@ mod tests {
         std::fs::create_dir_all(&instance_dir).expect("instance dir");
         let runtime_config_path = peppy_root.join(format!("runtime_config_{instance_id}.json5"));
         std::fs::write(&runtime_config_path, "{}").expect("runtime config file");
+        let credential = peppy_root.join(format!("{instance_id}.key"));
+        std::fs::write(&credential, "{}").expect("key file");
         let child = tokio::process::Command::new("sleep")
             .arg("5")
             .spawn()
@@ -3421,7 +3466,10 @@ mod tests {
             child,
             StartedInstanceCtx {
                 instance_dir,
-                runtime_config_path,
+                spawn_files: SpawnFiles {
+                    runtime_config: runtime_config_path,
+                    credential,
+                },
                 stderr_buffer: StderrTail::new(),
                 output_reader_handles: Vec::new(),
                 group,
@@ -3443,7 +3491,7 @@ mod tests {
         let peppy_root = tempfile::tempdir().expect("peppy_root tempdir");
         let (child, started_ctx) = sleeping_start(peppy_root.path(), "sensor_inst", generation);
         let instance_dir = started_ctx.instance_dir.clone();
-        let runtime_config_path = started_ctx.runtime_config_path.clone();
+        let spawn_files = started_ctx.spawn_files.clone();
 
         let error = NodeEntity::commit_started(
             handle,
@@ -3479,8 +3527,12 @@ mod tests {
             "a refused commit removes the instance dir"
         );
         assert!(
-            !runtime_config_path.exists(),
+            !spawn_files.runtime_config.exists(),
             "a refused commit removes the runtime config file"
+        );
+        assert!(
+            !spawn_files.credential.exists(),
+            "a refused commit removes the key file"
         );
     }
 
@@ -4106,6 +4158,7 @@ mod tests {
                 spawn: SpawnTarget::Respawn,
                 env_vars: &[],
                 mount_paths_resolved: &[],
+                credential: std::path::Path::new("no-such.key"),
                 peppy_dirs,
                 output_sinks: OutputSinks {
                     announcer: Announcer::new(scratch_log(), feedback_tx.clone()),

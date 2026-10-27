@@ -2,7 +2,7 @@ use crate::error::Error;
 use config::runtime::CoreNodeName;
 use daemon::state::DaemonState;
 use peppylib::{MessengerHandle, SessionScope};
-use pmi::Messenger;
+use pmi::{ClientCredential, Messenger};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{Mutex, OnceCell};
@@ -13,6 +13,11 @@ pub struct AppContext {
     /// `--core-node` override: the core node daemon-scoped commands address
     /// instead of the local daemon. `None` targets the local daemon.
     core_node_override: Option<CoreNodeName>,
+    /// A session that a test gives in place of a connection to the router.
+    given_messenger: Option<Arc<Mutex<Messenger>>>,
+    /// The session of the command line, which signs each call to a daemon
+    /// with the key of the command line. Opened at the first connection to
+    /// the daemon.
     messenger_handle: OnceCell<MessengerHandle>,
 }
 
@@ -22,6 +27,7 @@ impl AppContext {
             root_dir: PathBuf::from(root_dir.as_ref()),
             daemon_state_path: None,
             core_node_override: None,
+            given_messenger: None,
             messenger_handle: OnceCell::new(),
         }
     }
@@ -81,35 +87,51 @@ impl AppContext {
         Ok(self.read_daemon_state()?.core_node_name)
     }
 
-    /// Creates an AppContext with a pre-initialized messenger handle.
-    /// This is useful for testing with a shared mock messenger.
-    ///
-    /// The cell is built already populated, so injecting the handle cannot fail
-    /// and there is no post-construction `set` whose error would have to be
-    /// discarded.
+    /// Creates an AppContext over a session that the caller gives in place
+    /// of a connection to the router. This is useful for testing with a
+    /// shared mock messenger. The context signs over it as over its own
+    /// session.
     pub fn with_messenger(root_dir: impl AsRef<Path>, messenger: Arc<Mutex<Messenger>>) -> Self {
         Self {
-            messenger_handle: OnceCell::new_with(Some(MessengerHandle::from_shared(messenger))),
+            given_messenger: Some(messenger),
             ..Self::new(root_dir)
         }
     }
 
-    async fn connect_with_endpoint(
+    /// The session of the command line to the daemon of `daemon_state`,
+    /// signing each call to a daemon with the key of the command line that
+    /// the state names.
+    async fn connect_with_state(
         &self,
-        messaging_host: &str,
-        messaging_port: u16,
-        namespace: config::namespace::Namespace,
+        daemon_state: &DaemonState,
     ) -> crate::error::Result<&MessengerHandle> {
-        // Open the control session as a pure Zenoh client under the typed
-        // namespace recorded by the daemon generation: no listener,
-        // no gossip discovery, every request relayed through the daemon's
-        // router.
         let messenger = self
             .messenger_handle
             .get_or_try_init(|| async {
-                MessengerHandle::connect(messaging_host, messaging_port)
-                    .scope(SessionScope::Namespace(namespace))
-                    .await
+                let signer = ClientCredential::read(&daemon_state.command_line_key)
+                    .map_err(|error| {
+                        Error::ExecutionFailed(format!(
+                            "the command line cannot sign its calls to the daemon: {error}; \
+                             restart the daemon so that it writes the key of the command line"
+                        ))
+                    })?
+                    .into_signer();
+                let messenger = match &self.given_messenger {
+                    Some(given) => MessengerHandle::from_shared(Arc::clone(given)),
+                    // Open the control session as a pure Zenoh client under
+                    // the typed namespace recorded by the daemon generation:
+                    // no listener, no gossip discovery, every request relayed
+                    // through the daemon's router.
+                    None => {
+                        MessengerHandle::connect(
+                            &daemon_state.messaging_host,
+                            daemon_state.messaging_port,
+                        )
+                        .scope(SessionScope::Namespace(daemon_state.namespace.clone()))
+                        .await?
+                    }
+                };
+                Ok::<_, Error>(messenger.signing_calls_with(signer))
             })
             .await?;
         Ok(messenger)
@@ -146,13 +168,7 @@ pub(crate) struct DaemonConnection<'a> {
 impl AppContext {
     pub(crate) async fn connect_to_daemon(&self) -> crate::error::Result<DaemonConnection<'_>> {
         let daemon_state = self.read_daemon_state()?;
-        let messenger = self
-            .connect_with_endpoint(
-                &daemon_state.messaging_host,
-                daemon_state.messaging_port,
-                daemon_state.namespace,
-            )
-            .await?;
+        let messenger = self.connect_with_state(&daemon_state).await?;
         let target_is_override = self.core_node_override.is_some();
         let target_core_node = match &self.core_node_override {
             Some(core_node) => core_node.as_str().to_owned(),
@@ -190,6 +206,10 @@ mod tests {
         let messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
         let state_path = dir.join("daemon_state.json5");
+        let command_line_key = dir.join("command_line.key");
+        ClientCredential::new(pmi::ClientKey::generate(), None)
+            .write(&command_line_key)
+            .expect("the key of the command line should write");
         let state = DaemonState::new(
             "local-daemon",
             config::consts::DEFAULT_MESSAGING_HOST,
@@ -198,6 +218,7 @@ mod tests {
             config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
             config::namespace::Namespace::local(),
             None,
+            command_line_key,
         );
         DaemonState::write_to(&state_path, &state).expect("daemon state should write");
 

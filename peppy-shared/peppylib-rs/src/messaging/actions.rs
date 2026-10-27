@@ -1,7 +1,7 @@
+use super::call_check::VerifiedCaller;
 use super::discovery::{budget_left_after_discovery, discover_producer};
 use super::generate_short_id;
 use super::topics::Subscription;
-use super::call_check::VerifiedCaller;
 use super::{MessengerHandle, ServiceEndpoint, ServiceResponder, TopicPublisher};
 use crate::error::{Error, Result};
 use crate::messaging::ProducerRef;

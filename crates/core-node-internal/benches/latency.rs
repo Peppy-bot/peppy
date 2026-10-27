@@ -6,6 +6,10 @@
 //! service roundtrip on a single clock and reports the distribution back over a
 //! raw control service.
 //!
+//! It also times the proof that each call to a daemon carries: the signature
+//! by the sender and its check by the daemon, in process, which is what a
+//! signed call adds to the roundtrip of a call to a daemon.
+//!
 //! Prints a self-explanatory summary table: p50 / p90 / mean per scenario, the
 //! ceiling, and the change in the **median (p50)** versus the previous run **on
 //! this machine** (baselines are keyed by /etc/machine-id and stored under the
@@ -37,6 +41,12 @@ use latency_report::format;
 
 /// Subdirectory under `target/` for this bench's same-machine baseline.
 const BASELINE_SUBDIR: &str = "latency-bench";
+
+/// The id of the row of the proof of a call to a daemon.
+const CALL_PROOF_SCENARIO: &str = "proof/daemon-call";
+
+/// The ceiling of the median proof of a call to a daemon (sign and verify).
+const CALL_PROOF_CEILING_MS: u64 = 1;
 
 /// One measured scenario, ready to render.
 struct Row {
@@ -110,6 +120,29 @@ fn main() {
         runtime.block_on(scenario.shutdown());
     }
 
+    if filter
+        .as_deref()
+        .is_none_or(|needle| CALL_PROOF_SCENARIO.contains(needle))
+    {
+        let stats = time_call_proofs(DEFAULT_WARMUP, DEFAULT_SAMPLES);
+        current.insert(
+            CALL_PROOF_SCENARIO.to_owned(),
+            StoredStats {
+                p50_ns: stats.p50_ns,
+                p90_ns: stats.p90_ns,
+                mean_ns: stats.mean_ns,
+            },
+        );
+        rows.push(Row {
+            name: CALL_PROOF_SCENARIO.to_owned(),
+            p50: Duration::from_nanos(stats.p50_ns),
+            p90: Duration::from_nanos(stats.p90_ns),
+            mean: Duration::from_nanos(stats.mean_ns),
+            ceiling_ms: CALL_PROOF_CEILING_MS,
+            prev_p50_ns: previous.get(CALL_PROOF_SCENARIO).map(|s| s.p50_ns),
+        });
+    }
+
     print_table(&rows);
     if let Err(err) = baseline::save(&baseline_path, &current) {
         eprintln!(
@@ -117,6 +150,32 @@ fn main() {
             baseline_path.display()
         );
     }
+}
+
+/// Times the proof of a call to a daemon, `samples` times after `warmup`: the
+/// signature of the call by its sender and the check of the signature by the
+/// daemon. The payload is a small request, as most calls to a daemon carry.
+fn time_call_proofs(warmup: u64, samples: u64) -> latency_report::stats::Summary {
+    use pmi::{CallReceiver, ClientCredential, ClientKey, ServiceQueryKind, SignedCall};
+
+    let signer = ClientCredential::new(ClientKey::generate(), None).into_signer();
+    let key = signer.public_key();
+    let call = SignedCall {
+        namespace: "local",
+        key_expr: "cn-desk/cn-desk/*/peppy-cli/service/node/cn-desk/core/*/stack_list",
+        kind: ServiceQueryKind::UserRequest,
+        payload: &[0u8; 64],
+    };
+    let mut nanos = Vec::with_capacity(samples as usize);
+    for sample in 0..warmup + samples {
+        let started = std::time::Instant::now();
+        let proof = signer.prove(&call, CallReceiver::ThisMachine);
+        assert!(proof.verifies(&key, &call), "a proof verifies its own call");
+        if sample >= warmup {
+            nanos.push(started.elapsed().as_nanos() as u64);
+        }
+    }
+    latency_report::stats::summarize(&nanos)
 }
 
 /// Print the CPU/scheduling environment that governs run-to-run variance, so a
@@ -197,6 +256,8 @@ fn print_table(rows: &[Row]) {
     println!(
         "\nΔp50 = median vs the previous run on this machine (+ = slower, - = faster). \
          status = median within ceiling (the gated metric; p90 is a diagnostic). \
-         Ceilings via PEPPY_LATENCY_MAX_MS_<LANG>_<TRANSPORT>."
+         Ceilings via PEPPY_LATENCY_MAX_MS_<LANG>_<TRANSPORT>. \
+         {CALL_PROOF_SCENARIO} = the signature of a call to a daemon and its check, in \
+         process: what a signed call adds to a call to a daemon."
     );
 }

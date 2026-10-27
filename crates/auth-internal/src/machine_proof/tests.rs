@@ -101,7 +101,10 @@ fn a_proof_that_names_another_namespace_or_machine_is_refused() {
     };
     assert!(matches!(
         trust.verify(&proof, elsewhere, during_validity()),
-        Err(MachineProofError::NamesAnother { field: "the namespace", .. })
+        Err(MachineProofError::NamesAnother {
+            field: "the namespace",
+            ..
+        })
     ));
     let other_machine = ClaimedSender {
         core_node: "cn-desk",
@@ -109,7 +112,10 @@ fn a_proof_that_names_another_namespace_or_machine_is_refused() {
     };
     assert!(matches!(
         trust.verify(&proof, other_machine, during_validity()),
-        Err(MachineProofError::NamesAnother { field: "the core node", .. })
+        Err(MachineProofError::NamesAnother {
+            field: "the core node",
+            ..
+        })
     ));
 }
 
@@ -182,7 +188,11 @@ fn a_platform_certificate_chains_to_the_project_ca_through_the_issuer_of_its_pee
         .trust()
         .verify(&credential.daemon_proof(), sender(BOOT), during_validity())
         .unwrap();
-    assert_eq!(proven.key, boot_key.public_key(), "the label of the leaf names no core node");
+    assert_eq!(
+        proven.key,
+        boot_key.public_key(),
+        "the label of the leaf names no core node"
+    );
 }
 
 #[test]

@@ -61,6 +61,15 @@ pub enum Error {
     #[error("core node already started")]
     AlreadyStarted,
 
+    /// The daemon could not write the key files that its clients sign their
+    /// calls with, so no client could call it.
+    #[error("the daemon could not write the key files of its clients under {directory}: {source}")]
+    CredentialsNotWritten {
+        directory: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error(
         "core node name '{name}' is already in use by another daemon reachable over this \
          router/federation; refusing to start. Set `core_node_name` in \

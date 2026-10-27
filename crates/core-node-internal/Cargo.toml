@@ -62,6 +62,7 @@ zstd = "0.14"
 tempfile = "3.10"
 sha2 = "0.11"
 parking_lot = { workspace = true }
+auth = { workspace = true }
 dirs = "7"
 ignore = "0.4"
 # `getifaddrs`, for the host addresses an instance's endpoints expand to.
@@ -98,6 +99,9 @@ tracing-subscriber = "0.3"
 # `PackagesBaseUrl::loopback_http_for_tests`: the PyPI mirror of the build
 # tests is an `httptest` server on loopback.
 daemon-config = { workspace = true, features = ["test-support"] }
+# The test CA that mints the machine certificates of the tests of the calls of
+# other machines.
+auth = { workspace = true, features = ["test-support"] }
 
 [features]
 container_e2e = []

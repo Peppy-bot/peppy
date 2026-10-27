@@ -88,8 +88,8 @@ pub(crate) trait GoalHandler: Clone + Send + 'static {
 
 /// Accept loop shared by all built-in core-node actions. Runs until the goal
 /// service closes (the messenger session is torn down). It refuses each goal
-/// of the action `id` from an instance of the stack ([`RawCallGate`]) and
-/// hands every other goal to `handler`.
+/// of the action `id` from an instance ([`RawCallGate`]) and hands every other
+/// goal to `handler`.
 pub(crate) async fn run_action_loop<H: GoalHandler>(
     mut action: ConcurrentAction,
     id: ActionId,
@@ -97,7 +97,7 @@ pub(crate) async fn run_action_loop<H: GoalHandler>(
     handler: H,
 ) -> crate::Result<()> {
     while let Some(pending) = action.recv_next_goal().await? {
-        if let Some(refusal) = raw_calls.refusal(id.name(), pending.instance_id()) {
+        if let Some(refusal) = raw_calls.refusal(id.name(), pending.verified_caller()) {
             refuse_goal(pending, refusal).await;
             continue;
         }

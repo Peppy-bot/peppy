@@ -809,6 +809,7 @@ mod tests {
         let external = serde_json::to_value(super::super::ZenohConfig::External(
             super::super::ExternalZenohConfig {
                 endpoint: "tcp/router.internal:7448".to_string(),
+                machine_certificate: None,
             },
         ))
         .expect("external zenoh config must serialize");
@@ -897,6 +898,7 @@ mod tests {
         let fully_spelled = serde_json5::to_string(&PeppyConfig {
             zenoh: super::super::ZenohConfig::External(super::super::ExternalZenohConfig {
                 endpoint: "tcp/router.internal:7448".to_string(),
+                machine_certificate: None,
             }),
             ..PeppyConfig::default()
         })

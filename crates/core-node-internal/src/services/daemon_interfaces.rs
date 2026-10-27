@@ -10,9 +10,9 @@
 //! ([`caller::Caller`]): the command line has no scope and calls every
 //! member; an instance of the launch calls what the scope of its daemon
 //! target of the interface gives; `check_move` answers every sender, and
-//! `changes` answers each MCP server of peppy. The sender is the instance id
-//! and the machine that the call gives, which the messaging layer does not
-//! authenticate: the scopes bind the nodes that call as themselves.
+//! `changes` answers each MCP server of peppy. The sender is the caller that
+//! the check of the session of the daemon verified
+//! ([`crate::services::credentials`]).
 //!
 //! The daemon of the coordinator of a launch serves the interfaces of that
 //! launch: a daemon that holds the slice of a launch of another machine
@@ -28,6 +28,7 @@ pub(crate) use caller::Caller;
 use codecs::{Codecs, Side};
 
 use crate::services::federation::SliceOwnership;
+use crate::services::fleet::ClientRef;
 use crate::services::response::failure;
 use config::failure_kind::PeppyFailureKind;
 use daemon_config::daemon_interface::DaemonInterface;
@@ -36,6 +37,7 @@ use node_stack::NodeStack;
 use peppylib::MessengerHandle;
 use peppylib::messaging::{
     ConcurrentAction, Failure, PendingGoal, SenderTarget, ServiceAnswer, ServiceRequestContext,
+    VerifiedCaller,
 };
 use peppylib::types::Payload;
 use peppylib::{CoreNodePresenceMessenger, ServiceMessenger};
@@ -100,9 +102,14 @@ impl InterfaceContext {
     }
 
     /// The sender of a request or a goal, as the scopes of the launch read
-    /// it.
-    fn caller(&self, instance_id: &str) -> Caller {
-        Caller::of(&self.slice_ownership, instance_id)
+    /// it: the caller that the check of the session verified. A call that no
+    /// check verified is refused.
+    fn caller(&self, verified: Option<&VerifiedCaller>) -> Result<(Caller, ClientRef), Failure> {
+        let verified = crate::services::raw_calls::verified(verified)?;
+        Ok((
+            Caller::of(&self.slice_ownership, verified),
+            ClientRef::new(verified.core_node(), verified.instance_id()),
+        ))
     }
 
     /// Decodes the message of the `side` of `member` of `interface` from

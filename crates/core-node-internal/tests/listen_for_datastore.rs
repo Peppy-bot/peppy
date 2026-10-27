@@ -192,11 +192,12 @@ fn assert_refused_naming(err: peppylib::PeppyError, started: &StartedCoreNode, o
     );
 }
 
+/// The command line is a sender that proves itself and runs no process.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_exclusive_store_from_an_instance_the_daemon_does_not_run_fails() {
+async fn an_exclusive_store_from_a_sender_the_daemon_does_not_run_fails() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let message = datastore_store_exclusive_as(&started, "unrun_inst", DRIVER_KEY, b"v")
+    let message = datastore_store_exclusive_as(&started, CALLER_INSTANCE_ID, DRIVER_KEY, b"v")
         .await
         .expect_err("no process runs under the id")
         .to_string();

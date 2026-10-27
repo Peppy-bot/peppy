@@ -902,6 +902,7 @@ name = "core-node"
 version = "0.0.1"
 dependencies = [
  "askama",
+ "auth",
  "build-helpers",
  "bytes",
  "chrono",

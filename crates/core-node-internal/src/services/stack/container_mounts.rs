@@ -163,6 +163,22 @@ impl LocalMounts {
     }
 }
 
+/// Refuses `mount_sources`, the sources that the containers of this machine
+/// bind, when one of them touches `data_root`, before anything is created: a
+/// container node does not see the data root.
+pub(crate) fn refuse_data_root_sources(
+    mount_sources: &[String],
+    data_root: &Path,
+) -> std::result::Result<(), String> {
+    for src in mount_sources {
+        let expanded = containers::expand_home_in_mount_spec(src)?;
+        if let Some(rejection) = containers::data_root_mount_rejection(&expanded, data_root) {
+            return Err(rejection);
+        }
+    }
+    Ok(())
+}
+
 /// Prepares this machine's bind sources and reports each one it had to
 /// create. Each machine prepares the sources of its own instances: a
 /// participant was handed its share when it was told to replace its slice.
@@ -172,6 +188,7 @@ pub(in crate::services::stack) async fn prepare_local_container_mounts(
     mut mount_sources: Vec<String>,
     mounts: LocalMounts,
 ) -> std::result::Result<(), String> {
+    refuse_data_root_sources(&mount_sources, ctx.peppy_dirs.root())?;
     // The peppy data root hosts the container build working dirs (`tmp/`),
     // built images (`built_nodes/`), and instance dirs. When it sits outside
     // `$HOME` (a `PEPPY_HOME` outside it) the Lima guest cannot see it, so

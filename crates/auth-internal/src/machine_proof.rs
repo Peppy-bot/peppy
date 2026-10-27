@@ -73,7 +73,9 @@ pub enum MachineProofError {
     },
     #[error("`{path}` holds no PEM {label}")]
     NoPem { path: String, label: &'static str },
-    #[error("the private key of the machine certificate is not a PKCS#8 key of ECDSA P-256, ECDSA P-384, Ed25519 or RSA")]
+    #[error(
+        "the private key of the machine certificate is not a PKCS#8 key of ECDSA P-256, ECDSA P-384, Ed25519 or RSA"
+    )]
     UnsupportedKey,
     #[error("the machine proof does not decode: {0}")]
     Decode(String),
@@ -85,7 +87,9 @@ pub enum MachineProofError {
     },
     #[error("the certificate of the machine does not chain to the CA of this daemon: {0}")]
     Chain(webpki::Error),
-    #[error("the certificate of the machine names `{named}` in its common name, not the core node `{core_node}`")]
+    #[error(
+        "the certificate of the machine names `{named}` in its common name, not the core node `{core_node}`"
+    )]
     CommonName { named: String, core_node: String },
     #[error("the boot statement does not verify with the key of the certificate of the machine")]
     BootStatement,
@@ -582,11 +586,14 @@ impl MachineProof {
                     .map(|certificate| BASE64.encode(certificate))
                     .collect(),
             },
-            endorsement: self.endorsement.as_ref().map(|endorsement| EndorsementJson {
-                client: endorsement.client.clone(),
-                public_key: BASE64.encode(endorsement.public_key.as_bytes()),
-                signature: BASE64.encode(&endorsement.signature),
-            }),
+            endorsement: self
+                .endorsement
+                .as_ref()
+                .map(|endorsement| EndorsementJson {
+                    client: endorsement.client.clone(),
+                    public_key: BASE64.encode(endorsement.public_key.as_bytes()),
+                    signature: BASE64.encode(&endorsement.signature),
+                }),
         };
         Bytes::from(serde_json::to_vec(&json).expect("a machine proof serializes"))
     }

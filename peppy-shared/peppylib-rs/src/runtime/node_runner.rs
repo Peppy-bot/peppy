@@ -59,9 +59,7 @@ impl NodeRunner {
         // started signs each of its calls to a daemon with the key that the
         // daemon wrote for it.
         let messenger = match processor.credential() {
-            Some(path) => {
-                messenger.signing_calls_with(ClientCredential::read(path)?.into_signer())
-            }
+            Some(path) => messenger.signing_calls_with(ClientCredential::read(path)?.into_signer()),
             None => messenger,
         };
         Ok(Self::over_messenger(

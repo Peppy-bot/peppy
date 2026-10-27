@@ -1,5 +1,6 @@
 mod action_loop;
 mod clock;
+pub(crate) mod credentials;
 mod daemon_interfaces;
 mod datastore;
 pub(crate) mod federation;
@@ -176,6 +177,11 @@ pub struct CoreNodeConfig {
     pub host_addresses: node::endpoints::HostAddressSource,
     /// Where the log files of the node stack send their lines.
     pub log_exporter: log_export::LogExporter,
+    /// The certificate of this machine, which proves the calls of this
+    /// machine to the daemons of the other machines of a federation and
+    /// gives the CA that the daemon checks their calls against. `None`: the
+    /// daemon takes no call of another machine.
+    pub machine_certificate: Option<auth::machine_proof::MachineCertificate>,
 }
 
 pub struct CoreNode {
@@ -221,6 +227,27 @@ pub struct CoreNode {
     /// Flipped by [`CoreNode::start_with_ready`] so a second start on the same
     /// instance is rejected rather than silently re-registering listeners.
     started: AtomicBool,
+    /// The keys of this boot and of the clients of the daemon. The session
+    /// signs the calls of the daemon with the key of its boot and checks the
+    /// sender of every call that it receives.
+    keys: Arc<credentials::DaemonKeys>,
+}
+
+/// Writes the key file of an instance that a test spawns itself, as the
+/// daemon writes one at each start of an instance.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone)]
+pub struct InstanceKeys(Arc<credentials::DaemonKeys>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl InstanceKeys {
+    /// Writes a new key file for a start of `instance_id`, and gives its
+    /// path.
+    pub fn issue(&self, instance_id: &str) -> std::io::Result<PathBuf> {
+        self.0
+            .issue_instance_key(instance_id)
+            .map(|issued| issued.path)
+    }
 }
 
 /// Pre-flight checks that must pass before the daemon starts spawning nodes.
@@ -341,6 +368,7 @@ impl CoreNode {
             shutdown_token,
             host_addresses,
             log_exporter,
+            machine_certificate,
         } = config;
 
         let manifest_name = match node_name {
@@ -381,7 +409,6 @@ impl CoreNode {
             framework: config::node::NodeFramework::default(),
         };
 
-        let messenger = MessengerHandle::from_shared(messenger);
         let instance_id = Name::new(get_random(rng())).expect(
             "names_generator2 output is lowercase ASCII letters, `-` and digits, which a Name allows",
         );
@@ -399,11 +426,28 @@ impl CoreNode {
             .with_log_exporter(log_exporter)
             .with_time_source(time_source)
             .with_reply_bounds(reply_bounds);
+        let node_stack = Arc::new(node_stack);
         let slice_ownership = federation::SliceOwnership::new(node_config.manifest.name.as_str());
         let clock_watches = Arc::new(clock::watch::ClockWatches::new());
+        let keys = Arc::new(credentials::DaemonKeys::new(
+            peppy_dirs.clone(),
+            namespace.as_str(),
+            node_config.manifest.name.as_str(),
+            instance_id.as_str(),
+            machine_certificate,
+        ));
+        // Every call that the daemon sends to a daemon carries the signature
+        // of its boot, and every endpoint of the daemon checks the sender of
+        // each call before a handler reads it.
+        let messenger = MessengerHandle::from_shared(messenger)
+            .signing_calls_with(keys.daemon_signer())
+            .checking_calls_with(Arc::new(credentials::DaemonCallCheck::new(
+                Arc::clone(&keys),
+                Arc::clone(&node_stack),
+            )));
 
         Self {
-            node_stack: Arc::new(node_stack),
+            node_stack,
             node_config,
             instance_id,
             messenger,
@@ -424,6 +468,7 @@ impl CoreNode {
             slice_ownership,
             clock_watches,
             started: AtomicBool::new(false),
+            keys,
         }
     }
 
@@ -481,6 +526,14 @@ impl CoreNode {
         Arc::clone(&self.slice_ownership)
     }
 
+    /// The issuer of the key files of the instances that a test spawns
+    /// itself, so the daemon takes their calls as it takes the calls of the
+    /// instances that it starts.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn instance_keys(&self) -> InstanceKeys {
+        InstanceKeys(Arc::clone(&self.keys))
+    }
+
     /// Bundles what the federation endpoints need from the daemon. Built per
     /// listener rather than stored so it always reflects the current
     /// generation's messenger and shutdown token.
@@ -498,6 +551,7 @@ impl CoreNode {
             root_instance_id: self.instance_id().to_owned(),
             shutdown_token: self.shutdown_token.clone(),
             raw_calls: ctx.raw_calls.clone(),
+            data_root: self.peppy_dirs.root().to_path_buf(),
         }
     }
 
@@ -777,6 +831,7 @@ impl CoreNode {
                         &self.peppy_config,
                         self.namespace.clone(),
                         self.host_addresses.clone(),
+                        Arc::clone(&self.keys),
                     ),
                     shutdown_token: self.shutdown_token.clone(),
                     slice_ownership: Arc::clone(&self.slice_ownership),
@@ -835,6 +890,7 @@ impl CoreNode {
                         &self.peppy_config,
                         self.namespace.clone(),
                         self.host_addresses.clone(),
+                        Arc::clone(&self.keys),
                     ),
                     shutdown_token: self.shutdown_token.clone(),
                     relationships: ctx.relationships.clone(),
@@ -969,6 +1025,15 @@ impl CoreNode {
             Some(token);
 
         clear_instances_dir(&self.peppy_dirs);
+        // The key files of the instances of an earlier boot go with its
+        // instances, and the command line gets its key file for this boot
+        // before any endpoint takes a call.
+        self.keys
+            .prepare()
+            .map_err(|source| crate::Error::CredentialsNotWritten {
+                directory: self.peppy_dirs.credentials_dir().display().to_string(),
+                source,
+            })?;
 
         // A halt that a daemon before this one wrote stays a halt.
         self.slice_ownership
@@ -1033,10 +1098,7 @@ impl CoreNode {
                 core_node_name,
             )),
             relationships,
-            raw_calls: raw_calls::RawCallGate::new(
-                Arc::clone(&self.node_stack),
-                Arc::clone(&self.slice_ownership),
-            ),
+            raw_calls: raw_calls::RawCallGate::new(),
         };
         // Set up all listeners concurrently so startup latency is bounded by
         // the slowest single listener, not the sum of all of them. They're

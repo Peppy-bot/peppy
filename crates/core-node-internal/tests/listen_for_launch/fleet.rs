@@ -62,6 +62,12 @@ impl<'a> InterfaceClient<'a> {
         }
     }
 
+    /// The session that sends as the instance of this client, signing with
+    /// the key of its current process.
+    pub(super) fn handle(&self) -> MessengerHandle {
+        self.started.handle_of(&self.identity.instance_id)
+    }
+
     /// The answer of the service `member` to `request`.
     pub(super) async fn call(
         &self,
@@ -73,7 +79,7 @@ impl<'a> InterfaceClient<'a> {
         ServiceClient::of_contract(document, name)
             .expect("the interface declares the service")
             .call(
-                &self.started.caller_handle,
+                &self.handle(),
                 &self.identity,
                 &MemberBinding::of_contract(document, name).expect("a binding"),
                 &self.daemon,
@@ -132,7 +138,7 @@ impl<'a> InterfaceClient<'a> {
         ActionClient::of_contract(document, name)
             .expect("the interface declares the action")
             .fire_goal(
-                &self.started.caller_handle,
+                &self.handle(),
                 &self.identity,
                 &MemberBinding::of_contract(document, name).expect("a binding"),
                 &self.daemon,
@@ -146,7 +152,7 @@ impl<'a> InterfaceClient<'a> {
 
     /// The end of `goal`.
     pub(super) async fn end_of(&self, goal: &GoalHandle) -> GoalOutcome {
-        goal.result(&self.started.caller_handle, RESULT_TIMEOUT)
+        goal.result(&self.handle(), RESULT_TIMEOUT)
             .await
             .expect("the goal ends")
     }
@@ -289,6 +295,8 @@ async fn an_instance_calls_the_fleet_within_its_scope_while_its_launch_starts() 
             "alpha has not started yet"
         );
 
+        // A node calls the daemon once its process runs.
+        common::wait_for_state(&started, DIRECTOR, node_stack::InstanceState::Running).await;
         let director = FleetClient::sending_as(&started, DIRECTOR).await;
         let robots: Vec<String> = director
             .listing()
@@ -648,16 +656,39 @@ async fn a_stack_goal_of_another_sender_does_not_act_for_a_lease_holder() {
 
 /// The daemon refuses its raw goals, and its raw services that change the
 /// stack, from an instance of the stack, and answers the services that
-/// read.
+/// read. An instance that calls under the id of the command line is refused
+/// before the daemon reads the sender.
 #[tokio::test]
 async fn the_daemon_refuses_its_raw_calls_that_change_the_stack_from_its_instances() {
     let started = start_core_node_with_mock_messenger().await;
     let (_directory, _responders) =
         launched_with_alpha(&started, r#"{ members: ["list"] }"#, "fleet-raw-calls-test").await;
 
+    // The node calls as the command line, with its own key: the daemon
+    // refuses the call before it reads the sender.
+    let impersonation = poll(
+        &StackResetRequest::new(),
+        &started.handle_of(ALPHA_ARM),
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started.core_node_name,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .expect_err("a node does not reset the stack as the command line");
+    let failure = impersonation.failure().expect("an error reply");
+    assert_eq!(failure.kind().as_str(), "rejected");
+    assert!(
+        failure
+            .message()
+            .contains("does not verify with the key of `peppy-cli`"),
+        "{}",
+        failure.message()
+    );
+
     let reset = poll(
         &StackResetRequest::new(),
-        &started.caller_handle,
+        &started.handle_of(ALPHA_ARM),
         &started.core_node_name,
         ALPHA_ARM,
         &started.core_node_name,
@@ -677,7 +708,7 @@ async fn the_daemon_refuses_its_raw_calls_that_change_the_stack_from_its_instanc
 
     let removal = send_goal(
         &StackRemoveGoal::new(config::runtime::CopyName::new("alpha").unwrap()),
-        &started.caller_handle,
+        &started.handle_of(DIRECTOR),
         &started.core_node_name,
         DIRECTOR,
         None,
@@ -698,7 +729,7 @@ async fn the_daemon_refuses_its_raw_calls_that_change_the_stack_from_its_instanc
 
     poll(
         &StackListRequest::new(),
-        &started.caller_handle,
+        &started.handle_of(DIRECTOR),
         &started.core_node_name,
         DIRECTOR,
         &started.core_node_name,
@@ -750,7 +781,12 @@ async fn a_participant_refuses_the_fleet_and_names_the_coordinator() {
         "this machine runs a slice of launch `launch-of-the-desk`, which `cn-desk` coordinates: \
          call the daemon of `cn-desk`"
     );
-    let copies = InterfaceClient::of(&started, DaemonInterface::StackCopies, DIRECTOR).await;
+    let copies = InterfaceClient::of(
+        &started,
+        DaemonInterface::StackCopies,
+        core_node_api::names::COMMAND_LINE_INSTANCE_ID,
+    )
+    .await;
     assert_eq!(
         copies.refusal("list", json!({})).await.kind().as_str(),
         "precondition_failed"
@@ -785,7 +821,7 @@ async fn a_lease_ends_with_its_goal_and_a_reset_ends_every_lease() {
         json!("lease_start")
     );
     lease
-        .cancel(&started.caller_handle, GOAL_TIMEOUT)
+        .cancel(&director.handle(), GOAL_TIMEOUT)
         .await
         .expect("the daemon takes the cancel");
     let ended = next_change(&mut changes).await;

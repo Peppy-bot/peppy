@@ -8,6 +8,7 @@
 //! the failure path.
 
 use super::super::{JOIN_BUSY_REASON, undo_unaccepted};
+use crate::services::credentials::testing::{KnownKeys, client_key};
 use crate::services::daemon_interfaces::{InterfaceContext, serve};
 use crate::services::federation::SliceOwnership;
 use crate::services::stack::fixtures::active_launch_with_daemon_targets;
@@ -25,7 +26,8 @@ use peppy_codec::consumer::{
     ActionClient, ConsumerIdentity, GoalHandle, GoalOutcome, MemberBinding,
 };
 use peppylib::messaging::{
-    DEFAULT_FEEDBACK_BOUND, Failure, GoalContext, MessengerHandle, ProducerRef, SenderTarget,
+    CallerKind, DEFAULT_FEEDBACK_BOUND, Failure, GoalContext, MessengerHandle, ProducerRef,
+    SenderTarget,
 };
 use peppylib::testing::{
     EphemeralRouter, MockActionServerCore, READINESS_TIMEOUT, wait_action_reachable,
@@ -92,9 +94,26 @@ async fn mesh() -> Mesh {
     let router = EphemeralRouter::start()
         .await
         .expect("the ephemeral router starts");
-    let daemon = router.connect().await.expect("the daemon connects");
+    // The client signs its calls with one key, which the check of the
+    // daemon knows as the key of the manager and of the instance with no
+    // target, so the scopes decide what each of them may call.
+    let (client_key, client_signer) = client_key();
+    let check = [MANAGER, "other_inst"]
+        .into_iter()
+        .fold(KnownKeys::default(), |known, instance| {
+            known.knowing(CORE_NODE, instance, client_key, CallerKind::Instance)
+        });
+    let daemon = router
+        .connect()
+        .await
+        .expect("the daemon connects")
+        .checking_calls_with(Arc::new(check));
     let stack_goals = router.connect().await.expect("the stack goals connect");
-    let client = router.connect().await.expect("the client connects");
+    let client = router
+        .connect()
+        .await
+        .expect("the client connects")
+        .signing_calls_with(client_signer);
     let directory = tempfile::tempdir().unwrap();
     let root_config =
         config::node::NodeConfigParser::from_content(ROOT_CONFIG).expect("the root config parses");

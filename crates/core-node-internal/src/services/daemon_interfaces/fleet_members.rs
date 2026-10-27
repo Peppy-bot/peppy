@@ -48,12 +48,6 @@ fn authorize(caller: &Caller, member: FleetMember, sender: &ClientRef) -> Result
     ))
 }
 
-/// The sender of a request.
-fn sender_of(request: &ServiceRequestContext) -> ClientRef {
-    let message = request.message();
-    ClientRef::new(message.core_node(), message.instance_id())
-}
-
 /// Answers one request of a service of `fleet:v1`.
 pub(super) async fn answer(
     ctx: &InterfaceContext,
@@ -66,8 +60,8 @@ pub(super) async fn answer(
             format!("`{member}` is not a member of fleet:v1"),
         ));
     };
-    let sender = sender_of(request);
-    authorize(&ctx.caller(&sender.instance_id), member, &sender)?;
+    let (caller, sender) = ctx.caller(request.verified_caller())?;
+    authorize(&caller, member, &sender)?;
     let bytes = request.message().payload_bytes();
     let name = member.name();
     match member {
@@ -235,7 +229,13 @@ fn check_move(
 
 /// Runs one goal of an action of `fleet:v1`.
 pub(super) async fn run_goal(ctx: &InterfaceContext, member: &str, pending: PendingGoal) {
-    let sender = ClientRef::new(pending.core_node(), pending.instance_id());
+    let (caller, sender) = match ctx.caller(pending.verified_caller()) {
+        Ok(verified) => verified,
+        Err(refusal) => {
+            refuse(pending, refusal).await;
+            return;
+        }
+    };
     let member = match FleetMember::named(member) {
         Some(member @ (FleetMember::Changes | FleetMember::Lease)) => member,
         _ => {
@@ -247,7 +247,7 @@ pub(super) async fn run_goal(ctx: &InterfaceContext, member: &str, pending: Pend
             return;
         }
     };
-    if let Err(refusal) = authorize(&ctx.caller(&sender.instance_id), member, &sender) {
+    if let Err(refusal) = authorize(&caller, member, &sender) {
         refuse(pending, refusal).await;
         return;
     }

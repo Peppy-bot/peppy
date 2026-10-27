@@ -449,6 +449,7 @@ impl ServeCommandEmulation {
             namespace: config::namespace::Namespace::local(),
             shutdown_token: shutdown_token.clone(),
             log_exporter: log_export::LogExporter::disabled(),
+            machine_certificate: None,
         });
         let core_node_name = core_node.node_name().to_string();
         let slice_ownership = core_node.slice_ownership();
@@ -481,6 +482,7 @@ impl ServeCommandEmulation {
             config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
             config::namespace::Namespace::local(),
             None,
+            PeppyDirs::new(&root).command_line_key_path(),
         );
         DaemonState::write_to(&daemon_state_path, &daemon_state)
             .expect("failed to write daemon state");

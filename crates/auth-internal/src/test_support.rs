@@ -259,7 +259,9 @@ impl TestMachineCa {
 
 fn ca_params(name: &str) -> rcgen::CertificateParams {
     let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("no names");
-    params.distinguished_name.push(rcgen::DnType::CommonName, name);
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, name);
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     params.key_usages = vec![
         rcgen::KeyUsagePurpose::KeyCertSign,

@@ -79,10 +79,10 @@ use crate::types::{Message, Payload};
 use config::node::{QoSProfile, TopicRetention};
 use pmi::{
     ActionWireReceiver, CallSigner, CallSigning, Messenger, MessengerAdapter, MessengerBackend,
-    MessengerPublisher,
-    Namespace, PresenceScope, PublisherQoS, ReplyStream, Segment, ServiceQueryKind, ServiceReply,
-    ServiceReplyKind, ServiceWireReceiver, ServiceWireSender, Subscription as PmiSubscription,
-    TopicWireReceiver, TopicWireSender, ZenohAdapter, ZenohNetProtocol,
+    MessengerPublisher, Namespace, PresenceScope, PublisherQoS, ReplyStream, Segment,
+    ServiceQueryKind, ServiceReply, ServiceReplyKind, ServiceWireReceiver, ServiceWireSender,
+    Subscription as PmiSubscription, TopicWireReceiver, TopicWireSender, ZenohAdapter,
+    ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::sync::{

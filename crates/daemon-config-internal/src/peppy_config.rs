@@ -547,6 +547,26 @@ pub struct ManagedZenohConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExternalZenohConfig {
     pub endpoint: String,
+    /// The certificate of this machine from the CA of the operator, which
+    /// proves the calls of this machine to the daemons of the other machines
+    /// of the federation. A daemon with none takes no call of another
+    /// machine.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine_certificate: Option<MachineCertificatePaths>,
+}
+
+/// The files of a machine certificate that the operator of an operator-run
+/// router gives, each an absolute path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MachineCertificatePaths {
+    /// The CA of the operator, PEM: the daemon checks the certificates of the
+    /// other machines against it.
+    pub trust_anchor: PathBuf,
+    /// The certificate of this machine, PEM, then the certificates above it.
+    /// Its common name is the core node of this machine.
+    pub certificate: PathBuf,
+    /// The PKCS#8 private key of the certificate, PEM.
+    pub private_key: PathBuf,
 }
 
 /// The `zenoh` section holds exactly one transport mode. Managed-only knobs
@@ -624,14 +644,54 @@ fn parse_external_zenoh(
         );
     };
     let endpoint = fields.remove("endpoint");
+    let machine_certificate = fields
+        .remove("machine_certificate")
+        .map(parse_machine_certificate)
+        .transpose()?;
     if let Some(field) = fields.keys().next() {
         return Err(format!("unknown field `zenoh.external.{field}`"));
     }
     match endpoint {
-        Some(serde_json::Value::String(endpoint)) => Ok(ExternalZenohConfig { endpoint }),
+        Some(serde_json::Value::String(endpoint)) => Ok(ExternalZenohConfig {
+            endpoint,
+            machine_certificate,
+        }),
         Some(_) => Err("zenoh.external.endpoint must be a string".to_string()),
         None => Err("zenoh.external.endpoint is required".to_string()),
     }
+}
+
+fn parse_machine_certificate(
+    value: serde_json::Value,
+) -> std::result::Result<MachineCertificatePaths, String> {
+    const BLOCK: &str = "zenoh.external.machine_certificate";
+    let serde_json::Value::Object(mut fields) = value else {
+        return Err(format!(
+            "{BLOCK} must be a block like {{ trust_anchor: \"/etc/peppy/ca.crt\", certificate: \
+             \"/etc/peppy/machine.crt\", private_key: \"/etc/peppy/machine.key\" }}"
+        ));
+    };
+    let mut path = |field: &str| -> std::result::Result<PathBuf, String> {
+        match fields.remove(field) {
+            Some(serde_json::Value::String(path)) if Path::new(&path).is_absolute() => {
+                Ok(PathBuf::from(path))
+            }
+            Some(serde_json::Value::String(path)) => Err(format!(
+                "{BLOCK}.{field} must be an absolute path, not `{path}`"
+            )),
+            Some(_) => Err(format!("{BLOCK}.{field} must be a string")),
+            None => Err(format!("{BLOCK}.{field} is required")),
+        }
+    };
+    let paths = MachineCertificatePaths {
+        trust_anchor: path("trust_anchor")?,
+        certificate: path("certificate")?,
+        private_key: path("private_key")?,
+    };
+    if let Some(field) = fields.keys().next() {
+        return Err(format!("unknown field `{BLOCK}.{field}`"));
+    }
+    Ok(paths)
 }
 
 impl ZenohConfig {
@@ -658,6 +718,14 @@ impl ZenohConfig {
         match self {
             Self::Managed(_) => None,
             Self::External(config) => Some(&config.endpoint),
+        }
+    }
+
+    /// The machine certificate that the operator gives in external mode.
+    pub fn machine_certificate(&self) -> Option<&MachineCertificatePaths> {
+        match self {
+            Self::Managed(_) => None,
+            Self::External(config) => config.machine_certificate.as_ref(),
         }
     }
 
@@ -1133,6 +1201,7 @@ mod tests {
         let expected = PeppyConfig {
             zenoh: ZenohConfig::External(ExternalZenohConfig {
                 endpoint: "tcp/router.internal:7448".to_string(),
+                machine_certificate: None,
             }),
             ..PeppyConfig::default()
         };
@@ -1383,6 +1452,7 @@ mod tests {
     fn external_accessors_disable_managed_only_behavior() {
         let zenoh = ZenohConfig::External(ExternalZenohConfig {
             endpoint: "tcp/router.internal:7448".to_string(),
+            machine_certificate: None,
         });
 
         assert!(!zenoh.gossip());
@@ -1417,10 +1487,60 @@ mod tests {
         assert_eq!(
             cfg.zenoh,
             ZenohConfig::External(ExternalZenohConfig {
-                endpoint: endpoint.to_string()
+                endpoint: endpoint.to_string(),
+                machine_certificate: None,
             })
         );
         assert_eq!(cfg.zenoh.external_endpoint(), Some(endpoint));
+    }
+
+    #[test]
+    fn an_external_block_carries_the_machine_certificate_of_the_operator() {
+        let (_tmp, peppy_dirs, _) = dirs_with_config(
+            r#"{ zenoh: { external: {
+                endpoint: "tcp/router.internal:7448",
+                machine_certificate: {
+                    trust_anchor: "/etc/peppy/ca.crt",
+                    certificate: "/etc/peppy/machine.crt",
+                    private_key: "/etc/peppy/machine.key",
+                },
+            } } }"#,
+        );
+        let config = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(
+            config.zenoh.machine_certificate(),
+            Some(&MachineCertificatePaths {
+                trust_anchor: "/etc/peppy/ca.crt".into(),
+                certificate: "/etc/peppy/machine.crt".into(),
+                private_key: "/etc/peppy/machine.key".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_machine_certificate_with_a_relative_missing_or_unknown_field_is_refused() {
+        for (block, expected_message) in [
+            (
+                r#"{ trust_anchor: "ca.crt", certificate: "/m.crt", private_key: "/m.key" }"#,
+                "trust_anchor must be an absolute path, not `ca.crt`",
+            ),
+            (
+                r#"{ trust_anchor: "/ca.crt", private_key: "/m.key" }"#,
+                "certificate is required",
+            ),
+            (
+                r#"{ trust_anchor: "/ca.crt", certificate: "/m.crt", private_key: "/m.key", key: "/k" }"#,
+                "unknown field `zenoh.external.machine_certificate.key`",
+            ),
+            ("\"/m.crt\"", "machine_certificate must be a block"),
+        ] {
+            let content = format!(
+                r#"{{ zenoh: {{ external: {{ endpoint: "tcp/router.internal:7448", machine_certificate: {block} }} }} }}"#
+            );
+            let (_tmp, peppy_dirs, _) = dirs_with_config(&content);
+            let error = load_or_create(&peppy_dirs).unwrap_err().to_string();
+            assert!(error.contains(expected_message), "{block}: {error}");
+        }
     }
 
     #[test]

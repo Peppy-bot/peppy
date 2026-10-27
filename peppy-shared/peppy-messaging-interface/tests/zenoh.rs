@@ -1154,8 +1154,8 @@ mod zenoh_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_namespaced_receiver_verifies_the_proof_of_a_signed_call() {
         use pmi::{
-            CallReceiver, CallSigning, ClientCredential, ClientKey, ServiceKind, ServiceQueryKind,
-            ServiceWireReceiver, ServiceWireSender, SenderTarget,
+            CallReceiver, CallSigning, ClientCredential, ClientKey, SenderTarget, ServiceKind,
+            ServiceQueryKind, ServiceWireReceiver, ServiceWireSender,
         };
         use std::sync::Arc;
 
@@ -1195,7 +1195,10 @@ mod zenoh_tests {
             ServiceKind::Service,
         )
         .expect("sender")
-        .signed(CallSigning::new(Arc::new(signer), CallReceiver::ThisMachine));
+        .signed(CallSigning::new(
+            Arc::new(signer),
+            CallReceiver::ThisMachine,
+        ));
         let _replies = client
             .call_service(
                 &sender,

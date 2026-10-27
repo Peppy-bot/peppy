@@ -64,6 +64,9 @@ pub(crate) struct FederationServiceContext {
     /// Refuses each federation request from an instance of the stack: only
     /// a daemon sends one.
     pub(crate) raw_calls: RawCallGate,
+    /// The data root of this daemon, which no container mount of a slice may
+    /// touch.
+    pub(crate) data_root: std::path::PathBuf,
 }
 
 /// Declares the listener for one federation endpoint.
@@ -522,7 +525,16 @@ async fn slice_begin_inner(
     } else {
         LocalMounts::WholeStack
     };
-    match crate::services::stack::prepare_container_mounts(&decoded.mount_sources, mounts).await {
+    let prepared = match crate::services::stack::refuse_data_root_sources(
+        &decoded.mount_sources,
+        &context.data_root,
+    ) {
+        Ok(()) => {
+            crate::services::stack::prepare_container_mounts(&decoded.mount_sources, mounts).await
+        }
+        Err(rejection) => Err(rejection),
+    };
+    match prepared {
         Ok(auto_created) => {
             for (instance, hosts) in decoded.lifecycle_watchers {
                 context.relationships.record_watchers(

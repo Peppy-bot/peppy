@@ -138,6 +138,7 @@ fn test_core_node_config(
         namespace: config::namespace::Namespace::local(),
         shutdown_token: tokio_util::sync::CancellationToken::new(),
         log_exporter: log_export::LogExporter::disabled(),
+        machine_certificate: None,
     }
 }
 

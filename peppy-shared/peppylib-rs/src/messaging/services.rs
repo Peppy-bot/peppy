@@ -1,10 +1,10 @@
+use super::call_check::{CallCheck, ReceivedCall, VerifiedCaller};
 use super::discovery::{budget_left_after_discovery, discover_producer};
 use super::{MessengerHandle, generate_short_id};
 use crate::error::{Error, Result};
 use crate::messaging::ProducerRef;
 use crate::runtime::{TaskHandle, spawn};
 use crate::types::{Message, Payload};
-use super::call_check::{CallCheck, ReceivedCall, VerifiedCaller};
 use pmi::{
     Failure, IncomingRequest, Messenger, ResponseToken, SenderTarget, ServiceKind,
     ServiceQueryKind, ServiceQueryable, ServiceWireReceiver, ServiceWireSender, TopicMessage,

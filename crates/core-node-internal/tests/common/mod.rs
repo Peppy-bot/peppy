@@ -53,5 +53,7 @@ pub fn core_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, names::CORE_NODE_TAG).expect("core node target")
 }
 
-pub const CALLER_INSTANCE_ID: &str = "caller_instance";
+/// The tests call the daemon as its command line: the harness signs their
+/// calls with the key of the command line, which the daemon checks.
+pub const CALLER_INSTANCE_ID: &str = names::COMMAND_LINE_INSTANCE_ID;
 pub const TEST_GIT_HASH: &str = "test-hash";

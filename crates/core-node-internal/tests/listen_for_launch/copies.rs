@@ -15,7 +15,7 @@ async fn participant_answer<R: core_node_api::ServiceRequest>(
 ) -> peppylib::PeppyResult<R::Response> {
     poll(
         request,
-        &started.caller_handle,
+        &started.remote_handle("coordinator"),
         "coordinator",
         CALLER_INSTANCE_ID,
         &started.core_node_name,

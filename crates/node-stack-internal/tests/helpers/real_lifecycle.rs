@@ -58,6 +58,9 @@ pub struct LifecycleHarness {
     pub feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     pub publish_enabled: Arc<AtomicBool>,
     pub hooks: Arc<dyn OutputReaderHooks>,
+    /// The key file each fixture start names, which the start owns once it
+    /// gets it.
+    pub credential: std::path::PathBuf,
     feedback_drain: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -79,8 +82,9 @@ impl LifecycleHarness {
     }
 
     /// The start context of a fixture spawn of `instance_id`: an empty
-    /// runtime config, no slot bindings, the wall clock, no launch identity
-    /// or copy, and no extra env vars or mounts.
+    /// runtime config, the key file of the harness, no slot bindings, the
+    /// wall clock, no launch identity or copy, and no extra env vars or
+    /// mounts.
     pub fn start_context<'a>(&'a self, instance_id: &'a Name) -> StartContext<'a> {
         StartContext {
             core_node: "cn-a",
@@ -94,6 +98,7 @@ impl LifecycleHarness {
             spawn: new_spawn(instance_id),
             env_vars: &[],
             mount_paths_resolved: &[],
+            credential: &self.credential,
             peppy_dirs: &self.peppy_dirs,
             output_sinks: self.output_sinks(),
         }
@@ -115,6 +120,9 @@ pub fn lifecycle_harness() -> LifecycleHarness {
     .expect("create log");
     let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
     let feedback_drain = tokio::spawn(async move { while feedback_rx.recv().await.is_some() {} });
+    let credential = peppy_dirs.instance_key_path("fixture", 0);
+    std::fs::create_dir_all(peppy_dirs.instance_keys_dir()).expect("key file directory");
+    std::fs::write(&credential, "{}").expect("key file");
     LifecycleHarness {
         peppy_root,
         peppy_dirs,
@@ -123,6 +131,7 @@ pub fn lifecycle_harness() -> LifecycleHarness {
         feedback_tx,
         publish_enabled: Arc::new(AtomicBool::new(true)),
         hooks: Arc::new(NoOpHooks),
+        credential,
         feedback_drain: Some(feedback_drain),
     }
 }

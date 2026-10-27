@@ -4,9 +4,9 @@
 
 use peppylib::PeppyError;
 use peppylib::messaging::{
-    ActionMessenger, CallCheck, CallerKind, CancelState, ConcurrentAction,
-    DEFAULT_FEEDBACK_BOUND, MessengerHandle, ProducerRef, ReceivedCall, SenderTarget,
-    ServiceMessenger, ServiceTarget, VerifiedCaller, decode_cancel_ack,
+    ActionMessenger, CallCheck, CallerKind, CancelState, ConcurrentAction, DEFAULT_FEEDBACK_BOUND,
+    MessengerHandle, ProducerRef, ReceivedCall, SenderTarget, ServiceMessenger, ServiceTarget,
+    VerifiedCaller, decode_cancel_ack,
 };
 use peppylib::types::Payload;
 use pmi::{
@@ -44,7 +44,8 @@ impl KeyCheck {
 impl CallCheck for KeyCheck {
     fn verify(&self, call: &ReceivedCall<'_>) -> Result<VerifiedCaller, Failure> {
         self.proofs_seen.lock().unwrap().push(call.proof.is_some());
-        let refused = |why: &str| Failure::new(config::failure_kind::PeppyFailureKind::Rejected, why);
+        let refused =
+            |why: &str| Failure::new(config::failure_kind::PeppyFailureKind::Rejected, why);
         let proof = call.proof.ok_or_else(|| refused("no signature"))?;
         let (key, kind) = self
             .keys
@@ -136,8 +137,13 @@ fn refusal_message(error: PeppyError) -> String {
 async fn a_signed_call_to_a_daemon_reaches_its_handler_with_the_verified_caller() {
     let session = mock_session().await;
     let command_line = ClientKey::generate();
-    let check = KeyCheck::default().knowing("peppy-cli", command_line.public_key(), CallerKind::CommandLine);
-    let daemon = MessengerHandle::from_shared(Arc::clone(&session)).checking_calls_with(Arc::new(check));
+    let check = KeyCheck::default().knowing(
+        "peppy-cli",
+        command_line.public_key(),
+        CallerKind::CommandLine,
+    );
+    let daemon =
+        MessengerHandle::from_shared(Arc::clone(&session)).checking_calls_with(Arc::new(check));
     let handled = serve_reset(&daemon).await;
 
     let client = signing(MessengerHandle::from_shared(session), command_line);
@@ -152,9 +158,14 @@ async fn an_unsigned_call_and_a_call_under_another_id_are_refused_before_their_h
     let command_line = ClientKey::generate();
     let arm = ClientKey::generate();
     let check = KeyCheck::default()
-        .knowing("peppy-cli", command_line.public_key(), CallerKind::CommandLine)
+        .knowing(
+            "peppy-cli",
+            command_line.public_key(),
+            CallerKind::CommandLine,
+        )
         .knowing("arm_inst", arm.public_key(), CallerKind::Instance);
-    let daemon = MessengerHandle::from_shared(Arc::clone(&session)).checking_calls_with(Arc::new(check));
+    let daemon =
+        MessengerHandle::from_shared(Arc::clone(&session)).checking_calls_with(Arc::new(check));
     let handled = serve_reset(&daemon).await;
 
     let unsigned = MessengerHandle::from_shared(Arc::clone(&session));
@@ -184,10 +195,15 @@ async fn a_call_to_a_node_carries_no_signature() {
     let node_target = SenderTarget::node("arm", "v1").unwrap();
     let observer = MessengerHandle::from_shared(Arc::clone(&session))
         .checking_calls_with(Arc::clone(&check) as Arc<dyn CallCheck>);
-    let mut endpoint =
-        ServiceMessenger::listen(&observer, "cn-desk", "arm_inst", node_target.clone(), "home")
-            .await
-            .unwrap();
+    let mut endpoint = ServiceMessenger::listen(
+        &observer,
+        "cn-desk",
+        "arm_inst",
+        node_target.clone(),
+        "home",
+    )
+    .await
+    .unwrap();
     tokio::spawn(async move {
         endpoint
             .handle_requests(|_| async { Ok(Payload::new()) })
@@ -217,7 +233,8 @@ async fn a_daemon_takes_the_cancel_of_a_goal_from_its_sender_alone() {
     let check = KeyCheck::default()
         .knowing("holder_inst", holder.public_key(), CallerKind::Instance)
         .knowing("other_inst", other.public_key(), CallerKind::Instance);
-    let daemon = MessengerHandle::from_shared(Arc::clone(&session)).checking_calls_with(Arc::new(check));
+    let daemon =
+        MessengerHandle::from_shared(Arc::clone(&session)).checking_calls_with(Arc::new(check));
     let fleet = || SenderTarget::contract("fleet", "v1").unwrap();
     let mut action = ConcurrentAction::expose(
         &daemon,
@@ -263,10 +280,14 @@ async fn a_daemon_takes_the_cancel_of_a_goal_from_its_sender_alone() {
         "lease",
     )
     .unwrap();
-    let refused =
-        ActionMessenger::cancel_with_sender(&other_client, &other_sender, goal.goal_id(), CALL_TIMEOUT)
-            .await
-            .unwrap_err();
+    let refused = ActionMessenger::cancel_with_sender(
+        &other_client,
+        &other_sender,
+        goal.goal_id(),
+        CALL_TIMEOUT,
+    )
+    .await
+    .unwrap_err();
     assert!(
         refusal_message(refused).contains("a goal of another client"),
         "another client cannot cancel the goal"

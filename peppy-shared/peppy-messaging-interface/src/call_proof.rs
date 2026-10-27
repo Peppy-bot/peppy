@@ -116,6 +116,12 @@ impl ClientKey {
     }
 }
 
+impl Clone for ClientKey {
+    fn clone(&self) -> Self {
+        Self::from_pkcs8(&self.pkcs8).expect("the PKCS#8 document of a key parses again")
+    }
+}
+
 impl fmt::Debug for ClientKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientKey")
@@ -204,7 +210,10 @@ impl ClientCredential {
     pub fn write(&self, path: &Path) -> std::io::Result<()> {
         let file = CredentialFile {
             key: BASE64.encode(&self.key.pkcs8),
-            machine_proof: self.machine_proof.as_ref().map(|proof| BASE64.encode(proof)),
+            machine_proof: self
+                .machine_proof
+                .as_ref()
+                .map(|proof| BASE64.encode(proof)),
         };
         let text = serde_json::to_string(&file).map_err(std::io::Error::other)?;
         let directory = path.parent().unwrap_or_else(|| Path::new("."));
@@ -269,8 +278,9 @@ impl CallSigner {
 
 /// The milliseconds of `time` since the Unix epoch; 0 before it.
 pub fn unix_millis(time: SystemTime) -> u64 {
-    time.duration_since(UNIX_EPOCH)
-        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+    time.duration_since(UNIX_EPOCH).map_or(0, |since| {
+        u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+    })
 }
 
 /// How a sender signs one call: with which signer, for which receiver. It
@@ -416,7 +426,8 @@ impl CallProof {
             timestamp_ms,
             nonce,
             signature,
-            machine_proof: (!machine_proof.is_empty()).then(|| Bytes::copy_from_slice(machine_proof)),
+            machine_proof: (!machine_proof.is_empty())
+                .then(|| Bytes::copy_from_slice(machine_proof)),
         })
     }
 }
@@ -425,7 +436,10 @@ impl fmt::Debug for CallProof {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CallProof")
             .field("timestamp_ms", &self.timestamp_ms)
-            .field("machine_proof_len", &self.machine_proof.as_ref().map(Bytes::len))
+            .field(
+                "machine_proof_len",
+                &self.machine_proof.as_ref().map(Bytes::len),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -500,7 +514,10 @@ mod tests {
         assert!(!proof.verifies(&key, &changed), "the namespace");
         let mut changed = call(b"reset");
         changed.key_expr = "cn-desk/cn-desk/*/arm_inst/service/node/cn-desk/core/*/stack_reset";
-        assert!(!proof.verifies(&key, &changed), "the sender in the key expression");
+        assert!(
+            !proof.verifies(&key, &changed),
+            "the sender in the key expression"
+        );
         let mut changed = call(b"reset");
         changed.kind = ServiceQueryKind::Probe;
         assert!(!proof.verifies(&key, &changed), "the kind");
