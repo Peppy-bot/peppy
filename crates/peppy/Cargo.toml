@@ -115,6 +115,9 @@ git2 = "0.21"
 peppy = { path = ".", features = ["test-support"] }
 # The OTLP receiver the log export e2e tests point a daemon at.
 log-export = { workspace = true, features = ["test-support"] }
+# The test CA that gives each daemon of the multi-daemon e2e its machine
+# certificate.
+auth = { workspace = true, features = ["test-support"] }
 # The readers of the log file format, for the same tests.
 node-stack = { workspace = true, features = ["test-support"] }
 # The full-stack MCP e2e generates the exposure node's peppygen out-of-band

@@ -83,27 +83,26 @@ pub fn leaf() -> String {
     leaf_pem(ISSUED_AT, EXPIRES_AT)
 }
 
-/// Enrolls the machine under `dirs` with `document` and `leaf_pem` as its
-/// certificate, with placeholder PEM material for the rest, as `peppy
-/// platform enroll` would have.
-pub fn write_enrollment_with_leaf(dirs: &PeppyDirs, document: EnrollmentDocument, leaf_pem: &str) {
+/// Enrolls the machine under `dirs` with `document`, as `peppy platform
+/// enroll` would have: a leaf for [`PEER_NAME`] valid from [`ISSUED_AT`] to
+/// [`EXPIRES_AT`] with its key, from an issuer of its own under a CA of the
+/// project, as the platform issues it.
+pub fn write_enrollment(dirs: &PeppyDirs, document: EnrollmentDocument) {
+    let project = TestMachineCa::root("project CA");
+    let issuer = project.issuer("issuer of the peer");
+    let (leaf_pem, key_pem) = issuer.leaf_pem(PEER_NAME, ISSUED_AT, EXPIRES_AT);
     let bundle = EnrollmentBundle {
-        peer_key_pem: secret("key".into()),
+        peer_key_pem: secret(key_pem),
         issued: IssuedMaterial {
             document,
-            certificate: CertificateValidity::parse_pem(leaf_pem).expect("a certificate"),
-            peer_certificate_pem: leaf_pem.into(),
-            trust_anchor_pem: "ca".into(),
-            chain_pem: "chain".into(),
+            certificate: CertificateValidity::parse_pem(&leaf_pem).expect("a certificate"),
+            peer_certificate_pem: leaf_pem,
+            trust_anchor_pem: project.trust_anchor_pem(),
+            chain_pem: issuer.chain_pem(),
             platform_zenoh_config: "{}".into(),
         },
     };
     save(dirs, &bundle).expect("write the enrollment");
-}
-
-/// [`write_enrollment_with_leaf`] with [`leaf`].
-pub fn write_enrollment(dirs: &PeppyDirs, document: EnrollmentDocument) {
-    write_enrollment_with_leaf(dirs, document, &leaf());
 }
 
 /// One peer of a router as the platform lists it.

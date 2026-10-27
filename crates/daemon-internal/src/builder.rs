@@ -56,8 +56,8 @@ pub struct ServeCommandBuilder {
     identity: FederationIdentity,
     /// The certificate of this machine, resolved in
     /// [`with_messaging_router`](Self::with_messaging_router): the one that
-    /// the operator gives in `zenoh.external.machine_certificate`, else the
-    /// platform certificate of the enrollment. `None`: the core node takes no
+    /// the operator gives in `machine_certificate`, else the platform
+    /// certificate of the enrollment. `None`: the core node takes no
     /// call of another machine.
     machine_certificate: Option<MachineCertificate>,
     /// The managed zenoh router of this generation, set by
@@ -205,7 +205,7 @@ impl ServeCommandBuilder {
         })?;
         self.identity = FederationIdentity::of(enrollment.as_ref());
         self.machine_certificate = machine_certificate_of(
-            self.peppy_config.zenoh.machine_certificate(),
+            self.peppy_config.machine_certificate.as_ref(),
             enrollment.as_ref(),
         )?;
 
@@ -447,7 +447,7 @@ fn machine_certificate_of(
         )
         .map_err(|error| {
             Error::ExecutionFailed(format!(
-                "could not read zenoh.external.machine_certificate: {error}"
+                "could not read the machine_certificate of the peppy config: {error}"
             ))
         })?,
         (None, Some(enrollment)) => {
@@ -601,7 +601,6 @@ mod tests {
             zenoh: daemon_config::peppy_config::ZenohConfig::External(
                 daemon_config::peppy_config::ExternalZenohConfig {
                     endpoint: ENDPOINT.to_string(),
-                    machine_certificate: None,
                 },
             ),
             ..PeppyConfig::default()
@@ -744,7 +743,6 @@ mod tests {
             zenoh: daemon_config::peppy_config::ZenohConfig::External(
                 daemon_config::peppy_config::ExternalZenohConfig {
                     endpoint: "tcp/zenoh-router.regression.test:17555".to_string(),
-                    machine_certificate: None,
                 },
             ),
             ..PeppyConfig::default()

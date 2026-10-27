@@ -8,7 +8,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use config::consts::{PEPPY_CONFIG_ENV, PEPPY_HOME_ENV};
 use daemon_config::peppy_config::{
-    ExternalZenohConfig, ManagedZenohConfig, OtlpEndpoint, PeppyConfig, ZenohConfig,
+    ExternalZenohConfig, MachineCertificatePaths, ManagedZenohConfig, OtlpEndpoint, PeppyConfig,
+    ZenohConfig,
 };
 use futures::{Stream, StreamExt};
 use log_export::test_support::{OtlpReceiver, ReceivedRecord};
@@ -232,6 +233,47 @@ fn require_success(output: ExecOutput, operation: &str) -> String {
     output.text
 }
 
+/// Where every daemon container sees the machine certificates of the suite.
+const CONTAINER_MACHINE_CERTIFICATES: &str = "/opt/peppy-machine";
+
+/// The directory of the machine certificates of the suite on the host, which
+/// every daemon container mounts: the CA of the suite, `ca.crt`, and the
+/// certificate and the key of each core node that a test runs.
+struct MachineCertificates {
+    ca: auth::test_support::TestMachineCa,
+    directory: tempfile::TempDir,
+}
+
+fn machine_certificates() -> &'static MachineCertificates {
+    static CERTIFICATES: std::sync::OnceLock<MachineCertificates> = std::sync::OnceLock::new();
+    CERTIFICATES.get_or_init(|| {
+        let directory = tempfile::tempdir().expect("a directory for the machine certificates");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("the containers read the machine certificates");
+        MachineCertificates {
+            ca: auth::test_support::TestMachineCa::root("multi-daemon e2e CA"),
+            directory,
+        }
+    })
+}
+
+/// The machine certificate of `core_node`, signed by the CA of the suite,
+/// as the daemon container of that core node reads it.
+fn machine_certificate_of(core_node: &str) -> MachineCertificatePaths {
+    let certificates = machine_certificates();
+    let files = certificates
+        .ca
+        .write_machine(certificates.directory.path(), core_node);
+    let in_container = |path: &Path| {
+        Path::new(CONTAINER_MACHINE_CERTIFICATES).join(path.file_name().expect("a file name"))
+    };
+    MachineCertificatePaths {
+        trust_anchor: in_container(&files.trust_anchor),
+        certificate: in_container(&files.certificate),
+        private_key: in_container(&files.private_key),
+    }
+}
+
 fn external_daemon_config(
     core_node: &str,
     router_port: u16,
@@ -241,6 +283,7 @@ fn external_daemon_config(
         core_node_name: Some(core_node.to_string()),
         otlp_endpoint: otlp_endpoint
             .map(|url| OtlpEndpoint::parse(url).expect("a test endpoint is an OTLP/HTTP URL")),
+        machine_certificate: Some(machine_certificate_of(core_node)),
         ..PeppyConfig::default()
     };
     config.zenoh = ZenohConfig::External(ExternalZenohConfig {
@@ -253,6 +296,7 @@ fn managed_daemon_config(core_node: &str) -> String {
     let config = PeppyConfig {
         core_node_name: Some(core_node.to_string()),
         zenoh: ZenohConfig::Managed(ManagedZenohConfig::default()),
+        machine_certificate: Some(machine_certificate_of(core_node)),
         ..PeppyConfig::default()
     };
     serde_json::to_string(&config).expect("full daemon config should serialize")
@@ -1087,6 +1131,10 @@ async fn start_daemon(
         read_only_bind(
             &repositories_config,
             &format!("{CONTAINER_PEPPY_HOME}/conf/repositories.json5"),
+        ),
+        read_only_bind(
+            machine_certificates().directory.path(),
+            CONTAINER_MACHINE_CERTIFICATES,
         ),
     ];
     let mut env = vec![

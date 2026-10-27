@@ -260,6 +260,10 @@ Peppy runs the `.sif` image with `apptainer run` and a clean environment: the da
 
 The container executes the `%runscript` section, which runs the compiled binary (Rust) or the Python module entry point.
 
+## What a container node sees of the data root
+
+The data root of Peppy (`~/.peppy`, or `PEPPY_HOME`) holds the keys that the clients of the daemon sign their calls to it with, and the machine certificate (see [The senders of the calls to a daemon](/advanced_guides/call_senders/)). A container node does not see it: the daemon mounts an empty directory over the data root, and over that directory the container sees its own working directory, its own runtime configuration and its own key file, and nothing else of the data root. Apptainer binds the home directory of the user into the container, so a node keeps its caches and its other files there.
+
 ## Mounting host directories
 
 By default, a container is isolated from the host filesystem. Use `mount_paths` to bind-mount host directories into the running container, useful for sharing datasets, persisting output, or exposing device files.
@@ -303,6 +307,10 @@ A missing mount source is created on the host as a directory before the containe
 
 :::note
 A bind path that holds a `:` or a `,`, on the host side or the container side, is refused: Apptainer's `src:dest:opts` spec reads both characters as separators and offers no way to escape them, so such a path cannot be expressed. A path produced by `${parameters:...}` substitution is checked the same way, once the parameter resolves.
+:::
+
+:::note
+A mount whose source is the data root of Peppy, a path in it, or a directory that holds it, such as `~` with the default data root `~/.peppy`, is refused when the launch prepares the mounts of the machine and when the instance starts, with a message that names the mount: a container node does not see the data root.
 :::
 
 :::note

@@ -69,6 +69,16 @@ Every daemon in a federation runs the same Peppy version. A mixed-version
 federation is refused during preflight, with a message naming both versions and
 the machine to upgrade; versions are never negotiated.
 
+Each call to the daemon of another machine carries the proof of its sender:
+the daemon checks it against the CA of the machine certificates, the CA of the
+project for enrolled machines (see [Machines of a
+federation](/advanced_guides/call_senders/#machines-of-a-federation)). A
+federation that the operator forms needs a certificate of a CA of the operator
+on each machine
+([`machine_certificate`](/advanced_guides/daemon_config/#machine_certificate-the-certificate-of-the-machine)).
+The machines keep their wall clocks within 30 seconds of each other: a daemon
+refuses a call whose timestamp is further from its own clock.
+
 Only the coordinator's repositories matter to a launch. The daemon you submit
 to resolves every deployment from its own caches and ships the result to the
 others as pinned content, so `peppy repo refresh` is the submitting machine's
@@ -462,4 +472,4 @@ Launch replaces every participating slice. Join adds each of the copy's instance
 
 ## The fleet of a federated launch
 
-The daemon of the coordinator serves the fleet of the launch, its leases and its halt, in `fleet:v1`, and its copies in `stack_copies:v1` (see [Robot leases and the halt](/advanced_guides/fleet/#federation)). The daemon of each machine tells the coordinator each start and each end of the process of an instance of the launch, so the fleet listing gives the software of each robot on every machine. A daemon target of an instance of the launch, the `fleet` slot of an MCP server on a robot machine included, reaches the daemon of the coordinator. A participant refuses the calls of these interfaces and names the coordinator. `peppy fleet` and `peppy node call` on any machine reach the coordinator through the stack listing of the daemon that they target, so a halt on one machine halts the whole stack.
+The daemon of the coordinator serves the fleet of the launch, its leases and its halt, in `fleet:v1`, and its copies in `stack_copies:v1` (see [Robot leases and the halt](/advanced_guides/fleet/#federation)). It takes the call of an instance of another machine as that instance only when the launch places the instance on that machine. The daemon of each machine tells the coordinator each start and each end of the process of an instance of the launch, so the fleet listing gives the software of each robot on every machine. A daemon target of an instance of the launch, the `fleet` slot of an MCP server on a robot machine included, reaches the daemon of the coordinator. A participant refuses the calls of these interfaces and names the coordinator. `peppy fleet` and `peppy node call` on any machine reach the coordinator through the stack listing of the daemon that they target, so a halt on one machine halts the whole stack.

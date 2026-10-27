@@ -3265,7 +3265,6 @@ mod tests {
             zenoh: daemon_config::peppy_config::ZenohConfig::External(
                 daemon_config::peppy_config::ExternalZenohConfig {
                     endpoint: "tcp/router.example:7447".to_string(),
-                    machine_certificate: None,
                 },
             ),
             ..PeppyConfig::default()

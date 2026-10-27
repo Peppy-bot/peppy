@@ -227,6 +227,17 @@ const OTLP_ENDPOINT_SECTION_SNIPPET: &str = r#"  // OTLP/HTTP URL of an OpenTele
   otlp_endpoint: null,
 "#;
 
+/// The `machine_certificate` entry with its explanatory comment. Spelled out
+/// as an explicit `null` (parsed as `None`, the platform certificate of an
+/// enrolled machine) for the same reason as [`CORE_NODE_NAME_SECTION_SNIPPET`].
+const MACHINE_CERTIFICATE_SECTION_SNIPPET: &str = r#"  // The certificate of this machine from a CA of the operator of its federation,
+  // or null. The daemons of a federation prove their calls to each other with
+  // it; null uses the platform certificate of an enrolled machine. Absolute
+  // paths, example: { trust_anchor: "/etc/peppy/ca.crt", certificate:
+  // "/etc/peppy/machine.crt", private_key: "/etc/peppy/machine.key" }.
+  machine_certificate: null,
+"#;
+
 /// The `otlp_min_severity` entry with its explanatory comment. Spelled out as
 /// an explicit `null` (parsed as `None`, every line) for the same reason as
 /// [`CORE_NODE_NAME_SECTION_SNIPPET`].
@@ -298,6 +309,8 @@ const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
     OTLP_ENDPOINT_SECTION_SNIPPET,
     "\n",
     OTLP_MIN_SEVERITY_SECTION_SNIPPET,
+    "\n",
+    MACHINE_CERTIFICATE_SECTION_SNIPPET,
     "\n",
     RESOURCE_SERVERS_SECTION_SNIPPET,
     "}\n"
@@ -547,16 +560,10 @@ pub struct ManagedZenohConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExternalZenohConfig {
     pub endpoint: String,
-    /// The certificate of this machine from the CA of the operator, which
-    /// proves the calls of this machine to the daemons of the other machines
-    /// of the federation. A daemon with none takes no call of another
-    /// machine.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub machine_certificate: Option<MachineCertificatePaths>,
 }
 
-/// The files of a machine certificate that the operator of an operator-run
-/// router gives, each an absolute path.
+/// The files of a machine certificate that the operator of a federation
+/// gives, each an absolute path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MachineCertificatePaths {
     /// The CA of the operator, PEM: the daemon checks the certificates of the
@@ -644,27 +651,37 @@ fn parse_external_zenoh(
         );
     };
     let endpoint = fields.remove("endpoint");
-    let machine_certificate = fields
-        .remove("machine_certificate")
-        .map(parse_machine_certificate)
-        .transpose()?;
     if let Some(field) = fields.keys().next() {
         return Err(format!("unknown field `zenoh.external.{field}`"));
     }
     match endpoint {
-        Some(serde_json::Value::String(endpoint)) => Ok(ExternalZenohConfig {
-            endpoint,
-            machine_certificate,
-        }),
+        Some(serde_json::Value::String(endpoint)) => Ok(ExternalZenohConfig { endpoint }),
         Some(_) => Err("zenoh.external.endpoint must be a string".to_string()),
         None => Err("zenoh.external.endpoint is required".to_string()),
+    }
+}
+
+/// Deserializes `machine_certificate`: `null`, or the block of its three
+/// absolute paths. A relative, missing or unknown field fails the load with
+/// its name.
+fn deserialize_machine_certificate<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<MachineCertificatePaths>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Null => Ok(None),
+        value => parse_machine_certificate(value)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
     }
 }
 
 fn parse_machine_certificate(
     value: serde_json::Value,
 ) -> std::result::Result<MachineCertificatePaths, String> {
-    const BLOCK: &str = "zenoh.external.machine_certificate";
+    const BLOCK: &str = "machine_certificate";
     let serde_json::Value::Object(mut fields) = value else {
         return Err(format!(
             "{BLOCK} must be a block like {{ trust_anchor: \"/etc/peppy/ca.crt\", certificate: \
@@ -718,14 +735,6 @@ impl ZenohConfig {
         match self {
             Self::Managed(_) => None,
             Self::External(config) => Some(&config.endpoint),
-        }
-    }
-
-    /// The machine certificate that the operator gives in external mode.
-    pub fn machine_certificate(&self) -> Option<&MachineCertificatePaths> {
-        match self {
-            Self::Managed(_) => None,
-            Self::External(config) => config.machine_certificate.as_ref(),
         }
     }
 
@@ -836,6 +845,14 @@ pub struct PeppyConfig {
     /// explicit `null`) exports every line.
     #[serde(default, deserialize_with = "severity::deserialize_otlp_min_severity")]
     pub otlp_min_severity: Option<OtlpMinSeverity>,
+    /// The certificate of this machine from a CA of the operator of its
+    /// federation, which proves the calls of this machine to the daemons of
+    /// the other machines and gives the CA that the daemon checks their calls
+    /// against; `None` (the template's explicit `null`) uses the platform
+    /// certificate of an enrolled machine, and gives a machine that is not
+    /// enrolled no certificate.
+    #[serde(default, deserialize_with = "deserialize_machine_certificate")]
+    pub machine_certificate: Option<MachineCertificatePaths>,
     #[serde(default)]
     pub resource_servers: ResourceServers,
 }
@@ -1201,7 +1218,6 @@ mod tests {
         let expected = PeppyConfig {
             zenoh: ZenohConfig::External(ExternalZenohConfig {
                 endpoint: "tcp/router.internal:7448".to_string(),
-                machine_certificate: None,
             }),
             ..PeppyConfig::default()
         };
@@ -1452,7 +1468,6 @@ mod tests {
     fn external_accessors_disable_managed_only_behavior() {
         let zenoh = ZenohConfig::External(ExternalZenohConfig {
             endpoint: "tcp/router.internal:7448".to_string(),
-            machine_certificate: None,
         });
 
         assert!(!zenoh.gossip());
@@ -1488,33 +1503,39 @@ mod tests {
             cfg.zenoh,
             ZenohConfig::External(ExternalZenohConfig {
                 endpoint: endpoint.to_string(),
-                machine_certificate: None,
             })
         );
         assert_eq!(cfg.zenoh.external_endpoint(), Some(endpoint));
     }
 
     #[test]
-    fn an_external_block_carries_the_machine_certificate_of_the_operator() {
-        let (_tmp, peppy_dirs, _) = dirs_with_config(
-            r#"{ zenoh: { external: {
-                endpoint: "tcp/router.internal:7448",
-                machine_certificate: {
-                    trust_anchor: "/etc/peppy/ca.crt",
-                    certificate: "/etc/peppy/machine.crt",
-                    private_key: "/etc/peppy/machine.key",
-                },
-            } } }"#,
-        );
-        let config = load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(
-            config.zenoh.machine_certificate(),
-            Some(&MachineCertificatePaths {
-                trust_anchor: "/etc/peppy/ca.crt".into(),
-                certificate: "/etc/peppy/machine.crt".into(),
-                private_key: "/etc/peppy/machine.key".into(),
-            })
-        );
+    fn the_machine_certificate_of_the_operator_parses_in_every_router_mode() {
+        for zenoh in [
+            "",
+            r#"zenoh: { external: { endpoint: "tcp/router.internal:7448" } },"#,
+        ] {
+            let (_tmp, peppy_dirs, _) = dirs_with_config(&format!(
+                r#"{{ {zenoh}
+                    machine_certificate: {{
+                        trust_anchor: "/etc/peppy/ca.crt",
+                        certificate: "/etc/peppy/machine.crt",
+                        private_key: "/etc/peppy/machine.key",
+                    }},
+                }}"#
+            ));
+            let config = load_or_create(&peppy_dirs).unwrap();
+            assert_eq!(
+                config.machine_certificate,
+                Some(MachineCertificatePaths {
+                    trust_anchor: "/etc/peppy/ca.crt".into(),
+                    certificate: "/etc/peppy/machine.crt".into(),
+                    private_key: "/etc/peppy/machine.key".into(),
+                }),
+                "{zenoh}"
+            );
+        }
+        let (_tmp, peppy_dirs, _) = dirs_with_config("{ machine_certificate: null }");
+        assert_eq!(load_or_create(&peppy_dirs).unwrap().machine_certificate, None);
     }
 
     #[test]
@@ -1522,21 +1543,19 @@ mod tests {
         for (block, expected_message) in [
             (
                 r#"{ trust_anchor: "ca.crt", certificate: "/m.crt", private_key: "/m.key" }"#,
-                "trust_anchor must be an absolute path, not `ca.crt`",
+                "machine_certificate.trust_anchor must be an absolute path, not `ca.crt`",
             ),
             (
                 r#"{ trust_anchor: "/ca.crt", private_key: "/m.key" }"#,
-                "certificate is required",
+                "machine_certificate.certificate is required",
             ),
             (
                 r#"{ trust_anchor: "/ca.crt", certificate: "/m.crt", private_key: "/m.key", key: "/k" }"#,
-                "unknown field `zenoh.external.machine_certificate.key`",
+                "unknown field `machine_certificate.key`",
             ),
             ("\"/m.crt\"", "machine_certificate must be a block"),
         ] {
-            let content = format!(
-                r#"{{ zenoh: {{ external: {{ endpoint: "tcp/router.internal:7448", machine_certificate: {block} }} }} }}"#
-            );
+            let content = format!("{{ machine_certificate: {block} }}");
             let (_tmp, peppy_dirs, _) = dirs_with_config(&content);
             let error = load_or_create(&peppy_dirs).unwrap_err().to_string();
             assert!(error.contains(expected_message), "{block}: {error}");
@@ -2267,6 +2286,11 @@ mod tests {
             ),
             otlp_endpoint: Some(OtlpEndpoint::parse("https://otlp.example.com/otlp").unwrap()),
             otlp_min_severity: Some(OtlpMinSeverity::Info),
+            machine_certificate: Some(MachineCertificatePaths {
+                trust_anchor: "/etc/peppy/ca.crt".into(),
+                certificate: "/etc/peppy/machine.crt".into(),
+                private_key: "/etc/peppy/machine.key".into(),
+            }),
             resource_servers: ResourceServers {
                 api: "http://localhost:9000".to_string(),
             },

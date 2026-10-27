@@ -24,7 +24,8 @@ use std::collections::HashMap;
 use super::{
     API_FIELD_SNIPPET, CORE_NODE_NAME_SECTION_SNIPPET, DAEMON_GRACE_FIELD_SNIPPET,
     HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET, LIFECYCLE_SECTION_SNIPPET,
-    LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET, MANAGED_SECTION_SNIPPET, OTLP_ENDPOINT_SECTION_SNIPPET,
+    LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET, MACHINE_CERTIFICATE_SECTION_SNIPPET, MANAGED_SECTION_SNIPPET,
+    OTLP_ENDPOINT_SECTION_SNIPPET,
     OTLP_MIN_SEVERITY_SECTION_SNIPPET, PYPI_MIRROR_SECTION_SNIPPET,
     RESOURCE_SERVERS_SECTION_SNIPPET, SHUTDOWN_GRACE_FIELD_SNIPPET, STANDARD_BUFFER_FIELD_SNIPPET,
     SUBSCRIBER_BUFFERS_SECTION_SNIPPET, ZENOH_SECTION_SNIPPET,
@@ -133,6 +134,12 @@ const SECTIONS: &[EntrySpec] = &[
     EntrySpec {
         key: "otlp_min_severity",
         snippet: OTLP_MIN_SEVERITY_SECTION_SNIPPET,
+        alternatives: &[],
+        children: &[],
+    },
+    EntrySpec {
+        key: "machine_certificate",
+        snippet: MACHINE_CERTIFICATE_SECTION_SNIPPET,
         alternatives: &[],
         children: &[],
     },
@@ -809,7 +816,6 @@ mod tests {
         let external = serde_json::to_value(super::super::ZenohConfig::External(
             super::super::ExternalZenohConfig {
                 endpoint: "tcp/router.internal:7448".to_string(),
-                machine_certificate: None,
             },
         ))
         .expect("external zenoh config must serialize");
@@ -839,6 +845,7 @@ mod tests {
                 "pypi_mirror",
                 "otlp_endpoint",
                 "otlp_min_severity",
+                "machine_certificate",
                 "resource_servers",
                 "zenoh.managed.subscriber_buffers",
                 "lifecycle.shutdown_grace_secs",
@@ -898,7 +905,6 @@ mod tests {
         let fully_spelled = serde_json5::to_string(&PeppyConfig {
             zenoh: super::super::ZenohConfig::External(super::super::ExternalZenohConfig {
                 endpoint: "tcp/router.internal:7448".to_string(),
-                machine_certificate: None,
             }),
             ..PeppyConfig::default()
         })
@@ -1021,7 +1027,7 @@ mod tests {
         // byte of the user's file untouched.
         let close = content.rfind('}').unwrap();
         let expected = format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}{}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}{}",
             &content[..close],
             super::super::CORE_NODE_NAME_SECTION_SNIPPET,
             super::super::ZENOH_SECTION_SNIPPET,
@@ -1029,6 +1035,7 @@ mod tests {
             PYPI_MIRROR_SECTION_SNIPPET,
             OTLP_ENDPOINT_SECTION_SNIPPET,
             OTLP_MIN_SEVERITY_SECTION_SNIPPET,
+            super::super::MACHINE_CERTIFICATE_SECTION_SNIPPET,
             super::super::RESOURCE_SERVERS_SECTION_SNIPPET,
             &content[close..]
         );

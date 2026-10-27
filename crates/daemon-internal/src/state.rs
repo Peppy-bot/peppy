@@ -254,6 +254,7 @@ mod tests {
                 "shutdown_grace_secs": 5,
                 "namespace": "local",
                 "router_id": null,
+                "command_line_key": "/peppy/credentials/command_line.key",
                 "written_at_ms": 1234
             }"#,
         )

@@ -18,7 +18,7 @@ The daemon serves the fleet in the daemon interface `fleet:v1`, a document in th
 
 The leases and the halt bind only the clients that ask the daemon before they move a robot. They prevent conflicts between clients. They are not a safety function: the emergency stop of each robot stays in its certified layers.
 
-The daemon knows a client by the instance id and the machine that its calls give, and checks the scope of that instance. The messaging layer does not authenticate this identity: the scopes and the raw-call rules below bind the nodes that call as themselves, as the generated code, `peppylib` and the codec API do, and they do not stop a process that gives the identity of another client.
+The daemon knows a client by the sender that its call proves: each call to a daemon carries the signature of its sender, and the daemon verifies it before it reads the sender (see [The senders of the calls to a daemon](/advanced_guides/call_senders/)). A node cannot call under the id of the command line or of a lease holder. The scopes and the raw-call rules below read the sender that the call proves.
 
 ## Members that move a robot
 
@@ -86,10 +86,10 @@ Each change counts one **revision** of the fleet, which each feedback gives, the
 The daemon checks each call of `fleet:v1` against its sender:
 
 - The command line calls every member: it has no scope.
-- An instance of the launch calls the members that the scope of its `fleet` target gives (see [Scoping a daemon target](/advanced_guides/core_node_functions/#scoping-a-daemon-target)).
+- An instance of the launch calls the members that the scope of its `fleet` target gives (see [Scoping a daemon target](/advanced_guides/core_node_functions/#scoping-a-daemon-target)). An instance of another machine has its scope only when the launch places it on that machine.
 - `check_move` answers every sender, and `changes` answers each MCP server of peppy.
 
-A node of the stack reaches the daemon only through its daemon targets. The daemon refuses each of its raw actions, such as a launch, a join, a removal, a build or a run of a node, and each of its raw services that changes the stack, a node, a repository or a federated launch, such as a reset or the stop of a node, from an instance of the stack, with the failure kind `rejected`. An instance of the stack is an instance that the stack of the daemon runs, or an instance of the launch that the daemon coordinates. A node keeps the raw services that read or that it needs to run: the clock, the datastore, health, info, the stack listing, the node information, the documents of an instance and the repository listing.
+A node reaches the daemon only through its daemon targets. The daemon refuses each of its raw actions, such as a launch, a join, a removal, a build or a run of a node, and each of its raw services that changes the stack, a node, a repository or a federated launch, such as a reset or the stop of a node, from an instance, of its machine or of another one, with the failure kind `rejected`. A node keeps the raw services that read or that it needs to run: the clock, the datastore, health, info, the stack listing, the node information, the documents of an instance and the repository listing. The command line and the daemons call every raw service.
 
 ## Federation
 
