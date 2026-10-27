@@ -4,6 +4,7 @@
 //! is peppy-specific. The zenoh-shaped wire format that encodes it lives in
 //! `wire::zenoh_format`.
 
+use crate::call_proof::CallSigning;
 use config::runtime::ProducerRef;
 use std::fmt;
 
@@ -736,6 +737,8 @@ fn producer_slots(
 /// unrepresentable at this boundary.
 /// The link_id wire slot is always emitted as `*`: producers advertise under
 /// the reserved `_` segment, and Zenoh's matcher unifies the two.
+/// `signing` says how the sender signs the call, when it signs it (see
+/// [`crate::call_proof`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceWireSender {
     pub(crate) bound_core_node: Segment,
@@ -745,6 +748,7 @@ pub struct ServiceWireSender {
     pub(crate) to_target: SenderTarget,
     pub(crate) to_service_name: Segment,
     pub(crate) kind: ServiceKind,
+    pub(crate) signing: Option<CallSigning>,
 }
 
 impl ServiceWireSender {
@@ -767,7 +771,34 @@ impl ServiceWireSender {
             to_target,
             to_service_name: Segment::try_from(to_service_name)?,
             kind,
+            signing: None,
         })
+    }
+
+    /// The sender of a call that `signing` signs.
+    pub fn signed(mut self, signing: CallSigning) -> Self {
+        self.signing = Some(signing);
+        self
+    }
+
+    /// How the sender signs the call, when it signs it.
+    pub fn signing(&self) -> Option<&CallSigning> {
+        self.signing.as_ref()
+    }
+
+    /// The core node that the sender calls as.
+    pub fn bound_core_node(&self) -> &str {
+        &self.bound_core_node
+    }
+
+    /// The target of the call: the identity that its producer serves.
+    pub fn to_target(&self) -> &SenderTarget {
+        &self.to_target
+    }
+
+    /// The core node of the producer, when the sender pins it.
+    pub fn target_core_node(&self) -> Option<&str> {
+        self.target_core_node.as_deref()
     }
 
     /// Scopes the selector's target core_node slot to `target_core_node`
@@ -917,6 +948,7 @@ impl ActionWireSender {
             to_target: self.to_target.clone(),
             to_service_name: self.to_action_name.clone(),
             kind,
+            signing: None,
         }
     }
 }

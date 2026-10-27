@@ -2,6 +2,7 @@ use super::CancellationToken;
 
 use crate::error::Result;
 use crate::{MessengerHandle, SessionScope};
+use pmi::ClientCredential;
 
 use futures::FutureExt;
 use std::collections::BTreeMap;
@@ -54,6 +55,15 @@ impl NodeRunner {
                 .reconnecting()
                 .scope(SessionScope::Discovery(processor.discovery()))
                 .await?;
+        // The daemon refuses an unsigned call, so an instance that a daemon
+        // started signs each of its calls to a daemon with the key that the
+        // daemon wrote for it.
+        let messenger = match processor.credential() {
+            Some(path) => {
+                messenger.signing_calls_with(ClientCredential::read(path)?.into_signer())
+            }
+            None => messenger,
+        };
         Ok(Self::over_messenger(
             messenger,
             processor,

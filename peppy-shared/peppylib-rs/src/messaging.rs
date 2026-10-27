@@ -5,6 +5,7 @@ mod tests;
 
 mod actions;
 mod bound_set;
+mod call_check;
 mod discovery;
 mod non_empty;
 mod observation;
@@ -28,6 +29,7 @@ pub use actions::{
     wrap_result_outcome,
 };
 pub use bound_set::{BoundSetState, NonEmptyMembers, NonEmptyProducers};
+pub use call_check::{CallCheck, CallerKind, ReceivedCall, VerifiedCaller};
 pub use non_empty::NonEmpty;
 pub use observation::{
     NonEmptyObservedSources, ObservationState, ObservedMemberState, ObservedSource,
@@ -76,7 +78,8 @@ use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::{QoSProfile, TopicRetention};
 use pmi::{
-    ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
+    ActionWireReceiver, CallSigner, CallSigning, Messenger, MessengerAdapter, MessengerBackend,
+    MessengerPublisher,
     Namespace, PresenceScope, PublisherQoS, ReplyStream, Segment, ServiceQueryKind, ServiceReply,
     ServiceReplyKind, ServiceWireReceiver, ServiceWireSender, Subscription as PmiSubscription,
     TopicWireReceiver, TopicWireSender, ZenohAdapter, ZenohNetProtocol,
@@ -135,6 +138,11 @@ pub(crate) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
     client_presence: Arc<ClientPresenceTokens>,
+    /// Signs each user request that this handle sends to a daemon.
+    call_signer: Option<Arc<CallSigner>>,
+    /// Verifies the sender of each call that an endpoint of this handle
+    /// receives, before its handler reads it.
+    call_check: Option<Arc<dyn CallCheck>>,
 }
 
 /// The liveliness tokens of the identities a handle sends goals as, one per
@@ -474,7 +482,44 @@ impl MessengerHandle {
         Self {
             messenger,
             client_presence: Arc::new(ClientPresenceTokens::new()),
+            call_signer: None,
+            call_check: None,
         }
+    }
+
+    /// This handle, signing with `signer` each user request that it sends to
+    /// a daemon: a raw service or action of a daemon, or a member of a daemon
+    /// interface. The daemon refuses such a call without a signature.
+    pub fn signing_calls_with(mut self, signer: CallSigner) -> Self {
+        self.call_signer = Some(Arc::new(signer));
+        self
+    }
+
+    /// This handle, running `check` on each call that an endpoint of the
+    /// handle receives, before its handler reads it. A daemon gives its
+    /// session the check of its senders.
+    pub fn checking_calls_with(mut self, check: Arc<dyn CallCheck>) -> Self {
+        self.call_check = Some(check);
+        self
+    }
+
+    /// `sender`, signed by this handle, when the call is a user request to a
+    /// daemon and the handle has a signer.
+    fn signed_for_daemon(
+        &self,
+        sender: &ServiceWireSender,
+        kind: ServiceQueryKind,
+    ) -> Option<ServiceWireSender> {
+        let signer = self.call_signer.as_ref()?;
+        if kind != ServiceQueryKind::UserRequest {
+            return None;
+        }
+        let receiver = call_check::daemon_receiver(sender)?;
+        Some(
+            sender
+                .clone()
+                .signed(CallSigning::new(Arc::clone(signer), receiver)),
+        )
     }
 
     /// The presence of this handle as the sender `(core_node, instance_id)`:
@@ -675,7 +720,11 @@ impl MessengerHandle {
             let messenger = self.messenger.lock().await;
             messenger.listen_service(recv).await?
         };
-        Ok(ServiceEndpoint::new(Arc::clone(&self.messenger), queryable))
+        Ok(ServiceEndpoint::new(
+            Arc::clone(&self.messenger),
+            queryable,
+            self.call_check.clone(),
+        ))
     }
 
     pub(crate) async fn poll_service(
@@ -686,6 +735,8 @@ impl MessengerHandle {
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
         let response_timeout: Option<Duration> = response_timeout.into();
+        let signed = self.signed_for_daemon(sender, kind);
+        let sender = signed.as_ref().unwrap_or(sender);
 
         // Re-issue the query (cheap `Bytes` clone per attempt) on a cold-start
         // miss; see the retry rationale below.

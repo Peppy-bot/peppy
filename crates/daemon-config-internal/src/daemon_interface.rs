@@ -14,6 +14,7 @@ mod stack_copies;
 
 use crate::internal::launcher::{JoinableNodes, PreparedLauncher, UnitSelection, VacantReason};
 use config::node::{DaemonTargetDependency, DependsOn};
+use core_node_api::names;
 use peppy_codec::contract::{PeppyContract, PeppyContractParser};
 use peppy_mcp_catalog::{DaemonInterfaceRef, ExposureBundle, McpExposure, ResolvedInterface};
 use std::sync::LazyLock;
@@ -51,16 +52,21 @@ impl DaemonInterface {
 
     /// The name a target's `daemon` reference names the interface by.
     pub fn name(self) -> &'static str {
-        match self {
-            Self::StackCopies => "stack_copies",
-            Self::Fleet => "fleet",
-        }
+        self.name_and_tag().0
     }
 
     /// The one tag of the interface this peppy serves.
     pub fn tag(self) -> &'static str {
+        self.name_and_tag().1
+    }
+
+    /// The name and the tag of the interface, as the shared names of the
+    /// daemon interfaces give them: peppylib signs the calls to them by these
+    /// names.
+    fn name_and_tag(self) -> (&'static str, &'static str) {
         match self {
-            Self::StackCopies | Self::Fleet => "v1",
+            Self::StackCopies => names::STACK_COPIES_INTERFACE,
+            Self::Fleet => names::FLEET_INTERFACE,
         }
     }
 

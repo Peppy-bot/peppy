@@ -27,6 +27,13 @@ tempfile = "3"
 # router config. Same version the rest of the workspace already resolves
 # (peppylib-rs, peppylib-py), so this adds no new crate to the tree.
 rand = "0.10"
+# The Ed25519 keys and signatures of the proofs of the calls to a daemon
+# (`call_proof`), and their random nonces. zenoh's TLS links already build
+# ring 0.17, so this adds no new crate to the tree.
+ring = "0.17"
+# The text of a key file of a client (`call_proof::ClientCredential`).
+base64 = "0.22"
+thiserror = "2.0"
 
 # Optional deps
 # Exact-pinned; peppylib pins the same `=1.10.1` in its [dev-dependencies] so

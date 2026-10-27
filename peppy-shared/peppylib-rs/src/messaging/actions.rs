@@ -1,6 +1,7 @@
 use super::discovery::{budget_left_after_discovery, discover_producer};
 use super::generate_short_id;
 use super::topics::Subscription;
+use super::call_check::VerifiedCaller;
 use super::{MessengerHandle, ServiceEndpoint, ServiceResponder, TopicPublisher};
 use crate::error::{Error, Result};
 use crate::messaging::ProducerRef;
@@ -1541,6 +1542,10 @@ impl CancelCause {
 /// and then work on it without holding that lock across `.await`.
 #[derive(Clone)]
 struct GoalSlot {
+    /// The caller that sent the goal, as the check of the endpoint verified
+    /// it; `None` on an endpoint with no check. Only that caller cancels the
+    /// goal (see [`may_cancel`]).
+    owner: Option<VerifiedCaller>,
     cancel: CancellationToken,
     /// The cause of the first cancel signal; later ones keep it.
     cancel_cause: Arc<OnceLock<CancelCause>>,
@@ -1562,8 +1567,9 @@ struct LinkedTokens {
 }
 
 impl GoalSlot {
-    fn new() -> Self {
+    fn new(owner: Option<VerifiedCaller>) -> Self {
         Self {
+            owner,
             cancel: CancellationToken::new(),
             cancel_cause: Arc::new(OnceLock::new()),
             linked: Arc::new(StdMutex::new(LinkedTokens::default())),
@@ -1663,13 +1669,34 @@ const PENDING_WAITERS_CAP: usize = 1024;
 /// server-side responder retention for polls that are never adopted.
 const PENDING_WAITER_MAX_PARK: Duration = Duration::from_secs(30);
 
-/// `goal_id` → the instant a cancel request for a goal that is not registered
-/// yet stops being remembered. A client whose goal request got no answer it
-/// could read cancels the goal at once (see [`ActionMessenger::send_goal`]);
-/// a provider that admits that goal later finds the cancel here at accept.
+/// `(goal_id, canceller)` → the instant a cancel request for a goal that is
+/// not registered yet stops being remembered. A client whose goal request got
+/// no answer it could read cancels the goal at once (see
+/// [`ActionMessenger::send_goal`]); a provider that admits that goal later
+/// finds the cancel here at accept, and applies it when its canceller is the
+/// sender of the goal. Keyed by the canceller too, so the cancel of another
+/// client never takes the place of the cancel of the sender.
 /// Lock discipline as for [`PendingWaiters`]: the registry may be acquired
 /// while holding it, never the reverse.
-type EarlyCancels = Arc<StdMutex<HashMap<String, Instant>>>;
+type EarlyCancels = Arc<StdMutex<HashMap<(String, Option<VerifiedCaller>), Instant>>>;
+
+/// Whether `canceller` may cancel the goal of `slot`: only the sender of the
+/// goal, on an endpoint that verifies its callers. On an endpoint with no
+/// check both are `None`, so every caller may.
+fn may_cancel(slot: &GoalSlot, canceller: &Option<VerifiedCaller>) -> bool {
+    slot.owner == *canceller
+}
+
+/// The refusal of the cancel of `goal_id` by a client that did not send it.
+fn cancel_of_another_client(goal_id: &str) -> Failure {
+    Failure::new(
+        PeppyFailureKind::Rejected,
+        format!(
+            "the goal `{goal_id}` is a goal of another client: a client cancels its own goals \
+             alone"
+        ),
+    )
+}
 
 /// Upper bound on the remembered early cancels, guarding against a flood of
 /// cancels for goal ids that never arrive. Past it, a cancel for an unknown
@@ -1682,24 +1709,38 @@ const EARLY_CANCELS_CAP: usize = 1024;
 /// finds it.
 fn remember_early_cancel(
     goal_id: &str,
+    canceller: &Option<VerifiedCaller>,
     registry: &GoalRegistry,
     early_cancels: &EarlyCancels,
-) -> CancelState {
+) -> std::result::Result<CancelState, Failure> {
     let mut early = early_cancels.lock().unwrap();
     if let Some(slot) = registry.lock().unwrap().get(goal_id) {
-        if slot.is_terminal() {
-            return CancelState::AlreadyTerminal;
-        }
-        slot.signal_cancel(CancelCause::Caller);
-        return CancelState::Signalled;
+        return cancel_slot(goal_id, slot, canceller);
     }
     if early.len() < EARLY_CANCELS_CAP {
         early.insert(
-            goal_id.to_string(),
+            (goal_id.to_string(), canceller.clone()),
             Instant::now() + PENDING_WAITER_MAX_PARK,
         );
     }
-    CancelState::Unknown
+    Ok(CancelState::Unknown)
+}
+
+/// Cancels the goal of `slot` for `canceller`, or refuses the cancel of a
+/// client that did not send the goal.
+fn cancel_slot(
+    goal_id: &str,
+    slot: &GoalSlot,
+    canceller: &Option<VerifiedCaller>,
+) -> std::result::Result<CancelState, Failure> {
+    if !may_cancel(slot, canceller) {
+        return Err(cancel_of_another_client(goal_id));
+    }
+    if slot.is_terminal() {
+        return Ok(CancelState::AlreadyTerminal);
+    }
+    slot.signal_cancel(CancelCause::Caller);
+    Ok(CancelState::Signalled)
 }
 
 /// How often the retention sweeper runs. Independent of the per-goal retention
@@ -1888,16 +1929,24 @@ enum GoalRequestService {
     Result,
 }
 
+/// One request of the cancel or the result service of an action: the goal
+/// it names, the responder of the request, and the caller that the check of
+/// the endpoint verified (`None` on an endpoint with no check).
+struct GoalRequest {
+    goal_id: String,
+    responder: ServiceResponder,
+    verified_caller: Option<VerifiedCaller>,
+}
+
 /// Waits for the next request on `service` that carries a `goal_id`, and
-/// returns that `goal_id` with the request's responder. A request without a
-/// goal envelope is answered with an error and skipped. `None` ends the
-/// calling loop: `stop` fired, the request stream closed, or receiving failed
-/// (logged).
+/// returns it. A request without a goal envelope is answered with an error
+/// and skipped. `None` ends the calling loop: `stop` fired, the request
+/// stream closed, or receiving failed (logged).
 async fn next_goal_request(
     service: &mut ServiceEndpoint,
     stop: &CancellationToken,
     kind: GoalRequestService,
-) -> Option<(String, ServiceResponder)> {
+) -> Option<GoalRequest> {
     loop {
         let next = tokio::select! {
             _ = stop.cancelled() => return None,
@@ -1925,7 +1974,11 @@ async fn next_goal_request(
                 .await;
             continue;
         };
-        return Some((goal_id, responder));
+        return Some(GoalRequest {
+            goal_id,
+            responder,
+            verified_caller: context.verified_caller().cloned(),
+        });
     }
 }
 
@@ -1943,20 +1996,29 @@ async fn run_cancel_loop(
     early_cancels: EarlyCancels,
     stop: CancellationToken,
 ) {
-    while let Some((goal_id, responder)) =
-        next_goal_request(&mut cancel_service, &stop, GoalRequestService::Cancel).await
+    while let Some(GoalRequest {
+        goal_id,
+        responder,
+        verified_caller,
+    }) = next_goal_request(&mut cancel_service, &stop, GoalRequestService::Cancel).await
     {
         // Clone the token + terminal flag out under the lock, then fire + respond
         // without holding the registry lock across the network reply.
         let found = registry.lock().unwrap().get(&goal_id).cloned();
         let state = match found {
-            Some(slot) if !slot.is_terminal() => {
-                slot.signal_cancel(CancelCause::Caller);
-                CancelState::Signalled
+            Some(slot) => cancel_slot(&goal_id, &slot, &verified_caller),
+            None if tombstones.lock().unwrap().contains(&goal_id) => {
+                Ok(CancelState::AlreadyTerminal)
             }
-            Some(_) => CancelState::AlreadyTerminal,
-            None if tombstones.lock().unwrap().contains(&goal_id) => CancelState::AlreadyTerminal,
-            None => remember_early_cancel(&goal_id, &registry, &early_cancels),
+            None => remember_early_cancel(&goal_id, &verified_caller, &registry, &early_cancels),
+        };
+        let state = match state {
+            Ok(state) => state,
+            Err(refusal) => {
+                warn!(%goal_id, %refusal, "refusing the cancel of a goal of another client");
+                let _ = responder.respond_failure(refusal).await;
+                continue;
+            }
         };
 
         match encode_cancel_ack(state) {
@@ -2064,8 +2126,9 @@ async fn run_result_loop(
     tombstones: Tombstones,
     stop: CancellationToken,
 ) {
-    while let Some((goal_id, responder)) =
-        next_goal_request(&mut result_service, &stop, GoalRequestService::Result).await
+    while let Some(GoalRequest {
+        goal_id, responder, ..
+    }) = next_goal_request(&mut result_service, &stop, GoalRequestService::Result).await
     {
         let route = route_result_poll(
             &goal_id,
@@ -2354,9 +2417,14 @@ impl ConcurrentAction {
             } else {
                 None
             };
-            return Ok(Some(
-                self.pending_goal(request, sender, responder, feedback),
-            ));
+            let verified_caller = context.verified_caller().cloned();
+            return Ok(Some(self.pending_goal(
+                request,
+                sender,
+                verified_caller,
+                responder,
+                feedback,
+            )));
         }
     }
 
@@ -2364,12 +2432,14 @@ impl ConcurrentAction {
         &self,
         request: GoalRequestEnvelope,
         sender: ClientPresence,
+        verified_caller: Option<VerifiedCaller>,
         responder: ServiceResponder,
         feedback: Option<ActionFeedbackPublisher>,
     ) -> PendingGoal {
         PendingGoal {
             goal_id: request.goal_id,
             sender,
+            verified_caller,
             request_bytes: request.user_payload,
             responder,
             feedback,
@@ -2479,6 +2549,9 @@ impl EngineShared {
 pub struct PendingGoal {
     goal_id: String,
     sender: ClientPresence,
+    /// The caller that the check of the goal endpoint verified; `None` on an
+    /// endpoint with no check.
+    verified_caller: Option<VerifiedCaller>,
     request_bytes: Bytes,
     responder: ServiceResponder,
     feedback: Option<ActionFeedbackPublisher>,
@@ -2506,6 +2579,13 @@ impl PendingGoal {
         &self.sender
     }
 
+    /// The caller that sent this goal, as the check of the endpoint verified
+    /// it: the sender that the goal request proves. `None` on an endpoint
+    /// whose session has no check.
+    pub fn verified_caller(&self) -> Option<&VerifiedCaller> {
+        self.verified_caller.as_ref()
+    }
+
     /// The envelope-stripped goal request payload, ready to decode.
     pub fn request_bytes(&self) -> &[u8] {
         self.request_bytes.as_ref()
@@ -2519,7 +2599,7 @@ impl PendingGoal {
     /// `fire_goal` returns always finds the goal.
     pub async fn accept(self, response: Payload) -> Result<GoalContext> {
         let response = wrap_goal_accepted(response.as_ref());
-        let slot = GoalSlot::new();
+        let slot = GoalSlot::new(self.verified_caller.clone());
         self.engine
             .registry
             .lock()
@@ -2535,7 +2615,7 @@ impl PendingGoal {
             .early_cancels
             .lock()
             .unwrap()
-            .remove(&self.goal_id)
+            .remove(&(self.goal_id.clone(), self.verified_caller.clone()))
             .is_some()
         {
             slot.signal_cancel(CancelCause::Caller);
@@ -3162,7 +3242,7 @@ mod envelope_tests {
                 evict_at,
             })),
             terminal: Arc::new(AtomicBool::new(true)),
-            ..GoalSlot::new()
+            ..GoalSlot::new(None)
         }
     }
 
@@ -3251,7 +3331,7 @@ mod envelope_tests {
         registry
             .lock()
             .unwrap()
-            .insert("live".to_string(), GoalSlot::new());
+            .insert("live".to_string(), GoalSlot::new(None));
         registry.lock().unwrap().insert(
             "ended".to_string(),
             terminal_slot(Instant::now() + Duration::from_secs(10)),

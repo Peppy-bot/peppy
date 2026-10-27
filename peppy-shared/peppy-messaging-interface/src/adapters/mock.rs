@@ -118,6 +118,10 @@ type MockDeclaredTopics = Arc<Mutex<DeclaredTopics<RetainedMessages>>>;
 /// whose declared keyexpr intersects the caller's selector. `attachment`
 /// mirrors the Zenoh query attachment, which carries the request kind, so
 /// the in-process matcher follows the same protocol as the live transport.
+/// The namespace that the proof of a signed call covers on the mock, which
+/// has no session namespace.
+const MOCK_NAMESPACE: &str = "";
+
 pub(crate) struct MockQuery {
     selector_keyexpr: String,
     payload: Payload,
@@ -312,7 +316,13 @@ impl MessengerBackend for MockAdapter {
         }
 
         let selector = ZenohWireFormat::service_get_selector(sender);
-        let attachment = ZenohWireFormat::service_get_selector_attachment(kind);
+        let attachment = ZenohWireFormat::service_get_selector_attachment(
+            sender,
+            MOCK_NAMESPACE,
+            &selector,
+            kind,
+            payload.as_bytes().as_ref(),
+        );
         let timeout = service_query_lifetime(timeout);
 
         let (reply_tx, mut reply_rx) = mpsc::channel::<ServiceReply>(
@@ -976,6 +986,9 @@ async fn handle_mock_queryable(
             link_id: chosen_link_id.to_string(),
             caller_core: parsed.caller_core,
             caller_inst: parsed.caller_inst,
+            key_expr: mock_query.selector_keyexpr,
+            namespace: MOCK_NAMESPACE.to_owned(),
+            proof: parsed.proof,
             token,
         };
 
