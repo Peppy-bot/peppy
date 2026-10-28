@@ -24,6 +24,15 @@ reports it:
   and holds a "Merge" box, and a "Re-run the out-of-date CI" box while a hub
   run of the set is out of date.
 
+A pull request of the set that merged before the rest of it, by its own merge
+button or by a merge of the set that stopped part way, stays in the set as
+merged: the dashboard lists it with the state `merged`, and the bot keeps its
+dashboard in step with the others. A merged pull request from the branch is
+part of the set when it was open at the same time as an open pull request of
+the set, or as another merged pull request that is part of the set. One that
+merged before every pull request of the set opened belongs to an earlier set
+of the same name.
+
 Ticking "Merge" asks the bot to merge the set. The bot checks every pull
 request of the set, sets the status green on each, checks that GitHub merges
 each one, and merges them one after the other, peppy first and sim-chat last.
@@ -49,7 +58,11 @@ any pull request of it. A review that requests changes blocks every user.
 
 A hub run is out of date when a job of it ran with another commit of a branch
 of the set than the head of that branch, unless that head differs from the
-commit by a clean merge of its base alone. The bot does not ask a pull request
+commit by a clean merge of its base alone. The head of a branch that merged is
+the head of the pull request that merged it. GitHub deletes that branch, and a
+job then reads the base of its repository in its place: a job that ran that
+base at a commit that holds the head that merged ran the change of the branch,
+so it is not out of date. The bot does not ask a pull request
 to be up to date with its base, so a branch that merges its base in does not
 ask a re-run either: the merge of the set takes in that base all the same. The
 bot asks git to merge the commit and the base again, in a scratch repository
@@ -106,6 +119,7 @@ import urllib.request
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
@@ -467,12 +481,18 @@ class PullRequest:
     # names no user.
     author: str | None
     is_open: bool
-    merged: bool
+    created_at: datetime
+    # None while it has not merged.
+    merged_at: datetime | None
     draft: bool
     head_commit: str
     head_branch: str
     base_branch: str
     from_fork: bool
+
+    @property
+    def merged(self) -> bool:
+        return self.merged_at is not None
 
     @property
     def label(self) -> str:
@@ -483,10 +503,24 @@ class PullRequest:
         """The pull request as GitHub links it from any repository."""
         return f"{self.repository.full_name}#{self.number}"
 
+    @property
+    def link(self) -> str:
+        """The label of the pull request, linked to it."""
+        return f"[{self.label}]({self.url})"
+
+
+# The form of a time in the REST API, `2026-10-28T08:13:47Z`.
+GITHUB_TIME_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
+
+
+def parse_github_time(text: str) -> datetime:
+    return datetime.strptime(text, GITHUB_TIME_FORMAT)
+
 
 def parse_pull_request(repository: Repository, item: Mapping) -> PullRequest:
     """A pull request as the REST API returns it, in a list or alone."""
     head_repository = (item["head"].get("repo") or {}).get("full_name")
+    merged_at = item.get("merged_at")
     return PullRequest(
         repository=repository,
         number=item["number"],
@@ -494,7 +528,8 @@ def parse_pull_request(repository: Repository, item: Mapping) -> PullRequest:
         title=item["title"],
         author=(item.get("user") or {}).get("login"),
         is_open=item["state"] == "open",
-        merged=item.get("merged_at") is not None,
+        created_at=parse_github_time(item["created_at"]),
+        merged_at=None if merged_at is None else parse_github_time(merged_at),
         draft=bool(item.get("draft")),
         head_commit=item["head"]["sha"],
         head_branch=item["head"]["ref"],
@@ -505,8 +540,8 @@ def parse_pull_request(repository: Repository, item: Mapping) -> PullRequest:
 
 @dataclass(frozen=True)
 class Member:
-    """A repository of the set: one that has a change on the branch of the
-    set."""
+    """A repository of the set that has a change on the branch of the set
+    that did not merge yet."""
 
     repository: Repository
     # The head of the branch of the set in this repository.
@@ -522,16 +557,39 @@ class Member:
 
 
 @dataclass(frozen=True)
+class MergedMember:
+    """A repository of the set whose change merged before the rest of the
+    set. GitHub deleted its branch of the set, or the branch is left at the
+    head that merged."""
+
+    repository: Repository
+    # Its pull requests from the branch that merged into its integration
+    # branch as part of the set, in the order they merged.
+    pull_requests: tuple[PullRequest, ...]
+
+    @property
+    def head(self) -> str:
+        """The head of the newest merge, which holds the older ones."""
+        return self.pull_requests[-1].head_commit
+
+
+@dataclass(frozen=True)
 class SetState:
     name: str
     # Ordered as REPOSITORIES.
     members: tuple[Member, ...]
+    # Ordered as REPOSITORIES. A repository is a member or merged, not both.
+    merged: tuple[MergedMember, ...]
     # The repositories that still hold the branch of a pull request that
-    # merged it: a branch left behind, not a change of the set.
+    # merged it before every open pull request of the set opened: a branch
+    # left behind by an earlier set of the same name, not a change of this
+    # set.
     left_behind: tuple[Repository, ...]
 
     @property
     def is_alone(self) -> bool:
+        """Whether fewer than two repositories have a change of the set left
+        to merge. The merged members do not count."""
         return len(self.members) < 2
 
     def open_pull_requests(self) -> list[PullRequest]:
@@ -539,6 +597,13 @@ class SetState:
             pull_request
             for member in self.members
             for pull_request in member.open_pull_requests
+        ]
+
+    def merged_pull_requests(self) -> list[PullRequest]:
+        return [
+            pull_request
+            for merged in self.merged
+            for pull_request in merged.pull_requests
         ]
 
     def member_of(self, repository: Repository) -> Member | None:
@@ -562,6 +627,32 @@ def is_left_behind(head: str, pull_requests: Sequence[PullRequest]) -> bool:
     return newest.merged and newest.head_commit == head
 
 
+def merged_while_the_set_was_open(
+    open_pull_requests: Sequence[PullRequest],
+    merged_pull_requests: Sequence[PullRequest],
+) -> list[PullRequest]:
+    """The merged pull requests that are part of the set, in the order they
+    merged: each one merged after an open pull request of the set opened, or
+    after another merged pull request that is part of the set opened, so the
+    two were open at the same time. A set with no open pull request has
+    none."""
+    if not open_pull_requests:
+        return []
+    set_opened = min(pull_request.created_at for pull_request in open_pull_requests)
+    newest_first = sorted(
+        merged_pull_requests,
+        key=lambda pull_request: pull_request.merged_at,
+        reverse=True,
+    )
+    in_the_set = []
+    for pull_request in newest_first:
+        if pull_request.merged_at < set_opened:
+            break
+        in_the_set.append(pull_request)
+        set_opened = min(set_opened, pull_request.created_at)
+    return in_the_set[::-1]
+
+
 def choose_set(
     name: str,
     heads: Mapping[Repository, str | None],
@@ -569,23 +660,48 @@ def choose_set(
 ) -> SetState:
     """The set named `name`, from the head of its branch in each repository
     (None where there is no such branch) and the pull requests from that
-    branch in each repository."""
-    members, left_behind = [], []
-    for repository in REPOSITORIES:
-        head = heads[repository]
-        if head is None:
-            continue
-        own = [
+    branch in each repository, open, closed and merged."""
+    own = {
+        repository: [
             pull_request
             for pull_request in pull_requests[repository]
             if not pull_request.from_fork and pull_request.head_branch == name
         ]
-        open_ones = tuple(pull_request for pull_request in own if pull_request.is_open)
-        if not open_ones and is_left_behind(head, own):
+        for repository in REPOSITORIES
+    }
+    open_ones = {
+        repository: tuple(
+            pull_request for pull_request in own[repository] if pull_request.is_open
+        )
+        for repository in REPOSITORIES
+    }
+    merged_in_the_set = merged_while_the_set_was_open(
+        [pull_request for found in open_ones.values() for pull_request in found],
+        [
+            pull_request
+            for repository in REPOSITORIES
+            for pull_request in own[repository]
+            if pull_request.merged
+            and pull_request.base_branch == repository.integration_branch
+        ],
+    )
+    members, merged, left_behind = [], [], []
+    for repository in REPOSITORIES:
+        head = heads[repository]
+        merged_here = tuple(
+            pull_request
+            for pull_request in merged_in_the_set
+            if pull_request.repository is repository
+        )
+        if head is not None and (
+            open_ones[repository] or not is_left_behind(head, own[repository])
+        ):
+            members.append(Member(repository, head, open_ones[repository]))
+        elif merged_here:
+            merged.append(MergedMember(repository, merged_here))
+        elif head is not None:
             left_behind.append(repository)
-            continue
-        members.append(Member(repository, head, open_ones))
-    return SetState(name, tuple(members), tuple(left_behind))
+    return SetState(name, tuple(members), tuple(merged), tuple(left_behind))
 
 
 # The checks, the reviews and the rules --------------------------------------
@@ -982,7 +1098,10 @@ class Mismatch:
 
     repository: Repository
     tested: TestedRef
+    # The head of the branch, or the head that merged for a merged member.
     current: str
+    # Whether the member merged.
+    merged: bool
 
 
 @dataclass(frozen=True)
@@ -1005,34 +1124,73 @@ def tested_ref_of(tested: TestedSet, repository: Repository) -> TestedRef | None
     return None
 
 
+def mismatch_of(
+    tested: TestedSet, repository: Repository, head: str, merged: bool
+) -> Mismatch | None:
+    """What a job ran of a repository of the set, when it ran another commit
+    than `head`."""
+    recorded = tested_ref_of(tested, repository)
+    if recorded is None or recorded.commit == head:
+        return None
+    return Mismatch(repository, recorded, head, merged)
+
+
+# Whether a commit of a repository holds another one: (repository, commit,
+# ancestor).
+Holds = Callable[[Repository, str, str], bool]
+
+
+def ran_the_base_after_the_merge(mismatch: Mismatch, holds: Holds) -> bool:
+    """Whether a job ran the integration branch of a merged member at a
+    commit that holds the head that merged: GitHub deleted the branch of the
+    set, and the job read the integration branch in its place."""
+    repository = mismatch.repository
+    return (
+        mismatch.merged
+        and mismatch.tested.ref == repository.integration_branch
+        and holds(repository, mismatch.tested.commit, mismatch.current)
+    )
+
+
 def mismatches_of(
     tested: TestedSet,
     state: SetState,
     under_test: Repository,
     is_clean_base_merge: Callable[[Mismatch], bool],
+    holds: Holds,
 ) -> tuple[Mismatch, ...]:
-    mismatches = []
-    for member in state.members:
-        if member.repository is under_test:
-            continue
-        recorded = tested_ref_of(tested, member.repository)
-        if recorded is None or recorded.commit == member.head:
-            continue
-        mismatch = Mismatch(member.repository, recorded, member.head)
-        if not is_clean_base_merge(mismatch):
-            mismatches.append(mismatch)
-    return tuple(mismatches)
+    found = [
+        *(
+            mismatch_of(tested, member.repository, member.head, merged=False)
+            for member in state.members
+            if member.repository is not under_test
+        ),
+        *(
+            mismatch_of(tested, merged.repository, merged.head, merged=True)
+            for merged in state.merged
+        ),
+    ]
+    return tuple(
+        mismatch
+        for mismatch in found
+        if mismatch is not None
+        and not ran_the_base_after_the_merge(mismatch, holds)
+        and not is_clean_base_merge(mismatch)
+    )
 
 
 def stale_jobs(
     state: SetState,
     runs: Sequence[HubRun],
     is_clean_base_merge: Callable[[Mismatch], bool],
+    holds: Holds,
 ) -> list[StaleJob]:
     """The jobs of the runs of a hub pull request that did not run with the
     head of every branch of the set. A job that ran a branch at an older
     commit is not stale when `is_clean_base_merge` tells that the head differs
-    from that commit by a clean merge of its base alone."""
+    from that commit by a clean merge of its base alone, nor, for a merged
+    member, when `holds` tells that the job ran its integration branch at a
+    commit that holds the head that merged."""
     stale = []
     for run in runs:
         for record in run.records:
@@ -1040,7 +1198,7 @@ def stale_jobs(
                 stale.append(StaleJob(run, record.job, (), record_expired=True))
                 continue
             mismatches = mismatches_of(
-                record.tested, state, run.repository, is_clean_base_merge
+                record.tested, state, run.repository, is_clean_base_merge, holds
             )
             if mismatches:
                 stale.append(
@@ -1130,13 +1288,18 @@ def stale_job_text(label: str, stale: StaleJob) -> str:
             f"{where} has an expired set record, so nothing tells what it ran "
             "with: re-run it."
         )
-    ran = "; ".join(
-        f"{mismatch.repository.name} at `{mismatch.tested.ref}` "
-        f"`{short(mismatch.tested.commit)}`, and its branch of the set is now at "
-        f"`{short(mismatch.current)}`"
-        for mismatch in stale.mismatches
-    )
+    ran = "; ".join(mismatch_text(mismatch) for mismatch in stale.mismatches)
     return f"{where} ran with {ran}: re-run it."
+
+
+def mismatch_text(mismatch: Mismatch) -> str:
+    ran = (
+        f"{mismatch.repository.name} at `{mismatch.tested.ref}` "
+        f"`{short(mismatch.tested.commit)}`"
+    )
+    if mismatch.merged:
+        return f"{ran}, and its branch of the set merged at `{short(mismatch.current)}`"
+    return f"{ran}, and its branch of the set is now at `{short(mismatch.current)}`"
 
 
 CHECK_STATE_TEXTS = {
@@ -1301,9 +1464,13 @@ def ticked_actions(body: str) -> list[Action]:
     return actions
 
 
+def number_link(pull_request: PullRequest) -> str:
+    return f"[#{pull_request.number}]({pull_request.url})"
+
+
 def pull_request_cell(member: Member) -> str:
     if member.pull_request is not None:
-        return f"[#{member.pull_request.number}]({member.pull_request.url})"
+        return number_link(member.pull_request)
     if not member.open_pull_requests:
         return "no open pull request"
     return f"{len(member.open_pull_requests)} open pull requests"
@@ -1341,18 +1508,14 @@ def render_set_dashboard(
         "",
         "| Repository | Pull request | Head | CI | State |",
         "| --- | --- | --- | --- | --- |",
+        *dashboard_rows(state, reports, blockers),
     ]
-    lines.extend(
-        f"| {member.repository.name} | {pull_request_cell(member)} "
-        f"| `{short(member.head)}` | {ci_cell(member, reports)} "
-        f"| {member_state(member.repository, blockers)} |"
-        for member in state.members
-    )
     if state.left_behind:
         lines.append("")
         lines.extend(
             f"{repository.name} still has the branch `{state.name}` of a pull "
-            "request that merged it, so it is not part of the set."
+            "request that merged it before the pull requests of this set "
+            "opened, so it is not part of the set."
             for repository in state.left_behind
         )
     lines.append("")
@@ -1372,6 +1535,37 @@ def render_set_dashboard(
             box_line(Action.RERUN, f"Re-run the out-of-date CI of this set ({runs})")
         )
     return "\n".join(lines) + "\n"
+
+
+def merged_pull_requests_cell(merged: MergedMember) -> str:
+    return ", ".join(number_link(pull_request) for pull_request in merged.pull_requests)
+
+
+def dashboard_rows(
+    state: SetState,
+    reports: Mapping[str, PullRequestReport],
+    blockers: Sequence[Blocker],
+) -> list[str]:
+    """A row of the table of the dashboard for each repository of the set,
+    merged or not, in the order of REPOSITORIES."""
+    rows = {
+        member.repository: (
+            f"| {member.repository.name} | {pull_request_cell(member)} "
+            f"| `{short(member.head)}` | {ci_cell(member, reports)} "
+            f"| {member_state(member.repository, blockers)} |"
+        )
+        for member in state.members
+    }
+    rows.update(
+        {
+            merged.repository: (
+                f"| {merged.repository.name} | {merged_pull_requests_cell(merged)} "
+                f"| `{short(merged.head)}` |  | merged |"
+            )
+            for merged in state.merged
+        }
+    )
+    return [rows[repository] for repository in REPOSITORIES if repository in rows]
 
 
 def member_state(repository: Repository, blockers: Sequence[Blocker]) -> str:
@@ -1396,7 +1590,8 @@ ADMIN_WAIVER = (
 CURRENT_HUB_RUNS = (
     "each hub run ran with the head of every branch of the set that it reads, "
     "or with a commit that differs from that head by a clean merge of its base "
-    "alone"
+    "alone, or, for a branch that merged, with a commit of its base that holds "
+    "that head"
 )
 
 
@@ -1432,11 +1627,25 @@ def readiness_lines(blockers: Sequence[Blocker]) -> list[str]:
     return lines
 
 
-def render_alone_dashboard(set_name: str) -> str:
-    return (
-        f"{DASHBOARD_MARKER}\n### Set `{set_name}`\n\n"
-        f"No other repository has a change on the branch `{set_name}`, so this "
-        "pull request is alone: its own merge button merges it.\n"
+def merged_links(state: SetState) -> str:
+    return ", ".join(pull_request.link for pull_request in state.merged_pull_requests())
+
+
+def render_alone_dashboard(state: SetState) -> str:
+    """The dashboard of a set that is alone. The bot writes it on the merged
+    pull requests of the set too, so with merged members it names the pull
+    request that is alone and the ones that merged."""
+    header = f"{DASHBOARD_MARKER}\n### Set `{state.name}`\n\n"
+    if not state.merged:
+        return header + (
+            f"No other repository has a change on the branch `{state.name}`, so "
+            "this pull request is alone: its own merge button merges it.\n"
+        )
+    alone = ", ".join(pull_request.link for pull_request in state.open_pull_requests())
+    return header + (
+        f"No other repository has a change on the branch `{state.name}` left to "
+        f"merge, so {alone} is alone: its own merge button merges it.\n\n"
+        f"Merged from the set: {merged_links(state)}.\n"
     )
 
 
@@ -1641,9 +1850,17 @@ def render_merge_report(
     return "\n".join(lines) + "\n"
 
 
-def render_merged_dashboard(set_name: str, outcome: MergeOutcome) -> str:
+def render_merged_dashboard(state: SetState, outcome: MergeOutcome) -> str:
+    """The dashboard of the pull requests of the set that merged, after a
+    merge of the set. `state` is the set before the merge: its merged
+    members merged before it."""
     labels = ", ".join(merged.pull_request.label for merged in outcome.merged)
-    text = f"{DASHBOARD_MARKER}\n### Set `{set_name}`\n\nMerged together: {labels}."
+    text = f"{DASHBOARD_MARKER}\n### Set `{state.name}`\n\nMerged together: {labels}."
+    if state.merged:
+        before = ", ".join(
+            pull_request.label for pull_request in state.merged_pull_requests()
+        )
+        text += f" Merged before them: {before}."
     if outcome.unmerged:
         rest = ", ".join(pull_request.label for pull_request in outcome.unmerged)
         text += f" Not merged: {rest}."
@@ -1874,6 +2091,7 @@ class GitHubGateway:
         self.bot_login = bot_login
         self.git = git
         self.clean_base_merges: dict[tuple[str, str, str], bool] = {}
+        self.held_commits: dict[tuple[str, str, str], bool] = {}
         self.rules: dict[str, BranchRules] = {}
         self.bypasses: dict[tuple[str, int], RulesetBypass] = {}
         self.permissions: dict[tuple[str, str], str] = {}
@@ -2035,6 +2253,25 @@ class GitHubGateway:
                 f"`{repository.integration_branch}` alone. {error}"
             )
             return False
+
+    def holds(self, repository: Repository, commit: str, ancestor: str) -> bool:
+        """Whether `commit` holds `ancestor`. Each pair is checked once a
+        sync: the jobs of a run share the commits they ran with."""
+        key = (repository.name, commit, ancestor)
+        if key not in self.held_commits:
+            self.held_commits[key] = self.check_holds(repository, commit, ancestor)
+        return self.held_commits[key]
+
+    def check_holds(self, repository: Repository, commit: str, ancestor: str) -> bool:
+        """Whether `ancestor` has no commit that `commit` lacks."""
+        try:
+            comparison = self.compare(repository, ancestor, commit)
+        except ApiError as error:
+            # GitHub knows no such commit, or no history that the two share.
+            if error.status == 404:
+                return False
+            raise
+        return comparison.behind_by == 0
 
     def pull_request_runs(self, pull_request: PullRequest) -> list[Mapping]:
         """Every workflow run of the head commit of the pull request, for the
@@ -2314,10 +2551,10 @@ def read_set(gateway: GitHubGateway, name: str) -> SetState:
     heads = {
         repository: gateway.branch_head(repository, name) for repository in REPOSITORIES
     }
+    # A repository without the branch can hold a merged pull request of the
+    # set: GitHub deletes the branch of a merged pull request.
     pull_requests = {
         repository: gateway.pull_requests_from(repository, name)
-        if heads[repository]
-        else []
         for repository in REPOSITORIES
     }
     return choose_set(name, heads, pull_requests)
@@ -2345,7 +2582,10 @@ def read_report(
         stale=(
             tuple(
                 stale_jobs(
-                    state, gateway.hub_runs(pull_request), gateway.is_clean_base_merge
+                    state,
+                    gateway.hub_runs(pull_request),
+                    gateway.is_clean_base_merge,
+                    gateway.holds,
                 )
             )
             if repository.hub is not None
@@ -2383,8 +2623,10 @@ def read_reports(
 
 
 def read_dashboards(gateway: GitHubGateway, state: SetState) -> dict[str, Dashboard]:
+    """The dashboard of each open and merged pull request of the set that has
+    one, by its label."""
     dashboards = {}
-    for pull_request in state.open_pull_requests():
+    for pull_request in [*state.open_pull_requests(), *state.merged_pull_requests()]:
         dashboard = gateway.dashboard(pull_request)
         if dashboard is not None:
             dashboards[pull_request.label] = dashboard
@@ -2597,17 +2839,19 @@ def merge_the_set(
     outcome = merge_in_order(gateway, state.name, pull_requests)
     block_again(gateway, state.name, outcome.unmerged, dashboards)
     report = render_merge_report(state.name, requesters, outcome, unapproved)
-    for pull_request in pull_requests:
+    # The merged pull requests of the set get the report too: a box ticked on
+    # the dashboard of one of them asked for the merge.
+    for pull_request in [*pull_requests, *state.merged_pull_requests()]:
         gateway.create_comment(pull_request, report)
-    for merged in outcome.merged:
-        dashboard = dashboards.get(merged.pull_request.label)
-        if dashboard is not None:
-            write_dashboard(
-                gateway,
-                merged.pull_request,
-                dashboard,
-                render_merged_dashboard(state.name, outcome),
-            )
+    write_merged_dashboards(
+        gateway,
+        [
+            *(merged.pull_request for merged in outcome.merged),
+            *state.merged_pull_requests(),
+        ],
+        dashboards,
+        render_merged_dashboard(state, outcome),
+    )
 
 
 def rerun_out_of_date(
@@ -2673,25 +2917,41 @@ def handle_requests(
             )
 
 
+def write_merged_dashboards(
+    gateway: GitHubGateway,
+    pull_requests: Sequence[PullRequest],
+    dashboards: Mapping[str, Dashboard],
+    body: str,
+) -> None:
+    """Write `body` as the dashboard of each merged pull request that has
+    one. The bot writes no new dashboard on a merged pull request."""
+    for pull_request in pull_requests:
+        dashboard = dashboards.get(pull_request.label)
+        if dashboard is not None:
+            write_dashboard(gateway, pull_request, dashboard, body)
+
+
 def publish(
     gateway: GitHubGateway, state: SetState, dashboards: Mapping[str, Dashboard]
 ) -> None:
-    """Write the dashboard and the gate of each open pull request of the set."""
+    """Write the dashboard and the gate of each open pull request of the set,
+    and the same dashboard on each merged pull request of the set that has
+    one, so every dashboard of the set says the same."""
     if state.is_alone:
+        body = render_alone_dashboard(state)
         for pull_request in state.open_pull_requests():
             set_gate(gateway, pull_request, alone_gate(state.name))
             dashboard = dashboards.get(pull_request.label)
             if dashboard is not None:
-                write_dashboard(
-                    gateway, pull_request, dashboard, render_alone_dashboard(state.name)
-                )
-        return
-    body = render_set_dashboard(state, read_reports(gateway, state))
-    for pull_request in state.open_pull_requests():
-        url = write_dashboard(
-            gateway, pull_request, dashboards.get(pull_request.label), body
-        )
-        set_gate(gateway, pull_request, member_gate(state.name, url))
+                write_dashboard(gateway, pull_request, dashboard, body)
+    else:
+        body = render_set_dashboard(state, read_reports(gateway, state))
+        for pull_request in state.open_pull_requests():
+            url = write_dashboard(
+                gateway, pull_request, dashboards.get(pull_request.label), body
+            )
+            set_gate(gateway, pull_request, member_gate(state.name, url))
+    write_merged_dashboards(gateway, state.merged_pull_requests(), dashboards, body)
 
 
 def no_set_gate(pull_request: PullRequest) -> Gate:
