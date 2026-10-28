@@ -20,6 +20,7 @@ import tempfile
 import unittest
 import zipfile
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -65,6 +66,15 @@ APPROVAL_RULESET = 20864833
 RULES = BranchRules((TEST_CHECK,), strict=False, approval_rulesets=(APPROVAL_RULESET,))
 
 
+# When each pull request opened, unless a test names another time.
+OPENED_AT = datetime(2026, 10, 26, 20, 32, tzinfo=UTC)
+# A merge while the pull requests of the set are open.
+MERGED_AT = datetime(2026, 10, 28, 8, 13, tzinfo=UTC)
+# A merge of an earlier set of the same name, before every pull request of
+# the set opened.
+MERGED_BEFORE_THE_SET = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+
+
 def commit(repository, label="head"):
     """A distinct, fixed commit for each repository and label."""
     return f"{repository.name}:{label}".encode().hex()[:40].ljust(40, "0")
@@ -79,7 +89,8 @@ def pull_request(repository, number=1, **changes):
         # The user who ticks the boxes unless a test names another one.
         "author": "alice",
         "is_open": True,
-        "merged": False,
+        "created_at": OPENED_AT,
+        "merged_at": None,
         "draft": False,
         "head_commit": commit(repository),
         "head_branch": SET_NAME,
@@ -96,8 +107,14 @@ def member(repository, *pull_requests, head=None):
     )
 
 
-def set_state(*members, left_behind=()):
-    return merge_set.SetState(SET_NAME, tuple(members), tuple(left_behind))
+def merged_member(repository, *pull_requests):
+    return merge_set.MergedMember(repository, tuple(pull_requests))
+
+
+def set_state(*members, merged=(), left_behind=()):
+    return merge_set.SetState(
+        SET_NAME, tuple(members), tuple(merged), tuple(left_behind)
+    )
 
 
 def tested_set(hubs=None, peppy=None):
@@ -106,6 +123,11 @@ def tested_set(hubs=None, peppy=None):
 
 def no_clean_base_merge(mismatch):
     """The answer of a branch that changed on its own since the job ran."""
+    return False
+
+
+def holds_nothing(repository, commit, ancestor):
+    """The answer of a commit that does not hold the head that merged."""
     return False
 
 
@@ -712,6 +734,7 @@ class PullRequests(unittest.TestCase):
             "title": "Add the gripper force",
             "user": {"login": "alice"},
             "state": "open",
+            "created_at": "2026-10-26T20:32:00Z",
             "merged_at": None,
             "draft": False,
             "head": {
@@ -734,10 +757,12 @@ class PullRequests(unittest.TestCase):
 
     def test_a_merged_pull_request(self):
         parsed = merge_set.parse_pull_request(
-            NODES_HUB, self.item(state="closed", merged_at="2026-09-28T10:00:00Z")
+            NODES_HUB, self.item(state="closed", merged_at="2026-10-28T08:13:00Z")
         )
         self.assertFalse(parsed.is_open)
         self.assertTrue(parsed.merged)
+        self.assertEqual(parsed.merged_at, MERGED_AT)
+        self.assertEqual(parsed.created_at, OPENED_AT)
 
     def test_the_author_is_the_user_who_opened_it(self):
         self.assertEqual(
@@ -811,7 +836,9 @@ class ChooseSet(unittest.TestCase):
         self.assertIsNone(contracts.pull_request)
 
     def test_the_branch_of_a_merged_pull_request_is_left_behind(self):
-        merged = pull_request(CONTRACTS_HUB, 3, is_open=False, merged=True)
+        merged = pull_request(
+            CONTRACTS_HUB, 3, is_open=False, merged_at=MERGED_BEFORE_THE_SET
+        )
         state = merge_set.choose_set(
             SET_NAME,
             self.heads(NODES_HUB, CONTRACTS_HUB),
@@ -826,7 +853,7 @@ class ChooseSet(unittest.TestCase):
             CONTRACTS_HUB,
             3,
             is_open=False,
-            merged=True,
+            merged_at=MERGED_BEFORE_THE_SET,
             head_commit=commit(CONTRACTS_HUB, "old"),
         )
         state = merge_set.choose_set(
@@ -841,7 +868,9 @@ class ChooseSet(unittest.TestCase):
     def test_only_the_newest_closed_pull_request_decides(self):
         # The branch name was used before: the newest pull request of it
         # closed unmerged, so the branch still holds a change.
-        older = pull_request(CONTRACTS_HUB, 3, is_open=False, merged=True)
+        older = pull_request(
+            CONTRACTS_HUB, 3, is_open=False, merged_at=MERGED_BEFORE_THE_SET
+        )
         newer = pull_request(CONTRACTS_HUB, 5, is_open=False)
         state = merge_set.choose_set(
             SET_NAME,
@@ -869,6 +898,141 @@ class ChooseSet(unittest.TestCase):
         )
         self.assertEqual(state.member_of(NODES_HUB).open_pull_requests, (first, second))
         self.assertIsNone(state.member_of(NODES_HUB).pull_request)
+
+    def test_a_pull_request_that_merged_with_the_set_open_stays_in_it_as_merged(
+        self,
+    ):
+        # GitHub deleted the branch of launchers-hub#132 when it merged.
+        merged = pull_request(LAUNCHERS_HUB, 132, is_open=False, merged_at=MERGED_AT)
+        state = merge_set.choose_set(
+            SET_NAME,
+            self.heads(PEPPY, NODES_HUB),
+            self.pulls(
+                peppy=[pull_request(PEPPY)],
+                nodes_hub=[pull_request(NODES_HUB)],
+                launchers_hub=[merged],
+            ),
+        )
+        self.assertEqual([m.repository for m in state.members], [PEPPY, NODES_HUB])
+        self.assertEqual(state.merged, (merged_member(LAUNCHERS_HUB, merged),))
+        self.assertEqual(state.merged_pull_requests(), [merged])
+        self.assertEqual(state.left_behind, ())
+        self.assertFalse(state.is_alone)
+
+    def test_the_last_repository_left_to_merge_is_alone(self):
+        merged = pull_request(LAUNCHERS_HUB, 132, is_open=False, merged_at=MERGED_AT)
+        state = merge_set.choose_set(
+            SET_NAME,
+            self.heads(NODES_HUB),
+            self.pulls(nodes_hub=[pull_request(NODES_HUB)], launchers_hub=[merged]),
+        )
+        self.assertTrue(state.is_alone)
+        self.assertEqual(state.merged, (merged_member(LAUNCHERS_HUB, merged),))
+
+    def test_a_branch_left_at_the_head_that_merged_with_the_set_is_merged(self):
+        merged = pull_request(CONTRACTS_HUB, 3, is_open=False, merged_at=MERGED_AT)
+        state = merge_set.choose_set(
+            SET_NAME,
+            self.heads(NODES_HUB, CONTRACTS_HUB),
+            self.pulls(nodes_hub=[pull_request(NODES_HUB)], contracts_hub=[merged]),
+        )
+        self.assertEqual(state.merged, (merged_member(CONTRACTS_HUB, merged),))
+        self.assertEqual(state.left_behind, ())
+        self.assertEqual([m.repository for m in state.members], [NODES_HUB])
+
+    def test_a_pull_request_that_merged_before_the_set_opened_is_not_part_of_it(
+        self,
+    ):
+        merged = pull_request(
+            CONTRACTS_HUB, 3, is_open=False, merged_at=MERGED_BEFORE_THE_SET
+        )
+        state = merge_set.choose_set(
+            SET_NAME,
+            self.heads(NODES_HUB),
+            self.pulls(nodes_hub=[pull_request(NODES_HUB)], contracts_hub=[merged]),
+        )
+        self.assertEqual([m.repository for m in state.members], [NODES_HUB])
+        self.assertEqual(state.merged, ())
+        self.assertEqual(state.left_behind, ())
+
+    def test_a_merged_pull_request_joins_the_set_through_another_merged_one(self):
+        # contracts-hub#3 was open while nodes-hub#1 is, and launchers-hub#5
+        # was open while contracts-hub#3 was. peppy#7 merged before any of
+        # them opened.
+        def day(number):
+            return datetime(2026, 10, number, 12, 0, tzinfo=UTC)
+
+        peppy = pull_request(
+            PEPPY, 7, is_open=False, created_at=day(1), merged_at=day(2)
+        )
+        launchers = pull_request(
+            LAUNCHERS_HUB, 5, is_open=False, created_at=day(3), merged_at=day(5)
+        )
+        contracts = pull_request(
+            CONTRACTS_HUB, 3, is_open=False, created_at=day(4), merged_at=day(7)
+        )
+        nodes = pull_request(NODES_HUB, 1, created_at=day(6))
+        state = merge_set.choose_set(
+            SET_NAME,
+            self.heads(NODES_HUB),
+            self.pulls(
+                peppy=[peppy],
+                nodes_hub=[nodes],
+                launchers_hub=[launchers],
+                contracts_hub=[contracts],
+            ),
+        )
+        self.assertEqual(
+            state.merged,
+            (
+                merged_member(LAUNCHERS_HUB, launchers),
+                merged_member(CONTRACTS_HUB, contracts),
+            ),
+        )
+
+    def test_a_pull_request_merged_into_another_branch_did_not_merge_with_the_set(
+        self,
+    ):
+        merged = pull_request(
+            CONTRACTS_HUB, 3, is_open=False, merged_at=MERGED_AT, base_branch="release"
+        )
+        state = merge_set.choose_set(
+            SET_NAME,
+            self.heads(NODES_HUB),
+            self.pulls(nodes_hub=[pull_request(NODES_HUB)], contracts_hub=[merged]),
+        )
+        self.assertEqual(state.merged, ())
+
+    def test_a_set_without_an_open_pull_request_has_no_merged_member(self):
+        merged = pull_request(CONTRACTS_HUB, 3, is_open=False, merged_at=MERGED_AT)
+        state = merge_set.choose_set(
+            SET_NAME, self.heads(NODES_HUB), self.pulls(contracts_hub=[merged])
+        )
+        self.assertEqual(state.merged, ())
+        self.assertEqual(state.member_of(NODES_HUB).open_pull_requests, ())
+
+    def test_the_pull_requests_a_repository_merged_with_the_set_keep_their_order(
+        self,
+    ):
+        first = pull_request(
+            CONTRACTS_HUB,
+            3,
+            is_open=False,
+            merged_at=MERGED_AT,
+            head_commit=commit(CONTRACTS_HUB, "first"),
+        )
+        second = pull_request(
+            CONTRACTS_HUB, 4, is_open=False, merged_at=MERGED_AT.replace(hour=9)
+        )
+        state = merge_set.choose_set(
+            SET_NAME,
+            self.heads(NODES_HUB),
+            self.pulls(
+                nodes_hub=[pull_request(NODES_HUB)], contracts_hub=[second, first]
+            ),
+        )
+        self.assertEqual(state.merged, (merged_member(CONTRACTS_HUB, first, second),))
+        self.assertEqual(state.merged[0].head, commit(CONTRACTS_HUB))
 
 
 class Rules(unittest.TestCase):
@@ -1190,7 +1354,9 @@ class Freshness(unittest.TestCase):
 
     def stale_of(self, tested):
         run = hub_run(NODES_HUB, records=[JobRecord("check-index", tested)])
-        return merge_set.stale_jobs(self.state(), [run], no_clean_base_merge)
+        return merge_set.stale_jobs(
+            self.state(), [run], no_clean_base_merge, holds_nothing
+        )
 
     def test_a_job_that_ran_with_every_head_of_the_set_is_fresh(self):
         self.assertEqual(self.stale_of(self.fresh_record()), [])
@@ -1204,7 +1370,7 @@ class Freshness(unittest.TestCase):
         self.assertEqual(len(stale), 1)
         self.assertEqual(
             stale[0].mismatches,
-            (merge_set.Mismatch(CONTRACTS_HUB, old, commit(CONTRACTS_HUB)),),
+            (merge_set.Mismatch(CONTRACTS_HUB, old, commit(CONTRACTS_HUB), False),),
         )
 
     def test_a_job_that_ran_a_commit_its_head_merges_its_base_into_is_fresh(self):
@@ -1226,11 +1392,15 @@ class Freshness(unittest.TestCase):
             return True
 
         self.assertEqual(
-            merge_set.stale_jobs(self.state(), [run], is_clean_base_merge), []
+            merge_set.stale_jobs(
+                self.state(), [run], is_clean_base_merge, holds_nothing
+            ),
+            [],
         )
         # Only the branch that moved since the job ran is checked.
         self.assertEqual(
-            asked, [merge_set.Mismatch(CONTRACTS_HUB, old, commit(CONTRACTS_HUB))]
+            asked,
+            [merge_set.Mismatch(CONTRACTS_HUB, old, commit(CONTRACTS_HUB), False)],
         )
 
     def test_a_job_that_ran_before_the_branch_existed_is_stale(self):
@@ -1268,7 +1438,9 @@ class Freshness(unittest.TestCase):
             hubs={"nodes-hub": TestedRef("checkout", commit(NODES_HUB))}
         )
         run = hub_run(NODES_HUB, records=[JobRecord("check-index", tested)])
-        self.assertEqual(merge_set.stale_jobs(state, [run], no_clean_base_merge), [])
+        self.assertEqual(
+            merge_set.stale_jobs(state, [run], no_clean_base_merge, holds_nothing), []
+        )
 
     def test_the_libs_and_sim_chat_branches_of_the_set_make_no_job_stale(self):
         # No job reads them, so their heads are in no set record.
@@ -1280,7 +1452,9 @@ class Freshness(unittest.TestCase):
         run = hub_run(
             NODES_HUB, records=[JobRecord("check-index", self.fresh_record())]
         )
-        self.assertEqual(merge_set.stale_jobs(state, [run], no_clean_base_merge), [])
+        self.assertEqual(
+            merge_set.stale_jobs(state, [run], no_clean_base_merge, holds_nothing), []
+        )
         for repository in (PUBLIC_PEPPY_LIBS, SIM_CHAT):
             with self.subTest(repository=repository.name):
                 self.assertIsNone(
@@ -1307,11 +1481,103 @@ class Freshness(unittest.TestCase):
             nodes.label: report(
                 nodes,
                 stale=tuple(
-                    merge_set.stale_jobs(self.state(), [run], no_clean_base_merge)
+                    merge_set.stale_jobs(
+                        self.state(), [run], no_clean_base_merge, holds_nothing
+                    )
                 ),
             )
         }
         self.assertEqual(merge_set.stale_runs(reports), [run])
+
+
+class FreshnessOfMergedBranches(unittest.TestCase):
+    """nodes-hub#1 is open, and launchers-hub#132 merged before the rest of
+    the set. Its branch is gone, so a job that reads it reads `main`."""
+
+    def setUp(self):
+        self.merged = pull_request(
+            LAUNCHERS_HUB, 132, is_open=False, merged_at=MERGED_AT
+        )
+        self.state = set_state(
+            member(NODES_HUB, pull_request(NODES_HUB)),
+            member(CONTRACTS_HUB, pull_request(CONTRACTS_HUB)),
+            merged=(merged_member(LAUNCHERS_HUB, self.merged),),
+        )
+        # The (repository name, commit, ancestor) triples where the commit
+        # holds the ancestor, and the triples the bot asked about.
+        self.held = set()
+        self.asked = []
+
+    def holds(self, repository, commit, ancestor):
+        self.asked.append((repository.name, commit, ancestor))
+        return (repository.name, commit, ancestor) in self.held
+
+    def stale_of(self, hubs, is_clean_base_merge=no_clean_base_merge):
+        tested = tested_set(
+            hubs={
+                "nodes-hub": TestedRef("checkout", commit(NODES_HUB)),
+                "contracts-hub": TestedRef(SET_NAME, commit(CONTRACTS_HUB)),
+                **hubs,
+            }
+        )
+        run = hub_run(NODES_HUB, records=[JobRecord("check-index", tested)])
+        return merge_set.stale_jobs(self.state, [run], is_clean_base_merge, self.holds)
+
+    def test_a_job_that_ran_the_head_that_merged_is_fresh(self):
+        at_head = TestedRef(SET_NAME, self.merged.head_commit)
+        self.assertEqual(self.stale_of({"launchers-hub": at_head}), [])
+        self.assertEqual(self.asked, [])
+
+    def test_a_job_that_ran_an_older_commit_of_the_merged_branch_is_stale(self):
+        old = TestedRef(SET_NAME, commit(LAUNCHERS_HUB, "old"))
+        (stale,) = self.stale_of({"launchers-hub": old})
+        self.assertEqual(
+            stale.mismatches,
+            (merge_set.Mismatch(LAUNCHERS_HUB, old, self.merged.head_commit, True),),
+        )
+        self.assertEqual(self.asked, [])
+        self.assertIn(
+            f"ran with launchers-hub at `{SET_NAME}` `{old.commit[:7]}`, and its "
+            f"branch of the set merged at `{self.merged.head_commit[:7]}`: re-run it.",
+            merge_set.stale_job_text("nodes-hub#1", stale),
+        )
+
+    def test_a_job_that_ran_main_after_the_merge_is_fresh(self):
+        after = TestedRef("main", commit(LAUNCHERS_HUB, "main"))
+        self.held.add(("launchers-hub", after.commit, self.merged.head_commit))
+        self.assertEqual(self.stale_of({"launchers-hub": after}), [])
+        self.assertEqual(
+            self.asked, [("launchers-hub", after.commit, self.merged.head_commit)]
+        )
+
+    def test_a_job_that_ran_main_before_the_merge_is_stale(self):
+        before = TestedRef("main", commit(LAUNCHERS_HUB, "main"))
+        (stale,) = self.stale_of({"launchers-hub": before})
+        self.assertEqual(stale.mismatches[0].tested, before)
+
+    def test_only_main_is_read_in_place_of_the_merged_branch(self):
+        other = TestedRef("release", commit(LAUNCHERS_HUB, "release"))
+        self.held.add(("launchers-hub", other.commit, self.merged.head_commit))
+        self.assertEqual(len(self.stale_of({"launchers-hub": other})), 1)
+        self.assertEqual(self.asked, [])
+
+    def test_a_head_that_merged_its_base_alone_since_the_job_ran_is_fresh(self):
+        old = TestedRef(SET_NAME, commit(LAUNCHERS_HUB, "old"))
+        self.assertEqual(
+            self.stale_of(
+                {"launchers-hub": old}, is_clean_base_merge=lambda mismatch: True
+            ),
+            [],
+        )
+
+    def test_a_branch_that_did_not_merge_is_never_read_as_main(self):
+        # contracts-hub#1 is open: a job that ran main ran without it, even
+        # at a commit that holds its head.
+        at_main = TestedRef("main", commit(CONTRACTS_HUB, "main"))
+        self.held.add(("contracts-hub", at_main.commit, commit(CONTRACTS_HUB)))
+        (stale,) = self.stale_of({"contracts-hub": at_main})
+        self.assertFalse(stale.mismatches[0].merged)
+        self.assertEqual(self.asked, [])
 
 
 class Blockers(unittest.TestCase):
@@ -1340,7 +1606,10 @@ class Blockers(unittest.TestCase):
             "check-index",
             (
                 merge_set.Mismatch(
-                    PEPPY, TestedRef(SET_NAME, commit(PEPPY, "old")), commit(PEPPY)
+                    PEPPY,
+                    TestedRef(SET_NAME, commit(PEPPY, "old")),
+                    commit(PEPPY),
+                    False,
                 ),
             ),
             record_expired=False,
@@ -1750,6 +2019,80 @@ class Dashboards(unittest.TestCase):
         )
 
 
+class MergedDashboards(unittest.TestCase):
+    """peppy#512 and contracts-hub#9 are open, and launchers-hub#132 merged
+    before them."""
+
+    def setUp(self):
+        self.peppy = pull_request(PEPPY, 512)
+        self.contracts = pull_request(CONTRACTS_HUB, 9)
+        self.launchers = pull_request(
+            LAUNCHERS_HUB, 132, is_open=False, merged_at=MERGED_AT
+        )
+        self.state = set_state(
+            member(PEPPY, self.peppy),
+            member(CONTRACTS_HUB, self.contracts),
+            merged=(merged_member(LAUNCHERS_HUB, self.launchers),),
+        )
+
+    def test_a_merged_member_is_listed_as_merged_in_the_order_of_the_repositories(
+        self,
+    ):
+        body = merge_set.render_set_dashboard(
+            self.state, reports_by_label(report(self.peppy), report(self.contracts))
+        )
+        rows = [
+            line.split(" | ")[0]
+            for line in body.splitlines()
+            if line.startswith("| ") and not line.startswith(("| Repository", "| ---"))
+        ]
+        self.assertEqual(rows, ["| peppy", "| launchers-hub", "| contracts-hub"])
+        self.assertIn(
+            f"| launchers-hub | [#132]({self.launchers.url}) "
+            f"| `{self.launchers.head_commit[:7]}` |  | merged |",
+            body,
+        )
+        self.assertIn("**Ready to merge.**", body)
+        self.assertIn(
+            "- [ ] <!-- merge-set:merge --> Merge the 2 pull requests of this set "
+            "together",
+            body,
+        )
+
+    def test_a_repository_that_merged_several_pull_requests_links_each(self):
+        later = pull_request(
+            LAUNCHERS_HUB, 140, is_open=False, merged_at=MERGED_AT.replace(hour=9)
+        )
+        state = replace(
+            self.state, merged=(merged_member(LAUNCHERS_HUB, self.launchers, later),)
+        )
+        body = merge_set.render_set_dashboard(
+            state, reports_by_label(report(self.peppy), report(self.contracts))
+        )
+        self.assertIn(
+            f"| launchers-hub | [#132]({self.launchers.url}), [#140]({later.url}) |",
+            body,
+        )
+
+    def test_the_dashboard_after_a_merge_names_the_pull_requests_merged_before(
+        self,
+    ):
+        outcome = merge_set.MergeOutcome(
+            merged=(
+                merge_set.MergedPullRequest(self.peppy, "a" * 40),
+                merge_set.MergedPullRequest(self.contracts, "b" * 40),
+            ),
+            failure=None,
+            not_tried=(),
+        )
+        self.assertEqual(
+            merge_set.render_merged_dashboard(self.state, outcome),
+            f"{merge_set.DASHBOARD_MARKER}\n### Set `{SET_NAME}`\n\n"
+            "Merged together: peppy#512, contracts-hub#9. Merged before them: "
+            "launchers-hub#132.\n",
+        )
+
+
 class MergeMessages(unittest.TestCase):
     def test_a_merge_commit_names_the_other_pull_requests_of_the_set(self):
         peppy, nodes = pull_request(PEPPY, 512), pull_request(NODES_HUB, 88)
@@ -1821,6 +2164,9 @@ class FakeGitHub:
         # The (repository name, tested commit) pairs whose branch head differs
         # from that commit by a clean merge of its base alone.
         self.clean_base_merges = set()
+        # The (repository name, commit, ancestor) triples where the commit
+        # holds the ancestor.
+        self.held = set()
         self.runs = {}
         self.comments = []
         self.permissions = {}
@@ -1857,6 +2203,16 @@ class FakeGitHub:
         opened = replace(pr, author=login)
         pulls[pulls.index(pr)] = opened
         return opened
+
+    def merge_on_its_own(self, pr):
+        """Merge the pull request as its own merge button does, and return
+        it merged."""
+        pulls = self.pulls[pr.repository.name]
+        merged = replace(pr, is_open=False, merged_at=MERGED_AT)
+        pulls[pulls.index(pr)] = merged
+        # GitHub deletes the branch of a merged pull request.
+        del self.heads[(pr.repository.name, pr.head_branch)]
+        return merged
 
     def dashboard_comment(self, pr, body):
         comment = FakeComment(len(self.comments) + 1, pr, BOT, body)
@@ -1952,6 +2308,9 @@ class FakeGitHub:
             mismatch.tested.commit,
         ) in self.clean_base_merges
 
+    def holds(self, repository, commit, ancestor):
+        return (repository.name, commit, ancestor) in self.held
+
     def hub_runs(self, pr):
         return self.runs.get(pr.label, [])
 
@@ -2005,10 +2364,7 @@ class FakeGitHub:
         if pr.label in self.merge_refusals:
             raise MergeRefused(self.merge_refusals[pr.label])
         self.merged.append((pr.label, message))
-        pulls = self.pulls[pr.repository.name]
-        pulls[pulls.index(pr)] = replace(pr, is_open=False, merged=True)
-        # GitHub deletes the branch of a merged pull request.
-        del self.heads[(pr.repository.name, pr.head_branch)]
+        self.merge_on_its_own(pr)
         return f"{pr.repository.name}-merge".encode().hex()[:40].ljust(40, "0")
 
     def rerun(self, run):
@@ -2050,7 +2406,10 @@ class SyncAlone(unittest.TestCase):
         nodes = github.open_pull_request(NODES_HUB)
         old = github.dashboard_comment(nodes, f"{merge_set.DASHBOARD_MARKER}\nold set")
         sync(github)
-        self.assertEqual(old.body, merge_set.render_alone_dashboard(SET_NAME))
+        self.assertEqual(
+            old.body,
+            merge_set.render_alone_dashboard(set_state(member(NODES_HUB, nodes))),
+        )
         self.assertEqual(github.gates(nodes)[-1], merge_set.alone_gate(SET_NAME))
 
     def test_a_box_ticked_on_a_pull_request_now_alone_merges_nothing(self):
@@ -2064,7 +2423,29 @@ class SyncAlone(unittest.TestCase):
         github.tick(old, Action.MERGE)
         sync(github)
         self.assertEqual(github.merged, [])
-        self.assertEqual(old.body, merge_set.render_alone_dashboard(SET_NAME))
+        self.assertEqual(
+            old.body,
+            merge_set.render_alone_dashboard(set_state(member(NODES_HUB, nodes))),
+        )
+
+    def test_the_last_pull_request_left_by_a_merge_on_its_own_is_alone(self):
+        github = FakeGitHub(self)
+        nodes = github.open_pull_request(NODES_HUB, 88)
+        launchers = github.open_pull_request(LAUNCHERS_HUB, 132)
+        sync(github)
+        launchers = github.merge_on_its_own(launchers)
+        sync(github, repository=LAUNCHERS_HUB, pull_request=132)
+        self.assertEqual(github.gates(nodes)[-1], merge_set.alone_gate(SET_NAME))
+        alone = (
+            f"{merge_set.DASHBOARD_MARKER}\n### Set `{SET_NAME}`\n\n"
+            f"No other repository has a change on the branch `{SET_NAME}` left to "
+            f"merge, so [nodes-hub#88]({nodes.url}) is alone: its own merge button "
+            "merges it.\n\n"
+            f"Merged from the set: [launchers-hub#132]({launchers.url}).\n"
+        )
+        for pr in (nodes, launchers):
+            with self.subTest(pr=pr.label):
+                self.assertEqual(github.dashboard_body(pr), alone)
 
     def test_a_pull_request_from_a_fork_is_not_part_of_a_set(self):
         github = FakeGitHub(self)
@@ -2409,12 +2790,31 @@ class SyncMerge(unittest.TestCase):
             "- nodes-hub#88 did not merge: Base branch was modified.", report_text
         )
         self.assertIn("- contracts-hub#9 was not tried.", report_text)
-        # The two that did not merge are a set of their own, blocked again.
+        # The two that did not merge are blocked again, and the one that
+        # merged stays in the set as merged.
+        merged_row = (
+            f"| peppy | [#512]({self.peppy.url}) | `{self.peppy.head_commit[:7]}` "
+            "|  | merged |"
+        )
         for pr in (self.nodes, self.contracts):
             with self.subTest(pr=pr.label):
                 self.assertEqual(self.github.gates(pr)[-1].state, "pending")
-                self.assertIn("| nodes-hub |", self.github.dashboard_body(pr))
-                self.assertNotIn("| peppy |", self.github.dashboard_body(pr))
+                body = self.github.dashboard_body(pr)
+                self.assertIn("| nodes-hub |", body)
+                self.assertIn(merged_row, body)
+                self.assertIn("Merge the 2 pull requests of this set together", body)
+        self.assertEqual(
+            self.github.dashboard_body(self.peppy),
+            f"{merge_set.DASHBOARD_MARKER}\n### Set `{SET_NAME}`\n\n"
+            "Merged together: peppy#512. Not merged: nodes-hub#88, contracts-hub#9.\n",
+        )
+        # The sync of the merge of peppy#512 writes the dashboard of the set
+        # on it too.
+        sync(self.github, repository=PEPPY, pull_request=512)
+        self.assertEqual(
+            self.github.dashboard_body(self.peppy),
+            self.github.dashboard_body(self.nodes),
+        )
 
     def test_a_merge_that_stops_blocks_the_rest_before_it_reads_the_set_again(self):
         self.github.merge_refusals[self.nodes.label] = "Base branch was modified."
@@ -2432,10 +2832,20 @@ class SyncMerge(unittest.TestCase):
         self.assertEqual(
             self.github.gates(self.contracts)[-1], merge_set.alone_gate(SET_NAME)
         )
-        self.assertEqual(
-            self.github.dashboard_body(self.contracts),
-            merge_set.render_alone_dashboard(SET_NAME),
+        alone = (
+            f"{merge_set.DASHBOARD_MARKER}\n### Set `{SET_NAME}`\n\n"
+            f"No other repository has a change on the branch `{SET_NAME}` left to "
+            f"merge, so [contracts-hub#9]({self.contracts.url}) is alone: its own "
+            "merge button merges it.\n\n"
+            f"Merged from the set: [peppy#512]({self.peppy.url}), "
+            f"[nodes-hub#88]({self.nodes.url}).\n"
         )
+        self.assertEqual(self.github.dashboard_body(self.contracts), alone)
+        # The syncs of the merges write it on the pull requests that merged.
+        sync(self.github, repository=PEPPY, pull_request=512)
+        for pr in (self.peppy, self.nodes):
+            with self.subTest(pr=pr.label):
+                self.assertEqual(self.github.dashboard_body(pr), alone)
 
     def test_a_pull_request_github_does_not_merge_stops_the_set_before_any_merge(self):
         # A rule the bot does not read (a required deployment, say) blocks it.
@@ -2607,6 +3017,107 @@ class SyncLibsAndSimChat(unittest.TestCase):
             [label for label, _ in self.github.merged],
             ["public-peppy-libs#160", "nodes-hub#88", "sim-chat#61"],
         )
+
+
+class SyncMergedOnItsOwn(unittest.TestCase):
+    """peppy#512, nodes-hub#88 and launchers-hub#132 form a set, and
+    launchers-hub#132 merges on its own, by its merge button. GitHub deletes
+    its branch."""
+
+    def setUp(self):
+        self.github = FakeGitHub(self)
+        self.peppy = self.github.open_pull_request(PEPPY, 512)
+        self.nodes = self.github.open_pull_request(NODES_HUB, 88)
+        self.launchers = self.github.open_pull_request(LAUNCHERS_HUB, 132)
+        sync(self.github)
+        self.launchers = self.github.merge_on_its_own(self.launchers)
+        sync(self.github, repository=LAUNCHERS_HUB, pull_request=132)
+
+    def tick_merge(self, pr):
+        (comment,) = self.github.comments_on(pr)
+        self.github.tick(comment, Action.MERGE)
+        sync(self.github, repository=pr.repository, pull_request=pr.number)
+
+    def test_it_stays_in_every_dashboard_of_the_set_as_merged(self):
+        body = self.github.dashboard_body(self.nodes)
+        self.assertIn(
+            f"| launchers-hub | [#132]({self.launchers.url}) "
+            f"| `{self.launchers.head_commit[:7]}` |  | merged |",
+            body,
+        )
+        self.assertIn("**Ready to merge.**", body)
+        self.assertIn("Merge the 2 pull requests of this set together", body)
+        for pr in (self.peppy, self.launchers):
+            with self.subTest(pr=pr.label):
+                self.assertEqual(self.github.dashboard_body(pr), body)
+        for pr in (self.peppy, self.nodes):
+            with self.subTest(pr=pr.label):
+                self.assertEqual(self.github.gates(pr)[-1].state, "pending")
+        # The head that merged gets no gate after the merge.
+        self.assertEqual(len(self.github.gates(self.launchers)), 1)
+
+    def test_the_rest_of_the_set_merges_and_names_it(self):
+        self.tick_merge(self.nodes)
+        self.assertEqual(
+            [label for label, _ in self.github.merged], ["peppy#512", "nodes-hub#88"]
+        )
+        merged = (
+            f"{merge_set.DASHBOARD_MARKER}\n### Set `{SET_NAME}`\n\n"
+            "Merged together: peppy#512, nodes-hub#88. Merged before them: "
+            "launchers-hub#132.\n"
+        )
+        for pr in (self.peppy, self.nodes, self.launchers):
+            with self.subTest(pr=pr.label):
+                self.assertEqual(self.github.dashboard_body(pr), merged)
+                (report_text,) = self.github.reports_on(pr)
+                self.assertTrue(
+                    report_text.startswith(
+                        f"The set `{SET_NAME}` merged, as @alice asked:"
+                    )
+                )
+        # The set has no open pull request left, so the next sync writes
+        # nothing.
+        sync(self.github)
+        self.assertEqual(self.github.dashboard_body(self.launchers), merged)
+
+    def test_a_box_ticked_on_the_pull_request_that_merged_merges_the_rest(self):
+        self.tick_merge(self.launchers)
+        self.assertEqual(
+            [label for label, _ in self.github.merged], ["peppy#512", "nodes-hub#88"]
+        )
+        (report_text,) = self.github.reports_on(self.launchers)
+        self.assertIn("- nodes-hub#88 merged as", report_text)
+
+    def test_a_hub_run_that_ran_an_older_commit_of_it_is_out_of_date(self):
+        old = TestedRef(SET_NAME, commit(LAUNCHERS_HUB, "old"))
+        tested = TestedSet(
+            hubs={
+                "nodes-hub": TestedRef("checkout", self.nodes.head_commit),
+                "launchers-hub": old,
+            },
+            peppy=TestedRef(SET_NAME, self.peppy.head_commit),
+        )
+        self.github.runs[self.nodes.label] = [
+            hub_run(NODES_HUB, 10, records=[JobRecord("check-index", tested)])
+        ]
+        sync(self.github)
+        body = self.github.dashboard_body(self.nodes)
+        self.assertIn(
+            f"launchers-hub at `{SET_NAME}` `{old.commit[:7]}`, and its branch of "
+            f"the set merged at `{self.launchers.head_commit[:7]}`: re-run it.",
+            body,
+        )
+        self.assertIn("| CI out of date |", body)
+        self.assertIn("Re-run the out-of-date CI of this set (1 run)", body)
+        # The re-run reads main, which holds the merge of launchers-hub#132.
+        main = TestedRef("main", commit(LAUNCHERS_HUB, "main"))
+        self.github.held.add(("launchers-hub", main.commit, self.launchers.head_commit))
+        rerun = replace(tested, hubs={**tested.hubs, "launchers-hub": main})
+        self.github.runs[self.nodes.label] = [
+            hub_run(NODES_HUB, 10, records=[JobRecord("check-index", rerun)])
+        ]
+        sync(self.github)
+        self.assertIn("**Ready to merge.**", self.github.dashboard_body(self.nodes))
 
 
 class SyncRerun(unittest.TestCase):
@@ -2827,6 +3338,7 @@ class Gateway(unittest.TestCase):
             "title": pr.title,
             "user": {"login": pr.author},
             "state": "open",
+            "created_at": "2026-10-26T20:32:00Z",
             "head": {"sha": pr.head_commit, "ref": SET_NAME, "repo": repo},
             "base": {"ref": "main", "repo": repo},
             "mergeable": True,
@@ -2985,7 +3497,7 @@ class Gateway(unittest.TestCase):
         )
         self.git = FakeGit({(self.fork, self.tested, self.base, self.head): git_answer})
         self.mismatch = merge_set.Mismatch(
-            NODES_HUB, TestedRef(SET_NAME, self.tested), self.head
+            NODES_HUB, TestedRef(SET_NAME, self.tested), self.head, False
         )
         return gateway_of(self.api, self.git)
 
@@ -3024,6 +3536,29 @@ class Gateway(unittest.TestCase):
         self.assertTrue(log.getvalue().startswith("::warning::"))
         self.assertIn(f"ran nodes-hub at {self.tested[:7]}", log.getvalue())
         self.assertIn("not our ref", log.getvalue())
+
+    def test_a_commit_holds_an_ancestor_of_which_it_lacks_no_commit(self):
+        ancestor, head = commit(LAUNCHERS_HUB), commit(LAUNCHERS_HUB, "main")
+        path = f"/repos/Peppy-bot/launchers-hub/compare/{ancestor}...{head}"
+        for answer, expected in (
+            (comparison_item(ancestor, behind_by=0), True),
+            (comparison_item(ancestor, behind_by=2), False),
+            (not_found(path), False),
+        ):
+            with self.subTest(answer=answer):
+                api = FakeApi({("GET", path): answer})
+                gateway = gateway_of(api)
+                self.assertEqual(gateway.holds(LAUNCHERS_HUB, head, ancestor), expected)
+                # The jobs that ran the same commit are answered at once.
+                self.assertEqual(gateway.holds(LAUNCHERS_HUB, head, ancestor), expected)
+                self.assertEqual(len(api.calls), 1)
+
+    def test_another_failure_to_compare_two_commits_stops_the_sync(self):
+        ancestor, head = commit(LAUNCHERS_HUB), commit(LAUNCHERS_HUB, "main")
+        path = f"/repos/Peppy-bot/launchers-hub/compare/{ancestor}...{head}"
+        api = FakeApi({("GET", path): ApiError(f"GET {path}", 502, "Bad Gateway")})
+        with self.assertRaises(ApiError):
+            gateway_of(api).holds(LAUNCHERS_HUB, head, ancestor)
 
     def test_a_user_who_is_no_collaborator_has_no_permission(self):
         path = "/repos/Peppy-bot/nodes-hub/collaborators/mallory/permission"
