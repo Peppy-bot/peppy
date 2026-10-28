@@ -68,7 +68,7 @@ A join and a removal follow the leases. The daemon refuses a join under the name
 
 - The daemon ends every lease with no give-back, and every offer, then writes the halt to its data root.
 - Until `clear_halt`, it refuses every lease, and `check_move` refuses every call, from every client.
-- Each lease holder, each MCP server and `peppy node call` cancel each goal that they sent on a marked member, and send no new command, not even a safe state, so the safety layer of each robot acts. A lease holder keeps its `lease` and `changes` goals, and each goal that is not on a marked member.
+- Each lease holder, each MCP server and `peppy node call` cancel each goal that they sent on a marked member, and send no new command, not even a safe state, so the safety layer of each robot acts. A lease holder that streams setpoints, such as the teleoperation headset, ends its stream with a short burst of the measured pose, which holds the robot where it is: that burst is a stop, which the halt allows. A lease holder keeps its `lease` and `changes` goals, and each goal that is not on a marked member.
 - The halt stays after a restart of the daemon. A second halt changes nothing else.
 
 A halt that the daemon cannot write to its data root, such as on a full disk, holds all the same, and the call fails with `attempt_failed`: that halt ends at a restart of the daemon, and a next halt writes it again.

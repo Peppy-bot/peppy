@@ -12,6 +12,7 @@ use super::super::testgen::{
     DepActionSpec, DepLinkSpec, DepServiceSpec, DepTopicSpec, MOCK_CORE_NODE, MOCK_PEER_LINK_ID,
     MOCK_SOURCE_LINK_ID, ObservedLinkSpec, PairTopicSpec, PairingLinkSpec, TargetSpec,
     TestGenRegistry, dep_member_name, mock_instance_id, reserved_member_owners,
+    unreserved_member_name,
 };
 use super::scaffold::sanitize_rust_module_name;
 use super::topics::{qos_profile_tokens, retention_tokens};
@@ -91,7 +92,7 @@ fn claim_member_name(
     raw: &str,
     owners: &mut std::collections::HashMap<String, String>,
 ) -> Result<Ident> {
-    let sanitized = sanitize_rust_module_name(raw);
+    let sanitized = unreserved_member_name(link_id, raw, sanitize_rust_module_name);
     claim_sanitized_name(owners, &sanitized, "mock", &format!("{link_id}/{raw}"))?;
     Ok(Ident::new(&sanitized, Span::call_site()))
 }

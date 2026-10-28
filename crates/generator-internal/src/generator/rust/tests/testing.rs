@@ -198,8 +198,8 @@ fn required_pairing_slot_has_no_vacancy_knob() {
     );
 }
 
-#[test]
-fn a_member_shadowing_one_of_the_mock_s_own_bindings_is_a_hard_error() {
+/// A dependency slot `camera` whose producer emits one topic per name.
+fn registry_with_camera_topics(names: &[&str]) -> TestGenRegistry {
     let mut registry = TestGenRegistry::default();
     registry.record_node_identity("relay_node", "v1");
     registry.deps.insert(
@@ -211,27 +211,61 @@ fn a_member_shadowing_one_of_the_mock_s_own_bindings_is_a_hard_error() {
                 tag: "v1".to_string(),
             },
             cardinality: Cardinality::One,
-            topics: vec![DepTopicSpec {
-                name: "session".to_string(),
-                module_link: "camera".to_string(),
-                format: MessageFormat::default(),
-                retention: TopicRetention::LiveOnly,
-            }],
+            topics: names
+                .iter()
+                .map(|name| DepTopicSpec {
+                    name: (*name).to_string(),
+                    module_link: "camera".to_string(),
+                    format: MessageFormat::default(),
+                    retention: TopicRetention::LiveOnly,
+                })
+                .collect(),
             services: Vec::new(),
             actions: Vec::new(),
         },
     );
+    registry
+}
 
+#[test]
+fn a_member_named_after_one_of_the_mock_s_own_bindings_takes_its_link_qualified_name() {
     let mut generator = RustGenerator::new();
-    let error = super::super::mock::render(&mut generator, &registry)
-        .expect_err("a member named after the mock's own `session` must not render");
+    super::super::mock::render(&mut generator, &registry_with_camera_topics(&["session"]))
+        .expect("a member named after the mock's own `session` renders");
+    let camera = generator
+        .into_artifacts()
+        .into_iter()
+        .find(|artifact| artifact.module_path == ["deps", "camera"])
+        .expect("the camera mock is rendered");
+    assert!(
+        camera.code_output.contains("pub mod camera_session"),
+        "the member is reached as `camera_session`:\n{}",
+        camera.code_output
+    );
+    assert!(
+        !camera.code_output.contains("pub mod session"),
+        "no member takes the mock's own `session`:\n{}",
+        camera.code_output
+    );
+}
+
+#[test]
+fn a_link_qualified_name_still_collides_with_a_member_that_carries_it() {
+    let mut generator = RustGenerator::new();
+    let error = super::super::mock::render(
+        &mut generator,
+        &registry_with_camera_topics(&["session", "camera_session"]),
+    )
+    .expect_err("two members on one module must not render");
     assert!(
         matches!(
             &error,
-            crate::error::Error::ModuleNameCollision { sanitized, second, .. }
-                if sanitized == "session" && second == "camera/session"
+            crate::error::Error::ModuleNameCollision { sanitized, first, second, .. }
+                if sanitized == "camera_session"
+                    && first == "camera/session"
+                    && second == "camera/camera_session"
         ),
-        "expected a collision against the mock's own `session`, got: {error}"
+        "expected `session` and `camera_session` to collide on `camera_session`, got: {error}"
     );
 }
 
