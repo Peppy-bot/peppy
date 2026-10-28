@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       repository:
-        description: The repository of the event (peppy, public-peppy-libs, a hub or sim-chat)
+        description: The repository of the event (peppy, public-peppy-libs or a hub)
         required: true
         type: string
       branch:

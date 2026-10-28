@@ -5,12 +5,10 @@ A change that spans several repositories lands as pull requests that share one
 head branch name, the set name (see .github/actions/hub-ci-peppy/resolve.py).
 The CI of each hub pull request tests it with the branches of the set in peppy
 and in the other hubs, so the pull requests of a set are green together and
-merge together. Two other repositories are part of a set too, so that their
-`main` and the `main` of the hubs change together: public-peppy-libs, the
-libraries that the nodes of the hubs build on, and sim-chat, the chat that
-drives a stack through the MCP endpoints that peppy and the hubs serve. No hub
-CI reads their branches of a set: a hub builds the libraries at the commits
-that its lockfiles pin, and reads nothing of sim-chat.
+merge together. One other repository is part of a set too, so that its `main`
+and the `main` of the hubs change together: public-peppy-libs, the libraries
+that the nodes of the hubs build on. No hub CI reads its branch of a set: a hub
+builds the libraries at the commits that its lockfiles pin.
 
 The `merge-set` commit status is a required check of peppy `dev` and of the
 `main` of each other repository of a set, and only the merge-set GitHub App
@@ -35,7 +33,7 @@ of the same name.
 
 Ticking "Merge" asks the bot to merge the set. The bot checks every pull
 request of the set, sets the status green on each, checks that GitHub merges
-each one, and merges them one after the other, peppy first and sim-chat last.
+each one, and merges them one after the other, peppy first and the hubs last.
 GitHub merges one pull request at a time, so a merge that fails part way
 leaves the set partly merged: the bot then blocks the pull requests that did
 not merge and reports what merged on every pull request of the set.
@@ -68,8 +66,8 @@ ask a re-run either: the merge of the set takes in that base all the same. The
 bot asks git to merge the commit and the base again, in a scratch repository
 (GitMerges), and compares the result with the head, so a conflict resolved by
 hand or any other change of the branch counts. A job reads the branches of
-peppy and the hubs alone, so a change of the public-peppy-libs or sim-chat
-branch of a set makes no hub run out of date. Every job that runs the
+peppy and the hubs alone, so a change of the public-peppy-libs branch of a set
+makes no hub run out of date. Every job that runs the
 hub-ci-peppy action uploads the set it ran with, its set record, named after
 the check run of the job. A job that does not run the action reads no other
 repository, so it has no record and is never out of date; nor has the first
@@ -170,19 +168,15 @@ PEPPY = Repository("peppy", resolve.PEPPY_DEV_BRANCH, None)
 # The libraries that the nodes of the hubs build on. No hub CI reads its branch
 # of a set.
 PUBLIC_PEPPY_LIBS = Repository("public-peppy-libs", "main", None)
-# The chat that drives a stack through the MCP endpoints that peppy and the
-# hubs serve. No hub CI reads it.
-SIM_CHAT = Repository("sim-chat", "main", None)
 
 # Every repository a set can span, in the order the bot merges them: peppy
 # first, then public-peppy-libs, which the hubs build on, then the hubs in the
-# order of their repository ids, then sim-chat, which uses what they serve.
-# The order is fixed, so every report of a merge reads the same way.
+# order of their repository ids. The order is fixed, so every report of a merge
+# reads the same way.
 REPOSITORIES = (
     PEPPY,
     PUBLIC_PEPPY_LIBS,
     *(Repository(hub.name, resolve.HUB_MAIN_BRANCH, hub) for hub in resolve.HUBS),
-    SIM_CHAT,
 )
 REPOSITORIES_BY_NAME = {repository.name: repository for repository in REPOSITORIES}
 
