@@ -1,5 +1,5 @@
 //! The joinable nodes of a launch, as the coordinator builds them: every
-//! node that a join of an option of a `stack_copies` scope can bring (see
+//! node that a join of an option of a `robot_membership` scope can bring (see
 //! [`daemon_config::launcher::JoinableNodes`]).
 //!
 //! The launch resolves them with its own deployments and mints their doc

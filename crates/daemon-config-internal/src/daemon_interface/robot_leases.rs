@@ -1,5 +1,5 @@
-//! `fleet:v1`: the fleet listing and its changes, the leases that give one
-//! client the right to move one robot, the move check and the halt of the
+//! `robot_leases:v1`: the fleet listing and its changes, the leases that give
+//! one client the right to move one robot, the move check and the halt of the
 //! stack. Its scope names the members that a client may call.
 //!
 //! The types below are the messages of the interface in their canonical
@@ -9,11 +9,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 /// The interface's document, compiled in.
-pub(super) const DOCUMENT: &str = include_str!("fleet.v1.json5");
+pub(super) const DOCUMENT: &str = include_str!("robot_leases.v1.json5");
 
-/// A member of `fleet:v1`.
+/// A member of `robot_leases:v1`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum FleetMember {
+pub enum RobotLeasesMember {
     List,
     Contract,
     Take,
@@ -28,7 +28,7 @@ pub enum FleetMember {
     Lease,
 }
 
-impl FleetMember {
+impl RobotLeasesMember {
     /// Every member of the interface: its services, then its actions.
     pub const ALL: [Self; 12] = [
         Self::List,
@@ -83,11 +83,11 @@ impl FleetMember {
     }
 }
 
-/// A member that a fleet scope can name: each member but the services of a
-/// lease holder, which `lease` brings.
+/// A member that a `robot_leases` scope can name: each member but the
+/// services of a lease holder, which `lease` brings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ScopedFleetMember {
+pub enum ScopedRobotLeasesMember {
     List,
     Contract,
     Changes,
@@ -97,49 +97,51 @@ pub enum ScopedFleetMember {
     ClearHalt,
 }
 
-impl ScopedFleetMember {
-    fn member(self) -> FleetMember {
+impl ScopedRobotLeasesMember {
+    fn member(self) -> RobotLeasesMember {
         match self {
-            Self::List => FleetMember::List,
-            Self::Contract => FleetMember::Contract,
-            Self::Changes => FleetMember::Changes,
-            Self::Lease => FleetMember::Lease,
-            Self::CheckMove => FleetMember::CheckMove,
-            Self::Halt => FleetMember::Halt,
-            Self::ClearHalt => FleetMember::ClearHalt,
+            Self::List => RobotLeasesMember::List,
+            Self::Contract => RobotLeasesMember::Contract,
+            Self::Changes => RobotLeasesMember::Changes,
+            Self::Lease => RobotLeasesMember::Lease,
+            Self::CheckMove => RobotLeasesMember::CheckMove,
+            Self::Halt => RobotLeasesMember::Halt,
+            Self::ClearHalt => RobotLeasesMember::ClearHalt,
         }
     }
 }
 
-/// The scope of a `fleet` target: the members that its client may call.
+/// The scope of a daemon target of `robot_leases:v1`: the members that its
+/// client may call.
 /// `lease` brings the services of a lease holder (`take`, `release`,
 /// `offer`, `open` and `close`), and `check_move` answers every client with
 /// or without a scope.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(try_from = "RawFleetScope")]
-pub struct FleetScope {
-    members: BTreeSet<ScopedFleetMember>,
+#[serde(try_from = "RawRobotLeasesScope")]
+pub struct RobotLeasesScope {
+    members: BTreeSet<ScopedRobotLeasesMember>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawFleetScope {
+struct RawRobotLeasesScope {
     members: Vec<String>,
 }
 
-impl TryFrom<RawFleetScope> for FleetScope {
+impl TryFrom<RawRobotLeasesScope> for RobotLeasesScope {
     type Error = String;
 
-    fn try_from(raw: RawFleetScope) -> Result<Self, String> {
+    fn try_from(raw: RawRobotLeasesScope) -> Result<Self, String> {
         if raw.members.is_empty() {
             return Err(
-                "`members` names no member; a fleet scope names at least one member of `fleet:v1`"
+                "`members` names no member; a `robot_leases` scope names at least one member of \
+                 `robot_leases:v1`"
                     .to_owned(),
             );
         }
         let mut members = BTreeSet::new();
         for name in &raw.members {
-            let member = match FleetMember::named(name) {
+            let member = match RobotLeasesMember::named(name) {
                 Some(member) if member.is_lease_service() => {
                     return Err(format!(
                         "`members` names `{name}`, which `lease` brings with the other services \
@@ -149,12 +151,13 @@ impl TryFrom<RawFleetScope> for FleetScope {
                 Some(member) => member,
                 None => {
                     return Err(format!(
-                        "`members` names `{name}`, which is not a member of `fleet:v1`; a scope \
-                         names list, contract, changes, lease, check_move, halt and clear_halt"
+                        "`members` names `{name}`, which is not a member of `robot_leases:v1`; a \
+                         scope names list, contract, changes, lease, check_move, halt and \
+                         clear_halt"
                     ));
                 }
             };
-            let scoped = ScopedFleetMember::ALL
+            let scoped = ScopedRobotLeasesMember::ALL
                 .into_iter()
                 .find(|scoped| scoped.member() == member)
                 .expect("each member that is not a lease service can be scoped");
@@ -166,7 +169,7 @@ impl TryFrom<RawFleetScope> for FleetScope {
     }
 }
 
-impl ScopedFleetMember {
+impl ScopedRobotLeasesMember {
     const ALL: [Self; 7] = [
         Self::List,
         Self::Contract,
@@ -178,13 +181,14 @@ impl ScopedFleetMember {
     ];
 }
 
-impl FleetScope {
+impl RobotLeasesScope {
     /// Leaves out of `bundle` each tool and task of the daemon target
     /// `target` whose member the scope does not give: the server serves no
     /// tool that the daemon refuses.
     pub(super) fn narrow(&self, bundle: &mut peppy_mcp_catalog::ExposureBundle, target: &str) {
-        let given =
-            |member: &str| FleetMember::named(member).is_some_and(|member| self.allows(member));
+        let given = |member: &str| {
+            RobotLeasesMember::named(member).is_some_and(|member| self.allows(member))
+        };
         bundle
             .tools
             .retain(|tool| tool.target != target || given(&tool.member));
@@ -194,12 +198,12 @@ impl FleetScope {
     }
 
     /// Whether the scope lets its client call `member`.
-    pub fn allows(&self, member: FleetMember) -> bool {
-        if member == FleetMember::CheckMove {
+    pub fn allows(&self, member: RobotLeasesMember) -> bool {
+        if member == RobotLeasesMember::CheckMove {
             return true;
         }
         if member.is_lease_service() {
-            return self.members.contains(&ScopedFleetMember::Lease);
+            return self.members.contains(&ScopedRobotLeasesMember::Lease);
         }
         self.members.iter().any(|scoped| scoped.member() == member)
     }
@@ -413,16 +417,16 @@ impl From<MoveTarget> for CheckMoveRequest {
     }
 }
 
-/// The failure kinds that `fleet:v1` declares.
+/// The failure kinds that `robot_leases:v1` declares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum FleetFailureKind {
+pub enum RobotLeasesFailureKind {
     Halted,
     Leased,
     NotLeased,
 }
 
-impl FleetFailureKind {
+impl RobotLeasesFailureKind {
     /// The name of the kind on the wire and in the document.
     pub fn name(self) -> &'static str {
         match self {
@@ -433,9 +437,9 @@ impl FleetFailureKind {
     }
 }
 
-impl From<FleetFailureKind> for config::failure_kind::FailureKindName {
-    fn from(kind: FleetFailureKind) -> Self {
-        Self::parse(kind.name()).expect("each kind of fleet:v1 is a valid failure kind name")
+impl From<RobotLeasesFailureKind> for config::failure_kind::FailureKindName {
+    fn from(kind: RobotLeasesFailureKind) -> Self {
+        Self::parse(kind.name()).expect("each kind of robot_leases:v1 is a valid failure kind name")
     }
 }
 
@@ -470,7 +474,7 @@ pub struct CheckMoveResponse {
 /// the client refuses its call with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveRefusal {
-    pub failure_kind: FleetFailureKind,
+    pub failure_kind: RobotLeasesFailureKind,
     pub message: String,
 }
 
@@ -534,38 +538,38 @@ pub struct LeaseEvent {
 mod tests {
     use super::*;
 
-    fn scope(text: &str) -> Result<FleetScope, String> {
-        serde_json::from_str::<FleetScope>(text).map_err(|error| error.to_string())
+    fn scope(text: &str) -> Result<RobotLeasesScope, String> {
+        serde_json::from_str::<RobotLeasesScope>(text).map_err(|error| error.to_string())
     }
 
     #[test]
     fn a_scope_names_members_and_lease_brings_the_services_of_a_holder() {
         let holder = scope(r#"{ "members": ["lease", "changes"] }"#).unwrap();
         for member in [
-            FleetMember::Lease,
-            FleetMember::Changes,
-            FleetMember::Take,
-            FleetMember::Release,
-            FleetMember::Offer,
-            FleetMember::Open,
-            FleetMember::Close,
-            FleetMember::CheckMove,
+            RobotLeasesMember::Lease,
+            RobotLeasesMember::Changes,
+            RobotLeasesMember::Take,
+            RobotLeasesMember::Release,
+            RobotLeasesMember::Offer,
+            RobotLeasesMember::Open,
+            RobotLeasesMember::Close,
+            RobotLeasesMember::CheckMove,
         ] {
             assert!(holder.allows(member), "{member:?}");
         }
         for member in [
-            FleetMember::List,
-            FleetMember::Contract,
-            FleetMember::Halt,
-            FleetMember::ClearHalt,
+            RobotLeasesMember::List,
+            RobotLeasesMember::Contract,
+            RobotLeasesMember::Halt,
+            RobotLeasesMember::ClearHalt,
         ] {
             assert!(!holder.allows(member), "{member:?}");
         }
         let controls = scope(r#"{ "members": ["list", "halt", "clear_halt"] }"#).unwrap();
-        assert!(controls.allows(FleetMember::Halt));
-        assert!(controls.allows(FleetMember::CheckMove));
-        assert!(!controls.allows(FleetMember::Take));
-        assert!(!controls.allows(FleetMember::Changes));
+        assert!(controls.allows(RobotLeasesMember::Halt));
+        assert!(controls.allows(RobotLeasesMember::CheckMove));
+        assert!(!controls.allows(RobotLeasesMember::Take));
+        assert!(!controls.allows(RobotLeasesMember::Changes));
     }
 
     #[test]
@@ -573,7 +577,10 @@ mod tests {
         for (text, expected) in [
             (r#"{ "members": [] }"#, "names no member"),
             (r#"{ "members": ["take"] }"#, "name `lease`"),
-            (r#"{ "members": ["reset"] }"#, "not a member of `fleet:v1`"),
+            (
+                r#"{ "members": ["reset"] }"#,
+                "not a member of `robot_leases:v1`",
+            ),
             (r#"{ "members": ["list", "list"] }"#, "`list` twice"),
             (r#"{ "members": ["list"], "max": 1 }"#, "unknown field"),
         ] {
@@ -584,13 +591,13 @@ mod tests {
 
     #[test]
     fn every_member_has_its_name_and_its_kind() {
-        for member in FleetMember::ALL {
-            assert_eq!(FleetMember::named(member.name()), Some(member));
+        for member in RobotLeasesMember::ALL {
+            assert_eq!(RobotLeasesMember::named(member.name()), Some(member));
         }
-        assert_eq!(FleetMember::named("stop"), None);
-        assert!(FleetMember::Changes.is_action());
-        assert!(FleetMember::Lease.is_action());
-        assert!(!FleetMember::Halt.is_action());
+        assert_eq!(RobotLeasesMember::named("stop"), None);
+        assert!(RobotLeasesMember::Changes.is_action());
+        assert!(RobotLeasesMember::Lease.is_action());
+        assert!(!RobotLeasesMember::Halt.is_action());
     }
 
     #[test]

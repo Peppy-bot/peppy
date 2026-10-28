@@ -118,6 +118,11 @@ mod tests {
         .unwrap()
     }
 
+    /// The target of the contract `(name, tag)`.
+    fn contract_target((name, tag): (&str, &str)) -> SenderTarget {
+        SenderTarget::contract(name, tag).unwrap()
+    }
+
     #[test]
     fn a_raw_call_goes_to_the_daemon_of_the_core_node_that_its_target_names() {
         let local = SenderTarget::node("cn-desk", names::CORE_NODE_TAG).unwrap();
@@ -134,32 +139,32 @@ mod tests {
 
     #[test]
     fn a_daemon_interface_call_goes_to_the_daemon_that_it_pins() {
-        let fleet = || SenderTarget::contract("fleet", "v1").unwrap();
+        let leases = || contract_target(names::ROBOT_LEASES_INTERFACE);
         let here = ProducerRef::new("cn-desk", "brave-otter-1234");
         let there = ProducerRef::new("cn-arm", "calm-heron-5678");
         assert_eq!(
-            daemon_receiver(&sender(fleet(), Some(&here))),
+            daemon_receiver(&sender(leases(), Some(&here))),
             Some(CallReceiver::ThisMachine)
         );
         assert_eq!(
-            daemon_receiver(&sender(fleet(), Some(&there))),
+            daemon_receiver(&sender(leases(), Some(&there))),
             Some(CallReceiver::OtherMachine)
         );
         assert_eq!(
-            daemon_receiver(&sender(fleet(), None)),
+            daemon_receiver(&sender(leases(), None)),
             Some(CallReceiver::OtherMachine),
             "an unpinned call may reach another machine, so it carries the machine proof"
         );
-        let copies = SenderTarget::contract("stack_copies", "v1").unwrap();
-        assert!(daemon_receiver(&sender(copies, Some(&here))).is_some());
+        let membership = contract_target(names::ROBOT_MEMBERSHIP_INTERFACE);
+        assert!(daemon_receiver(&sender(membership, Some(&here))).is_some());
     }
 
     #[test]
     fn a_call_to_a_node_or_to_another_contract_does_not_go_to_a_daemon() {
         let node = SenderTarget::node("arm", "v1").unwrap();
         let contract = SenderTarget::contract("manipulator", "v1").unwrap();
-        let later_fleet = SenderTarget::contract("fleet", "v2").unwrap();
-        for target in [node, contract, later_fleet] {
+        let later_leases = contract_target((names::ROBOT_LEASES_INTERFACE.0, "v2"));
+        for target in [node, contract, later_leases] {
             assert_eq!(daemon_receiver(&sender(target, None)), None);
         }
     }

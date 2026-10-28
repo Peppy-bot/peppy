@@ -9,8 +9,8 @@
 //! launcher gives a target that names it, the narrowing of its published
 //! schema by a scope, and the checks a launch runs on a scope.
 
-pub mod fleet;
-mod stack_copies;
+pub mod robot_leases;
+mod robot_membership;
 
 use crate::internal::launcher::{JoinableNodes, PreparedLauncher, UnitSelection, VacantReason};
 use config::node::{DaemonTargetDependency, DependsOn};
@@ -19,36 +19,36 @@ use peppy_codec::contract::{PeppyContract, PeppyContractParser};
 use peppy_mcp_catalog::{DaemonInterfaceRef, ExposureBundle, McpExposure, ResolvedInterface};
 use std::sync::LazyLock;
 
-use fleet::FleetScope;
-pub use stack_copies::{
-    Description, MAX_DESCRIPTION_CHARS, MAX_FEATURES, PlacedFeature, ScopedFeature, ScopedOption,
-    StackCopiesMember, StackCopiesScope,
+use robot_leases::RobotLeasesScope;
+pub use robot_membership::{
+    Description, MAX_DESCRIPTION_CHARS, MAX_FEATURES, PlacedFeature, RobotMembershipMember,
+    RobotMembershipScope, ScopedFeature, ScopedOption,
 };
 
 /// One daemon interface this peppy serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DaemonInterface {
-    /// `stack_copies`: list the copies of the running launch, add one,
-    /// remove one.
-    StackCopies,
-    /// `fleet`: the fleet listing and its changes, the leases of the robots,
-    /// the move check and the halt of the stack.
-    Fleet,
+    /// `robot_membership`: the robots of the stack, which are the copies of
+    /// the running launch: list them, add one, remove one.
+    RobotMembership,
+    /// `robot_leases`: the fleet listing and its changes, the leases of the
+    /// robots, the move check and the halt of the stack.
+    RobotLeases,
 }
 
-static STACK_COPIES_DOCUMENT: LazyLock<PeppyContract> = LazyLock::new(|| {
-    PeppyContractParser::from_content(stack_copies::DOCUMENT)
-        .expect("the compiled-in `stack_copies` document parses as a contract")
+static ROBOT_MEMBERSHIP_DOCUMENT: LazyLock<PeppyContract> = LazyLock::new(|| {
+    PeppyContractParser::from_content(robot_membership::DOCUMENT)
+        .expect("the compiled-in `robot_membership` document parses as a contract")
 });
 
-static FLEET_DOCUMENT: LazyLock<PeppyContract> = LazyLock::new(|| {
-    PeppyContractParser::from_content(fleet::DOCUMENT)
-        .expect("the compiled-in `fleet` document parses as a contract")
+static ROBOT_LEASES_DOCUMENT: LazyLock<PeppyContract> = LazyLock::new(|| {
+    PeppyContractParser::from_content(robot_leases::DOCUMENT)
+        .expect("the compiled-in `robot_leases` document parses as a contract")
 });
 
 impl DaemonInterface {
     /// Every interface this peppy serves.
-    pub const ALL: [Self; 2] = [Self::StackCopies, Self::Fleet];
+    pub const ALL: [Self; 2] = [Self::RobotMembership, Self::RobotLeases];
 
     /// The name a target's `daemon` reference names the interface by.
     pub fn name(self) -> &'static str {
@@ -65,8 +65,8 @@ impl DaemonInterface {
     /// names.
     fn name_and_tag(self) -> (&'static str, &'static str) {
         match self {
-            Self::StackCopies => names::STACK_COPIES_INTERFACE,
-            Self::Fleet => names::FLEET_INTERFACE,
+            Self::RobotMembership => names::ROBOT_MEMBERSHIP_INTERFACE,
+            Self::RobotLeases => names::ROBOT_LEASES_INTERFACE,
         }
     }
 
@@ -78,16 +78,16 @@ impl DaemonInterface {
     /// The interface's document in the contract format, as compiled in.
     pub fn document_text(self) -> &'static str {
         match self {
-            Self::StackCopies => stack_copies::DOCUMENT,
-            Self::Fleet => fleet::DOCUMENT,
+            Self::RobotMembership => robot_membership::DOCUMENT,
+            Self::RobotLeases => robot_leases::DOCUMENT,
         }
     }
 
     /// The interface's document, parsed.
     pub fn document(self) -> &'static PeppyContract {
         match self {
-            Self::StackCopies => &STACK_COPIES_DOCUMENT,
-            Self::Fleet => &FLEET_DOCUMENT,
+            Self::RobotMembership => &ROBOT_MEMBERSHIP_DOCUMENT,
+            Self::RobotLeases => &ROBOT_LEASES_DOCUMENT,
         }
     }
 
@@ -136,10 +136,12 @@ impl DaemonInterface {
     /// into the interface's scope type, which holds the scope's rules.
     pub fn parse_scope(self, value: &serde_json::Value) -> Result<DaemonScope, String> {
         match self {
-            Self::StackCopies => {
-                parse_value::<StackCopiesScope>(value).map(DaemonScope::StackCopies)
+            Self::RobotMembership => {
+                parse_value::<RobotMembershipScope>(value).map(DaemonScope::RobotMembership)
             }
-            Self::Fleet => parse_value::<FleetScope>(value).map(DaemonScope::Fleet),
+            Self::RobotLeases => {
+                parse_value::<RobotLeasesScope>(value).map(DaemonScope::RobotLeases)
+            }
         }
     }
 }
@@ -282,16 +284,16 @@ fn collect_served(
 /// of one daemon target do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonScope {
-    StackCopies(StackCopiesScope),
-    Fleet(FleetScope),
+    RobotMembership(RobotMembershipScope),
+    RobotLeases(RobotLeasesScope),
 }
 
 impl DaemonScope {
     /// The interface this scope belongs to.
     pub fn interface(&self) -> DaemonInterface {
         match self {
-            Self::StackCopies(_) => DaemonInterface::StackCopies,
-            Self::Fleet(_) => DaemonInterface::Fleet,
+            Self::RobotMembership(_) => DaemonInterface::RobotMembership,
+            Self::RobotLeases(_) => DaemonInterface::RobotLeases,
         }
     }
 
@@ -305,23 +307,23 @@ impl DaemonScope {
         selection: &UnitSelection,
     ) -> Result<JoinableNodes, Vec<String>> {
         match self {
-            Self::StackCopies(scope) => scope.check_launch(prepared, selection),
-            // A fleet scope names members of the interface alone, so every
-            // launcher holds it, and a member brings no node to join.
-            Self::Fleet(_) => Ok(JoinableNodes::default()),
+            Self::RobotMembership(scope) => scope.check_launch(prepared, selection),
+            // A `robot_leases` scope names members of the interface alone, so
+            // every launcher holds it, and a member brings no node to join.
+            Self::RobotLeases(_) => Ok(JoinableNodes::default()),
         }
     }
 
     /// Narrows the tool and task entries of `bundle` that daemon target
     /// `target` serves to what this scope allows, so the runtime refuses
     /// input outside the scope before a call reaches the daemon: a
-    /// `stack_copies` scope narrows their input schemas, and a fleet scope
-    /// leaves out each entry of a member that it does not give. Entries of
-    /// other targets stay as they are.
+    /// `robot_membership` scope narrows their input schemas, and a
+    /// `robot_leases` scope leaves out each entry of a member that it does
+    /// not give. Entries of other targets stay as they are.
     pub fn narrow(&self, bundle: &mut ExposureBundle, target: &str) {
         match self {
-            Self::StackCopies(scope) => scope.narrow(bundle, target),
-            Self::Fleet(scope) => scope.narrow(bundle, target),
+            Self::RobotMembership(scope) => scope.narrow(bundle, target),
+            Self::RobotLeases(scope) => scope.narrow(bundle, target),
         }
     }
 }

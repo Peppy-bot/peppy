@@ -12,7 +12,7 @@ pub(crate) use book::{
 use crate::services::federation::SliceOwnership;
 use crate::services::stack::ActiveLaunch;
 use config::failure_kind::PeppyFailureKind;
-use daemon_config::daemon_interface::fleet::FleetFailureKind;
+use daemon_config::daemon_interface::robot_leases::RobotLeasesFailureKind;
 use peppylib::messaging::Failure;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -160,7 +160,7 @@ impl Refusal {
     /// goal.
     pub(crate) fn into_failure(self) -> Failure {
         match self.kind {
-            RefusalKind::Fleet(kind) => Failure::new(kind, self.message),
+            RefusalKind::RobotLeases(kind) => Failure::new(kind, self.message),
             RefusalKind::PreconditionFailed => {
                 Failure::new(PeppyFailureKind::PreconditionFailed, self.message)
             }
@@ -172,15 +172,14 @@ impl Refusal {
     /// a join or a removal that a lease or the halt refuses.
     pub(crate) fn into_daemon_failure(self) -> Failure {
         let kind = match self.kind {
-            RefusalKind::Fleet(FleetFailureKind::Halted) => {
+            RefusalKind::RobotLeases(RobotLeasesFailureKind::Halted) => {
                 core_node_api::DaemonFailureKind::Halted
             }
-            RefusalKind::Fleet(FleetFailureKind::Leased) => {
+            RefusalKind::RobotLeases(RobotLeasesFailureKind::Leased) => {
                 core_node_api::DaemonFailureKind::Leased
             }
-            RefusalKind::Fleet(FleetFailureKind::NotLeased) | RefusalKind::PreconditionFailed => {
-                PeppyFailureKind::PreconditionFailed.into()
-            }
+            RefusalKind::RobotLeases(RobotLeasesFailureKind::NotLeased)
+            | RefusalKind::PreconditionFailed => PeppyFailureKind::PreconditionFailed.into(),
             RefusalKind::Rejected => PeppyFailureKind::Rejected.into(),
         };
         Failure::new(kind, self.message)

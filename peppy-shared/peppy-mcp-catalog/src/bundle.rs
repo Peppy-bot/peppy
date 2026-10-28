@@ -734,7 +734,7 @@ mod tests {
         minimal_bundle_json(1, 1).replace(
             r#""resources": ["#,
             r#""daemon_targets": [
-    { "target": "stack", "name": "stack_copies", "tag": "v1" }
+    { "target": "stack", "name": "robot_membership", "tag": "v1" }
   ],
   "resources": ["#,
         )
@@ -747,7 +747,7 @@ mod tests {
             bundle.surface.daemon_targets(),
             [BundleDaemonTarget {
                 target: "stack".to_string(),
-                name: "stack_copies".to_string(),
+                name: "robot_membership".to_string(),
                 tag: "v1".to_string(),
             }]
         );

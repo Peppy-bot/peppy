@@ -235,12 +235,13 @@ async fn a_daemon_takes_the_cancel_of_a_goal_from_its_sender_alone() {
         .knowing("other_inst", other.public_key(), CallerKind::Instance);
     let daemon =
         MessengerHandle::from_shared(Arc::clone(&session)).checking_calls_with(Arc::new(check));
-    let fleet = || SenderTarget::contract("fleet", "v1").unwrap();
+    let (name, tag) = core_node_api::names::ROBOT_LEASES_INTERFACE;
+    let leases = || SenderTarget::contract(name, tag).unwrap();
     let mut action = ConcurrentAction::expose(
         &daemon,
         DAEMON_CORE_NODE,
         DAEMON_INSTANCE_ID,
-        fleet(),
+        leases(),
         "lease",
         false,
     )
@@ -253,7 +254,7 @@ async fn a_daemon_takes_the_cancel_of_a_goal_from_its_sender_alone() {
         &holder_client,
         DAEMON_CORE_NODE,
         "holder_inst",
-        fleet(),
+        leases(),
         "lease",
         Some(&producer),
         Payload::new(),
@@ -276,7 +277,7 @@ async fn a_daemon_takes_the_cancel_of_a_goal_from_its_sender_alone() {
         DAEMON_CORE_NODE,
         "other_inst",
         Some(&producer),
-        fleet(),
+        leases(),
         "lease",
     )
     .unwrap();

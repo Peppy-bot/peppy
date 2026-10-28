@@ -36,7 +36,7 @@ use core_node_api::encoding::{
     InstanceEndpoints, LaunchFeedbackStep, LaunchResult, NodeAddLogEntry, NodeBuildLogEntry,
     NodeLogs, NodeRunLogEntry, StackJoinGoal,
 };
-use daemon_config::daemon_interface::fleet::ChangeKind;
+use daemon_config::daemon_interface::robot_leases::ChangeKind;
 use daemon_config::launcher::{CopyMembership, ScopeCheck};
 use futures::FutureExt;
 use std::{collections::HashMap, panic::AssertUnwindSafe};

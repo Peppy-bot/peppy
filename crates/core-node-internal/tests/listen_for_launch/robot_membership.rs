@@ -1,16 +1,17 @@
-//! The copies of a launch through `stack_copies:v1`, which the daemon serves
-//! on the messaging layer: a client lists, joins and removes the copies of
-//! the options of its scope, and the daemon refuses a copy outside it.
+//! The copies of a launch through `robot_membership:v1`, which the daemon
+//! serves on the messaging layer: a client lists, joins and removes the
+//! copies of the options of its scope, and the daemon refuses a copy outside
+//! it.
 
 use super::copies::{execute, fleet_launch, participant_request};
-use super::fleet::InterfaceClient;
+use super::robot_leases::InterfaceClient;
 use super::*;
 use core_node_api::encoding::{PlacementSpec, StackListRequest};
 use daemon_config::daemon_interface::DaemonInterface;
 use peppy_codec::consumer::GoalOutcome;
 use serde_json::json;
 
-/// The manager, a client of `stack_copies:v1` deployed outside any copy.
+/// The manager, a client of `robot_membership:v1` deployed outside any copy.
 const MANAGER: &str = "manager_inst";
 
 /// The fleet of these tests, written under a new directory: the manager,
@@ -29,7 +30,7 @@ fn fleet_with_a_manager(
         "v1",
         NodeConfigOptions {
             run_cmd: &["sleep", "300"],
-            depends_on: r#"{ daemon: [{ name: "stack_copies", tag: "v1", link_id: "stack" }] }"#,
+            depends_on: r#"{ daemon: [{ name: "robot_membership", tag: "v1", link_id: "stack" }] }"#,
             interfaces: r#"{
                 services: { consumes: [{ link_id: "stack", name: "list" }] },
                 actions: { consumes: [
@@ -105,10 +106,10 @@ async fn a_client_joins_and_removes_the_copies_of_its_scope() {
     let (_directory, launcher) = fleet_with_a_manager(&started, &[]);
     let mut responders = answer_readiness(&started, "manager", MANAGER).await;
     responders.extend(answer_readiness(&started, "named_robot", "bravo_arm_inst").await);
-    execute(&started, &fleet_launch(launcher, "stack-copies-test"))
+    execute(&started, &fleet_launch(launcher, "robot-membership-test"))
         .await
         .assert_completed();
-    let manager = InterfaceClient::of(&started, DaemonInterface::StackCopies, MANAGER).await;
+    let manager = InterfaceClient::of(&started, DaemonInterface::RobotMembership, MANAGER).await;
 
     let listing = manager
         .call("list", json!({}))
@@ -176,7 +177,7 @@ async fn the_launch_copies_of_the_scope_are_join_goals_also_after_a_removal() {
     for instance in ["alpha_arm_inst", "bravo_arm_inst", "zulu_arm_inst"] {
         responders.extend(answer_readiness(&started, "named_robot", instance).await);
     }
-    let launch = fleet_launch(launcher, "stack-copies-launch-test")
+    let launch = fleet_launch(launcher, "robot-membership-launch-test")
         .with_layout(
             PlacementSpec::default(),
             Vec::new(),
@@ -184,7 +185,7 @@ async fn the_launch_copies_of_the_scope_are_join_goals_also_after_a_removal() {
         )
         .expect("the layout holds");
     execute(&started, &launch).await.assert_completed();
-    let manager = InterfaceClient::of(&started, DaemonInterface::StackCopies, MANAGER).await;
+    let manager = InterfaceClient::of(&started, DaemonInterface::RobotMembership, MANAGER).await;
 
     let launched = json!([
         join(&started, "alpha", "real"),

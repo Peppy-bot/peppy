@@ -1,4 +1,4 @@
-//! `stack_copies:v1`: the copies of the running launch, listed, added and
+//! `robot_membership:v1`: the copies of the running launch, listed, added and
 //! removed. Its scope names the launcher options a client may add, with the
 //! robot model and a description of each and the features a copy of it may
 //! hold, and the most copies of them the stack holds.
@@ -15,20 +15,20 @@ use std::collections::HashSet;
 use std::num::NonZeroU16;
 
 /// The interface's document, compiled in.
-pub(super) const DOCUMENT: &str = include_str!("stack_copies.v1.json5");
+pub(super) const DOCUMENT: &str = include_str!("robot_membership.v1.json5");
 
 /// The refusal of a scope in a launcher that declares no axis that runs as
 /// copies. A flat launcher declares no axis, so the flat document `peppy
 /// stack resolve` prints for a launcher with a scope gets it too.
 const NO_AXIS_RUNS_AS_COPIES: &str = "this launcher declares no axis that runs as copies \
-     (`zero_or_more` or `one_or_more`), so no option of a `stack_copies` scope can be added; a \
+     (`zero_or_more` or `one_or_more`), so no option of a `robot_membership` scope can be added; a \
      flat launcher, such as the one `peppy stack resolve` prints, declares no axis at all: \
      launch the launcher it was resolved from, or take the instance that serves this target \
      out of the flat file";
 
-/// A member of `stack_copies:v1`, as an exposure entry names it.
+/// A member of `robot_membership:v1`, as an exposure entry names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StackCopiesMember {
+pub enum RobotMembershipMember {
     /// The service that answers the scope's options and the copies of them
     /// on the stack.
     List,
@@ -39,7 +39,7 @@ pub enum StackCopiesMember {
     Remove,
 }
 
-impl StackCopiesMember {
+impl RobotMembershipMember {
     /// Every member of the interface.
     pub const ALL: [Self; 3] = [Self::List, Self::Join, Self::Remove];
 
@@ -99,13 +99,14 @@ impl Description {
     }
 }
 
-/// The scope of a `stack_copies` target: the launcher options a client may
-/// add, each once and with its robot model, a description and the features
-/// it offers, and the most copies of these options the stack holds. Parsing
-/// holds every rule, so a value of this type is a scope the server can use.
+/// The scope of a daemon target of `robot_membership:v1`: the launcher
+/// options a client may add, each once and with its robot model, a
+/// description and the features it offers, and the most copies of these
+/// options the stack holds. Parsing holds every rule, so a value of this type
+/// is a scope the server can use.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(try_from = "RawStackCopiesScope")]
-pub struct StackCopiesScope {
+#[serde(try_from = "RawRobotMembershipScope")]
+pub struct RobotMembershipScope {
     options: Vec<ScopedOption>,
     max_copies: NonZeroU16,
 }
@@ -139,11 +140,11 @@ pub struct PlacedFeature<'a> {
     pub core_node: Option<&'a CoreNodeName>,
 }
 
-/// Wire shape of [`StackCopiesScope`]. `max_copies` is read as any number
+/// Wire shape of [`RobotMembershipScope`]. `max_copies` is read as any number
 /// so that a value outside its range is refused with the range.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawStackCopiesScope {
+struct RawRobotMembershipScope {
     options: Vec<RawScopedOption>,
     max_copies: serde_json::Number,
 }
@@ -167,10 +168,10 @@ struct RawScopedFeature {
     description: String,
 }
 
-impl TryFrom<RawStackCopiesScope> for StackCopiesScope {
+impl TryFrom<RawRobotMembershipScope> for RobotMembershipScope {
     type Error = String;
 
-    fn try_from(raw: RawStackCopiesScope) -> Result<Self, String> {
+    fn try_from(raw: RawRobotMembershipScope) -> Result<Self, String> {
         if raw.options.is_empty() {
             return Err(
                 "`options` names no option; a scope names at least one launcher option a client \
@@ -352,7 +353,7 @@ impl ScopedFeature {
     }
 }
 
-impl StackCopiesScope {
+impl RobotMembershipScope {
     /// The options a client may add, in the order the launcher lists them.
     pub fn options(&self) -> &[ScopedOption] {
         &self.options
@@ -501,8 +502,8 @@ impl StackCopiesScope {
             else {
                 continue;
             };
-            match StackCopiesMember::named(&task.member) {
-                Some(StackCopiesMember::Join) => {
+            match RobotMembershipMember::named(&task.member) {
+                Some(RobotMembershipMember::Join) => {
                     properties.insert(
                         "option".to_owned(),
                         serde_json::json!({ "type": "string", "enum": options }),
@@ -511,10 +512,10 @@ impl StackCopiesScope {
                     properties.insert("core_node".to_owned(), name_rule.clone());
                     narrow_features(properties, &features, &name_rule);
                 }
-                Some(StackCopiesMember::Remove) => {
+                Some(RobotMembershipMember::Remove) => {
                     properties.insert("name".to_owned(), name_rule.clone());
                 }
-                Some(StackCopiesMember::List) | None => {}
+                Some(RobotMembershipMember::List) | None => {}
             }
         }
     }
@@ -552,7 +553,7 @@ fn narrow_features(
     item.insert("core_node".to_owned(), name_rule.clone());
 }
 
-/// Step 2 of [`StackCopiesScope::check_launch`] for one feature, with no
+/// Step 2 of [`RobotMembershipScope::check_launch`] for one feature, with no
 /// composition.
 fn check_feature(
     prepared: &PreparedLauncher,

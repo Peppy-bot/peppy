@@ -163,7 +163,7 @@ impl StackRequest {
     }
 
     /// The client the request acts for: the client that the goal names when
-    /// `daemon`, this daemon, sent it (its provider of `stack_copies:v1`
+    /// `daemon`, this daemon, sent it (its provider of `robot_membership:v1`
     /// sends each join and removal for the client of its own goal), else
     /// `sender`. A goal of any other sender that names a client is refused:
     /// a sender acts for itself.

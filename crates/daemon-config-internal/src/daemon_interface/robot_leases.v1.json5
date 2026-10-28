@@ -27,7 +27,7 @@
 // layers.
 {
   peppy_schema: "contract/v1",
-  manifest: { name: "fleet", tag: "v1" },
+  manifest: { name: "robot_leases", tag: "v1" },
   failure_kinds: {
     halted: "The stack is halted",
     leased: "Another client holds the lease of the robot; the message names the holder and the lease name",
@@ -127,8 +127,8 @@
               receiver_core_node: "string",
             },
           },
-          // Each option and feature that a stack_copies scope of the launch
-          // names, with the contracts that its instances implement.
+          // Each option and feature that a robot_membership scope of the
+          // launch names, with the contracts that its instances implement.
           options: {
             $type: "array",
             $items: {

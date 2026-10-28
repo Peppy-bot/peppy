@@ -646,7 +646,7 @@ mod tests {
     };
     use config::failure_kind::FailureKindName;
     use daemon_config::daemon_interface::DaemonInterface;
-    use daemon_config::daemon_interface::fleet::{ChangeKind, FleetChange, FleetListing};
+    use daemon_config::daemon_interface::robot_leases::{ChangeKind, FleetChange, FleetListing};
     use peppylib::Payload;
     use peppylib::messaging::{
         CancelCause, ConcurrentAction, GoalContext, NonEmptyPayload, SenderTarget, ServiceAnswer,
@@ -775,13 +775,16 @@ mod tests {
     /// The per-boot instance id of the daemon of the fleet.
     const FLEET_DAEMON: &str = "core-boot";
 
-    fn fleet() -> SenderTarget {
-        SenderTarget::contract("fleet", "v1").expect("a target")
+    fn robot_leases() -> SenderTarget {
+        let interface = DaemonInterface::RobotLeases;
+        SenderTarget::contract(interface.name(), interface.tag()).expect("a target")
     }
 
-    /// The codec of one side of a member of `fleet:v1`.
-    fn fleet_codec(format: Option<&config::node::MessageFormat>) -> peppy_codec::MessageCodec {
-        peppy_codec::MessageCodec::of_payload("test_fleet", format)
+    /// The codec of one side of a member of `robot_leases:v1`.
+    fn robot_leases_codec(
+        format: Option<&config::node::MessageFormat>,
+    ) -> peppy_codec::MessageCodec {
+        peppy_codec::MessageCodec::of_payload("test_robot_leases", format)
             .expect("the format lays out")
             .expect("the side has a format")
     }
@@ -794,22 +797,27 @@ mod tests {
             caller(),
             ProducerRef::new(CORE_NODE, FLEET_DAEMON),
         )
-        .expect("the codecs of fleet:v1 lay out")
+        .expect("the codecs of robot_leases:v1 lay out")
     }
 
     /// The `check_move` of the daemon of the fleet, which answers each
     /// request with `answer`.
     async fn serve_fleet_check_move(messenger: &MessengerHandle, answer: Value) {
-        let document = DaemonInterface::Fleet.document();
-        let response = fleet_codec(
+        let document = DaemonInterface::RobotLeases.document();
+        let response = robot_leases_codec(
             document
                 .service("check_move")
                 .and_then(|service| service.response_message_format.as_ref()),
         );
-        let mut endpoint =
-            ServiceMessenger::listen(messenger, CORE_NODE, FLEET_DAEMON, fleet(), "check_move")
-                .await
-                .expect("the service listens");
+        let mut endpoint = ServiceMessenger::listen(
+            messenger,
+            CORE_NODE,
+            FLEET_DAEMON,
+            robot_leases(),
+            "check_move",
+        )
+        .await
+        .expect("the service listens");
         let answer = Payload::from(response.encode(&answer).expect("the answer encodes"));
         tokio::spawn(async move {
             let _ = endpoint
@@ -824,8 +832,8 @@ mod tests {
     /// One feedback of `changes`: a listing that gives a halt, at a later
     /// revision than the move check of the call.
     fn halted_listing() -> NonEmptyPayload {
-        let document = DaemonInterface::Fleet.document();
-        let feedback = fleet_codec(
+        let document = DaemonInterface::RobotLeases.document();
+        let feedback = robot_leases_codec(
             document
                 .action("changes")
                 .and_then(|action| action.feedback_topic.as_ref())
@@ -901,7 +909,7 @@ mod tests {
             &messenger,
             CORE_NODE,
             FLEET_DAEMON,
-            fleet(),
+            robot_leases(),
             "changes",
             true,
         )

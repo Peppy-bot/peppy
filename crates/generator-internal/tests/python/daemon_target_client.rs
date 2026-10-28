@@ -43,7 +43,7 @@ for coroutine in (
 ):
     assert inspect.iscoroutinefunction(coroutine), coroutine
 
-schema = fleet_list._poll_fleet_list_response_message_capnp().PollFleetListResponseMessage
+schema = fleet_list._poll_robot_leases_list_response_message_capnp().PollRobotLeasesListResponseMessage
 message = schema.new_message()
 message.version = "unknown"
 robots = message.init("robots", 1)
@@ -87,7 +87,7 @@ fn a_python_node_with_a_daemon_target_gets_a_client_of_its_interface() {
     for module in modules {
         let code = fs::read_to_string(peppygen_dir.join(&module))
             .unwrap_or_else(|error| panic!("{module} is generated: {error}"));
-        config_test_support::assert_contains_all(&code, &[LINK_ID, "fleet"]);
+        config_test_support::assert_contains_all(&code, &[LINK_ID, "robot_leases"]);
     }
 
     helpers::run_python_check(

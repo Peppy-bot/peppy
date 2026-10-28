@@ -1,10 +1,10 @@
-// An exposure whose two targets name daemon interfaces: `stack_copies:v1`,
-// the copies of the launch, and `fleet:v1`, the fleet of the stack and its
-// halt. The peppy daemon of the coordinator serves them, and no node
-// implements them, so the targets take no `links`: the launcher gives each a
-// scope. The scope of `stack` gives the robot options a client may add, the
-// features of each, and the most robots of them on the stack; the scope of
-// `fleet` names the members its client may call.
+// An exposure whose two targets name daemon interfaces:
+// `robot_membership:v1`, the copies of the launch, and `robot_leases:v1`, the
+// fleet of the stack and its halt. The peppy daemon of the coordinator serves
+// them, and no node implements them, so the targets take no `links`: the
+// launcher gives each a scope. The scope of `stack` gives the robot options a
+// client may add, the features of each, and the most robots of them on the
+// stack; the scope of `fleet` names the members its client may call.
 {
   peppy_schema: "mcp_exposure/v1",
   manifest: { name: "framework_controls", tag: "v1" },
@@ -24,7 +24,7 @@
     stack: {
       // A daemon interface is compiled into peppy and is never pinned:
       // `daemon` takes a name and a tag, and no `sha256`.
-      daemon: { name: "stack_copies", tag: "v1" },
+      daemon: { name: "robot_membership", tag: "v1" },
       services: [
         {
           member: "list",
@@ -52,7 +52,7 @@
       ],
     },
     fleet: {
-      daemon: { name: "fleet", tag: "v1" },
+      daemon: { name: "robot_leases", tag: "v1" },
       services: [
         {
           member: "list",

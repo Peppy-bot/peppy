@@ -19,9 +19,9 @@
 //! of each machine tells, and the software state of each robot: the
 //! software of a robot runs when the process of each of its instances runs.
 
-use daemon_config::daemon_interface::fleet::{
-    ChangeKind, CheckMoveResponse, FleetFailureKind, FleetLease, FleetListing, LeaseEvent,
-    LeaseEventKind, MoveRefusal, SoftwareState,
+use daemon_config::daemon_interface::robot_leases::{
+    ChangeKind, CheckMoveResponse, FleetLease, FleetListing, LeaseEvent, LeaseEventKind,
+    MoveRefusal, RobotLeasesFailureKind, SoftwareState,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -51,7 +51,7 @@ impl fmt::Display for ClientRef {
     }
 }
 
-/// Why the book refuses a call: a kind of `fleet:v1`, or
+/// Why the book refuses a call: a kind of `robot_leases:v1`, or
 /// `precondition_failed` and `rejected` of peppy, with a message for a
 /// person.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,21 +62,21 @@ pub(crate) struct Refusal {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RefusalKind {
-    Fleet(FleetFailureKind),
+    RobotLeases(RobotLeasesFailureKind),
     PreconditionFailed,
     Rejected,
 }
 
 impl From<MoveRefusal> for Refusal {
     fn from(refusal: MoveRefusal) -> Self {
-        Self::fleet(refusal.failure_kind, refusal.message)
+        Self::robot_leases(refusal.failure_kind, refusal.message)
     }
 }
 
 impl Refusal {
-    fn fleet(kind: FleetFailureKind, message: impl Into<String>) -> Self {
+    fn robot_leases(kind: RobotLeasesFailureKind, message: impl Into<String>) -> Self {
         Self {
-            kind: RefusalKind::Fleet(kind),
+            kind: RefusalKind::RobotLeases(kind),
             message: message.into(),
         }
     }
@@ -537,8 +537,8 @@ impl FleetBook {
     fn not_halted(&self, what: &str) -> Result<(), Refusal> {
         match &self.halt {
             None => Ok(()),
-            Some(by) => Err(Refusal::fleet(
-                FleetFailureKind::Halted,
+            Some(by) => Err(Refusal::robot_leases(
+                RobotLeasesFailureKind::Halted,
                 format!(
                     "the stack is halted (by {by}), so {what} is refused until the halt is cleared"
                 ),
@@ -555,7 +555,7 @@ impl FleetBook {
             .cloned()
             .unwrap_or_else(|| "it never held the lease".to_owned());
         MoveRefusal {
-            failure_kind: FleetFailureKind::NotLeased,
+            failure_kind: RobotLeasesFailureKind::NotLeased,
             message: format!("{client} holds no lease of robot `{robot}`: {how}"),
         }
     }
@@ -563,7 +563,7 @@ impl FleetBook {
     /// The refusal of a client other than the holder of `lease`.
     fn leased_by_another(robot: &str, lease: &Lease) -> MoveRefusal {
         MoveRefusal {
-            failure_kind: FleetFailureKind::Leased,
+            failure_kind: RobotLeasesFailureKind::Leased,
             message: format!(
                 "robot `{robot}` is leased by {} under the name `{}`",
                 lease.holder, lease.name
@@ -740,7 +740,7 @@ impl FleetBook {
     fn move_refusal(&self, client: &ClientRef, robot: Option<&str>) -> Option<MoveRefusal> {
         if let Some(by) = &self.halt {
             return Some(MoveRefusal {
-                failure_kind: FleetFailureKind::Halted,
+                failure_kind: RobotLeasesFailureKind::Halted,
                 message: format!(
                     "the stack is halted (by {by}): no move until the halt is cleared"
                 ),

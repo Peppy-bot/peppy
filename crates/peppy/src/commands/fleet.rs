@@ -1,5 +1,5 @@
 //! `peppy fleet`: the fleet of the stack, as the daemon of its coordinator
-//! serves it in `fleet:v1`. `list` gives each robot with its kind, its
+//! serves it in `robot_leases:v1`. `list` gives each robot with its kind, its
 //! software and its lease, and the halt; `halt` halts the stack, and
 //! `clear-halt` ends the halt. The command line has no scope: it acts for the
 //! person or the program that runs it.
@@ -14,8 +14,8 @@ use crate::error::{Error, Result};
 use clap::Subcommand;
 use core_node_api::encoding::{StackListRequest, StackListResponse};
 use daemon_config::daemon_interface::DaemonInterface;
-use daemon_config::daemon_interface::fleet::{
-    FleetLease, FleetListing, FleetMember, FleetRobot, RobotKind, SoftwareState,
+use daemon_config::daemon_interface::robot_leases::{
+    FleetLease, FleetListing, FleetRobot, RobotKind, RobotLeasesMember, SoftwareState,
 };
 use peppy_codec::consumer::{ConsumerIdentity, MemberBinding, ServiceClient};
 use peppylib::core_node::transport::poll;
@@ -64,11 +64,12 @@ impl Command for FleetCommand {
                     println!("{text}");
                 }
                 FleetCommands::Halt => {
-                    call_fleet(&conn, &daemon, FleetMember::Halt, &json!({})).await?;
+                    call_robot_leases(&conn, &daemon, RobotLeasesMember::Halt, &json!({})).await?;
                     println!("The stack is halted: no robot moves until `peppy fleet clear-halt`.");
                 }
                 FleetCommands::ClearHalt => {
-                    call_fleet(&conn, &daemon, FleetMember::ClearHalt, &json!({})).await?;
+                    call_robot_leases(&conn, &daemon, RobotLeasesMember::ClearHalt, &json!({}))
+                        .await?;
                     println!(
                         "The stack is not halted. Each client takes its leases again; nothing \
                          starts again by itself."
@@ -131,16 +132,17 @@ async fn stack_listing(conn: &DaemonConnection<'_>, core_node: &str) -> Result<S
     })
 }
 
-/// Calls the service `member` of `fleet:v1` on `daemon` with `request`.
-async fn call_fleet(
+/// Calls the service `member` of `robot_leases:v1` on `daemon` with `request`.
+async fn call_robot_leases(
     conn: &DaemonConnection<'_>,
     daemon: &ProducerRef,
-    member: FleetMember,
+    member: RobotLeasesMember,
     request: &Value,
 ) -> Result<Value> {
-    let document = DaemonInterface::Fleet.document();
+    let document = DaemonInterface::RobotLeases.document();
     let name = member.name();
-    let failed = |error: String| Error::ExecutionFailed(format!("`fleet.{name}` failed: {error}"));
+    let failed =
+        |error: String| Error::ExecutionFailed(format!("`robot_leases.{name}` failed: {error}"));
     let client =
         ServiceClient::of_contract(document, name).map_err(|error| failed(error.to_string()))?;
     let binding =
@@ -160,7 +162,7 @@ async fn call_fleet(
 
 /// The fleet listing of `daemon`.
 async fn list(conn: &DaemonConnection<'_>, daemon: &ProducerRef) -> Result<FleetListing> {
-    let answer = call_fleet(conn, daemon, FleetMember::List, &json!({})).await?;
+    let answer = call_robot_leases(conn, daemon, RobotLeasesMember::List, &json!({})).await?;
     serde_json::from_value(answer).map_err(|error| {
         Error::ExecutionFailed(format!("The fleet listing does not parse: {error}"))
     })

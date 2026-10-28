@@ -45,13 +45,13 @@ pub const RUN_COMMAND: [&str; 3] = ["peppy", "mcp", "serve"];
 /// serve` the path of its [`McpServeSpec`].
 pub const SPEC_ENV_VAR: &str = "PEPPY_MCP_SERVE_SPEC";
 
-/// The link id of the daemon slot of `fleet:v1` that the server adds when no
-/// exposure names `fleet:v1`: the server asks `check_move` and follows
-/// `changes` through it.
+/// The link id of the daemon slot of `robot_leases:v1` that the server adds
+/// when no exposure names `robot_leases:v1`: the server asks `check_move` and
+/// follows `changes` through it.
 pub const FLEET_SLOT: &str = "fleet";
 
-/// The members of `fleet:v1` that the server calls through its fleet slot,
-/// whatever its exposures give.
+/// The members of `robot_leases:v1` that the server calls through its fleet
+/// slot, whatever its exposures give.
 const FLEET_SLOT_SERVICES: [&str; 1] = ["check_move"];
 const FLEET_SLOT_ACTIONS: [&str; 1] = ["changes"];
 
@@ -172,8 +172,8 @@ pub enum McpDeploymentError {
     Invalid(Vec<ExposureViolations>),
     #[error(
         "target `{target}` of exposure `{exposure}` names {source_label}; the server reaches \
-         daemon interface `fleet:v1` under the target name `{target}`, so a target of that name \
-         names `fleet:v1`"
+         daemon interface `robot_leases:v1` under the target name `{target}`, so a target of that \
+         name names `robot_leases:v1`"
     )]
     FleetSlotTaken {
         target: String,
@@ -240,8 +240,8 @@ pub struct McpDeploymentPlan {
     /// The targets of the exposures, which the launch checks of daemon
     /// scopes read.
     pub targets: DeploymentTargets,
-    /// The link id of the daemon slot of `fleet:v1`: the fleet target of the
-    /// exposures, or [`FLEET_SLOT`].
+    /// The link id of the daemon slot of `robot_leases:v1`: the target of the
+    /// exposures that names it, or [`FLEET_SLOT`].
     pub fleet_slot: String,
 }
 
@@ -327,11 +327,11 @@ struct Slot<'a> {
 /// name with another source is a [`McpDeploymentError::SourceConflict`]. Each
 /// daemon target takes a daemon slot, which the daemon binds to itself; each
 /// one must name an interface this peppy serves at the tag it names. The
-/// manifest always has a daemon slot of `fleet:v1`, through which the server
-/// asks `check_move` and follows `changes`: the fleet target of the
-/// exposures, or a slot [`FLEET_SLOT`] that the planner adds. An exposure's
-/// own `sha256` pin, when present, must agree with the deployment's contract
-/// pin; absent, the deployment's pin fixes the bytes.
+/// manifest always has a daemon slot of `robot_leases:v1`, through which the
+/// server asks `check_move` and follows `changes`: the target of the
+/// exposures that names it, or a slot [`FLEET_SLOT`] that the planner adds.
+/// An exposure's own `sha256` pin, when present, must agree with the
+/// deployment's contract pin; absent, the deployment's pin fixes the bytes.
 pub fn plan_deployment(
     exposures: &[PinnedExposure],
     contracts: &[PinnedContract],
@@ -554,7 +554,7 @@ pub fn plan_deployment(
     let mut daemon_targets = targets.daemon.clone();
     daemon_targets
         .entry(fleet_slot.clone())
-        .or_insert(DaemonInterface::Fleet);
+        .or_insert(DaemonInterface::RobotLeases);
     let daemon_slots: Vec<serde_json::Value> = daemon_targets
         .iter()
         .map(|(target, interface)| {
@@ -609,9 +609,9 @@ pub fn plan_deployment(
     })
 }
 
-/// The link id of the daemon slot of `fleet:v1` of a deployment of
+/// The link id of the daemon slot of `robot_leases:v1` of a deployment of
 /// `exposures`, whose targets are `targets`: the target that names
-/// `fleet:v1`, or [`FLEET_SLOT`] when no target does. A target named
+/// `robot_leases:v1`, or [`FLEET_SLOT`] when no target does. A target named
 /// [`FLEET_SLOT`] that names another source is refused.
 fn fleet_slot_of(
     exposures: &[&PinnedExposure],
@@ -620,7 +620,7 @@ fn fleet_slot_of(
     if let Some((target, _)) = targets
         .daemon
         .iter()
-        .find(|(_, interface)| **interface == DaemonInterface::Fleet)
+        .find(|(_, interface)| **interface == DaemonInterface::RobotLeases)
     {
         return Ok(target.clone());
     }
@@ -1125,15 +1125,15 @@ mod tests {
         assert_eq!(plan.name.as_str(), "mcp_framework_controls_v1");
         assert_eq!(
             plan.fleet_slot, "fleet",
-            "the fleet target is the fleet slot"
+            "the target of robot_leases:v1 is the fleet slot"
         );
         let manifest = serde_json::to_value(&plan.config).expect("serializes");
         assert_eq!(
             manifest["manifest"]["depends_on"],
             serde_json::json!({
                 "daemon": [
-                    { "name": "fleet", "tag": "v1", "link_id": "fleet" },
-                    { "name": "stack_copies", "tag": "v1", "link_id": "stack" },
+                    { "name": "robot_leases", "tag": "v1", "link_id": "fleet" },
+                    { "name": "robot_membership", "tag": "v1", "link_id": "stack" },
                 ],
             }),
             "no contract slot"
@@ -1173,11 +1173,11 @@ mod tests {
                 daemon: [
                     (
                         "stack".to_owned(),
-                        crate::internal::daemon_interface::DaemonInterface::StackCopies
+                        crate::internal::daemon_interface::DaemonInterface::RobotMembership
                     ),
                     (
                         "fleet".to_owned(),
-                        crate::internal::daemon_interface::DaemonInterface::Fleet
+                        crate::internal::daemon_interface::DaemonInterface::RobotLeases
                     ),
                 ]
                 .into_iter()
@@ -1244,8 +1244,8 @@ mod tests {
         );
     }
 
-    /// A deployment with no fleet target gets the fleet slot `fleet`, and
-    /// refuses a target of that name that names another source.
+    /// A deployment with no target of `robot_leases:v1` gets the fleet slot
+    /// `fleet`, and refuses a target of that name that names another source.
     #[test]
     fn the_planner_adds_the_fleet_slot_and_refuses_a_target_that_takes_its_name() {
         let camera = |target: &str| {
@@ -1263,7 +1263,7 @@ mod tests {
         assert_eq!(plan.fleet_slot, FLEET_SLOT);
         let depends_on = plan.config.manifest.depends_on.as_ref().unwrap();
         assert_eq!(depends_on.daemon.len(), 1);
-        assert_eq!(depends_on.daemon[0].name.as_str(), "fleet");
+        assert_eq!(depends_on.daemon[0].name.as_str(), "robot_leases");
         assert_eq!(depends_on.daemon[0].link_id, FLEET_SLOT);
         assert!(
             plan.targets.daemon.is_empty(),
@@ -1300,7 +1300,7 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "target `stack` is bound to contract `rgb_camera:v1` by exposure `camera_only:v1` and \
-             to daemon interface `stack_copies:v1` by exposure `framework_controls:v1`; two \
+             to daemon interface `robot_membership:v1` by exposure `framework_controls:v1`; two \
              exposures sharing a target name must name the same source"
         );
 
@@ -1310,8 +1310,8 @@ mod tests {
             &crate::internal::daemon_interface::tests::FRAMEWORK_CONTROLS
                 .replace(r#"name: "framework_controls""#, r#"name: "other_controls""#)
                 .replace(
-                    r#"daemon: { name: "stack_copies", tag: "v1" }"#,
-                    r#"daemon: { name: "stack_copies", tag: "v2" }"#,
+                    r#"daemon: { name: "robot_membership", tag: "v1" }"#,
+                    r#"daemon: { name: "robot_membership", tag: "v2" }"#,
                 ),
         );
         let error = plan_deployment(&[framework_controls(), other], &[])
@@ -1319,16 +1319,22 @@ mod tests {
         let McpDeploymentError::SourceConflict(conflict) = error else {
             panic!("expected a source conflict, got {error}");
         };
-        assert_eq!(conflict.first_source, "daemon interface `stack_copies:v1`");
-        assert_eq!(conflict.second_source, "daemon interface `stack_copies:v2`");
+        assert_eq!(
+            conflict.first_source,
+            "daemon interface `robot_membership:v1`"
+        );
+        assert_eq!(
+            conflict.second_source,
+            "daemon interface `robot_membership:v2`"
+        );
     }
 
     #[test]
     fn a_daemon_interface_this_peppy_does_not_serve_is_refused_naming_the_served_tag() {
         let unserved = exposure(
             &crate::internal::daemon_interface::tests::FRAMEWORK_CONTROLS.replace(
-                r#"daemon: { name: "stack_copies", tag: "v1" }"#,
-                r#"daemon: { name: "stack_copies", tag: "v2" }"#,
+                r#"daemon: { name: "robot_membership", tag: "v1" }"#,
+                r#"daemon: { name: "robot_membership", tag: "v2" }"#,
             ),
         );
         let error = plan_deployment(&[unserved], &[]).expect_err("v2 is not served");
@@ -1338,15 +1344,15 @@ mod tests {
                 "exposure `framework_controls:v1` does not validate against its contracts and \
                  daemon interfaces:"
             ) && rendered.contains(
-                "target `stack`: daemon interface `stack_copies:v2` is not one this peppy \
-                 serves; it serves `stack_copies` at tag `v1` only"
+                "target `stack`: daemon interface `robot_membership:v2` is not one this peppy \
+                 serves; it serves `robot_membership` at tag `v1` only"
             ),
             "{rendered}"
         );
 
         let unknown = exposure(
             &crate::internal::daemon_interface::tests::FRAMEWORK_CONTROLS
-                .replace(r#"name: "stack_copies""#, r#"name: "node_controls""#),
+                .replace(r#"name: "robot_membership""#, r#"name: "node_controls""#),
         );
         let rendered = plan_deployment(&[unknown], &[])
             .expect_err("no such interface")
@@ -1354,7 +1360,7 @@ mod tests {
         assert!(
             rendered.contains(
                 "daemon interface `node_controls:v1` is not one this peppy serves; it serves \
-                 `stack_copies:v1`"
+                 `robot_membership:v1`"
             ),
             "{rendered}"
         );

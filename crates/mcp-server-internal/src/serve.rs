@@ -48,7 +48,7 @@ pub enum ServeError {
     DaemonResource { resource: String, target: String },
     #[error("target `{target}` names a daemon interface this server does not serve: {reason}")]
     UnservedDaemonInterface { target: String, reason: String },
-    #[error("the server cannot call fleet:v1: {0}")]
+    #[error("the server cannot call robot_leases:v1: {0}")]
     FleetClient(#[from] peppy_codec::consumer::MemberError),
     #[error(
         "the daemon targets cannot be served:{problems}\nA launch and a join check every scope \
@@ -119,7 +119,7 @@ pub fn serve() -> Result<(), ServeError> {
 /// bridges to the producers of each target, one server per exposure, the
 /// listener, and the pumps that feed the resources. `daemon_targets` are
 /// the daemon targets of the deployment, with the interface each one names,
-/// and `fleet_slot` the slot of `fleet:v1` that the fleet rules ask.
+/// and `fleet_slot` the slot of `robot_leases:v1` that the fleet rules ask.
 async fn run(
     arguments: ServeArguments,
     node_runner: Arc<NodeRunner>,

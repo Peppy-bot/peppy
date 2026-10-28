@@ -2211,7 +2211,7 @@ mod daemon_target_tests {
     use generator::InterfaceVariant;
     use tempfile::TempDir;
 
-    /// A manifest whose daemon target `fleet` names `name:tag`.
+    /// A manifest whose daemon target `fleet` names the interface `name:tag`.
     fn director(name_and_tag: &str) -> Manifest {
         serde_json5::from_str(&format!(
             r#"{{ name: "director", tag: "v1", depends_on: {{
@@ -2221,7 +2221,7 @@ mod daemon_target_tests {
         .expect("manifest parses")
     }
 
-    /// `list` and `take` of `fleet:v1`, and its action `lease`.
+    /// `list` and `take` of `robot_leases:v1`, and its action `lease`.
     fn lease_holder() -> Interfaces {
         serde_json5::from_str(
             r#"{
@@ -2235,19 +2235,19 @@ mod daemon_target_tests {
         .expect("interfaces parse")
     }
 
-    /// A contract cache that holds a document named `fleet:v1` whose one
+    /// A contract cache that holds a document named `robot_leases:v1` whose one
     /// service is `list`, with another response: a daemon target never
     /// reads it.
-    fn cache_with_a_fleet_contract(dir: &std::path::Path) -> (TempDir, PeppyDirs) {
+    fn cache_with_a_robot_leases_contract(dir: &std::path::Path) -> (TempDir, PeppyDirs) {
         let body = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "fleet", tag: "v1" },
+            manifest: { name: "robot_leases", tag: "v1" },
             interfaces: { services: [{ name: "list", response_message_format: { other: "u8" } }] },
         }"#;
-        let path = dir.join("fleet_v1.json5");
+        let path = dir.join("robot_leases_v1.json5");
         std::fs::write(&path, body).expect("write the contract");
         peppy_dirs_with_cache(&[repo_cache::ContractCacheEntry {
-            contract_name: daemon_config::repository::ItemName::parse("fleet").unwrap(),
+            contract_name: daemon_config::repository::ItemName::parse("robot_leases").unwrap(),
             tag: daemon_config::repository::ItemTag::parse("v1").unwrap(),
             sha256: daemon_config::repository::ManifestFingerprint::of_bytes(body.as_bytes()),
             origin: repo_cache::EntryOrigin::Fs { path },
@@ -2257,14 +2257,14 @@ mod daemon_target_tests {
 
     /// The consumed members of a daemon target take their formats and their
     /// failure kinds from the compiled-in document of its interface, and
-    /// address the daemon as the provider of `fleet:v1`, on a sync with the
-    /// local caches and on an add with its documents alike.
+    /// address the daemon as the provider of `robot_leases:v1`, on a sync
+    /// with the local caches and on an add with its documents alike.
     #[test]
     fn a_daemon_target_resolves_the_compiled_in_document_of_its_interface() {
         let tmp = TempDir::new().unwrap();
-        let (_cache, dirs) = cache_with_a_fleet_contract(tmp.path());
-        let manifest = director(r#"name: "fleet", tag: "v1""#);
-        let document = DaemonInterface::Fleet.document();
+        let (_cache, dirs) = cache_with_a_robot_leases_contract(tmp.path());
+        let manifest = director(r#"name: "robot_leases", tag: "v1""#);
+        let document = DaemonInterface::RobotLeases.document();
         let added =
             crate::services::node::pins::ManifestDocuments::read(&dirs, &[], &manifest, &|_| {})
                 .expect("a daemon target names no document that an add pins");
@@ -2278,7 +2278,7 @@ mod daemon_target_tests {
                 documents,
                 &|_| {},
             )
-            .expect("the members of fleet:v1 resolve");
+            .expect("the members of robot_leases:v1 resolve");
             assert_eq!(out.len(), 3, "{out:?}");
             for interface in &out {
                 let (name, dependency) = match interface.interface() {
@@ -2328,7 +2328,7 @@ mod daemon_target_tests {
                         origin.contract_name.as_str(),
                         origin.contract_tag.as_str()
                     ),
-                    ("fleet", "fleet", "v1"),
+                    ("fleet", "robot_leases", "v1"),
                     "{name}"
                 );
                 assert_eq!(dependency.cardinality, config::node::Cardinality::One);
@@ -2347,7 +2347,7 @@ mod daemon_target_tests {
             let kinds = take.member_failure_kinds(MemberSection::Service, "take");
             assert!(
                 kinds.allows("halted") && kinds.allows("leased"),
-                "take gives the failure kinds of fleet:v1 that it lists"
+                "take gives the failure kinds of robot_leases:v1 that it lists"
             );
         }
     }
@@ -2358,17 +2358,17 @@ mod daemon_target_tests {
     #[test]
     fn a_daemon_target_of_an_unserved_interface_is_refused() {
         let tmp = TempDir::new().unwrap();
-        let (_cache, dirs) = cache_with_a_fleet_contract(tmp.path());
+        let (_cache, dirs) = cache_with_a_robot_leases_contract(tmp.path());
         for (name_and_tag, expected) in [
             (
-                r#"name: "fleet", tag: "v2""#,
-                "daemon target `fleet`: daemon interface `fleet:v2` is not one this peppy \
-                 serves; it serves `fleet` at tag `v1` only",
+                r#"name: "robot_leases", tag: "v2""#,
+                "daemon target `fleet`: daemon interface `robot_leases:v2` is not one this peppy \
+                 serves; it serves `robot_leases` at tag `v1` only",
             ),
             (
                 r#"name: "robots", tag: "v1""#,
                 "daemon target `fleet`: daemon interface `robots:v1` is not one this peppy \
-                 serves; it serves `stack_copies:v1`, `fleet:v1`",
+                 serves; it serves `robot_membership:v1`, `robot_leases:v1`",
             ),
         ] {
             let err = collect_consumed_interfaces(
@@ -2394,7 +2394,7 @@ mod daemon_target_tests {
         )
         .expect("interfaces parse");
         let err = collect_consumed_interfaces(
-            &director(r#"name: "fleet", tag: "v1""#),
+            &director(r#"name: "robot_leases", tag: "v1""#),
             &interfaces,
             |_, _| None,
             &dirs,
@@ -2405,7 +2405,7 @@ mod daemon_target_tests {
         assert_eq!(
             err,
             "`services.consumes` entry `take_all` (link_id `fleet`) names no member of daemon \
-             interface `fleet:v1`"
+             interface `robot_leases:v1`"
         );
     }
 }

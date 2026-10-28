@@ -14,24 +14,25 @@ fn local_launch(path: PathBuf, launch_id: &str) -> LaunchGoal {
         .expect("a local launch with no word")
 }
 
-/// The `depends_on` of a node with the daemon target `fleet` of `fleet:v1`.
-const FLEET_TARGET: &str = r#"{ daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }] }"#;
+/// The `depends_on` of a node with the daemon target `fleet` of
+/// `robot_leases:v1`.
+const FLEET_TARGET: &str = r#"{ daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }] }"#;
 
-/// The `interfaces` of a lease holder of `fleet:v1`.
+/// The `interfaces` of a lease holder of `robot_leases:v1`.
 const LEASE_HOLDER: &str = r#"{
     services: { consumes: [{ link_id: "fleet", name: "list" }, { link_id: "fleet", name: "take" }] },
     actions: { consumes: [{ link_id: "fleet", name: "lease" }] },
 }"#;
 
-/// A scope of `fleet:v1` that holds.
+/// A scope of `robot_leases:v1` that holds.
 const LEASE_SCOPE: &str = r#"{ members: ["list", "lease"] }"#;
 
 /// Writes the nodes of these tests under `directory` and records them in the
 /// nodes cache of `started`: `director:v1`, whose daemon target is
-/// `fleet:v1`; `twin_director:v1`, which names `fleet` twice; and
-/// `future_director:v1`, which names `fleet:v2`, a tag this peppy does not
-/// serve. Each runs `sleep`, and each consumes the members of a lease
-/// holder.
+/// `robot_leases:v1`; `twin_director:v1`, which names `robot_leases:v1`
+/// twice; and `future_director:v1`, which names `robot_leases:v2`, a tag this
+/// peppy does not serve. Each runs `sleep`, and each consumes the members of
+/// a lease holder.
 fn write_directors(started: &StartedCoreNode, directory: &Path) {
     let node = |name: &str, depends_on: &str| {
         write_node_config_with_options(
@@ -50,13 +51,13 @@ fn write_directors(started: &StartedCoreNode, directory: &Path) {
     let twin_director = node(
         "twin_director",
         r#"{ daemon: [
-            { name: "fleet", tag: "v1", link_id: "fleet" },
-            { name: "fleet", tag: "v1", link_id: "other_fleet" },
+            { name: "robot_leases", tag: "v1", link_id: "fleet" },
+            { name: "robot_leases", tag: "v1", link_id: "other_fleet" },
         ] }"#,
     );
     let future_director = node(
         "future_director",
-        r#"{ daemon: [{ name: "fleet", tag: "v2", link_id: "fleet" }] }"#,
+        r#"{ daemon: [{ name: "robot_leases", tag: "v2", link_id: "fleet" }] }"#,
     );
     TestPackagesCache::new()
         .fs_entry("director", "v1", &director)
@@ -164,7 +165,7 @@ async fn a_launch_refuses_a_daemon_target_that_breaks_a_rule() {
     for (index, (deployments, expected)) in [
         (
             deployment("director", r#"{ instance_id: "director_inst" }"#),
-            "daemon target `fleet` (fleet:v1) of instance `director_inst` has no scope",
+            "daemon target `fleet` (robot_leases:v1) of instance `director_inst` has no scope",
         ),
         (
             deployment("director", &scoped(r#"links: { fleet: "director_inst" },"#)),
@@ -178,13 +179,13 @@ async fn a_launch_refuses_a_daemon_target_that_breaks_a_rule() {
         ),
         (
             deployment("twin_director", &scoped("")),
-            "depends_on.daemon names daemon interface `fleet` twice, with link_ids `fleet` and \
-             `other_fleet`",
+            "depends_on.daemon names daemon interface `robot_leases` twice, with link_ids `fleet` \
+             and `other_fleet`",
         ),
         (
             deployment("future_director", &scoped("")),
-            "daemon target `fleet`: daemon interface `fleet:v2` is not one this peppy serves; \
-             it serves `fleet` at tag `v1` only",
+            "daemon target `fleet`: daemon interface `robot_leases:v2` is not one this peppy \
+             serves; it serves `robot_leases` at tag `v1` only",
         ),
     ]
     .into_iter()

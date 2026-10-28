@@ -124,13 +124,13 @@ pub mod launcher {
 pub mod daemon_interface {
     pub use crate::internal::daemon_interface::{
         DaemonInterface, DaemonScope, Description, MAX_DESCRIPTION_CHARS, MAX_FEATURES,
-        PlacedFeature, ScopedFeature, ScopedOption, StackCopiesMember, StackCopiesScope,
+        PlacedFeature, RobotMembershipMember, RobotMembershipScope, ScopedFeature, ScopedOption,
         TargetScope, UnservedInterface, served_interfaces, served_targets,
     };
 
-    /// `fleet:v1`: its members, its scope and its messages.
-    pub mod fleet {
-        pub use crate::internal::daemon_interface::fleet::*;
+    /// `robot_leases:v1`: its members, its scope and its messages.
+    pub mod robot_leases {
+        pub use crate::internal::daemon_interface::robot_leases::*;
     }
 }
 

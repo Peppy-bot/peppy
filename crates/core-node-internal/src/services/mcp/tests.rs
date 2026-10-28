@@ -246,8 +246,9 @@ fn a_launch_resolves_exposures_and_their_contracts_through_the_caches() {
     );
 }
 
-/// The design's `framework/framework_controls.json5`: one daemon target,
-/// `stack`, that names `stack_copies:v1`.
+/// The design's `framework/framework_controls.json5`: two daemon targets,
+/// `stack`, that names `robot_membership:v1`, and `fleet`, that names
+/// `robot_leases:v1`.
 const FRAMEWORK_CONTROLS: &str = include_str!(
     "../../../../daemon-config-internal/src/daemon_interface/fixtures/framework_controls.json5"
 );

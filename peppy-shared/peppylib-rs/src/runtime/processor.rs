@@ -2182,13 +2182,14 @@ mod tests {
         );
     }
 
-    /// A node with a daemon target, `fleet`, of the `fleet:v1` interface.
+    /// A node with a daemon target, `fleet`, of the `robot_leases:v1`
+    /// interface.
     const DAEMON_TARGET_PEPPY_CONFIG: &str = r#"{
         peppy_schema: "node/v1",
         manifest: {
             name: "consumer_node",
             tag: "v1",
-            depends_on: { daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }] },
+            depends_on: { daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }] },
         },
         interfaces: { services: { consumes: [{ link_id: "fleet", name: "list" }] } },
         execution: { language: "rust", run_cmd: ["./target/release/consumer_node"] },

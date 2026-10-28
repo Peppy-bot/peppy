@@ -56,7 +56,7 @@ pub fn silence_window(budgets: &StackBudgets) -> Duration {
 mod tests {
     use super::*;
 
-    /// The defaults a join sends from the CLI and from `stack_copies:v1`.
+    /// The defaults a join sends from the CLI and from `robot_membership:v1`.
     #[test]
     fn the_default_budgets_give_the_build_less_silence_and_set_no_deadline() {
         assert_eq!(

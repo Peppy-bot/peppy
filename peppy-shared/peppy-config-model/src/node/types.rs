@@ -1519,11 +1519,11 @@ impl<'de> Deserialize<'de> for PairingObserverDependency {
 }
 
 /// A daemon target, declared under `depends_on.daemon`: this node calls a
-/// daemon interface, such as `fleet:v1`, that the peppy daemon serves and no
-/// node implements. The node lists the members it calls in the `consumes`
-/// lists of its `interfaces` with the slot's `link_id`, as it does for a
-/// contract slot, and the launcher gives the daemon target named `link_id` a
-/// scope in `daemon_scopes`.
+/// daemon interface, such as `robot_leases:v1`, that the peppy daemon serves
+/// and no node implements. The node lists the members it calls in the
+/// `consumes` lists of its `interfaces` with the slot's `link_id`, as it does
+/// for a contract slot, and the launcher gives the daemon target named
+/// `link_id` a scope in `daemon_scopes`.
 ///
 /// The daemon that runs an instance of the node is the one producer of the
 /// slot, so the entry takes no `cardinality`. The document of the interface

@@ -124,7 +124,7 @@ Because core nodes are addressed by name over the messaging layer, every core no
 
 ## The fleet
 
-The **fleet** of a stack is the robots of the launch that the core node coordinates: each [copy](/guides/launch_files/#copies) of the launch is a robot, a device that a client changes included. The core node serves the fleet in the daemon interface `fleet:v1` (see [Robot leases and the halt](/advanced_guides/fleet/)):
+The **fleet** of a stack is the robots of the launch that the core node coordinates: each [copy](/guides/launch_files/#copies) of the launch is a robot, a device that a client changes included. The core node serves the fleet in the daemon interface `robot_leases:v1` (see [Robot leases and the halt](/advanced_guides/fleet/)):
 
 - A **lease** gives one client the right to move one robot. Only a node whose launcher scopes it to hold leases takes one.
 - A **mark** on a contract member, such as `moves_robot`, says what the member does. Each MCP server of peppy, `peppy node call` and each lease holder ask the core node before they call a member with the mark `moves_robot`.

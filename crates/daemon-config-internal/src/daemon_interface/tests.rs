@@ -3,8 +3,9 @@ use crate::internal::mcp_exposure::PeppyMcpExposureParser;
 use peppy_mcp_catalog::{ExposureBundle, build_exposure_bundle};
 use serde_json::json;
 
-/// The design's `framework/framework_controls.json5`: one fixed target,
-/// `stack`, that names `stack_copies:v1`.
+/// The design's `framework/framework_controls.json5`: two daemon targets,
+/// `stack`, that names `robot_membership:v1`, and `fleet`, that names
+/// `robot_leases:v1`.
 pub(crate) const FRAMEWORK_CONTROLS: &str = include_str!("fixtures/framework_controls.json5");
 
 /// Every interface this peppy serves, as the catalog resolves them.
@@ -90,14 +91,14 @@ fn the_compiled_in_document_parses_as_a_contract_of_the_registered_identity() {
         assert_eq!(parsed.manifest.tag, interface.tag());
         assert_eq!(&parsed, interface.document());
     }
-    let stack_copies = DaemonInterface::StackCopies.document();
-    let services: Vec<&str> = stack_copies
+    let robot_membership = DaemonInterface::RobotMembership.document();
+    let services: Vec<&str> = robot_membership
         .interfaces
         .services
         .iter()
         .map(|service| service.name.as_str())
         .collect();
-    let actions: Vec<&str> = stack_copies
+    let actions: Vec<&str> = robot_membership
         .interfaces
         .actions
         .iter()
@@ -105,11 +106,13 @@ fn the_compiled_in_document_parses_as_a_contract_of_the_registered_identity() {
         .collect();
     assert_eq!(services, ["list"]);
     assert_eq!(actions, ["join", "remove"]);
-    assert!(stack_copies.interfaces.topics.is_empty());
+    assert!(robot_membership.interfaces.topics.is_empty());
     assert!(
-        DaemonInterface::StackCopies
+        DaemonInterface::RobotMembership
             .document_text()
-            .starts_with("// The copies of the running launch: list them, add one, remove one."),
+            .starts_with(
+                "// The robots of the stack, each a copy of the running launch: list them,"
+            ),
         "the document keeps its comments"
     );
 }
@@ -117,8 +120,8 @@ fn the_compiled_in_document_parses_as_a_contract_of_the_registered_identity() {
 /// The members the bridge and the narrowing name are the members of the
 /// compiled-in document, each of its kind.
 #[test]
-fn the_stack_copies_members_are_the_members_of_its_document() {
-    let interfaces = &DaemonInterface::StackCopies.document().interfaces;
+fn the_robot_membership_members_are_the_members_of_its_document() {
+    let interfaces = &DaemonInterface::RobotMembership.document().interfaces;
     let services: Vec<&str> = interfaces
         .services
         .iter()
@@ -129,29 +132,29 @@ fn the_stack_copies_members_are_the_members_of_its_document() {
         .iter()
         .map(|action| action.name.as_str())
         .collect();
-    assert_eq!(services, [StackCopiesMember::List.name()]);
+    assert_eq!(services, [RobotMembershipMember::List.name()]);
     assert_eq!(
         actions,
         [
-            StackCopiesMember::Join.name(),
-            StackCopiesMember::Remove.name()
+            RobotMembershipMember::Join.name(),
+            RobotMembershipMember::Remove.name()
         ]
     );
-    for member in StackCopiesMember::ALL {
-        assert_eq!(StackCopiesMember::named(member.name()), Some(member));
+    for member in RobotMembershipMember::ALL {
+        assert_eq!(RobotMembershipMember::named(member.name()), Some(member));
     }
-    assert_eq!(StackCopiesMember::named("reset"), None);
+    assert_eq!(RobotMembershipMember::named("reset"), None);
 }
 
-/// `stack_copies:v1` declares each kind of the daemon that is not a kind of
+/// `robot_membership:v1` declares each kind of the daemon that is not a kind of
 /// peppy, with the meaning the daemon gives it, so `join` and `remove` can
 /// give every kind of the daemon and no other.
 #[test]
-fn stack_copies_declares_the_kinds_of_the_daemon_beyond_peppy() {
+fn robot_membership_declares_the_kinds_of_the_daemon_beyond_peppy() {
     use config::failure_kind::{MemberFailureKinds, MemberSection, PeppyFailureKind};
     use core_node_api::DaemonFailureKind;
 
-    let kinds = &DaemonInterface::StackCopies.document().failure_kinds;
+    let kinds = &DaemonInterface::RobotMembership.document().failure_kinds;
     let declared: Vec<(&str, &str)> = kinds
         .declared()
         .iter()
@@ -206,20 +209,20 @@ fn stack_copies_declares_the_kinds_of_the_daemon_beyond_peppy() {
 #[test]
 fn the_registry_serves_one_tag_of_each_interface() {
     assert_eq!(
-        DaemonInterface::served(&reference("stack_copies", "v1")),
-        Ok(DaemonInterface::StackCopies)
+        DaemonInterface::served(&reference("robot_membership", "v1")),
+        Ok(DaemonInterface::RobotMembership)
     );
     assert_eq!(
-        DaemonInterface::served(&reference("fleet", "v1")),
-        Ok(DaemonInterface::Fleet)
+        DaemonInterface::served(&reference("robot_leases", "v1")),
+        Ok(DaemonInterface::RobotLeases)
     );
 
-    let error =
-        DaemonInterface::served(&reference("stack_copies", "v2")).expect_err("v2 is not served");
+    let error = DaemonInterface::served(&reference("robot_membership", "v2"))
+        .expect_err("v2 is not served");
     assert_eq!(
         error.to_string(),
-        "daemon interface `stack_copies:v2` is not one this peppy serves; it serves \
-         `stack_copies` at tag `v1` only, and a document that names a daemon interface ships \
+        "daemon interface `robot_membership:v2` is not one this peppy serves; it serves \
+         `robot_membership` at tag `v1` only, and a document that names a daemon interface ships \
          with the peppy release that serves its tag"
     );
 
@@ -228,7 +231,7 @@ fn the_registry_serves_one_tag_of_each_interface() {
     assert_eq!(
         error.to_string(),
         "daemon interface `node_controls:v1` is not one this peppy serves; it serves \
-         `stack_copies:v1`, `fleet:v1`"
+         `robot_membership:v1`, `robot_leases:v1`"
     );
 }
 
@@ -239,31 +242,33 @@ fn the_daemon_targets_of_an_exposure_resolve_through_the_registry() {
     assert_eq!(
         served_interfaces(&exposure),
         Ok(vec![
-            ("stack".to_owned(), DaemonInterface::StackCopies),
-            ("fleet".to_owned(), DaemonInterface::Fleet),
+            ("stack".to_owned(), DaemonInterface::RobotMembership),
+            ("fleet".to_owned(), DaemonInterface::RobotLeases),
         ])
     );
 
     let unserved = PeppyMcpExposureParser::from_content(&FRAMEWORK_CONTROLS.replace(
-        r#"daemon: { name: "stack_copies", tag: "v1" }"#,
-        r#"daemon: { name: "stack_copies", tag: "v9" }"#,
+        r#"daemon: { name: "robot_membership", tag: "v1" }"#,
+        r#"daemon: { name: "robot_membership", tag: "v9" }"#,
     ))
     .expect("the document parses whatever tag it names");
     let refusals = served_interfaces(&unserved).expect_err("v9 is not served");
     assert_eq!(refusals.len(), 1, "{refusals:?}");
     assert!(
         refusals[0].starts_with(
-            "target `stack`: daemon interface `stack_copies:v9` is not one this peppy serves; \
-             it serves `stack_copies` at tag `v1` only"
+            "target `stack`: daemon interface `robot_membership:v9` is not one this peppy serves; \
+             it serves `robot_membership` at tag `v1` only"
         ),
         "{refusals:?}"
     );
 }
 
-fn scope(value: serde_json::Value) -> Result<StackCopiesScope, String> {
-    match DaemonInterface::StackCopies.parse_scope(&value)? {
-        DaemonScope::StackCopies(scope) => Ok(scope),
-        DaemonScope::Fleet(_) => panic!("the stack_copies interface parses a stack_copies scope"),
+fn scope(value: serde_json::Value) -> Result<RobotMembershipScope, String> {
+    match DaemonInterface::RobotMembership.parse_scope(&value)? {
+        DaemonScope::RobotMembership(scope) => Ok(scope),
+        DaemonScope::RobotLeases(_) => {
+            panic!("the robot_membership interface parses a robot_membership scope")
+        }
     }
 }
 
@@ -299,7 +304,7 @@ fn featureless_scope() -> serde_json::Value {
 }
 
 #[test]
-fn a_stack_copies_scope_parses_into_its_type() {
+fn a_robot_membership_scope_parses_into_its_type() {
     let parsed = scope(simulation_scope()).expect("parses");
     let options: Vec<(&str, &str, &str, Vec<&str>)> = parsed
         .options()
@@ -344,11 +349,11 @@ fn a_stack_copies_scope_parses_into_its_type() {
     );
     assert_eq!(parsed.max_copies().get(), 4);
     assert_eq!(
-        DaemonInterface::StackCopies
+        DaemonInterface::RobotMembership
             .parse_scope(&simulation_scope())
             .expect("parses")
             .interface(),
-        DaemonInterface::StackCopies
+        DaemonInterface::RobotMembership
     );
 }
 
@@ -413,7 +418,7 @@ fn a_feature_gives_its_word_and_is_found_in_a_robots_selections() {
 }
 
 #[test]
-fn a_stack_copies_scope_holds_its_rules() {
+fn a_robot_membership_scope_holds_its_rules() {
     let option = |option: &str, description: &str| json!({ "option": option, "model": "m", "description": description });
     let refused = |value: serde_json::Value| scope(value).expect_err("the scope is refused");
 
@@ -624,24 +629,24 @@ fn the_launch_copies_of_list_take_the_form_of_its_copies_without_running() {
 /// The framework bundle with `value`'s scope narrowing its target.
 fn narrowed_bundle(value: serde_json::Value) -> ExposureBundle {
     let mut bundle = framework_controls_bundle();
-    DaemonInterface::StackCopies
+    DaemonInterface::RobotMembership
         .parse_scope(&value)
         .expect("parses")
         .narrow(&mut bundle, "stack");
     bundle
 }
 
-/// A fleet scope leaves out the tools of the members that it does not give,
-/// and keeps every entry of another target.
+/// A `robot_leases` scope leaves out the tools of the members that it does
+/// not give, and keeps every entry of another target.
 #[test]
-fn a_fleet_scope_serves_the_tools_of_the_members_that_it_gives() {
+fn a_robot_leases_scope_serves_the_tools_of_the_members_that_it_gives() {
     let mut bundle = framework_controls_bundle();
     let tools = |bundle: &ExposureBundle| -> Vec<String> {
         bundle.tools.iter().map(|tool| tool.name.clone()).collect()
     };
     let derived = tools(&bundle);
     assert!(derived.contains(&"fleet.clear_halt".to_owned()));
-    DaemonInterface::Fleet
+    DaemonInterface::RobotLeases
         .parse_scope(&json!({ "members": ["list", "halt"] }))
         .expect("parses")
         .narrow(&mut bundle, "fleet");
@@ -742,7 +747,7 @@ fn a_scope_narrows_the_published_schemas_of_its_target() {
 
     // A scope narrows the entries of its own target alone.
     let mut elsewhere = derived.clone();
-    DaemonInterface::StackCopies
+    DaemonInterface::RobotMembership
         .parse_scope(&simulation_scope())
         .expect("parses")
         .narrow(&mut elsewhere, "other");

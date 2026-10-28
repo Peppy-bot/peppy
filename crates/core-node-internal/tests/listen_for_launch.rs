@@ -3,10 +3,10 @@ mod common;
 mod copies;
 #[path = "listen_for_launch/daemon_targets.rs"]
 mod daemon_targets;
-#[path = "listen_for_launch/fleet.rs"]
-mod fleet;
-#[path = "listen_for_launch/stack_copies.rs"]
-mod stack_copies;
+#[path = "listen_for_launch/robot_leases.rs"]
+mod robot_leases;
+#[path = "listen_for_launch/robot_membership.rs"]
+mod robot_membership;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, FeedbackDrainOutcome, GOAL_TIMEOUT, GoalEnd, RESULT_TIMEOUT,

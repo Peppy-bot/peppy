@@ -578,7 +578,7 @@ mod exposures {
     }
 
     /// The design's `framework/framework_controls.json5`, kept beside the
-    /// registry of the daemon interfaces whose `stack_copies:v1` it names.
+    /// registry of the daemon interfaces whose `robot_membership:v1` it names.
     const FRAMEWORK_CONTROLS: &str = include_str!(
         "../../daemon-config-internal/src/daemon_interface/fixtures/framework_controls.json5"
     );
@@ -594,7 +594,7 @@ mod exposures {
             .replace(edit.0, edit.1)
     }
 
-    const STACK_COPIES_REFERENCE: &str = r#"daemon: { name: "stack_copies", tag: "v1" }"#;
+    const ROBOT_MEMBERSHIP_REFERENCE: &str = r#"daemon: { name: "robot_membership", tag: "v1" }"#;
 
     /// A hub of `framework/` documents: the design's document, and one per
     /// way a daemon target can be wrong. No contract is cached, since a
@@ -613,8 +613,8 @@ mod exposures {
             framework_document(
                 "unserved_tag",
                 (
-                    STACK_COPIES_REFERENCE,
-                    r#"daemon: { name: "stack_copies", tag: "v2" }"#,
+                    ROBOT_MEMBERSHIP_REFERENCE,
+                    r#"daemon: { name: "robot_membership", tag: "v2" }"#,
                 ),
             ),
         );
@@ -623,7 +623,7 @@ mod exposures {
             framework_document(
                 "unknown_interface",
                 (
-                    STACK_COPIES_REFERENCE,
+                    ROBOT_MEMBERSHIP_REFERENCE,
                     r#"daemon: { name: "node_controls", tag: "v1" }"#,
                 ),
             ),
@@ -640,9 +640,9 @@ mod exposures {
             framework_document(
                 "pinned",
                 (
-                    STACK_COPIES_REFERENCE,
+                    ROBOT_MEMBERSHIP_REFERENCE,
                     &format!(
-                        r#"daemon: {{ name: "stack_copies", tag: "v1", sha256: "{}" }}"#,
+                        r#"daemon: {{ name: "robot_membership", tag: "v1", sha256: "{}" }}"#,
                         "a".repeat(64)
                     ),
                 ),
@@ -653,8 +653,8 @@ mod exposures {
             framework_document(
                 "both_sources",
                 (
-                    STACK_COPIES_REFERENCE,
-                    r#"daemon: { name: "stack_copies", tag: "v1" }, contract: { name: "rgb_camera", tag: "v1" }"#,
+                    ROBOT_MEMBERSHIP_REFERENCE,
+                    r#"daemon: { name: "robot_membership", tag: "v1" }, contract: { name: "rgb_camera", tag: "v1" }"#,
                 ),
             ),
         );
@@ -668,17 +668,17 @@ mod exposures {
         for (id, phrase) in [
             (
                 "unserved_tag:v1",
-                "target `stack`: daemon interface `stack_copies:v2` is not one this peppy \
-                 serves; it serves `stack_copies` at tag `v1` only",
+                "target `stack`: daemon interface `robot_membership:v2` is not one this peppy \
+                 serves; it serves `robot_membership` at tag `v1` only",
             ),
             (
                 "unknown_interface:v1",
                 "daemon interface `node_controls:v1` is not one this peppy serves; it serves \
-                 `stack_copies:v1`",
+                 `robot_membership:v1`",
             ),
             (
                 "unknown_member:v1",
-                "selects service member `lists`, but daemon interface `stack_copies:v1` \
+                "selects service member `lists`, but daemon interface `robot_membership:v1` \
                  declares no such service",
             ),
             (
@@ -725,8 +725,8 @@ mod exposures {
         assert_eq!(
             catalog["daemon_targets"],
             serde_json::json!([
-                { "target": "stack", "name": "stack_copies", "tag": "v1" },
-                { "target": "fleet", "name": "fleet", "tag": "v1" },
+                { "target": "stack", "name": "robot_membership", "tag": "v1" },
+                { "target": "fleet", "name": "robot_leases", "tag": "v1" },
             ])
         );
         let join = catalog["tasks"]

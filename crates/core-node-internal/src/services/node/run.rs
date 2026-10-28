@@ -3046,8 +3046,8 @@ mod tests {
             r#"{ name: "director", tag: "v1", depends_on: {
                 contracts: [{ name: "limb_motion", tag: "v1", link_id: "arm" }],
                 daemon: [
-                    { name: "fleet", tag: "v1", link_id: "fleet" },
-                    { name: "stack_copies", tag: "v1", link_id: "copies" },
+                    { name: "robot_leases", tag: "v1", link_id: "fleet" },
+                    { name: "robot_membership", tag: "v1", link_id: "copies" },
                 ],
             } }"#,
         )

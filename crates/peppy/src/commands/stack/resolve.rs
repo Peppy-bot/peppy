@@ -36,7 +36,7 @@ const PREVIEW_CORE_NODE: &str = "cn-preview";
 /// as a launch would, minus the goal. The flattened `launcher/v1` document
 /// goes to stdout, so it doubles as the escape hatch: flatten, hand-edit,
 /// launch the flat file. The one exception is a launcher with a
-/// `stack_copies` scope: the flat document keeps the scope and declares no
+/// `robot_membership` scope: the flat document keeps the scope and declares no
 /// axis, so its launch refuses the scope, whose options no longer run as
 /// copies. The resolution report goes to stderr.
 ///
@@ -173,7 +173,7 @@ fn deployment_targets(
 
 /// Hold the flat plan to the launch checks of daemon scopes: every scope
 /// parsed into its interface's type and held against the launcher and the
-/// stack `selection` resolves (for `stack_copies`, the trial join of every
+/// stack `selection` resolves (for `robot_membership`, the trial join of every
 /// feature set of every option), every instance with a daemon target on the
 /// coordinator, no link to a daemon target, and at most one daemon target
 /// of each interface on an instance. They read the exposure documents and

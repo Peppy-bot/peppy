@@ -191,7 +191,7 @@ struct ScopeVerdicts {
 /// `deployments` lists, each beside its targets. `prepared` is the launcher
 /// the stack was composed
 /// from, which a scope's own checks read (the options of the axes that run
-/// as copies and the copies they compose, for `stack_copies`); `copies`
+/// as copies and the copies they compose, for `robot_membership`); `copies`
 /// tells which instances belong to a copy. Every refusal is reported at
 /// once.
 ///

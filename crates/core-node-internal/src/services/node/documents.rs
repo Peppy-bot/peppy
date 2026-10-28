@@ -241,7 +241,7 @@ mod tests {
                 peppy_schema: "node/v1",
                 manifest: { name: "director", tag: "v1", depends_on: {
                     contracts: [{ name: "limb_motion", tag: "v1", link_id: "arm" }],
-                    daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }],
+                    daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }],
                 } },
                 interfaces: { actions: { consumes: [{ link_id: "fleet", name: "lease" }] } },
                 execution: { language: "rust", run_cmd: ["./bin"] },
@@ -263,9 +263,9 @@ mod tests {
             [
                 sent(&limb_motion),
                 encoding::PinnedDocument::new(
-                    "fleet",
+                    "robot_leases",
                     "v1",
-                    DaemonInterface::Fleet.document_text().to_owned(),
+                    DaemonInterface::RobotLeases.document_text().to_owned(),
                 ),
             ]
         );
