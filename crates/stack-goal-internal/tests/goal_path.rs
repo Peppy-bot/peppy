@@ -457,17 +457,16 @@ async fn a_cancel_reaches_the_daemon_and_the_goal_ends_cancelled() {
 /// cause `SenderGone`, under the default sender grace of zero.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_caller_that_goes_away_gets_its_goal_cancelled() {
-    let (mut mesh, mut provider) = mesh().await;
+    let (mesh, mut provider) = mesh().await;
     let (running, context) = running_join(&mesh, &mut provider).await;
 
     drop(running);
     // The caller's session is the only one of its process: dropping it ends
-    // its presence on the router.
-    let caller = std::mem::replace(
-        &mut mesh.caller,
-        mesh._router.connect().await.expect("another session"),
-    );
-    drop(caller);
+    // its presence on the router. No other session joins the mesh while the
+    // caller leaves: zenoh 1.10.1 can keep, in the routing of a gossip peer,
+    // the token of a peer that leaves while another peer links in, and the
+    // goal then has a sender that the engine never sees go.
+    drop(mesh.caller);
 
     tokio::time::timeout(READINESS_TIMEOUT, context.cancel_signal())
         .await
