@@ -73,7 +73,7 @@ async def start_router_and_runner(tmp_path: Path):
     the messaging fabric.
     """
     # `peppylib.testing.EphemeralRouter` also serializes meshes within this
-    # loop and applies the fd-limit / ZENOH_RUNTIME test-process setup.
+    # loop and applies the fd-limit test-process setup.
     router = await peppy_testing.EphemeralRouter.start()
     # The node runner opens its session under a workspace namespace; the standalone
     # config carries no workspace id, so it resolves to the `local`

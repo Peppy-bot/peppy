@@ -463,7 +463,7 @@ async fn a_caller_that_goes_away_gets_its_goal_cancelled() {
     drop(running);
     // The caller's session is the only one of its process: dropping it ends
     // its presence on the router. No other session joins the mesh while the
-    // caller leaves: zenoh 1.10.1 can keep, in the routing of a gossip peer,
+    // caller leaves: zenoh 1.10.2 can keep, in the routing of a gossip peer,
     // the token of a peer that leaves while another peer links in, and the
     // goal then has a sender that the engine never sees go.
     drop(mesh.caller);

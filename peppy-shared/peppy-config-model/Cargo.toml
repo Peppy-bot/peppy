@@ -25,7 +25,7 @@ indexmap = { version = "2.2", features = ["serde"] }
 # Validates the workspace namespace as a zenoh non-wild key expression so an
 # invalid workspace id can never reach a live session. Pinned to
 # the zenoh version pmi/zenohd federate against.
-zenoh-keyexpr = "=1.10.1"
+zenoh-keyexpr = "=1.10.2"
 # `atomic_write::publish_atomic` stages through `NamedTempFile` siblings.
 # Optional, so that the lockfile of a node that vendors this crate has no
 # entry for it.

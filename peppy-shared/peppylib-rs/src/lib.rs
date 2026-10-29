@@ -1,9 +1,8 @@
 // peppylib's shipped library contains no `unsafe` in production code paths.
-// This denies any new unsafe crate-wide; the only opt-outs are the two scoped
-// `#[allow(unsafe_code)]` helpers in the `testing` module (never compiled into
-// production builds: the `testing` feature is enabled via dev-dependencies
-// only), which need load-bearing FFI/ctor test infrastructure with no safe
-// equivalent.
+// This denies any new unsafe crate-wide; the only opt-out is the scoped
+// `#[allow(unsafe_code)]` fd-limit helper in the `testing` module (never
+// compiled into production builds: the `testing` feature is enabled via
+// dev-dependencies only), whose FFI has no safe equivalent.
 #![deny(unsafe_code)]
 
 mod error;
