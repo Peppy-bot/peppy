@@ -3787,9 +3787,10 @@ fn write_viewer_nodes_cache(cache_dir: &Path, origin: &str) {
     let manifest = config::node::NodeConfigParser::from_content(VIEWER_PAIRING_MANIFEST)
         .expect("the viewer manifest parses")
         .manifest;
-    let descriptions =
-        serde_json::to_string(&core_node::CachedDescriptions::of_document(&manifest.description))
-            .expect("descriptions");
+    let descriptions = serde_json::to_string(&core_node::CachedDescriptions::of_document(
+        &manifest.description,
+    ))
+    .expect("descriptions");
     fs::write(
         cache_dir.join("nodes.json5"),
         format!(
