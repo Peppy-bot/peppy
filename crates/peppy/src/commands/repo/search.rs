@@ -8,13 +8,15 @@ use crate::commands::table::render_table;
 use crate::error::{Error, Result};
 
 /// `peppy repo search <query>`: every indexed item the query matches,
-/// listed with where each document is stored.
-pub(super) fn repo_search(query: &str, json: bool) -> Result<()> {
+/// listed with the summary of its description and where each document is
+/// stored. With `text`, the query also matches the descriptions.
+pub(super) fn repo_search(query: &str, text: bool, json: bool) -> Result<()> {
     print!(
         "{}",
         search_rendered(
             &PeppyDirs::default(),
             query,
+            text,
             json,
             crate::terminal::stdout_width()
         )?
@@ -30,10 +32,15 @@ pub(super) fn repo_search(query: &str, json: bool) -> Result<()> {
 pub fn search_rendered(
     peppy_dirs: &PeppyDirs,
     query: &str,
+    text: bool,
     json: bool,
     max_width: Option<usize>,
 ) -> Result<String> {
     let query = SearchQuery::parse(query).map_err(Error::ExecutionFailed)?;
+    let query = match text {
+        true => query.with_descriptions(),
+        false => query,
+    };
     let outcome =
         core_node::search_repo_items(peppy_dirs, &query).map_err(Error::ExecutionFailed)?;
     Ok(if json {
@@ -82,9 +89,9 @@ pub(super) fn no_match_phrase(query: &SearchQuery, excluded_hint: &str) -> Strin
 }
 
 /// The listed view, one row per match in the service's rank order: the
-/// kind, the identity, and where the document is stored, with the
-/// fingerprint shortened the way `repo show`'s pin cells shorten it (the
-/// JSON carries it whole).
+/// kind, the identity, the summary of its description, and where the
+/// document is stored, with the fingerprint shortened the way `repo show`'s
+/// pin cells shorten it (the JSON carries it whole).
 fn match_table(
     query: &SearchQuery,
     matches: &[MatchedItem],
@@ -106,6 +113,7 @@ fn match_table(
             vec![
                 kind_label(item.kind).to_owned(),
                 paint(colorize, NODE_COLOR, &display_id(item)),
+                summary(item).unwrap_or_default().to_owned(),
                 item.published.repo_label.clone(),
                 item.published.path.clone(),
                 short_fingerprint(item.published.sha256.as_str()),
@@ -115,13 +123,20 @@ fn match_table(
     let mut table = String::new();
     render_table(
         &mut table,
-        &["KIND", "ITEM", "REPOSITORY", "PATH", "SHA256"],
+        &["KIND", "ITEM", "SUMMARY", "REPOSITORY", "PATH", "SHA256"],
         &[rows],
         max_width,
     );
     out.push_str(table.trim_end_matches('\n'));
     out.push('\n');
     out
+}
+
+/// The first paragraph of the description of the match, or `None` for an
+/// MCP exposure, the one kind with no description.
+fn summary(item: &MatchedItem) -> Option<&str> {
+    let descriptions = item.descriptions.as_ref()?;
+    Some(descriptions.summary().as_str())
 }
 
 /// `name:tag`, or the bare name for untagged kinds (launchers).
@@ -162,6 +177,7 @@ pub(super) fn query_json(query: &SearchQuery) -> serde_json::Value {
         "name": query.name_pattern(),
         "tag": query.tag_pattern(),
         "sha256": query.digest().map(|digest| digest.as_str()),
+        "text": query.matches_descriptions(),
     })
 }
 
@@ -178,7 +194,9 @@ pub(super) fn matches_json(matches: &[MatchedItem]) -> serde_json::Value {
                     true => serde_json::Value::Null,
                     false => item.tag.clone().into(),
                 },
+                "by_name": item.by_name,
                 "exact": item.exact,
+                "summary": summary(item),
                 "published": published_json(&item.published),
             })
         })
@@ -200,7 +218,9 @@ fn published_json(doc: &PublishedDoc) -> serde_json::Value {
 /// other published document.
 #[cfg(test)]
 pub(super) mod fixtures {
-    use core_node::{IndexedNode, MatchedItem, PublishedDoc, SearchQuery, SearchReport};
+    use core_node::{
+        CachedDescriptions, IndexedNode, MatchedItem, PublishedDoc, SearchQuery, SearchReport,
+    };
     use core_node_api::encoding::{RepoItemKind, RepoSourceKind};
     use daemon_config::repository::ManifestFingerprint;
 
@@ -243,18 +263,33 @@ pub(super) mod fixtures {
         published(1002, CONTRACTS, "cameras/rgb_camera.json5", 'a')
     }
 
+    /// The descriptions of a document whose paragraphs are `paragraphs`,
+    /// with no member.
+    pub fn described(paragraphs: &[&str]) -> CachedDescriptions {
+        serde_json::from_value(serde_json::json!({ "description": paragraphs }))
+            .expect("the paragraphs are not blank")
+    }
+
+    /// A match by name, whose description says what `name` is; an MCP
+    /// exposure has none.
     pub fn matched(
         kind: RepoItemKind,
         name: &str,
         tag: &str,
         published: PublishedDoc,
     ) -> MatchedItem {
+        let descriptions = match kind {
+            RepoItemKind::McpExposure => None,
+            _ => Some(described(&[&format!("What {name} is.")])),
+        };
         MatchedItem {
             kind,
             name: name.to_owned(),
             tag: tag.to_owned(),
+            by_name: true,
             exact: true,
             published,
+            descriptions,
         }
     }
 
@@ -327,7 +362,8 @@ mod tests {
     }
 
     /// Several matched identities are one flat table in the service's
-    /// rank order, with the fingerprints shortened.
+    /// rank order, with the summary of each description and the
+    /// fingerprints shortened.
     #[test]
     fn human_output_lists_multiple_matches_as_a_table() {
         let text = render_human(&query("camera"), &multi(), false, None);
@@ -336,13 +372,13 @@ mod tests {
             "camera",
             "",
             "3 items match `camera`",
-            "┌──────────┬───────────────┬────────────────────────────────────────────────────────────┬──────────────────────────┬──────────┐",
-            "│ KIND     │ ITEM          │ REPOSITORY                                                 │ PATH                     │ SHA256   │",
-            "├──────────┼───────────────┼────────────────────────────────────────────────────────────┼──────────────────────────┼──────────┤",
-            "│ launcher │ camera_boot   │ https://github.com/Peppy-bot/launchers-hub.git (ref: main) │ camera_boot.json5        │ eeeeeeee │",
-            "│ contract │ rgb_camera:v1 │ https://github.com/Peppy-bot/contracts-hub.git (ref: main) │ cameras/rgb_camera.json5 │ aaaaaaaa │",
-            "│ node     │ uvc_camera:v1 │ https://github.com/Peppy-bot/nodes-hub.git (ref: main)     │ uvc_camera/peppy.json5   │ bbbbbbbb │",
-            "└──────────┴───────────────┴────────────────────────────────────────────────────────────┴──────────────────────────┴──────────┘",
+            "┌──────────┬───────────────┬──────────────────────┬────────────────────────────────────────────────────────────┬──────────────────────────┬──────────┐",
+            "│ KIND     │ ITEM          │ SUMMARY              │ REPOSITORY                                                 │ PATH                     │ SHA256   │",
+            "├──────────┼───────────────┼──────────────────────┼────────────────────────────────────────────────────────────┼──────────────────────────┼──────────┤",
+            "│ launcher │ camera_boot   │ What camera_boot is. │ https://github.com/Peppy-bot/launchers-hub.git (ref: main) │ camera_boot.json5        │ eeeeeeee │",
+            "│ contract │ rgb_camera:v1 │ What rgb_camera is.  │ https://github.com/Peppy-bot/contracts-hub.git (ref: main) │ cameras/rgb_camera.json5 │ aaaaaaaa │",
+            "│ node     │ uvc_camera:v1 │ What uvc_camera is.  │ https://github.com/Peppy-bot/nodes-hub.git (ref: main)     │ uvc_camera/peppy.json5   │ bbbbbbbb │",
+            "└──────────┴───────────────┴──────────────────────┴────────────────────────────────────────────────────────────┴──────────────────────────┴──────────┘",
             "",
         ]
         .join("\n");
@@ -395,9 +431,54 @@ mod tests {
         }
     }
 
+    fn matches_of(doc: &serde_json::Value) -> &Vec<serde_json::Value> {
+        doc["matches"].as_array().expect("array")
+    }
+
+    /// A match that a description search found by a description alone says
+    /// so in the JSON, and an MCP exposure has no summary: its cell stays
+    /// empty.
+    #[test]
+    fn a_match_by_description_and_an_exposure_with_no_summary() {
+        let outcome = SearchOutcome {
+            matches: vec![
+                MatchedItem {
+                    by_name: false,
+                    exact: false,
+                    descriptions: Some(described(&["A camera of the wrist.", "In meters."])),
+                    ..matched(RepoItemKind::Contract, "rgb_camera", "v1", contract())
+                },
+                matched(
+                    RepoItemKind::McpExposure,
+                    "cameras",
+                    "v1",
+                    published(1003, HUB, "cameras.json5", 'c'),
+                ),
+            ],
+            excluded_hint: String::new(),
+        };
+        let wrist = query("wrist").with_descriptions();
+        let doc: serde_json::Value =
+            serde_json::from_str(&render_json(&wrist, &outcome)).expect("valid JSON");
+        assert_eq!(doc["query"]["text"], true);
+        assert_eq!(matches_of(&doc)[0]["by_name"], false);
+        assert_eq!(matches_of(&doc)[0]["summary"], "A camera of the wrist.");
+        assert!(matches_of(&doc)[1]["summary"].is_null());
+
+        let text = render_human(&wrist, &outcome, false, None);
+        assert!(
+            text.contains("│ contract     │ rgb_camera:v1 │ A camera of the wrist. │"),
+            "{text}"
+        );
+        assert!(
+            text.contains("│ mcp exposure │ cameras:v1    │                        │"),
+            "{text}"
+        );
+    }
+
     /// The JSON carries the parsed query and every match with its full
-    /// fingerprint; an untagged launcher's tag is `null`, and no usage
-    /// report rides a search.
+    /// fingerprint and its summary; an untagged launcher's tag is `null`,
+    /// and no usage report rides a search.
     #[test]
     fn json_output_lists_matches() {
         let text = render_json(&query("camera"), &multi());
@@ -411,8 +492,11 @@ mod tests {
                 "name": "camera",
                 "tag": serde_json::Value::Null,
                 "sha256": serde_json::Value::Null,
+                "text": false,
             })
         );
+        assert_eq!(matches_of(&doc)[1]["summary"], "What rgb_camera is.");
+        assert_eq!(matches_of(&doc)[1]["by_name"], true);
         let matches = doc["matches"].as_array().expect("array");
         assert_eq!(matches.len(), 3);
         assert_eq!(matches[0]["kind"], "launcher");

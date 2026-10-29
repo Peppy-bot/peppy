@@ -104,8 +104,8 @@ async fn stack_benchmark_runs_repeatedly() {
 fn provider_config() -> &'static str {
     r#"{
         peppy_schema: "node/v1",
-        manifest: { name: "bench_provider", tag: "v1" },
-        interfaces: { services: { exposes: [{ name: "bench_svc" }] } },
+        manifest: { name: "bench_provider", tag: "v1", description: ["A test node."] },
+        interfaces: { services: { exposes: [{ name: "bench_svc", description: "A test service." }] } },
         execution: { language: "rust", run_cmd: ["sleep", "10"] }
     }"#
 }
@@ -116,6 +116,7 @@ fn consumer_config() -> &'static str {
         manifest: {
             name: "bench_consumer",
             tag: "v1",
+            description: ["A test node."],
             depends_on: { nodes: [{ name: "bench_provider", tag: "v1", link_id: "prov" }] }
         },
         interfaces: { services: { consumes: [{ link_id: "prov", name: "bench_svc" }] } },
@@ -177,6 +178,7 @@ fn two_link_consumer_config() -> &'static str {
         manifest: {
             name: "bench_consumer",
             tag: "v1",
+            description: ["A test node."],
             depends_on: { nodes: [
                 { name: "bench_provider", tag: "v1", link_id: "left" },
                 { name: "bench_provider", tag: "v1", link_id: "right" }
@@ -244,10 +246,10 @@ async fn stack_benchmark_distinguishes_edges_by_link_id() {
 fn action_and_topic_provider_config() -> &'static str {
     r#"{
         peppy_schema: "node/v1",
-        manifest: { name: "bench_provider", tag: "v1" },
+        manifest: { name: "bench_provider", tag: "v1", description: ["A test node."] },
         interfaces: {
-            topics: { emits: [{ name: "bench_topic" }] },
-            actions: { exposes: [{ name: "bench_act" }] }
+            topics: { emits: [{ name: "bench_topic", description: "A test topic." }] },
+            actions: { exposes: [{ name: "bench_act", description: "A test action." }] }
         },
         execution: { language: "rust", run_cmd: ["sleep", "10"] }
     }"#
@@ -259,6 +261,7 @@ fn action_and_topic_consumer_config() -> &'static str {
         manifest: {
             name: "bench_consumer",
             tag: "v1",
+            description: ["A test node."],
             depends_on: { nodes: [{ name: "bench_provider", tag: "v1", link_id: "prov" }] }
         },
         interfaces: {

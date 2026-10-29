@@ -216,6 +216,7 @@ async fn stack_launch_command_succeeds() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: peppy::commands::node::NodeName::new(node_b_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -272,6 +273,7 @@ async fn stack_launch_command_succeeds() {
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{
                     source: {{ name: "{node_b_name}:{node_tag}" }},
@@ -416,6 +418,7 @@ async fn stack_launch_fails_when_a_node_never_becomes_healthy_and_clears_the_sta
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{
                     source: {{ name: "{node_b_name}:{node_tag}" }},
@@ -504,6 +507,7 @@ async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: peppy::commands::node::NodeName::new(node_b_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -518,6 +522,7 @@ async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{
                     source: {{ name: "{node_b_name}:v1" }},
@@ -750,6 +755,7 @@ async fn stack_launch_binds_the_consumer_slot_from_launcher_links() {
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{
                     source: {{ name: "{producer_name}:{node_tag}" }},
@@ -905,6 +911,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{
                     source: {{ name: "{producer_name}:{node_tag}" }},
@@ -1011,6 +1018,7 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{
                     source: {{ name: "{producer_name}:{node_tag}" }},
@@ -1095,6 +1103,7 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{
                     source: {{ name: "{camera_name}:{node_tag}" }},
@@ -1185,11 +1194,12 @@ fn write_contract_v1_doc_with_topic(
     let body = format!(
         r#"{{
             peppy_schema: "contract/v1",
-            manifest: {{ name: "{name}", tag: "{tag}" }},
+            manifest: {{ name: "{name}", tag: "{tag}", description: ["A test contract."] }},
             interfaces: {{
                 topics: [
                     {{
                         name: "{topic_name}",
+                        description: "A test topic.",
                         qos_profile: "sensor_data",
                         message_format: {message_format_json5}
                     }}
@@ -1301,6 +1311,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{
                     source: {{ name: "{producer_name}:{node_tag}" }},
@@ -1421,6 +1432,7 @@ async fn stack_launch_rejects_binding_when_producer_omits_implements() {
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{
                     source: {{ name: "{producer_name}:{node_tag}" }},
@@ -1552,6 +1564,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{
                     source: {{ name: "{producer_name}:{node_tag}" }},
@@ -1744,6 +1757,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{
                     source: {{ name: "{controller_name}:{node_tag}" }},
@@ -1918,6 +1932,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{
                     source: {{ name: "{producer_name}:{node_tag}" }},
@@ -2039,6 +2054,7 @@ async fn stack_launch_rejects_unbound_slot() {
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{
                     source: {{ name: "{producer_name}:{node_tag}" }},
@@ -2186,6 +2202,7 @@ async fn stack_launch_establishes_launcher_pairings() {
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {
                     source: { name: "robot_arm:v1" },
@@ -2320,6 +2337,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {
                     source: { name: "robot_arm:v1" },
@@ -2496,6 +2514,7 @@ async fn stack_launch_delivers_observer_member_sets() {
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {
                     source: { name: "robot_arm:v1" },
@@ -2648,6 +2667,7 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {
                     source: { name: "robot_arm:v1" },
@@ -2694,6 +2714,7 @@ async fn stack_launch_rejects_a_path_shaped_deployment_source() {
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         deployments: [
             {
                 source: { local: "./uvc_camera" },
@@ -2850,6 +2871,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {
                     source: { name: "openarm_backbone:v1" },
@@ -3044,6 +3066,7 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
         services: {
             exposes: [{
                 name: "finish_session",
+                description: "A test service.",
                 response_message_format: { episodes_recorded: "u32" }
             }]
         }
@@ -3096,6 +3119,7 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{
                     source: {{ name: "{consumer_name}:{node_tag}" }},
@@ -3209,6 +3233,7 @@ async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependenc
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{
                     source: {{ name: "{consumer_name}:{node_tag}" }},
@@ -3316,6 +3341,7 @@ async fn stack_launch_flattens_a_composed_launcher() {
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 {{
                     name: "backend",
@@ -3402,7 +3428,7 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
     let flat_launcher = nodes_dir.path().join("flat.json5");
     fs::write(
         &flat_launcher,
-        r#"{ peppy_schema: "launcher/v1", deployments: [] }"#,
+        r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [] }"#,
     )
     .expect("flat launcher should be writable");
     let err = StackCommand {
@@ -3426,6 +3452,7 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
         &composed_launcher,
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "robot",
                   options: { real: { deployments: [] }, mujoco: { deployments: [] } } },
@@ -3477,6 +3504,7 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
         &requires_launcher,
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "robot",
                   options: { real: { deployments: [] }, mujoco: { deployments: [] } } },
@@ -3513,6 +3541,7 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
         &forbids_launcher,
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "robot",
                   options: { real: { deployments: [] }, mujoco: { deployments: [] } } },
@@ -3563,6 +3592,7 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
         &launcher,
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "robot",
                   options: {
@@ -3642,6 +3672,7 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
         &launcher,
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "robot",
                   options: {
@@ -3716,6 +3747,7 @@ const VIEWER_PAIRING_MANIFEST: &str = r#"{
     manifest: {
         name: "viewer",
         tag: "v1",
+        description: ["A test node."],
         depends_on: {
             pairings: [
                 { name: "camera_link", tag: "v1", role: "viewer",
@@ -3730,6 +3762,7 @@ const VIEWER_PAIRING_MANIFEST: &str = r#"{
 /// vacant, so whether the link rules ran is exactly whether it resolves.
 const UNCOVERED_VIEWER_LAUNCHER: &str = r#"{
     peppy_schema: "launcher/v1",
+    description: ["A test launcher."],
     deployments: [
         { source: { name: "viewer", tag: "v1" },
           instances: [{ instance_id: "viewer_inst" }] },
@@ -3748,16 +3781,23 @@ const VIEWER_REPO_MANIFEST_PATH: &str = "nodes/viewer/peppy.json5";
 /// from `origin`, in the shape `repo refresh` writes.
 fn write_viewer_nodes_cache(cache_dir: &Path, origin: &str) {
     fs::create_dir_all(cache_dir).expect("cache dir");
-    // The links are serialized from the type `repo refresh` writes, so a
-    // change to their shape reaches this fixture.
+    // The links and the descriptions are serialized from the types `repo
+    // refresh` writes, so a change to their shape reaches this fixture.
     let links = serde_json::to_string(&core_node::DeclaredLinks::default()).expect("links");
+    let manifest = config::node::NodeConfigParser::from_content(VIEWER_PAIRING_MANIFEST)
+        .expect("the viewer manifest parses")
+        .manifest;
+    let descriptions =
+        serde_json::to_string(&core_node::CachedDescriptions::of_document(&manifest.description))
+            .expect("descriptions");
     fs::write(
         cache_dir.join("nodes.json5"),
         format!(
             r#"[{{ node_name: "viewer", node_tag: "v1",
                   sha256: "{}",
                   origin: {origin},
-                  links: {links} }}]"#,
+                  links: {links},
+                  descriptions: {descriptions} }}]"#,
             "0".repeat(64),
         ),
     )
@@ -3883,6 +3923,7 @@ fn stack_resolve_accepts_a_vacant_pairing_slot_and_says_it_checked() {
         &launcher,
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 { source: { name: "viewer", tag: "v1" },
                   instances: [{ instance_id: "viewer_inst",
@@ -3913,6 +3954,7 @@ fn stack_resolve_reports_the_check_skipped_when_a_manifest_is_missing() {
         &launcher,
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 { source: { name: "viewer", tag: "v1" },
                   instances: [{ instance_id: "viewer_inst" }] },
@@ -3951,7 +3993,7 @@ fn stack_resolve_reports_the_check_skipped_on_a_mislabeled_manifest() {
         &manifest,
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "renamed_viewer", tag: "v1" },
+            manifest: { name: "renamed_viewer", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["./bin/renamed_viewer"] },
         }"#,
     )
@@ -4048,7 +4090,7 @@ fn stack_resolve_never_reads_a_bare_name_from_the_current_directory() {
     let cwd = tempfile::tempdir().expect("temp cwd");
     fs::write(
         cwd.path().join("openarm_v2.json5"),
-        r#"{ peppy_schema: "launcher/v1", deployments: [] }"#,
+        r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [] }"#,
     )
     .expect("same-named launcher file");
     let home = tempfile::tempdir().expect("temp home");
@@ -4126,6 +4168,7 @@ impl CountedLaunch {
             command: NodeCommands::Init {
                 node_name: peppy::commands::node::NodeName::new(CACHED_NODE_NAME)
                     .expect("valid node name"),
+                description: config::description::Description::new("A test node.").unwrap(),
                 to_dir: None,
                 toolchain: Toolchain::Cargo,
                 with_container: false,
@@ -4169,6 +4212,7 @@ impl CountedLaunch {
             format!(
                 r#"{{
                     peppy_schema: "launcher/v1",
+                    description: ["A test launcher."],
                     deployments: [
                         {{
                             source: {{ name: "{CACHED_NODE_NAME}:v1" }},
@@ -4251,7 +4295,7 @@ impl CountedLaunch {
     /// A launcher that deploys nothing, beside this one.
     fn empty_launcher(&self) -> PathBuf {
         let path = self.launcher_path.with_file_name("empty_launcher.json5");
-        fs::write(&path, r#"{ peppy_schema: "launcher/v1", deployments: [] }"#)
+        fs::write(&path, r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [] }"#)
             .expect("launcher config should be writable");
         path
     }
@@ -4580,6 +4624,7 @@ async fn stack_build_builds_the_nodes_the_selection_runs() {
         &launcher_path,
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 {
                     name: "backend",
@@ -4780,6 +4825,7 @@ async fn stack_launch_prints_the_endpoint_blocks_after_the_log_files() {
         format!(
             r#"{{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 deployments: [
                     {{
                         source: {{ name: "{page_node}:{node_tag}" }},

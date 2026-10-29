@@ -1,4 +1,5 @@
 use askama::Template;
+use config::description::Description;
 use rust_embed::Embed;
 use std::path::Path;
 
@@ -49,18 +50,30 @@ pub struct RustSmokeTest<'a> {
 
 /// Template for Rust peppy.json5 file
 #[derive(Template)]
-#[template(path = "node_init/rust/peppy.json5.j2")]
+#[template(path = "node_init/rust/peppy.json5.j2", escape = "none")]
 pub struct RustPeppyJson5<'a> {
     pub node_name: &'a str,
+    /// The description, as a JSON5 string literal ([`string_literal`]).
+    pub description: &'a str,
     pub with_container: bool,
 }
 
 /// Template for Python peppy.json5 file
 #[derive(Template)]
-#[template(path = "node_init/python/peppy.json5.j2")]
+#[template(path = "node_init/python/peppy.json5.j2", escape = "none")]
 pub struct PythonPeppyJson5<'a> {
     pub node_name: &'a str,
+    /// The description, as a JSON5 string literal ([`string_literal`]).
+    pub description: &'a str,
     pub with_container: bool,
+}
+
+/// `text` as a JSON5 string literal, quoted and escaped, so a description
+/// with quotes or backslashes lands in the manifest as it was given. The
+/// manifest templates do not escape their values as HTML: a JSON5 file is
+/// not HTML.
+fn string_literal(text: &Description) -> String {
+    serde_json::to_string(text.as_str()).expect("a string serializes")
 }
 
 /// Template for the Python `tests/test_smoke.py`: boots the node through the
@@ -119,7 +132,12 @@ fn copy_embedded_static_files(prefix: &str, dest_dir: &Path) -> Result<()> {
 }
 
 /// Applies templates and copies static files for Rust node initialization
-pub fn apply_rust_templates(node_name: &str, node_dir: &Path, with_container: bool) -> Result<()> {
+pub fn apply_rust_templates(
+    node_name: &str,
+    description: &Description,
+    node_dir: &Path,
+    with_container: bool,
+) -> Result<()> {
     // Copy all static files (non-.j2 files) recursively, src/lib.rs (the
     // importable `setup`) among them.
     copy_embedded_static_files("node_init/rust", node_dir)?;
@@ -150,6 +168,7 @@ pub fn apply_rust_templates(node_name: &str, node_dir: &Path, with_container: bo
     // Apply peppy.json5 template
     let peppy_json5 = RustPeppyJson5 {
         node_name,
+        description: &string_literal(description),
         with_container,
     };
     std::fs::write(
@@ -172,6 +191,7 @@ pub fn apply_rust_templates(node_name: &str, node_dir: &Path, with_container: bo
 /// Applies templates and copies static files for Python node initialization
 pub fn apply_python_templates(
     node_name: &str,
+    description: &Description,
     node_dir: &Path,
     with_container: bool,
 ) -> Result<()> {
@@ -188,6 +208,7 @@ pub fn apply_python_templates(
     // Apply peppy.json5 template
     let peppy_json5 = PythonPeppyJson5 {
         node_name,
+        description: &string_literal(description),
         with_container,
     };
     std::fs::write(
@@ -237,4 +258,40 @@ if __name__ == "__main__":
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The manifest of each toolchain parses, with the description as it
+    /// was given, quotes and a backslash included.
+    #[test]
+    fn the_scaffolded_manifest_parses_with_its_description() {
+        let description = Description::new(r#"A node that says "hello" \ greets."#).unwrap();
+        let literal = string_literal(&description);
+        for with_container in [false, true] {
+            let manifests = [
+                RustPeppyJson5 {
+                    node_name: "greeter",
+                    description: &literal,
+                    with_container,
+                }
+                .render()
+                .unwrap(),
+                PythonPeppyJson5 {
+                    node_name: "greeter",
+                    description: &literal,
+                    with_container,
+                }
+                .render()
+                .unwrap(),
+            ];
+            for manifest in manifests {
+                let config = config::node::NodeConfigParser::from_content(&manifest)
+                    .unwrap_or_else(|error| panic!("{error}\n{manifest}"));
+                assert_eq!(config.manifest.description.summary(), &description);
+            }
+        }
+    }
 }

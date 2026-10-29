@@ -9,6 +9,7 @@ use config::node::{Cardinality, NativeEmittedTopic};
 const JOINT_STATES: &str = r#"
 {
   name: "joint_states",
+  description: "A test member.",
   qos_profile: "sensor_data",
   message_format: {
     positions: { $type: "array", $items: "f64", $length: 3 },
@@ -293,8 +294,10 @@ fn peer_slot_state_is_cardinality_typed() {
 
 #[test]
 fn peer_consumed_topic_requires_a_message_format() {
-    let topic: NativeEmittedTopic =
-        serde_json5::from_str(r#"{ name: "opaque", qos_profile: "reliable" }"#).unwrap();
+    let topic: NativeEmittedTopic = serde_json5::from_str(
+        r#"{ name: "opaque", description: "A test member.", qos_profile: "reliable" }"#,
+    )
+    .unwrap();
     let mut generator = PythonGenerator::new();
     let err = generator
         .add_peer_consumed_topic(&topic, &peer_context())

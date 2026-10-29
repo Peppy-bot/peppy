@@ -1,5 +1,6 @@
 use config::validate_named_items;
 use config::{
+    description::Description,
     node::{MessageFormat, NativeEmittedTopic, QoSProfile, TopicRetention},
     runtime::Name,
     schema::PeppySchema,
@@ -47,14 +48,15 @@ impl PeppyPairing {
     }
 }
 
-/// One topic of the conversation: its name, QoS and shape, plus `emitted_by`,
-/// which names the emitting role; the other role consumes the topic. A pairing
-/// topic is live only.
+/// One topic of the conversation: its name, its description, QoS and shape,
+/// plus `emitted_by`, which names the emitting role; the other role consumes
+/// the topic. A pairing topic is live only.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(try_from = "RawPairingTopic")]
 pub struct PairingTopic {
     pub emitted_by: String,
     pub name: String,
+    pub description: Description,
     pub qos_profile: QoSProfile,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_format: Option<MessageFormat>,
@@ -66,6 +68,7 @@ impl PairingTopic {
     pub fn as_native(&self) -> NativeEmittedTopic {
         NativeEmittedTopic {
             name: self.name.clone(),
+            description: self.description.clone(),
             qos_profile: self.qos_profile.clone(),
             retention: TopicRetention::LiveOnly,
             message_format: self.message_format.clone(),
@@ -80,6 +83,7 @@ struct RawPairingTopic {
     emitted_by: String,
     #[serde(default)]
     name: String,
+    description: Description,
     #[serde(default)]
     qos_profile: QoSProfile,
     #[serde(default)]
@@ -101,6 +105,7 @@ impl TryFrom<RawPairingTopic> for PairingTopic {
         Ok(Self {
             emitted_by: raw.emitted_by,
             name: raw.name,
+            description: raw.description,
             qos_profile: raw.qos_profile,
             message_format: raw.message_format,
         })
@@ -206,18 +211,20 @@ mod tests {
 
     const ARM_LINK: &str = r#"{
         peppy_schema: "pairing/v1",
-        manifest: { name: "arm_link", tag: "v1" },
+        manifest: { name: "arm_link", tag: "v1", description: ["A test pairing."] },
         roles: ["controller", "arm"],
         topics: [
             {
                 emitted_by: "controller",
                 name: "joint_commands",
+                description: "A test topic.",
                 qos_profile: "reliable",
                 message_format: { target_positions: { $type: "array", $items: "f64", $length: 3 }, max_velocity: "f64" },
             },
             {
                 emitted_by: "arm",
                 name: "joint_states",
+                description: "A test topic.",
                 qos_profile: "sensor_data",
                 message_format: { positions: { $type: "array", $items: "f64", $length: 3 }, timestamp: "time" },
             },
@@ -255,10 +262,10 @@ mod tests {
         // A role with zero emitted topics is legal: strictly one-directional.
         let json5 = r#"{
             peppy_schema: "pairing/v1",
-            manifest: { name: "telemetry_link", tag: "v1" },
+            manifest: { name: "telemetry_link", tag: "v1", description: ["A test pairing."] },
             roles: ["sender", "receiver"],
             topics: [
-                { emitted_by: "sender", name: "samples" }
+                { emitted_by: "sender", name: "samples", description: "A test topic." }
             ]
         }"#;
         let parsed: PeppyPairing = serde_json5::from_str(json5).expect("should parse");
@@ -269,10 +276,10 @@ mod tests {
     fn a_pairing_topic_refuses_retention() {
         let json5 = r#"{
             peppy_schema: "pairing/v1",
-            manifest: { name: "telemetry_link", tag: "v1" },
+            manifest: { name: "telemetry_link", tag: "v1", description: ["A test pairing."] },
             roles: ["sender", "receiver"],
             topics: [
-                { emitted_by: "sender", name: "samples", retention: { latest: 1 } }
+                { emitted_by: "sender", name: "samples", description: "A test topic.", retention: { latest: 1 } }
             ]
         }"#;
         let err =
@@ -291,7 +298,7 @@ mod tests {
     fn rejects_wrong_schema_tag() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "x", tag: "v1" },
+            manifest: { name: "x", tag: "v1", description: ["A test contract."] },
             roles: ["a", "b"],
             topics: [{ emitted_by: "a", name: "t" }]
         }"#;
@@ -310,9 +317,9 @@ mod tests {
     }
 
     const VALID_PAIRING: PairingFields = PairingFields {
-        manifest: r#"{ name: "x", tag: "v1" }"#,
+        manifest: r#"{ name: "x", tag: "v1", description: ["A test pairing."] }"#,
         roles: r#"["a", "b"]"#,
-        topics: r#"[{ emitted_by: "a", name: "t" }]"#,
+        topics: r#"[{ emitted_by: "a", name: "t", description: "A test topic." }]"#,
         extra: "",
     };
 
@@ -342,10 +349,42 @@ mod tests {
         // (what, document fields, substrings the error must contain)
         let cases: &[(&str, PairingFields, &[&str])] = &[
             (
+                "no description of the pairing",
+                PairingFields {
+                    manifest: r#"{ name: "x", tag: "v1" }"#,
+                    ..VALID_PAIRING
+                },
+                &["missing field `description`"],
+            ),
+            (
+                "a blank paragraph",
+                PairingFields {
+                    manifest: r#"{ name: "x", tag: "v1", description: ["A pairing.", " "] }"#,
+                    ..VALID_PAIRING
+                },
+                &["blank"],
+            ),
+            (
+                "a topic with no description",
+                PairingFields {
+                    topics: r#"[{ emitted_by: "a", name: "t" }]"#,
+                    ..VALID_PAIRING
+                },
+                &["missing field `description`"],
+            ),
+            (
+                "a topic with a blank description",
+                PairingFields {
+                    topics: r#"[{ emitted_by: "a", name: "t", description: "" }]"#,
+                    ..VALID_PAIRING
+                },
+                &["blank"],
+            ),
+            (
                 "one role",
                 PairingFields {
                     roles: r#"["solo"]"#,
-                    topics: r#"[{ emitted_by: "solo", name: "t" }]"#,
+                    topics: r#"[{ emitted_by: "solo", name: "t", description: "A test topic." }]"#,
                     ..VALID_PAIRING
                 },
                 &["exactly two roles"],
@@ -362,7 +401,7 @@ mod tests {
                 "duplicate roles",
                 PairingFields {
                     roles: r#"["same", "same"]"#,
-                    topics: r#"[{ emitted_by: "same", name: "t" }]"#,
+                    topics: r#"[{ emitted_by: "same", name: "t", description: "A test topic." }]"#,
                     ..VALID_PAIRING
                 },
                 &["distinct"],
@@ -371,7 +410,7 @@ mod tests {
                 "`_` role",
                 PairingFields {
                     roles: r#"["_", "b"]"#,
-                    topics: r#"[{ emitted_by: "b", name: "t" }]"#,
+                    topics: r#"[{ emitted_by: "b", name: "t", description: "A test topic." }]"#,
                     ..VALID_PAIRING
                 },
                 &["sentinel"],
@@ -380,7 +419,7 @@ mod tests {
                 // The error names the bad role and the declared roles.
                 "undeclared emitted_by",
                 PairingFields {
-                    topics: r#"[{ emitted_by: "ghost", name: "t" }]"#,
+                    topics: r#"[{ emitted_by: "ghost", name: "t", description: "A test topic." }]"#,
                     ..VALID_PAIRING
                 },
                 &["ghost", "`a`", "`b`"],
@@ -400,8 +439,8 @@ mod tests {
                 "cross-direction duplicate topic",
                 PairingFields {
                     topics: r#"[
-                        { emitted_by: "a", name: "shared" },
-                        { emitted_by: "b", name: "shared" }
+                        { emitted_by: "a", name: "shared", description: "A test topic." },
+                        { emitted_by: "b", name: "shared", description: "A test topic." }
                     ]"#,
                     ..VALID_PAIRING
                 },
@@ -461,7 +500,7 @@ mod tests {
             (
                 "empty topic name",
                 PairingFields {
-                    topics: r#"[{ emitted_by: "a" }]"#,
+                    topics: r#"[{ emitted_by: "a", description: "A test topic." }]"#,
                     ..VALID_PAIRING
                 },
                 &["empty"],

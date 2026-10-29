@@ -1,6 +1,11 @@
 #[cfg(feature = "container_e2e")]
 #[path = "."]
 mod container_e2e_tests {
+    /// The description that each scaffolded manifest gets.
+    fn node_description() -> config::description::Description {
+        config::description::Description::new("A node that greets.").unwrap()
+    }
+
     mod common;
 
     use common::{
@@ -60,6 +65,7 @@ mod container_e2e_tests {
             &NodeInitRequest::new(
                 nodes_root.path(),
                 node_name,
+                node_description(),
                 common::TEST_GIT_HASH,
                 true,
                 toolchain,
@@ -191,7 +197,7 @@ mod container_e2e_tests {
             source_dir.path(),
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "cargo_progress_e2e_node", tag: "v1" },
+                manifest: { name: "cargo_progress_e2e_node", tag: "v1", description: ["A test node."] },
                 execution: { language: "rust", container: { def_file: "apptainer.def" } }
             }"#,
         );
@@ -268,7 +274,7 @@ mod container_e2e_tests {
             source_dir.path(),
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "data_root_view_e2e_node", tag: "v1" },
+                manifest: { name: "data_root_view_e2e_node", tag: "v1", description: ["A test node."] },
                 execution: { language: "rust", container: { def_file: "apptainer.def" } }
             }"#,
         );
@@ -398,7 +404,7 @@ mod container_e2e_tests {
             source_dir.path(),
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "uv_cache_e2e_node", tag: "v1" },
+                manifest: { name: "uv_cache_e2e_node", tag: "v1", description: ["A test node."] },
                 execution: { language: "python", container: { def_file: "apptainer.def" } }
             }"#,
         );
@@ -622,7 +628,7 @@ mod container_e2e_tests {
             base_dir.path(),
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "zombie_e2e_base", tag: "v1" },
+                manifest: { name: "zombie_e2e_base", tag: "v1", description: ["A test node."] },
                 execution: { language: "rust", container: { def_file: "apptainer.def" } }
             }"#,
         );
@@ -666,7 +672,7 @@ mod container_e2e_tests {
             source_dir.path(),
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "zombie_e2e_node", tag: "v1" },
+                manifest: { name: "zombie_e2e_node", tag: "v1", description: ["A test node."] },
                 execution: { language: "rust", container: { def_file: "apptainer.def" } }
             }"#,
         );

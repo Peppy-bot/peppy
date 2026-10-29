@@ -1,4 +1,5 @@
 use capnp::message::Builder;
+use config::description::Description;
 use config::node::Toolchain;
 use std::path::PathBuf;
 
@@ -11,6 +12,9 @@ use crate::encoding::{decode_message, encode_fs_path, encode_message};
 pub struct NodeInitRequest {
     pub node_root_dir: PathBuf,
     pub node_name: String,
+    /// What the node does, which the scaffolded manifest gives as the
+    /// first paragraph of its description.
+    pub description: Description,
     pub git_hash: String,
     pub with_container: bool,
     pub toolchain: Toolchain,
@@ -20,6 +24,7 @@ impl NodeInitRequest {
     pub fn new(
         node_root_dir: impl Into<PathBuf>,
         node_name: impl Into<String>,
+        description: Description,
         git_hash: impl Into<String>,
         with_container: bool,
         toolchain: Toolchain,
@@ -27,6 +32,7 @@ impl NodeInitRequest {
         Self {
             node_root_dir: node_root_dir.into(),
             node_name: node_name.into(),
+            description,
             git_hash: git_hash.into(),
             with_container,
             toolchain,
@@ -39,6 +45,7 @@ impl NodeInitRequest {
             let mut request = builder.init_root::<node_capnp::node_init_request::Builder>();
             request.set_node_root_dir(encode_fs_path(&self.node_root_dir, "node_root_dir")?);
             request.set_node_name(&self.node_name);
+            request.set_description(self.description.as_str());
             request.set_git_hash(&self.git_hash);
             request.set_with_container(self.with_container);
             request.set_toolchain(self.toolchain.to_string());
@@ -51,9 +58,12 @@ impl NodeInitRequest {
         let request = reader.get_root::<node_capnp::node_init_request::Reader>()?;
         let toolchain_str = request.get_toolchain()?.to_str()?;
         let toolchain = toolchain_str.parse()?;
+        let description = Description::new(request.get_description()?.to_str()?)
+            .map_err(|blank| crate::Error::Decoding(format!("node init description: {blank}")))?;
         Ok(Self {
             node_root_dir: PathBuf::from(request.get_node_root_dir()?.to_str()?),
             node_name: request.get_node_name()?.to_str()?.to_owned(),
+            description,
             git_hash: request.get_git_hash()?.to_str()?.to_owned(),
             with_container: request.get_with_container(),
             toolchain,
@@ -107,6 +117,7 @@ mod tests {
         let request = NodeInitRequest::new(
             crate::encoding::non_utf8_path(),
             "my_node",
+            description(),
             "deadbeef",
             false,
             Toolchain::Cargo,
@@ -123,6 +134,7 @@ mod tests {
         let request = NodeInitRequest::new(
             "/var/lib/node-root",
             "my_node",
+            description(),
             "deadbeef",
             true,
             Toolchain::Cargo,
@@ -130,6 +142,7 @@ mod tests {
         let payload = request.encode().expect("encode");
         let decoded = NodeInitRequest::decode(payload.as_ref()).expect("decode");
         assert!(decoded.with_container);
+        assert_eq!(decoded.description.as_str(), "A node that greets.");
         assert_eq!(decoded, request);
     }
 
@@ -138,6 +151,7 @@ mod tests {
         let request = NodeInitRequest::new(
             "/var/lib/node-root",
             "my_node",
+            description(),
             "abc123",
             false,
             Toolchain::Uv,
@@ -146,6 +160,28 @@ mod tests {
         let decoded = NodeInitRequest::decode(payload.as_ref()).expect("decode");
         assert!(!decoded.with_container);
         assert_eq!(decoded, request);
+    }
+
+    fn description() -> Description {
+        Description::new("A node that greets.").unwrap()
+    }
+
+    /// A request whose description is blank is refused: the manifest the
+    /// daemon scaffolds requires one.
+    #[test]
+    fn init_request_decode_refuses_a_blank_description() {
+        let mut builder = Builder::new_default();
+        {
+            let mut request = builder.init_root::<node_capnp::node_init_request::Builder>();
+            request.set_node_root_dir("/var/lib/node-root");
+            request.set_node_name("my_node");
+            request.set_description("  ");
+            request.set_git_hash("abc123");
+            request.set_toolchain("cargo");
+        }
+        let payload = encode_message(&builder).expect("encode");
+        let error = NodeInitRequest::decode(payload.as_ref()).expect_err("a blank description");
+        assert!(error.to_string().contains("blank"), "{error}");
     }
 
     #[test]

@@ -112,10 +112,11 @@ mod tests {
         let cfg = NodeConfigParser::from_content(&format!(
             r#"{{
                 peppy_schema: "node/v1",
-                manifest: {{ name: "n", tag: "v1" }},
+                manifest: {{ name: "n", tag: "v1", description: ["A test node."] }},
                 execution: {{ language: "rust", run_cmd: ["n"] }},
                 interfaces: {{ services: {{ exposes: [ {{
                     name: "svc",
+                    description: "A test service.",
                     request_message_format: {schema},
                     response_message_format: {{ ok: "bool" }}
                 }} ] }} }}

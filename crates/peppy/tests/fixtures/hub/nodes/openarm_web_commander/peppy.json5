@@ -3,6 +3,7 @@
   manifest: {
     name: "openarm_web_commander",
     tag: "v1",
+    description: ["A test node."],
     implements: [
       // Runtime on/off for the backbone's self-collision governor, driven by
       // the UI.

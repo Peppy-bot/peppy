@@ -19,12 +19,14 @@
   manifest: {
     name: "joint_link",
     tag: "v1",
+    description: ["A test pairing."],
   },
   roles: ["leader", "follower"],
   topics: [
     {
       emitted_by: "leader",
       name: "joint_setpoints",
+      description: "A test topic.",
       // High-frequency stream where only the latest setpoint matters;
       // occasional drops are acceptable.
       qos_profile: "sensor_data",
@@ -42,6 +44,7 @@
     {
       emitted_by: "follower",
       name: "joint_states",
+      description: "A test topic.",
       // High-frequency stream where only the latest state matters;
       // occasional drops are acceptable.
       qos_profile: "sensor_data",

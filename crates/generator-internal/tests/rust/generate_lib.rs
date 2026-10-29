@@ -16,13 +16,15 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
   manifest: {
     name: "test_node",
-    tag: "v1"
+    tag: "v1",
+    description: ["A test node."],
   },
   interfaces: {
     topics: {
       emits: [
         {
           name: "test_topic",
+          description: "A test topic.",
           qos_profile: "sensor_data",
           message_format: {
             value: "u32",
@@ -35,6 +37,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
       exposes: [
         {
           name: "test_service",
+          description: "A test service.",
           request_message_format: {
             input: "string"
           },
@@ -61,7 +64,8 @@ fn minimal_rust_node_config(name: &str) -> String {
   peppy_schema: "node/v1",
   manifest: {{
     name: "{name}",
-    tag: "v1"
+    tag: "v1",
+    description: ["A test node."],
   }},
   execution: {{
     language: "rust",
@@ -321,12 +325,14 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
           manifest: {
             name: "{EXPOSED_NODE_NAME}",
             tag: "v1",
+            description: ["A test node."],
           },
           interfaces: {
             topics: {
               emits: [
                 {
                   name: "test_topic",
+                  description: "A test topic.",
                   qos_profile: "sensor_data",
                   message_format: {
                     value: "u32"
@@ -416,12 +422,14 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
           manifest: {
             name: "{EXPOSED_NODE_NAME}",
             tag: "v1",
+            description: ["A test node."],
           },
           interfaces: {
             services: {
               exposes: [
                 {
                   name: "test_service",
+                  description: "A test service.",
                   request_message_format: {
                     input: "string"
                   },
@@ -526,12 +534,14 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
           manifest: {
             name: "{EXPOSED_NODE_NAME}",
             tag: "v1",
+            description: ["A test node."],
           },
           interfaces: {
             actions: {
               exposes: [
                 {
                   name: "test_action",
+                  description: "A test action.",
                   goal_service: {
                     request_message_format: {
                       value: "u32"

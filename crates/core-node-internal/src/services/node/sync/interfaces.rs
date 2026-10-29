@@ -373,6 +373,7 @@ mod action_message_tests {
         let exposed_action: config::node::NativeExposedAction = serde_json5::from_str(
             r#"{
                 name: "move_arm",
+                description: "A test member.",
                 goal_service: {
                     response_message_format: {
                         accepted: "bool"
@@ -790,22 +791,23 @@ mod implements_tests {
             sha256: daemon_config::repository::ManifestFingerprint::of_bytes(body.as_bytes()),
             origin: repo_cache::EntryOrigin::Fs { path: path.clone() },
             repo_id: 0,
+            descriptions: crate::services::repo::cache::test_support::descriptions("test contract"),
         }
     }
 
     const DEPTH_V1_BODY: &str = r#"{
         peppy_schema: "contract/v1",
-        manifest: { name: "depth_camera", tag: "v1" },
+        manifest: { name: "depth_camera", tag: "v1", description: ["A test contract."] },
         interfaces: {
             topics: [
-                { name: "video_stream", qos_profile: "sensor_data" }
+                { name: "video_stream", description: "A test topic.", qos_profile: "sensor_data" }
             ]
         }
     }"#;
 
     fn manifest_with_implements(implements: &str) -> Manifest {
         serde_json5::from_str(&format!(
-            r#"{{ name: "camera_node", tag: "v1", implements: [{implements}] }}"#
+            r#"{{ name: "camera_node", tag: "v1", description: ["A test node."], implements: [{implements}] }}"#
         ))
         .expect("manifest parses")
     }
@@ -817,7 +819,9 @@ mod implements_tests {
     #[test]
     fn returns_empty_when_no_implements() {
         let dirs = PeppyDirs::new(TempDir::new().unwrap().path().to_path_buf());
-        let manifest: Manifest = serde_json5::from_str(r#"{ name: "plain", tag: "v1" }"#).unwrap();
+        let manifest: Manifest =
+            serde_json5::from_str(r#"{ name: "plain", tag: "v1", description: ["A test node."] }"#)
+                .unwrap();
         let out = resolve_implements(&manifest, &Interfaces::default(), &dirs, None, &|_| {})
             .expect("ok");
         assert!(out.is_empty());
@@ -834,10 +838,10 @@ mod implements_tests {
             "v1",
             r#"{
                 peppy_schema: "contract/v1",
-                manifest: { name: "robot_state", tag: "v1" },
+                manifest: { name: "robot_state", tag: "v1", description: ["A test contract."] },
                 interfaces: {
                     topics: [
-                        { name: "robot_mode", retention: { latest: 3 }, message_format: { mode: "string" } },
+                        { name: "robot_mode", description: "A test topic.", retention: { latest: 3 }, message_format: { mode: "string" } },
                     ]
                 }
             }"#,
@@ -903,10 +907,10 @@ mod implements_tests {
     fn partial_coverage_rejected_with_aggregated_diff() {
         const UVC_BODY: &str = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "uvc_camera", tag: "v1" },
+            manifest: { name: "uvc_camera", tag: "v1", description: ["A test contract."] },
             interfaces: {
-                topics: [ { name: "video_stream" } ],
-                services: [ { name: "video_stream_info" }, { name: "set_contrast" } ]
+                topics: [ { name: "video_stream", description: "A test topic." } ],
+                services: [ { name: "video_stream_info", description: "A test service." }, { name: "set_contrast", description: "A test service." } ]
             }
         }"#;
         let tmp = TempDir::new().unwrap();
@@ -978,8 +982,8 @@ mod implements_tests {
     fn multi_slot_error_names_only_the_broken_slot() {
         const IMU_BODY: &str = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "imu", tag: "v1" },
-            interfaces: { topics: [ { name: "orientation" } ] }
+            manifest: { name: "imu", tag: "v1", description: ["A test contract."] },
+            interfaces: { topics: [ { name: "orientation", description: "A test topic." } ] }
         }"#;
         let tmp = TempDir::new().unwrap();
         let depth = seed_contract(tmp.path(), "depth_camera", "v1", DEPTH_V1_BODY);
@@ -1013,7 +1017,7 @@ mod implements_tests {
     fn zero_member_contract_with_zero_entries_passes() {
         const EMPTY_BODY: &str = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "empty_contract", tag: "v1" },
+            manifest: { name: "empty_contract", tag: "v1", description: ["A test contract."] },
             interfaces: {}
         }"#;
         let tmp = TempDir::new().unwrap();
@@ -1050,11 +1054,11 @@ mod implements_tests {
     fn resolves_service_and_action_members_with_origin() {
         const ARM_BODY: &str = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "arm", tag: "v1" },
+            manifest: { name: "arm", tag: "v1", description: ["A test contract."] },
             failure_kinds: { leader_streaming: "A leader streams a limb of the goal" },
             interfaces: {
-                services: [ { name: "control" } ],
-                actions: [ { name: "move_arm", failure_kinds: ["leader_streaming"] } ]
+                services: [ { name: "control", description: "A test service." } ],
+                actions: [ { name: "move_arm", description: "A test action.", failure_kinds: ["leader_streaming"] } ]
             }
         }"#;
         let tmp = TempDir::new().unwrap();
@@ -1117,17 +1121,19 @@ mod implements_tests {
     /// document refuses.
     const LIMB_MOTION_V1_BODY: &str = r#"{
         peppy_schema: "contract/v1",
-        manifest: { name: "limb_motion", tag: "v1" },
+        manifest: { name: "limb_motion", tag: "v1", description: ["A test contract."] },
         interfaces: {
             topics: [
                 {
                     name: "joint_states",
+                    description: "A test topic.",
                     message_format: { positions: { $type: "array", $items: "f64" } }
                 }
             ],
             actions: [
                 {
                     name: "move_arm_joints",
+                    description: "A test action.",
                     goal_service: {
                         request_message_format: {
                             arm_id: "u8",
@@ -1408,6 +1414,7 @@ mod implements_tests {
                 .unwrap(),
             },
             repo_id: 0,
+            descriptions: crate::services::repo::cache::test_support::descriptions("test contract"),
         };
         let (peppy_tmp, dirs) = peppy_dirs_with_cache(&[entry]);
         (peppy_tmp, source_parent, dirs)
@@ -1474,11 +1481,12 @@ mod implements_tests {
     fn consumed_service_with_response_only_format_resolves() {
         const UVC_V1_BODY: &str = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "uvc_camera", tag: "v1" },
+            manifest: { name: "uvc_camera", tag: "v1", description: ["A test contract."] },
             interfaces: {
                 services: [
                     {
                         name: "video_stream_info",
+                        description: "A test service.",
                         response_message_format: {
                             width: "u32",
                             height: "u32",
@@ -1497,6 +1505,7 @@ mod implements_tests {
             r#"{
                 name: "uvc_consumer",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     contracts: [
                         { name: "uvc_camera", tag: "v1", link_id: "camera" }
@@ -1560,11 +1569,11 @@ mod implements_tests {
     fn pairing_and_contract_entries_route_to_separate_collectors() {
         const ARM_LINK_BODY: &str = r#"{
             peppy_schema: "pairing/v1",
-            manifest: { name: "arm_link", tag: "v1" },
+            manifest: { name: "arm_link", tag: "v1", description: ["A test pairing."] },
             roles: ["controller", "arm"],
             topics: [
-                { emitted_by: "controller", name: "joint_commands" },
-                { emitted_by: "arm", name: "joint_states" }
+                { emitted_by: "controller", name: "joint_commands", description: "A test topic." },
+                { emitted_by: "arm", name: "joint_states", description: "A test topic." }
             ]
         }"#;
 
@@ -1585,6 +1594,7 @@ mod implements_tests {
                 path: pairing_path.clone(),
             },
             repo_id: 0,
+            descriptions: crate::services::repo::cache::test_support::descriptions("test pairing"),
         };
         repo_cache::write_repo_cache(&dirs, &[pairing_entry]).expect("write pairing cache");
 
@@ -1593,7 +1603,7 @@ mod implements_tests {
         // collectors run, and each must claim exactly its own entries.
         let manifest: Manifest = serde_json5::from_str(
             r#"{
-                name: "robot_arm", tag: "v1",
+                name: "robot_arm", tag: "v1", description: ["A test node."],
                 implements: [{ name: "depth_camera", tag: "v1", link_id: "cam_out" }],
                 depends_on: {
                     contracts: [{ name: "depth_camera", tag: "v1", link_id: "cam_in" }],
@@ -1667,7 +1677,7 @@ mod implements_tests {
 
         let manifest: Manifest = serde_json5::from_str(
             r#"{
-                name: "camera_consumer", tag: "v1",
+                name: "camera_consumer", tag: "v1", description: ["A test node."],
                 depends_on: {
                     contracts: [{ name: "depth_camera", tag: "v1", link_id: "cam" }]
                 }
@@ -1705,11 +1715,11 @@ mod implements_tests {
             "v1",
             r#"{
                 peppy_schema: "contract/v1",
-                manifest: { name: "robot_state", tag: "v1" },
+                manifest: { name: "robot_state", tag: "v1", description: ["A test contract."] },
                 interfaces: {
                     topics: [
-                        { name: "robot_mode", retention: { latest: 3 }, message_format: { mode: "string" } },
-                        { name: "joint_state", message_format: { position: "f64" } },
+                        { name: "robot_mode", description: "A test topic.", retention: { latest: 3 }, message_format: { mode: "string" } },
+                        { name: "joint_state", description: "A test topic.", message_format: { position: "f64" } },
                     ]
                 }
             }"#,
@@ -1718,11 +1728,11 @@ mod implements_tests {
         let arm: config::node::NodeConfig = config::node::NodeConfigParser::from_content(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "arm", tag: "v1" },
+                manifest: { name: "arm", tag: "v1", description: ["A test node."] },
                 interfaces: {
                     topics: { emits: [
-                        { name: "calibration", retention: { latest: 1 }, message_format: { offset: "f64" } },
-                        { name: "telemetry", message_format: { load: "f64" } },
+                        { name: "calibration", description: "A test topic.", retention: { latest: 1 }, message_format: { offset: "f64" } },
+                        { name: "telemetry", description: "A test topic.", message_format: { load: "f64" } },
                     ] },
                 },
                 execution: { language: "rust", run_cmd: ["./bin"] },
@@ -1731,7 +1741,7 @@ mod implements_tests {
         .expect("producer parses");
         let manifest: Manifest = serde_json5::from_str(
             r#"{
-                name: "panel", tag: "v1",
+                name: "panel", tag: "v1", description: ["A test node."],
                 depends_on: {
                     nodes: [{ name: "arm", tag: "v1", link_id: "arm" }],
                     contracts: [{ name: "robot_state", tag: "v1", link_id: "robot" }]
@@ -1784,12 +1794,13 @@ mod implements_tests {
     /// (goal request and result only).
     const ARM_ACTIONS_V1_BODY: &str = r#"{
         peppy_schema: "contract/v1",
-        manifest: { name: "arm_actions", tag: "v1" },
+        manifest: { name: "arm_actions", tag: "v1", description: ["A test contract."] },
         failure_kinds: { unreachable: "No plan to the target" },
         interfaces: {
             actions: [
                 {
                     name: "move_arm",
+                    description: "A test action.",
                     goal_service: {
                         request_message_format: { task: "string" },
                         response_message_format: { accepted: "bool" }
@@ -1805,6 +1816,7 @@ mod implements_tests {
                 },
                 {
                     name: "wave",
+                    description: "A test action.",
                     goal_service: {
                         request_message_format: { times: "u8" }
                     },
@@ -1885,7 +1897,7 @@ mod implements_tests {
     fn arm_actions_consumer_manifest() -> Manifest {
         serde_json5::from_str(
             r#"{
-                name: "arm_consumer", tag: "v1",
+                name: "arm_consumer", tag: "v1", description: ["A test node."],
                 depends_on: {
                     contracts: [{ name: "arm_actions", tag: "v1", link_id: "arm" }]
                 }
@@ -1897,7 +1909,7 @@ mod implements_tests {
     fn limb_motion_consumer_manifest() -> Manifest {
         serde_json5::from_str(
             r#"{
-                name: "arm_consumer", tag: "v1",
+                name: "arm_consumer", tag: "v1", description: ["A test node."],
                 depends_on: {
                     contracts: [{ name: "limb_motion", tag: "v1", link_id: "arm" }]
                 }
@@ -2062,9 +2074,9 @@ mod implements_tests {
         let producer: config::node::NodeConfig = config::node::NodeConfigParser::from_content(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "producer_node", tag: "v1" },
+                manifest: { name: "producer_node", tag: "v1", description: ["A test node."] },
                 interfaces: {
-                    topics: { emits: [{ name: "debug_stream", message_format: { x: "f64" } }] },
+                    topics: { emits: [{ name: "debug_stream", description: "A test topic.", message_format: { x: "f64" } }] },
                 },
                 execution: { language: "rust", run_cmd: ["./bin"] },
             }"#,
@@ -2072,7 +2084,7 @@ mod implements_tests {
         .expect("producer parses");
         let manifest: Manifest = serde_json5::from_str(
             r#"{
-                name: "consumer", tag: "v1",
+                name: "consumer", tag: "v1", description: ["A test node."],
                 depends_on: { nodes: [{ name: "producer_node", tag: "v1", link_id: "producer" }] }
             }"#,
         )
@@ -2118,13 +2130,13 @@ mod implements_tests {
             r#"{
                 peppy_schema: "node/v1",
                 manifest: {
-                    name: "hybrid", tag: "v1",
+                    name: "hybrid", tag: "v1", description: ["A test node."],
                     implements: [{ name: "depth_camera", tag: "v1", link_id: "cam" }],
                 },
                 interfaces: {
                     topics: { emits: [
                         { link_id: "cam", name: "video_stream" },
-                        { name: "debug_stream", message_format: { x: "f64" } },
+                        { name: "debug_stream", description: "A test topic.", message_format: { x: "f64" } },
                     ] },
                 },
                 execution: { language: "rust", run_cmd: ["./bin"] },
@@ -2136,6 +2148,7 @@ mod implements_tests {
             r#"{
                 name: "consumer",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     nodes: [ { name: "hybrid", tag: "v1", link_id: "producer" } ]
                 }
@@ -2214,7 +2227,7 @@ mod daemon_target_tests {
     /// A manifest whose daemon target `fleet` names the interface `name:tag`.
     fn director(name_and_tag: &str) -> Manifest {
         serde_json5::from_str(&format!(
-            r#"{{ name: "director", tag: "v1", depends_on: {{
+            r#"{{ name: "director", tag: "v1", description: ["A test node."], depends_on: {{
                 daemon: [{{ {name_and_tag}, link_id: "fleet" }}]
             }} }}"#
         ))
@@ -2241,8 +2254,8 @@ mod daemon_target_tests {
     fn cache_with_a_robot_leases_contract(dir: &std::path::Path) -> (TempDir, PeppyDirs) {
         let body = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "robot_leases", tag: "v1" },
-            interfaces: { services: [{ name: "list", response_message_format: { other: "u8" } }] },
+            manifest: { name: "robot_leases", tag: "v1", description: ["A test contract."] },
+            interfaces: { services: [{ name: "list", description: "A test service.", response_message_format: { other: "u8" } }] },
         }"#;
         let path = dir.join("robot_leases_v1.json5");
         std::fs::write(&path, body).expect("write the contract");
@@ -2252,6 +2265,7 @@ mod daemon_target_tests {
             sha256: daemon_config::repository::ManifestFingerprint::of_bytes(body.as_bytes()),
             origin: repo_cache::EntryOrigin::Fs { path },
             repo_id: 0,
+            descriptions: crate::services::repo::cache::test_support::descriptions("test contract"),
         }])
     }
 

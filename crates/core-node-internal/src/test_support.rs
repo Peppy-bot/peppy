@@ -189,6 +189,10 @@ pub fn seed_contract_cache(dirs: &PeppyDirs, documents: &[SeededDocument<'_>]) {
             origin: EntryOrigin::Fs {
                 path: path.to_path_buf(),
             },
+            descriptions: crate::services::repo::descriptions::CachedDescriptions::of_contract(
+                &peppy_codec::contract::PeppyContractParser::from_path(path)
+                    .unwrap_or_else(|error| panic!("{} is a contract: {error}", path.display())),
+            ),
             repo_id: 0,
         })
         .collect();

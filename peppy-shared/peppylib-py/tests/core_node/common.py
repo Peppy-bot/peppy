@@ -34,7 +34,7 @@ _CallResult = TypeVar("_CallResult")
 
 _PEPPY_CONFIG = """{
     peppy_schema: "node/v1",
-    manifest: { name: "test_node", tag: "v1" },
+    manifest: { name: "test_node", tag: "v1", description: ["A test node."] },
     execution: { language: "rust", run_cmd: ["./target/debug/test_node"] },
 }"""
 

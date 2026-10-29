@@ -1,18 +1,12 @@
-// The robots of the stack, each a copy of the running launch: list them, add
-// one, remove one. The peppy daemon that coordinates the stack serves this
-// interface, and no node implements it. The daemon target of each instance of
-// the stack reaches that daemon; a daemon that runs the slice of a launch
-// that another machine coordinates refuses each call with precondition_failed
-// and names the coordinator. The scope that the launcher gives the target of
-// a client limits every member to the options it names and the features it
-// gives them. A machine is the core node name of a peppy daemon. A join or a
-// removal follows the leases of robot_leases:v1: a join by a lease holder
-// leases the new robot to it, and a join is refused during a halt; a join
-// under the name of a robot that another client leases, and the removal of a
-// robot that another client leases, are refused with the failure kind leased.
 {
   peppy_schema: "contract/v1",
-  manifest: { name: "robot_membership", tag: "v1" },
+  manifest: {
+    name: "robot_membership",
+    tag: "v1",
+    description: [
+      "The robots of the stack, each a copy of the running launch: list them, add one, remove one. The peppy daemon that coordinates the stack serves this interface, and no node implements it. The daemon target of each instance of the stack reaches that daemon; a daemon that runs the slice of a launch that another machine coordinates refuses each call with precondition_failed and names the coordinator. The scope that the launcher gives the target of a client limits every member to the options it names and the features it gives them. A machine is the core node name of a peppy daemon. A join or a removal follows the leases of robot_leases:v1: a join by a lease holder leases the new robot to it, and a join is refused during a halt; a join under the name of a robot that another client leases, and the removal of a robot that another client leases, are refused with the failure kind leased.",
+    ],
+  },
   // The kinds of the daemon beside the kinds of peppy, which join and
   // remove give. Each meaning is the meaning that the daemon gives it.
   failure_kinds: {
@@ -23,113 +17,70 @@
   interfaces: {
     services: [
       {
-        // The options of the scope with their models and their features, the
-        // machines of the federation now, the copies of these options on the
-        // stack, in name order, the addition or removal of a copy of one of
-        // them that runs now, and the copies of them that the launch
-        // started. Each copy, without its `running`, and each launch copy is
-        // a valid `join` goal. For a copy that `join` added, the goal adds
-        // the same copy on the same machines. A copy that a word of the
-        // command line, or the copy's entry in the launcher, shaped with a
-        // part that no feature of the scope names, or with arguments or
-        // adjustments of its own, can come back different from the listed
-        // one.
         name: "list",
+        description: "The options of the scope with their models and their features, the machines of the federation now, the copies of these options on the stack, in name order, the addition or removal of a copy of one of them that runs now, and the copies of them that the launch started. Each copy, without its `running`, and each launch copy is a valid `join` goal. For a copy that `join` added, the goal adds the same copy on the same machines. A copy that a word of the command line, or the copy's entry in the launcher, shaped with a part that no feature of the scope names, or with arguments or adjustments of its own, can come back different from the listed one.",
         response_message_format: {
           options: {
             $type: "array",
             $items: {
               $type: "object",
-              // The launcher option, the value `join` takes.
-              option: "string",
-              // The robot model a copy of the option is, as the scope names
-              // it.
-              model: "string",
-              // The one-line description the scope gives the option.
-              description: "string",
-              // The features a copy of the option may hold, in the scope's
-              // order; empty when it offers none.
+              option: { $type: "string", $description: "The launcher option, the value `join` takes." },
+              model: { $type: "string", $description: "The robot model a copy of the option is, as the scope names it." },
+              description: { $type: "string", $description: "The one-line description the scope gives the option." },
               features: {
                 $type: "array",
+                $description: "The features a copy of the option may hold, in the scope's order; empty when it offers none.",
                 $items: {
                   $type: "object",
-                  // The feature, the value a `join` feature item takes.
-                  feature: "string",
-                  // The one-line description the scope gives the feature.
-                  description: "string",
+                  feature: { $type: "string", $description: "The feature, the value a `join` feature item takes." },
+                  description: { $type: "string", $description: "The one-line description the scope gives the feature." },
                 },
               },
-              // simulated when every instance that the option and its
-              // features can bring reads the clock of a simulation, else
-              // physical.
-              kind: { $type: "string", $enum: ["simulated", "physical"] },
+              kind: { $type: "string", $enum: ["simulated", "physical"], $description: "simulated when every instance that the option and its features can bring reads the clock of a simulation, else physical." },
             },
           },
-          // This machine and every live daemon of the same workspace or
-          // project, each once, in name order, read on every call.
-          core_nodes: { $type: "array", $items: "string" },
-          // The machine of this stack: the coordinator.
-          this_core_node: "string",
+          core_nodes: { $type: "array", $items: "string", $description: "This machine and every live daemon of the same workspace or project, each once, in name order, read on every call." },
+          this_core_node: { $type: "string", $description: "The machine of this stack: the coordinator." },
           copies: {
             $type: "array",
             $items: {
               $type: "object",
-              // The copy's name: the prefix of its instance ids.
-              name: "string",
-              // The launcher option the copy runs.
-              option: "string",
-              // The copy's machine, which runs its base.
-              core_node: "string",
-              // The features of the option the copy holds, in the scope's
-              // order, each with the machine that runs its part.
+              name: { $type: "string", $description: "The copy's name: the prefix of its instance ids." },
+              option: { $type: "string", $description: "The launcher option the copy runs." },
+              core_node: { $type: "string", $description: "The copy's machine, which runs its base." },
               features: {
                 $type: "array",
+                $description: "The features of the option the copy holds, in the scope's order, each with the machine that runs its part.",
                 $items: {
                   $type: "object",
                   feature: "string",
                   core_node: "string",
                 },
               },
-              // Whether every instance of the copy runs.
-              running: "bool",
+              running: { $type: "bool", $description: "Whether every instance of the copy runs." },
             },
           },
-          // The most copies of the scope's options on the stack: `join`
-          // refuses when the stack holds this many.
-          max_copies: "u16",
-          // The addition or removal of a copy of a scoped option that runs on
-          // the stack now; absent while none runs. A copy that joins is in
-          // `copies` only once its join ends.
+          max_copies: { $type: "u16", $description: "The most copies of the scope's options on the stack: `join` refuses when the stack holds this many." },
           change: {
             $type: "object",
             $optional: true,
+            $description: "The addition or removal of a copy of a scoped option that runs on the stack now; absent while none runs. A copy that joins is in `copies` only once its join ends.",
             action: { $type: "string", $enum: ["join", "remove"] },
             name: "string",
             option: "string",
           },
-          // The launcher of the stack.
-          launcher: "string",
-          // The copies of the scope's options that the launch of the stack
-          // started, each as the launch started it, in name order, in the
-          // form of an item of `copies` without its `running`. They stay
-          // listed whether or not each one is on the stack now, from
-          // `peppy stack launch` until `peppy stack reset`, the next launch
-          // or the end of the daemon; `join` and `remove` do not change
-          // them.
+          launcher: { $type: "string", $description: "The launcher of the stack." },
           launch_copies: {
             $type: "array",
+            $description: "The copies of the scope's options that the launch of the stack started, each as the launch started it, in name order, in the form of an item of `copies` without its `running`. They stay listed whether or not each one is on the stack now, from `peppy stack launch` until `peppy stack reset`, the next launch or the end of the daemon; `join` and `remove` do not change them.",
             $items: {
               $type: "object",
-              // The copy's name: the prefix of its instance ids.
-              name: "string",
-              // The launcher option the launch gave the copy.
-              option: "string",
-              // The machine the launch gave the copy, which runs its base.
-              core_node: "string",
-              // The features of the option the copy holds, in the scope's
-              // order, each with the machine the launch gave its part.
+              name: { $type: "string", $description: "The copy's name: the prefix of its instance ids." },
+              option: { $type: "string", $description: "The launcher option the launch gave the copy." },
+              core_node: { $type: "string", $description: "The machine the launch gave the copy, which runs its base." },
               features: {
                 $type: "array",
+                $description: "The features of the option the copy holds, in the scope's order, each with the machine the launch gave its part.",
                 $items: {
                   $type: "object",
                   feature: "string",
@@ -143,34 +94,16 @@
     ],
     actions: [
       {
-        // Adds a copy of an option on a machine, with the features it
-        // names, each part on its machine, as `peppy stack join
-        // OPTION:NAME@CORE_NODE` does with the `axis=option@CORE_NODE` word
-        // of each feature: the option's entry in the launcher decides the
-        // rest of the copy's selection. Refused when the option is not in
-        // the scope, when a feature is not a feature of the option or is
-        // named twice, when a copy on the stack has the name, when the stack
-        // holds max_copies copies of the scope's options, and, with the
-        // failure kind busy, while another stack change or node operation
-        // runs on the daemon. A join that ran and failed
-        // gives its failure kind and a message that names the log files,
-        // and is undone: resource_unavailable when a machine is not live,
-        // timeout when a phase went quiet past its budget, attempt_failed
-        // when an add, a build or a start failed. A completed join gives no
-        // result: the copy is on the stack. A cancel stops the join and
-        // undoes it as a failure at the same step does, and the goal ends
-        // cancelled.
         name: "join",
+        description: "Adds a copy of an option on a machine, with the features it names, each part on its machine, as `peppy stack join OPTION:NAME@CORE_NODE` does with the `axis=option@CORE_NODE` word of each feature: the option's entry in the launcher decides the rest of the copy's selection. Refused when the option is not in the scope, when a feature is not a feature of the option or is named twice, when a copy on the stack has the name, when the stack holds max_copies copies of the scope's options, and, with the failure kind busy, while another stack change or node operation runs on the daemon. A join that ran and failed gives its failure kind and a message that names the log files, and is undone: resource_unavailable when a machine is not live, timeout when a phase went quiet past its budget, attempt_failed when an add, a build or a start failed. A completed join gives no result: the copy is on the stack. A cancel stops the join and undoes it as a failure at the same step does, and the goal ends cancelled. The feedback gives each line of the join's log, in order.",
         goal_service: {
           request_message_format: {
             name: "string",
             option: "string",
-            // The copy's machine, which runs its base.
-            core_node: "string",
-            // The features of the copy, each with the machine of its part;
-            // empty for the copy of the launcher's entry.
+            core_node: { $type: "string", $description: "The copy's machine, which runs its base." },
             features: {
               $type: "array",
+              $description: "The features of the copy, each with the machine of its part; empty for the copy of the launcher's entry.",
               $items: {
                 $type: "object",
                 feature: "string",
@@ -179,35 +112,23 @@
             },
           },
         },
-        // One message per line of the join's log, in order.
         feedback_topic: {
           qos_profile: "standard",
           message_format: {
-            // launch, add, build or run.
-            step: "string",
+            step: { $type: "string", $description: "launch, add, build or run." },
             line: "string",
           },
         },
         failure_kinds: ["busy", "halted", "leased"],
       },
       {
-        // Stops and removes a copy, as `peppy stack remove NAME` does.
-        // Refused when no copy of a scoped option has the name, and, with
-        // the failure kind busy, while another stack change or node
-        // operation runs on the daemon. A removal that ran and
-        // failed gives its failure kind and a message that names the log
-        // file; the copy stays listed, and a removal again stops what is
-        // left of it. A completed removal gives no result: the copy is off
-        // the stack. A cancel stops the removal before its next stop, and
-        // the goal ends cancelled.
         name: "remove",
+        description: "Stops and removes a copy, as `peppy stack remove NAME` does. Refused when no copy of a scoped option has the name, and, with the failure kind busy, while another stack change or node operation runs on the daemon. A removal that ran and failed gives its failure kind and a message that names the log file; the copy stays listed, and a removal again stops what is left of it. A completed removal gives no result: the copy is off the stack. A cancel stops the removal before its next stop, and the goal ends cancelled. The feedback gives each line of the removal's log, in order: one at least for each instance it stops, on each machine.",
         goal_service: {
           request_message_format: {
             name: "string",
           },
         },
-        // One message per line of the removal's log, in order: one at
-        // least for each instance it stops, on each machine.
         feedback_topic: {
           qos_profile: "standard",
           message_format: {

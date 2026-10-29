@@ -1,14 +1,17 @@
 //! `peppy node describe <instance>`: prints the interfaces of a running
 //! instance, read from its pinned documents: the members of its contracts,
 //! the members of its node's own and the topics of its pairing slots, each
-//! with the message formats of its pinned manifest and the name that
-//! `peppy node call` and `echo` take. `--json` prints the same as one JSON
-//! document.
+//! with its description, the message formats of its pinned manifest (the
+//! descriptions of their fields included) and the name that `peppy node
+//! call` and `echo` take, under the description of its document. `--json`
+//! prints the same as one JSON document.
 
 use super::interfaces::{InstanceInterfaces, Member, full_name};
 use super::json_lines::is_closed_by_reader;
+use crate::commands::prose;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use config::description::DocumentDescription;
 use config::node::MessageFormat;
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -38,15 +41,17 @@ pub async fn describe_rendered(ctx: &Arc<AppContext>, params: DescribeParams) ->
     let conn = ctx.connect_to_daemon().await?;
     let interfaces = super::interfaces::fetch(&conn, &params.instance_id).await?;
     if !params.json {
-        return Ok(render(&interfaces));
+        return Ok(render(&interfaces, crate::terminal::stdout_width()));
     }
     let document = serde_json::to_string_pretty(&interfaces)
         .map_err(|error| Error::ExecutionFailed(format!("Cannot write the JSON: {error}")))?;
     Ok(format!("{document}\n"))
 }
 
-/// The text `peppy node describe` prints for `interfaces`.
-pub(crate) fn render(interfaces: &InstanceInterfaces) -> String {
+/// The text `peppy node describe` prints for `interfaces`, its prose
+/// wrapped to `max_width` columns (`None` keeps each paragraph on one
+/// line).
+pub(crate) fn render(interfaces: &InstanceInterfaces, max_width: Option<usize>) -> String {
     let mut out = String::new();
     let node = &interfaces.node;
     let _ = writeln!(
@@ -55,6 +60,7 @@ pub(crate) fn render(interfaces: &InstanceInterfaces) -> String {
         interfaces.instance_id, node.name, node.tag, interfaces.core_node
     );
     let _ = writeln!(out, "Manifest sha256: {}", node.sha256);
+    write_description(&mut out, &node.description, max_width);
     for contract in &interfaces.contracts {
         let identity = &contract.contract;
         let _ = writeln!(
@@ -62,11 +68,18 @@ pub(crate) fn render(interfaces: &InstanceInterfaces) -> String {
             "\nContract {}:{} through slot `{}` (sha256: {})",
             identity.name, identity.tag, contract.link_id, identity.sha256
         );
-        write_members(&mut out, Some(&contract.link_id), &contract.members);
+        write_description(&mut out, &identity.description, max_width);
+        out.push('\n');
+        write_members(
+            &mut out,
+            Some(&contract.link_id),
+            &contract.members,
+            max_width,
+        );
     }
     if !interfaces.own_members.is_empty() {
         let _ = writeln!(out, "\nOwn members of {}:{}", node.name, node.tag);
-        write_members(&mut out, None, &interfaces.own_members);
+        write_members(&mut out, None, &interfaces.own_members, max_width);
     }
     for pairing in &interfaces.pairings {
         let identity = &pairing.pairing;
@@ -75,7 +88,9 @@ pub(crate) fn render(interfaces: &InstanceInterfaces) -> String {
             "\nPairing {}:{} through slot `{}`, role `{}` (sha256: {})",
             identity.name, identity.tag, pairing.link_id, pairing.role, identity.sha256
         );
-        write_members(&mut out, Some(&pairing.link_id), &pairing.topics);
+        write_description(&mut out, &identity.description, max_width);
+        out.push('\n');
+        write_members(&mut out, Some(&pairing.link_id), &pairing.topics, max_width);
     }
     if interfaces.contracts.is_empty()
         && interfaces.own_members.is_empty()
@@ -86,12 +101,28 @@ pub(crate) fn render(interfaces: &InstanceInterfaces) -> String {
     out
 }
 
+/// The paragraphs of the description of a document, under its heading.
+fn write_description(
+    out: &mut String,
+    description: &DocumentDescription,
+    max_width: Option<usize>,
+) {
+    let paragraphs = description.paragraphs().iter().map(|p| p.as_str());
+    out.push_str(&prose::paragraphs(paragraphs, "  ", max_width));
+}
+
 /// Each member under the full name that `peppy node call` and `echo` take
 /// for the members of the slot `slot`, or of the node's own, with its
-/// message formats.
-fn write_members(out: &mut String, slot: Option<&str>, members: &[Member]) {
+/// description and its message formats.
+fn write_members(
+    out: &mut String,
+    slot: Option<&str>,
+    members: &[Member],
+    max_width: Option<usize>,
+) {
     for member in members {
         let name = full_name(slot, member.name());
+        let description = prose::wrapped(member.description().as_str(), "    ", max_width);
         match member {
             Member::Topic(topic) => {
                 let _ = writeln!(
@@ -100,10 +131,12 @@ fn write_members(out: &mut String, slot: Option<&str>, members: &[Member]) {
                     topic.qos_profile,
                     super::info::retention_note(topic.retention)
                 );
+                out.push_str(&description);
                 write_format(out, "message", topic.message_format.as_ref());
             }
             Member::Service(service) => {
                 let _ = writeln!(out, "  service {name}");
+                out.push_str(&description);
                 write_format(
                     out,
                     "request",
@@ -119,6 +152,7 @@ fn write_members(out: &mut String, slot: Option<&str>, members: &[Member]) {
             Member::Action(action) => {
                 let shape = &action.action;
                 let _ = writeln!(out, "  action {name}");
+                out.push_str(&description);
                 write_format(
                     out,
                     "goal",
@@ -185,13 +219,19 @@ mod tests {
     fn the_text_names_each_member_as_call_and_echo_take_it_with_its_formats() {
         let documents = documents();
         let interfaces = InstanceInterfaces::from_documents(&documents).expect("the interfaces");
-        let text = render(&interfaces);
+        let text = render(&interfaces, None);
         let expected = format!(
             r#"Instance arm_inst of arm:v1 on core node robot-7
 Manifest sha256: {manifest}
+  An arm on a bench.
 
 Contract limb_motion:v1 through slot `motion` (sha256: {contract})
+  The motion of a limb.
+
+  Joints are in radians.
+
   topic motion.limb_states (qos: SensorData)
+    The joints of the limb.
     message: {{
       joints: {{
         $type: "array",
@@ -199,6 +239,7 @@ Contract limb_motion:v1 through slot `motion` (sha256: {contract})
       }}
     }}
   service motion.check_move
+    Check whether a move is reachable.
     request: {{
       joints: {{
         $type: "array",
@@ -210,6 +251,7 @@ Contract limb_motion:v1 through slot `motion` (sha256: {contract})
     }}
     failure kind unreachable: No plan to the target
   action motion.move_to
+    Move the limb to the joints.
     goal: {{
       joints: {{
         $type: "array",
@@ -227,10 +269,12 @@ Contract limb_motion:v1 through slot `motion` (sha256: {contract})
 
 Own members of arm:v1
   topic heartbeat (qos: Reliable)
+    A count, once a second.
     message: {{
       count: "u64"
     }}
   service set_gain
+    Set the gain of the arm.
     request: {{
       value: "i32"
     }}
@@ -239,7 +283,10 @@ Own members of arm:v1
     }}
 
 Pairing arm_link:v1 through slot `controller`, role `arm` (sha256: {pairing})
+  The link between an arm and its controller.
+
   topic controller.joint_states (qos: SensorData)
+    The joints of the arm.
     message: {{
       positions: {{
         $type: "array",
@@ -286,7 +333,8 @@ Pairing arm_link:v1 through slot `controller`, role `arm` (sha256: {pairing})
         interfaces.own_members.clear();
         interfaces.pairings.clear();
         assert!(
-            render(&interfaces).ends_with("\nThe instance serves no topic, service or action.\n")
+            render(&interfaces, None)
+                .ends_with("\nThe instance serves no topic, service or action.\n")
         );
     }
 }

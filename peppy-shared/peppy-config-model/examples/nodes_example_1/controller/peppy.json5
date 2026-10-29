@@ -1,9 +1,9 @@
-// A simple node that receives commands from a brain and control the joints of the robot
 {
   peppy_schema: "node/v1",
   manifest: {
     name: "controller",
     tag: "v1",
+    description: ["A node that receives commands from a brain and controls the joints of the robot."],
     labels: [
       "controller",
       "openarm",
@@ -13,8 +13,8 @@
     actions: {
       exposes: [
         {
-          // The controller exposes this action to the brain
           name: "move_right_arm",
+          description: "Move the right arm of the robot, for the brain.",
           goal_service: {
             request_message_format: {
               arm_id: "u16",
@@ -50,8 +50,8 @@
           }
         },
         {
-          // The controller exposes this action to the brain
           name: "move_left_arm",
+          description: "Move the left arm of the robot, for the brain.",
           goal_service: {
             request_message_format: {
               arm_id: "u16",

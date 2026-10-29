@@ -108,12 +108,12 @@ fn the_compiled_in_document_parses_as_a_contract_of_the_registered_identity() {
     assert_eq!(actions, ["join", "remove"]);
     assert!(robot_membership.interfaces.topics.is_empty());
     assert!(
-        DaemonInterface::RobotMembership
-            .document_text()
-            .starts_with(
-                "// The robots of the stack, each a copy of the running launch: list them,"
-            ),
-        "the document keeps its comments"
+        robot_membership
+            .description()
+            .summary()
+            .as_str()
+            .starts_with("The robots of the stack, each a copy of the running launch: list them,"),
+        "the document gives its description"
     );
 }
 
@@ -596,14 +596,36 @@ fn tool_output_schema<'a>(bundle: &'a ExposureBundle, tool: &str) -> &'a serde_j
         .output_schema
 }
 
+/// `rule` with `description`, as a narrowing keeps the description of the
+/// schema that it narrows.
+fn with_description(rule: &serde_json::Value, description: &str) -> serde_json::Value {
+    let mut described = rule.clone();
+    described["description"] = json!(description);
+    described
+}
+
+/// `schema` with the `description` of each of its schemas left out: the
+/// form of the values, which descriptions do not change.
+fn without_descriptions(mut schema: serde_json::Value) -> serde_json::Value {
+    if let Some(object) = schema.as_object_mut() {
+        if object.contains_key("type") {
+            object.shift_remove("description");
+        }
+        for value in object.values_mut() {
+            *value = without_descriptions(value.take());
+        }
+    }
+    schema
+}
+
 /// `list` answers `launch_copies` in the form of `copies` without its
 /// `running`: the published item schema of `copies` with `running` left out
-/// is the item schema of `launch_copies`, so an item of `launch_copies` is
-/// a `join` goal as it is.
+/// is the item schema of `launch_copies`, descriptions aside, so an item of
+/// `launch_copies` is a `join` goal as it is.
 #[test]
 fn the_launch_copies_of_list_take_the_form_of_its_copies_without_running() {
     let bundle = framework_controls_bundle();
-    let list = tool_output_schema(&bundle, "stack.list");
+    let list = without_descriptions(tool_output_schema(&bundle, "stack.list").clone());
     let mut copies = list["properties"]["copies"].clone();
     assert_eq!(copies["type"], "array", "{list}");
     let item = copies["items"].as_object_mut().expect("an item schema");
@@ -687,8 +709,15 @@ fn a_scope_narrows_the_published_schemas_of_its_target() {
         json!({
             "name": { "type": "string" },
             "option": { "type": "string" },
-            "core_node": { "type": "string" },
-            "features": { "type": "array", "items": feature_item },
+            "core_node": {
+                "type": "string",
+                "description": "The copy's machine, which runs its base.",
+            },
+            "features": {
+                "type": "array",
+                "items": feature_item,
+                "description": "The features of the copy, each with the machine of its part; empty for the copy of the launcher's entry.",
+            },
         }),
         "the interface's own schema, which `peppy mcp catalog` prints"
     );
@@ -708,9 +737,10 @@ fn a_scope_narrows_the_published_schemas_of_its_target() {
         json!({
             "name": name_rule,
             "option": { "type": "string", "enum": ["openarm_sim", "so101_sim"] },
-            "core_node": name_rule,
+            "core_node": with_description(&name_rule, "The copy's machine, which runs its base."),
             "features": {
                 "type": "array",
+                "description": "The features of the copy, each with the machine of its part; empty for the copy of the launcher's entry.",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -742,7 +772,10 @@ fn a_scope_narrows_the_published_schemas_of_its_target() {
     let featureless = narrowed_bundle(featureless_scope());
     assert_eq!(
         task_schema(&featureless, "stack.join")["properties"]["features"],
-        json!({ "type": "array", "maxItems": 0 })
+        with_description(
+            &json!({ "type": "array", "maxItems": 0 }),
+            "The features of the copy, each with the machine of its part; empty for the copy of the launcher's entry."
+        )
     );
 
     // A scope narrows the entries of its own target alone.

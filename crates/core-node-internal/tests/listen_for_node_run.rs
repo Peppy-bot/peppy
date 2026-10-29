@@ -125,6 +125,7 @@ async fn listen_for_node_run_timeout() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -249,6 +250,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -332,6 +334,7 @@ async fn listen_for_node_run_writes_log_file() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -419,6 +422,7 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -509,6 +513,7 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -621,6 +626,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             manifest: {
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -646,6 +652,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             manifest: {
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -736,6 +743,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -821,6 +829,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -886,6 +895,7 @@ async fn listen_for_node_run_with_container_success() {
         manifest: {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
+            description: ["A test node."],
         },
         execution: {
             language: "rust",
@@ -1047,6 +1057,7 @@ async fn listen_for_node_run_with_container_creates_missing_mount_dir_and_warns(
         manifest: {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
+            description: ["A test node."],
         },
         execution: {
             language: "rust",
@@ -1165,6 +1176,7 @@ async fn listen_for_node_run_container_failure_includes_stderr_in_error() {
         manifest: {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
+            description: ["A test node."],
         },
         execution: {
             language: "rust",
@@ -1263,6 +1275,7 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1355,6 +1368,7 @@ async fn listen_for_node_run_logs_why_a_node_that_exits_before_ready_never_start
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1419,6 +1433,7 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1553,6 +1568,7 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1677,6 +1693,7 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1807,6 +1824,7 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1907,7 +1925,7 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
 fn panel_node_json5(node_name: &str) -> String {
     r#"{
         peppy_schema: "node/v1",
-        manifest: { name: "{NODE_NAME}", tag: "v1" },
+        manifest: { name: "{NODE_NAME}", tag: "v1", description: ["A test node."] },
         execution: {
             language: "rust",
             run_cmd: ["sleep", "300"],
@@ -2112,7 +2130,11 @@ async fn a_failed_instance_exports_an_error_record_of_the_stack_log() {
     );
     let peppy_json5 = serde_json::json!({
         "peppy_schema": "node/v1",
-        "manifest": { "name": TARGET_NODE_NAME, "tag": TARGET_NODE_TAG },
+        "manifest": {
+            "name": TARGET_NODE_NAME,
+            "tag": TARGET_NODE_TAG,
+            "description": ["A test node."],
+        },
         "execution": { "language": "rust", "run_cmd": ["sh", "-c", run_script] },
     })
     .to_string();

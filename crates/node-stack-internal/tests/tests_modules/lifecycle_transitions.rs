@@ -27,11 +27,12 @@ fn sensor_config() -> config::node::NodeConfig {
             manifest: {
                 name: "sensor",
                 tag: "v1",
+                description: ["A test node."],
             },
             interfaces: {
                 topics: {
                     emits: [
-                        { name: "data_stream", qos_profile: "sensor_data" }
+                        { name: "data_stream", description: "A test topic.", qos_profile: "sensor_data" }
                     ]
                 }
             },
@@ -318,8 +319,8 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
     let producer_a: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "producer_a", tag: "v1" },
-            interfaces: { services: { exposes: [ { name: "reset_sensor" } ] } },
+            manifest: { name: "producer_a", tag: "v1", description: ["A test node."] },
+            interfaces: { services: { exposes: [ { name: "reset_sensor", description: "A test service." } ] } },
             execution: { language: "rust", run_cmd: ["producer_a"] }
         }"#,
     )
@@ -328,8 +329,8 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
     let producer_b: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "producer_b", tag: "v1" },
-            interfaces: { services: { exposes: [ { name: "reset_sensor" } ] } },
+            manifest: { name: "producer_b", tag: "v1", description: ["A test node."] },
+            interfaces: { services: { exposes: [ { name: "reset_sensor", description: "A test service." } ] } },
             execution: { language: "rust", run_cmd: ["producer_b"] }
         }"#,
     )
@@ -343,6 +344,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
                 manifest: {
                     name: "consumer",
                     tag: "v1",
+                    description: ["A test node."],
                     depends_on: {
                         nodes: [
                             { name: "PRODUCER", tag: "v1", link_id: "LINK_ID" }
@@ -593,11 +595,12 @@ fn sensor_config_in_language(language: &str, build_cmd_shell: &str) -> config::n
             manifest: {{
                 name: "sensor",
                 tag: "v1",
+                description: ["A test node."],
             }},
             interfaces: {{
                 topics: {{
                     emits: [
-                        {{ name: "data_stream", qos_profile: "sensor_data" }}
+                        {{ name: "data_stream", description: "A test topic.", qos_profile: "sensor_data" }}
                     ]
                 }}
             }},
@@ -1296,11 +1299,12 @@ fn long_running_sensor_config() -> config::node::NodeConfig {
             manifest: {
                 name: "sensor",
                 tag: "v1",
+                description: ["A test node."],
             },
             interfaces: {
                 topics: {
                     emits: [
-                        { name: "data_stream", qos_profile: "sensor_data" }
+                        { name: "data_stream", description: "A test topic.", qos_profile: "sensor_data" }
                     ]
                 }
             },

@@ -46,7 +46,7 @@ CALLER_INSTANCE = "caller_1"
 
 _PEPPY_CONFIG = """{
     peppy_schema: "node/v1",
-    manifest: { name: "test_node", tag: "v1" },
+    manifest: { name: "test_node", tag: "v1", description: ["A test node."] },
     execution: { language: "python", run_cmd: ["uv", "run"] },
 }"""
 
@@ -475,7 +475,7 @@ async def test_harness_core_node_reads_the_setup_budget_of_its_manifest(tmp_path
         peppy_config_path.write_text(
             """{
     peppy_schema: "node/v1",
-    manifest: { name: "test_node", tag: "v1" },
+    manifest: { name: "test_node", tag: "v1", description: ["A test node."] },
     execution: {
         language: "python",
         run_cmd: ["uv", "run"],

@@ -584,7 +584,7 @@ mod tests {
             format!(
                 r#"{{
                     peppy_schema: "node/v1",
-                    manifest: {{ name: "cam", tag: "v1" }},
+                    manifest: {{ name: "cam", tag: "v1", description: ["A test node."] }},
                     execution: {{ language: "rust", run_cmd: ["./cam"] }},
                     framework: {{ restart: {restart} }},
                 }}"#

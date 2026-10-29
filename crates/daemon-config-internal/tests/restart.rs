@@ -61,6 +61,7 @@ fn fragment_root_restart_is_refused() {
     );
     let launcher = r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "robot", cardinality: "zero_or_one", options: { real: "arm.json5" } },
         ],
@@ -104,6 +105,7 @@ fn option_root_restart_is_refused() {
     let directory = tempdir().unwrap();
     let launcher = r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "robot", cardinality: "zero_or_one", options: { real: {
                 framework: { restart: "always" },
@@ -135,6 +137,7 @@ fn copy_fragment_root_restart_is_refused() {
     );
     let launcher = r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "robot", cardinality: "zero_or_more", options: { real: "arm.json5" } },
         ],
@@ -164,6 +167,7 @@ fn joining_a_copy_whose_fragment_writes_the_restart_is_refused() {
     );
     let launcher = r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "robot", cardinality: "zero_or_more", options: { real: "arm.json5" } },
         ],
@@ -207,6 +211,7 @@ fn merge_framework_keeps_the_root_restart() {
     );
     let launcher = r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         framework: { restart: { policy: "on_failure", max_restarts: 5 } },
         components: [
             { name: "simulation", cardinality: "zero_or_one", options: { mujoco: "sim.json5" } },
@@ -241,6 +246,7 @@ fn a_launcher_refuses_a_bad_restart_value() {
         PeppyLauncherParser::from_content(&format!(
             r#"{{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 {root}
                 deployments: [
                     {{ source: {{ name: "arm", tag: "v1" }}, instances: [{{ instance_id: "arm_inst"{entry} }}] }},
@@ -276,6 +282,7 @@ fn a_launcher_refuses_a_bad_restart_value() {
 fn set_framework_restart_counts_as_an_operation() {
     let launcher = r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "mode", cardinality: "zero_or_one", options: { field: {
                 adjustments: [{ target: "arm_inst", set_framework: { restart: "always" } }],
@@ -295,6 +302,7 @@ fn set_framework_restart_applies_in_adjustment_order() {
     let directory = tempdir().unwrap();
     let launcher = r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "mode", cardinality: "zero_or_one", options: { field: {
                 adjustments: [{ target: "arm_inst", set_framework: { restart: "on_failure" } }],
@@ -354,6 +362,7 @@ fn applied_change_restart_renders_with_origin() {
     let directory = tempdir().unwrap();
     let launcher = r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "mode", cardinality: "zero_or_one", options: { field: {
                 adjustments: [{ target: "arm_inst", set_framework: { restart: "never" } }],
@@ -387,6 +396,7 @@ fn copies_must_agree_on_restart() {
         format!(
             r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 {{ name: "simulation", options: {{ engine: {{ deployments: [
                     {{ source: {{ name: "engine", tag: "v1" }}, instances: [
@@ -446,6 +456,7 @@ fn join_refuses_a_changed_restart() {
     let directory = tempdir().unwrap();
     let launcher = r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "simulation", options: { engine: { deployments: [
                 { source: { name: "engine", tag: "v1" }, instances: [

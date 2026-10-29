@@ -20,13 +20,13 @@ use common::TestPackagesCache;
 
 const CONTRACT_BODY: &str = r#"{
     peppy_schema: "contract/v1",
-    manifest: { name: "uvc_camera", tag: "v1" },
+    manifest: { name: "uvc_camera", tag: "v1", description: ["A test contract."] },
     interfaces: {
         topics: [
-            { name: "video_stream", qos_profile: "sensor_data" }
+            { name: "video_stream", description: "A test topic.", qos_profile: "sensor_data" }
         ],
         services: [
-            { name: "video_stream_info" }
+            { name: "video_stream_info", description: "A test service." }
         ]
     }
 }"#;
@@ -34,7 +34,7 @@ const CONTRACT_BODY: &str = r#"{
 const NODE_BODY: &str = r#"{
     peppy_schema: "node/v1",
     manifest: {
-        name: "fake_uvc_camera", tag: "v1",
+        name: "fake_uvc_camera", tag: "v1", description: ["A test node."],
         implements: [
             { name: "uvc_camera", tag: "v1", link_id: "cam" }
         ]

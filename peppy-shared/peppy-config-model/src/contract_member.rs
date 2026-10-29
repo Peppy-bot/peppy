@@ -4,6 +4,7 @@
 //! gives ([`ContractKinds`]), and the marks of each member
 //! ([`ContractMarks`]).
 
+use crate::internal::description::Description;
 use crate::internal::failure_kind::{
     ContractFailureKinds, ContractKinds, FailureKindName, InvalidMemberKinds, MemberSection,
 };
@@ -21,6 +22,7 @@ use std::collections::BTreeMap;
 #[serde(deny_unknown_fields)]
 pub struct ContractTopic {
     pub name: String,
+    pub description: Description,
     #[serde(default)]
     pub qos_profile: QoSProfile,
     #[serde(default, skip_serializing_if = "TopicRetention::is_live_only")]
@@ -37,6 +39,7 @@ pub struct ContractTopic {
 #[serde(deny_unknown_fields)]
 pub struct ContractService {
     pub name: String,
+    pub description: Description,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_message_format: Option<MessageFormat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,6 +56,7 @@ pub struct ContractService {
 #[serde(deny_unknown_fields)]
 pub struct ContractAction {
     pub name: String,
+    pub description: Description,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_service: Option<GoalServiceEndpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -130,6 +134,7 @@ impl ContractMembers {
             .map(|topic| {
                 let ContractTopic {
                     name,
+                    description,
                     qos_profile,
                     retention,
                     message_format,
@@ -138,6 +143,7 @@ impl ContractMembers {
                 marks.insert(InterfaceKind::Topic, &name, topic_marks);
                 NativeEmittedTopic {
                     name,
+                    description,
                     qos_profile,
                     retention,
                     message_format,
@@ -149,6 +155,7 @@ impl ContractMembers {
             .map(|service| {
                 let ContractService {
                     name,
+                    description,
                     request_message_format,
                     response_message_format,
                     failure_kinds,
@@ -158,6 +165,7 @@ impl ContractMembers {
                 listed.push((MemberSection::Service, name.clone(), failure_kinds));
                 NativeExposedService {
                     name,
+                    description,
                     request_message_format,
                     response_message_format,
                 }
@@ -168,6 +176,7 @@ impl ContractMembers {
             .map(|action| {
                 let ContractAction {
                     name,
+                    description,
                     goal_service,
                     feedback_topic,
                     result_service,
@@ -178,6 +187,7 @@ impl ContractMembers {
                 listed.push((MemberSection::Action, name.clone(), failure_kinds));
                 NativeExposedAction {
                     name,
+                    description,
                     goal_service,
                     feedback_topic,
                     result_service,
@@ -199,6 +209,7 @@ impl ContractMembers {
             .iter()
             .map(|topic| ContractTopic {
                 name: topic.name.clone(),
+                description: topic.description.clone(),
                 qos_profile: topic.qos_profile.clone(),
                 retention: topic.retention,
                 message_format: topic.message_format.clone(),
@@ -214,6 +225,7 @@ impl ContractMembers {
             .iter()
             .map(|service| ContractService {
                 name: service.name.clone(),
+                description: service.description.clone(),
                 request_message_format: service.request_message_format.clone(),
                 response_message_format: service.response_message_format.clone(),
                 failure_kinds: self
@@ -231,6 +243,7 @@ impl ContractMembers {
             .iter()
             .map(|action| ContractAction {
                 name: action.name.clone(),
+                description: action.description.clone(),
                 goal_service: action.goal_service.clone(),
                 feedback_topic: action.feedback_topic.clone(),
                 result_service: action.result_service.clone(),

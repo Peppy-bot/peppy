@@ -31,7 +31,7 @@ use std::time::Duration;
 /// both list.
 const CONTRACT: &str = r#"{
     peppy_schema: "contract/v1",
-    manifest: { name: "limb_motion", tag: "v1" },
+    manifest: { name: "limb_motion", tag: "v1", description: ["A test contract."] },
     failure_kinds: {
         unreachable: "No plan to the width",
     },
@@ -39,6 +39,7 @@ const CONTRACT: &str = r#"{
         services: [
             {
                 name: "check_width",
+                description: "A test service.",
                 response_message_format: { width: "f64" },
                 failure_kinds: ["unreachable"],
             },
@@ -46,6 +47,7 @@ const CONTRACT: &str = r#"{
         actions: [
             {
                 name: "move_gripper",
+                description: "A test action.",
                 goal_service: { request_message_format: { width: "f64" } },
                 feedback_topic: {
                     qos_profile: "reliable",

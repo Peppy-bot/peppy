@@ -2164,7 +2164,7 @@ mod tests {
             repo_a.join("uvc_camera/peppy.json5"),
             r#"{
   peppy_schema: "contract/v1",
-  manifest: { name: "uvc_camera", tag: "v1" },
+  manifest: { name: "uvc_camera", tag: "v1", description: ["A test contract."] },
   interfaces: {}
 }"#,
         )
@@ -2175,7 +2175,7 @@ mod tests {
             r#"{
   // Same identity, different content fingerprint via extra whitespace.
   peppy_schema: "contract/v1",
-  manifest:    { name: "uvc_camera", tag: "v1" },
+  manifest:    { name: "uvc_camera", tag: "v1", description: ["A test contract."] },
   interfaces:  {}
 }"#,
         )
@@ -2319,7 +2319,7 @@ mod tests {
         // in the repo and must not be misclassified.
         std::fs::write(
             repo.join("manifest.json5"),
-            r#"{ peppy_schema: "node/v1", manifest: { name: "x", tag: "v1" }, interfaces: {}, execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] } }"#,
+            r#"{ peppy_schema: "node/v1", manifest: { name: "x", tag: "v1", description: ["A test node."] }, interfaces: {}, execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] } }"#,
         )
         .unwrap();
 
@@ -2396,6 +2396,7 @@ mod tests {
             src.join("openarm01").join("openarm01_teleop.json5"),
             r#"{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 deployments: []
             }"#,
         )

@@ -1028,7 +1028,7 @@ pub async fn add_and_build_process_node(
     let source_dir = tempfile::tempdir().expect("temp source dir");
     let peppy_json5 = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "{NAME}", tag: "{TAG}" },
+            manifest: { name: "{NAME}", tag: "{TAG}", description: ["A test node."] },
             execution: {
                 language: "rust",
                 run_cmd: {RUN_CMD}

@@ -265,6 +265,7 @@ const CONFIG_WITH_AN_UNRESOLVED_DEPENDENCY: &str = r#"{
     manifest: {
         name: "consumer_node",
         tag: "v1",
+        description: ["A test node."],
         depends_on: {
             nodes: [
                 { name: "non_existent_node", tag: "v1", link_id: "non_existent_node" }
@@ -284,6 +285,7 @@ const CONFIG_WITH_A_DUPLICATE_LINK_ID: &str = r#"{
     manifest: {
         name: "dup_link_id_node",
         tag: "v1",
+        description: ["A test node."],
         depends_on: {
             nodes: [
                 { name: "alpha", tag: "v1", link_id: "dup" },
@@ -307,6 +309,7 @@ const CONFIG_CONSUMING_AN_ABSENT_DEPENDENCY: &str = r#"{
     manifest: {
       name: "add_cmd_node",
       tag: "v1",
+      description: ["A test node."],
       depends_on: {
         nodes: [
           { name: "fake_uvc_camera", tag: "v1", link_id: "fake_uvc_camera" }
@@ -433,6 +436,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
         manifest: {
           name: "TARGET_NODE_NAME",
           tag: "TARGET_NODE_TAG",
+          description: ["A test node."],
           depends_on: {
             nodes: [
               { name: "DEPENDENCY_NODE_NAME", tag: "DEPENDENCY_NODE_TAG", link_id: "DEPENDENCY_NODE_NAME" }

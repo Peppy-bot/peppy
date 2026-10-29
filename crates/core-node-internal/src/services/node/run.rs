@@ -3030,7 +3030,7 @@ mod tests {
         serde_json5::from_str(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "camera", tag: "v1" },
+                manifest: { name: "camera", tag: "v1", description: ["A test node."] },
                 execution: { language: "rust", run_cmd: ["camera"] }
             }"#,
         )
@@ -3043,7 +3043,7 @@ mod tests {
     #[test]
     fn each_daemon_target_is_bound_to_the_daemon_that_runs_the_instance() {
         let manifest: config::node::Manifest = serde_json5::from_str(
-            r#"{ name: "director", tag: "v1", depends_on: {
+            r#"{ name: "director", tag: "v1", description: ["A test node."], depends_on: {
                 contracts: [{ name: "limb_motion", tag: "v1", link_id: "arm" }],
                 daemon: [
                     { name: "robot_leases", tag: "v1", link_id: "fleet" },

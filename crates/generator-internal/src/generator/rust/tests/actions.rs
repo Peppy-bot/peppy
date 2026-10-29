@@ -7,6 +7,7 @@ use std::{collections::HashMap, fs};
 const EXPOSED_ACTION_EXAMPLE: &str = r#"
 {
   name: "move_arm",
+  description: "A test member.",
   goal_service: {
     request_message_format: {
       arm_id: "u16",
@@ -50,6 +51,7 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
 const EXPOSED_ACTION_EXAMPLE_WITHOUT_GOAL_REQUEST: &str = r#"
 {
   name: "move_arm",
+  description: "A test member.",
   goal_service: {
     response_message_format: {
       accepted: "bool"
@@ -85,6 +87,7 @@ const EXPOSED_ACTION_EXAMPLE_WITHOUT_GOAL_REQUEST: &str = r#"
 const EXPOSED_ACTION_EXAMPLE2: &str = r#"
 {
   name: "rotate_servo_clockwise",
+  description: "A test member.",
   goal_service: {
     response_message_format: {
       accepted: "bool"
@@ -112,6 +115,7 @@ const EXPOSED_ACTION_EXAMPLE2: &str = r#"
 const EXPOSED_ACTION_RESERVED_FEEDBACK_FIELD_EXAMPLE: &str = r#"
 {
   name: "status_ping",
+  description: "A test member.",
   feedback_topic: {
     qos_profile: "standard",
     message_format: {
@@ -460,6 +464,7 @@ fn expose_feedback_only_action() {
         r#"
         {
           name: "blink_led",
+          description: "A test member.",
           feedback_topic: {
             qos_profile: "standard",
             message_format: {
@@ -1369,6 +1374,7 @@ fn clippy_consumed_action_empty_goal_request() {
 const EXPOSED_ACTION_WITH_NESTED_GOAL: &str = r#"
 {
   name: "record",
+  description: "A test member.",
   goal_service: {
     request_message_format: {
       steps: "u32",

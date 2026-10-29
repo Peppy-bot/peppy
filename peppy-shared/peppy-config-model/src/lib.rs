@@ -31,6 +31,7 @@ mod internal {
     pub mod atomic_write;
     pub mod consts;
     pub mod contract_member;
+    pub mod description;
     pub mod failure_kind;
     pub mod fingerprint;
     pub mod mark;
@@ -77,6 +78,13 @@ pub mod consts {
 pub mod contract_member {
     pub use crate::internal::contract_member::{
         ContractAction, ContractMarks, ContractMembers, ContractService, ContractTopic,
+    };
+}
+
+// -- description --
+pub mod description {
+    pub use crate::internal::description::{
+        BlankDescription, Description, DocumentDescription, NoParagraph,
     };
 }
 

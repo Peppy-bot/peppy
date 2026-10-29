@@ -14,7 +14,8 @@ const NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
   manifest: {
     name: "arm_driver",
-    tag: "v1"
+    tag: "v1",
+    description: ["A test node."],
   },
   execution: {
     language: "rust",
@@ -25,6 +26,7 @@ const NODE_CONFIG: &str = r#"{
       exposes: [
         {
           name: "move_arm",
+          description: "A test action.",
           goal_service: {
             request_message_format: { native_marker: "i32" },
             response_message_format: { native_marker_ack: "bool" }

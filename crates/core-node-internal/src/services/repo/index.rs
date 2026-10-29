@@ -19,6 +19,7 @@ use crate::services::repo::cache::{
     ContractCacheEntry, DeclaredLinks, EntryOrigin, LauncherCacheEntry, McpExposureCacheEntry,
     NodeCacheEntry, PairingCacheEntry, RepoItems,
 };
+use crate::services::repo::descriptions::CachedDescriptions;
 use crate::services::repo::refresh::RepoReadFailure;
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
@@ -186,6 +187,8 @@ pub(crate) struct PublishedItem {
     pub origin: EntryOrigin,
     /// Empty for every kind but nodes.
     pub links: DeclaredLinks,
+    /// `None` for an MCP exposure, the one kind with no description.
+    pub descriptions: Option<CachedDescriptions>,
 }
 
 /// Where the tree being read came from, which is all that separates reading
@@ -312,6 +315,7 @@ pub(crate) fn read_published_items(
                 sha256: ManifestFingerprint::of_bytes(&resolved.bytes),
                 origin,
                 links: resolved.links,
+                descriptions: resolved.descriptions,
             }),
             Err(detail) => problems.push(format!("{item} points at {}, which {detail}", item.path)),
         }
@@ -342,16 +346,25 @@ pub(crate) fn build_cache_entries(
                 .clone()
                 .ok_or_else(|| format!("{} `{}` is indexed without a tag", item.kind, item.name))
         };
+        // Descriptions are present for exactly the four kinds that have
+        // them, because `declaration_of` reads them from each of those.
+        let described = |item: &PublishedItem| -> std::result::Result<CachedDescriptions, String> {
+            item.descriptions.clone().ok_or_else(|| {
+                format!("{} `{}` is read without descriptions", item.kind, item.name)
+            })
+        };
         match item.kind {
             RepoItemKind::Node => built.nodes.push(NodeCacheEntry {
                 node_name: item.name.clone(),
                 node_tag: tagged(&item)?,
+                descriptions: described(&item)?,
                 sha256: item.sha256,
                 origin: item.origin,
                 links: item.links,
                 repo_id: 0,
             }),
             RepoItemKind::Launcher => built.launchers.push(LauncherCacheEntry {
+                descriptions: described(&item)?,
                 launcher_name: item.name,
                 sha256: item.sha256,
                 origin: item.origin,
@@ -360,6 +373,7 @@ pub(crate) fn build_cache_entries(
             RepoItemKind::Contract => built.contracts.push(ContractCacheEntry {
                 contract_name: item.name.clone(),
                 tag: tagged(&item)?,
+                descriptions: described(&item)?,
                 sha256: item.sha256,
                 origin: item.origin,
                 repo_id: 0,
@@ -367,6 +381,7 @@ pub(crate) fn build_cache_entries(
             RepoItemKind::Pairing => built.pairings.push(PairingCacheEntry {
                 pairing_name: item.name.clone(),
                 tag: tagged(&item)?,
+                descriptions: described(&item)?,
                 sha256: item.sha256,
                 origin: item.origin,
                 repo_id: 0,
@@ -546,6 +561,8 @@ pub(crate) struct ResolvedItem {
     pub bytes: Vec<u8>,
     /// The links a node manifest declares; empty for every other kind.
     pub links: DeclaredLinks,
+    /// The descriptions of the document; `None` for an MCP exposure.
+    pub descriptions: Option<CachedDescriptions>,
 }
 
 /// Resolves one declared item against the tree at `root`, returning the
@@ -587,17 +604,21 @@ pub(crate) fn resolve_declared_item(
     Ok(ResolvedItem {
         bytes,
         links: declared.links,
+        descriptions: declared.descriptions,
     })
 }
 
-/// What a document declares when read as `kind`: its identity, and for a
-/// node the contract and pairing links its manifest states.
+/// What a document declares when read as `kind`: its identity, its
+/// descriptions, and for a node the contract and pairing links its manifest
+/// states.
 struct Declaration {
     name: String,
     /// Empty for a launcher.
     tag: String,
     /// Empty for every kind but nodes.
     links: DeclaredLinks,
+    /// `None` for an MCP exposure, the one kind with no description.
+    descriptions: Option<CachedDescriptions>,
 }
 
 /// The declaration a document makes when read as `kind`: its `(name, tag)`,
@@ -615,11 +636,13 @@ fn declaration_of(
     content: &str,
     path: &Path,
 ) -> std::result::Result<Declaration, String> {
-    let identity = |name: String, tag: String| Declaration {
-        name,
-        tag,
-        links: DeclaredLinks::default(),
-    };
+    let identity =
+        |name: String, tag: String, descriptions: Option<CachedDescriptions>| Declaration {
+            name,
+            tag,
+            links: DeclaredLinks::default(),
+            descriptions,
+        };
     match kind {
         RepoItemKind::Node => {
             let parsed = NodeConfigParser::from_content(content).map_err(|e| e.to_string())?;
@@ -627,6 +650,9 @@ fn declaration_of(
                 name: parsed.manifest.name.as_str().to_owned(),
                 tag: parsed.manifest.tag.clone(),
                 links: DeclaredLinks::from(&parsed.manifest),
+                descriptions: Some(CachedDescriptions::of_document(
+                    &parsed.manifest.description,
+                )),
             })
         }
         RepoItemKind::Launcher => {
@@ -643,13 +669,18 @@ fn declaration_of(
                 .and_then(|s| s.to_str())
                 .filter(|stem| !stem.is_empty())
                 .ok_or_else(|| "has no usable file stem".to_owned())?;
-            Ok(identity(stem.to_owned(), String::new()))
+            Ok(identity(
+                stem.to_owned(),
+                String::new(),
+                Some(CachedDescriptions::of_document(&parsed.description)),
+            ))
         }
         RepoItemKind::Contract => {
             let parsed = PeppyContractParser::from_content(content).map_err(|e| e.to_string())?;
             Ok(identity(
                 parsed.manifest.name.as_str().to_owned(),
                 parsed.manifest.tag.clone(),
+                Some(CachedDescriptions::of_contract(&parsed)),
             ))
         }
         RepoItemKind::Pairing => {
@@ -657,6 +688,7 @@ fn declaration_of(
             Ok(identity(
                 parsed.manifest.name.as_str().to_owned(),
                 parsed.manifest.tag.clone(),
+                Some(CachedDescriptions::of_pairing(&parsed)),
             ))
         }
         RepoItemKind::McpExposure => {
@@ -665,6 +697,7 @@ fn declaration_of(
             Ok(identity(
                 parsed.manifest.name.as_str().to_owned(),
                 parsed.manifest.tag.clone(),
+                None,
             ))
         }
     }
@@ -1000,7 +1033,7 @@ pub(crate) mod test_support {
             format!(
                 r#"{{
   peppy_schema: "node/v1",
-  manifest: {{ name: "{name}", tag: "{tag}" }},
+  manifest: {{ name: "{name}", tag: "{tag}", description: ["A test node."] }},
   interfaces: {{}},
   execution: {{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }},
 }}"#
@@ -1018,6 +1051,7 @@ pub(crate) mod test_support {
             path,
             r#"{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: []
 }"#,
         )
@@ -1033,7 +1067,7 @@ pub(crate) mod test_support {
         let body = format!(
             r#"{{
   peppy_schema: "contract/v1",
-  manifest: {{ name: "{name}", tag: "{tag}" }},
+  manifest: {{ name: "{name}", tag: "{tag}", description: ["A test contract."] }},
   interfaces: {{}}
 }}"#
         );
@@ -1051,11 +1085,11 @@ pub(crate) mod test_support {
             format!(
                 r#"{{
   peppy_schema: "pairing/v1",
-  manifest: {{ name: "{name}", tag: "{tag}" }},
+  manifest: {{ name: "{name}", tag: "{tag}", description: ["A test pairing."] }},
   roles: ["leader", "follower"],
   topics: [
-    {{ emitted_by: "leader", name: "setpoints" }},
-    {{ emitted_by: "follower", name: "states" }}
+    {{ emitted_by: "leader", name: "setpoints", description: "A test topic." }},
+    {{ emitted_by: "follower", name: "states", description: "A test topic." }}
   ]
 }}"#
             ),
@@ -1413,6 +1447,7 @@ mod tests {
   manifest: {{
     name: "linked",
     tag: "v1",
+    description: ["A test node."],
     implements: [{{ name: "rgb_camera", tag: "v1", link_id: "camera", sha256: "{pin}" }}],
     depends_on: {{
       contracts: [{{ name: "depth", tag: "v2", link_id: "depth_in", cardinality: "zero_or_one" }}],
@@ -1955,6 +1990,7 @@ mod tests {
             repo.join("teleop.json5"),
             r#"{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 components: [
                     { name: "robot",
                       provides: ["arm_inst"],
@@ -2044,6 +2080,7 @@ mod tests {
             repo.join("teleop.json5"),
             r#"{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 components: [
                     { name: "robot",
                       provides: ["arm_inst"],
@@ -2087,6 +2124,7 @@ mod tests {
             format!(
                 r#"{{
                     peppy_schema: "launcher/v1",
+                    description: ["A test launcher."],
                     components: [
                         {{ name: "robot",
                           provides: ["arm_inst"],

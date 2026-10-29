@@ -28,6 +28,7 @@ fn fs_cache_entry(node_dir: &std::path::Path, name: &str, tag: &str) -> serde_js
         "sha256": config::fingerprint::fingerprint_for_bytes(&body),
         "origin": common::fs_origin(&manifest),
         "links": common::empty_links(),
+        "descriptions": common::test_descriptions(&format!("node {name}:{tag}")),
     })
 }
 
@@ -47,6 +48,7 @@ fn git_cache_entry(
         "sha256": common::seeded_sha(&id),
         "origin": common::git_origin(repo_url, repo_ref, path, &id),
         "links": common::empty_links(),
+        "descriptions": common::test_descriptions(&format!("node {name}:{tag}")),
     })
 }
 

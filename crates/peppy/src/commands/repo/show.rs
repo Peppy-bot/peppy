@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use core_node::{
-    IndexedNode, MatchedItem, Participant, PinStatus, SearchQuery, SearchReport, ShowOutcome,
-    SlotPeers,
+    CachedDescriptions, IndexedNode, MatchedItem, Participant, PinStatus, SearchQuery,
+    SearchReport, ShowOutcome, SlotPeers,
 };
 use core_node_api::encoding::RepoItemKind;
 use daemon_config::consts::PeppyDirs;
@@ -11,6 +11,7 @@ use super::search::{
     display_id, kind_label, matches_json, no_match_phrase, query_json, short_fingerprint,
 };
 use crate::commands::colors::{BINDING_COLOR, COUNT_COLOR, NODE_COLOR, ORANGE, RED, paint};
+use crate::commands::prose;
 use crate::commands::table::render_table;
 use crate::error::{Error, Result};
 
@@ -99,10 +100,11 @@ const CONTRACT_HEADERS: [&str; 5] = ["NODE", "TAG", "SLOT", "PIN", "PATH"];
 const PAIRING_HEADERS: [&str; 6] = ["NODE", "TAG", "ROLE", "SLOT", "PIN", "PATH"];
 
 /// One identity's report: one published line per document of the
-/// identity, then the four usage sections, then, for a node, one section
-/// per pairing slot it declares. A contract or pairing nobody uses says
-/// so; a launcher or an MCP exposure has neither kind of section to be
-/// empty, so its published line is the whole answer.
+/// identity, each with the description of the document under it, then the
+/// four usage sections, then, for a node, one section per pairing slot it
+/// declares. A contract or pairing nobody uses says so; a launcher or an
+/// MCP exposure has neither kind of section to be empty, so its published
+/// line and its description are the whole answer.
 fn report_block(
     report: &SearchReport,
     items: &[&MatchedItem],
@@ -113,6 +115,9 @@ fn report_block(
     let mut out = String::new();
     for item in items {
         out.push_str(&published_line(item));
+        if let Some(descriptions) = &item.descriptions {
+            out.push_str(&description_block(item.kind, descriptions, max_width));
+        }
     }
 
     let mut sections = String::new();
@@ -246,6 +251,34 @@ fn published_line(item: &MatchedItem) -> String {
     )
 }
 
+/// The description of one published document, under its published line:
+/// its paragraphs and, for a contract or a pairing, each member or topic
+/// with its description.
+fn description_block(
+    kind: RepoItemKind,
+    descriptions: &CachedDescriptions,
+    max_width: Option<usize>,
+) -> String {
+    let paragraphs = descriptions.description.paragraphs().iter();
+    let mut out = format!(
+        "\n{}",
+        prose::paragraphs(paragraphs.map(|p| p.as_str()), "    ", max_width)
+    );
+    if descriptions.members.is_empty() {
+        return out;
+    }
+    let title = match kind {
+        RepoItemKind::Pairing => "Topics",
+        _ => "Members",
+    };
+    out.push_str(&format!("\n    {title}:\n"));
+    for member in &descriptions.members {
+        let line = format!("{} {}: {}", member.kind, member.name, member.description);
+        out.push_str(&prose::wrapped(&line, "      ", max_width));
+    }
+    out
+}
+
 /// The SLOT column: the `link_id`, tinted like every link id, with the
 /// cardinality the manifest declares on it.
 fn slot_cell(link_id: &str, qualifier: Option<&str>, colorize: bool) -> String {
@@ -352,16 +385,28 @@ fn indented(table: &str) -> String {
 }
 
 /// Machine-readable output: the parsed query, every match with its full
-/// fingerprint, and one usage report per matched identity under
-/// `reports`, in match order.
+/// fingerprint and its descriptions, and one usage report per matched
+/// identity under `reports`, in match order.
 fn render_json(query: &SearchQuery, outcome: &ShowOutcome) -> String {
     let doc = serde_json::json!({
         "query": query_json(query),
-        "matches": matches_json(&outcome.matches),
+        "matches": described_matches_json(&outcome.matches),
         "reports": outcome.reports.iter().map(report_json).collect::<Vec<_>>(),
         "excluded": outcome.excluded_hint,
     });
     format!("{doc}\n")
+}
+
+/// The matches as a search lists them, each with the descriptions of its
+/// document under `descriptions`: `null` for an MCP exposure.
+fn described_matches_json(matches: &[MatchedItem]) -> serde_json::Value {
+    let mut listed = matches_json(matches);
+    let entries = listed.as_array_mut().expect("the matches are a list");
+    for (entry, item) in entries.iter_mut().zip(matches) {
+        entry["descriptions"] =
+            serde_json::to_value(&item.descriptions).expect("the descriptions are JSON");
+    }
+    listed
 }
 
 /// One usage report: every section with each hit's node, slot facts, raw
@@ -623,6 +668,8 @@ mod tests {
             "sim_rgb_camera:v1",
             "  node sim_rgb_camera:v1 published by https://github.com/Peppy-bot/nodes-hub.git (ref: main) at sim_rgb_camera/peppy.json5 (sha256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
             "",
+            "    What sim_rgb_camera is.",
+            "",
             "Slot engine (sim_rgb_camera_link:v1 as viewer, one) can pair with 2 indexed nodes",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
             "    ┌────────────┬─────┬────────┬────────────────────────────┬────────────────────────┬────────────────────────┐",
@@ -678,6 +725,8 @@ mod tests {
         let expected = [
             "rgb_camera:v1",
             "  contract rgb_camera:v1 published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+            "",
+            "    What rgb_camera is.",
             "",
             "Implemented by 2 indexed nodes",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
@@ -758,6 +807,8 @@ mod tests {
             "rgb_camera:v1",
             "  contract rgb_camera:v1 published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
             "",
+            "    What rgb_camera is.",
+            "",
             "Implemented by 3 indexed nodes",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
             "    ┌──────────────────┬─────┬────────┬──────────┬──────────────────────────────┐",
@@ -793,6 +844,8 @@ mod tests {
         let expected = [
             "rgb_camera:v1",
             "  contract rgb_camera:v1 published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+            "",
+            "    What rgb_camera is.",
             "",
             "Implemented by 2 indexed nodes",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
@@ -1012,10 +1065,51 @@ mod tests {
             text,
             format!(
                 "openarm_boot\n\
-                 \x20 launcher openarm_boot published by {LAUNCHERS} at openarm_boot.json5 (sha256 {})\n",
+                 \x20 launcher openarm_boot published by {LAUNCHERS} at openarm_boot.json5 (sha256 {})\n\
+                 \n\
+                 \x20   What openarm_boot is.\n",
                 sha('e')
             )
         );
+    }
+
+    /// The description of a contract follows its published line: each
+    /// paragraph wrapped to the width limit, then each member with its
+    /// description; an MCP exposure has no description to print.
+    #[test]
+    fn human_output_prints_the_description_and_the_members_of_a_document() {
+        let mut contract_match = matched(RepoItemKind::Contract, "rgb_camera", "v1", contract());
+        contract_match.descriptions = Some(
+            serde_json::from_value(serde_json::json!({
+                "description": ["A color camera: its frames and its settings.", "Sizes are in pixels."],
+                "members": [
+                    { "kind": "topic", "name": "video_stream", "description": "Each frame." },
+                    { "kind": "service", "name": "set_brightness", "description": "Set the brightness." },
+                ],
+            }))
+            .unwrap(),
+        );
+        let outcome = shown(vec![empty_report()], vec![contract_match]);
+
+        let text = render_human(&query("rgb_camera"), &outcome, false, Some(40));
+
+        let block = "\n    A color camera: its frames and its\n    settings.\n\n    Sizes are in pixels.\n\n    Members:\n      topic video_stream: Each frame.\n      service set_brightness: Set the\n      brightness.\n";
+        assert!(text.contains(block), "\n{text}");
+
+        let exposure = shown(
+            vec![SearchReport {
+                name: "cameras".to_owned(),
+                ..empty_report()
+            }],
+            vec![matched(
+                RepoItemKind::McpExposure,
+                "cameras",
+                "v1",
+                published(1003, HUB, "cameras.json5", 'c'),
+            )],
+        );
+        let text = render_human(&query("cameras"), &exposure, false, None);
+        assert_eq!(text.lines().count(), 2, "\n{text}");
     }
 
     /// One report block per matched identity in match order, a blank line
@@ -1047,11 +1141,15 @@ mod tests {
                 "rgb_camera\n\
                  \x20 contract rgb_camera:v1 published by {CONTRACTS} at \
                  cameras/rgb_camera.json5 (sha256 {a})\n\
+                 \n\
+                 \x20   What rgb_camera is.\n\
                  \nNo indexed node implements, consumes, participates in, or observes \
                  `rgb_camera:v1`\n\
                  \n\
                  \x20 pairing sim_rgb_camera_link:v1 published by {CONTRACTS} at \
                  cameras/sim_rgb_camera_link.json5 (sha256 {d})\n\
+                 \n\
+                 \x20   What sim_rgb_camera_link is.\n\
                  \nNo indexed node implements, consumes, participates in, or observes \
                  `sim_rgb_camera_link:v1`\n",
                 a = sha('a'),
@@ -1077,10 +1175,15 @@ mod tests {
                 "name": "rgb_camera",
                 "tag": "v1",
                 "sha256": serde_json::Value::Null,
+                "text": false,
             })
         );
         let matches = doc["matches"].as_array().expect("array");
         assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0]["descriptions"],
+            serde_json::json!({ "description": ["What rgb_camera is."] })
+        );
         assert_eq!(matches[0]["kind"], "contract");
         assert_eq!(matches[0]["name"], "rgb_camera");
         assert_eq!(matches[0]["tag"], "v1");

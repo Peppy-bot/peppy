@@ -612,7 +612,7 @@ mod tests {
         // Write a canonical peppy.json5 at the default location
         let canonical_config = r#"{
           peppy_schema: "node/v1",
-          manifest: { name: "canonical_node", tag: "v1" },
+          manifest: { name: "canonical_node", tag: "v1", description: ["A test node."] },
           execution: { language: "rust", run_cmd: ["./target/release/canonical_node"] }
         }"#;
         fs::write(node_dir.join(NODE_CONFIG_FILE), canonical_config).unwrap();
@@ -620,7 +620,7 @@ mod tests {
         // Write a different config at a custom path
         let custom_config = r#"{
           peppy_schema: "node/v1",
-          manifest: { name: "custom_node", tag: "v2" },
+          manifest: { name: "custom_node", tag: "v2", description: ["A test node."] },
           execution: { language: "rust", run_cmd: ["./target/release/custom_node"] }
         }"#;
         let custom_path = temp_dir.path().join("custom_peppy.json5");
@@ -721,7 +721,7 @@ mod tests {
             node_dir.join(NODE_CONFIG_FILE),
             r#"{
               peppy_schema: "node/v1",
-              manifest: { name: "staged_node", tag: "v1" },
+              manifest: { name: "staged_node", tag: "v1", description: ["A test node."] },
               execution: { language: "rust", run_cmd: ["./target/release/staged_node"] }
             }"#,
         )

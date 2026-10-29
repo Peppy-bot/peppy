@@ -614,7 +614,7 @@ mod tests {
         };
         let config: NodeConfig = config::node::NodeConfigParser::from_content(&format!(
             r#"{{ peppy_schema: "node/v1",
-                  manifest: {{ name: "{name}", tag: "{tag}"{depends_on} }},
+                  manifest: {{ name: "{name}", tag: "{tag}", description: ["A test node."]{depends_on} }},
                   execution: {{ language: "python", build_cmd: ["true"], run_cmd: ["true"] }} }}"#
         ))
         .expect("test config parses");

@@ -13,11 +13,12 @@ use tempfile::TempDir;
 
 const CAMERA_CONTRACT: &str = r#"{
     peppy_schema: "contract/v1",
-    manifest: { name: "rgb_camera", tag: "v1" },
+    manifest: { name: "rgb_camera", tag: "v1", description: ["A test contract."] },
     interfaces: {
         services: [
             {
                 name: "video_stream_info",
+                description: "A test service.",
                 response_message_format: { width: "u32", height: "u32" },
             },
         ],
@@ -27,11 +28,12 @@ const CAMERA_CONTRACT: &str = r#"{
 /// The same identity at other bytes, for the two-contents refusal.
 const CAMERA_CONTRACT_REVISED: &str = r#"{
     peppy_schema: "contract/v1",
-    manifest: { name: "rgb_camera", tag: "v1" },
+    manifest: { name: "rgb_camera", tag: "v1", description: ["A test contract."] },
     interfaces: {
         services: [
             {
                 name: "video_stream_info",
+                description: "A test service.",
                 response_message_format: { width: "u32", height: "u32", fps: "u8" },
             },
         ],
@@ -40,11 +42,12 @@ const CAMERA_CONTRACT_REVISED: &str = r#"{
 
 const RECORDING_CONTRACT: &str = r#"{
     peppy_schema: "contract/v1",
-    manifest: { name: "episode_recording", tag: "v1" },
+    manifest: { name: "episode_recording", tag: "v1", description: ["A test contract."] },
     interfaces: {
         actions: [
             {
                 name: "record_episode",
+                description: "A test action.",
                 goal_service: { request_message_format: { episode_name: "string" } },
                 result_service: { response_message_format: { frames: "u32" } },
             },

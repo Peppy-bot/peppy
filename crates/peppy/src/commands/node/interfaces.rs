@@ -9,6 +9,7 @@ use crate::commands::{CALLER_INSTANCE_ID, request_failure_text};
 use crate::context::DaemonConnection;
 use crate::error::Error;
 use config::RefinementMismatch;
+use config::description::DocumentDescription;
 use config::failure_kind::{MemberFailureKinds, MemberSection};
 use config::mark::Marks;
 use config::node::{
@@ -67,20 +68,24 @@ pub(crate) struct InstanceInterfaces {
     pub pairings: Vec<PairingInterfaces>,
 }
 
-/// A pinned document: its name, its tag and the SHA-256 of its content.
+/// A pinned document: its name, its tag, the SHA-256 of its content and
+/// its description.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct DocumentIdentity {
     pub name: String,
     pub tag: String,
     pub sha256: String,
+    pub description: DocumentDescription,
 }
 
-impl From<&PinnedDocument> for DocumentIdentity {
-    fn from(document: &PinnedDocument) -> Self {
+impl DocumentIdentity {
+    /// The identity of `document`, whose parsed form has `description`.
+    fn new(document: &PinnedDocument, description: &DocumentDescription) -> Self {
         Self {
             name: document.name().to_owned(),
             tag: document.tag().to_owned(),
             sha256: document.sha256().to_owned(),
+            description: description.clone(),
         }
     }
 }
@@ -180,6 +185,16 @@ impl Member {
             Member::Topic(topic) => &topic.name,
             Member::Service(service) => &service.service.name,
             Member::Action(action) => &action.action.name,
+        }
+    }
+
+    /// What the member does, as its contract, its pairing or its node
+    /// says.
+    pub fn description(&self) -> &config::description::Description {
+        match self {
+            Member::Topic(topic) => &topic.description,
+            Member::Service(service) => &service.service.description,
+            Member::Action(action) => &action.action.description,
         }
     }
 
@@ -307,12 +322,20 @@ impl InstanceInterfaces {
                 reason: e.to_string(),
             }
         })?;
-        let contracts = parse_documents(instance, "contract", &documents.contracts, |content| {
-            PeppyContractParser::from_content(content).map_err(|e| e.to_string())
-        })?;
-        let pairings = parse_documents(instance, "pairing", &documents.pairings, |content| {
-            PeppyPairingParser::from_content(content).map_err(|e| e.to_string())
-        })?;
+        let contracts = parse_documents(
+            instance,
+            "contract",
+            &documents.contracts,
+            |content| PeppyContractParser::from_content(content).map_err(|e| e.to_string()),
+            PeppyContract::description,
+        )?;
+        let pairings = parse_documents(
+            instance,
+            "pairing",
+            &documents.pairings,
+            |content| PeppyPairingParser::from_content(content).map_err(|e| e.to_string()),
+            |pairing| &pairing.manifest.description,
+        )?;
         let builder = Builder {
             instance,
             config: &config,
@@ -322,7 +345,7 @@ impl InstanceInterfaces {
         Ok(Self {
             instance_id: documents.instance_id.clone(),
             core_node: documents.core_node.clone(),
-            node: DocumentIdentity::from(&documents.manifest),
+            node: DocumentIdentity::new(&documents.manifest, &config.manifest.description),
             contracts: builder.contract_interfaces()?,
             own_members: builder.own_members(),
             pairings: builder.pairing_interfaces()?,
@@ -474,12 +497,14 @@ fn name_list<'a, 'b: 'a>(
     names.join(", ")
 }
 
-/// Each document of `documents` parsed with `parse`, with its identity.
+/// Each document of `documents` parsed with `parse`, with its identity and
+/// the description that `describe` reads from the parsed document.
 fn parse_documents<T>(
     instance: &str,
     kind: &'static str,
     documents: &[PinnedDocument],
     parse: impl Fn(&str) -> Result<T, String>,
+    describe: impl Fn(&T) -> &DocumentDescription,
 ) -> Result<Vec<(DocumentIdentity, T)>, DocumentsError> {
     documents
         .iter()
@@ -491,7 +516,7 @@ fn parse_documents<T>(
                 tag: document.tag().to_owned(),
                 reason,
             })?;
-            Ok((DocumentIdentity::from(document), parsed))
+            Ok((DocumentIdentity::new(document, describe(&parsed)), parsed))
         })
         .collect()
 }
@@ -692,11 +717,20 @@ mod tests {
         assert_eq!(described["core_node"], CORE_NODE);
         assert_eq!(
             described["node"],
-            json!({"name": "arm", "tag": "v1", "sha256": documents.manifest.sha256()})
+            json!({
+                "name": "arm",
+                "tag": "v1",
+                "sha256": documents.manifest.sha256(),
+                "description": ["An arm on a bench."],
+            })
         );
 
         let contract = &described["contracts"][0];
         assert_eq!(contract["name"], "limb_motion");
+        assert_eq!(
+            contract["description"],
+            json!(["The motion of a limb.", "Joints are in radians."])
+        );
         assert_eq!(contract["sha256"], documents.contracts[0].sha256());
         assert_eq!(contract["link_id"], "motion");
         let members = contract["members"].as_array().expect("a list of members");
@@ -858,7 +892,7 @@ mod tests {
             r#"{
                 peppy_schema: "node/v1",
                 manifest: {
-                    name: "arm", tag: "v1",
+                    name: "arm", tag: "v1", description: ["A test node."],
                     depends_on: {
                         pairings: [
                             { name: "arm_link", tag: "v1", role: "arm", link_id: "left" },

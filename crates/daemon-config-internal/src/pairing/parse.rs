@@ -35,11 +35,11 @@ mod tests {
     fn from_content_parses_pairing() {
         let json5 = r#"{
             peppy_schema: "pairing/v1",
-            manifest: { name: "arm_link", tag: "v1" },
+            manifest: { name: "arm_link", tag: "v1", description: ["A test pairing."] },
             roles: ["controller", "arm"],
             topics: [
-                { emitted_by: "controller", name: "joint_commands" },
-                { emitted_by: "arm", name: "joint_states" }
+                { emitted_by: "controller", name: "joint_commands", description: "A test topic." },
+                { emitted_by: "arm", name: "joint_states", description: "A test topic." }
             ]
         }"#;
         let parsed = PeppyPairingParser::from_content(json5).expect("should parse");
@@ -53,9 +53,9 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let json5 = r#"{
             peppy_schema: "pairing/v1",
-            manifest: { name: "ping_link", tag: "v1" },
+            manifest: { name: "ping_link", tag: "v1", description: ["A test pairing."] },
             roles: ["a", "b"],
-            topics: [{ emitted_by: "a", name: "ping" }]
+            topics: [{ emitted_by: "a", name: "ping", description: "A test topic." }]
         }"#;
         std::fs::write(tmp.path(), json5).unwrap();
         let parsed = PeppyPairingParser::from_path(tmp.path()).expect("should parse");
@@ -97,7 +97,7 @@ mod tests {
     fn contract_document_rejected() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "x", tag: "v1" },
+            manifest: { name: "x", tag: "v1", description: ["A test contract."] },
             interfaces: {}
         }"#;
         let err = PeppyPairingParser::from_content(json5)

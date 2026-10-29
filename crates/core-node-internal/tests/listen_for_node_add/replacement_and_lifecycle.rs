@@ -12,6 +12,7 @@ fn node_config_with_interfaces(name: &str, tag: &str, interfaces_body: &str) -> 
             manifest: {{
                 name: "{name}",
                 tag: "{tag}",
+                description: ["A test node."],
             }},
             interfaces: {interfaces_body},
             execution: {{
@@ -28,7 +29,9 @@ fn service_provider_config(name: &str, tag: &str, service: &str) -> String {
     node_config_with_interfaces(
         name,
         tag,
-        &format!(r#"{{ services: {{ exposes: [{{ name: "{service}" }}] }} }}"#),
+        &format!(
+            r#"{{ services: {{ exposes: [{{ name: "{service}", description: "A test service." }}] }} }}"#
+        ),
     )
 }
 
@@ -47,6 +50,7 @@ fn reset_sensor_consumer_config(
             manifest: {{
                 name: "{name}",
                 tag: "{tag}",
+                description: ["A test node."],
                 depends_on: {{
                     nodes: [
                         {{ name: "{provider_name}", tag: "{provider_tag}", link_id: "{provider_name}" }}
@@ -179,7 +183,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
     let peppy_json5_v1 = node_config_with_interfaces(
         NODE_NAME,
         NODE_TAG,
-        r#"{ topics: { emits: [{ name: "wrong_topic_name" }] } }"#,
+        r#"{ topics: { emits: [{ name: "wrong_topic_name", description: "A test topic." }] } }"#,
     );
     write_peppy_json5(source_dir_v1.path(), &peppy_json5_v1);
 
@@ -203,7 +207,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
     let peppy_json5_v2 = node_config_with_interfaces(
         NODE_NAME,
         NODE_TAG,
-        r#"{ topics: { emits: [{ name: "/example" }] } }"#,
+        r#"{ topics: { emits: [{ name: "/example", description: "A test topic." }] } }"#,
     );
     write_peppy_json5(source_dir_v2.path(), &peppy_json5_v2);
 
@@ -1178,7 +1182,7 @@ async fn listen_for_node_add_stages_a_generated_copy_that_removal_deletes() {
         r#"{
             topics: {
                 emits: [
-                    { name: "readings", message_format: { timestamp: "time", value: "f64" } }
+                    { name: "readings", description: "A test topic.", message_format: { timestamp: "time", value: "f64" } }
                 ]
             }
         }"#,

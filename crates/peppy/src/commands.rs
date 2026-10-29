@@ -9,6 +9,7 @@ pub mod mcp;
 mod menu;
 pub mod node;
 pub mod platform;
+mod prose;
 pub mod repo;
 pub mod service;
 pub mod stack;

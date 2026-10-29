@@ -307,7 +307,10 @@ mod tests {
     use super::*;
 
     fn brain_manifest() -> Manifest {
-        serde_json5::from_str(r#"{ name: "my_robot_brain", tag: "v1" }"#).expect("manifest parses")
+        serde_json5::from_str(
+            r#"{ name: "my_robot_brain", tag: "v1", description: ["A test node."] }"#,
+        )
+        .expect("manifest parses")
     }
 
     fn missing_dependency(dependency: &str, dependency_tag: &str) -> ParsingError {

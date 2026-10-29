@@ -21,6 +21,7 @@ async fn listen_for_node_list_returns_succeeds() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",

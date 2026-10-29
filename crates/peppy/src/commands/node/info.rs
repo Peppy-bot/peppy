@@ -70,13 +70,14 @@ pub async fn node_info_rendered(
     }
 
     let mut out = String::new();
-    format_node_info(&mut out, &info);
+    format_node_info(&mut out, &info, crate::terminal::stdout_width());
     Ok(out)
 }
 
-/// Renders the node's info; a restarting instance's wait counts down from
-/// the daemon's clock when it answered.
-fn format_node_info(out: &mut String, response: &NodeInfo) {
+/// Renders the node's info, its description wrapped to `max_width` columns
+/// (`None` keeps each paragraph on one line); a restarting instance's wait
+/// counts down from the daemon's clock when it answered.
+fn format_node_info(out: &mut String, response: &NodeInfo, max_width: Option<usize>) {
     let config = &response.config;
     let manifest = &config.manifest;
 
@@ -107,6 +108,14 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
     if let Some(container) = &config.execution.container {
         let _ = writeln!(out, "Container: {}", container.def_file);
     }
+
+    write_section_heading(out, "Description");
+    let paragraphs = manifest.description.paragraphs().iter();
+    out.push_str(&crate::commands::prose::paragraphs(
+        paragraphs.map(|paragraph| paragraph.as_str()),
+        "",
+        max_width,
+    ));
 
     // Node stack status: the daemon only answers node_info requests for
     // nodes that are in the stack, so we always have a stage + instance list.
@@ -569,6 +578,10 @@ mod tests {
                 manifest: {{
                     name: "sensor_node",
                     tag: "v1",
+                    description: [
+                        "A sensor on the bench: it publishes what it reads, once a second.",
+                        "It needs no device.",
+                    ],
                 }},
                 interfaces: {{}},
                 execution: {execution_json5}
@@ -633,6 +646,7 @@ mod tests {
                 config,
                 ..sample_response()
             },
+            None,
         );
         out
     }
@@ -644,11 +658,11 @@ mod tests {
         let out = format_with_config(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "arm", tag: "v1" },
+                manifest: { name: "arm", tag: "v1", description: ["A test node."] },
                 interfaces: {
                     topics: { emits: [
-                        { name: "joint_state", qos_profile: "sensor_data", message_format: { position: "f64" } },
-                        { name: "robot_mode", qos_profile: "reliable", retention: { latest: 3 }, message_format: { mode: "string" } },
+                        { name: "joint_state", description: "A test topic.", qos_profile: "sensor_data", message_format: { position: "f64" } },
+                        { name: "robot_mode", description: "A test topic.", qos_profile: "reliable", retention: { latest: 3 }, message_format: { mode: "string" } },
                     ] },
                 },
                 execution: { language: "rust", run_cmd: ["./bin"] },
@@ -662,6 +676,26 @@ mod tests {
         );
     }
 
+    /// The full description of the node follows its basic facts, one
+    /// paragraph at a time, wrapped to the width limit.
+    #[test]
+    fn print_node_info_prints_the_description_of_the_node() {
+        let response = sample_response();
+        let mut out = String::new();
+        format_node_info(&mut out, &response, Some(40));
+
+        assert!(
+            out.contains(
+                "\nDescription\n--------------------------------------------------\n\
+                 A sensor on the bench: it publishes what\n\
+                 it reads, once a second.\n\
+                 \n\
+                 It needs no device.\n"
+            ),
+            "{out}"
+        );
+    }
+
     /// Each endpoint of an instance is listed under its instance line as
     /// `label (kind)  url`, one line per URL; an instance serving nothing
     /// gets no such line.
@@ -669,7 +703,7 @@ mod tests {
     fn print_node_info_lists_endpoints_under_their_instance() {
         let response = sample_response();
         let mut out = String::new();
-        format_node_info(&mut out, &response);
+        format_node_info(&mut out, &response, None);
 
         let lines: Vec<&str> = out.lines().collect();
         let instance_line = lines
@@ -722,7 +756,7 @@ mod tests {
         response.instances[1].restart_status.next_start_ms = Some(now + 60_000);
         let rendered = |response: &NodeInfo| {
             let mut out = String::new();
-            format_node_info(&mut out, response);
+            format_node_info(&mut out, response, None);
             out
         };
         // A running instance names no attempt, whatever its backoff holds.
@@ -801,7 +835,7 @@ mod tests {
     fn print_node_info_renders_stage_instances_and_logs() {
         let response = sample_response();
         let mut out = String::new();
-        format_node_info(&mut out, &response);
+        format_node_info(&mut out, &response, None);
 
         assert!(
             out.contains("Stage:     Ready"),
@@ -851,7 +885,7 @@ mod tests {
         response.run_log_paths.clear();
 
         let mut out = String::new();
-        format_node_info(&mut out, &response);
+        format_node_info(&mut out, &response, None);
 
         assert!(
             !out.contains("\nLogs\n"),
@@ -881,7 +915,7 @@ mod tests {
         );
 
         let mut out = String::new();
-        format_node_info(&mut out, &response);
+        format_node_info(&mut out, &response, None);
 
         // Primitive parameters render as `name: type`.
         assert!(
@@ -923,7 +957,7 @@ mod tests {
         );
 
         let mut out = String::new();
-        format_node_info(&mut out, &response);
+        format_node_info(&mut out, &response, None);
 
         assert!(
             out.contains("  device_path: string = \"/dev/video0\""),
@@ -971,7 +1005,7 @@ mod tests {
         );
 
         let mut out = String::new();
-        format_node_info(&mut out, &response);
+        format_node_info(&mut out, &response, None);
 
         assert!(
             out.contains("  tags: array[string]"),
@@ -989,6 +1023,7 @@ mod tests {
                 manifest: {
                     name: "relay",
                     tag: "v1",
+                    description: ["A test node."],
                     implements: [{ name: "rgb_camera", tag: "v1", link_id: "camera" }],
                     depends_on: {
                         nodes: [
@@ -1001,7 +1036,7 @@ mod tests {
                 interfaces: {
                     topics: {
                         emits: [
-                            { name: "joint_state", qos_profile: "sensor_data", message_format: { position: "f64" } },
+                            { name: "joint_state", description: "A test topic.", qos_profile: "sensor_data", message_format: { position: "f64" } },
                             { link_id: "camera", name: "video_stream" },
                         ],
                         consumes: [
@@ -1010,11 +1045,11 @@ mod tests {
                         ],
                     },
                     services: {
-                        exposes: [{ name: "get_status" }],
+                        exposes: [{ name: "get_status", description: "A test service." }],
                         consumes: [{ link_id: "config", name: "get_config" }],
                     },
                     actions: {
-                        exposes: [{ name: "calibrate" }],
+                        exposes: [{ name: "calibrate", description: "A test action." }],
                         consumes: [{ link_id: "nav", name: "go_to_pose" }],
                     },
                 },
@@ -1064,10 +1099,10 @@ mod tests {
         let out = format_with_config(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "quiet", tag: "v1" },
+                manifest: { name: "quiet", tag: "v1", description: ["A test node."] },
                 interfaces: {
                     topics: { emits: [], consumes: [] },
-                    services: { exposes: [{ name: "get_status" }], consumes: [] },
+                    services: { exposes: [{ name: "get_status", description: "A test service." }], consumes: [] },
                     actions: { exposes: [], consumes: [] },
                 },
                 execution: { language: "rust", run_cmd: ["./bin"] },

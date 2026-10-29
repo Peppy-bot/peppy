@@ -1103,6 +1103,7 @@ pub(super) fn flat_document(
 ) -> PeppyLauncher {
     PeppyLauncher {
         peppy_schema: launcher.peppy_schema,
+        description: launcher.description.clone(),
         core_nodes,
         deployments,
         option_deployments: Vec::new(),

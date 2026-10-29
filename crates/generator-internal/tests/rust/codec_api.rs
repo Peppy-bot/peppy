@@ -15,7 +15,7 @@ use crate::helpers;
 
 const NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
-  manifest: { name: "codec_node", tag: "v1" },
+  manifest: { name: "codec_node", tag: "v1", description: ["A test node."] },
   execution: {
     language: "rust",
     run_cmd: ["./target/debug/codec_node"],
@@ -106,16 +106,17 @@ mod tests {
 
     const CONTRACT: &str = r#"{
         peppy_schema: "contract/v1",
-        manifest: { name: "arm", tag: "v1" },
+        manifest: { name: "arm", tag: "v1", description: ["An arm."] },
         interfaces: {
             services: [{
                 name: "home",
+                description: "Send the arm home.",
                 request_message_format: {
                     speed: "f32",
                     item: { $type: "string", $marks: ["item_id"] },
                 },
             }],
-            actions: [{ name: "grip", marks: ["moves_robot"] }],
+            actions: [{ name: "grip", description: "Close the gripper.", marks: ["moves_robot"] }],
         },
     }"#;
 

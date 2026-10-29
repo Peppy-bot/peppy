@@ -53,6 +53,7 @@ fn observer_config_named(
         manifest: {{
             name: "{name}",
             tag: "v1",
+            description: ["A test node."],
             depends_on: {{
                 pairing_observers: [
                     {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "{cardinality}" }}

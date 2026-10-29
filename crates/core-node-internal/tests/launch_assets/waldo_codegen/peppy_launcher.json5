@@ -5,6 +5,7 @@
 // fixture, and the generated bindings do not depend on what a slot holds.
 {
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: [
     {
       source: { name: "waldo", tag: "v1" },

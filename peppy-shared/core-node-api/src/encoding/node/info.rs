@@ -432,7 +432,7 @@ mod tests {
     fn sample_config_for_roundtrip() -> NodeConfig {
         let config_json5 = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "sensor_node", tag: "v1" },
+            manifest: { name: "sensor_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#;
         let dir = tempfile::tempdir().expect("tempdir");

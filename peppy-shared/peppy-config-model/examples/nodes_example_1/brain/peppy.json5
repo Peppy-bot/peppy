@@ -1,10 +1,9 @@
-// A simple node that has an AI and acts as the brain of the robot.
-// It receives camera data and sends actions to the controller.
 {
   peppy_schema: "node/v1",
   manifest: {
     name: "brain",
     tag: "v1",
+    description: ["A node that acts as the brain of the robot: it receives the frames of the camera and sends actions to the controller."],
     labels: [
       "brain"
     ],

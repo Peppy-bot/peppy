@@ -3,6 +3,7 @@
   manifest: {
     name: "uvc_camera_python_mock",
     tag: "v1",
+    description: ["A test node."],
     implements: [
       { name: "rgb_camera", tag: "v1", link_id: "camera" },
     ],

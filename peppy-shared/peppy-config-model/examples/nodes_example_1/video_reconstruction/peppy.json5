@@ -3,6 +3,7 @@
   manifest: {
     name: "video_reconstruction",
     tag: "v1",
+    description: ["A node that records the frames of a UVC camera and makes a video of them."],
     depends_on: {
       nodes: [
         {

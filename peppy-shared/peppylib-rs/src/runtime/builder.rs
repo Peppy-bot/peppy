@@ -1031,7 +1031,7 @@ mod tests {
         let manifest = config::node::NodeConfigParser::from_content(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "ordered", tag: "v1" },
+                manifest: { name: "ordered", tag: "v1", description: ["A test node."] },
                 execution: { language: "rust", run_cmd: ["ordered"] },
             }"#,
         )

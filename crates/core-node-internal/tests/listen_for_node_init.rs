@@ -199,6 +199,7 @@ async fn listen_for_node_init_rust_success() {
         &NodeInitRequest::new(
             nodes_root.path(),
             NODE_NAME,
+            node_description(),
             "abc123",
             false,
             Toolchain::Cargo,
@@ -228,6 +229,7 @@ async fn listen_for_node_init_rust_container_success() {
         &NodeInitRequest::new(
             nodes_root.path(),
             NODE_NAME,
+            node_description(),
             "abc123",
             true,
             Toolchain::Cargo,
@@ -255,7 +257,14 @@ async fn listen_for_node_init_python_success() {
 
     let response = send_node_init(
         &started_core_node,
-        &NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", false, Toolchain::Uv),
+        &NodeInitRequest::new(
+            nodes_root.path(),
+            NODE_NAME,
+            node_description(),
+            "abc123",
+            false,
+            Toolchain::Uv,
+        ),
     )
     .await;
 
@@ -278,7 +287,14 @@ async fn listen_for_node_init_python_container_success() {
 
     let response = send_node_init(
         &started_core_node,
-        &NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", true, Toolchain::Uv),
+        &NodeInitRequest::new(
+            nodes_root.path(),
+            NODE_NAME,
+            node_description(),
+            "abc123",
+            true,
+            Toolchain::Uv,
+        ),
     )
     .await;
 
@@ -323,6 +339,7 @@ async fn listen_for_node_init_fails_if_directory_exists() {
         &NodeInitRequest::new(
             nodes_root.path(),
             NODE_NAME,
+            node_description(),
             "abc123",
             false,
             Toolchain::Cargo,
@@ -369,7 +386,14 @@ async fn listen_for_node_init_fails_if_node_directory_cannot_be_created() {
 
     let response = send_node_init(
         &started_core_node,
-        &NodeInitRequest::new(&nodes_root, NODE_NAME, "abc123", false, Toolchain::Cargo),
+        &NodeInitRequest::new(
+            &nodes_root,
+            NODE_NAME,
+            node_description(),
+            "abc123",
+            false,
+            Toolchain::Cargo,
+        ),
     )
     .await;
 
@@ -390,4 +414,9 @@ async fn listen_for_node_init_fails_if_node_directory_cannot_be_created() {
         "a file, not a directory",
         "the nodes root file should be left untouched"
     );
+}
+
+/// The description that each scaffolded manifest gets.
+fn node_description() -> config::description::Description {
+    config::description::Description::new("A node that greets.").unwrap()
 }

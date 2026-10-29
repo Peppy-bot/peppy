@@ -30,7 +30,7 @@ fn repo_refresh_succeeds_after_adding_fs_repo() {
         node_dir.path().join("peppy.json5"),
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "test_node", tag: "v1" },
+            manifest: { name: "test_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["sleep", "1"] }
         }"#,
     )
@@ -63,7 +63,7 @@ fn seed_one_readable_and_two_unreadable_repositories(
         healthy.path().join("peppy.json5"),
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "reachable_node", tag: "v1" },
+            manifest: { name: "reachable_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["sleep", "1"] }
         }"#,
     )
@@ -77,7 +77,7 @@ fn seed_one_readable_and_two_unreadable_repositories(
         unpublished.path().join("peppy.json5"),
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "unpublished_node", tag: "v1" },
+            manifest: { name: "unpublished_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["sleep", "1"] }
         }"#,
     )

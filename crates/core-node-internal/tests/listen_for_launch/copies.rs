@@ -255,6 +255,7 @@ async fn six_copies_join_remove_and_rejoin_without_restarting_their_neighbors() 
     let launcher = directory.path().join("fleet.json5");
     fs::write(&launcher, r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "robot", cardinality: "zero_or_more", options: {
             real: { deployments: [{ source: { name: "named_robot", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }] },
             broken: { deployments: [{ source: { name: "broken_robot", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }] }
@@ -379,6 +380,7 @@ async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
         &launcher,
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "robot", cardinality: "zero_or_more", options: {
             simulated: { deployments: [{
                 source: { name: "blocked_robot", tag: "v1" },
@@ -464,6 +466,7 @@ async fn a_cancelled_join_is_undone_and_ends_cancelled() {
         &launcher,
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "robot", cardinality: "zero_or_more", options: {
             simulated: { deployments: [{
                 source: { name: "blocked_robot", tag: "v1" },
@@ -523,6 +526,7 @@ async fn a_cancelled_removal_keeps_the_copy_and_the_instance_it_did_not_stop() {
         &launcher,
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         deployments: [{ robot: "real", instances: [{ instance_id: "alpha" }] }],
         components: [{ name: "robot", cardinality: "zero_or_more", options: {
             real: { deployments: [{
@@ -617,6 +621,7 @@ fn fleet_with_a_shared_node(
     let launcher = directory.path().join("fleet.json5");
     fs::write(&launcher, format!(r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         deployments: [
             {{ source: {{ name: "shared_node", tag: "v1" }}, instances: [{{ instance_id: "shared_inst" }}] }},
             {copies}
@@ -765,6 +770,7 @@ async fn the_launch_copies_stay_as_launched_through_joins_and_removals_until_res
     let launcher = directory.path().join("fleet.json5");
     fs::write(&launcher, r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         deployments: [{ robot: "real", instances: [{ instance_id: "alpha" }] }],
         components: [{ name: "robot", cardinality: "zero_or_more", options: {
             real: { deployments: [{ source: { name: "named_robot", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }] },
@@ -860,6 +866,7 @@ fn fleet_with_a_tool_axis(started: &StartedCoreNode, entry: &str) -> (tempfile::
     let launcher = directory.path().join("fleet.json5");
     fs::write(&launcher, format!(r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{{ name: "robot", cardinality: "zero_or_more", options: {{
             real: {{
                 deployments: [{{ tool: "gripper" }}],
@@ -1105,6 +1112,7 @@ fn fleet_of_copies_only(started: &StartedCoreNode) -> (tempfile::TempDir, PathBu
     let launcher = directory.path().join("fleet.json5");
     fs::write(&launcher, r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "robot", cardinality: "zero_or_more", options: {
             real: { deployments: [{ source: { name: "named_robot", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }] }
         } }]
@@ -1178,6 +1186,7 @@ fn fleet_of_robots(started: &StartedCoreNode, robot: &str) -> (tempfile::TempDir
         format!(
             r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{{ name: "robot", cardinality: "zero_or_more", options: {{
             real: {{ deployments: [{robot}] }}
         }} }}]
@@ -1289,7 +1298,7 @@ const MONITORED_ROBOT_DEPENDS_ON: &str = r#"{ pairings: [
     { name: "joint_link", tag: "v1", role: "follower", link_id: "controller", cardinality: "zero_or_one" }
 ] }"#;
 const MONITORED_ROBOT_INTERFACES: &str = r#"{ topics: {
-    emits: [{ name: "heartbeat" }, { link_id: "controller", name: "joint_states" }],
+    emits: [{ name: "heartbeat", description: "A test topic." }, { link_id: "controller", name: "joint_states" }],
     consumes: [{ link_id: "controller", name: "joint_setpoints" }]
 } }"#;
 const MONITOR_INTERFACES: &str = r#"{ topics: { consumes: [
@@ -1353,6 +1362,7 @@ fn fleet_with_a_monitor(
         format!(
             r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         deployments: [
             {{ source: {{ name: "monitor", tag: "v1" }}, instances: [{{ instance_id: "monitor_inst" }}] }},
             {deployments}
@@ -1692,6 +1702,7 @@ async fn the_last_copy_of_a_one_or_more_axis_stays_until_the_stack_goes() {
         &launcher,
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "robot", cardinality: "one_or_more", options: {
             real: { deployments: [{ source: { name: "named_robot", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }] }
         } }],

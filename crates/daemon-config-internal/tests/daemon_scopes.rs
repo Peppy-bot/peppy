@@ -42,6 +42,7 @@ fn simulation_mcp_with(
     format!(
         r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             {{ name: "robot_control", cardinality: "one", options: {{
                 robot_control: {{ deployments: [
@@ -104,7 +105,7 @@ fn instance<'a>(flat: &'a PeppyLauncher, id: &str) -> &'a DeploymentInstance {
 /// `robot_leases:v1` beside the contract slot `arm`.
 const DIRECTOR: &str = r#"{
     peppy_schema: "node/v1",
-    manifest: { name: "director", tag: "v1", depends_on: {
+    manifest: { name: "director", tag: "v1", description: ["A test node."], depends_on: {
         contracts: [{ name: "limb_motion", tag: "v1", link_id: "arm" }],
         daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }],
     } },
@@ -497,6 +498,7 @@ fn flat(deployments: &str) -> (PreparedLauncher, PeppyLauncher) {
     let document = format!(
         r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         core_nodes: ["robot_pc"],
         deployments: [{deployments}],
     }}"#
@@ -1360,6 +1362,7 @@ fn two_scopes_give_one_joinable_node_per_source_with_every_option_that_brings_it
     let prepared = load(&format!(
         r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             {{ name: "robot", cardinality: "zero_or_more", options: {{
                 openarm_sim: {{ deployments: [

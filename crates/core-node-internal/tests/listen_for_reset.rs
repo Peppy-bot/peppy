@@ -57,6 +57,7 @@ async fn listen_for_node_reset_clears_node_stack() {
             manifest: {
                 name: "{TARGET_NODE_A_NAME}",
                 tag: "{TARGET_NODE_A_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -85,6 +86,7 @@ async fn listen_for_node_reset_clears_node_stack() {
             manifest: {
                 name: "{TARGET_NODE_B_NAME}",
                 tag: "{TARGET_NODE_B_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -289,6 +291,7 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -397,7 +400,7 @@ fn setup_budget_test_node() {
     let manifest = config::node::NodeConfigParser::from_content(
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "setup_waits", tag: "v1" },
+            manifest: { name: "setup_waits", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["setup_waits"] },
         }"#,
     )

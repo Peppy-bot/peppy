@@ -15,6 +15,7 @@ fn brain_consuming_move_right_arm() -> config::node::NodeConfig {
             manifest: {
               name: "brain",
               tag: "v1",
+              description: ["A test node."],
               depends_on: {
                 nodes: [
                   { name: "controller", tag: "v1", link_id: "controller" }
@@ -50,12 +51,14 @@ fn action_dependency_resolved_when_dependency_added_first() {
             manifest: {
               name: "controller",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 actions: {
                     exposes: [
                         {
                           name: "move_right_arm",
+                          description: "A test action.",
                           goal_service: {
                             request_message_format: {
                               arm_id: "u16",
@@ -167,12 +170,14 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
             manifest: {
               name: "controller",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 actions: {
                     exposes: [
                         {
                           name: "move_left_arm",
+                          description: "A test action.",
                           goal_service: {
                             request_message_format: {
                               arm_id: "u16",
@@ -256,6 +261,7 @@ fn action_dependency_fails_when_link_id_is_undeclared() {
             manifest: {
               name: "brain",
               tag: "v1",
+              description: ["A test node."],
               depends_on: {
                 nodes: []
               },

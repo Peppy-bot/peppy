@@ -74,7 +74,7 @@ const FRAME_URI: &str = "peppy://resource/front_camera.latest_frame";
 /// `shutter_closed` when asked for a blank.
 const CAMERA_CONTRACT: &str = r#"{
     peppy_schema: "contract/v1",
-    manifest: { name: "rgb_camera", tag: "v1" },
+    manifest: { name: "rgb_camera", tag: "v1", description: ["A test contract."] },
     failure_kinds: {
         shutter_closed: "The shutter of the camera is closed",
     },
@@ -82,6 +82,7 @@ const CAMERA_CONTRACT: &str = r#"{
         topics: [
             {
                 name: "video_stream",
+                description: "A test topic.",
                 qos_profile: "sensor_data",
                 message_format: {
                     frame: { $type: "array", $items: "u8" },
@@ -92,6 +93,7 @@ const CAMERA_CONTRACT: &str = r#"{
             },
             {
                 name: "camera_status",
+                description: "A test topic.",
                 message_format: {
                     battery: "u8",
                     note: "string",
@@ -102,6 +104,7 @@ const CAMERA_CONTRACT: &str = r#"{
         services: [
             {
                 name: "video_stream_info",
+                description: "A test service.",
                 response_message_format: {
                     width: "u16",
                     height: "u16",
@@ -111,15 +114,18 @@ const CAMERA_CONTRACT: &str = r#"{
             },
             {
                 name: "set_brightness",
+                description: "A test service.",
                 request_message_format: { value: "i32" },
                 response_message_format: { applied: "bool" },
             },
             {
                 name: "freeze_probe",
+                description: "A test service.",
                 response_message_format: { ok: "bool" },
             },
             {
                 name: "snapshot",
+                description: "A test service.",
                 request_message_format: { blank: "bool" },
                 response_message_format: {
                     frame: { $type: "array", $items: "u8" },
@@ -133,6 +139,7 @@ const CAMERA_CONTRACT: &str = r#"{
         actions: [
             {
                 name: "record_clip",
+                description: "A test action.",
                 goal_service: {
                     request_message_format: { duration_frames: "u32" },
                 },
@@ -151,11 +158,12 @@ const CAMERA_CONTRACT: &str = r#"{
 /// exposure: a running native member the MCP catalog must not reach.
 const RECORDING_CONTRACT: &str = r#"{
     peppy_schema: "contract/v1",
-    manifest: { name: "episode_recording", tag: "v1" },
+    manifest: { name: "episode_recording", tag: "v1", description: ["A test contract."] },
     interfaces: {
         actions: [
             {
                 name: "record_episode",
+                description: "A test action.",
                 goal_service: {
                     request_message_format: { episode_name: "string" },
                 },
@@ -170,6 +178,7 @@ const RECORDING_CONTRACT: &str = r#"{
         services: [
             {
                 name: "finish_session",
+                description: "A test service.",
                 response_message_format: { episodes_recorded: "u32" },
             },
         ],
@@ -181,6 +190,7 @@ const CAMERA_NODE_CONFIG: &str = r#"{
     manifest: {
         name: "mock_uvc_camera",
         tag: "v1",
+        description: ["A test node."],
         implements: [
             { name: "rgb_camera", tag: "v1", link_id: "camera" },
         ],
@@ -341,6 +351,7 @@ const RECORDER_NODE_CONFIG: &str = r#"{
     manifest: {
         name: "mock_recorder",
         tag: "v1",
+        description: ["A test node."],
         implements: [
             { name: "episode_recording", tag: "v1", link_id: "recording" },
         ],
@@ -988,6 +999,7 @@ impl Stack {
             &format!(
                 r#"{{
                     peppy_schema: "launcher/v1",
+                    description: ["A test launcher."],
                     deployments: [{deployments}]
                 }}"#
             ),
@@ -2473,6 +2485,7 @@ async fn stack_resolve_checks_the_links_of_an_exposure_deployment() {
             format!(
                 r#"{{
                     peppy_schema: "launcher/v1",
+                    description: ["A test launcher."],
                     deployments: [{deployments}]
                 }}"#
             ),
@@ -2674,6 +2687,7 @@ fn fleet_launcher(port: u16, option: &str, front_camera: &[&str], copies: &str) 
     format!(
         r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             {{
                 name: "robot",
@@ -3238,6 +3252,7 @@ fn featured_framework_launcher(port: u16) -> String {
     format!(
         r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             {{
                 name: "robot",
@@ -3280,6 +3295,7 @@ fn framework_launcher(port: u16) -> String {
     format!(
         r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             {{
                 name: "robot",
@@ -3893,6 +3909,7 @@ fn joinable_launcher(port: u16) -> String {
     format!(
         r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             {{
                 name: "robot_control",

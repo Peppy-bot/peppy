@@ -3,6 +3,7 @@
   manifest: {
     name: "isolation_arm",
     tag: "v1",
+    description: ["A test node."],
     labels: ["arm"]
   },
   execution: {
@@ -18,6 +19,7 @@
       emits: [
         {
           name: "heartbeat",
+          description: "A test topic.",
           qos_profile: "sensor_data",
           message_format: { seq: "u32", timestamp: "time" }
         }
@@ -29,12 +31,14 @@
           // Answers with the token it was sent, so a caller can tell whose
           // arm answered.
           name: "echo",
+          description: "A test service.",
           request_message_format: { token: "string" },
           response_message_format: { token: "string" }
         },
         {
           // Lets a gated `move` goal complete; the token names the goal.
           name: "release",
+          description: "A test service.",
           request_message_format: { token: "string" },
           response_message_format: { token: "string" }
         }
@@ -47,6 +51,7 @@
           // token, unless cancelled first; the token rides through feedback
           // and result.
           name: "move",
+          description: "A test action.",
           goal_service: {
             request_message_format: { token: "string", hold_ms: "u32", gated: "bool" }
           },

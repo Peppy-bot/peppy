@@ -63,6 +63,16 @@ const CORE_NODE_TAG: &str = match PEPPY_GIT_TAG {
     None => "dev",
 };
 
+/// The description of the manifest of the core node.
+fn core_node_description() -> config::description::DocumentDescription {
+    let summary = config::description::Description::new(
+        "The core node of this machine: the root of its node stack, which adds, builds, \
+         starts and stops the nodes of each launch.",
+    )
+    .expect("the text is not blank");
+    config::description::DocumentDescription::new(vec![summary]).expect("one paragraph")
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -391,6 +401,7 @@ impl CoreNode {
             manifest: Manifest {
                 name: manifest_name,
                 tag: CORE_NODE_TAG.to_string(),
+                description: core_node_description(),
                 labels: None,
                 implements: Vec::new(),
                 depends_on: None,

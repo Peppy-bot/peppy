@@ -20,7 +20,9 @@
 //! A node entry also carries the contract and pairing links its manifest
 //! declares ([`DeclaredLinks`]), so "who implements, consumes, participates
 //! in, or observes `x:v1`" is answered from the cache without reading a
-//! manifest or materializing a checkout.
+//! manifest or materializing a checkout. A node, launcher, contract and
+//! pairing entry carries the descriptions of its document
+//! ([`CachedDescriptions`]), so a search and a show print them the same way.
 //!
 //! Reads of the nodes cache are memoized by `(mtime-of-cache-file)` per
 //! path so that a daemon hit by many `node add` / launch goals in a row
@@ -28,6 +30,7 @@
 
 use crate::Result;
 use crate::services::node::Report;
+use crate::services::repo::descriptions::CachedDescriptions;
 use crate::services::repo::refresh::read_or_create_repos;
 use crate::services::repo::{RepoOwners, attributable_repo_id};
 use crate::source_url::SourceUrl;
@@ -190,6 +193,7 @@ pub struct NodeCacheEntry {
     pub origin: EntryOrigin,
     /// The contract and pairing links the manifest declares.
     pub links: DeclaredLinks,
+    pub descriptions: CachedDescriptions,
     /// The id of the repository entry this node was discovered under (as
     /// read from `repositories.json5`). Derived at read time and never
     /// serialized back to disk.
@@ -206,6 +210,7 @@ pub struct LauncherCacheEntry {
     pub launcher_name: ItemName,
     pub sha256: ManifestFingerprint,
     pub origin: EntryOrigin,
+    pub descriptions: CachedDescriptions,
     #[serde(skip)]
     pub repo_id: u32,
 }
@@ -219,6 +224,7 @@ pub struct ContractCacheEntry {
     pub tag: ItemTag,
     pub sha256: ManifestFingerprint,
     pub origin: EntryOrigin,
+    pub descriptions: CachedDescriptions,
     #[serde(skip)]
     pub repo_id: u32,
 }
@@ -232,6 +238,7 @@ pub struct PairingCacheEntry {
     pub tag: ItemTag,
     pub sha256: ManifestFingerprint,
     pub origin: EntryOrigin,
+    pub descriptions: CachedDescriptions,
     #[serde(skip)]
     pub repo_id: u32,
 }
@@ -294,6 +301,11 @@ pub(crate) trait RepoCacheEntry:
     }
     fn sha256(&self) -> &ManifestFingerprint;
     fn origin(&self) -> &EntryOrigin;
+    /// The descriptions of the document. `None` for an MCP exposure, the
+    /// one kind whose text is not a description.
+    fn descriptions(&self) -> Option<&CachedDescriptions> {
+        None
+    }
     fn repo_id(&self) -> u32;
     fn set_repo_id(&mut self, id: u32);
 
@@ -307,9 +319,11 @@ pub(crate) trait RepoCacheEntry:
 /// their constants and in which field holds the name and the tag, so
 /// spelling the accessors out five times would be five chances to wire one
 /// to the wrong field.
-/// The trailing tag field is omitted for launchers, the one untagged kind.
+/// The tag field is omitted for launchers, the one untagged kind, and the
+/// descriptions field for MCP exposures.
 macro_rules! repo_cache_entry {
-    ($ty:ident, $kind:literal, $file:literal, $item_kind:ident, $name_field:ident $(, $tag_field:ident)?) => {
+    ($ty:ident, $kind:literal, $file:literal, $item_kind:ident, name: $name_field:ident
+     $(, tag: $tag_field:ident)? $(, descriptions: $descriptions_field:ident)?) => {
         impl RepoCacheEntry for $ty {
             const KIND: &'static str = $kind;
             const FILE_NAME: &'static str = $file;
@@ -327,6 +341,9 @@ macro_rules! repo_cache_entry {
             fn origin(&self) -> &EntryOrigin {
                 &self.origin
             }
+            $( fn descriptions(&self) -> Option<&CachedDescriptions> {
+                Some(&self.$descriptions_field)
+            } )?
             fn repo_id(&self) -> u32 {
                 self.repo_id
             }
@@ -342,39 +359,43 @@ repo_cache_entry!(
     "node",
     "nodes.json5",
     Node,
-    node_name,
-    node_tag
+    name: node_name,
+    tag: node_tag,
+    descriptions: descriptions
 );
 repo_cache_entry!(
     LauncherCacheEntry,
     "launcher",
     "launchers.json5",
     Launcher,
-    launcher_name
+    name: launcher_name,
+    descriptions: descriptions
 );
 repo_cache_entry!(
     ContractCacheEntry,
     "contract",
     "contracts.json5",
     Contract,
-    contract_name,
-    tag
+    name: contract_name,
+    tag: tag,
+    descriptions: descriptions
 );
 repo_cache_entry!(
     PairingCacheEntry,
     "pairing",
     "pairings.json5",
     Pairing,
-    pairing_name,
-    tag
+    name: pairing_name,
+    tag: tag,
+    descriptions: descriptions
 );
 repo_cache_entry!(
     McpExposureCacheEntry,
     "mcp exposure",
     "mcp_exposures.json5",
     McpExposure,
-    exposure_name,
-    tag
+    name: exposure_name,
+    tag: tag
 );
 
 /// The kinds a coordinator can pin: every cache kind but launchers, which
@@ -1143,6 +1164,16 @@ pub(crate) mod test_support {
         ManifestFingerprint::of_bytes(seed.as_bytes())
     }
 
+    /// The descriptions of a test document: one paragraph that names the
+    /// document `label`, and no member.
+    pub(crate) fn descriptions(label: &str) -> CachedDescriptions {
+        let summary = config::description::Description::new(format!("The {label}."))
+            .expect("the text is not blank");
+        CachedDescriptions::of_document(
+            &config::description::DocumentDescription::new(vec![summary]).expect("one paragraph"),
+        )
+    }
+
     /// A distinct, valid commit per `seed`.
     pub(crate) fn commit(seed: &str) -> GitCommit {
         GitCommit::parse(&fingerprint(seed).as_str()[..40]).expect("40 hex chars is a commit")
@@ -1210,6 +1241,7 @@ pub(crate) mod test_support {
             sha256: fingerprint(&format!("{name}:{tag}")),
             origin,
             links: DeclaredLinks::default(),
+            descriptions: descriptions(&format!("node {name}:{tag}")),
             repo_id: 0,
         }
     }
@@ -1300,6 +1332,7 @@ pub(crate) mod test_support {
             launcher_name: ItemName::parse(name).expect("test launcher name is valid"),
             sha256: fingerprint(name),
             origin,
+            descriptions: descriptions(&format!("launcher {name}")),
             repo_id: 0,
         }
     }
@@ -1310,6 +1343,7 @@ pub(crate) mod test_support {
             tag: ItemTag::parse(tag).expect("test contract tag is valid"),
             sha256: fingerprint(&format!("{name}:{tag}")),
             origin,
+            descriptions: descriptions(&format!("contract {name}:{tag}")),
             repo_id: 0,
         }
     }
@@ -1334,6 +1368,7 @@ pub(crate) mod test_support {
             tag: ItemTag::parse(tag).expect("test pairing tag is valid"),
             sha256: fingerprint(&format!("pairing {name}:{tag}")),
             origin,
+            descriptions: descriptions(&format!("pairing {name}:{tag}")),
             repo_id: 0,
         }
     }

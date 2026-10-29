@@ -20,6 +20,7 @@ fn fleet_document(deployments: &str) -> String {
     format!(
         r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             {{ name: "simulation", cardinality: "zero_or_one", options: {{
                 engine: {{ deployments: [
@@ -532,6 +533,7 @@ fn a_launch_time_join_composes_as_a_copy_of_the_entry() {
     let error = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "simulation", cardinality: "zero_or_one", options: { engine: {} } },
         ],
@@ -550,6 +552,7 @@ fn a_launch_time_join_composes_as_a_copy_of_the_entry() {
     let open_commander = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {
             deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
             components: [{ name: "commander", options: {
@@ -601,7 +604,7 @@ fn a_copy_starts_something_and_selects_what_its_option_declares() {
         "{error}"
     );
     let error = load_error(
-        r#"{ peppy_schema: "launcher/v1", components: [
+        r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."], components: [
             { name: "robot", cardinality: "zero_or_more", options: { real: {} } }
         ], deployments: [{ robot: "real", instances: [{ instance_id: "alpha", with: { commander: "web" } }] }] }"#,
     );
@@ -611,7 +614,7 @@ fn a_copy_starts_something_and_selects_what_its_option_declares() {
         "{error}"
     );
     let stack_only = load(
-        r#"{ peppy_schema: "launcher/v1", components: [
+        r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."], components: [
             { name: "robot", options: { real: { deployments: [
                 { source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }
             ] } } }
@@ -646,7 +649,9 @@ fn a_copy_starts_something_and_selects_what_its_option_declares() {
 
 #[test]
 fn flat_launchers_keep_their_selection_errors() {
-    let prepared = load(r#"{peppy_schema: "launcher/v1", deployments: []}"#);
+    let prepared = load(
+        r#"{peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: []}"#,
+    );
     assert!(prepared.launch(&[], &[]).is_ok());
     assert!(matches!(
         prepared.launch(&words(&["unknown"]), &[]),
@@ -656,8 +661,11 @@ fn flat_launchers_keep_their_selection_errors() {
 
 #[test]
 fn the_axis_grammar_refuses_every_key_it_does_not_declare() {
-    let document =
-        |axis: &str| format!(r#"{{ peppy_schema: "launcher/v1", components: [{axis}] }}"#);
+    let document = |axis: &str| {
+        format!(
+            r#"{{ peppy_schema: "launcher/v1", description: ["A test launcher."], components: [{axis}] }}"#
+        )
+    };
     let error = PeppyLauncherParser::from_content(&document(
         r#"{ name: "robot_system", cardinality: "zero_or_more", components: [
             { name: "robot", options: { on: {} } }
@@ -777,6 +785,7 @@ fn one_or_more_fleet(deployments: &str) -> String {
     format!(
         r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{{ name: "robot", cardinality: "one_or_more", options: {{
             sim: {{ deployments: [{{ source: {{ name: "arm", tag: "v1" }}, instances: [
                 {{ instance_id: "arm_inst" }}
@@ -795,6 +804,7 @@ fn an_adjustment_guarded_on_a_copy_axis_is_skipped_for_the_stack() {
         format!(
             r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         deployments: [
             {{ source: {{ name: "observer", tag: "v1" }},
               instances: [{{ instance_id: "observer_inst" }}] }},
@@ -844,6 +854,7 @@ fn an_adjustment_on_an_id_only_copies_define_is_skipped_for_the_stack() {
         format!(
             r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         deployments: [
             {{ source: {{ name: "observer", tag: "v1" }},
               instances: [{{ instance_id: "observer_inst" }}] }},
@@ -900,6 +911,7 @@ fn an_options_adjustments_reach_only_the_units_that_selected_it() {
         format!(
             r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{{ name: "robot", cardinality: "zero_or_more", options: {{
             real: {{ deployments: [{{ source: {{ name: "arm", tag: "v1" }},
                 instances: [{{ instance_id: "arm_inst", arguments: {{ speed: 1 }} }}] }}] }},
@@ -949,6 +961,7 @@ fn an_adjustment_the_copies_run_cannot_read_a_stack_options_own_axis() {
     let launch = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "cameras", cardinality: "zero_or_more", options: { wrist: {
                 deployments: [{ source: { name: "cam", tag: "v1" }, instances: [{ instance_id: "cam_inst" }] },
@@ -977,6 +990,7 @@ fn an_adjustment_the_copies_run_cannot_read_a_stack_options_own_axis() {
     let launch = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "cameras", cardinality: "zero_or_more", options: { wrist: {
                 deployments: [{ source: { name: "cam", tag: "v1" }, instances: [{ instance_id: "cam_inst" }] },
@@ -1013,6 +1027,7 @@ fn an_adjustment_the_copies_run_cannot_read_a_stack_options_own_axis() {
     let error = load_error(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "robot", options: { openarm: {
                 deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },
@@ -1061,6 +1076,7 @@ fn a_copy_entry_targeting_a_sibling_options_instance_is_refused() {
         format!(
             r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 {{ name: "robot", cardinality: "zero_or_more", options: {{
                     sim: {{ deployments: [{{ source: {{ name: "arm", tag: "v1" }}, instances: [{{ instance_id: "arm_inst" }}] }}],
@@ -1110,6 +1126,7 @@ fn a_copy_entrys_guard_advice_stands_alone_when_nothing_is_in_reach() {
     let error = load_error(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "robot", cardinality: "zero_or_more", options: {
                 sim: {},
@@ -1135,6 +1152,7 @@ fn a_copy_entrys_dead_reference_names_only_the_ids_in_reach() {
     let error = load_error(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "robot", cardinality: "zero_or_more", options: { sim: {
                 deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
@@ -1167,6 +1185,7 @@ fn an_ambiguous_entry_keeps_its_options_condition_and_an_own_write_is_not_ambigu
         format!(
             r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 {{ name: "simulation", cardinality: "zero_or_one", options: {{ isaac: {{
                     deployments: [{{ source: {{ name: "cam", tag: "v1" }}, instances: [{{ instance_id: "cam_inst" }}] }}] }} }} }},
@@ -1200,6 +1219,7 @@ fn a_copys_skipped_writes_read_under_its_name() {
     let launch = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "robot", cardinality: "zero_or_more", options: { sim: {
             deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
             components: [{ name: "recorder", cardinality: "zero_or_one", provides: ["recorder_inst"],
@@ -1233,6 +1253,7 @@ fn a_copys_own_entry_names_the_copy_once() {
     let launch = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "robot", cardinality: "zero_or_more", options: { sim: {
             deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
             components: [{ name: "recorder", cardinality: "zero_or_one", provides: ["recorder_inst"],
@@ -1260,6 +1281,7 @@ fn in_a_copy_the_options_entries_run_before_the_launchers_own() {
     let launch = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "robot", cardinality: "zero_or_more", options: { sim: {
             deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
             adjustments: [{ target: "arm_inst", set_arguments: { speed: 1 } }],
@@ -1296,6 +1318,7 @@ fn an_options_adjustment_reaches_a_launch_time_join() {
     let launch = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "robot", cardinality: "zero_or_more", options: { sim: {
             deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
             adjustments: [
@@ -1330,6 +1353,7 @@ fn an_options_adjustment_cannot_target_a_sibling_options_instance() {
     let error = load_error(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "simulation", options: {
             mujoco: { deployments: [{ source: { name: "mujoco", tag: "v1" }, instances: [{ instance_id: "mujoco_inst" }] }] },
             waldo: { deployments: [{ source: { name: "waldo", tag: "v1" }, instances: [{ instance_id: "waldo_inst" }] }],
@@ -1354,6 +1378,7 @@ fn a_target_a_sibling_option_shares_with_a_copy_option_runs_in_the_copies() {
     let launch = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "simulation", options: {
                 mujoco: { deployments: [{ source: { name: "mujoco", tag: "v1" }, instances: [{ instance_id: "sim_inst" }] }],
@@ -1386,6 +1411,7 @@ fn a_target_two_copy_axes_define_runs_in_the_copies_of_both() {
     let launch = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "cameras", cardinality: "zero_or_more", options: { wrist: {
                 deployments: [{ source: { name: "cam", tag: "v1" }, instances: [{ instance_id: "cam_inst" }] }]
@@ -1428,6 +1454,7 @@ fn a_target_a_stack_option_and_a_copy_option_both_define_is_refused() {
         format!(
             r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             {{ name: "simulation", options: {{
                 mujoco: {{ deployments: [{{ source: {{ name: "mujoco", tag: "v1" }}, instances: [{{ instance_id: "sim_inst" }}] }}] }},
@@ -1480,6 +1507,7 @@ fn minted_ids_never_collide_with_the_stack_or_with_each_other() {
     let prepared = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "alpha_arm_inst" }] }],
         components: [{ name: "robot", cardinality: "zero_or_more", options: {
             real: { deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }] },
@@ -1517,6 +1545,7 @@ fn a_copy_cannot_place_itself() {
         format!(
             r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             core_nodes: ["cloud"],
             components: [{{ name: "robot", cardinality: "zero_or_more", options: {{
                 real: {{ deployments: [{{ source: {{ name: "arm", tag: "v1" }}, instances: [
@@ -1573,7 +1602,7 @@ fn fragment_files_are_snapshotted_at_launch() {
         ),
     );
     let parsed = PeppyLauncherParser::from_content(
-        r#"{ peppy_schema: "launcher/v1", components: [
+        r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."], components: [
             { name: "robot", cardinality: "zero_or_more", options: { real: "arm.json5" } }
         ] }"#,
     )
@@ -1598,6 +1627,7 @@ fn every_link_follows_the_prefix_and_a_join_grows_a_stack_set() {
         format!(
             r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {{ source: {{ name: "observer", tag: "v1" }}, instances: [
                     {{ instance_id: "observer_inst", links: {{ robots: ["first"] }} }}
@@ -1685,6 +1715,7 @@ fn copies_configure_stack_nodes_together_and_joined_copies_cannot_change_them() 
         format!(
             r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 {{ name: "simulation", provides: ["engine_inst"], options: {{
                     engine: {{ deployments: [{{ source: {{ name: "engine", tag: "v1" }}, instances: [
@@ -1781,6 +1812,7 @@ fn joins_preserve_stack_fragments_additive_adjustments() {
     let prepared = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         deployments: [
             { source: { name: "observer", tag: "v1" }, instances: [
                 { instance_id: "observer_inst", links: { sources: ["first"] } }
@@ -1828,6 +1860,7 @@ fn the_repository_check_composes_every_launch_and_every_join() {
         format!(
             r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 {{ name: "simulation", cardinality: "zero_or_one", options: {{
                     engine: {{ deployments: [
@@ -1866,6 +1899,7 @@ fn the_repository_check_composes_every_launch_and_every_join() {
     let problems = composition_problems(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {
             deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
             components: [{ name: "commander", cardinality: "zero_or_one", options: {
@@ -1894,6 +1928,7 @@ fn simulation_with_arm_slot_document(slot: &str, arm_links: &str) -> String {
     format!(
         r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             {{ name: "simulation", provides: ["simulation_inst"], options: {{
                 mujoco: {{ deployments: [
@@ -2143,6 +2178,7 @@ fn copies_writing_different_fields_of_one_stack_instance_agree() {
     let prepared = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "simulation", options: { engine: { deployments: [
                 { source: { name: "engine", tag: "v1" }, instances: [
@@ -2191,6 +2227,7 @@ fn copies_appending_to_one_stack_slot_union_at_launch_and_at_join() {
     let prepared = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "cameras", cardinality: "zero_or_more", options: {
                 wrist: { deployments: [{ source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "wrist" }] }],
@@ -2242,6 +2279,7 @@ fn a_launcher_constraint_naming_a_copy_axis_speaks_for_its_copies() {
     let prepared = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "simulation", cardinality: "zero_or_one", options: { engine: { deployments: [
                 { source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] }
@@ -2287,6 +2325,7 @@ fn an_option_axis_cannot_shadow_a_launcher_axis() {
     let error = load_error(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "simulation", options: { engine: { deployments: [
                 { source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] }
@@ -2314,6 +2353,7 @@ fn copy_options_are_distinct_across_copy_axes() {
     let error = PeppyLauncherParser::from_content(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "robot", cardinality: "zero_or_more", options: { sim: {} } },
             { name: "cameras", cardinality: "zero_or_more", options: { sim: {} } }
@@ -2356,6 +2396,7 @@ fn a_copy_cannot_reuse_an_id_the_stack_defines() {
     let prepared = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "robot", cardinality: "zero_or_more", options: {
                 sim: { deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] }] }
@@ -2394,6 +2435,7 @@ fn a_copy_reusing_several_stack_ids_names_the_first() {
     let prepared = load(&format!(
         r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             {{ name: "robot", cardinality: "zero_or_more", options: {{
                 sim: {{ deployments: [{{ source: {{ name: "arm", tag: "v1" }}, instances: {instances} }}] }}
@@ -2435,6 +2477,7 @@ fn a_stack_fragment_cannot_guard_on_a_copy_axis() {
     let parsed = PeppyLauncherParser::from_content(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "simulation", options: { engine: "engine.json5" } },
             { name: "robot", cardinality: "zero_or_more", options: {
@@ -2460,6 +2503,7 @@ fn removing_a_copy_takes_out_its_members_and_a_stack_link_keeps_it() {
     let prepared = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "cameras", cardinality: "zero_or_more", options: {
                 wrist: { deployments: [{ source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "wrist" }] }],
@@ -2529,6 +2573,7 @@ fn two_copy_axes(extra: &str, constraints: &str) -> String {
     format!(
         r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             {{ name: "simulation", cardinality: "zero_or_one", options: {{ engine: {{ deployments: [
                 {{ source: {{ name: "engine", tag: "v1" }}, instances: [{{ instance_id: "engine_inst" }}] }}
@@ -2565,6 +2610,7 @@ fn a_fragment_file_shared_by_two_options_is_one_document_to_the_check() {
         &directory.path().join("fleet.json5"),
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "simulation", cardinality: "zero_or_one", options: { engine: { deployments: [
                     { source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] }
@@ -2595,6 +2641,7 @@ fn a_fragment_names_no_copy_axis_its_unit_cannot_fill() {
     let error = load_error(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "simulation", cardinality: "zero_or_one", options: { engine: {
                 deployments: [{ source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] }],
@@ -2667,6 +2714,7 @@ fn a_file_copy_overrides_only_the_instances_it_selects() {
     let error = load_error(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "robot", cardinality: "zero_or_more", options: { real: {
                 deployments: [
@@ -2725,6 +2773,7 @@ fn the_report_files_copy_writes_and_copy_only_adjustments_under_the_copy() {
     let prepared = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "simulation", cardinality: "one", options: { engine: { deployments: [
                 { source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst", arguments: { hardware: "v2" } }] }
@@ -2777,6 +2826,7 @@ fn binding_a_vacant_slot_from_the_stack_side_is_refused_with_the_spelling() {
     let prepared = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "simulation", cardinality: "one", options: { engine: { deployments: [
                 { source: { name: "engine", tag: "v1" }, instances: [
@@ -2854,6 +2904,7 @@ fn an_option_entry_shares_its_settings_with_the_copies_it_lists() {
     let unlisted = PeppyLauncherParser::from_content(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {} } }],
         deployments: [{ robot: "real", with: { commander: "xr" } }],
     }"#,
@@ -2870,6 +2921,7 @@ fn rigged_fleet_document(deployments: &str) -> String {
     format!(
         r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             {{ name: "robot", cardinality: "zero_or_more", options: {{
                 arm: {{
@@ -3351,6 +3403,7 @@ fn a_file_copy_may_leave_an_axis_for_a_launch_word() {
         format!(
             r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{{ name: "robot", cardinality: "zero_or_more", options: {{ real: {{
             deployments: [{{ source: {{ name: "arm", tag: "v1" }}, instances: [{{ instance_id: "arm_inst" }}] }}],
             components: [{{ name: "commander", options: {{
@@ -3426,6 +3479,7 @@ fn a_file_copy_may_leave_two_axes_for_launch_words() {
         format!(
             r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{{ name: "robot", cardinality: "zero_or_more", options: {{ real: {{
             deployments: [{{ source: {{ name: "arm", tag: "v1" }}, instances: [{{ instance_id: "arm_inst" }}] }}],
             components: [
@@ -3521,6 +3575,7 @@ fn copy_adjustment_and_scoped_word_refusals_name_the_fix() {
     let error = PeppyLauncherParser::from_content(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "simulation", options: { engine: {} } }],
         deployments: [{ simulation: "engine", with: { x: "y" } }],
     }"#,
@@ -3540,6 +3595,7 @@ fn a_join_cannot_add_a_stack_instance_to_a_running_set() {
     let prepared = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "cameras", cardinality: "zero_or_more", options: {
                 wrist: { deployments: [{ source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "wrist" }] }],
@@ -3585,6 +3641,7 @@ fn a_running_set_follows_joins_and_removals_and_a_rejoin_appears_once() {
     let prepared = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "cameras", cardinality: "zero_or_more", options: {
                 wrist: { deployments: [{ source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "wrist" }] }],
@@ -3672,6 +3729,7 @@ fn a_join_cannot_add_to_a_slot_holding_a_single_member() {
     let prepared = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "cameras", cardinality: "zero_or_more", options: {
                 wrist: { deployments: [{ source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "wrist" }] }],
@@ -3719,6 +3777,7 @@ fn the_repository_check_accepts_a_copy_that_adds_a_stack_instance_to_a_set() {
     let problems = composition_problems(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "cameras", cardinality: "zero_or_more", options: {
                 wrist: { deployments: [{ source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "wrist" }] }],
@@ -3888,6 +3947,7 @@ fn a_placed_commander_keeps_its_cross_axis_link() {
 fn camera_choice_document() -> String {
     r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "robot", cardinality: "zero_or_more", options: {
                 arm: {
@@ -4084,6 +4144,7 @@ fn a_copy_of_parts_alone_keeps_its_name_link() {
     let prepared = load(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "robot", cardinality: "zero_or_more", options: {
                 kit: {

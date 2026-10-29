@@ -35,7 +35,7 @@ fn empty_stack(root: &tempfile::TempDir) -> Arc<NodeStack> {
     let root_config = config::node::NodeConfigParser::from_content(
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "cn_desk", tag: "v1" },
+            manifest: { name: "cn_desk", tag: "v1", description: ["A test node."] },
             interfaces: {},
             execution: { language: "rust", parameters: {}, build_cmd: ["true"], run_cmd: ["true"] },
         }"#,

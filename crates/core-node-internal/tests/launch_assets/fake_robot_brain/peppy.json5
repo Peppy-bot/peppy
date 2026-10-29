@@ -4,6 +4,7 @@
     // This is a brain that can plug to any controller
     name: "fake_robot_brain",
     tag: "v1",
+    description: ["A test node."],
     labels: [
       "brain"
     ],

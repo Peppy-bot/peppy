@@ -15,6 +15,7 @@ fn brain_consuming_push_lidar_object() -> config::node::NodeConfig {
             manifest: {
               name: "brain",
               tag: "v1",
+              description: ["A test node."],
               depends_on: {
                 nodes: [
                   { name: "lidar", tag: "v1", link_id: "lidar" }
@@ -50,12 +51,14 @@ fn topic_dependency_resolved_when_dependency_added_first() {
             manifest: {
               name: "lidar",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 topics: {
                     emits: [
                         {
                           name: "push_lidar_object",
+                          description: "A test topic.",
                           qos_profile: "sensor_data",
                           message_format: {
                             header: {
@@ -149,12 +152,14 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
             manifest: {
               name: "lidar",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 topics: {
                     emits: [
                         {
                           name: "push_camera_frame",
+                          description: "A test topic.",
                           qos_profile: "sensor_data",
                           message_format: {
                             width: "u32",
@@ -211,6 +216,7 @@ fn topic_dependency_fails_when_link_id_is_undeclared() {
             manifest: {
               name: "brain",
               tag: "v1",
+              description: ["A test node."],
               depends_on: {
                 nodes: []
               },

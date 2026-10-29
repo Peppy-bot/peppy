@@ -22,7 +22,7 @@ pub(crate) const INSTANCE: &str = "arm_inst";
 pub(crate) const MANIFEST: &str = r#"{
     peppy_schema: "node/v1",
     manifest: {
-        name: "arm", tag: "v1",
+        name: "arm", tag: "v1", description: ["An arm on a bench."],
         implements: [{ name: "limb_motion", tag: "v1", link_id: "motion" }],
         depends_on: {
             pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }],
@@ -31,7 +31,7 @@ pub(crate) const MANIFEST: &str = r#"{
     interfaces: {
         topics: {
             emits: [
-                { name: "heartbeat", qos_profile: "reliable", message_format: { count: "u64" } },
+                { name: "heartbeat", description: "A count, once a second.", qos_profile: "reliable", message_format: { count: "u64" } },
                 { link_id: "motion", name: "limb_states" },
                 { link_id: "controller", name: "joint_states" },
             ],
@@ -40,6 +40,7 @@ pub(crate) const MANIFEST: &str = r#"{
             exposes: [
                 {
                     name: "set_gain",
+                    description: "Set the gain of the arm.",
                     request_message_format: { value: "i32" },
                     response_message_format: { current_value: "i32" },
                 },
@@ -61,12 +62,13 @@ pub(crate) const MANIFEST: &str = r#"{
 
 pub(crate) const LIMB_MOTION: &str = r#"{
     peppy_schema: "contract/v1",
-    manifest: { name: "limb_motion", tag: "v1" },
+    manifest: { name: "limb_motion", tag: "v1", description: ["The motion of a limb.", "Joints are in radians."] },
     failure_kinds: { unreachable: "No plan to the target" },
     interfaces: {
         topics: [
             {
                 name: "limb_states",
+                description: "The joints of the limb.",
                 qos_profile: "sensor_data",
                 message_format: { joints: { $type: "array", $items: "f64" } },
             },
@@ -74,6 +76,7 @@ pub(crate) const LIMB_MOTION: &str = r#"{
         services: [
             {
                 name: "check_move",
+                description: "Check whether a move is reachable.",
                 request_message_format: { joints: { $type: "array", $items: "f64" } },
                 response_message_format: { reachable: "bool" },
                 failure_kinds: ["unreachable"],
@@ -82,6 +85,7 @@ pub(crate) const LIMB_MOTION: &str = r#"{
         actions: [
             {
                 name: "move_to",
+                description: "Move the limb to the joints.",
                 goal_service: {
                     request_message_format: { joints: { $type: "array", $items: "f64" } },
                 },
@@ -96,18 +100,20 @@ pub(crate) const LIMB_MOTION: &str = r#"{
 
 pub(crate) const ARM_LINK: &str = r#"{
     peppy_schema: "pairing/v1",
-    manifest: { name: "arm_link", tag: "v1" },
+    manifest: { name: "arm_link", tag: "v1", description: ["The link between an arm and its controller."] },
     roles: ["controller", "arm"],
     topics: [
         {
             emitted_by: "controller",
             name: "joint_commands",
+            description: "The joints that the controller wants.",
             qos_profile: "reliable",
             message_format: { target: { $type: "array", $items: "f64" } },
         },
         {
             emitted_by: "arm",
             name: "joint_states",
+            description: "The joints of the arm.",
             qos_profile: "sensor_data",
             message_format: { positions: { $type: "array", $items: "f64" } },
         },

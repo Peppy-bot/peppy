@@ -17,12 +17,14 @@ async fn add_instance_creates_new_entity() {
             manifest: {
               name: "sensor",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 topics: {
                     emits: [
                         {
                           name: "data_stream",
+                          description: "A test topic.",
                           qos_profile: "sensor_data"
                         }
                     ]
@@ -108,12 +110,14 @@ async fn add_instance_to_existing_entity() {
             manifest: {
               name: "sensor",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 topics: {
                     emits: [
                         {
                           name: "data_stream",
+                          description: "A test topic.",
                           qos_profile: "sensor_data"
                         }
                     ]
@@ -121,7 +125,8 @@ async fn add_instance_to_existing_entity() {
                 services: {
                     exposes: [
                         {
-                          name: "calibrate"
+                          name: "calibrate",
+                          description: "A test service.",
                         }
                     ]
                 }
@@ -203,12 +208,14 @@ async fn add_instance_with_specific_id() {
             manifest: {
               name: "sensor",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 topics: {
                     emits: [
                         {
                           name: "data_stream",
+                          description: "A test topic.",
                           qos_profile: "sensor_data"
                         }
                     ]
@@ -255,12 +262,14 @@ async fn remove_instance_from_entity_with_multiple_instances() {
             manifest: {
               name: "sensor",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 topics: {
                     emits: [
                         {
                           name: "data_stream",
+                          description: "A test topic.",
                           qos_profile: "sensor_data"
                         }
                     ]
@@ -268,7 +277,8 @@ async fn remove_instance_from_entity_with_multiple_instances() {
                 services: {
                     exposes: [
                         {
-                          name: "calibrate"
+                          name: "calibrate",
+                          description: "A test service.",
                         }
                     ]
                 }
@@ -331,11 +341,12 @@ async fn remove_last_instance_keeps_entity_in_graph() {
             manifest: {
               name: "sensor",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 services: {
                     exposes: [
-                        { name: "reset_sensor" }
+                        { name: "reset_sensor", description: "A test service." }
                     ]
                 }
             },
@@ -388,12 +399,14 @@ async fn remove_nonexistent_instance_returns_false() {
             manifest: {
               name: "sensor",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 services: {
                     exposes: [
                         {
-                          name: "reset_sensor"
+                          name: "reset_sensor",
+                          description: "A test service.",
                         }
                     ]
                 }
@@ -442,12 +455,14 @@ fn reset_clears_all_except_core_node() {
             manifest: {
               name: "sensor1",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 services: {
                     exposes: [
                         {
-                          name: "reset_sensor"
+                          name: "reset_sensor",
+                          description: "A test service.",
                         }
                     ]
                 }
@@ -466,12 +481,14 @@ fn reset_clears_all_except_core_node() {
             manifest: {
               name: "sensor2",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 services: {
                     exposes: [
                         {
                           name: "reset_sensor",
+                          description: "A test service.",
                           request_message_format: {
                             force: "bool"
                           },
@@ -528,12 +545,14 @@ async fn spawning_multiple_instances_on_same_entity() {
             manifest: {
               name: "sensor",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 services: {
                     exposes: [
                         {
-                          name: "reset_sensor"
+                          name: "reset_sensor",
+                          description: "A test service.",
                         }
                     ]
                 }
@@ -611,12 +630,14 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
             manifest: {
               name: "sensor",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 topics: {
                     emits: [
                         {
                           name: "data_stream",
+                          description: "A test topic.",
                           qos_profile: "sensor_data"
                         }
                     ]
@@ -637,12 +658,14 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
             manifest: {
               name: "sensor",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 topics: {
                     emits: [
                         {
                           name: "data_stream",
+                          description: "A test topic.",
                           qos_profile: "sensor_data"
                         }
                     ]
@@ -650,7 +673,8 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
                 services: {
                     exposes: [
                         {
-                          name: "calibrate"
+                          name: "calibrate",
+                          description: "A test service.",
                         }
                     ]
                 }
@@ -723,12 +747,14 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
             manifest: {
               name: "sensor",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 services: {
                     exposes: [
                         {
-                          name: "reset_sensor"
+                          name: "reset_sensor",
+                          description: "A test service.",
                         }
                     ]
                 }
@@ -748,11 +774,12 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
             manifest: {
               name: "sensor",
               tag: "v2",
+              description: ["A test node."],
             },
             interfaces: {
                 services: {
                     exposes: [
-                        { name: "new_service" }
+                        { name: "new_service", description: "A test service." }
                     ]
                 }
             },
@@ -857,11 +884,12 @@ fn node_stack_wires_dependencies_for_dependants() {
             manifest: {
               name: "lidar",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 services: {
                     exposes: [
-                        { name: "reset_sensor" }
+                        { name: "reset_sensor", description: "A test service." }
                     ]
                 }
             },
@@ -879,6 +907,7 @@ fn node_stack_wires_dependencies_for_dependants() {
             manifest: {
               name: "brain",
               tag: "v1",
+              description: ["A test node."],
               depends_on: {
                 nodes: [
                   { name: "lidar", tag: "v1", link_id: "lidar" }
@@ -930,6 +959,7 @@ fn removing_a_dependency_and_adding_it_again_rewires_its_dependants() {
                 manifest: {{
                   name: "lidar",
                   tag: "v1",
+                  description: ["A test node."],
                 }},
                 interfaces: {{
                     services: {{
@@ -951,6 +981,7 @@ fn removing_a_dependency_and_adding_it_again_rewires_its_dependants() {
             manifest: {
               name: "brain",
               tag: "v1",
+              description: ["A test node."],
               depends_on: {
                 nodes: [
                   { name: "lidar", tag: "v1", link_id: "lidar" }
@@ -978,7 +1009,7 @@ fn removing_a_dependency_and_adding_it_again_rewires_its_dependants() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     stack
         .push_config(
-            lidar_config(r#"{ name: "reset_sensor" }"#),
+            lidar_config(r#"{ name: "reset_sensor", description: "A test service." }"#),
             Vec::new(),
             false,
             PathBuf::from("/tmp"),
@@ -994,7 +1025,7 @@ fn removing_a_dependency_and_adding_it_again_rewires_its_dependants() {
     );
     stack
         .push_config(
-            lidar_config(r#"{ name: "reset_sensor" }"#),
+            lidar_config(r#"{ name: "reset_sensor", description: "A test service." }"#),
             Vec::new(),
             false,
             PathBuf::from("/tmp"),
@@ -1008,7 +1039,7 @@ fn removing_a_dependency_and_adding_it_again_rewires_its_dependants() {
     );
 
     let result = stack.push_config(
-        lidar_config(r#"{ name: "reset_sensor" }, { name: "calibrate" }"#),
+        lidar_config(r#"{ name: "reset_sensor", description: "A test service." }, { name: "calibrate", description: "A test service." }"#),
         Vec::new(),
         false,
         PathBuf::from("/tmp"),
@@ -1031,6 +1062,7 @@ fn dependency_fails_when_node_name_mismatches() {
             manifest: {
               name: "brain",
               tag: "v1",
+              description: ["A test node."],
               depends_on: {
                 nodes: [
                   { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
@@ -1040,7 +1072,7 @@ fn dependency_fails_when_node_name_mismatches() {
             interfaces: {
                 services: {
                     exposes: [
-                        { name: "reset_sensor" }
+                        { name: "reset_sensor", description: "A test service." }
                     ]
                 }
             },
@@ -1058,6 +1090,7 @@ fn dependency_fails_when_node_name_mismatches() {
             manifest: {
               name: "lidar",
               tag: "v1",
+              description: ["A test node."],
             },
             execution: {
               language: "rust",
@@ -1103,6 +1136,7 @@ fn dependency_fails_when_node_tag_mismatches() {
             manifest: {
               name: "brain",
               tag: "v1",
+              description: ["A test node."],
               depends_on: {
                 nodes: [
                   { name: "lidar", tag: "v1", link_id: "lidar" }
@@ -1123,6 +1157,7 @@ fn dependency_fails_when_node_tag_mismatches() {
             manifest: {
               name: "lidar",
               tag: "v2",
+              description: ["A test node."],
             },
             execution: {
               language: "rust",
@@ -1176,6 +1211,7 @@ fn absent_dependency_on_an_empty_admitting_slot_is_not_missing() {
             manifest: {
               name: "brain",
               tag: "v1",
+              description: ["A test node."],
               depends_on: {
                 nodes: [
                   { name: "recorder", tag: "v1", link_id: "rec", cardinality: "zero_or_more" }
@@ -1202,6 +1238,7 @@ fn absent_dependency_on_an_empty_admitting_slot_is_not_missing() {
             manifest: {
               name: "recorder",
               tag: "v1",
+              description: ["A test node."],
             },
             execution: {
               language: "rust",
@@ -1237,11 +1274,12 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
             manifest: {
               name: "lidar",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 services: {
                     exposes: [
-                        { name: "reset_sensor" }
+                        { name: "reset_sensor", description: "A test service." }
                     ]
                 }
             },
@@ -1259,6 +1297,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
             manifest: {
               name: "brain",
               tag: "v1",
+              description: ["A test node."],
               depends_on: {
                 nodes: [
                   { name: "lidar", tag: "v1", link_id: "lidar" }
@@ -1289,11 +1328,12 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
             manifest: {
               name: "lidar",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 services: {
                     exposes: [
-                        { name: "new_service" }
+                        { name: "new_service", description: "A test service." }
                     ]
                 }
             },
@@ -1366,6 +1406,7 @@ fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
             manifest: {
               name: "sensor",
               tag: "v1",
+              description: ["A test node."],
             },
             execution: {
               language: "rust",
@@ -1381,6 +1422,7 @@ fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
             manifest: {
               name: "sensor",
               tag: "v1",
+              description: ["A test node."],
             },
             execution: {
               language: "rust",
@@ -1442,6 +1484,7 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
             manifest: {
               name: "lidar",
               tag: "v1",
+              description: ["A test node."],
             },
             execution: {
               language: "rust",
@@ -1457,6 +1500,7 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
             manifest: {
               name: "brain",
               tag: "v1",
+              description: ["A test node."],
               depends_on: {
                 nodes: [
                   { name: "lidar", tag: "v1", link_id: "lidar" }
@@ -1478,6 +1522,7 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
             manifest: {
               name: "lidar",
               tag: "v1",
+              description: ["A test node."],
             },
             execution: {
               language: "rust",

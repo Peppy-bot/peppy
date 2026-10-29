@@ -100,6 +100,7 @@ fn launcher_with(
         format!(
             r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             core_nodes: ["robot_pc"],
             components: [
                 {{ name: "robot_control", cardinality: "one", options: {{
@@ -435,6 +436,7 @@ fn featured_launcher(root: &Path, features: &str, constraints: &str) -> PathBuf 
         format!(
             r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 {{ name: "robot", cardinality: "zero_or_more", options: {{
                     featured_sim: {{
@@ -536,7 +538,7 @@ fn cache_director(root: &Path) {
         dir.join("peppy.json5"),
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "director", tag: "v1", depends_on: {
+            manifest: { name: "director", tag: "v1", description: ["A test node."], depends_on: {
                 daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }],
             } },
             interfaces: { actions: { consumes: [{ link_id: "fleet", name: "lease" }] } },

@@ -41,7 +41,10 @@ fn make_consumer_depend_on_provider(
     if !exposed.iter().any(|topic| topic.name() == topic_name) {
         exposed.push(EmittedTopic::Native(config::node::NativeEmittedTopic {
             name: topic_name.to_string(),
-            ..Default::default()
+            description: config::description::Description::new("A test topic.").unwrap(),
+            qos_profile: Default::default(),
+            retention: Default::default(),
+            message_format: None,
         }));
     }
 
@@ -166,6 +169,7 @@ async fn stack_list_command_succeeds() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(provider_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -177,6 +181,7 @@ async fn stack_list_command_succeeds() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(consumer_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -320,6 +325,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
         NodeCommand {
             command: NodeCommands::Init {
                 node_name: NodeName::new(node_name).expect("valid node name"),
+                description: config::description::Description::new("A test node.").unwrap(),
                 to_dir: None,
                 toolchain: Toolchain::Cargo,
                 with_container: false,
@@ -588,6 +594,7 @@ async fn stack_list_renders_instance_endpoints_with_kind_and_label() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,

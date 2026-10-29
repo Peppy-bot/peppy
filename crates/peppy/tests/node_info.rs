@@ -140,6 +140,7 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
             manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
+                description: ["A test node."],
                 depends_on: {
                     nodes: [
                         { name: "camera_node", tag: "v1", link_id: "camera_node" },
@@ -181,12 +182,12 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
     // `consumer_node` consumes, so the add resolves cleanly.
     let camera_node = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "camera_node", tag: "v1" },
+            manifest: { name: "camera_node", tag: "v1", description: ["A test node."] },
             interfaces: {
                 topics: {
                     emits: [
-                        { name: "video_stream" },
-                        { name: "depth_stream" }
+                        { name: "video_stream", description: "A test topic." },
+                        { name: "depth_stream", description: "A test topic." }
                     ]
                 }
             },
@@ -194,25 +195,25 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
         }"#;
     let lidar_node = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "lidar_node", tag: "v1" },
+            manifest: { name: "lidar_node", tag: "v1", description: ["A test node."] },
             interfaces: {
-                topics: { emits: [{ name: "point_cloud" }] }
+                topics: { emits: [{ name: "point_cloud", description: "A test topic." }] }
             },
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#;
     let config_node = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "config_node", tag: "v1" },
+            manifest: { name: "config_node", tag: "v1", description: ["A test node."] },
             interfaces: {
-                services: { exposes: [{ name: "get_config" }] }
+                services: { exposes: [{ name: "get_config", description: "A test service." }] }
             },
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#;
     let navigation_node = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "navigation_node", tag: "v1" },
+            manifest: { name: "navigation_node", tag: "v1", description: ["A test node."] },
             interfaces: {
-                actions: { exposes: [{ name: "go_to_pose" }] }
+                actions: { exposes: [{ name: "go_to_pose", description: "A test action." }] }
             },
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#;
@@ -299,11 +300,12 @@ fn node_info_no_dependencies_when_no_consumes() {
             manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
+                description: ["A test node."],
             },
             interfaces: {
                 topics: {
                     emits: [
-                        { name: "output_data", qos_profile: "standard" }
+                        { name: "output_data", description: "A test topic.", qos_profile: "standard" }
                     ]
                 }
             },

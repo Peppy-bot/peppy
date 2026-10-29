@@ -23,6 +23,7 @@ pub use services::repo::cache::{
     nodes_repo_cache_path, pairings_repo_cache_path, repositories_list_path,
     resolve_repo_launcher_path,
 };
+pub use services::repo::descriptions::{CachedDescriptions, FieldDescription, MemberDescriptions};
 pub use services::repo::index::{
     IndexDrift, IndexError, RepoConflict, check_repository_index, publish_repository_index,
 };

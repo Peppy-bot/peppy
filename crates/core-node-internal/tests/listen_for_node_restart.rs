@@ -357,7 +357,7 @@ async fn add_node(
         &format!(
             r#"{{
                 peppy_schema: "node/v1",
-                manifest: {{ name: "{name}", tag: "{TEST_NODE_TAG}" }},
+                manifest: {{ name: "{name}", tag: "{TEST_NODE_TAG}", description: ["A test node."] }},
                 execution: {{ language: "rust", run_cmd: {run_cmd} }},
                 {framework}
             }}"#
@@ -691,7 +691,7 @@ async fn a_crash_under_on_failure_respawns_under_the_same_id() {
         &format!(
             r#"{{
                 peppy_schema: "node/v1",
-                manifest: {{ name: "{NODE}", tag: "{TEST_NODE_TAG}" }},
+                manifest: {{ name: "{NODE}", tag: "{TEST_NODE_TAG}", description: ["A test node."] }},
                 execution: {{
                     language: "rust",
                     parameters: {{ speed: {{ $type: "u32", $default: 1 }} }},
@@ -3986,6 +3986,7 @@ async fn add_joint_link_node(
                 manifest: {{
                     name: "{name}",
                     tag: "{TEST_NODE_TAG}",
+                    description: ["A test node."],
                     depends_on: {{ pairings: [{{
                         name: "joint_link", tag: "v1", role: "{role}",
                         link_id: "{link_id}", cardinality: "{cardinality}"

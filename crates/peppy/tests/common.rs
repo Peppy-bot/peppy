@@ -524,7 +524,8 @@ pub fn write_node_config_for_helper(
             peppy_schema: "node/v1",
             manifest: {{
                 name: "{node_name}",
-                tag: "{node_tag}"{manifest_extra}
+                tag: "{node_tag}",
+                description: ["A test node."]{manifest_extra}
             }}{interfaces_extra},
             execution: {{
                 language: "rust",
@@ -544,7 +545,7 @@ pub fn write_indexable_node(dir: &std::path::Path, name: &str, tag: &str) {
         format!(
             r#"{{
   peppy_schema: "node/v1",
-  manifest: {{ name: "{name}", tag: "{tag}" }},
+  manifest: {{ name: "{name}", tag: "{tag}", description: ["A test node."] }},
   interfaces: {{}},
   execution: {{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }},
 }}"#
@@ -579,11 +580,14 @@ pub fn register_repo_caches(
                 "node_name": name,
                 "node_tag": tag,
                 "sha256": config::fingerprint::fingerprint_for_bytes(content.as_bytes()),
-                // The origin and the links are serialized from the types
-                // `repo refresh` writes, so a change to their shape reaches
-                // this fixture.
+                // The origin, the links and the descriptions are serialized
+                // from the types `repo refresh` writes, so a change to their
+                // shape reaches this fixture.
                 "origin": daemon_config::repository::EntryOrigin::Fs { path: manifest_path },
                 "links": core_node::DeclaredLinks::from(&parsed.manifest),
+                "descriptions": core_node::CachedDescriptions::of_document(
+                    &parsed.manifest.description
+                ),
             })
         })
         .collect();
@@ -861,6 +865,7 @@ pub fn pairing_node_config_writing_pid_to(
             manifest: {{
                 name: "{name}",
                 tag: "{TEST_NODE_TAG}",
+                description: ["A test node."],
                 depends_on: {{
                     pairings: [
                         {{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}", cardinality: "{cardinality}" }}
@@ -1024,18 +1029,20 @@ pub fn observer_slot_channels(
 /// (`node_pair`, `node_observe`, `repo_refresh`, `node_sync`).
 pub const ARM_LINK_PAIRING: &str = r#"{
     peppy_schema: "pairing/v1",
-    manifest: { name: "arm_link", tag: "v1" },
+    manifest: { name: "arm_link", tag: "v1", description: ["A test pairing."] },
     roles: ["controller", "arm"],
     topics: [
         {
             emitted_by: "controller",
             name: "joint_commands",
+            description: "A test topic.",
             qos_profile: "reliable",
             message_format: { target_positions: { $type: "array", $items: "f64", $length: 3 } }
         },
         {
             emitted_by: "arm",
             name: "joint_states",
+            description: "A test topic.",
             qos_profile: "sensor_data",
             message_format: { positions: { $type: "array", $items: "f64", $length: 3 } }
         }

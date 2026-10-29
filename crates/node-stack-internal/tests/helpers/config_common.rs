@@ -9,6 +9,7 @@ pub fn core_node_config() -> NodeConfig {
             manifest: {
                 name: "core",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",

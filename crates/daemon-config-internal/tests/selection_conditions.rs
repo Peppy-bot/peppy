@@ -7,6 +7,7 @@ fn prepared(constraint: &str) -> PreparedLauncher {
     let document = format!(
         r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             {{ name: "robot", options: {{ real: {{}}, sim: {{}}, other: {{}} }} }},
             {{ name: "commander", options: {{ web: {{}}, xr: {{}}, mcp: {{}} }} }}
