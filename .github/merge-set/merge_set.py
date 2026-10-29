@@ -5,10 +5,13 @@ A change that spans several repositories lands as pull requests that share one
 head branch name, the set name (see .github/actions/hub-ci-peppy/resolve.py).
 The CI of each hub pull request tests it with the branches of the set in peppy
 and in the other hubs, so the pull requests of a set are green together and
-merge together. One other repository is part of a set too, so that its `main`
-and the `main` of the hubs change together: public-peppy-libs, the libraries
-that the nodes of the hubs build on. No hub CI reads its branch of a set: a hub
-builds the libraries at the commits that its lockfiles pin.
+merge together. Two other repositories are part of a set too, so that their
+`main` and the `main` of the hubs change together: public-peppy-libs, the
+libraries that the nodes of the hubs build on, and platform, whose simulation
+chat drives a stack through the MCP endpoints that peppy and the hubs serve and
+shows the viewer page of the simulation. No hub CI reads their branches of a
+set: a hub builds the libraries at the commits that its lockfiles pin, and
+reads nothing of the platform.
 
 The `merge-set` commit status is a required check of peppy `dev` and of the
 `main` of each other repository of a set, and only the merge-set GitHub App
@@ -33,7 +36,10 @@ of the same name.
 
 Ticking "Merge" asks the bot to merge the set. The bot checks every pull
 request of the set, sets the status green on each, checks that GitHub merges
-each one, and merges them one after the other, peppy first and the hubs last.
+each one, and merges them one after the other, peppy first and platform last.
+It squashes a platform pull request into one commit titled as the pull
+request, as the platform merges each one, and merges the pull request of each
+other repository with a merge commit.
 GitHub merges one pull request at a time, so a merge that fails part way
 leaves the set partly merged: the bot then blocks the pull requests that did
 not merge and reports what merged on every pull request of the set.
@@ -66,8 +72,8 @@ ask a re-run either: the merge of the set takes in that base all the same. The
 bot asks git to merge the commit and the base again, in a scratch repository
 (GitMerges), and compares the result with the head, so a conflict resolved by
 hand or any other change of the branch counts. A job reads the branches of
-peppy and the hubs alone, so a change of the public-peppy-libs branch of a set
-makes no hub run out of date. Every job that runs the
+peppy and the hubs alone, so a change of the public-peppy-libs or platform
+branch of a set makes no hub run out of date. Every job that runs the
 hub-ci-peppy action uploads the set it ran with, its set record, named after
 the check run of the job. A job that does not run the action reads no other
 repository, so it has no record and is never out of date; nor has the first
@@ -151,6 +157,15 @@ class MergeRefused(MergeSetError):
 # The repositories -----------------------------------------------------------
 
 
+class MergeMethod(Enum):
+    """How GitHub merges a pull request, as its merge endpoint names it."""
+
+    # The commits of the pull request, under a merge commit.
+    MERGE = "merge"
+    # One commit that holds every change of the pull request.
+    SQUASH = "squash"
+
+
 @dataclass(frozen=True)
 class Repository:
     name: str
@@ -158,6 +173,8 @@ class Repository:
     integration_branch: str
     # The hub this repository is; None for a repository that is not a hub.
     hub: resolve.Hub | None
+    # How the bot merges the pull request of a set in this repository.
+    merge_method: MergeMethod = MergeMethod.MERGE
 
     @property
     def full_name(self) -> str:
@@ -168,15 +185,21 @@ PEPPY = Repository("peppy", resolve.PEPPY_DEV_BRANCH, None)
 # The libraries that the nodes of the hubs build on. No hub CI reads its branch
 # of a set.
 PUBLIC_PEPPY_LIBS = Repository("public-peppy-libs", "main", None)
+# The platform, whose simulation chat drives a stack through the MCP endpoints
+# that peppy and the hubs serve and shows the viewer page of the simulation. No
+# hub CI reads it. Each commit of its `main` is one squashed pull request, so
+# that a deploy names one change.
+PLATFORM = Repository("platform", "main", None, MergeMethod.SQUASH)
 
 # Every repository a set can span, in the order the bot merges them: peppy
 # first, then public-peppy-libs, which the hubs build on, then the hubs in the
-# order of their repository ids. The order is fixed, so every report of a merge
-# reads the same way.
+# order of their repository ids, then platform, which uses what they serve.
+# The order is fixed, so every report of a merge reads the same way.
 REPOSITORIES = (
     PEPPY,
     PUBLIC_PEPPY_LIBS,
     *(Repository(hub.name, resolve.HUB_MAIN_BRANCH, hub) for hub in resolve.HUBS),
+    PLATFORM,
 )
 REPOSITORIES_BY_NAME = {repository.name: repository for repository in REPOSITORIES}
 
@@ -1742,7 +1765,6 @@ def access_refusal(
 
 # The merge -------------------------------------------------------------------
 
-MERGE_METHOD = "merge"
 # GitHub computes whether a pull request merges in the background, after it is
 # asked and after each change of the pull request, its base or its checks:
 # the bot asks this many times, this far apart, before it takes the answer.
@@ -1786,15 +1808,32 @@ class MergeOutcome:
         return (self.failure.pull_request, *self.not_tried)
 
 
-def merge_commit_message(
+@dataclass(frozen=True)
+class MergeCommit:
+    """The commit that merges a pull request of the set."""
+
+    method: MergeMethod
+    # None for the title GitHub gives a merge commit.
+    title: str | None
+    message: str
+
+
+def merge_commit(
     set_name: str, pull_request: PullRequest, pull_requests: Sequence[PullRequest]
-) -> str:
+) -> MergeCommit:
+    """A merge commit carries the title of the pull request first in its
+    message; a squashed commit is titled as the merge button of GitHub titles
+    it. Both name the other pull requests of the set."""
     others = ", ".join(
         other.reference for other in pull_requests if other is not pull_request
     )
-    return (
-        f"{pull_request.title}\n\nMerged together with the set `{set_name}`: {others}."
-    )
+    together = f"Merged together with the set `{set_name}`: {others}."
+    method = pull_request.repository.merge_method
+    if method is MergeMethod.SQUASH:
+        return MergeCommit(
+            method, f"{pull_request.title} (#{pull_request.number})", together
+        )
+    return MergeCommit(method, None, f"{pull_request.title}\n\n{together}")
 
 
 def merged_line(merged: MergedPullRequest, unapproved: Sequence[PullRequest]) -> str:
@@ -2390,21 +2429,20 @@ class GitHubGateway:
             return NO_PERMISSION
         return response["permission"]
 
-    def merge(self, pull_request: PullRequest, message: str) -> str:
+    def merge(self, pull_request: PullRequest, commit: MergeCommit) -> str:
         """Merge the pull request at its head commit, and return the merge
         commit. A call that fails is checked against the pull request: GitHub
         can merge it and still fail the response."""
         path = pull_request_path(pull_request.repository, pull_request.number)
+        body = {
+            "merge_method": commit.method.value,
+            "sha": pull_request.head_commit,
+            "commit_message": commit.message,
+        }
+        if commit.title is not None:
+            body["commit_title"] = commit.title
         try:
-            response = self.api.request(
-                "PUT",
-                f"{path}/merge",
-                body={
-                    "merge_method": MERGE_METHOD,
-                    "sha": pull_request.head_commit,
-                    "commit_message": message,
-                },
-            )
+            response = self.api.request("PUT", f"{path}/merge", body=body)
             return response["sha"]
         except ApiError as error:
             item = self.api.request("GET", path)
@@ -2754,9 +2792,10 @@ def merge_in_order(
     GitHub does not merge."""
     merged = []
     for index, pull_request in enumerate(pull_requests):
-        message = merge_commit_message(set_name, pull_request, pull_requests)
         try:
-            commit = gateway.merge(pull_request, message)
+            commit = gateway.merge(
+                pull_request, merge_commit(set_name, pull_request, pull_requests)
+            )
         except MergeRefused as refusal:
             return MergeOutcome(
                 merged=tuple(merged),
