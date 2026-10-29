@@ -32,7 +32,7 @@ Run:
     <Steps>
     1. Initialize the node:
        ```sh
-       peppy node init --toolchain uv hello_world
+       peppy node init --toolchain uv hello_world "A node that says hello to the world."
        ```
 
     2. Navigate into the directory:
@@ -50,7 +50,7 @@ Run:
     <Steps>
     1. Initialize the node:
        ```sh
-       peppy node init --toolchain cargo hello_world
+       peppy node init --toolchain cargo hello_world "A node that says hello to the world."
        ```
 
     2. Navigate into the directory:
@@ -65,6 +65,8 @@ Run:
     :::
   </TabItem>
 </Tabs>
+
+The second argument is the description of the node: what it does, and what it needs to run, such as a GPU or a device. The command refuses to run without it, or with a blank one. It becomes the first paragraph of `manifest.description` in `peppy.json5`, the summary that [`peppy repo search`](/advanced_guides/repositories/#search-the-repositories) prints (see [Descriptions](/reference/concepts/#descriptions)).
 
 In the node folder, you'll find the following:
  - A `peppy.json5` file
@@ -91,6 +93,7 @@ Let's open the `peppy.json5` file of the node we just created and explore it tog
       manifest: {
         name: "hello_world",
         tag: "v1",
+        description: ["A node that says hello to the world."],
       },
       interfaces: {},
       execution: {
@@ -116,6 +119,7 @@ Let's open the `peppy.json5` file of the node we just created and explore it tog
       manifest: {
         name: "hello_world",
         tag: "v1",
+        description: ["A node that says hello to the world."],
       },
       interfaces: {},
       execution: {
@@ -137,6 +141,7 @@ Let's open the `peppy.json5` file of the node we just created and explore it tog
 Let's go through the different options:
  - `peppy_schema`: Identifies the structure of the configuration file. For node configs always set this to `"node/v1"`
  - `manifest`: Contains information about the node. Each node is identified by its `name` and `tag`
+   - `description`: What the node does and what it needs to run, as a list of paragraphs. Add paragraphs after the first one when a reader needs more (see [Descriptions](/reference/concepts/#descriptions))
  - `execution`: Contains the language and execution commands for the node
    - `language`: The programming language used by the node (e.g. `"python"`, `"rust"`)
    - `build_cmd`: Command run during the build phase of the node (e.g. via `peppy node build`, `peppy node add --build`, or the combined shorthands `peppy node add -sb` / `-sr`). This is typically the place where you want to run heavy operations like code compilation.
@@ -154,7 +159,7 @@ Validation rules:
 - Dots (`.`) are forbidden; `0.1.0` and `v1.2` are rejected.
 :::
 
-Let's modify this configuration file to expose a topic that sends a "hello world" message.
+Let's modify this configuration file to expose a topic that sends a "hello world" message. A topic that the node declares itself says what it carries in its `description`.
 
 <Tabs>
   <TabItem label="Python">

@@ -119,6 +119,35 @@ A mark name is 1 to 64 lowercase ASCII letters, digits and `_`: words that each 
 
 ---
 
+## Description modifier
+
+A field can say what it holds with `$description` in the structured form of the field. A primitive, an array and an object take it. On an array it sits beside `$items`, and on an object beside the keys of the fields:
+
+```json5
+message_format: {
+  speed: { $type: "f64", $description: "The speed of the base, in meters per second." },
+  target: {
+    $type: "object",
+    $description: "The point to go to, in the frame of the map.",
+    x: "f64",
+    y: "f64"
+  },
+  path: {
+    $type: "array",
+    $description: "The points on the way to the target, in order.",
+    $items: { $type: "object", x: "f64", y: "f64" }
+  }
+}
+```
+
+| Field          | Required | Description |
+|----------------|----------|-------------|
+| `$description` | No       | What the field holds: one string that is not blank. Leave the key out for a field with no description |
+
+A description changes nothing on the wire and in the generated code, and peppy reads no rule from it. The [codec API](/advanced_guides/codec_api/) gives it, [`peppy node describe`](/advanced_guides/calling_instances/#peppy-node-describe) prints it in each message format, and the [MCP server](/advanced_guides/mcp/#the-published-schemas) publishes it as the `description` of the property. A document and its members have descriptions of their own, which are required (see [Descriptions](/reference/concepts/#descriptions)).
+
+---
+
 ## Object
 
 An object groups related fields into a nested structure. It generates a nested struct in Rust and a dataclass in Python.
@@ -275,7 +304,8 @@ A full `peppy.json5` topic using multiple schema types:
   peppy_schema: "node/v1",
   manifest: {
     name: "arm_controller",
-    tag: "v1"
+    tag: "v1",
+    description: ["The controller of a six-joint arm with a gripper: it publishes the state of the arm."]
   },
   execution: {
     language: "rust",
@@ -286,9 +316,10 @@ A full `peppy.json5` topic using multiple schema types:
       emits: [
         {
           name: "arm_state",
+          description: "The joints and the end effector of the arm, at each control step.",
           qos_profile: "sensor_data",
           message_format: {
-            timestamp: "time",
+            timestamp: { $type: "time", $description: "The time of the measure." },
             joint_positions: { $type: "array", $items: "f64", $length: 6 },
             joint_velocities: { $type: "array", $items: "f64", $length: 6 },
             end_effector: {

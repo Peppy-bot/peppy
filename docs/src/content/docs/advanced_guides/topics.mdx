@@ -24,7 +24,7 @@ Topics also underpin two higher-level constructs: [contract implementation](/adv
 ## Emitting a topic
 
 A node that publishes messages declares its topics under `interfaces.topics.emits` in its `peppy.json5`.
-Each topic defines a `name`, a `qos_profile`, and a `message_format`, and can declare a [`retention`](#retaining-the-latest-value):
+Each topic defines a `name`, a [`description`](/reference/concepts/#descriptions), a `qos_profile`, and a `message_format`, and can declare a [`retention`](#retaining-the-latest-value):
 
 <Tabs>
   <TabItem label="Python">
@@ -34,12 +34,14 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`, and can de
       manifest: {
         name: "uvc_camera",
         tag: "v1",
+        description: ["The driver of a UVC camera: it streams the frames of the camera. It needs a UVC camera on its machine."],
       },
       interfaces: {
         topics: {
           emits: [
             {
               name: "video_stream",
+              description: "Each frame of the camera, with its size and its encoding.",
               qos_profile: "sensor_data",
               message_format: {
                 header: {
@@ -74,12 +76,14 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`, and can de
       manifest: {
         name: "uvc_camera",
         tag: "v1",
+        description: ["The driver of a UVC camera: it streams the frames of the camera. It needs a UVC camera on its machine."],
       },
       interfaces: {
         topics: {
           emits: [
             {
               name: "video_stream",
+              description: "Each frame of the camera, with its size and its encoding.",
               qos_profile: "sensor_data",
               message_format: {
                 header: {
@@ -125,6 +129,7 @@ Set `retention` on the emitted topic:
 ```json5
 {
   name: "robot_mode",
+  description: "The mode of the robot, each time it changes.",
   qos_profile: "reliable",
   retention: { latest: 1 },
   message_format: {
@@ -145,6 +150,7 @@ interfaces: {
   topics: [
     {
       name: "robot_mode",
+      description: "The mode of the robot, each time it changes.",
       retention: { latest: 5 },
       message_format: {
         mode: "string"
@@ -278,6 +284,7 @@ For a topic with a simple message format:
 ```json5
 {
   name: "message_stream",
+  description: "Each greeting, as text.",
   qos_profile: "sensor_data",
   message_format: {
     message: "string"
@@ -321,6 +328,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `link_id` i
       manifest: {
         name: "web_video_stream",
         tag: "v1",
+        description: ["A web page that shows the video of one UVC camera. It needs no device."],
         depends_on: {
           nodes: [
             { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" },
@@ -352,6 +360,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `link_id` i
       manifest: {
         name: "web_video_stream",
         tag: "v1",
+        description: ["A web page that shows the video of one UVC camera. It needs no device."],
         depends_on: {
           nodes: [
             { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" },
@@ -784,6 +793,7 @@ A consumer that wires two specific depth cameras to dedicated wrist slots:
   manifest: {
     name: "openarm01_backbone",
     tag: "v1",
+    description: ["The backbone of an OpenArm with a depth camera on each wrist."],
     depends_on: {
       contracts: [
         { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
@@ -800,6 +810,7 @@ And the launcher that binds it:
 ```json5
 // peppy_launcher.json5
 {
+  description: ["An OpenArm backbone with a depth camera on each wrist. It needs the arm and the two cameras."],
   deployments: [
     { source: { name: "depth_camera:v1" }, instances: [
       { instance_id: "left_cam" },

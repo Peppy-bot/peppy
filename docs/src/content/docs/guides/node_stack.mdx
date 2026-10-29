@@ -327,7 +327,7 @@ Both grace periods are configured in `~/.peppy/conf/peppy_config.json5` (see [Da
 
 ## Inspecting a node with `peppy node info`
 
-When you need more than the one-line view from `stack list`, `peppy node info` dumps the node's stage, its currently-tracked instances with their individual states and last-known health, and the paths to its add log and per-instance run logs. It takes a `<node_name>:<node_tag>` reference to a node **that has already been added to the stack**; it doesn't touch the filesystem or any git/http source, so run `peppy node add` first if the node isn't in the stack yet:
+When you need more than the one-line view from `stack list`, `peppy node info` dumps the node's [description](/reference/concepts/#descriptions), its stage, its currently-tracked instances with their individual states and last-known health, and the paths to its add log and per-instance run logs. It takes a `<node_name>:<node_tag>` reference to a node **that has already been added to the stack**; it doesn't touch the filesystem or any git/http source, so run `peppy node add` first if the node isn't in the stack yet:
 
 ```sh
 peppy node info hello_world:v1
@@ -344,6 +344,10 @@ Tag:       v1
 Language:  Python
 Build cmd:   uv sync
 Run cmd: uv run hello_world
+
+Description
+--------------------------------------------------
+A node that publishes a greeting with a count, every 3 seconds.
 
 Node Stack Status
 --------------------------------------------------
@@ -379,7 +383,7 @@ Each instance line ends with its [restart policy](/guides/launch_files/#restart-
 - A `failed` instance adds ``attempt N refused: max_restarts M reached, failed starts included`` when the cap ended its restarts, or `attempt N refused` when the daemon refused to start it again (the stack log says why).
 - Every instance that has exited adds its last exit, such as `last exit: exit code 1`, `last exit: signal 9 (SIGKILL)` or `last exit: killed after 60 s without an answered health check`, or why a start failed.
 
-`Exposed Interfaces` summarizes the topics, services, and actions the node publishes per its `peppy.json5`; consumed interfaces get their own `Consumed Interfaces` section, and a `Dependencies` section lists the slots (`link_id`) they go through. A node with parameters gets a `Parameters` section too, and labels or a container block add a `Labels:` or `Container:` line under `Node Information`; each is omitted when empty, as in the listing above. Under `Emitted Topics`, a native topic (one whose shape the node declares in its own `peppy.json5`) states its QoS, such as `message_stream` above. A native topic that retains its newest messages for subscribers that join later also states its retention, for example `  - robot_mode (qos: Reliable, retention: latest 3)`. A [contract-backed](/advanced_guides/contract_implementation/) or [pairing-backed](/advanced_guides/pairing/) topic names its slot instead of a QoS, for example `  - video_stream (via implements slot: cam)`. Its QoS comes from the contract or the pairing; a contract-backed topic takes its retention from the contract, and a pairing-backed topic is always live only. `Config SHA256` is the fingerprint of the config that was fed through peppygen; it's what `peppy node add` checks against to refuse a stale snapshot and tell you to run `peppy node sync`.
+The `Description` section follows the basic facts of the node and prints each paragraph of its `manifest.description`, wrapped to the width of the terminal. `Exposed Interfaces` summarizes the topics, services, and actions the node publishes per its `peppy.json5`; consumed interfaces get their own `Consumed Interfaces` section, and a `Dependencies` section lists the slots (`link_id`) they go through. A node with parameters gets a `Parameters` section too, and labels or a container block add a `Labels:` or `Container:` line under `Node Information`; each is omitted when empty, as in the listing above. Under `Emitted Topics`, a native topic (one whose shape the node declares in its own `peppy.json5`) states its QoS, such as `message_stream` above. A native topic that retains its newest messages for subscribers that join later also states its retention, for example `  - robot_mode (qos: Reliable, retention: latest 3)`. A [contract-backed](/advanced_guides/contract_implementation/) or [pairing-backed](/advanced_guides/pairing/) topic names its slot instead of a QoS, for example `  - video_stream (via implements slot: cam)`. Its QoS comes from the contract or the pairing; a contract-backed topic takes its retention from the contract, and a pairing-backed topic is always live only. `Config SHA256` is the fingerprint of the config that was fed through peppygen; it's what `peppy node add` checks against to refuse a stale snapshot and tell you to run `peppy node sync`.
 
 An instance of a node that declares [`execution.endpoints`](/guides/first_node/#serving-a-page-or-an-mcp-endpoint) lists each endpoint under its instance line as `label (kind)  url`, one line per URL:
 
@@ -392,7 +396,7 @@ Instances: 1 tracked
 
 ## Calling a running instance
 
-`peppy node describe <instance>` shows the topics, services and actions of a running instance with their message formats. `peppy node call <instance> <member>` calls one of its services or actions, and `peppy node echo <instance> <topic>` prints the messages of one of its topics, with no code of your own:
+`peppy node describe <instance>` shows the topics, services and actions of a running instance with their descriptions and their message formats. `peppy node call <instance> <member>` calls one of its services or actions, and `peppy node echo <instance> <topic>` prints the messages of one of its topics, with no code of your own:
 
 ```sh
 peppy node call camera_inst camera.set_brightness --set value=12

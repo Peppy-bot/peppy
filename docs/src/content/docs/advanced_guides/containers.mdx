@@ -50,12 +50,12 @@ Pass the `--container` flag to `peppy node init`:
 <Tabs>
   <TabItem label="Python">
     ```sh
-    peppy node init --toolchain uv --container my_node
+    peppy node init --toolchain uv --container my_node "A node that runs in an Apptainer container."
     ```
   </TabItem>
   <TabItem label="Rust">
     ```sh
-    peppy node init --toolchain cargo --container my_node
+    peppy node init --toolchain cargo --container my_node "A node that runs in an Apptainer container."
     ```
   </TabItem>
 </Tabs>
@@ -74,6 +74,7 @@ A container node includes a `container` block inside its `execution` section ins
       manifest: {
         name: "my_node",
         tag: "v1",
+        description: ["A node that runs in an Apptainer container."],
       },
       interfaces: {},
       execution: {
@@ -92,6 +93,7 @@ A container node includes a `container` block inside its `execution` section ins
       manifest: {
         name: "my_node",
         tag: "v1",
+        description: ["A node that runs in an Apptainer container."],
       },
       interfaces: {},
       execution: {
@@ -117,6 +119,7 @@ Compare this with a standard process node, which defines `build_cmd` and `run_cm
       manifest: {
         name: "my_node",
         tag: "v1",
+        description: ["A node that runs as a process on its machine."],
       },
       interfaces: {},
       execution: {
@@ -134,6 +137,7 @@ Compare this with a standard process node, which defines `build_cmd` and `run_cm
       manifest: {
         name: "my_node",
         tag: "v1",
+        description: ["A node that runs as a process on its machine."],
       },
       interfaces: {},
       execution: {
@@ -276,6 +280,7 @@ Add a `mount_paths` array to the `container` block inside `execution` in `peppy.
   manifest: {
     name: "my_node",
     tag: "v1",
+    description: ["A node that runs in an Apptainer container."],
   },
   interfaces: {},
   execution: {
@@ -333,6 +338,7 @@ Mount paths can reference runtime [parameters](/guides/parameters/) using the `$
   manifest: {
     name: "uvc_camera",
     tag: "v1",
+    description: ["The driver of a UVC camera, in an Apptainer container. It needs a UVC camera at the device path that its parameter gives."],
   },
   interfaces: {},
   execution: {
@@ -673,6 +679,7 @@ You can pass additional command-line arguments directly to Apptainer or Lima usi
   manifest: {
     name: "my_node",
     tag: "v1",
+    description: ["A node that runs in an Apptainer container."],
   },
   interfaces: {},
   execution: {

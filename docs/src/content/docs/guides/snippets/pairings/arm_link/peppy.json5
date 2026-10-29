@@ -3,6 +3,9 @@
   manifest: {
     name: "arm_link",
     tag: "v1",
+    description: [
+      "The link between one controller and one arm: the controller commands the joints of the arm, and the arm gives back the state of its joints.",
+    ],
   },
   // Exactly two roles. Each paired instance plays one of them.
   roles: ["controller", "arm"],
@@ -12,6 +15,7 @@
     {
       emitted_by: "controller",
       name: "joint_commands",
+      description: "The joint positions that the controller wants, and the highest joint velocity on the way to them.",
       qos_profile: "reliable",
       message_format: {
         target_positions: { $type: "array", $items: "f64", $length: 3 },
@@ -21,6 +25,7 @@
     {
       emitted_by: "arm",
       name: "joint_states",
+      description: "The measured positions and velocities of the joints, with the time of the measure.",
       qos_profile: "sensor_data",
       message_format: {
         positions: { $type: "array", $items: "f64", $length: 3 },

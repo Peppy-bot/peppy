@@ -3,6 +3,7 @@
   manifest: {
     name: "optional_receiver",
     tag: "v1",
+    description: ["A node that prints the greetings of a hello_world_param instance when a launcher links one, and runs without one."],
     depends_on: {
       nodes: [
         {

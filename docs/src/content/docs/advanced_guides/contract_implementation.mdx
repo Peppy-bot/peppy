@@ -24,24 +24,27 @@ A contract lives in its own file under a repository Peppy scans (see [Repositori
   manifest: {
     name: "depth_camera",
     tag: "v1",
+    description: ["A depth camera: a stream of its frames, and a service that gives the settings of that stream."],
   },
   interfaces: {
     topics: [
       {
         name: "video_stream",
+        description: "Each frame of the camera, with its size and its encoding.",
         qos_profile: "sensor_data",
         message_format: {
           header: { $type: "object", stamp: "time", frame_id: "u32" },
           encoding: "string",
           width: "u32",
           height: "u32",
-          frame: { $type: "array", $items: "u8" },
+          frame: { $type: "array", $items: "u8", $description: "The pixels of the frame, row by row, in its encoding." },
         },
       },
     ],
     services: [
       {
         name: "video_stream_info",
+        description: "The size, the frame rate and the encoding of the stream.",
         response_message_format: {
           width: "u32",
           height: "u32",
@@ -71,7 +74,7 @@ A contract declares the kinds of its own in its `failure_kinds` block, between `
 ```json5
 {
   peppy_schema: "contract/v1",
-  manifest: { name: "limb_motion", tag: "v1" },
+  manifest: { name: "limb_motion", tag: "v1", description: ["The motions of the arms and the grippers of a robot."] },
   failure_kinds: {
     unreachable: "No plan to the target",
     leader_streaming: "A leader streams a limb of the goal",
@@ -99,7 +102,7 @@ A contract can give marks, names, to its members: a `marks` list on a topic, a s
 ```json5
 {
   peppy_schema: "contract/v1",
-  manifest: { name: "limb_motion", tag: "v1" },
+  manifest: { name: "limb_motion", tag: "v1", description: ["The motions of the arms and the grippers of a robot."] },
   interfaces: {
     actions: [
       { name: "move_arm", marks: ["moves_robot"], /* ... */ },
@@ -113,15 +116,11 @@ A contract can give marks, names, to its members: a `marks` list on a topic, a s
 
 A mark name follows the rule of a failure kind name: words of lowercase ASCII letters and digits that each start with a letter, joined by one `_`, 64 bytes at most. A `marks` list holds at least one mark, each once; a member with no mark leaves the key out. Peppy keeps each other mark as written and gives it to the clients of the contract, such as the [codec API](/advanced_guides/codec_api/): each client defines the marks that it reads. The fields of a message format carry marks with `$marks`, and a `string` field declares a closed set of strings with `$enum` (see [Message format](/reference/message_format/#enum-modifier)).
 
-#### Comments
+#### Descriptions
 
-The parser keeps the comments of a contract document:
+A contract describes itself and each of its members as data. `manifest.description` gives the paragraphs of the contract, the first one its summary. Each topic, service and action gives a `description` after its `name`, and a field can give a [`$description`](/reference/message_format/#description-modifier), as `video_stream` and its `frame` field do above. The rules are in [Descriptions](/reference/concepts/#descriptions).
 
-- The comment before the document.
-- The comment of each member: the comment before its item in its list, then the comment before its `name`.
-- The comment of each field of its message formats: the comment before its key, or a comment that starts on the line where the value of the field ends.
-
-The [codec API](/advanced_guides/codec_api/) gives these comments with the document, so a contract can describe its members and its fields for the programs that call it.
+The [codec API](/advanced_guides/codec_api/#parse-a-contract) gives these descriptions with the document, `peppy repo show` and [`peppy node describe`](/advanced_guides/calling_instances/#peppy-node-describe) print them, and the [MCP server](/advanced_guides/mcp/#the-published-schemas) publishes the description of each field. The comments of a contract are notes for its maintainers, and no reader shows them.
 
 After `peppy repo refresh`, the contract is cached and addressable by `(name, tag)`. Files use whatever filename you like as long as it ends in `.json5`; Peppy identifies a `contract/v1` document by its `peppy_schema` field. `peppy repo show <name>:<tag>` lists the indexed nodes that implement or consume it (see [Show what a query matches](/advanced_guides/repositories/#show-what-a-query-matches)).
 
@@ -138,6 +137,7 @@ A producer node claims a contract in `manifest.implements`. Each entry names a c
       manifest: {
         name: "realsense_d405",
         tag: "v1",
+        description: ["The driver of an Intel RealSense D405 depth camera. It needs a D405 on a USB port of its machine."],
         implements: [
           { name: "depth_camera", tag: "v1", link_id: "cam" },
         ],
@@ -170,6 +170,7 @@ A producer node claims a contract in `manifest.implements`. Each entry names a c
       manifest: {
         name: "realsense_d405",
         tag: "v1",
+        description: ["The driver of an Intel RealSense D405 depth camera. It needs a D405 on a USB port of its machine."],
         implements: [
           { name: "depth_camera", tag: "v1", link_id: "cam" },
         ],
@@ -196,7 +197,7 @@ A producer node claims a contract in `manifest.implements`. Each entry names a c
   </TabItem>
 </Tabs>
 
-A contract-backed entry is `{link_id, name}`, plus an optional `refine` block described [below](#refining-the-contracts-generic-arrays). The shape, QoS and [retention](/advanced_guides/topics/#retaining-the-latest-value) come from the contract document, never from the manifest: an inline `message_format`, `qos_profile`, `retention`, or service/action payload field on a contract-backed entry is rejected at parse time. The `name` is a strict selector, byte-equal to a member the contract declares.
+A contract-backed entry is `{link_id, name}`, plus an optional `refine` block described [below](#refining-the-contracts-generic-arrays). The description, the shape, QoS and [retention](/advanced_guides/topics/#retaining-the-latest-value) come from the contract document, never from the manifest: an inline `description`, `message_format`, `qos_profile`, `retention`, or service/action payload field on a contract-backed entry is rejected at parse time. The `name` is a strict selector, byte-equal to a member the contract declares.
 
 The producer node is named `realsense_d405`, not `depth_camera`. The two names are unrelated. The only thing that makes `realsense_d405` a valid `depth_camera` is the explicit `implements` claim. After `peppy node sync`, code generation emits the same `video_stream` and `video_stream_info` modules that a node declaring the shapes natively would get, nested under the implements slot's `link_id` (`emitted_topics/cam/video_stream`), not the contract's name or tag.
 
@@ -290,6 +291,7 @@ A consumer references a contract through `manifest.depends_on.contracts` rather 
       manifest: {
         name: "video_reconstruction",
         tag: "v1",
+        description: ["A node that makes a video from the frames of one depth camera. It needs no device."],
         depends_on: {
           contracts: [
             { name: "depth_camera", tag: "v1", link_id: "rear_camera" },
@@ -322,6 +324,7 @@ A consumer references a contract through `manifest.depends_on.contracts` rather 
       manifest: {
         name: "video_reconstruction",
         tag: "v1",
+        description: ["A node that makes a video from the frames of one depth camera. It needs no device."],
         depends_on: {
           contracts: [
             { name: "depth_camera", tag: "v1", link_id: "rear_camera" },
@@ -368,6 +371,7 @@ A contract slot is bound with `--link link_id@producer_instance_id` (or a launch
 // peppy_launcher.json5
 {
   peppy_schema: "launcher/v1",
+  description: ["A RealSense D405 camera and a video reconstruction of its frames. It needs a D405 on a USB port."],
   deployments: [
     {
       source: { name: "realsense_d405:v1" },
@@ -424,6 +428,7 @@ A common case is several instances of the same implementing node (say, three `re
       manifest: {
         name: "video_reconstruction",
         tag: "v1",
+        description: ["A node that makes one video from the frames of three depth cameras: front, back left and back right. It needs no device."],
         depends_on: {
           contracts: [
             { name: "depth_camera", tag: "v1", link_id: "front" },
@@ -457,6 +462,7 @@ A common case is several instances of the same implementing node (say, three `re
       manifest: {
         name: "video_reconstruction",
         tag: "v1",
+        description: ["A node that makes one video from the frames of three depth cameras: front, back left and back right. It needs no device."],
         depends_on: {
           contracts: [
             { name: "depth_camera", tag: "v1", link_id: "front" },
@@ -490,6 +496,7 @@ Then the launcher binds each slot to its producer instance:
 // peppy_launcher.json5
 {
   peppy_schema: "launcher/v1",
+  description: ["Three RealSense D405 cameras, front, back left and back right, and one video reconstruction of their frames. It needs the three cameras."],
   deployments: [
     {
       source: { name: "realsense_d405:v1" },
@@ -624,6 +631,7 @@ A launcher can wire the three slots to any mix of implementing producers:
 ```json5
 {
   peppy_schema: "launcher/v1",
+  description: ["Two RealSense D405 cameras and a ZED 2i camera, and a video reconstruction of their frames. It needs the three cameras."],
   deployments: [
     {
       source: { name: "realsense_d405:v1" },
@@ -675,11 +683,12 @@ Two service contracts, one provided by each node:
 // pose_service/peppy.json5 (contract)
 {
   peppy_schema: "contract/v1",
-  manifest: { name: "pose_service", tag: "v1" },
+  manifest: { name: "pose_service", tag: "v1", description: ["The pose of a robot on its map."] },
   interfaces: {
     services: [
       {
         name: "current_pose",
+        description: "The current position and heading of the robot on the map.",
         response_message_format: { x: "f64", y: "f64", theta: "f64" },
       },
     ],
@@ -689,11 +698,12 @@ Two service contracts, one provided by each node:
 // obstacle_service/peppy.json5 (contract)
 {
   peppy_schema: "contract/v1",
-  manifest: { name: "obstacle_service", tag: "v1" },
+  manifest: { name: "obstacle_service", tag: "v1", description: ["The obstacles of a map."] },
   interfaces: {
     services: [
       {
         name: "nearest_obstacle",
+        description: "The distance and the bearing of the obstacle nearest to a point of the map.",
         request_message_format: { x: "f64", y: "f64" },
         response_message_format: { distance: "f64", bearing: "f64" },
       },
@@ -713,6 +723,7 @@ Two service contracts, one provided by each node:
       manifest: {
         name: "localizer",
         tag: "v1",
+        description: ["A localizer: it gives the pose of the robot on the map, and asks the mapper for the nearest obstacle."],
         implements: [
           { name: "pose_service", tag: "v1", link_id: "pose_out" }, // provides current_pose
         ],
@@ -745,6 +756,7 @@ Two service contracts, one provided by each node:
       manifest: {
         name: "mapper",
         tag: "v1",
+        description: ["A mapper: it gives the obstacle nearest to a point, and asks the localizer for the pose of the robot."],
         implements: [
           { name: "obstacle_service", tag: "v1", link_id: "obstacles_out" }, // provides nearest_obstacle
         ],
@@ -780,6 +792,7 @@ Two service contracts, one provided by each node:
       manifest: {
         name: "localizer",
         tag: "v1",
+        description: ["A localizer: it gives the pose of the robot on the map, and asks the mapper for the nearest obstacle."],
         implements: [
           { name: "pose_service", tag: "v1", link_id: "pose_out" }, // provides current_pose
         ],
@@ -812,6 +825,7 @@ Two service contracts, one provided by each node:
       manifest: {
         name: "mapper",
         tag: "v1",
+        description: ["A mapper: it gives the obstacle nearest to a point, and asks the localizer for the pose of the robot."],
         implements: [
           { name: "obstacle_service", tag: "v1", link_id: "obstacles_out" }, // provides nearest_obstacle
         ],

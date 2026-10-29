@@ -11,6 +11,7 @@
 //   peppy stack launch --local split_compute_manipulation
 {
   peppy_schema: "launcher/v1",
+  description: ["Manipulation split between two machines: a fast reactive policy on the robot and a large deliberative planner in the cloud. It needs the two machines, or `--local` to run the whole stack on one."],
   // Core node links: placeholders this file names, wired to real machines at
   // launch time via `stack launch --place <core-node-link>@<core-node>`.
   // The file describes a topology; the command binds it to today's hardware,

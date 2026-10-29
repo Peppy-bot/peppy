@@ -16,7 +16,7 @@ For long-running work that needs progress feedback or cancellation, use an [acti
 ## Exposing a service
 
 A node that handles service requests declares its services under `interfaces.services.exposes` in its `peppy.json5`.
-Each service defines a `name`, an optional `request_message_format`, and an optional `response_message_format`:
+Each service defines a `name`, a [`description`](/reference/concepts/#descriptions), an optional `request_message_format`, and an optional `response_message_format`:
 
 <Tabs>
   <TabItem label="Python">
@@ -26,12 +26,14 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
       manifest: {
         name: "uvc_camera",
         tag: "v1",
+        description: ["The driver of a UVC camera: it turns the camera on and off, and gives its settings. It needs a UVC camera on its machine."],
       },
       interfaces: {
         services: {
           exposes: [
             {
               name: "enable_camera",
+              description: "Turn the camera on or off, and give its state after the change.",
               request_message_format: {
                 enable: "bool",
               },
@@ -42,6 +44,7 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
             {
               // A service without a request body; the caller just needs the response.
               name: "get_camera_info",
+              description: "The type of the camera card, the size of its frames and the interval between two frames.",
               response_message_format: {
                 card_type: "string",
                 size: "string",
@@ -66,12 +69,14 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
       manifest: {
         name: "uvc_camera",
         tag: "v1",
+        description: ["The driver of a UVC camera: it turns the camera on and off, and gives its settings. It needs a UVC camera on its machine."],
       },
       interfaces: {
         services: {
           exposes: [
             {
               name: "enable_camera",
+              description: "Turn the camera on or off, and give its state after the change.",
               request_message_format: {
                 enable: "bool",
               },
@@ -82,6 +87,7 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
             {
               // A service without a request body; the caller just needs the response.
               name: "get_camera_info",
+              description: "The type of the camera card, the size of its frames and the interval between two frames.",
               response_message_format: {
                 card_type: "string",
                 size: "string",
@@ -303,6 +309,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `link_id` i
       manifest: {
         name: "robot_brain",
         tag: "v1",
+        description: ["The brain of a robot: it turns its UVC camera on and off. It needs no device."],
         depends_on: {
           nodes: [
             { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" },
@@ -334,6 +341,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `link_id` i
       manifest: {
         name: "robot_brain",
         tag: "v1",
+        description: ["The brain of a robot: it turns its UVC camera on and off. It needs no device."],
         depends_on: {
           nodes: [
             { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" },
@@ -576,6 +584,7 @@ A consumer that wires two depth cameras to two dedicated slots:
   manifest: {
     name: "openarm01_backbone",
     tag: "v1",
+    description: ["The backbone of an OpenArm with a depth camera on each wrist."],
     depends_on: {
       contracts: [
         { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
@@ -590,6 +599,7 @@ A consumer that wires two depth cameras to two dedicated slots:
 ```json5
 // peppy_launcher.json5
 {
+  description: ["An OpenArm backbone with a depth camera on each wrist. It needs the arm and the two cameras."],
   deployments: [
     { source: { name: "depth_camera:v1" }, instances: [
       { instance_id: "left_cam" },
