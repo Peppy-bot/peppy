@@ -27,6 +27,7 @@ from unittest.mock import patch
 import merge_set
 from merge_set import (
     PEPPY,
+    PLATFORM,
     PUBLIC_PEPPY_LIBS,
     AccessRefusal,
     Action,
@@ -38,6 +39,8 @@ from merge_set import (
     Gate,
     HubRun,
     JobRecord,
+    MergeCommit,
+    MergeMethod,
     MergeRefused,
     MergeSetError,
     PullRequest,
@@ -197,25 +200,39 @@ def set_record_text(hubs, peppy=None):
 
 
 class Repositories(unittest.TestCase):
-    def test_peppy_merges_first_then_the_libs_then_the_hubs(self):
+    def test_peppy_merges_first_then_the_libs_then_the_hubs_then_platform(self):
         self.assertEqual(
             [repository.name for repository in merge_set.REPOSITORIES],
-            ["peppy", "public-peppy-libs", *(hub.name for hub in resolve.HUBS)],
+            [
+                "peppy",
+                "public-peppy-libs",
+                *(hub.name for hub in resolve.HUBS),
+                "platform",
+            ],
         )
 
     def test_each_repository_merges_into_its_integration_branch(self):
         self.assertEqual(PEPPY.integration_branch, "dev")
         self.assertEqual(PUBLIC_PEPPY_LIBS.integration_branch, "main")
+        self.assertEqual(PLATFORM.integration_branch, "main")
         for hub in resolve.HUBS:
             with self.subTest(hub=hub.name):
                 repository = merge_set.REPOSITORIES_BY_NAME[hub.name]
                 self.assertEqual(repository.integration_branch, "main")
                 self.assertIs(repository.hub, hub)
 
-    def test_peppy_and_the_libs_are_no_hubs(self):
-        for repository in (PEPPY, PUBLIC_PEPPY_LIBS):
+    def test_peppy_the_libs_and_platform_are_no_hubs(self):
+        for repository in (PEPPY, PUBLIC_PEPPY_LIBS, PLATFORM):
             with self.subTest(repository=repository.name):
                 self.assertIsNone(repository.hub)
+
+    def test_platform_squashes_and_every_other_repository_makes_a_merge_commit(self):
+        for repository in merge_set.REPOSITORIES:
+            with self.subTest(repository=repository.name):
+                self.assertIs(
+                    repository.merge_method,
+                    MergeMethod.SQUASH if repository is PLATFORM else MergeMethod.MERGE,
+                )
 
     def test_a_pull_request_from_an_integration_branch_names_no_set(self):
         for repository in merge_set.REPOSITORIES:
@@ -231,7 +248,7 @@ class Repositories(unittest.TestCase):
         self.assertEqual(
             merge_set.repository_list(),
             "peppy,public-peppy-libs,nodes-hub,launchers-hub,contracts-hub,"
-            "mcp-hub,pairings-hub,private-nodes-hub",
+            "mcp-hub,pairings-hub,private-nodes-hub,platform",
         )
 
     def test_a_repository_outside_every_set_is_refused(self):
@@ -245,6 +262,7 @@ class Repositories(unittest.TestCase):
             merge_set.repository_of_full_name("Peppy-bot/public-peppy-libs"),
             PUBLIC_PEPPY_LIBS,
         )
+        self.assertIs(merge_set.repository_of_full_name("Peppy-bot/platform"), PLATFORM)
         self.assertIsNone(merge_set.repository_of_full_name("Peppy-bot/sim-chat"))
         self.assertIsNone(merge_set.repository_of_full_name("someone/peppy"))
         self.assertIsNone(merge_set.repository_of_full_name("Peppy-bot/landing-page"))
@@ -489,20 +507,24 @@ class Relay(unittest.TestCase):
         self.assertEqual(calls, [self.DISPATCH])
         self.assertIn(RELAY_RUN_URL, text)
 
-    def test_the_relay_starts_the_sync_for_an_event_of_the_libs(self):
+    def test_the_relay_starts_the_sync_for_an_event_of_the_libs_or_platform(self):
         token, method, path, body = self.DISPATCH
-        payload = pull_request_event(
-            "synchronize", head_repository=PUBLIC_PEPPY_LIBS.full_name
-        )
-        payload["repository"]["full_name"] = PUBLIC_PEPPY_LIBS.full_name
-        text, calls = self.relay("pull_request", payload)
-        inputs = {
-            **body["inputs"],
-            "repository": PUBLIC_PEPPY_LIBS.name,
-            "head-repository": PUBLIC_PEPPY_LIBS.full_name,
-        }
-        self.assertEqual(calls, [(token, method, path, {**body, "inputs": inputs})])
-        self.assertIn(RELAY_RUN_URL, text)
+        for repository in (PUBLIC_PEPPY_LIBS, PLATFORM):
+            with self.subTest(repository=repository.name):
+                payload = pull_request_event(
+                    "synchronize", head_repository=repository.full_name
+                )
+                payload["repository"]["full_name"] = repository.full_name
+                text, calls = self.relay("pull_request", payload)
+                inputs = {
+                    **body["inputs"],
+                    "repository": repository.name,
+                    "head-repository": repository.full_name,
+                }
+                self.assertEqual(
+                    calls, [(token, method, path, {**body, "inputs": inputs})]
+                )
+                self.assertIn(RELAY_RUN_URL, text)
 
     def test_the_relay_reads_the_branch_of_a_dashboard_edit(self):
         edit = comment_edit(before=dashboard_text(), after=dashboard_text() + "x")
@@ -1431,11 +1453,12 @@ class Freshness(unittest.TestCase):
             merge_set.stale_jobs(state, [run], no_clean_base_merge, holds_nothing), []
         )
 
-    def test_the_libs_branch_of_the_set_makes_no_job_stale(self):
-        # No job reads it, so its head is in no set record.
+    def test_the_libs_and_platform_branches_of_the_set_make_no_job_stale(self):
+        # No job reads them, so their heads are in no set record.
         state = set_state(
             *self.state().members,
             member(PUBLIC_PEPPY_LIBS, pull_request(PUBLIC_PEPPY_LIBS)),
+            member(PLATFORM, pull_request(PLATFORM)),
         )
         run = hub_run(
             NODES_HUB, records=[JobRecord("check-index", self.fresh_record())]
@@ -1443,9 +1466,11 @@ class Freshness(unittest.TestCase):
         self.assertEqual(
             merge_set.stale_jobs(state, [run], no_clean_base_merge, holds_nothing), []
         )
-        self.assertIsNone(
-            merge_set.tested_ref_of(self.fresh_record(), PUBLIC_PEPPY_LIBS)
-        )
+        for repository in (PUBLIC_PEPPY_LIBS, PLATFORM):
+            with self.subTest(repository=repository.name):
+                self.assertIsNone(
+                    merge_set.tested_ref_of(self.fresh_record(), repository)
+                )
 
     def test_an_expired_record_is_stale(self):
         stale = self.stale_of(None)
@@ -2083,9 +2108,24 @@ class MergeMessages(unittest.TestCase):
     def test_a_merge_commit_names_the_other_pull_requests_of_the_set(self):
         peppy, nodes = pull_request(PEPPY, 512), pull_request(NODES_HUB, 88)
         self.assertEqual(
-            merge_set.merge_commit_message(SET_NAME, nodes, [peppy, nodes]),
-            f"Change nodes-hub\n\nMerged together with the set `{SET_NAME}`: "
-            "Peppy-bot/peppy#512.",
+            merge_set.merge_commit(SET_NAME, nodes, [peppy, nodes]),
+            MergeCommit(
+                MergeMethod.MERGE,
+                None,
+                f"Change nodes-hub\n\nMerged together with the set `{SET_NAME}`: "
+                "Peppy-bot/peppy#512.",
+            ),
+        )
+
+    def test_a_squashed_commit_is_titled_as_its_pull_request(self):
+        nodes, platform = pull_request(NODES_HUB, 88), pull_request(PLATFORM, 52)
+        self.assertEqual(
+            merge_set.merge_commit(SET_NAME, platform, [nodes, platform]),
+            MergeCommit(
+                MergeMethod.SQUASH,
+                "Change platform (#52)",
+                f"Merged together with the set `{SET_NAME}`: Peppy-bot/nodes-hub#88.",
+            ),
         )
 
     def test_the_report_of_a_merge_that_stopped(self):
@@ -2343,13 +2383,13 @@ class FakeGitHub:
     def permission(self, repository, login):
         return self.permissions.get((repository.name, login), "write")
 
-    def merge(self, pr, message):
+    def merge(self, pr, commit):
         self.test.assertEqual(
             self.gate(pr).state, "success", f"{pr.label} merged while blocked"
         )
         if pr.label in self.merge_refusals:
             raise MergeRefused(self.merge_refusals[pr.label])
-        self.merged.append((pr.label, message))
+        self.merged.append((pr.label, commit))
         self.merge_on_its_own(pr)
         return f"{pr.repository.name}-merge".encode().hex()[:40].ljust(40, "0")
 
@@ -2589,7 +2629,7 @@ class SyncMerge(unittest.TestCase):
         self.assertIn(
             "Merged together with the set `feat/gripper-force`: Peppy-bot/nodes-hub#88, "
             "Peppy-bot/contracts-hub#9.",
-            self.github.merged[0][1],
+            self.github.merged[0][1].message,
         )
         for pr in (self.peppy, self.nodes, self.contracts):
             with self.subTest(pr=pr.label):
@@ -2965,14 +3005,16 @@ class SyncMerge(unittest.TestCase):
         self.assertIn("as @bob, @alice asked", report_text)
 
 
-class SyncLibs(unittest.TestCase):
-    """A set of public-peppy-libs and nodes-hub: the hub run read nodes-hub at
-    its head and the dev build of peppy `dev`, as peppy has no branch of the
-    set. The libs open last, so the merge order is the bot's own."""
+class SyncLibsAndPlatform(unittest.TestCase):
+    """A set of public-peppy-libs, nodes-hub and platform: the hub run read
+    nodes-hub at its head and the dev build of peppy `dev`, as peppy has no
+    branch of the set. The libs open last, so the merge order is the bot's
+    own."""
 
     def setUp(self):
         self.github = FakeGitHub(self)
         self.nodes = self.github.open_pull_request(NODES_HUB, 88)
+        self.platform = self.github.open_pull_request(PLATFORM, 52)
         self.libs = self.github.open_pull_request(PUBLIC_PEPPY_LIBS, 160)
         tested = TestedSet(
             hubs={"nodes-hub": TestedRef("checkout", self.nodes.head_commit)},
@@ -2984,21 +3026,26 @@ class SyncLibs(unittest.TestCase):
         sync(self.github)
 
     def test_the_set_is_ready_when_the_hub_runs_read_the_head_of_each_hub(self):
-        for pr in (self.libs, self.nodes):
+        for pr in (self.libs, self.nodes, self.platform):
             with self.subTest(pr=pr.label):
                 body = self.github.dashboard_body(pr)
                 self.assertIn("**Ready to merge.**", body)
                 self.assertIn(f"| public-peppy-libs | [#160]({self.libs.url}) |", body)
+                self.assertIn(f"| platform | [#52]({self.platform.url}) |", body)
                 self.assertNotIn("CI out of date", body)
                 self.assertEqual(self.github.gates(pr)[-1].state, "pending")
 
-    def test_the_set_merges_the_libs_before_the_hubs(self):
-        (comment,) = self.github.comments_on(self.nodes)
+    def test_the_set_merges_the_libs_before_the_hubs_and_squashes_platform_last(self):
+        (comment,) = self.github.comments_on(self.platform)
         self.github.tick(comment, Action.MERGE, "alice")
         sync(self.github)
         self.assertEqual(
-            [label for label, _ in self.github.merged],
-            ["public-peppy-libs#160", "nodes-hub#88"],
+            [(label, merged.method) for label, merged in self.github.merged],
+            [
+                ("public-peppy-libs#160", MergeMethod.MERGE),
+                ("nodes-hub#88", MergeMethod.MERGE),
+                ("platform#52", MergeMethod.SQUASH),
+            ],
         )
 
 
@@ -3299,15 +3346,17 @@ class Gateway(unittest.TestCase):
             with self.subTest(pull=pull):
                 api = FakeApi({("PUT", f"{path}/merge"): refused, ("GET", path): pull})
                 gateway = gateway_of(api)
+                merge_commit = MergeCommit(MergeMethod.MERGE, None, "message")
                 if expected is None:
                     with self.assertRaises(MergeRefused) as refusal:
-                        gateway.merge(pull_request(NODES_HUB, 88), "message")
+                        gateway.merge(pull_request(NODES_HUB, 88), merge_commit)
                     self.assertEqual(
                         str(refusal.exception), "Required status check is expected."
                     )
                 else:
                     self.assertEqual(
-                        gateway.merge(pull_request(NODES_HUB, 88), "message"), expected
+                        gateway.merge(pull_request(NODES_HUB, 88), merge_commit),
+                        expected,
                     )
 
     def test_the_calls_about_a_pull_request_name_its_paths(self):
@@ -3342,13 +3391,32 @@ class Gateway(unittest.TestCase):
     def test_a_merge_asks_for_the_head_commit_it_checked(self):
         path = "/repos/Peppy-bot/nodes-hub/pulls/88/merge"
         api = FakeApi({("PUT", path): {"sha": "m" * 40}})
-        gateway_of(api).merge(pull_request(NODES_HUB, 88), "message")
+        gateway_of(api).merge(
+            pull_request(NODES_HUB, 88), MergeCommit(MergeMethod.MERGE, None, "message")
+        )
         self.assertEqual(
             api.calls[0][3],
             {
                 "merge_method": "merge",
                 "sha": commit(NODES_HUB),
                 "commit_message": "message",
+            },
+        )
+
+    def test_a_squash_asks_for_the_title_of_its_commit(self):
+        path = "/repos/Peppy-bot/platform/pulls/52/merge"
+        api = FakeApi({("PUT", path): {"sha": "s" * 40}})
+        gateway_of(api).merge(
+            pull_request(PLATFORM, 52),
+            MergeCommit(MergeMethod.SQUASH, "Change platform (#52)", "message"),
+        )
+        self.assertEqual(
+            api.calls[0][3],
+            {
+                "merge_method": "squash",
+                "sha": commit(PLATFORM),
+                "commit_message": "message",
+                "commit_title": "Change platform (#52)",
             },
         )
 
