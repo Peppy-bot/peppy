@@ -213,7 +213,7 @@ mod tests {
     use crate::commands::action_poll::test_support::presses_on_demand;
     use config::node::{QoSProfile, TopicRetention};
     use peppylib::Payload;
-    use peppylib::messaging::{SenderTarget, TopicMessenger, TopicPublisher};
+    use peppylib::messaging::{PeerInfo, SenderTarget, TopicMessenger, TopicPublisher};
     use serde_json::{Value, json};
     use tokio::sync::mpsc;
 
@@ -350,11 +350,16 @@ mod tests {
     }
 
     /// A pairing topic is received as an observer of the pairs that the
-    /// instance's slot holds, with no slot of a node of its own.
+    /// instance's slot holds, with no slot of a node of its own: it hears
+    /// the emissions to the peer of each pair.
     #[tokio::test]
     async fn the_echo_of_a_pairing_topic_prints_each_message() {
         let messenger = mock_messenger().await;
-        let publisher = TopicMessenger::declare_sole_peer_publisher(
+        let peer = PeerInfo {
+            producer: ProducerRef::new("robot-8", "controller_inst"),
+            peer_link_id: "arm".to_owned(),
+        };
+        let publisher = TopicMessenger::declare_pairing_publisher(
             &messenger,
             CORE_NODE,
             INSTANCE,
@@ -362,6 +367,7 @@ mod tests {
             "controller",
             "joint_states",
             QoSProfile::SensorData,
+            &peer,
         )
         .await
         .expect("the publisher is declared");

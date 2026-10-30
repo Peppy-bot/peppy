@@ -423,7 +423,7 @@ peppy node run --instance-id rec_1 recorder:v1 --link watch@arm_1
 
 The runtime guarantees mirror pairing's, with the lifecycle twist that defines an observer:
 
-- **Follows the source, not a pair.** The observer receives `arm_1`'s emissions whether or not `arm_1` is paired to anyone, and it is unaffected when `arm_1` re-pairs to a different controller. It is pinned to the source instance itself.
+- **Follows the source, not a pair.** The observer receives `arm_1`'s emissions whichever controller `arm_1` is paired with, and it is unaffected when `arm_1` re-pairs to a different controller. It is pinned to the source instance itself. While `arm_1` is unpaired, its slot is silent, so the observer receives nothing.
 - **Many observers, one source.** Observation is not exclusive: any number of recorders can watch the same arm at once, and none of them affects the pair.
 - **Incarnation-isolated.** If the source instance restarts, the observer transparently drops the old stream and picks up the new incarnation: the drop discards everything its subscription buffered before the switch, so no buffered message from a previous run of the source leaks into the new stream. The switch happens when the daemon's lifecycle notify records the new incarnation and delivers it, which follows the restart by the notify latency; isolation is enforced at that boundary, not by wall-clock simultaneity with the restart.
 - **Read-only.** The generated module for an observer topic exposes the same subscription surface as a consumed topic, plus a helper reporting the pairings the slot observes. There is no publisher and no `paired()`; an observer never talks back.

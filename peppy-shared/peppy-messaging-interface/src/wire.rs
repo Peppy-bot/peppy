@@ -449,11 +449,10 @@ impl WirePeer {
 /// and adapter code inside this crate can read fields directly.
 ///
 /// A contract or node emission is addressed to whoever subscribes. A pairing
-/// emission from a slot holding several pairs names the peer it is for, so
-/// each peer hears its own alone; one from a scalar slot is addressed to the
-/// one peer that holds its pair, whoever that is. [`Self::new`] builds the
-/// first and refuses a pairing target, [`Self::to_peer`] the second,
-/// [`Self::to_sole_peer`] the third.
+/// emission names the peer it is for, whatever the cardinality of its slot,
+/// so each peer hears its own alone and an instance that the slot does not
+/// pair with hears none. [`Self::new`] builds the first and refuses a
+/// pairing target, [`Self::to_peer`] the second.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TopicWireSender {
     pub(crate) as_core_node: Segment,
@@ -461,8 +460,7 @@ pub struct TopicWireSender {
     pub(crate) as_target: SenderTarget,
     pub(crate) link_id: Segment,
     pub(crate) as_topic_name: Segment,
-    /// The peer a multi slot's pairing emission is for; `None` on a scalar
-    /// slot's emission and on every other target.
+    /// The peer a pairing emission is for; `None` on every other target.
     pub(crate) to_peer: Option<WirePeer>,
 }
 
@@ -487,7 +485,8 @@ impl TopicWireSender {
         })
     }
 
-    /// A pairing emission from this node's slot `link_id` to `peer`.
+    /// A pairing emission from this node's slot `link_id` to `peer`. Only a
+    /// pairing target has peers.
     pub fn to_peer(
         as_core_node: &str,
         as_instance_id: &str,
@@ -495,47 +494,6 @@ impl TopicWireSender {
         link_id: &str,
         as_topic_name: &str,
         peer: WirePeer,
-    ) -> crate::error::Result<Self> {
-        Self::pairing_emission(
-            as_core_node,
-            as_instance_id,
-            as_target,
-            link_id,
-            as_topic_name,
-            Some(peer),
-        )
-    }
-
-    /// A pairing emission from this node's scalar slot `link_id` to the one
-    /// peer holding its pair: the recipient stays open, and the peer's own
-    /// pinned subscription is what selects it.
-    pub fn to_sole_peer(
-        as_core_node: &str,
-        as_instance_id: &str,
-        as_target: SenderTarget,
-        link_id: &str,
-        as_topic_name: &str,
-    ) -> crate::error::Result<Self> {
-        Self::pairing_emission(
-            as_core_node,
-            as_instance_id,
-            as_target,
-            link_id,
-            as_topic_name,
-            None,
-        )
-    }
-
-    /// A pairing emission from this node's slot `link_id`, to `to_peer` or,
-    /// when `None`, to the one peer holding the slot's pair. Only a pairing
-    /// target has peers.
-    fn pairing_emission(
-        as_core_node: &str,
-        as_instance_id: &str,
-        as_target: SenderTarget,
-        link_id: &str,
-        as_topic_name: &str,
-        to_peer: Option<WirePeer>,
     ) -> crate::error::Result<Self> {
         if !as_target.is_pairing() {
             return Err(crate::error::Error::PeerOnNonPairingPublish);
@@ -546,7 +504,7 @@ impl TopicWireSender {
             as_target,
             link_id: Segment::try_link_id(link_id)?,
             as_topic_name: Segment::try_from(as_topic_name)?,
-            to_peer,
+            to_peer: Some(peer),
         })
     }
 }

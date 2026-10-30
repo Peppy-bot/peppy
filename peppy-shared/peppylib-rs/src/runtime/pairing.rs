@@ -275,13 +275,13 @@ pub async fn subscribe_peer_with_watch(
     })
 }
 
-/// Publisher on one topic of a multi pairing slot. A pairing emission from a
-/// slot holding several pairs names the peer it is for, so the publisher
-/// keeps one declared wire publisher per peer the slot currently holds,
-/// converged with the slot's live set at each publish, and
-/// [`publish_to`](Self::publish_to) names the peer. A scalar slot publishes
-/// through the [`TopicPublisher`] [`declare_sole_peer_publisher`] declares,
-/// addressed to whichever peer holds its one pair.
+/// Publisher on one topic of a pairing slot. A pairing emission names the
+/// peer it is for, so the publisher keeps one declared wire publisher per
+/// peer the slot currently holds, converged with the slot's live set at
+/// each publish. On a multi slot [`publish_to`](Self::publish_to) names the
+/// peer. A scalar slot publishes through the [`TopicPublisher`] that
+/// [`declare_sole_peer_publisher`] declares over this publisher, to the one
+/// peer that holds its pair at the publish.
 pub struct PeerPublisher {
     messenger: MessengerHandle,
     as_core_node: String,
@@ -305,24 +305,8 @@ impl PeerPublisher {
     /// the slot does not hold is refused, so a message never leaves for a
     /// pair that ended.
     pub async fn publish_to(&self, peer: &PeerInfo, payload: Payload) -> Result<()> {
-        let publisher = self.publisher_for(peer).await?;
-        publisher.publish(payload).await
-    }
-
-    /// The declared wire publisher for `peer`, after converging the declared
-    /// set with the slot's current peers: a peer gone loses its publisher, a
-    /// peer new to the set gets one.
-    async fn publisher_for(&self, peer: &PeerInfo) -> Result<TopicPublisher> {
-        let mut declared = self.declared.lock().await;
-        // Both checks read one snapshot of the slot through the watch guard,
-        // which ends with this block: it must not live across the declare
-        // below, because the guard is not Send and holds the watch read lock.
-        let is_paired = {
-            let state = self.watch_rx.borrow();
-            declared.retain(|(known, _)| state.peers().any(|held| held == known));
-            state.peers().any(|held| held == peer)
-        };
-        if !is_paired {
+        let held = |state: &PeerSetState| state.peers().find(|held| *held == peer).cloned();
+        let Some(publisher) = self.publisher_for(held).await? else {
             return Err(Error::PeerNotPaired {
                 link_id: self.link_id.clone(),
                 peer: format!(
@@ -330,9 +314,43 @@ impl PeerPublisher {
                     peer.producer.core_node, peer.producer.instance_id, peer.peer_link_id
                 ),
             });
+        };
+        publisher.publish(payload).await
+    }
+
+    /// Publishes to the one peer that holds the pair of a scalar slot when
+    /// the publish runs; a publish while the slot is unpaired sends nothing.
+    pub(crate) async fn publish_to_sole_peer(&self, payload: Payload) -> Result<()> {
+        let sole = |state: &PeerSetState| state.peers().next().cloned();
+        match self.publisher_for(sole).await? {
+            Some(publisher) => publisher.publish(payload).await,
+            None => Ok(()),
         }
-        if let Some((_, publisher)) = declared.iter().find(|(known, _)| known == peer) {
-            return Ok(publisher.clone());
+    }
+
+    /// The declared wire publisher for the peer that `pick` chooses from one
+    /// snapshot of the slot, after converging the declared set with that
+    /// snapshot: a peer gone loses its publisher, a peer new to the set gets
+    /// one. `None` when `pick` chooses no peer.
+    async fn publisher_for(
+        &self,
+        pick: impl FnOnce(&PeerSetState) -> Option<PeerInfo>,
+    ) -> Result<Option<TopicPublisher>> {
+        let mut declared = self.declared.lock().await;
+        // The convergence and the pick read one snapshot of the slot through
+        // the watch guard, which ends with this block: it must not live
+        // across the declare below, because the guard is not Send and holds
+        // the watch read lock.
+        let peer = {
+            let state = self.watch_rx.borrow();
+            declared.retain(|(known, _)| state.peers().any(|held| held == known));
+            pick(&state)
+        };
+        let Some(peer) = peer else {
+            return Ok(None);
+        };
+        if let Some((_, publisher)) = declared.iter().find(|(known, _)| *known == peer) {
+            return Ok(Some(publisher.clone()));
         }
         let publisher = TopicMessenger::declare_pairing_publisher(
             &self.messenger,
@@ -342,20 +360,23 @@ impl PeerPublisher {
             &self.link_id,
             &self.topic,
             self.qos.clone(),
-            peer,
+            &peer,
         )
         .await?;
-        declared.push((peer.clone(), publisher.clone()));
-        Ok(publisher)
+        declared.push((peer, publisher.clone()));
+        Ok(Some(publisher))
     }
 }
 
 /// Declares the publisher for one topic of the scalar pairing slot at
 /// `link_id`: a plain [`TopicPublisher`] whose `publish` reaches the one
-/// paired peer and is a no-op while unpaired. Spliced by the generated
+/// peer that holds the pair when it runs, under a key that names that peer,
+/// and is a no-op while unpaired. Spliced by the generated
 /// `peppygen::paired_topics::<link_id>::<topic>::declare_publisher` call
 /// sites of scalar slots; `pairing_name` / `pairing_tag` / `topic` come from
-/// the pairing doc via codegen constants.
+/// the pairing doc via codegen constants. Async as every declare of a
+/// publisher is: the wire publisher of each peer is declared at its first
+/// publish.
 pub async fn declare_sole_peer_publisher(
     node_runner: &NodeRunner,
     link_id: &str,
@@ -364,18 +385,9 @@ pub async fn declare_sole_peer_publisher(
     topic: &str,
     qos: QoSProfile,
 ) -> Result<TopicPublisher> {
-    let processor = node_runner.processor();
-    let target = SenderTarget::pairing(pairing_name, pairing_tag)?;
-    TopicMessenger::declare_sole_peer_publisher(
-        node_runner.messenger(),
-        processor.bound_core_node(),
-        processor.bound_instance_id(),
-        target,
-        link_id,
-        topic,
-        qos,
-    )
-    .await
+    let publisher =
+        declare_peer_publisher(node_runner, link_id, pairing_name, pairing_tag, topic, qos)?;
+    Ok(TopicPublisher::to_sole_peer(publisher))
 }
 
 /// Declares the publisher for one topic of the multi pairing slot at

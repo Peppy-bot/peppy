@@ -193,11 +193,11 @@ impl PyPeerSlotSet {
 }
 
 /// Publisher on one topic of a multi pairing slot, vended by
-/// `node_runner.declare_peer_publisher(...)`. A pairing emission from a slot
-/// holding several pairs names the peer it is for: `publish_to(peer, ...)`
-/// names one, and raises for a peer the slot does not hold. A scalar slot
-/// publishes through the `TopicPublisher`
-/// `node_runner.declare_sole_peer_publisher(...)` vends.
+/// `node_runner.declare_peer_publisher(...)`. A pairing emission names the
+/// peer it is for: `publish_to(peer, ...)` names one, and raises for a peer
+/// the slot does not hold. A scalar slot publishes through the
+/// `TopicPublisher` `node_runner.declare_sole_peer_publisher(...)` vends,
+/// to the one peer that holds its pair.
 #[pyclass(name = "PeerPublisher")]
 pub struct PyPeerPublisher {
     pub(crate) inner: Arc<PeerPublisher>,
