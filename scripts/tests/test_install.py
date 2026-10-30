@@ -201,7 +201,8 @@ def test_container_node_build() -> None:
     )
 
     init = login_shell(
-        f"{env_preamble} && cd {home} && peppy node init --container test-node"
+        f"{env_preamble} && cd {home} && peppy node init --container test-node "
+        "'A node that the install test builds in a container.'"
     )
     assert init.returncode == 0, f"node init failed{diagnostic(init)}"
 

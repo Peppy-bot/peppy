@@ -143,12 +143,12 @@ fn parse_node_ref(s: &str) -> Result<(String, String), String> {
     Ok((node_name, tag))
 }
 
-/// Parses a key=value argument string into a tuple
 /// A description given on the command line: any text that is not blank.
 fn parse_description(s: &str) -> Result<Description, String> {
     Description::new(s).map_err(|blank| blank.to_string())
 }
 
+/// Parses a key=value argument string into a tuple
 fn parse_key_value_arg(s: &str) -> Result<(String, String), String> {
     let (key, value) = s
         .split_once('=')
@@ -298,8 +298,9 @@ pub enum NodeCommands {
         node_name: NodeName,
         /// What the node does and what it needs to run, such as a GPU or a
         /// device: the first paragraph of the description of its manifest,
-        /// which `peppy repo search` prints. Not blank.
-        #[arg(value_parser = parse_description)]
+        /// which `peppy repo search` prints. Not blank. It can start with
+        /// `-`, as in "-90 to 90 degree scanner".
+        #[arg(value_parser = parse_description, allow_hyphen_values = true)]
         description: Description,
         /// Build toolchain to use
         #[arg(long, default_value_t)]
