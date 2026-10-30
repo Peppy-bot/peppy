@@ -3,6 +3,7 @@
   manifest: {
     name: "hello_world",
     tag: "v1",
+    description: ["A node that says hello to the world."],
   },
   interfaces: {},
   execution: {

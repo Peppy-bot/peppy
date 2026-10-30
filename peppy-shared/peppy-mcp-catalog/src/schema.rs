@@ -15,6 +15,9 @@
 //!   only on root-level fields, so nested objects always require all of
 //!   their properties.
 //!
+//! The `$description` of a field becomes the `description` of its schema:
+//! an annotation for the caller, which no value is checked against.
+//!
 //! Public property names keep the DSL's snake_case spelling, not the
 //! lowerCamelCase spelling the wire encoding uses internally. Every emitted
 //! schema closes with `additionalProperties: false`.
@@ -87,7 +90,17 @@ pub(crate) fn without_root_member(mut schema: Value, member: &str) -> Value {
     schema
 }
 
+/// The schema of one field, with the description of the field when it has
+/// one.
 fn schema_type_to_json(schema: &SchemaType) -> Value {
+    let mut json = schema_shape_to_json(schema);
+    if let (Some(description), Some(object)) = (schema.description(), json.as_object_mut()) {
+        object.insert("description".to_string(), json!(description.as_str()));
+    }
+    json
+}
+
+fn schema_shape_to_json(schema: &SchemaType) -> Value {
     match schema {
         SchemaType::Type(token) => primitive_json(token),
         SchemaType::Primitive(primitive) => primitive_json(&primitive.kind),

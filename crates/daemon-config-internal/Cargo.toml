@@ -47,4 +47,4 @@ tempfile = "3"
 # (`jsonschema::validator_for`, default features off there too), so the
 # tests of a daemon interface's schema narrowing judge input the way the
 # runtime does.
-jsonschema = { version = "0.58", default-features = false }
+jsonschema = { version = "0.60", default-features = false }

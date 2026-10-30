@@ -51,6 +51,7 @@ pub const STUB_NODE_CONFIG: &str = r#"{
   manifest: {
     name: "generated_node",
     tag: "v1",
+    description: ["A test node."],
   },
   execution: {
     language: "rust",

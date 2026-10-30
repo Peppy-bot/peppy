@@ -188,13 +188,15 @@ const ACTION_PRODUCER_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
   manifest: {
     name: "producer",
-    tag: "v1"
+    tag: "v1",
+    description: ["A test node."],
   },
   interfaces: {
     actions: {
       exposes: [
         {
           name: "perform_scan",
+          description: "A test action.",
           goal_service: {
             request_message_format: { scan_id: "u32" },
             response_message_format: { accepted: "bool" }
@@ -226,6 +228,7 @@ const ACTION_CONSUMER_CONFIG: &str = r#"{
   manifest: {
     name: "consumer",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {
       nodes: [
         { name: "producer", tag: "v1", link_id: "producer" }
@@ -240,7 +243,7 @@ const ACTION_CONSUMER_CONFIG: &str = r#"{
     },
     services: {
       exposes: [
-        { name: "result_received" }
+        { name: "result_received", description: "A test service." }
       ]
     }
   },
@@ -475,13 +478,15 @@ const SERVICE_PRODUCER_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
   manifest: {
     name: "producer",
-    tag: "v1"
+    tag: "v1",
+    description: ["A test node."],
   },
   interfaces: {
     services: {
       exposes: [
         {
           name: "report_status",
+          description: "A test service.",
           request_message_format: { detail: "bool" },
           response_message_format: {
             ok: "bool",
@@ -504,6 +509,7 @@ const SERVICE_CONSUMER_CONFIG: &str = r#"{
   manifest: {
     name: "consumer",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {
       nodes: [
         { name: "producer", tag: "v1", link_id: "producer" }
@@ -516,7 +522,7 @@ const SERVICE_CONSUMER_CONFIG: &str = r#"{
         { link_id: "producer", name: "report_status" }
       ],
       exposes: [
-        { name: "response_received" }
+        { name: "response_received", description: "A test service." }
       ]
     }
   },
@@ -729,13 +735,15 @@ const TOPIC_PRODUCER_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
   manifest: {
     name: "producer",
-    tag: "v1"
+    tag: "v1",
+    description: ["A test node."],
   },
   interfaces: {
     topics: {
       emits: [
         {
           name: "telemetry_feed",
+          description: "A test topic.",
           qos_profile: "sensor_data",
           message_format: {
             sequence: "u32",
@@ -758,6 +766,7 @@ const TOPIC_CONSUMER_CONFIG: &str = r#"{
   manifest: {
     name: "consumer",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {
       nodes: [
         { name: "producer", tag: "v1", link_id: "producer" }
@@ -772,7 +781,7 @@ const TOPIC_CONSUMER_CONFIG: &str = r#"{
     },
     services: {
       exposes: [
-        { name: "received_ack" }
+        { name: "received_ack", description: "A test service." }
       ]
     }
   },

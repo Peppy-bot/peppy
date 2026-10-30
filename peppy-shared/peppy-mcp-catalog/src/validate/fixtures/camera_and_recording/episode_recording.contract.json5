@@ -1,10 +1,15 @@
 {
     peppy_schema: "contract/v1",
-    manifest: { name: "episode_recording", tag: "v1" },
+    manifest: {
+        name: "episode_recording",
+        tag: "v1",
+        description: ["The recorder of the episodes of a dataset."],
+    },
     interfaces: {
         actions: [
             {
                 name: "record_episode",
+                description: "Record one episode of a task. The feedback counts the frames, and the result tells whether the episode is saved.",
                 goal_service: {
                     request_message_format: {
                         task_name: "string",
@@ -24,6 +29,7 @@
             },
             {
                 name: "finish_session",
+                description: "Close the dataset of the session.",
                 result_service: {
                     response_message_format: { success: "bool" },
                 },

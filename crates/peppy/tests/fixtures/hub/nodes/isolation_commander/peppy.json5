@@ -3,6 +3,7 @@
   manifest: {
     name: "isolation_commander",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {
       nodes: [
         { name: "isolation_arm", tag: "v1", link_id: "arm" }
@@ -36,6 +37,7 @@
           // Moves the held goal on: `cancel` cancels it, `release` lets the
           // arm complete it. Answers with the token of the goal it moved on.
           name: "move_on",
+          description: "A test service.",
           request_message_format: { verb: "string" },
           response_message_format: { token: "string" }
         }

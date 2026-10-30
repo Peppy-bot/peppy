@@ -47,6 +47,7 @@ fn node_config_with_build_cmd(name: &str, tag: &str, build_cmd: &str) -> String 
             manifest: {{
                 name: "{name}",
                 tag: "{tag}",
+                description: ["A test node."],
             }},
             execution: {{
                 language: "rust",
@@ -66,6 +67,7 @@ fn container_node_config(name: &str, tag: &str) -> String {
             manifest: {{
                 name: "{name}",
                 tag: "{tag}",
+                description: ["A test node."],
             }},
             execution: {{
                 language: "rust",
@@ -177,7 +179,7 @@ async fn a_build_of_a_node_without_a_staged_working_dir_is_rejected() {
         source_dir.path(),
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "unstaged_node", tag: "v1" },
+            manifest: { name: "unstaged_node", tag: "v1", description: ["A test node."] },
             execution: {
                 language: "rust",
                 build_cmd: ["true"],
@@ -246,7 +248,7 @@ async fn listen_for_node_build_takes_the_pypi_mirror_of_the_daemon_config() {
         &format!(
             r#"{{
                 peppy_schema: "node/v1",
-                manifest: {{ name: "{NODE_NAME}", tag: "{NODE_TAG}" }},
+                manifest: {{ name: "{NODE_NAME}", tag: "{NODE_TAG}", description: ["A test node."] }},
                 execution: {{
                     language: "python",
                     build_cmd: ["true"],
@@ -683,6 +685,7 @@ async fn listen_for_node_build_copies_files_to_storage() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1174,7 +1177,7 @@ async fn stack_reset_cancels_a_running_build_and_allows_a_new_add() {
         &format!(
             r#"{{
         peppy_schema: "node/v1",
-        manifest: {{ name: "reset_build", tag: "v1" }},
+        manifest: {{ name: "reset_build", tag: "v1", description: ["A test node."] }},
         execution: {{
             language: "rust",
             build_cmd: [{}],

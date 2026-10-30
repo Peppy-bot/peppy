@@ -125,6 +125,7 @@ fn minimal_node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> String {
             manifest: {{
                 name: "{name}",
                 tag: "{tag}",
+                description: ["A test node."],
                 {depends_on}
             }},
             interfaces: {{}},
@@ -147,6 +148,7 @@ fn node_config_with_execution(name: &str, tag: &str, execution_body: &str) -> St
             manifest: {{
                 name: "{name}",
                 tag: "{tag}",
+                description: ["A test node."],
             }},
             interfaces: {{}},
             execution: {execution_body}
@@ -233,10 +235,11 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
             manifest: {
                 name: "uvc_camera",
                 tag: "v1",
+                description: ["A test node."],
             },
             interfaces: {
                 topics: {
-                    emits: [{ name: "/example" }]
+                    emits: [{ name: "/example", description: "A test topic." }]
                 }
             },
             execution: {
@@ -264,11 +267,12 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
             manifest: {
                 name: "uvc_camera",
                 tag: "v2",
+                description: ["A test node."],
             },
             interfaces: {
                 services: {
                     exposes: [
-                        { name: "reset_sensor" }
+                        { name: "reset_sensor", description: "A test service." }
                     ]
                 }
             },
@@ -312,6 +316,7 @@ fn create_git_repo_with_invalid_config(base_path: &Path) -> PathBuf {
             manifest: {
                 name: "bad_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             interfaces: {},
         }"#,

@@ -112,6 +112,7 @@ async fn node_run_command_with_args_succeeds() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -133,12 +134,13 @@ async fn node_run_command_with_args_succeeds() {
     let peppy_config = r#"{
   peppy_schema: "node/v1",
   manifest: { name: "test_run_args_node",
-    tag: "v1" },
+    tag: "v1", description: ["A test node."] },
   interfaces: {
     topics: {
       emits: [
         {
           name: "hello_world",
+          description: "A test topic.",
           qos_profile: "sensor_data",
           message_format: {
             timestamp: "time",
@@ -381,6 +383,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -641,6 +644,7 @@ fn write_consumer_with_slots(
     manifest: {{
         name: "{consumer_name}",
         tag: "v1",
+        description: ["A test node."],
         depends_on: {{
             nodes: [
 {entries}
@@ -669,6 +673,7 @@ fn init_and_add_built_node(
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -1489,6 +1494,7 @@ async fn node_run_prints_the_web_pages_of_a_node_that_declares_a_page() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,

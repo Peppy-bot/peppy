@@ -69,7 +69,7 @@ So no result reports a refusal or a failure in a field of its own, such as `succ
 ## Exposing an action
 
 A node that handles action goals declares its actions under `interfaces.actions.exposes` in its `peppy.json5`.
-Each action can define a `goal_service`, a `feedback_topic`, and a `result_service`:
+Each action defines a `name` and a [`description`](/reference/concepts/#descriptions) that tells its goal, its feedback and its result, and can define a `goal_service`, a `feedback_topic`, and a `result_service`:
 
 <Tabs>
   <TabItem label="Python">
@@ -79,12 +79,14 @@ Each action can define a `goal_service`, a `feedback_topic`, and a `result_servi
       manifest: {
         name: "brain",
         tag: "v1",
+        description: ["The brain of a robot with arms: it moves an arm to a position on request. It needs no device."],
       },
       interfaces: {
         actions: {
           exposes: [
             {
               name: "move_arm",
+              description: "Move an arm to a position. The goal gives the arm and the position, each feedback gives the new position of the arm, and the result gives its final position.",
               goal_service: {
                 request_message_format: {
                   arm_id: "u16",
@@ -132,12 +134,14 @@ Each action can define a `goal_service`, a `feedback_topic`, and a `result_servi
       manifest: {
         name: "brain",
         tag: "v1",
+        description: ["The brain of a robot with arms: it moves an arm to a position on request. It needs no device."],
       },
       interfaces: {
         actions: {
           exposes: [
             {
               name: "move_arm",
+              description: "Move an arm to a position. The goal gives the arm and the position, each feedback gives the new position of the arm, and the result gives its final position.",
               goal_service: {
                 request_message_format: {
                   arm_id: "u16",
@@ -514,6 +518,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `link_id` i
       manifest: {
         name: "controller",
         tag: "v1",
+        description: ["A controller that sends the goals of its arm motions to a brain. It needs no device."],
         depends_on: {
           nodes: [
             { name: "brain", tag: "v1", link_id: "brain" },
@@ -545,6 +550,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `link_id` i
       manifest: {
         name: "controller",
         tag: "v1",
+        description: ["A controller that sends the goals of its arm motions to a brain. It needs no device."],
         depends_on: {
           nodes: [
             { name: "brain", tag: "v1", link_id: "brain" },
@@ -852,6 +858,7 @@ A client that wires two depth cameras to two dedicated slots:
   manifest: {
     name: "openarm01_backbone",
     tag: "v1",
+    description: ["The backbone of an OpenArm with a depth camera on each wrist."],
     depends_on: {
       contracts: [
         { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
@@ -866,6 +873,7 @@ A client that wires two depth cameras to two dedicated slots:
 ```json5
 // peppy_launcher.json5
 {
+  description: ["An OpenArm backbone with a depth camera on each wrist. It needs the arm and the two cameras."],
   deployments: [
     { source: { name: "depth_camera:v1" }, instances: [
       { instance_id: "left_cam" },

@@ -229,6 +229,7 @@ A node calls a **daemon interface**, an interface that the peppy daemon serves a
       manifest: {
         name: "lease_holder",
         tag: "v1",
+        description: ["A lease holder: it lists the robots of the fleet and leases them, through the daemon. It needs no device."],
         depends_on: {
           daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }],
         },
@@ -259,6 +260,7 @@ A node calls a **daemon interface**, an interface that the peppy daemon serves a
       manifest: {
         name: "lease_holder",
         tag: "v1",
+        description: ["A lease holder: it lists the robots of the fleet and leases them, through the daemon. It needs no device."],
         depends_on: {
           daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }],
         },
@@ -373,6 +375,7 @@ The launcher gives each daemon target of an instance a scope in the [`daemon_sco
 ```json5 title="peppy_launcher.json5"
 {
   peppy_schema: "launcher/v1",
+  description: ["A lease holder that may list the fleet, lease its robots and check a move. It needs no device."],
   deployments: [
     {
       source: { name: "lease_holder", tag: "v1" },

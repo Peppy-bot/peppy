@@ -46,7 +46,7 @@ The robot commander of a robot is the option of its copy on the axis that the la
 
 The daemon of each machine tells the coordinator each start and each end of the process of an instance of the launch, so the `software` of a robot follows its instances on every machine.
 
-`contract` takes `name`, `tag` and `sha256` and gives the pinned `document` of a contract of the listing, as written. It refuses a document that the daemon does not hold with `rejected`.
+`contract` takes `name`, `tag` and `sha256` and gives the pinned `document` of a contract of the listing, as written. It refuses a document that the daemon does not hold with `rejected`. A client reads the [descriptions](/reference/concepts/#descriptions) of a contract, of its members and of their fields from its pinned document, for example through the [codec API](/advanced_guides/codec_api/#parse-a-contract).
 
 ## Leases
 

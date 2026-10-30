@@ -89,13 +89,22 @@ fn scaffold_node(
     // since generate_peppygen_lib requires peppy.json5 to exist)
     match request.toolchain {
         Toolchain::Cargo => {
-            apply_rust_templates(&request.node_name, &node_dir, request.with_container)
-                .map_err(|e| attempt_failed(format!("Failed to create Rust configuration: {e}")))?;
+            apply_rust_templates(
+                &request.node_name,
+                &request.description,
+                &node_dir,
+                request.with_container,
+            )
+            .map_err(|e| attempt_failed(format!("Failed to create Rust configuration: {e}")))?;
         }
         Toolchain::Uv => {
-            apply_python_templates(&request.node_name, &node_dir, request.with_container).map_err(
-                |e| attempt_failed(format!("Failed to create Python configuration: {e}")),
-            )?;
+            apply_python_templates(
+                &request.node_name,
+                &request.description,
+                &node_dir,
+                request.with_container,
+            )
+            .map_err(|e| attempt_failed(format!("Failed to create Python configuration: {e}")))?;
         }
     }
 

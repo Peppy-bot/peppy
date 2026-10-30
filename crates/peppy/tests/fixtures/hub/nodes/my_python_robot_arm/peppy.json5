@@ -3,6 +3,7 @@
   manifest: {
     name: "my_python_robot_arm",
     tag: "v1",
+    description: ["A test node."],
     labels: ["arm"]
   },
   execution: {
@@ -20,6 +21,7 @@
       emits: [
         {
           name: "joint_states",
+          description: "A test topic.",
           qos_profile: "sensor_data",
           message_format: {
             positions: {

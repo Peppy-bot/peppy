@@ -105,7 +105,7 @@ mod tests {
     fn contract_document_rejected() {
         let contract = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "rgb_camera", tag: "v1" },
+            manifest: { name: "rgb_camera", tag: "v1", description: ["A test contract."] },
             interfaces: {},
         }"#;
         let err = PeppyMcpExposureParser::from_content(contract).expect_err("wrong schema");

@@ -4,6 +4,7 @@
 // deploys (`uvc`); the same launcher with `--with=zed` swaps it.
 {
   peppy_schema: "launcher/v1",
+  description: ["A viewer of one camera: a UVC camera, or a ZED camera with `--with=zed`. It needs the camera that it selects."],
 
   components: [
     {

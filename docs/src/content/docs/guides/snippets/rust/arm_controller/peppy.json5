@@ -3,6 +3,7 @@
   manifest: {
     name: "arm_controller",
     tag: "v1",
+    description: ["The controller role of arm_link:v1: it commands the joints of one arm and reads the state of its joints."],
     depends_on: {
       pairings: [
         // The complementary slot: this node plays the `controller` role of

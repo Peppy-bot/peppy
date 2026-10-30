@@ -68,11 +68,12 @@ fn setup_env(peppy: &Path, node_dir: &Path) -> NodeSetup {
     let temp_dir = tempfile::tempdir().expect("failed to create temp directory");
     let nodes_root = temp_dir.path();
 
+    let summary = node_config.manifest.description.summary().as_str();
     let init_output = peppy_output(
         peppy,
         &daemon_root,
         nodes_root,
-        &["node", "init", node_name.as_str()],
+        &["node", "init", node_name.as_str(), summary],
     );
     assert_success(&init_output, "peppy node init");
 

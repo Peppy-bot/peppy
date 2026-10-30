@@ -14,7 +14,8 @@ const NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
   manifest: {
     name: "realsense_d435",
-    tag: "v1"
+    tag: "v1",
+    description: ["A test node."],
   },
   execution: {
     language: "python",
@@ -25,6 +26,7 @@ const NODE_CONFIG: &str = r#"{
       emits: [
         {
           name: "video_stream",
+          description: "A test topic.",
           qos_profile: "sensor_data",
           message_format: { native_marker: "u32" }
         }

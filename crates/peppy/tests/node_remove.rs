@@ -29,6 +29,7 @@ fn node_remove_command_succeeds() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -124,6 +125,7 @@ fn remove_running_node(
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,

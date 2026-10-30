@@ -3,6 +3,7 @@
   manifest: {
     name: "hello_receiver",
     tag: "v1",
+    description: ["A node that receives the greetings of one hello_world_param instance and prints them."],
     depends_on: {
       nodes: [
         {

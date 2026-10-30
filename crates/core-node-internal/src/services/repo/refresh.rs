@@ -8,7 +8,9 @@ use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::{ShallowCheckoutError, shallow_checkout_of_read_ref};
 use crate::services::raw_calls::RawCallGate;
-use crate::services::repo::cache::{RepoCacheEntry, RepoItems, write_repo_cache};
+use crate::services::repo::cache::{
+    RepoCacheEntry, RepoItems, load_repo_cache, repo_cache_path, write_repo_cache,
+};
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::index::{
     PublishedItem, ReadSource, build_cache_entries, read_published_items,
@@ -39,7 +41,7 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::time::SystemTime;
 use tokio::task::JoinHandle;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 pub async fn listen_for_repo_refresh(
     messenger: &MessengerHandle,
@@ -502,25 +504,31 @@ pub(crate) struct RefreshedRepos {
 /// The five caches as they stood before this refresh. A repository that
 /// fails its read keeps serving what it last published, so its
 /// identities do not vanish out from under launchers that reference
-/// them.
+/// them, and a repository outside the scope of the refresh keeps what it
+/// holds.
 ///
-/// A cache that cannot be read is treated as empty rather than fatal:
-/// this runs on the recovery path, where refusing to start because the
-/// fallback is also broken helps nobody.
-fn load_previous_caches(peppy_dirs: &PeppyDirs) -> RepoItems {
-    fn read<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Vec<E> {
-        crate::services::repo::cache::load_repo_cache::<E>(peppy_dirs).unwrap_or_else(|e| {
-            warn!("Could not read the previous {} cache: {e}", E::KIND);
-            Vec::new()
-        })
+/// `None` when one of the five is missing or does not parse, as a cache
+/// that an older peppy wrote: the caches then hold nothing that a
+/// repository can keep. That is not fatal: this runs on the recovery path,
+/// where refusing to start because the fallback is also broken helps
+/// nobody.
+fn load_previous_caches(peppy_dirs: &PeppyDirs) -> Option<RepoItems> {
+    fn read<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Option<Vec<E>> {
+        if !repo_cache_path::<E>(peppy_dirs).exists() {
+            info!("There is no previous {} cache", E::KIND);
+            return None;
+        }
+        load_repo_cache::<E>(peppy_dirs)
+            .inspect_err(|e| warn!("Could not read the previous {} cache: {e}", E::KIND))
+            .ok()
     }
-    RepoItems {
-        nodes: read(peppy_dirs),
-        launchers: read(peppy_dirs),
-        contracts: read(peppy_dirs),
-        pairings: read(peppy_dirs),
-        mcp_exposures: read(peppy_dirs),
-    }
+    Some(RepoItems {
+        nodes: read(peppy_dirs)?,
+        launchers: read(peppy_dirs)?,
+        contracts: read(peppy_dirs)?,
+        pairings: read(peppy_dirs)?,
+        mcp_exposures: read(peppy_dirs)?,
+    })
 }
 
 /// The previous entries of one kind that `repo_id` owns, using the same
@@ -682,7 +690,18 @@ pub(crate) fn process_refresh(
         let exclusions = ExclusionSet::load(peppy_dirs);
         (repos, exclusions)
     };
-    let previous = load_previous_caches(peppy_dirs);
+    // A repository outside `scope` keeps its entries from the previous
+    // caches. Without them it would keep nothing and vanish until the next
+    // full refresh, so the refresh then reads every repository.
+    let (previous, scope) = match load_previous_caches(peppy_dirs) {
+        Some(previous) => (previous, scope),
+        None => {
+            if *scope != RefreshScope::Every {
+                info!("The previous caches cannot be read, so the refresh reads every repository");
+            }
+            (RepoItems::default(), &RefreshScope::Every)
+        }
+    };
     // Resolved once for the whole refresh: retention asks which repository
     // owns an entry for every previous entry of all five kinds, of every
     // repository that failed.
@@ -1522,6 +1541,63 @@ mod tests {
         assert_eq!(cached[0].node_name, "first");
     }
 
+    /// A repository outside the scope of a refresh keeps its entries from
+    /// the previous caches. When one of the five does not parse, as a cache
+    /// that an older peppy wrote, there is nothing to keep, so the refresh
+    /// reads every repository and the repository loses nothing.
+    #[test]
+    fn a_refresh_reads_every_repository_when_a_previous_cache_does_not_parse() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let inside = tmp.path().join("inside");
+        let outside = tmp.path().join("outside");
+        write_node_json5(&inside.join("first"), "first", "v1");
+        write_node_json5(&outside.join("second"), "second", "v1");
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &inside), (2, &outside)]));
+        publish_repo(&inside);
+        publish_repo(&outside);
+        let refresh = |scope: &RefreshScope| {
+            process_refresh(
+                &peppy_dirs,
+                &peppy_build(),
+                scope,
+                TEST_NOW,
+                &mut |_| {},
+                None,
+            )
+            .unwrap()
+        };
+        write_all_caches(&peppy_dirs, &refresh(&RefreshScope::Every)).unwrap();
+        write_node_json5(&outside.join("third"), "third", "v1");
+        publish_repo(&outside);
+        let only_inside = RefreshScope::Only(BTreeSet::from([1]));
+        let node_names = |refreshed: &RefreshedRepos| -> Vec<String> {
+            refreshed
+                .items
+                .nodes
+                .iter()
+                .map(|node| node.node_name.as_str().to_owned())
+                .collect()
+        };
+
+        assert_eq!(
+            node_names(&refresh(&only_inside)),
+            ["first", "second"],
+            "the repository outside the scope keeps the entries it holds"
+        );
+
+        std::fs::write(
+            repo_cache_path::<LauncherCacheEntry>(&peppy_dirs),
+            r#"[{ written_by: "an older peppy" }]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            node_names(&refresh(&only_inside)),
+            ["first", "second", "third"],
+            "the repository outside the scope is read"
+        );
+    }
+
     /// A refresh whose cancel came before its reads reads no repository and
     /// publishes nothing: the caches keep what they held, here none.
     #[tokio::test]
@@ -2164,7 +2240,7 @@ mod tests {
             repo_a.join("uvc_camera/peppy.json5"),
             r#"{
   peppy_schema: "contract/v1",
-  manifest: { name: "uvc_camera", tag: "v1" },
+  manifest: { name: "uvc_camera", tag: "v1", description: ["A test contract."] },
   interfaces: {}
 }"#,
         )
@@ -2175,7 +2251,7 @@ mod tests {
             r#"{
   // Same identity, different content fingerprint via extra whitespace.
   peppy_schema: "contract/v1",
-  manifest:    { name: "uvc_camera", tag: "v1" },
+  manifest:    { name: "uvc_camera", tag: "v1", description: ["A test contract."] },
   interfaces:  {}
 }"#,
         )
@@ -2319,7 +2395,7 @@ mod tests {
         // in the repo and must not be misclassified.
         std::fs::write(
             repo.join("manifest.json5"),
-            r#"{ peppy_schema: "node/v1", manifest: { name: "x", tag: "v1" }, interfaces: {}, execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] } }"#,
+            r#"{ peppy_schema: "node/v1", manifest: { name: "x", tag: "v1", description: ["A test node."] }, interfaces: {}, execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] } }"#,
         )
         .unwrap();
 
@@ -2396,6 +2472,7 @@ mod tests {
             src.join("openarm01").join("openarm01_teleop.json5"),
             r#"{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 deployments: []
             }"#,
         )

@@ -32,7 +32,7 @@ x509-parser = "0.18"
 ring = "0.17"
 rustls-pki-types = "1"
 rustls-webpki = { version = "0.103", default-features = false, features = ["ring", "std"] }
-base64 = "0.22"
+base64 = "0.23"
 bytes = "1"
 # Only for the `test-support` fixtures, which mint a leaf with set dates.
 time = { version = "0.3", optional = true }
@@ -47,7 +47,7 @@ test-support = ["dep:time", "rcgen/x509-parser"]
 # Self-reference so the integration tests of this crate see `test_support`,
 # which the library exposes to them through the feature alone.
 auth = { path = ".", features = ["test-support"] }
-httpmock = "0.8"
+httpmock = "0.9"
 # The `x509-parser` feature reads a CSR back, so a test can pin what the
 # platform receives: one common name, no extensions, a P-256 key.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }

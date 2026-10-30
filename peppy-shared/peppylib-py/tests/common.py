@@ -31,6 +31,7 @@ PEPPY_CONFIG = """{
   manifest: {
     name: "test_node",
     tag: "v1",
+    description: ["A test node."],
   },
   execution: {
     language: "python",

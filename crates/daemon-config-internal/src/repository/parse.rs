@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn a_node_document_is_not_an_index() {
         let err = PeppyRepositoryIndexParser::from_content(
-            r#"{ peppy_schema: "node/v1", manifest: { name: "a", tag: "v1" } }"#,
+            r#"{ peppy_schema: "node/v1", manifest: { name: "a", tag: "v1", description: ["A test node."] } }"#,
         )
         .expect_err("a node document must not parse as an index");
         assert!(err.to_string().contains("repository/v1"), "{err}");

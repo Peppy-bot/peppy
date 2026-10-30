@@ -5,6 +5,7 @@
 //   peppy stack launch mcp_camera_and_recording
 {
   peppy_schema: "launcher/v1",
+  description: ["A front camera and an episode recorder, and the MCP server of peppy that serves the exposure camera_and_recording:v1 of the two. It needs a UVC camera."],
   deployments: [
     {
       source: { name: "uvc_camera:v1" },

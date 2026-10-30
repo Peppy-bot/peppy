@@ -172,7 +172,7 @@ mod tests {
 
     const ARM: &str = r#"{
         peppy_schema: "node/v1",
-        manifest: { name: "arm", tag: "v1" },
+        manifest: { name: "arm", tag: "v1", description: ["A test node."] },
         interfaces: {},
         execution: { language: "rust", run_cmd: ["./bin"] },
     }"#;
@@ -239,7 +239,7 @@ mod tests {
         let config = NodeConfigParser::from_content(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "director", tag: "v1", depends_on: {
+                manifest: { name: "director", tag: "v1", description: ["A test node."], depends_on: {
                     contracts: [{ name: "limb_motion", tag: "v1", link_id: "arm" }],
                     daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }],
                 } },

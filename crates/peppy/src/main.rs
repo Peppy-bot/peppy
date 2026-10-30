@@ -377,16 +377,106 @@ mod tests {
         assert_eq!(exposure, "camera_and_recording:v1");
     }
 
+    /// `node init` takes the description of the node as an argument and
+    /// refuses to parse without one, or with a blank one.
+    #[test]
+    fn node_init_requires_a_description() {
+        let cli = Cli::try_parse_from(["peppy", "node", "init", "greeter", "A node that greets."])
+            .expect("node init parses");
+        let Commands::Node {
+            command: node::NodeCommands::Init { description, .. },
+        } = cli.command
+        else {
+            panic!("expected node init");
+        };
+        assert_eq!(description.as_str(), "A node that greets.");
+
+        let missing = Cli::try_parse_from(["peppy", "node", "init", "greeter"])
+            .err()
+            .expect("a node init without a description is refused");
+        assert!(missing.to_string().contains("<DESCRIPTION>"), "{missing}");
+        let blank = Cli::try_parse_from(["peppy", "node", "init", "greeter", "  "])
+            .err()
+            .expect("a blank description is refused");
+        assert!(blank.to_string().contains("blank"), "{blank}");
+    }
+
+    /// A description that starts with `-` is the description, not a flag,
+    /// and the flags of `node init` still parse before and after it.
+    #[test]
+    fn a_node_init_description_can_start_with_a_hyphen() {
+        for args in [
+            &[
+                "peppy",
+                "node",
+                "init",
+                "lidar",
+                "-90 to 90 degree scanner.",
+                "--container",
+            ][..],
+            &[
+                "peppy",
+                "node",
+                "init",
+                "--container",
+                "lidar",
+                "-90 to 90 degree scanner.",
+            ],
+            &[
+                "peppy",
+                "node",
+                "init",
+                "lidar",
+                "-90 to 90 degree scanner.",
+                "--toolchain",
+                "uv",
+                "--container",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap_or_else(|error| panic!("{args:?}: {error}"));
+            let Commands::Node {
+                command:
+                    node::NodeCommands::Init {
+                        description,
+                        with_container,
+                        ..
+                    },
+            } = cli.command
+            else {
+                panic!("expected node init");
+            };
+            assert_eq!(
+                description.as_str(),
+                "-90 to 90 degree scanner.",
+                "{args:?}"
+            );
+            assert!(with_container, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn repo_search_text_parses() {
+        let cli = Cli::try_parse_from(["peppy", "repo", "search", "gripper", "--text"])
+            .expect("repo search --text parses");
+        assert!(matches!(
+            cli.command,
+            Commands::Repo {
+                command: repo::RepoCommands::Search { text: true, .. }
+            }
+        ));
+    }
+
     #[test]
     fn repo_search_parses() {
         let cli = Cli::try_parse_from(["peppy", "repo", "search", "rgb_camera:v1", "--json"])
             .expect("repo search parses");
         let Commands::Repo {
-            command: repo::RepoCommands::Search { query, json },
+            command: repo::RepoCommands::Search { query, text, json },
         } = cli.command
         else {
             panic!("expected repo search");
         };
+        assert!(!text, "a search matches names unless `--text` is given");
         assert_eq!(query, "rgb_camera:v1");
         assert!(json);
 

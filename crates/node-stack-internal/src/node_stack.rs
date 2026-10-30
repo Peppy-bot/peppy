@@ -2025,7 +2025,7 @@ mod live_container_instances_tests {
         NodeConfigParser::from_content(&format!(
             r#"{{
                 peppy_schema: "node/v1",
-                manifest: {{ name: "recon", tag: "v1" }},
+                manifest: {{ name: "recon", tag: "v1", description: ["A test node."] }},
                 execution: {execution},
                 interfaces: {{}},
             }}"#
@@ -2091,7 +2091,7 @@ mod live_container_instances_tests {
         let root = NodeConfigParser::from_content(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "root", tag: "v1" },
+                manifest: { name: "root", tag: "v1", description: ["A test node."] },
                 execution: { language: "rust", run_cmd: ["root"] },
             }"#,
         )
@@ -2100,7 +2100,7 @@ mod live_container_instances_tests {
         let process = NodeConfigParser::from_content(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "helper", tag: "v1" },
+                manifest: { name: "helper", tag: "v1", description: ["A test node."] },
                 execution: { language: "rust", run_cmd: ["helper"] },
                 interfaces: {},
             }"#,
@@ -2265,7 +2265,7 @@ mod built_in_tests {
         NodeConfigParser::from_content(&format!(
             r#"{{
                 peppy_schema: "node/v1",
-                manifest: {{ name: "{name}", tag: "builtin" }},
+                manifest: {{ name: "{name}", tag: "builtin", description: ["A test node."] }},
                 execution: {{ language: "rust", run_cmd: ["peppy", "mcp", "serve"] }},
             }}"#
         ))

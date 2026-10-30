@@ -3,6 +3,7 @@
   manifest: {
     name: "fake_uvc_camera",
     tag: "v1",
+    description: ["A test node."],
     labels: [
       "uvc",
       "camera",
@@ -14,6 +15,7 @@
       emits: [
         {
           name: "video_stream",
+          description: "A test topic.",
           qos_profile: "sensor_data",
           message_format: {
             header: {
@@ -36,6 +38,7 @@
       exposes: [
         {
           name: "video_stream_info",
+          description: "A test service.",
           response_message_format: {
             width: "u32",
             height: "u32",

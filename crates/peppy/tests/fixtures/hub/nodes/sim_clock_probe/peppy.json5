@@ -3,6 +3,7 @@
   manifest: {
     name: "sim_clock_probe",
     tag: "v1",
+    description: ["A test node."],
     labels: ["clock"]
   },
   execution: {

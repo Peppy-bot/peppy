@@ -37,10 +37,10 @@ Repository configuration lives in `~/.peppy/conf/`, and the indexes built by `pe
 |------|---------|
 | `conf/repositories.json5` | Repositories to scan |
 | `conf/excluded_repositories.json5` | Repositories (or subdirectories) to skip |
-| `cache/nodes.json5` | Index of nodes discovered across repositories, with the contract and pairing links each node's manifest declares |
-| `cache/launchers.json5` | Index of launch files discovered across repositories |
-| `cache/contracts.json5` | Index of contract definitions discovered across repositories |
-| `cache/pairings.json5` | Index of pairing definitions discovered across repositories |
+| `cache/nodes.json5` | Index of nodes discovered across repositories, with the contract and pairing links each node's manifest declares and the description of each node |
+| `cache/launchers.json5` | Index of launch files discovered across repositories, with the description of each launcher |
+| `cache/contracts.json5` | Index of contract definitions discovered across repositories, with the descriptions of each contract, of its members and of their fields |
+| `cache/pairings.json5` | Index of pairing definitions discovered across repositories, with the descriptions of each pairing, of its topics and of their fields |
 | `cache/mcp_exposures.json5` | Index of MCP exposure documents discovered across repositories |
 | `cache/repo_status.json5` | Per-repository read status: when each one was last read successfully, and how its most recent read failed |
 
@@ -129,29 +129,36 @@ A repository whose last refresh failed is marked `[retained, last read <date>]`,
 ### Search the repositories
 
 ```sh
-peppy repo search <name-regex>[:<tag-regex>][@<sha256>]
+peppy repo search [--text] <name-regex>[:<tag-regex>][@<sha256>]
 ```
 
 Finds any indexed item: nodes, launchers, contracts, pairings, and MCP exposures. Each query part is an unanchored regular expression, matched the way `apt search` matches its patterns: `camera` finds `rgb_camera`, `^rgb_camera$` only the exact name, `cam(era)?:v[12]` any combination of the alternatives. Matching is case-sensitive; prepend `(?i)` to a part for case-insensitive matching. A missing tag part matches every tag. Launchers carry no tag, so a bare name finds them, while a tag pattern only matches them when it matches the empty string (`demo:.*` does, `demo:v1` does not). The `:` splits the query, so a POSIX class like `[[:digit:]]` cannot be written; use `[0-9]`. `@<sha256>` keeps only the copies carrying exactly those bytes, wherever they are published, so `.*@<sha256>` finds a document knowing only its fingerprint.
 
-Every matching identity is listed with where it is stored, names the pattern matches outright first, then by name:
+Every matching identity is listed with the summary of its description and where it is stored, names the pattern matches outright first, then by name:
 
 ```text
 camera
 
 3 items match `camera`
-┌──────────────┬─────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────┬──────────────────────────────────────┬──────────┐
-│ KIND         │ ITEM                    │ REPOSITORY                                                                                          │ PATH                                 │ SHA256   │
-├──────────────┼─────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┤
-│ mcp exposure │ camera_and_recording:v1 │ https://github.com/Peppy-bot/mcp-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0)       │ recording/camera_and_recording.json5 │ 583f9ac9 │
-│ contract     │ rgb_camera:v1           │ https://github.com/Peppy-bot/contracts-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0) │ cameras/rgb_camera.json5             │ 4594da02 │
-│ node         │ sim_rgb_camera:v1       │ https://github.com/Peppy-bot/nodes-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0)     │ sim_rgb_camera/peppy.json5           │ 9f2c1a77 │
-└──────────────┴─────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────────┴──────────┘
+┌──────────────┬─────────────────────────┬────────────────────────────────────────────────────────────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────┬──────────────────────────────────────┬──────────┐
+│ KIND         │ ITEM                    │ SUMMARY                                                                        │ REPOSITORY                                                                                          │ PATH                                 │ SHA256   │
+├──────────────┼─────────────────────────┼────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┤
+│ mcp exposure │ camera_and_recording:v1 │                                                                                │ https://github.com/Peppy-bot/mcp-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0)       │ recording/camera_and_recording.json5 │ 583f9ac9 │
+│ contract     │ rgb_camera:v1           │ A color camera: its frames, the settings of its stream and its brightness.     │ https://github.com/Peppy-bot/contracts-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0) │ cameras/rgb_camera.json5             │ 4594da02 │
+│ node         │ sim_rgb_camera:v1       │ A color camera in the simulation. It needs a machine that runs the simulation. │ https://github.com/Peppy-bot/nodes-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0)     │ sim_rgb_camera/peppy.json5           │ 9f2c1a77 │
+└──────────────┴─────────────────────────┴────────────────────────────────────────────────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────────┴──────────┘
 ```
 
-The `SHA256` column shows the first eight characters of each document's fingerprint, as the `PIN` cells of [`peppy repo show`](#show-what-a-query-matches) do. A `@<sha256>` query takes the complete 64-character fingerprint; `--json` carries fingerprints whole.
+The `SUMMARY` column shows the first paragraph of the [description](/reference/concepts/#descriptions) of each document. An MCP exposure has no description, so its cell is empty. The `SHA256` column shows the first eight characters of each document's fingerprint, as the `PIN` cells of [`peppy repo show`](#show-what-a-query-matches) do. A `@<sha256>` query takes the complete 64-character fingerprint; `--json` carries fingerprints whole.
 
-The search reads this machine's caches, so it reflects the last `peppy repo refresh` and needs no daemon (`--core-node` has no effect). A query nothing matches is an answer, not an error: the command says so and, when repositories are excluded, that one of them may have provided the item. `--json` prints the same answer as one JSON document with `query` (the parsed `raw`, `name`, `tag`, and `sha256` parts), `matches` (each with its `kind`, `name`, `tag`, `exact`, and `published` document), and `excluded`.
+With `--text`, the name part of the query also matches the descriptions, with no regard to case: the paragraphs of each contract, pairing, node and launcher, and, for a contract or a pairing, the description of each member or topic and of each field. The hits by name come first, then the hits by description. The tag part and `@<sha256>` still filter the matches, and an MCP exposure matches by its name only:
+
+```sh
+peppy repo search --text gripper   # `gripper` in a name, then in a description
+peppy repo search --text GPU       # the nodes and launchers whose descriptions name a GPU
+```
+
+The search reads this machine's caches, so it reflects the last `peppy repo refresh` and needs no daemon (`--core-node` has no effect). A query nothing matches is an answer, not an error: the command says so and, when repositories are excluded, that one of them may have provided the item. `--json` prints the same answer as one JSON document with `query` (the parsed `raw`, `name`, `tag`, and `sha256` parts, and `text`, `true` with `--text`), `matches` (each with its `kind`, `name`, `tag`, `by_name`, `exact`, `summary`, and `published` document), and `excluded`. `by_name` is `false` for a match that a description alone found, and `summary` is `null` for an MCP exposure.
 
 ### Show what a query matches
 
@@ -161,11 +168,18 @@ peppy repo show <name-regex>[:<tag-regex>][@<sha256>]
 
 Takes the same query as [`peppy repo search`](#search-the-repositories) and prints the full report of every identity it matches, in the search's order, the way `apt show` prints one record per named package: `peppy repo show '^rgb_camera$:^v1$'` reports the one contract (the anchors keep names like `sim_rgb_camera` out, since each unanchored part matches anywhere in the name or tag), and `peppy repo show 'rgb_camera:v[12]'` answers who still uses each version in one pass.
 
-A report's first lines name each document of the identity with its kind, repository, path, and sha256; contracts and pairings are separate namespaces, so an identity published as both is reported as both, and one report covers them. For a contract or pairing, one section per way a node uses it follows: implementing it (`manifest.implements`), consuming it (`depends_on.contracts`), playing a role in it (`depends_on.pairings`), or observing one of its roles (`depends_on.pairing_observers`). Sections are grouped by repository like `peppy repo list`, each group a table with one row per slot: `NODE` and `TAG`, `ROLE` (pairing sections only), `SLOT` (the `link_id`, with its cardinality), `PIN`, and `PATH` (the manifest path). A launcher or an MCP exposure has no usage sections; its published line is the whole answer. A table wider than the terminal gives up width from its widest columns first, never below a header's width, and wraps over-long cells onto continuation lines inside the outline; piped output is never wrapped.
+A report's first lines name each document of the identity with its kind, repository, path, and sha256, each line followed by the full [description](/reference/concepts/#descriptions) of the document: each paragraph, indented, then, for a contract, `Members:`, and for a pairing, `Topics:`, with one line per member, `<kind> <name>: <description>`. Contracts and pairings are separate namespaces, so an identity published as both is reported as both, and one report covers them. For a contract or pairing, one section per way a node uses it follows: implementing it (`manifest.implements`), consuming it (`depends_on.contracts`), playing a role in it (`depends_on.pairings`), or observing one of its roles (`depends_on.pairing_observers`). Sections are grouped by repository like `peppy repo list`, each group a table with one row per slot: `NODE` and `TAG`, `ROLE` (pairing sections only), `SLOT` (the `link_id`, with its cardinality), `PIN`, and `PATH` (the manifest path). A launcher or an MCP exposure has no usage sections: the published line and the description of a launcher are the whole answer, and an MCP exposure has its published line only. A table wider than the terminal gives up width from its widest columns first, never below a header's width, and wraps over-long cells onto continuation lines inside the outline; piped output is never wrapped.
 
 ```text
 ^rgb_camera$:^v1$
   contract rgb_camera:v1 published by https://github.com/Peppy-bot/contracts-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0) at cameras/rgb_camera.json5 (sha256 a4e66999c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8)
+
+    A color camera: its frames, the settings of its stream and its brightness.
+
+    Members:
+      topic video_stream: Each frame of the camera, with its size and its encoding.
+      service video_stream_info: The size, the frame rate and the encoding of the stream.
+      service set_brightness: Set the brightness of the camera, and give the brightness that it applied.
 
 Implemented by 2 indexed nodes
   https://github.com/Peppy-bot/nodes-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0):
@@ -190,6 +204,8 @@ For a **node**, the report reads the same cache the other way: one section per p
 ```text
 ^sim_rgb_camera$:^v1$
   node sim_rgb_camera:v1 published by https://github.com/Peppy-bot/nodes-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0) at sim_rgb_camera/peppy.json5 (sha256 34d40c0140066c9055879c2d4bd022a7f665752ab834247a9ff69e4fd68a1899)
+
+    A color camera in the simulation. It needs a machine that runs the simulation.
 
 Slot engine (sim_rgb_camera_link:v1 as viewer, one) can pair with 2 indexed nodes
   https://github.com/Peppy-bot/nodes-hub.git (ref: @{peppy-release}, reads peppy-release/v0.32.0):
@@ -221,7 +237,7 @@ The `PIN` column says what a sync does with the claim's `sha256`:
 
 `(shadowed by <repository>)` means what it means in `peppy repo list`: a lower-`id` repository provides the same `name:tag`, so a launch resolves to that node, which may not make this claim at all.
 
-The show reads the same caches as the search and needs no daemon. A query nothing matches is an error, since the command was asked for a report it cannot print, and so is an identity one repository publishes twice: its report has no answer a launch would accept. `--json` prints one JSON document with `query`, `matches`, and `excluded` as the search prints them, plus `reports`: one usage report per matched identity in match order, each with its `implementers`, `consumers`, `participants`, `observers`, and `pairing_slots` (one entry per pairing slot a matched node declares, with its `link_id`, `pairing`, `role`, `cardinality`, and the `peers` that could fill it).
+The show reads the same caches as the search and needs no daemon. A query nothing matches is an error, since the command was asked for a report it cannot print, and so is an identity one repository publishes twice: its report has no answer a launch would accept. `--json` prints one JSON document with `query`, `matches`, and `excluded` as the search prints them, with `descriptions` on each match, plus `reports`. `descriptions` is `null` for an MCP exposure, else `{ description, members }`: `description` is the list of the paragraphs, and `members` lists each member of a contract or topic of a pairing as `{ kind, name, description, fields }`, with `fields` each `{ side, path, description }` of a field that has a `$description`. A list with no entry is left out. `reports` holds one usage report per matched identity in match order, each with its `implementers`, `consumers`, `participants`, `observers`, and `pairing_slots` (one entry per pairing slot a matched node declares, with its `link_id`, `pairing`, `role`, `cardinality`, and the `peers` that could fill it).
 
 ### Refresh the index
 
@@ -237,10 +253,13 @@ Re-scans all configured repositories and rebuilds the node, launcher, contract, 
 - Reads local directories in place. Of each git repository, it fetches only the commit that its `ref` names, at depth 1: no history, no other branch, and no other tag.
 - Reads up to 8 repositories at once, so a refresh takes about as long as its slowest repository.
 - Records what each repository's committed [`peppy_repository.json5`](#the-repository-index) publishes: nodes and their tags, together with the contract and pairing links each node's manifest declares, launchers (one per name, no tag), and contracts, pairings, and MCP exposures (keyed by their manifest `name:tag`). A repository without that file fails its read with instructions to run `peppy repo index`.
+- Keeps the [descriptions](/reference/concepts/#descriptions) of each node, launcher, contract and pairing in the caches, so `peppy repo search` and `peppy repo show` read no document.
 - Reports each excluded repository and the progress of each read in real time, and each discovered node, launcher, contract, pairing, and MCP exposure when every repository is read, in priority order.
 - Caches results in `~/.peppy/cache/nodes.json5`, `~/.peppy/cache/launchers.json5`, `~/.peppy/cache/contracts.json5`, `~/.peppy/cache/pairings.json5`, and `~/.peppy/cache/mcp_exposures.json5`, and records per-repository read status in `~/.peppy/cache/repo_status.json5`.
 
 On completion it prints a summary, for example `Repository refresh complete. 12 node(s), 3 launcher(s), 5 contract(s), 2 pairing(s), 1 MCP exposure(s) found.`
+
+A command that reads a cache that does not parse, for example a cache whose entries have no descriptions, refuses it and tells you to run `peppy repo update`, which writes the caches again.
 
 When you install another Peppy version, the daemon reads the repositories on `@{peppy-release}` again at its next start, at the tags of the new version, before it answers any request. That start takes as long as the fetch of those repositories. If a repository cannot be read then, it keeps the entries it holds and the daemon tries again at its next start.
 

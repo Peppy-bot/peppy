@@ -1,8 +1,9 @@
 //! Pairing runtime semantics over the mock adapter: unpaired slots are
 //! silent, pairing pins the wire triple live, re-pins swap without duplicate
 //! or stale delivery, clears silence the slot again, a multi slot hears every
-//! peer it holds and reaches each one alone, and the `peer_update` service
-//! applies daemon deliveries end to end.
+//! peer it holds and reaches each one alone, a scalar slot reaches the one
+//! peer that holds its pair alone, and the `peer_update` service applies
+//! daemon deliveries end to end.
 
 mod common;
 
@@ -444,64 +445,101 @@ async fn a_multi_slot_hears_every_peer_it_holds() {
     expect_silence(&mut subscription).await;
 }
 
-/// A scalar slot's publisher names no peer: the one peer holding its pair
-/// selects the stream through its own pinned subscription, and an observer of
-/// the slot hears it too.
+/// A scalar slot's publisher names, in the key of each publish, the one peer
+/// that holds its pair then: a peer that the slot pairs with no more, or not
+/// yet, hears none of it, even while it still pins the slot, and a publish
+/// while the slot is unpaired sends nothing. Each peer receives in the order
+/// of the publishes, so the first message a peer receives after a publish to
+/// another proves that it did not hear that one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_scalar_slots_publisher_reaches_the_peer_holding_its_pair() {
+async fn a_scalar_slots_publisher_reaches_the_peer_holding_its_pair_alone() {
     let (client, shared) = get_client_server().await;
-    let peer_handle = MessengerHandle::from_shared(shared);
+    let peers_handle = MessengerHandle::from_shared(shared);
 
-    // arm_1 holds the pair with the controller's `arm` slot, subscribed as its
-    // own slot `controller` pinned to the controller.
+    // Two arms, each subscribed the way a peer's own slot subscribes: pinned
+    // to the controller and to their own slot.
     let node = ProducerRef::new(CORE, CONSUMER_INSTANCE);
-    let mut arm_1 = peppylib::testing::subscribe_peer_pinned(
-        &peer_handle,
-        CORE,
-        "arm_1",
-        ARM_SLOT_LINK_ID,
-        pairing_target(),
-        &node,
-        CONSUMER_SLOT_LINK_ID,
-        TOPIC,
-        QoSProfile::Reliable,
-    )
-    .await
-    .expect("pinned peer subscription");
-    let publisher = TopicMessenger::declare_sole_peer_publisher(
-        &client.caller_handle,
-        CORE,
-        CONSUMER_INSTANCE,
-        pairing_target(),
-        CONSUMER_SLOT_LINK_ID,
-        TOPIC,
-        QoSProfile::Reliable,
-    )
-    .await
-    .expect("a scalar slot's publisher declares");
-    let matched = TopicMessenger::wait_for_pairing_subscriber(
-        &client.caller_handle,
-        CORE,
-        CONSUMER_INSTANCE,
-        pairing_target(),
-        CONSUMER_SLOT_LINK_ID,
-        TOPIC,
-        &pin_to("arm_1"),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("wait should not error");
-    assert!(matched, "arm_1's subscription did not appear");
+    let subscribe_arm = |instance: &'static str| {
+        let handle = peers_handle.clone();
+        let node = node.clone();
+        async move {
+            peppylib::testing::subscribe_peer_pinned(
+                &handle,
+                CORE,
+                instance,
+                ARM_SLOT_LINK_ID,
+                pairing_target(),
+                &node,
+                CONSUMER_SLOT_LINK_ID,
+                TOPIC,
+                QoSProfile::Reliable,
+            )
+            .await
+            .expect("pinned peer subscription")
+        }
+    };
+    let mut arm_1 = subscribe_arm("arm_1").await;
+    let mut arm_2 = subscribe_arm("arm_2").await;
+    for arm in ["arm_1", "arm_2"] {
+        let matched = TopicMessenger::wait_for_pairing_subscriber(
+            &client.caller_handle,
+            CORE,
+            CONSUMER_INSTANCE,
+            pairing_target(),
+            CONSUMER_SLOT_LINK_ID,
+            TOPIC,
+            &pin_to(arm),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("wait should not error");
+        assert!(matched, "{arm}'s subscription did not appear");
+    }
 
-    publisher
-        .publish(Payload::from_static(b"for my one peer"))
+    let (tx, watch_rx) = watch::channel(paired_with(1, &["arm_1"]));
+    let publisher = TopicPublisher::to_sole_peer(declare_peer_publisher_with_watch(
+        client.caller_handle.clone(),
+        CORE.to_string(),
+        CONSUMER_INSTANCE.to_string(),
+        CONSUMER_SLOT_LINK_ID.to_string(),
+        watch_rx,
+        pairing_target(),
+        TOPIC.to_string(),
+        QoSProfile::Reliable,
+    ));
+    async fn received(subscription: &mut peppylib::messaging::Subscription) -> Vec<u8> {
+        tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
+            .await
+            .expect("a message within 2s")
+            .expect("open subscription")
+            .payload_bytes()
+            .to_vec()
+    }
+    let publish = |payload: &'static [u8]| publisher.publish(Payload::from_static(payload));
+
+    publish(b"for arm_1").await.expect("publish");
+    assert_eq!(received(&mut arm_1).await, b"for arm_1");
+
+    tx.send(paired_with(2, &["arm_2"])).expect("watch send");
+    publish(b"for arm_2").await.expect("publish");
+    assert_eq!(
+        received(&mut arm_2).await,
+        b"for arm_2",
+        "arm_2 heard nothing before its pair"
+    );
+
+    tx.send(paired_with(3, &[])).expect("watch send");
+    publish(b"while unpaired")
         .await
-        .expect("publish");
-    let received = tokio::time::timeout(Duration::from_secs(2), arm_1.on_next_message())
-        .await
-        .expect("a message within 2s")
-        .expect("open subscription");
-    assert_eq!(&*received.payload_bytes(), b"for my one peer");
+        .expect("a publish while unpaired is a no-op");
+
+    tx.send(paired_with(4, &["arm_1"])).expect("watch send");
+    publish(b"back to arm_1").await.expect("publish");
+    assert_eq!(
+        received(&mut arm_1).await,
+        b"back to arm_1",
+        "arm_1 heard nothing while another arm or no arm held the pair"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

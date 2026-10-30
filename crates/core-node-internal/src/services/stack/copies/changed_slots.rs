@@ -486,6 +486,7 @@ mod tests {
         manifest: {
             name: "monitor",
             tag: "v1",
+            description: ["A test node."],
             depends_on: {
                 nodes: [
                     { name: "robot", tag: "v1", link_id: "robots", cardinality: "zero_or_more" },
@@ -648,6 +649,7 @@ mod tests {
             PeppyLauncherParser::from_content(&format!(
                 r#"{{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 deployments: [
                     {{ source: {{ name: "monitor", tag: "v1" }},
                       instances: [{{ instance_id: "monitor_inst", links: {{ fleet: {fleet} }} }}] }},
@@ -685,6 +687,7 @@ mod tests {
         let remaining = PeppyLauncherParser::from_content(
             r#"{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 deployments: [
                     { source: { name: "monitor", tag: "v1" },
                       instances: [{ instance_id: "monitor_inst", links: { fleet: [] } }] },

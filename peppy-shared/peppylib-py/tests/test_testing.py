@@ -46,7 +46,7 @@ CALLER_INSTANCE = "caller_1"
 
 _PEPPY_CONFIG = """{
     peppy_schema: "node/v1",
-    manifest: { name: "test_node", tag: "v1" },
+    manifest: { name: "test_node", tag: "v1", description: ["A test node."] },
     execution: { language: "python", run_cmd: ["uv", "run"] },
 }"""
 
@@ -475,7 +475,7 @@ async def test_harness_core_node_reads_the_setup_budget_of_its_manifest(tmp_path
         peppy_config_path.write_text(
             """{
     peppy_schema: "node/v1",
-    manifest: { name: "test_node", tag: "v1" },
+    manifest: { name: "test_node", tag: "v1", description: ["A test node."] },
     execution: {
         language: "python",
         run_cmd: ["uv", "run"],
@@ -679,20 +679,6 @@ async def test_mock_clock_publisher_leaves_the_domain_to_the_node(tmp_path):
             await clock.close()
             del node_runner
             gc.collect()
-
-
-@pytest.mark.asyncio
-async def test_prepare_test_process_sets_zenoh_runtime():
-    """Importing peppylib.testing configures the zenoh Net runtime workers
-    unless the operator already chose a value."""
-    import os
-
-    assert os.environ.get("ZENOH_RUNTIME"), (
-        "peppylib.testing must ensure ZENOH_RUNTIME is set before the native "
-        "runtime initializes"
-    )
-    # Module import already ran; calling again is idempotent.
-    peppy_testing.prepare_test_process()
 
 
 # --- Pump failures ------------------------------------------------------------

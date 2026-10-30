@@ -8,6 +8,7 @@ use config::node::{
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
   name: "video_stream",
+  description: "A test member.",
   qos_profile: "sensor_data",
   message_format: {
     header: {
@@ -29,6 +30,7 @@ const EMITTED_TOPIC_EXAMPLE: &str = r#"
 const EMITTED_TOPIC_EXAMPLE2: &str = r#"
 {
   name: "push_lidar_object",
+  description: "A test member.",
   qos_profile: "sensor_data",
   message_format: {
     header: {
@@ -332,6 +334,7 @@ fn emit_topic_escapes_python_keyword_fields() {
     let emitted_topic_with_python_keyword_fields: &str = r#"
     {
       name: "keyword_topic",
+      description: "A test member.",
       qos_profile: "standard",
       message_format: {
         "class": "u32",
@@ -366,6 +369,7 @@ fn emit_topic_rejects_reserved_message_field_name() {
     let emitted_topic_reserved_field_example: &str = r#"
     {
       name: "robot_state",
+      description: "A test member.",
       qos_profile: "standard",
       message_format: {
         instance_id: "string",
@@ -397,6 +401,7 @@ fn emit_topic_rejects_fixed_string_array() {
     let emitted_topic_fixed_string_array_example: &str = r#"
     {
       name: "labels",
+      description: "A test member.",
       qos_profile: "standard",
       message_format: {
         labels: {
@@ -427,6 +432,7 @@ fn emit_topic_rejects_fixed_object_array() {
     let emitted_topic_fixed_object_array_example = r#"
     {
       name: "detections",
+      description: "A test member.",
       qos_profile: "sensor_data",
       message_format: {
         objects: {
@@ -461,6 +467,7 @@ fn emit_topic_with_dynamic_object_array() {
     let emitted_topic_dynamic_object_array_example: &str = r#"
     {
       name: "detections",
+      description: "A test member.",
       qos_profile: "sensor_data",
       message_format: {
         objects: {

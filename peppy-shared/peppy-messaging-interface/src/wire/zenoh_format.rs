@@ -74,11 +74,10 @@ impl ZenohWireFormat {
     }
 
     /// `{to_core|*}/{as_core}/{to_inst|*}/{as_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{as_topic}`,
-    /// with `/{to_link_id}` appended on a pairing emission to a named peer and
-    /// `/*` on one from a scalar slot. The recipient slots are the ones a
-    /// subscriber pins as its own, so a pairing emission that fills them
-    /// reaches one peer, a scalar slot's reaches whoever pinned its one pair,
-    /// and every other emission reaches whoever subscribes.
+    /// with `/{to_link_id}` appended on a pairing emission, which names its
+    /// peer. The recipient slots are the ones a subscriber pins as its own,
+    /// so a pairing emission reaches its one peer and the observers of the
+    /// slot, and every other emission reaches whoever subscribes.
     pub(crate) fn topic_publish(s: &TopicWireSender) -> String {
         let (discriminator, name, tag) = target_segments(Some(&s.as_target));
         let (to_core, to_inst) = match &s.to_peer {
@@ -91,7 +90,6 @@ impl ZenohWireFormat {
         );
         match &s.to_peer {
             Some(peer) => format!("{key}/{}", peer.link_id),
-            None if s.as_target.is_pairing() => format!("{key}/{SINGLE_CHUNK_WILDCARD}"),
             None => key,
         }
     }

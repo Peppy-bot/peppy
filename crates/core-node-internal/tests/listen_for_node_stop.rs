@@ -38,6 +38,7 @@ async fn listen_for_node_stop_success() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -199,6 +200,7 @@ async fn node_stop_reports_graceful_for_node_that_exits_after_grace_but_within_d
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -699,6 +701,7 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",

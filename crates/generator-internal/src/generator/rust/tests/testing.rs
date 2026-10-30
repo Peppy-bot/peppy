@@ -327,7 +327,7 @@ fn harness_of_a_node_emitting_nothing_lints_clean() {
 fn harness_of_a_node_emitting_a_topic_lints_clean() {
     assert_generated_node_lints_clean(|generator| {
         let status: NativeEmittedTopic = serde_json5::from_str(
-            r#"{ name: "status", qos_profile: "reliable", message_format: { outcome: "string" } }"#,
+            r#"{ name: "status", description: "A test member.", qos_profile: "reliable", message_format: { outcome: "string" } }"#,
         )
         .unwrap();
         generator.add_emitted_topic(&status, None).unwrap();
@@ -341,7 +341,7 @@ fn harness_of_a_node_emitting_a_topic_lints_clean() {
 fn harness_of_a_node_with_retaining_topics_lints_clean() {
     assert_generated_node_lints_clean(|generator| {
         let status: NativeEmittedTopic = serde_json5::from_str(
-            r#"{ name: "status", retention: { latest: 3 }, message_format: { outcome: "string" } }"#,
+            r#"{ name: "status", description: "A test member.", retention: { latest: 3 }, message_format: { outcome: "string" } }"#,
         )
         .unwrap();
         generator.add_emitted_topic(&status, None).unwrap();
@@ -381,6 +381,7 @@ fn harness_of_a_node_with_rust_keyword_names_lints_clean() {
     let keyword_action: config::node::NativeExposedAction = serde_json5::from_str(
         r#"{
           name: "move",
+          description: "A test member.",
           goal_service: {
             request_message_format: { box: { $type: "array", $items: "f64", $length: 4 } },
             response_message_format: { match: "bool" },
@@ -391,13 +392,14 @@ fn harness_of_a_node_with_rust_keyword_names_lints_clean() {
     )
     .unwrap();
     let keyword_topic: NativeEmittedTopic = serde_json5::from_str(
-        r#"{ name: "box", qos_profile: "reliable", message_format: { type: "string" } }"#,
+        r#"{ name: "box", description: "A test member.", qos_profile: "reliable", message_format: { type: "string" } }"#,
     )
     .unwrap();
 
     assert_generated_node_lints_clean(|generator| {
         let exposed_service = config::node::NativeExposedService {
             name: "type".to_string(),
+            description: config::description::Description::new("A test service.").unwrap(),
             request_message_format: Some(keyword_fields.clone()),
             response_message_format: Some(keyword_fields.clone()),
         };

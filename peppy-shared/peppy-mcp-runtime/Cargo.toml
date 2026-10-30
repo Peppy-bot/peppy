@@ -35,7 +35,7 @@ indexmap = "2.2"
 # Validates tool inputs against the bundle's derived schemas before anything
 # touches the Peppy graph. Default features are dropped so no HTTP resolver or
 # TLS stack rides along; bundle schemas are self-contained.
-jsonschema = { version = "0.58", default-features = false }
+jsonschema = { version = "0.60", default-features = false }
 # JPEG and 16-bit PNG transcoding for image-representation topic snapshots,
 # the two codecs the representation policy emits.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

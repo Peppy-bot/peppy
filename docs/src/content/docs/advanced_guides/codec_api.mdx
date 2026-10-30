@@ -1,6 +1,6 @@
 ---
 title: The codec API
-description: Call the members of contracts that your node was not built with, parse contract documents with their enums, marks and comments, and convert messages of any format
+description: Call the members of contracts that your node was not built with, parse contract documents with their descriptions, enums and marks, and convert messages of any format
 sidebar:
   order: 21
 ---
@@ -11,7 +11,7 @@ A node calls the members of the contracts that its manifest names through its ge
 
 The codec API has three parts:
 
-- **The parser of contracts.** It reads a contract document and gives the message formats of its members, the [enums](/reference/message_format/#enum-modifier) and the [marks](/reference/message_format/#marks-modifier) of their fields, the [marks](/advanced_guides/contract_implementation/#marks) and the [failure kinds](/advanced_guides/contract_implementation/#failure-kinds) of its members, and the [comments](/advanced_guides/contract_implementation/#comments) of its text.
+- **The parser of contracts.** It reads a contract document and gives the [description](/reference/concepts/#descriptions) of the contract, the description and the message formats of each member, the [enums](/reference/message_format/#enum-modifier), the [marks](/reference/message_format/#marks-modifier) and the [descriptions](/reference/message_format/#description-modifier) of their fields, and the [marks](/advanced_guides/contract_implementation/#marks) and the [failure kinds](/advanced_guides/contract_implementation/#failure-kinds) of its members.
 - **The codec.** It converts a message of any format between its canonical JSON values and the bytes on the wire. The bytes are the bytes that a generated node writes for the same values.
 - **The clients.** They call a service, send the goal of an action and follow it, and read a topic of a contract, on one producer.
 
@@ -24,7 +24,11 @@ A node asks for the codec API in the `execution` block of its manifest:
 ```json5
 {
   peppy_schema: "node/v1",
-  manifest: { name: "workflow_director", tag: "v1" },
+  manifest: {
+    name: "workflow_director",
+    tag: "v1",
+    description: ["A director of workflows: it calls the members of the contracts that each workflow names, with no new build."],
+  },
   execution: {
     language: "rust",
     run_cmd: ["./target/release/workflow_director"],
@@ -66,19 +70,24 @@ let contract = PeppyContractParser::from_content(&document)?;
 // The format of the goal of `move_gripper`.
 let goal = contract.message_format(InterfaceKind::Action, "move_gripper", MessageSide::Goal);
 
-// The field `target.item` of that goal, with its enum and its marks.
+// The field `target.item` of that goal, with its enum, its marks and its description.
 let item = contract
     .field(InterfaceKind::Action, "move_gripper", MessageSide::Goal, &["target", "item"])
     .expect("the goal has the field");
 let holds_an_item_id = item.marks().contains("item_id");
 let values = item.enum_values().map(|values| values.values());
+let item_about = item.description().map(|description| description.as_str());
 
-// The marks of the member, and the comments of the text.
+// The marks of the member.
 let moves_robot = contract.marks.moves_robot(InterfaceKind::Action, "move_gripper");
-let about = contract.comments.member(InterfaceKind::Action, "move_gripper");
+
+// The description of the contract and of the member.
+let summary = contract.description().summary().as_str();
+let paragraphs = contract.description().paragraphs();
+let about = contract.member_description(InterfaceKind::Action, "move_gripper");
 ```
 
-`peppy_codec::contract` also gives the types of a format that the API names, such as `MessageFormat`, `SchemaType` and `Marks`. `PeppyContractParser::from_path` reads a file.
+`description()` gives the `DocumentDescription` of the contract: `summary()` is its first paragraph, and `paragraphs()` gives each paragraph. `member_description(kind, name)` gives an `Option<&Description>`, `None` for a member that the contract does not declare. `field_description(kind, name, side, path)` gives the description of a field by its path, as `field(...)?.description()` does: `None` for a field that the format does not have, or that has no `$description`. `peppy_codec::contract` also gives the types of a format that the API names, such as `MessageFormat`, `SchemaType`, `Marks`, `Description` and `DocumentDescription`. `PeppyContractParser::from_path` reads a file.
 
 </TabItem>
 <TabItem label="Python">
@@ -92,15 +101,18 @@ goal = contract.message_format("action", "move_gripper", "goal")
 marks = contract.field_marks("action", "move_gripper", "goal", ["target", "item"])
 values = contract.field_enum("action", "move_gripper", "goal", ["target", "item"])
 member_marks = contract.member_marks("action", "move_gripper")
-about = contract.member_comment("action", "move_gripper")
+
+paragraphs = contract.description
+about = contract.member_description("action", "move_gripper")
+item_about = contract.field_description("action", "move_gripper", "goal", ["target", "item"])
 ```
 
-`Contract.from_path` reads a file. A text that is not a contract raises `codec.ContractError`, which names the key that the parser refused.
+`description` is the list of the paragraphs of the contract, the first one its summary. `member_description` gives a `str`, and raises `KeyError` for a member that the contract does not declare. `field_description` gives a `str`, or `None` for a field with no `$description`, and raises `KeyError` for a field that the format does not have. `Contract.from_path` reads a file. A text that is not a contract raises `codec.ContractError`, which names the key that the parser refused.
 
 </TabItem>
 </Tabs>
 
-A member is named by its kind and its name. A message side is named by its member: `message` of a topic, `request` and `response` of a service, `goal`, `feedback` and `result` of an action. A field is named by its path in its format: the key of each object that it sits in, from the root of the format, with the items of an array passed through. So the field `angle` of each item of `joints` is `["joints", "angle"]`.
+A member is named by its kind and its name. A message side is named by its member: `message` of a topic, `request` and `response` of a service, `goal`, `goal_response` (the reply that accepts a goal), `feedback` and `result` of an action. A field is named by its path in its format: the key of each object that it sits in, from the root of the format, with the items of an array passed through. So the field `angle` of each item of `joints` is `["joints", "angle"]`.
 
 The parser gives each mark as written, `moves_robot` and the marks of your own alike. Your node defines the marks that it reads, and checks them.
 

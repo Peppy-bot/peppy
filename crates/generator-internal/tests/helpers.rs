@@ -240,6 +240,7 @@ fn consumer_stub_node_config_with_execution(
   manifest: {{
     name: "generated_node",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {{
       {slot_list}: [{{ name: "{dep_name}", tag: "{dep_tag}", link_id: "{link_id}"{cardinality_field} }}]
     }}
@@ -309,7 +310,8 @@ pub const STUB_NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
   manifest: {
     name: "generated_node",
-    tag: "v1"
+    tag: "v1",
+    description: ["A test node."],
   },
   execution: {
     language: "rust",
@@ -1353,7 +1355,7 @@ async fn poll_shutdown(
 pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
   manifest: { name: "generated_node",
-    tag: "v1" },
+    tag: "v1", description: ["A test node."] },
   execution: { language: "python",
     run_cmd: ["uv", "run", "python", "main.py"]
   }
@@ -1514,6 +1516,7 @@ pub const JOINTS_CONTRACT_NAME: &str = "limb_motion";
 pub const JOINTS_CONTRACT_ACTION: &str = r#"
 {
   name: "move_arm_joints",
+  description: "A test member.",
   goal_service: {
     request_message_format: {
       arm_id: "u16",
@@ -1543,6 +1546,7 @@ pub const JOINTS_REFINEMENT: &str = r#"
 pub const EXPOSED_ACTION_EXAMPLE: &str = r#"
 {
   name: "move_arm",
+  description: "A test member.",
   goal_service: {
     request_message_format: {
       arm_id: "u16",
@@ -1645,6 +1649,7 @@ pub const TOPIC_DEDUP_SHARED_FORMAT: &str = r#"{
 pub const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
   name: "enable_camera",
+  description: "A test member.",
   request_message_format: {
     enable: "bool"
   },
@@ -1671,6 +1676,7 @@ pub const CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 pub const EXPOSED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
 {
   name: "get_system_status",
+  description: "A test member.",
   response_message_format: {
     healthy: "bool"
   }
@@ -1750,6 +1756,7 @@ impl ServicePair {
 pub const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
   name: "video_stream",
+  description: "A test member.",
   qos_profile: "sensor_data",
   message_format: {
     header: {

@@ -79,6 +79,9 @@ fn write_key(out: &mut String, key: &str) {
     }
 }
 
+/// `s` as a quoted string. The line and paragraph separators (U+2028 and
+/// U+2029) are escaped as well: JSON5 parsers that follow ECMAScript 5,
+/// serde_json5 among them, refuse them raw inside a string.
 fn write_string(out: &mut String, s: &str) {
     out.push('"');
     for c in s.chars() {
@@ -90,6 +93,8 @@ fn write_string(out: &mut String, s: &str) {
             '\t' => out.push_str("\\t"),
             '\x08' => out.push_str("\\b"),
             '\x0c' => out.push_str("\\f"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
             c if (c as u32) < 0x20 => {
                 write!(out, "\\u{:04x}", c as u32).unwrap();
             }
@@ -160,6 +165,20 @@ mod tests {
             }
         ]);
         let s = to_string_pretty(&v).unwrap();
+        let parsed: serde_json::Value = serde_json5::from_str(&s).unwrap();
+        assert_eq!(parsed, v);
+    }
+
+    /// A string with a line or a paragraph separator is written escaped,
+    /// and serde_json5 reads it back as it was.
+    #[test]
+    fn escapes_the_line_and_paragraph_separators() {
+        let v = json!({ "description": "One\u{2028}line, one\u{2029}paragraph." });
+        let s = to_string_pretty(&v).unwrap();
+        assert!(
+            s.contains(r#"description: "One\u2028line, one\u2029paragraph.""#),
+            "got: {s}"
+        );
         let parsed: serde_json::Value = serde_json5::from_str(&s).unwrap();
         assert_eq!(parsed, v);
     }

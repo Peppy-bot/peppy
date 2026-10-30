@@ -27,11 +27,13 @@
   manifest: {
     name: "contact_state",
     tag: "v1",
+    description: ["A test contract."],
   },
   interfaces: {
     topics: [
       {
         name: "contacts",
+        description: "A test topic.",
         // High-frequency stream where only the latest snapshot matters;
         // occasional drops are acceptable.
         qos_profile: "sensor_data",

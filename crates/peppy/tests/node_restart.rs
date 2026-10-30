@@ -137,7 +137,7 @@ fn node_writing_pid_to(
     format!(
         r#"{{
             peppy_schema: "node/v1",
-            manifest: {{ name: "{name}", tag: "{TAG}" }},
+            manifest: {{ name: "{name}", tag: "{TAG}", description: ["A test node."] }},
             execution: {{
                 language: "rust",
                 run_cmd: ["sh", "-c", "echo $$ > {pidfile_word}; {body}"],
@@ -659,6 +659,7 @@ async fn three_levels_resolve_as_documented() {
             format!(
                 r#"{{
                     peppy_schema: "launcher/v1",
+                    description: ["A test launcher."],
                     framework: {{ restart: "always", clocks: {{
                         sim: {{ publisher: "pub_inst" }},
                         sim2: {{ publisher: "pub2_inst" }},
@@ -842,6 +843,7 @@ async fn a_relaunch_during_the_wait_leaves_no_slot() {
         &launcher,
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             framework: { restart: "on_failure" },
             deployments: [
                 { source: { name: "waiter", tag: "v1" }, instances: [{ instance_id: "waiter_inst" }] },
@@ -931,6 +933,7 @@ async fn a_copy_removed_during_the_wait_is_absent_after_the_restart() {
         &launcher,
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {
                 deployments: [{ source: { name: "arm", tag: "v1" },
                                 instances: [{ instance_id: "arm_inst", framework: { restart: "on_failure" } }] }],
@@ -1641,6 +1644,7 @@ async fn an_observer_sees_the_new_generation_after_a_restart() {
                 manifest: {{
                     name: "recorder",
                     tag: "v1",
+                    description: ["A test node."],
                     depends_on: {{
                         pairing_observers: [
                             {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "zero_or_one" }}
@@ -1747,6 +1751,7 @@ async fn a_restarted_clock_consumer_reads_its_domain_again() {
         &launcher,
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             framework: { restart: "on_failure", clocks: { sim: { publisher: "pub_inst" } } },
             deployments: [
                 { source: { name: "by_publisher", tag: "v1" }, instances: [{ instance_id: "pub_inst" }] },
@@ -1823,6 +1828,7 @@ async fn an_observer_set_shrunk_during_the_wait_is_in_the_respawn() {
         &launcher,
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {
                 deployments: [{ source: { name: "robot_arm", tag: "v1" },
                                 instances: [{ instance_id: "arm_inst",
@@ -1927,6 +1933,7 @@ async fn a_first_start_failure_fails_the_launch_under_every_policy() {
             format!(
                 r#"{{
                     peppy_schema: "launcher/v1",
+                    description: ["A test launcher."],
                     framework: {{ restart: "{policy}" }},
                     deployments: [
                         {{ source: {{ name: "exits", tag: "v1" }}, instances: [{{ instance_id: "exits_inst" }}] }},
@@ -1963,6 +1970,7 @@ fn observed_arm_manifest(pid_dir: &Path) -> String {
             manifest: {{
                 name: "robot_arm",
                 tag: "{TAG}",
+                description: ["A test node."],
                 depends_on: {{ pairings: [
                     {{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", cardinality: "zero_or_one" }}
                 ] }}

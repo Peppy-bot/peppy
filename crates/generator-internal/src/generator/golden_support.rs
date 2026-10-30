@@ -25,6 +25,7 @@ use std::path::Path;
 pub(crate) const EMITTED: &str = r#"
 {
   name: "video_stream",
+  description: "A test member.",
   qos_profile: "sensor_data",
   message_format: {
     header: { $type: "object", stamp: "time", frame_id: "u32" },
@@ -38,6 +39,7 @@ pub(crate) const EMITTED: &str = r#"
 pub(crate) const EMITTED_NO_FORMAT: &str = r#"
 {
   name: "heartbeat",
+  description: "A test member.",
   qos_profile: "reliable"
 }
 "#;
@@ -45,6 +47,7 @@ pub(crate) const EMITTED_NO_FORMAT: &str = r#"
 pub(crate) const EXPOSED_SERVICE_FULL: &str = r#"
 {
   name: "enable_camera",
+  description: "A test member.",
   request_message_format: { enable: "bool" },
   response_message_format: {
     enabled: "bool",
@@ -56,6 +59,7 @@ pub(crate) const EXPOSED_SERVICE_FULL: &str = r#"
 pub(crate) const EXPOSED_SERVICE_REQUEST_ONLY: &str = r#"
 {
   name: "set_mode",
+  description: "A test member.",
   request_message_format: { mode: "u8" }
 }
 "#;
@@ -63,19 +67,22 @@ pub(crate) const EXPOSED_SERVICE_REQUEST_ONLY: &str = r#"
 pub(crate) const EXPOSED_SERVICE_RESPONSE_ONLY: &str = r#"
 {
   name: "get_system_status",
+  description: "A test member.",
   response_message_format: { healthy: "bool" }
 }
 "#;
 
 pub(crate) const EXPOSED_SERVICE_BARE: &str = r#"
 {
-  name: "ping"
+  name: "ping",
+  description: "A test member.",
 }
 "#;
 
 pub(crate) const EXPOSED_ACTION_FULL: &str = r#"
 {
   name: "move_arm",
+  description: "A test member.",
   goal_service: {
     request_message_format: {
       arm_id: "u16",
@@ -101,6 +108,7 @@ pub(crate) const EXPOSED_ACTION_FULL: &str = r#"
 pub(crate) const EXPOSED_ACTION_BARE: &str = r#"
 {
   name: "home_all",
+  description: "A test member.",
   goal_service: {},
   result_service: {}
 }
@@ -109,6 +117,7 @@ pub(crate) const EXPOSED_ACTION_BARE: &str = r#"
 pub(crate) const EXPOSED_ACTION_FEEDBACK_ONLY: &str = r#"
 {
   name: "track_target",
+  description: "A test member.",
   goal_service: {},
   feedback_topic: {
     qos_profile: "sensor_data",
@@ -123,6 +132,7 @@ pub(crate) const EXPOSED_ACTION_FEEDBACK_ONLY: &str = r#"
 pub(crate) const EXPOSED_ACTION_NO_RESULT: &str = r#"
 {
   name: "nudge",
+  description: "A test member.",
   goal_service: {}
 }
 "#;
@@ -197,6 +207,7 @@ const CONSUMED_ACTION_RESULT: &str = r#"
 pub(crate) const PEER_TOPIC: &str = r#"
 {
   name: "joint_states",
+  description: "A test member.",
   qos_profile: "sensor_data",
   message_format: {
     positions: { $type: "array", $items: "f64", $length: 3 },

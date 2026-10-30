@@ -3,6 +3,7 @@
   manifest: {
     name: "standalone",
     tag: "v1",
+    description: ["A node with no topic, service or action, which takes the parameters of a camera."],
   },
   interfaces: {},
   execution: {

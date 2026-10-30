@@ -60,7 +60,7 @@ tokio = { version = "1", features = ["test-util", "net"] }
 flate2 = "1"
 # The PyPI mirror the presence check and the build-flow tests ask, and the
 # loopback packages base URL that points at it.
-httpmock = "0.8"
+httpmock = "0.9"
 daemon-config = { workspace = true, features = ["test-support"] }
 # `drain_records`, which reads what a test log exported.
 log-export = { workspace = true, features = ["test-support"] }

@@ -1,8 +1,8 @@
-// The test-environment machinery (the pre-main ZENOH_RUNTIME ctor, the
-// fd-limit FFI, the mesh-serialization mutex, the ephemeral router context)
-// lives in `crate::testing`, enabled for this crate's tests by the cyclic
-// self-dev-dependency and shared with generated node test code. These tests
-// are also the regression net for those helpers.
+// The test-environment machinery (the fd-limit FFI, the mesh-serialization
+// mutex, the ephemeral router context) lives in `crate::testing`, enabled for
+// this crate's tests by the cyclic self-dev-dependency and shared with
+// generated node test code. These tests are also the regression net for those
+// helpers.
 
 use crate::types::Payload;
 use config::node::{QoSProfile, TopicRetention};
@@ -115,10 +115,9 @@ impl ActionClientCase {
 
 /// Thin expect-adapting wrapper over [`crate::testing::EphemeralRouter`],
 /// which owns every router/test-environment semantic these tests rely on: the
-/// pre-main ZENOH_RUNTIME worker ctor, the fd-limit raise, the per-process
-/// mesh-serialization guard (held for this context's lifetime), the zenoh-open
-/// readiness probe, and connect retries. Each setup failure panics with a
-/// message that names the failed step.
+/// fd-limit raise, the per-process mesh-serialization guard (held for this
+/// context's lifetime), the zenoh-open readiness probe, and connect retries.
+/// Each setup failure panics with a message that names the failed step.
 struct TestRouterContext {
     router: crate::testing::EphemeralRouter,
 }

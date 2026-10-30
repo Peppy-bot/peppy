@@ -60,6 +60,7 @@ fn fleet_with_a_manager(
         format!(
             r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         deployments: [{{ source: {{ name: "manager", tag: "v1" }}, instances: [
             {{ instance_id: "{MANAGER}", daemon_scopes: {{ stack: {{
                 max_copies: 2,

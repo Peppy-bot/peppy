@@ -220,6 +220,12 @@ fn fingerprint_or_seeded(path: &Path, seed: &str) -> String {
         .unwrap_or_else(|_| seeded_sha(seed))
 }
 
+/// The descriptions of the document `label` as a refresh records them: one
+/// paragraph that names it, and no member.
+pub fn test_descriptions(label: &str) -> serde_json::Value {
+    serde_json::json!({ "description": [format!("The {label}.")] })
+}
+
 /// The `links` object of a node cache entry that declares no contract or
 /// pairing link, serialized from the type `repo refresh` writes so a change
 /// to its shape reaches every hand-written fixture.
@@ -291,6 +297,7 @@ impl TestPackagesCache {
             "sha256": sha256,
             "origin": fs_origin(&manifest_path),
             "links": empty_links(),
+            "descriptions": test_descriptions(&format!("node {name}:{tag}")),
         }));
         self
     }
@@ -327,6 +334,7 @@ impl TestPackagesCache {
                 &format!("{name}:{tag}"),
             ),
             "links": empty_links(),
+            "descriptions": test_descriptions(&format!("node {name}:{tag}")),
         }));
         self
     }
@@ -343,6 +351,7 @@ impl TestPackagesCache {
             "launcher_name": name,
             "sha256": sha256,
             "origin": fs_origin(path),
+            "descriptions": test_descriptions(&format!("launcher {name}")),
         }));
         self
     }
@@ -365,6 +374,7 @@ impl TestPackagesCache {
             "tag": tag,
             "sha256": config::fingerprint::fingerprint_for_bytes(body.as_bytes()),
             "origin": git_origin(repo_url, resolved_ref, path_in_repo, &format!("{name}:{tag}")),
+            "descriptions": test_descriptions(&format!("contract {name}:{tag}")),
         }));
         self
     }
@@ -385,6 +395,7 @@ impl TestPackagesCache {
             "tag": tag,
             "sha256": config::fingerprint::fingerprint_for_bytes(body.as_bytes()),
             "origin": fs_origin(absolute_path.as_ref()),
+            "descriptions": test_descriptions(&format!("contract {name}:{tag}")),
         }));
         self
     }
@@ -405,6 +416,7 @@ impl TestPackagesCache {
             "tag": tag,
             "sha256": config::fingerprint::fingerprint_for_bytes(body.as_bytes()),
             "origin": fs_origin(absolute_path.as_ref()),
+            "descriptions": test_descriptions(&format!("pairing {name}:{tag}")),
         }));
         self
     }
@@ -469,6 +481,7 @@ pub fn minimal_peppy_json5(name: &str, tag: &str) -> String {
   manifest: {{
     name: "{name}",
     tag: "{tag}",
+    description: ["A test node."],
   }},
   interfaces: {{}},
   execution: {{
@@ -647,12 +660,14 @@ fn main() -> Result<()> {
   manifest: {
     name: "{crate_name}",
     tag: "{node_tag}",
+    description: ["A test node."],
   },
   interfaces: {
     topics: {
       emits: [
         {
           name: "hello_world",
+          description: "A test topic.",
           qos_profile: "sensor_data",
           message_format: {
             timestamp: "time",

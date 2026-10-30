@@ -58,8 +58,10 @@ async fn run_move_arm_flow(
         .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let action_messages = consumed_move_arm_action_messages();
-    let flow_done: NativeExposedService =
-        serde_json5::from_str(&format!(r#"{{ name: "{flow_done_service}" }}"#)).unwrap();
+    let flow_done: NativeExposedService = serde_json5::from_str(&format!(
+        r#"{{ name: "{flow_done_service}", description: "A test member." }}"#
+    ))
+    .unwrap();
     let user_node_consumer = generate_node_project::<generator::PythonGenerator>(
         &temp_dir_consumer,
         &python_consumer_stub_node_config("brain", "v1", "brain"),
@@ -1272,7 +1274,8 @@ const ARM_SERVER_NODE_NAME: &str = "arm_server";
 const ACTION_CONTRACT_FLOW_DONE_SERVICE: &str = "move_arm_contract_flow_done";
 const EXPOSED_ACTION_CONTRACT_FLOW_DONE_SERVICE_EXAMPLE: &str = r#"
 {
-  name: "move_arm_contract_flow_done"
+  name: "move_arm_contract_flow_done",
+  description: "A test member.",
 }
 "#;
 /// The `failure_kinds` block of the `arm_actions` contract: both sides of the
@@ -1683,8 +1686,10 @@ async fn actions_refined_producer_interoperates_with_generic_consumer() {
     let consumed_action: ConsumedAction =
         serde_json5::from_str(r#"{ link_id: "arm", name: "move_arm_joints" }"#).unwrap();
     let action_messages = ConsumedActionMessage::from(&contract_action);
-    let flow_done_service: NativeExposedService =
-        serde_json5::from_str(&format!(r#"{{ name: "{JOINTS_FLOW_DONE_SERVICE}" }}"#)).unwrap();
+    let flow_done_service: NativeExposedService = serde_json5::from_str(&format!(
+        r#"{{ name: "{JOINTS_FLOW_DONE_SERVICE}", description: "A test member." }}"#
+    ))
+    .unwrap();
     let user_node_consumer = generate_node_project::<generator::PythonGenerator>(
         &temp_dir_consumer,
         &contract_consumer_stub_node_config(

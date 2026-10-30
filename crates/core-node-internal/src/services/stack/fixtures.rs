@@ -47,7 +47,7 @@ pub(super) fn planned_container_deployment(
     let config = config::node::NodeConfigParser::from_content(&format!(
         r#"{{
             peppy_schema: "node/v1",
-            manifest: {{ name: "{node_name}", tag: "v1" }},
+            manifest: {{ name: "{node_name}", tag: "v1", description: ["A test node."] }},
             execution: {{
                 language: "python",
                 container: {{ def_file: "apptainer.def", mount_paths: [{mounts}] }},
@@ -165,6 +165,7 @@ pub(super) fn graph_holding(instances: &[(&str, InstanceState)]) -> SerializedNo
 pub(super) fn robots() -> PreparedLauncher {
     let document = r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [
             { name: "robot", cardinality: "zero_or_more", options: {
                 arm: {
@@ -237,7 +238,7 @@ pub(in crate::services) fn active_launch_running(instances: &[(&str, &str)]) -> 
         })
         .collect();
     let document = format!(
-        r#"{{ peppy_schema: "launcher/v1", deployments: [{}] }}"#,
+        r#"{{ peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [{}] }}"#,
         deployments.join(", ")
     );
     let flat = daemon_config::launcher::PeppyLauncherParser::from_content(&document)

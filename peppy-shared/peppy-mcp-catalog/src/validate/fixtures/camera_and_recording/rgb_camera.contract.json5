@@ -1,10 +1,15 @@
 {
     peppy_schema: "contract/v1",
-    manifest: { name: "rgb_camera", tag: "v1" },
+    manifest: {
+        name: "rgb_camera",
+        tag: "v1",
+        description: ["A color camera: its frames, its status and its settings."],
+    },
     interfaces: {
         topics: [
             {
                 name: "video_stream",
+                description: "Each frame of the camera, as it is captured.",
                 qos_profile: "sensor_data",
                 message_format: {
                     header: { $type: "object", stamp: "time", frame_id: "u32" },
@@ -16,8 +21,9 @@
             },
             {
                 name: "camera_status",
+                description: "The state of the camera, about once a second.",
                 message_format: {
-                    temperature_c: "i16",
+                    temperature_c: { $type: "i16", $description: "The temperature of the sensor, in degrees Celsius." },
                     recording: "bool",
                 },
             },
@@ -25,6 +31,7 @@
         services: [
             {
                 name: "video_stream_info",
+                description: "Give the size, the rate and the encoding of the frames.",
                 response_message_format: {
                     width: "u32",
                     height: "u32",
@@ -34,7 +41,10 @@
             },
             {
                 name: "set_brightness",
-                request_message_format: { value: "i32" },
+                description: "Set the brightness of the frames, and give the value that the camera keeps.",
+                request_message_format: {
+                    value: { $type: "i32", $description: "The brightness, in the units of the device." },
+                },
                 response_message_format: {
                     success: "bool",
                     message: "string",
@@ -43,6 +53,7 @@
             },
             {
                 name: "seek",
+                description: "Move the playback of a recorded stream to a position.",
                 request_message_format: {
                     position: "u64",
                     label: "string",

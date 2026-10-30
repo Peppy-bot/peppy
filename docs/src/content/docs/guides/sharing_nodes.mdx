@@ -15,6 +15,14 @@ Because `nodes-hub` ships as one of the default [repositories](/advanced_guides/
 peppy node add uvc_camera:v1
 ```
 
+To find a node by what it does, search the names and the descriptions of the indexed documents. The table gives the summary of each match:
+
+```sh
+peppy repo search --text camera
+```
+
+See [Search the repositories](/advanced_guides/repositories/#search-the-repositories).
+
 ## Adding a node from an unindexed repository
 
 If the node lives in a repository that isn't registered in your `repositories.json5`, you can still add it directly by URL:
@@ -85,6 +93,7 @@ If we look at the logs of the started `fake_video_reconstruction` node:
 
 We can see the video has been saved to a temporary folder. Go ahead and open it; you'll find the reconstructed video of the robot.
 In the same way, you can share your own nodes by hosting them in a Git repository so others can pull them into their own stacks.
+Other people choose your node by its description: `peppy repo search` prints the first paragraph of its `manifest.description`, so write there what the node does and what it needs to run, such as a GPU or a device (see [Descriptions](/reference/concepts/#descriptions)).
 A node can also be pulled in the same way if it's in a Zstandard-compressed tar archive (`.tar.zst`, `.tar.zstd`, or `.tzst`).
 
 Publishing a node has a second step that is easy to forget: claiming its identity in the repository's

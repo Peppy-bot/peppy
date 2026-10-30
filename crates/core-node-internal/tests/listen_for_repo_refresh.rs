@@ -707,7 +707,7 @@ async fn refresh_discovers_contracts() {
     std::fs::create_dir_all(&iface_dir).expect("create iface dir");
     let manifest_body = r#"{
   peppy_schema: "contract/v1",
-  manifest: { name: "uvc_camera", tag: "v1", labels: ["uvc", "camera"] },
+  manifest: { name: "uvc_camera", tag: "v1", description: ["A test contract."], labels: ["uvc", "camera"] },
   interfaces: {}
 }"#;
     std::fs::write(iface_dir.join("peppy.json5"), manifest_body).expect("write contract manifest");
@@ -841,6 +841,7 @@ async fn refresh_discovers_launchers() {
     std::fs::create_dir_all(&repo_dir).expect("create launcher repo dir");
     let manifest_body = r#"{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: []
 }"#;
     std::fs::write(repo_dir.join("openarm01_teleop.json5"), manifest_body)

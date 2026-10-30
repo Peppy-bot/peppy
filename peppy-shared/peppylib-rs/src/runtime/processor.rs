@@ -1101,6 +1101,7 @@ mod tests {
             manifest: {
                 name: "uvc_camera",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1205,7 +1206,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "test_node", tag: "v1" },
+            manifest: { name: "test_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -1254,7 +1255,7 @@ mod tests {
         // Compiled config only has 'value' parameter
         let peppy_config = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "test_node", tag: "v1" },
+            manifest: { name: "test_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
 
@@ -1280,7 +1281,7 @@ mod tests {
         // Compiled config expects 'value' to be i64
         let peppy_config = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "test_node", tag: "v1" },
+            manifest: { name: "test_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
 
@@ -1306,7 +1307,7 @@ mod tests {
         // Compiled config expects nested object with specific types
         let peppy_config = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "test_node", tag: "v1" },
+            manifest: { name: "test_node", tag: "v1", description: ["A test node."] },
             execution: {
                 language: "rust",
                 parameters: {
@@ -1342,7 +1343,7 @@ mod tests {
         // Compiled config expects array of strings
         let peppy_config = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "test_node", tag: "v1" },
+            manifest: { name: "test_node", tag: "v1", description: ["A test node."] },
             execution: {
                 language: "rust",
                 parameters: {
@@ -1381,7 +1382,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "test_node", tag: "v1" },
+            manifest: { name: "test_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -1430,6 +1431,7 @@ mod tests {
                 manifest: {
                     name: "built_in_server",
                     tag: "v1",
+                    description: ["A test node."],
                     depends_on: {
                         contracts: [{ name: "rgb_camera", tag: "v1", link_id: "camera" }],
                     },
@@ -1663,7 +1665,7 @@ mod tests {
     fn standalone_mode_uses_manifest_node_name() {
         let peppy_config = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "my_node", tag: "v1" },
+            manifest: { name: "my_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
 
@@ -1682,7 +1684,7 @@ mod tests {
     fn standalone_mode_resolves_the_clock_like_a_launch_would() {
         let peppy_config = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "my_node", tag: "v1" },
+            manifest: { name: "my_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
 
@@ -1712,7 +1714,7 @@ mod tests {
     fn standalone_mode_with_custom_config() {
         let peppy_config = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "my_node", tag: "v1" },
+            manifest: { name: "my_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
 
@@ -1734,7 +1736,7 @@ mod tests {
     fn standalone_mode_with_json5_parameters() {
         let peppy_config = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "my_node", tag: "v1" },
+            manifest: { name: "my_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
 
@@ -1760,7 +1762,7 @@ mod tests {
 
         let peppy_config = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "my_node", tag: "v1" },
+            manifest: { name: "my_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
 
@@ -1788,6 +1790,7 @@ mod tests {
             manifest: {
                 name: "my_node",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     pairings: [
                         { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
@@ -1820,6 +1823,7 @@ mod tests {
         manifest: {
             name: "my_node",
             tag: "v1",
+            description: ["A test node."],
             depends_on: {
                 pairings: [
                     { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
@@ -1905,7 +1909,7 @@ mod tests {
     fn standalone_mode_fails_when_required_parameters_missing() {
         let peppy_config = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "my_node", tag: "v1" },
+            manifest: { name: "my_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
 
@@ -1931,7 +1935,7 @@ mod tests {
     fn standalone_mode_fails_when_some_parameters_missing() {
         let peppy_config = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "my_node", tag: "v1" },
+            manifest: { name: "my_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool", name: "string" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
 
@@ -1960,7 +1964,7 @@ mod tests {
         // Partial config: user omits `frame_rate`, runtime fills it from $default.
         let peppy_config = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "my_node", tag: "v1" },
+            manifest: { name: "my_node", tag: "v1", description: ["A test node."] },
             execution: {
                 language: "rust",
                 parameters: {
@@ -1987,7 +1991,7 @@ mod tests {
         // so the runtime synthesizes the group from defaults.
         let peppy_config = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "my_node", tag: "v1" },
+            manifest: { name: "my_node", tag: "v1", description: ["A test node."] },
             execution: {
                 language: "rust",
                 parameters: {
@@ -2018,7 +2022,7 @@ mod tests {
         // supply.
         let peppy_config = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "my_node", tag: "v1" },
+            manifest: { name: "my_node", tag: "v1", description: ["A test node."] },
             execution: {
                 language: "rust",
                 parameters: {
@@ -2070,6 +2074,7 @@ mod tests {
         manifest: {
             name: "consumer_node",
             tag: "v1",
+            description: ["A test node."],
             depends_on: {
                 nodes: [{ name: "camera", tag: "v1", link_id: "main" }]
             }
@@ -2085,6 +2090,7 @@ mod tests {
         manifest: {
             name: "consumer_node",
             tag: "v1",
+            description: ["A test node."],
             depends_on: {
                 nodes: [
                     { name: "camera", tag: "v1", link_id: "main" },
@@ -2189,6 +2195,7 @@ mod tests {
         manifest: {
             name: "consumer_node",
             tag: "v1",
+            description: ["A test node."],
             depends_on: { daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }] },
         },
         interfaces: { services: { consumes: [{ link_id: "fleet", name: "list" }] } },
@@ -2608,6 +2615,7 @@ mod tests {
         manifest: {
             name: "consumer_node",
             tag: "v1",
+            description: ["A test node."],
             depends_on: {
                 pairing_observers: [
                     { name: "arm_link", tag: "v1", role: "arm", link_id: "sole_arm" },
@@ -2636,6 +2644,7 @@ mod tests {
         manifest: {
             name: "consumer_node",
             tag: "v1",
+            description: ["A test node."],
             depends_on: {
                 pairing_observers: [
                     { name: "arm_link", tag: "v1", role: "arm", link_id: "maybe_arm", cardinality: "zero_or_one" },

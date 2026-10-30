@@ -3,6 +3,7 @@
   manifest: {
     name: "robot_arm",
     tag: "v1",
+    description: ["The arm role of arm_link:v1: it moves to the joints that its controller commands and gives back the state of its joints."],
     depends_on: {
       pairings: [
         // One pairing slot: this node plays the `arm` role of arm_link/v1.

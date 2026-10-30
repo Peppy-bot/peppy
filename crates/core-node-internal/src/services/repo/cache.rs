@@ -20,14 +20,18 @@
 //! A node entry also carries the contract and pairing links its manifest
 //! declares ([`DeclaredLinks`]), so "who implements, consumes, participates
 //! in, or observes `x:v1`" is answered from the cache without reading a
-//! manifest or materializing a checkout.
+//! manifest or materializing a checkout. A node, launcher, contract and
+//! pairing entry carries the descriptions of its document
+//! ([`CachedDescriptions`]), so a search and a show print them the same way.
 //!
-//! Reads of the nodes cache are memoized by `(mtime-of-cache-file)` per
-//! path so that a daemon hit by many `node add` / launch goals in a row
-//! doesn't re-read and re-parse the cache file on every request.
+//! Each cache file is parsed once per text it holds: a read compares the
+//! text of the file with the text it parsed last, so a daemon that
+//! resolves many contracts, pairings and nodes in a row, as a sync and a
+//! launch do, parses a cache once until a refresh rewrites it.
 
 use crate::Result;
 use crate::services::node::Report;
+use crate::services::repo::descriptions::CachedDescriptions;
 use crate::services::repo::refresh::read_or_create_repos;
 use crate::services::repo::{RepoOwners, attributable_repo_id};
 use crate::source_url::SourceUrl;
@@ -38,10 +42,10 @@ use daemon_config::repository::{
     ItemName, ItemTag, ManifestFingerprint, PinKind, PinnedDocument, PinnedItem,
 };
 use parking_lot::Mutex;
+use std::any::Any;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use std::time::SystemTime;
 
 // One vocabulary for "where bytes live and which revision they were read
 // at", shared with the launch pins (`daemon_config::repository::pins`) so
@@ -190,6 +194,7 @@ pub struct NodeCacheEntry {
     pub origin: EntryOrigin,
     /// The contract and pairing links the manifest declares.
     pub links: DeclaredLinks,
+    pub descriptions: CachedDescriptions,
     /// The id of the repository entry this node was discovered under (as
     /// read from `repositories.json5`). Derived at read time and never
     /// serialized back to disk.
@@ -206,6 +211,7 @@ pub struct LauncherCacheEntry {
     pub launcher_name: ItemName,
     pub sha256: ManifestFingerprint,
     pub origin: EntryOrigin,
+    pub descriptions: CachedDescriptions,
     #[serde(skip)]
     pub repo_id: u32,
 }
@@ -219,6 +225,7 @@ pub struct ContractCacheEntry {
     pub tag: ItemTag,
     pub sha256: ManifestFingerprint,
     pub origin: EntryOrigin,
+    pub descriptions: CachedDescriptions,
     #[serde(skip)]
     pub repo_id: u32,
 }
@@ -232,6 +239,7 @@ pub struct PairingCacheEntry {
     pub tag: ItemTag,
     pub sha256: ManifestFingerprint,
     pub origin: EntryOrigin,
+    pub descriptions: CachedDescriptions,
     #[serde(skip)]
     pub repo_id: u32,
 }
@@ -276,7 +284,7 @@ impl RepoItems {
 /// (write/load/lookup here, collection and cross-repo merging in
 /// `refresh.rs`) exists once instead of once per kind.
 pub(crate) trait RepoCacheEntry:
-    serde::Serialize + serde::de::DeserializeOwned + Clone
+    serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync + 'static
 {
     /// Singular kind label used in error and log messages.
     const KIND: &'static str;
@@ -294,6 +302,11 @@ pub(crate) trait RepoCacheEntry:
     }
     fn sha256(&self) -> &ManifestFingerprint;
     fn origin(&self) -> &EntryOrigin;
+    /// The descriptions of the document. `None` for an MCP exposure, the
+    /// one kind whose text is not a description.
+    fn descriptions(&self) -> Option<&CachedDescriptions> {
+        None
+    }
     fn repo_id(&self) -> u32;
     fn set_repo_id(&mut self, id: u32);
 
@@ -307,9 +320,11 @@ pub(crate) trait RepoCacheEntry:
 /// their constants and in which field holds the name and the tag, so
 /// spelling the accessors out five times would be five chances to wire one
 /// to the wrong field.
-/// The trailing tag field is omitted for launchers, the one untagged kind.
+/// The tag field is omitted for launchers, the one untagged kind, and the
+/// descriptions field for MCP exposures.
 macro_rules! repo_cache_entry {
-    ($ty:ident, $kind:literal, $file:literal, $item_kind:ident, $name_field:ident $(, $tag_field:ident)?) => {
+    ($ty:ident, $kind:literal, $file:literal, $item_kind:ident, name: $name_field:ident
+     $(, tag: $tag_field:ident)? $(, descriptions: $descriptions_field:ident)?) => {
         impl RepoCacheEntry for $ty {
             const KIND: &'static str = $kind;
             const FILE_NAME: &'static str = $file;
@@ -327,6 +342,9 @@ macro_rules! repo_cache_entry {
             fn origin(&self) -> &EntryOrigin {
                 &self.origin
             }
+            $( fn descriptions(&self) -> Option<&CachedDescriptions> {
+                Some(&self.$descriptions_field)
+            } )?
             fn repo_id(&self) -> u32 {
                 self.repo_id
             }
@@ -342,39 +360,43 @@ repo_cache_entry!(
     "node",
     "nodes.json5",
     Node,
-    node_name,
-    node_tag
+    name: node_name,
+    tag: node_tag,
+    descriptions: descriptions
 );
 repo_cache_entry!(
     LauncherCacheEntry,
     "launcher",
     "launchers.json5",
     Launcher,
-    launcher_name
+    name: launcher_name,
+    descriptions: descriptions
 );
 repo_cache_entry!(
     ContractCacheEntry,
     "contract",
     "contracts.json5",
     Contract,
-    contract_name,
-    tag
+    name: contract_name,
+    tag: tag,
+    descriptions: descriptions
 );
 repo_cache_entry!(
     PairingCacheEntry,
     "pairing",
     "pairings.json5",
     Pairing,
-    pairing_name,
-    tag
+    name: pairing_name,
+    tag: tag,
+    descriptions: descriptions
 );
 repo_cache_entry!(
     McpExposureCacheEntry,
     "mcp exposure",
     "mcp_exposures.json5",
     McpExposure,
-    exposure_name,
-    tag
+    name: exposure_name,
+    tag: tag
 );
 
 /// The kinds a coordinator can pin: every cache kind but launchers, which
@@ -445,7 +467,8 @@ pub(crate) fn write_repo_cache<E: RepoCacheEntry>(
 /// read time; never serialized back). Entries no repository claims fall
 /// back to [`UNOWNED_REPO_ID`], so a hand-written cache still resolves
 /// without outranking a configured repository. Returns an empty vec when
-/// the file is missing.
+/// the file is missing. The text of the file is parsed once
+/// ([`parsed_cache`]).
 ///
 /// A file that does not parse is refused whole rather than read for the
 /// entries that happen to be readable. Dropping the rest would leave a
@@ -459,17 +482,12 @@ pub(crate) fn load_repo_cache<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Resu
     }
 
     let content = std::fs::read_to_string(&path)?;
-    let raw: Vec<E> = serde_json5::from_str(&content).map_err(|e| {
-        core_node_api::Error::Decoding(format!(
-            "the {} cache at {} does not parse: {e}. Run `peppy repo update` to rewrite it",
-            E::KIND,
-            path.display()
-        ))
-    })?;
+    let raw = parsed_cache::<E>(&path, content)?;
 
     let owners = RepoOwners::new(&read_or_create_repos(peppy_dirs)?);
     let entries = raw
-        .into_iter()
+        .iter()
+        .cloned()
         .map(|mut e| {
             let id = lookup_repo_id(&owners, e.origin());
             e.set_repo_id(id);
@@ -477,6 +495,51 @@ pub(crate) fn load_repo_cache<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Resu
         })
         .collect();
     Ok(entries)
+}
+
+/// The entries of the cache file at `path`, whose text is `content`, as
+/// they parse, before any `repo_id` tagging. The last parse of each path is
+/// kept with its text, and a read of the same text takes it again: a
+/// whole cache holds the descriptions of every document, and parses in
+/// tens of milliseconds, while a sync reads it once for each slot. The
+/// text, not a time stamp, tells that the file is the one parsed, so a
+/// rewrite is never missed however close it follows the last read.
+fn parsed_cache<E: RepoCacheEntry>(path: &Path, content: String) -> Result<Arc<Vec<E>>> {
+    let kept = parsed_caches()
+        .lock()
+        .get(path)
+        .filter(|parsed| parsed.content == content)
+        .map(|parsed| Arc::clone(&parsed.entries));
+    if let Some(entries) = kept.and_then(|entries| entries.downcast::<Vec<E>>().ok()) {
+        return Ok(entries);
+    }
+    let entries: Arc<Vec<E>> = Arc::new(serde_json5::from_str(&content).map_err(|e| {
+        core_node_api::Error::Decoding(format!(
+            "the {} cache at {} does not parse: {e}. Run `peppy repo update` to rewrite it",
+            E::KIND,
+            path.display()
+        ))
+    })?);
+    parsed_caches().lock().insert(
+        path.to_path_buf(),
+        ParsedCache {
+            content,
+            entries: Arc::clone(&entries) as Arc<dyn Any + Send + Sync>,
+        },
+    );
+    Ok(entries)
+}
+
+/// The last parse of one cache file: its text and the entries of that
+/// text, a `Vec` of the entry type of the file.
+struct ParsedCache {
+    content: String,
+    entries: Arc<dyn Any + Send + Sync>,
+}
+
+fn parsed_caches() -> &'static Mutex<HashMap<PathBuf, ParsedCache>> {
+    static PARSED: OnceLock<Mutex<HashMap<PathBuf, ParsedCache>>> = OnceLock::new();
+    PARSED.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// One identity answered more than once by a single repository. Unlike
@@ -573,41 +636,9 @@ pub(crate) fn lookup_repo_entry_by_sha256<'a, E: RepoCacheEntry>(
         .find(|e| e.name() == name && e.tag() == tag && e.sha256() == sha256)
 }
 
-/// Reads `nodes.json5`, memoized on the mtimes of the cache file and of
-/// `repositories.json5`.
-///
-/// Both mtimes matter: the entries come from the first and the `repo_id`
-/// tagging on each of them from the second, so a memo keyed on the cache
-/// alone would serve stale priorities after a `repo add`.
+/// Reads `nodes.json5`.
 pub fn load_node_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<NodeCacheEntry>> {
-    let path = repo_cache_path::<NodeCacheEntry>(peppy_dirs);
-    let generation = std::fs::metadata(&path)
-        .ok()
-        .and_then(|m| m.modified().ok());
-    // Missing file maps to UNIX_EPOCH so any future appearance counts as a
-    // change.
-    let repos_mtime = repositories_mtime(peppy_dirs);
-
-    if let Some(mtime) = generation
-        && let Some(cached) = memo_get(&path, mtime, repos_mtime)
-    {
-        return Ok((*cached).clone());
-    }
-
-    let entries = load_repo_cache::<NodeCacheEntry>(peppy_dirs)?;
-
-    if let Some(mtime) = generation {
-        memo_put(&path, mtime, repos_mtime, entries.clone());
-    }
-    Ok(entries)
-}
-
-fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
-    let path = repositories_list_path(peppy_dirs);
-    std::fs::metadata(&path)
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .unwrap_or(SystemTime::UNIX_EPOCH)
+    load_repo_cache(peppy_dirs)
 }
 
 /// Priority given to a cached entry that no configured repository
@@ -704,14 +735,12 @@ pub fn repositories_list_path(peppy_dirs: &PeppyDirs) -> PathBuf {
         .join(crate::services::repo::REPOS_FILE)
 }
 
-/// Reads `contracts.json5` (no memoization: contract resolution is a
-/// sync-time event, not a hot path).
+/// Reads `contracts.json5`.
 pub fn load_contract_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<ContractCacheEntry>> {
     load_repo_cache(peppy_dirs)
 }
 
-/// Reads `pairings.json5` (no memoization: pairing resolution is a
-/// sync-time event, not a hot path).
+/// Reads `pairings.json5`.
 pub fn load_pairing_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<PairingCacheEntry>> {
     load_repo_cache(peppy_dirs)
 }
@@ -1096,39 +1125,6 @@ pub(crate) fn materialize_pinned_document<E: RepoCacheEntry>(
     Ok(PinnedDocument::new(pin.clone(), content))
 }
 
-struct MemoEntry {
-    mtime: SystemTime,
-    repos_mtime: SystemTime,
-    entries: Arc<Vec<NodeCacheEntry>>,
-}
-
-fn memo_map() -> &'static Mutex<HashMap<PathBuf, MemoEntry>> {
-    static MAP: OnceLock<Mutex<HashMap<PathBuf, MemoEntry>>> = OnceLock::new();
-    MAP.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn memo_get(
-    path: &Path,
-    mtime: SystemTime,
-    repos_mtime: SystemTime,
-) -> Option<Arc<Vec<NodeCacheEntry>>> {
-    let map = memo_map().lock();
-    map.get(path)
-        .filter(|e| e.mtime == mtime && e.repos_mtime == repos_mtime)
-        .map(|e| Arc::clone(&e.entries))
-}
-
-fn memo_put(path: &Path, mtime: SystemTime, repos_mtime: SystemTime, entries: Vec<NodeCacheEntry>) {
-    memo_map().lock().insert(
-        path.to_path_buf(),
-        MemoEntry {
-            mtime,
-            repos_mtime,
-            entries: Arc::new(entries),
-        },
-    );
-}
-
 /// Constructors for the parsed values cache entries hold, so tests state
 /// the fact they care about rather than a fingerprint and a commit spelled
 /// out in full every time.
@@ -1141,6 +1137,16 @@ pub(crate) mod test_support {
     /// that asserts on one reads the same way twice.
     pub(crate) fn fingerprint(seed: &str) -> ManifestFingerprint {
         ManifestFingerprint::of_bytes(seed.as_bytes())
+    }
+
+    /// The descriptions of a test document: one paragraph that names the
+    /// document `label`, and no member.
+    pub(crate) fn descriptions(label: &str) -> CachedDescriptions {
+        let summary = config::description::Description::new(format!("The {label}."))
+            .expect("the text is not blank");
+        CachedDescriptions::of_document(
+            &config::description::DocumentDescription::new(vec![summary]).expect("one paragraph"),
+        )
     }
 
     /// A distinct, valid commit per `seed`.
@@ -1210,6 +1216,7 @@ pub(crate) mod test_support {
             sha256: fingerprint(&format!("{name}:{tag}")),
             origin,
             links: DeclaredLinks::default(),
+            descriptions: descriptions(&format!("node {name}:{tag}")),
             repo_id: 0,
         }
     }
@@ -1300,6 +1307,7 @@ pub(crate) mod test_support {
             launcher_name: ItemName::parse(name).expect("test launcher name is valid"),
             sha256: fingerprint(name),
             origin,
+            descriptions: descriptions(&format!("launcher {name}")),
             repo_id: 0,
         }
     }
@@ -1310,6 +1318,7 @@ pub(crate) mod test_support {
             tag: ItemTag::parse(tag).expect("test contract tag is valid"),
             sha256: fingerprint(&format!("{name}:{tag}")),
             origin,
+            descriptions: descriptions(&format!("contract {name}:{tag}")),
             repo_id: 0,
         }
     }
@@ -1334,6 +1343,7 @@ pub(crate) mod test_support {
             tag: ItemTag::parse(tag).expect("test pairing tag is valid"),
             sha256: fingerprint(&format!("pairing {name}:{tag}")),
             origin,
+            descriptions: descriptions(&format!("pairing {name}:{tag}")),
             repo_id: 0,
         }
     }
@@ -1431,6 +1441,32 @@ mod tests {
         let mut entry = contract_entry(name, tag, fs_origin(path));
         entry.repo_id = repo_id;
         entry
+    }
+
+    /// A read of a cache whose text did not change takes the entries of
+    /// the last parse, and a read after a rewrite gives the entries of the
+    /// new text at once, with no clock in between.
+    #[test]
+    fn a_cache_is_parsed_once_for_each_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let path = contracts_repo_cache_path(&peppy_dirs);
+        let arm = contract_entry("arm", "v1", fs_origin("/tmp/arm.json5"));
+        let gripper = contract_entry("gripper", "v1", fs_origin("/tmp/gripper.json5"));
+        write_repo_cache(&peppy_dirs, std::slice::from_ref(&arm)).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        let first = parsed_cache::<ContractCacheEntry>(&path, content.clone()).unwrap();
+        let again = parsed_cache::<ContractCacheEntry>(&path, content).unwrap();
+        assert!(Arc::ptr_eq(&first, &again), "the same text is parsed once");
+
+        write_repo_cache(&peppy_dirs, &[arm, gripper]).unwrap();
+        let names: Vec<String> = load_contract_cache(&peppy_dirs)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.contract_name.as_str().to_owned())
+            .collect();
+        assert_eq!(names, ["arm", "gripper"], "a rewrite is read at once");
     }
 
     #[test]

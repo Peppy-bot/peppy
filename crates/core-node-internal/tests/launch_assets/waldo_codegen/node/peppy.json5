@@ -14,6 +14,7 @@
   manifest: {
     name: "waldo",
     tag: "v1",
+    description: ["A test node."],
     implements: [
       { name: "scene_control", tag: "v1", link_id: "scene" },
       { name: "object_state", tag: "v1", link_id: "objects" },

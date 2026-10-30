@@ -1,9 +1,9 @@
-// A simple node that emits video frames from a UVC camera
 {
   peppy_schema: "node/v1",
   manifest: {
     name: "uvc_camera",
     tag: "v1",
+    description: ["A node that emits the video frames of a UVC camera. It needs the camera on its machine."],
     // Labels are useful if the node is published with `peppy node publish`
     labels: [
       "uvc",
@@ -16,6 +16,7 @@
       emits: [
         {
           name: "video_stream",
+          description: "The frames of the camera.",
           qos_profile: "sensor_data",
           message_format: {
             header: {
@@ -38,13 +39,14 @@
       exposes: [
         {
           name: "enable_camera",
+          description: "Turn the camera on or off.",
           request_message_format: {
             enable: "bool",
           },
         },
         {
-          // This service simply returns camera info; no request body is required.
           name: "video_stream_info",
+          description: "Give the information of the camera. The request has no body.",
           response_message_format: {
             width: "u32",
             height: "u32",

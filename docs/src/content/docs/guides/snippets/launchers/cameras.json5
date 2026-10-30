@@ -4,6 +4,7 @@
 // the wrist camera takes the `on_failure` its node declares.
 {
   peppy_schema: "launcher/v1",
+  description: ["Three cameras of a robot: front, rear and wrist. It needs the UVC cameras at the device paths that its instances name."],
   framework: { restart: "always" },
   deployments: [
     {

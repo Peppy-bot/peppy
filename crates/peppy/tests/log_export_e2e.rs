@@ -84,7 +84,7 @@ impl Daemon {
         let manifest = format!(
             r#"{{
             peppy_schema: "node/v1",
-            manifest: {{ name: "{NODE_NAME}", tag: "{NODE_TAG}" }},
+            manifest: {{ name: "{NODE_NAME}", tag: "{NODE_TAG}", description: ["A test node."] }},
             execution: {{
                 language: "rust",
                 build_cmd: ["sh", "-c", {build:?}],
@@ -122,7 +122,7 @@ impl Daemon {
         std::fs::write(
             &launcher,
             format!(
-                r#"{{ peppy_schema: "launcher/v1", deployments: [ {{ source: {{ name: "{NODE_NAME}:{NODE_TAG}" }}, instances: [ {{ instance_id: "launched_inst" }} ] }} ] }}"#
+                r#"{{ peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [ {{ source: {{ name: "{NODE_NAME}:{NODE_TAG}" }}, instances: [ {{ instance_id: "launched_inst" }} ] }} ] }}"#
             ),
         )
         .expect("write the launcher");
@@ -138,7 +138,7 @@ impl Daemon {
         let manifest = format!(
             r#"{{
             peppy_schema: "node/v1",
-            manifest: {{ name: "{BROKEN_NODE_NAME}", tag: "{NODE_TAG}" }},
+            manifest: {{ name: "{BROKEN_NODE_NAME}", tag: "{NODE_TAG}", description: ["A test node."] }},
             execution: {{
                 language: "rust",
                 build_cmd: ["sh", "-c", {build:?}],
@@ -456,7 +456,7 @@ fn a_rust_node_that_logs_through_tracing_exports_the_levels_it_prints() {
     let manifest = format!(
         r#"{{
             peppy_schema: "node/v1",
-            manifest: {{ name: "{TRACING_NODE_NAME}", tag: "{NODE_TAG}" }},
+            manifest: {{ name: "{TRACING_NODE_NAME}", tag: "{NODE_TAG}", description: ["A test node."] }},
             execution: {{
                 language: "rust",
                 build_cmd: ["true"],
@@ -506,7 +506,7 @@ fn a_python_node_that_logs_through_logging_exports_the_levels_it_prints() {
     let manifest = format!(
         r#"{{
             peppy_schema: "node/v1",
-            manifest: {{ name: "{LOGGING_NODE_NAME}", tag: "{NODE_TAG}" }},
+            manifest: {{ name: "{LOGGING_NODE_NAME}", tag: "{NODE_TAG}", description: ["A test node."] }},
             execution: {{
                 language: "python",
                 build_cmd: ["true"],

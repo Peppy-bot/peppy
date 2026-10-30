@@ -60,6 +60,7 @@ The rules:
 - `topics` is one flat list; every topic's `emitted_by` must name one of the two roles, and topic names must be unique across the whole list.
 - Pairings declare **topics only**: no services, no actions.
 - A pairing topic is **live only**: it takes no `retention`.
+- The pairing describes itself in `manifest.description`, and each topic in a `description` after its `name`; a field can add a `$description`. See [Descriptions](/reference/concepts/#descriptions).
 
 After `peppy repo refresh`, the pairing is cached and addressable by `(name, tag)`. `peppy repo show <name>:<tag>` lists the indexed nodes that play its roles and the ones that observe them, and `peppy repo show <node>:<tag>` answers the same question from a node's side, one section per pairing slot it declares (see [Show what a query matches](/advanced_guides/repositories/#show-what-a-query-matches)).
 
@@ -67,7 +68,7 @@ After `peppy repo refresh`, the pairing is cached and addressable by `(name, tag
 
 Each node declares a **pairing slot** under `depends_on.pairings`: the contract, the role this node plays, and a `link_id` naming the slot. The `link_id` is how the node's own code and the pairing commands refer to *the other end*; while paired, one peer instance sits behind each pair the slot holds. A slot holds one pair unless its `cardinality` says otherwise (see [Pairing with several peers through one slot](#pairing-with-several-peers-through-one-slot)); the rest of this page describes that default.
 
-The slot says *which* conversation the node joins. `interfaces.topics` says *what the node uses through it*, exactly like a contract implementer and a contract consumer. A pairing-backed entry is `{ link_id, name }`, plus an optional `refine` block (see [below](#refining-the-pairings-generic-arrays)): the pairing document remains the single source of shape and QoS, so an inline `message_format`, `qos_profile` or `retention` on one of these entries is rejected.
+The slot says *which* conversation the node joins. `interfaces.topics` says *what the node uses through it*, exactly like a contract implementer and a contract consumer. A pairing-backed entry is `{ link_id, name }`, plus an optional `refine` block (see [below](#refining-the-pairings-generic-arrays)): the pairing document remains the single source of description, shape and QoS, so an inline `description`, `message_format`, `qos_profile` or `retention` on one of these entries is rejected.
 
 <Tabs>
   <TabItem label="Python">
@@ -172,6 +173,7 @@ In a launcher, the pair is declared once, on either instance, with `links:`; a s
 ```json5 title="peppy_launcher.json5"
 {
   peppy_schema: "launcher/v1",
+  description: ["One arm and its controller, paired over arm_link:v1. It needs no device."],
   deployments: [
     {
       source: { name: "robot_arm:v1" },
@@ -421,7 +423,7 @@ peppy node run --instance-id rec_1 recorder:v1 --link watch@arm_1
 
 The runtime guarantees mirror pairing's, with the lifecycle twist that defines an observer:
 
-- **Follows the source, not a pair.** The observer receives `arm_1`'s emissions whether or not `arm_1` is paired to anyone, and it is unaffected when `arm_1` re-pairs to a different controller. It is pinned to the source instance itself.
+- **Follows the source, not a pair.** The observer receives `arm_1`'s emissions whichever controller `arm_1` is paired with, and it is unaffected when `arm_1` re-pairs to a different controller. It is pinned to the source instance itself. While `arm_1` is unpaired, its slot is silent, so the observer receives nothing.
 - **Many observers, one source.** Observation is not exclusive: any number of recorders can watch the same arm at once, and none of them affects the pair.
 - **Incarnation-isolated.** If the source instance restarts, the observer transparently drops the old stream and picks up the new incarnation: the drop discards everything its subscription buffered before the switch, so no buffered message from a previous run of the source leaks into the new stream. The switch happens when the daemon's lifecycle notify records the new incarnation and delivers it, which follows the restart by the notify latency; isolation is enforced at that boundary, not by wall-clock simultaneity with the restart.
 - **Read-only.** The generated module for an observer topic exposes the same subscription surface as a consumed topic, plus a helper reporting the pairings the slot observes. There is no publisher and no `paired()`; an observer never talks back.

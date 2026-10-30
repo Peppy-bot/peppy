@@ -3,12 +3,14 @@
   manifest: {
     name: "hello_world",
     tag: "v1",
+    description: ["A node that publishes a greeting with a count, every 3 seconds."],
   },
   interfaces: {
     topics: {
       emits: [
         {
           name: "message_stream",
+          description: "Each greeting, as text.",
           qos_profile: "sensor_data",
           message_format: {
             message: "string"

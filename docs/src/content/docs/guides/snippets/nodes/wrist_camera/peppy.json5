@@ -3,7 +3,7 @@
 // launcher entry, an adjustment or `--restart` writes one.
 {
   peppy_schema: "node/v1",
-  manifest: { name: "wrist_camera", tag: "v1" },
+  manifest: { name: "wrist_camera", tag: "v1", description: ["The camera on the wrist of a robot arm. It needs the camera on its machine."] },
   interfaces: {},
   execution: {
     language: "rust",

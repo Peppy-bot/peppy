@@ -15,6 +15,7 @@ use crate::services::repo::cache::{
     load_contract_cache, load_node_cache, load_pairing_cache, load_repo_cache, lookup_repo_entry,
     lookup_repo_entry_by_sha256,
 };
+use crate::services::repo::descriptions::CachedDescriptions;
 use crate::services::repo::index::kind_rank;
 use crate::services::repo::{
     AttributedNode, ListedRepo, RepoNodes, listed_repositories, nodes_by_repository,
@@ -30,13 +31,19 @@ use std::collections::BTreeSet;
 /// Each part is an unanchored [`regex::Regex`], so `camera` finds
 /// `rgb_camera` and `^camera$` finds only `camera`. A missing tag part
 /// matches every tag, the empty one of untagged kinds included; a digest
-/// keeps only the copies carrying exactly those bytes.
+/// keeps only the copies carrying exactly those bytes. A query that also
+/// matches the descriptions ([`SearchQuery::with_descriptions`]) finds a
+/// document whose name does not match when its name pattern, with no regard
+/// to case, matches one of its descriptions.
 #[derive(Debug, Clone)]
 pub struct SearchQuery {
     raw: String,
     name: regex::Regex,
     tag: Option<regex::Regex>,
     digest: Option<ManifestFingerprint>,
+    /// The name pattern with no regard to case, when the query also
+    /// matches the descriptions.
+    text: Option<regex::Regex>,
 }
 
 impl SearchQuery {
@@ -87,10 +94,33 @@ impl SearchQuery {
         }
         Ok(Self {
             raw: raw.to_owned(),
-            name: compile_pattern(name)?,
-            tag: tag.map(compile_pattern).transpose()?,
+            name: compile_pattern(name, Case::Matched)?,
+            tag: tag
+                .map(|tag| compile_pattern(tag, Case::Matched))
+                .transpose()?,
             digest,
+            text: None,
         })
+    }
+
+    /// The same query, whose name pattern also matches the descriptions of
+    /// each contract, pairing, node and launcher, with no regard to case:
+    /// the paragraphs of the document, and for a contract or a pairing the
+    /// description of each member or topic and of each field. A document
+    /// found by its name still ranks ahead of one found by a description.
+    ///
+    /// Refused as [`Self::parse`] refuses an invalid pattern when the name
+    /// pattern does not compile with no regard to case: the folded cases
+    /// can make a pattern that compiled grow past the size limit of a
+    /// regular expression.
+    pub fn with_descriptions(mut self) -> Result<Self, String> {
+        self.text = Some(compile_pattern(self.name.as_str(), Case::Ignored)?);
+        Ok(self)
+    }
+
+    /// Whether the query also matches the descriptions.
+    pub fn matches_descriptions(&self) -> bool {
+        self.text.is_some()
     }
 
     /// The query as typed (trimmed), for echoing back in output.
@@ -116,11 +146,23 @@ impl SearchQuery {
     /// Whether the patterns match `(name, tag)`. The digest is a filter on
     /// copies, not identities, so it plays no part here.
     fn matches(&self, name: &str, tag: &str) -> bool {
-        self.name.is_match(name)
-            && self
-                .tag
-                .as_ref()
-                .is_none_or(|pattern| pattern.is_match(tag))
+        self.name.is_match(name) && self.matches_tag(tag)
+    }
+
+    fn matches_tag(&self, tag: &str) -> bool {
+        self.tag
+            .as_ref()
+            .is_none_or(|pattern| pattern.is_match(tag))
+    }
+
+    /// Whether the query matches the descriptions and finds `descriptions`,
+    /// the descriptions of a copy tagged `tag`, by one of its texts.
+    fn describes(&self, tag: &str, descriptions: Option<&CachedDescriptions>) -> bool {
+        let Some(text) = &self.text else {
+            return false;
+        };
+        self.matches_tag(tag)
+            && descriptions.is_some_and(|found| found.texts().any(|line| text.is_match(line)))
     }
 
     /// Whether the name pattern matches the whole name: such a hit ranks
@@ -134,9 +176,18 @@ impl SearchQuery {
     }
 }
 
+/// Whether a pattern of a query matches the case of the text.
+#[derive(Debug, Clone, Copy)]
+enum Case {
+    Matched,
+    Ignored,
+}
+
 /// Compiles one query part into its unanchored matcher.
-fn compile_pattern(part: &str) -> Result<regex::Regex, String> {
-    regex::Regex::new(part)
+fn compile_pattern(part: &str, case: Case) -> Result<regex::Regex, String> {
+    regex::RegexBuilder::new(part)
+        .case_insensitive(matches!(case, Case::Ignored))
+        .build()
         .map_err(|e| format!("search pattern `{part}` is not a valid regular expression: {e}"))
 }
 
@@ -262,16 +313,22 @@ pub struct MatchedItem {
     pub name: String,
     /// Empty for untagged kinds (launchers).
     pub tag: String,
+    /// The name pattern matches the name. `false` for a document that a
+    /// query found by one of its descriptions alone.
+    pub by_name: bool,
     /// The name pattern matches the whole name, not just a part of it.
     pub exact: bool,
     pub published: PublishedDoc,
+    /// The descriptions of the copy the answer points at. `None` for an MCP
+    /// exposure, the one kind with no description.
+    pub descriptions: Option<CachedDescriptions>,
 }
 
 /// Everything a search says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchOutcome {
-    /// Every identity the query matches, ranked: names the pattern spells
-    /// out first, then by name, tag and kind.
+    /// Every identity the query matches, ranked: hits by name first, among
+    /// them names the pattern spells out first, then by name, tag and kind.
     pub matches: Vec<MatchedItem>,
     /// [`excluded_repositories_hint`], so an empty result can say that an
     /// excluded repository may have provided the item without the caller
@@ -422,6 +479,9 @@ struct ContestedIdentity {
 /// An identity its winning repository publishes twice is listed by that
 /// repository's first copy in path order and recorded in `contests`, so
 /// the caller decides whether the contest matters.
+///
+/// A query that matches the descriptions also finds an identity whose name
+/// it does not match, by the descriptions of the copy the answer points at.
 fn matched_identities<E: RepoCacheEntry>(
     entries: &[E],
     repos: &[ListedRepo],
@@ -430,25 +490,31 @@ fn matched_identities<E: RepoCacheEntry>(
 ) -> Vec<MatchedItem> {
     let identities: BTreeSet<(&str, &str)> = entries
         .iter()
-        .filter(|e| query.matches(e.name(), e.tag()))
+        .filter(|e| query.matches(e.name(), e.tag()) || query.describes(e.tag(), e.descriptions()))
         .map(|e| (e.name(), e.tag()))
         .collect();
 
     let mut matches = Vec::new();
     for (name, tag) in identities {
-        let published = match query.digest() {
-            None => Some(referenced_copy(entries, repos, name, tag, contests)),
-            Some(digest) => copy_carrying(entries, repos, name, tag, digest),
+        let copy = match query.digest() {
+            None => Some(referenced_copy(entries, name, tag, contests)),
+            Some(digest) => copy_carrying(entries, name, tag, digest),
         };
-        let Some(published) = published else {
+        let Some(copy) = copy else {
             continue;
         };
+        let by_name = query.matches(name, tag);
+        if !by_name && !query.describes(tag, copy.descriptions()) {
+            continue;
+        }
         matches.push(MatchedItem {
             kind: E::ITEM_KIND,
             name: name.to_owned(),
             tag: tag.to_owned(),
+            by_name,
             exact: query.names_outright(name),
-            published,
+            published: published_copy(copy, repos),
+            descriptions: copy.descriptions().cloned(),
         });
     }
     matches
@@ -457,50 +523,53 @@ fn matched_identities<E: RepoCacheEntry>(
 /// The copy a plain reference to `name:tag` resolves to. When the winning
 /// repository publishes the identity twice, the contest is recorded in
 /// `contests` and that repository's first copy in path order stands in.
-fn referenced_copy<E: RepoCacheEntry>(
-    entries: &[E],
-    repos: &[ListedRepo],
+fn referenced_copy<'a, E: RepoCacheEntry>(
+    entries: &'a [E],
     name: &str,
     tag: &str,
     contests: &mut Vec<ContestedIdentity>,
-) -> PublishedDoc {
-    let error = match published_doc(entries, repos, name, tag) {
-        Ok(doc) => return doc.expect("the identity came from these entries"),
-        Err(error) => error,
+) -> &'a E {
+    let error = match lookup_repo_entry(entries, name, tag) {
+        Ok(copy) => return copy.expect("the identity came from these entries"),
+        Err(ambiguity) => ambiguity.to_string(),
     };
     contests.push(ContestedIdentity {
         name: name.to_owned(),
         tag: tag.to_owned(),
         error,
     });
-    let copy = entries
+    entries
         .iter()
         .filter(|e| e.name() == name && e.tag() == tag)
         .min_by_key(|e| (e.repo_id(), e.origin().path_str().to_owned()))
-        .expect("the identity came from these entries");
-    published_copy(copy, repos)
+        .expect("the identity came from these entries")
 }
 
 /// The highest-priority copy of `name:tag` that carries `digest`, or `None`
 /// when no copy does.
-fn copy_carrying<E: RepoCacheEntry>(
-    entries: &[E],
-    repos: &[ListedRepo],
+fn copy_carrying<'a, E: RepoCacheEntry>(
+    entries: &'a [E],
     name: &str,
     tag: &str,
     digest: &ManifestFingerprint,
-) -> Option<PublishedDoc> {
+) -> Option<&'a E> {
     entries
         .iter()
         .filter(|e| e.name() == name && e.tag() == tag && e.sha256() == digest)
         .min_by_key(|e| e.repo_id())
-        .map(|entry| published_copy(entry, repos))
 }
 
-/// The order matches are listed in: a name the pattern spells out ranks
-/// first, then name, tag and kind.
-fn match_order(item: &MatchedItem) -> (bool, &str, &str, u8) {
-    (!item.exact, &item.name, &item.tag, kind_rank(item.kind))
+/// The order matches are listed in: a hit by name ranks ahead of a hit by
+/// a description, a name the pattern spells out ahead of one it brushes,
+/// then name, tag and kind.
+fn match_order(item: &MatchedItem) -> (bool, bool, &str, &str, u8) {
+    (
+        !item.by_name,
+        !item.exact,
+        &item.name,
+        &item.tag,
+        kind_rank(item.kind),
+    )
 }
 
 /// Who uses `name:tag`: the nodes whose cached links implement, consume,
@@ -755,7 +824,7 @@ fn pin_status<E: RepoCacheEntry>(
 mod tests {
     use super::*;
     use crate::services::repo::cache::test_support::{
-        consumes, contract_entry, fingerprint, fs_repos, implements, launcher_entry,
+        consumes, contract_entry, descriptions, fingerprint, fs_repos, implements, launcher_entry,
         mcp_exposure_entry, node_entry, observes, pairing_entry, participates, with_links,
         write_excluded_repos, write_repos,
     };
@@ -815,6 +884,122 @@ mod tests {
 
     fn fs(path: PathBuf) -> EntryOrigin {
         EntryOrigin::Fs { path }
+    }
+
+    fn search_text(home: &Home, raw: &str) -> Result<SearchOutcome, String> {
+        let query = SearchQuery::parse(raw)
+            .expect("a valid query")
+            .with_descriptions()
+            .expect("a valid pattern with no regard to case");
+        search_repo_items(&home.dirs, &query)
+    }
+
+    /// The identities of `outcome`, each with whether its name matched.
+    fn found(outcome: &SearchOutcome) -> Vec<(RepoItemKind, &str, bool)> {
+        outcome
+            .matches
+            .iter()
+            .map(|item| (item.kind, item.name.as_str(), item.by_name))
+            .collect()
+    }
+
+    /// A hub whose documents speak of grippers in each of the places a
+    /// description sits: a contract named after one, a member of another
+    /// contract, a field of a pairing topic, a node, and an exposure named
+    /// after one, which a description search finds by its name alone.
+    fn gripper_hub(home: &Home) {
+        let hub = home.repo("hub");
+        home.configure(&[(1, &hub)]);
+        let contract = |text: &str| {
+            CachedDescriptions::of_contract(
+                &peppy_codec::contract::PeppyContractParser::from_content(text).unwrap(),
+            )
+        };
+        let mut gripper_state = contract_entry("gripper_state", "v1", fs(hub.join("a.json5")));
+        gripper_state.descriptions = descriptions("state of a hand");
+        let mut limb_motion = contract_entry("limb_motion", "v1", fs(hub.join("b.json5")));
+        limb_motion.descriptions = contract(
+            r#"{ peppy_schema: "contract/v1",
+                 manifest: { name: "limb_motion", tag: "v1", description: ["Arm motion."] },
+                 interfaces: { services: [{ name: "move_gripper", description: "Open or close the Gripper." }] } }"#,
+        );
+        let mut arm_link = pairing_entry("arm_link", "v1", fs(hub.join("c.json5")));
+        arm_link.descriptions = CachedDescriptions::of_pairing(
+            &daemon_config::pairing::PeppyPairingParser::from_content(
+                r#"{ peppy_schema: "pairing/v1",
+                     manifest: { name: "arm_link", tag: "v1", description: ["A leader and a follower."] },
+                     roles: ["leader", "follower"],
+                     topics: [{ emitted_by: "leader", name: "setpoints", description: "The setpoints.",
+                       message_format: { opening: { $type: "f64", $description: "The opening of the gripper." } } }] }"#,
+            )
+            .unwrap(),
+        );
+        let mut brain = node_entry("vla_brain", "v1", fs(hub.join("brain/peppy.json5")));
+        brain.descriptions = descriptions("brain that runs its models on the GPU of the robot");
+        home.cache(&[gripper_state, limb_motion]);
+        home.cache(&[arm_link]);
+        home.cache(&[brain]);
+        home.cache(&[mcp_exposure_entry(
+            "gripper_tools",
+            "v1",
+            fs(hub.join("d.json5")),
+        )]);
+        home.cache(&[launcher_entry("demo", fs(hub.join("demo.json5")))]);
+    }
+
+    /// A description search finds a document by a word of its own
+    /// description, of a member or of a field, with no regard to case,
+    /// after every hit by name; a name search finds the hits by name only.
+    #[test]
+    fn a_description_search_finds_documents_by_their_texts_after_the_hits_by_name() {
+        let home = Home::new();
+        gripper_hub(&home);
+
+        let by_name = search(&home, "gripper").unwrap();
+        assert_eq!(
+            found(&by_name),
+            [
+                (RepoItemKind::Contract, "gripper_state", true),
+                (RepoItemKind::McpExposure, "gripper_tools", true),
+            ]
+        );
+
+        let by_text = search_text(&home, "gripper").unwrap();
+        assert_eq!(
+            found(&by_text),
+            [
+                (RepoItemKind::Contract, "gripper_state", true),
+                (RepoItemKind::McpExposure, "gripper_tools", true),
+                (RepoItemKind::Pairing, "arm_link", false),
+                (RepoItemKind::Contract, "limb_motion", false),
+            ]
+        );
+        assert_eq!(
+            found(&search_text(&home, "GPU").unwrap()),
+            [(RepoItemKind::Node, "vla_brain", false)]
+        );
+    }
+
+    /// The tag part of a description search still filters, and a match
+    /// carries the descriptions of the copy it points at.
+    #[test]
+    fn a_description_search_keeps_the_tag_filter_and_gives_the_descriptions() {
+        let home = Home::new();
+        gripper_hub(&home);
+
+        assert!(search_text(&home, "gripper:v2").unwrap().matches.is_empty());
+        let outcome = search_text(&home, "follower").unwrap();
+        let [item] = outcome.matches.as_slice() else {
+            panic!("one match: {:?}", found(&outcome));
+        };
+        let descriptions = item
+            .descriptions
+            .as_ref()
+            .expect("a pairing has descriptions");
+        assert_eq!(descriptions.summary().as_str(), "A leader and a follower.");
+        assert_eq!(descriptions.members[0].name, "setpoints");
+        let exposure = search(&home, "gripper_tools").unwrap();
+        assert_eq!(exposure.matches[0].descriptions, None);
     }
 
     fn label(path: &Path) -> String {
@@ -885,6 +1070,17 @@ mod tests {
     fn parse_refuses_an_invalid_regex() {
         let err = SearchQuery::parse("cam[").expect_err("refuses");
         assert!(err.contains("`cam[`"), "got: {err}");
+        assert!(err.contains("not a valid regular expression"), "got: {err}");
+    }
+
+    /// A pattern that compiles as typed but grows past the size limit once
+    /// its cases fold (`k` also matches `K` and the Kelvin sign) is refused
+    /// for the descriptions as an invalid pattern is.
+    #[test]
+    fn a_pattern_too_large_with_no_regard_to_case_is_refused() {
+        let query = SearchQuery::parse("k{50000}").expect("compiles as typed");
+        let err = query.with_descriptions().expect_err("refuses");
+        assert!(err.contains("`k{50000}`"), "got: {err}");
         assert!(err.contains("not a valid regular expression"), "got: {err}");
     }
 
@@ -985,6 +1181,7 @@ mod tests {
                     kind: RepoItemKind::Contract,
                     name: "rgb_camera".to_owned(),
                     tag: "v1".to_owned(),
+                    by_name: true,
                     exact: true,
                     published: PublishedDoc {
                         repo_id: 1,
@@ -992,11 +1189,13 @@ mod tests {
                         path: label(&hub.join("contracts/rgb.json5")),
                         sha256: ManifestFingerprint::parse(&contract_sha).unwrap(),
                     },
+                    descriptions: Some(descriptions("contract rgb_camera:v1")),
                 },
                 MatchedItem {
                     kind: RepoItemKind::Pairing,
                     name: "rgb_camera".to_owned(),
                     tag: "v1".to_owned(),
+                    by_name: true,
                     exact: true,
                     published: PublishedDoc {
                         repo_id: 1,
@@ -1004,6 +1203,7 @@ mod tests {
                         path: label(&hub.join("pairings/rgb.json5")),
                         sha256: ManifestFingerprint::parse(&pairing_sha).unwrap(),
                     },
+                    descriptions: Some(descriptions("pairing rgb_camera:v1")),
                 },
             ]
         );

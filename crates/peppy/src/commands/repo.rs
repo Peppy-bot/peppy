@@ -93,8 +93,9 @@ pub enum RepoCommands {
     List,
     /// Search the repositories for any indexed item (node, launcher,
     /// contract, pairing, MCP exposure). Every match is listed with its
-    /// kind, repository, path, and fingerprint; `repo show` takes the
-    /// same query and prints each match's full report instead.
+    /// kind, the summary of its description, its repository, path, and
+    /// fingerprint; `repo show` takes the same query and prints each
+    /// match's full report instead.
     ///
     /// Each query part is an unanchored regular expression, as `apt
     /// search` reads its patterns: `camera` finds `rgb_camera`,
@@ -110,6 +111,13 @@ pub enum RepoCommands {
         /// The query, as `<name-regex>[:<tag-regex>][@<sha256>]`.
         #[arg(allow_hyphen_values = true)]
         query: String,
+        /// Also match the name part of the query, with no regard to case,
+        /// against the descriptions: of each contract, pairing, node and
+        /// launcher, and of the members, topics and fields of each contract
+        /// and pairing. Hits by name come first. An MCP exposure matches by
+        /// its name only.
+        #[arg(long)]
+        text: bool,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -222,7 +230,7 @@ impl Command for RepoCommand {
                 },
             ),
             RepoCommands::List => list::list_repos(ctx),
-            RepoCommands::Search { query, json } => search::repo_search(&query, json),
+            RepoCommands::Search { query, text, json } => search::repo_search(&query, text, json),
             RepoCommands::Show { query, json } => show::repo_show(&query, json),
             RepoCommands::Refresh { strict } => refresh::repo_refresh(ctx, strict),
             RepoCommands::Add {

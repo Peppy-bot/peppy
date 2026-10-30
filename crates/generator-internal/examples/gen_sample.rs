@@ -16,7 +16,7 @@ use std::path::Path;
 
 const NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
-  manifest: { name: "generated_node", tag: "v1" },
+  manifest: { name: "generated_node", tag: "v1", description: ["A test node."] },
   execution: { language: "rust", run_cmd: ["./target/release/generated_node"] }
 }
 "#;

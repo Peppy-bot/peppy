@@ -4,6 +4,7 @@
 //   peppy stack launch mcp_framework_controls
 {
   peppy_schema: "launcher/v1",
+  description: ["Simulated robots that run as copies, OpenArm or SO-101, and the MCP endpoint framework_controls:v1, through which a client adds and removes them. It needs a machine that runs the simulation."],
   components: [
     {
       name: "robot",

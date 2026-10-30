@@ -3,6 +3,7 @@
   manifest: {
     name: "{{ node_name }}",
     tag: "{{ node_tag }}",
+    description: ["A test node."],
     labels: [
       "sensor",
       "usb",
@@ -14,6 +15,7 @@
       emits: [
         {
           name: "push_lidar_object",
+          description: "A test topic.",
           qos_profile: "sensor_data",
           message_format: {
             header: {
@@ -35,6 +37,7 @@
       exposes: [
         {
           name: "enable_lidar",
+          description: "A test service.",
           request_message_format: {
             enable: "bool",
           },
@@ -44,6 +47,7 @@
         },
         {
           name: "get_lidar_info",
+          description: "A test service.",
           response_message_format: {
             card_type: "string",
             size: "string",

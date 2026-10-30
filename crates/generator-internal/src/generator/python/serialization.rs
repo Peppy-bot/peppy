@@ -237,6 +237,7 @@ mod tests {
             length,
             optional: false,
             marks: Default::default(),
+            description: None,
         });
         let mut builder = PythonCodeBuilder::new();
         let mut counter = 0u32;
@@ -297,10 +298,12 @@ mod tests {
                 fields,
                 optional: false,
                 marks: Default::default(),
+                description: None,
             })),
             length,
             optional: false,
             marks: Default::default(),
+            description: None,
         });
 
         let mut builder = PythonCodeBuilder::new();

@@ -46,14 +46,19 @@ It selects from these two contracts:
 // contracts/rgb_camera.json5
 {
   peppy_schema: "contract/v1",
-  manifest: { name: "rgb_camera", tag: "v1" },
+  manifest: {
+    name: "rgb_camera",
+    tag: "v1",
+    description: ["A color camera: its frames, the settings of its stream and its brightness."],
+  },
   interfaces: {
     topics: [
       {
         name: "video_stream",
+        description: "Each frame of the camera, with its size and its encoding.",
         qos_profile: "sensor_data",
         message_format: {
-          frame: { $type: "array", $items: "u8" },
+          frame: { $type: "array", $items: "u8", $description: "The pixels of the frame, in its encoding." },
           encoding: "string",
           width: "u32",
           height: "u32",
@@ -63,6 +68,7 @@ It selects from these two contracts:
     services: [
       {
         name: "video_stream_info",
+        description: "The size, the frame rate and the encoding of the stream.",
         response_message_format: {
           width: "u32",
           height: "u32",
@@ -72,6 +78,7 @@ It selects from these two contracts:
       },
       {
         name: "set_brightness",
+        description: "Set the brightness of the camera, and give the brightness that it applied.",
         request_message_format: { value: "i8" },
         response_message_format: { applied: "i8" },
       },
@@ -84,18 +91,27 @@ It selects from these two contracts:
 // contracts/episode_recording.json5
 {
   peppy_schema: "contract/v1",
-  manifest: { name: "episode_recording", tag: "v1" },
+  manifest: {
+    name: "episode_recording",
+    tag: "v1",
+    description: ["A recorder of episodes: it records one episode for each goal, and counts the episodes of its session."],
+  },
   interfaces: {
     actions: [
       {
         name: "record_episode",
+        description: "Record an episode. The goal gives the name of the episode, each feedback gives the last frame that the recorder wrote, and the result gives the number of frames of the episode.",
         goal_service: { request_message_format: { episode_name: "string" } },
         feedback_topic: { message_format: { frame: "u32" } },
         result_service: { response_message_format: { frames: "u32" } },
       },
     ],
     services: [
-      { name: "finish_session", response_message_format: { episodes_recorded: "u32" } },
+      {
+        name: "finish_session",
+        description: "End the session, and give the number of episodes that it recorded.",
+        response_message_format: { episodes_recorded: "u32" },
+      },
     ],
   },
 }
@@ -412,6 +428,9 @@ Most types map directly to JSON. These are the important mapping rules, includin
 | Other arrays | `array` with `items`; fixed length pins `minItems`/`maxItems` | Direct |
 | Nested objects | `object` with every property required | `$optional` is legal only at the top level |
 | `$optional` top-level field | Omitted from `required` | Direct |
+| [`$description`](/reference/message_format/#description-modifier) of a field | `description` of its property | Direct |
+
+The input and output schemas of each tool, resource and task carry the `$description` of each field, and a [scope](#scopes) that narrows a property keeps its description. The description of a tool, a resource or a task is the one that the exposure gives it.
 
 Public property names use the DSL's `snake_case` spelling. The internal wire encoding uses `lowerCamelCase` instead. Every derived object schema sets `additionalProperties: false`.
 

@@ -783,6 +783,7 @@ mod tests {
             r#"{
                 name: "arm",
                 tag: "v1",
+                description: ["A test node."],
                 implements: [{ name: "limb_motion", tag: "v1", link_id: "arm" }],
                 depends_on: {
                     contracts: [
@@ -828,7 +829,7 @@ mod tests {
     fn the_documents_of_a_manifest_refuse_a_document_with_no_pin() {
         let dir = tempfile::tempdir().expect("temp dir");
         let manifest: Manifest = serde_json5::from_str(
-            r#"{ name: "arm", tag: "v1", implements: [{ name: "limb_motion", tag: "v1", link_id: "arm" }] }"#,
+            r#"{ name: "arm", tag: "v1", description: ["A test node."], implements: [{ name: "limb_motion", tag: "v1", link_id: "arm" }] }"#,
         )
         .expect("the manifest parses");
         let Err(err) =
@@ -861,10 +862,10 @@ mod tests {
             serde_json5::from_str(json5).expect("the manifest parses")
         };
         let pairing_alone = manifest(
-            r#"{ name: "arm", tag: "v1", depends_on: { pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] } }"#,
+            r#"{ name: "arm", tag: "v1", description: ["A test node."], depends_on: { pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] } }"#,
         );
         let a_contract = manifest(
-            r#"{ name: "arm", tag: "v1", implements: [{ name: "arm_link", tag: "v1", link_id: "arm" }] }"#,
+            r#"{ name: "arm", tag: "v1", description: ["A test node."], implements: [{ name: "arm_link", tag: "v1", link_id: "arm" }] }"#,
         );
 
         let documents = ManifestDocuments::read(
@@ -901,12 +902,12 @@ mod tests {
         let manifest = |json5: &str| -> Manifest {
             serde_json5::from_str(json5).expect("the manifest parses")
         };
-        let no_document = manifest(r#"{ name: "bare", tag: "v1" }"#);
+        let no_document = manifest(r#"{ name: "bare", tag: "v1", description: ["A test node."] }"#);
         let pairing_alone = manifest(
-            r#"{ name: "arm", tag: "v1", depends_on: { pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] } }"#,
+            r#"{ name: "arm", tag: "v1", description: ["A test node."], depends_on: { pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] } }"#,
         );
         let a_contract = manifest(
-            r#"{ name: "arm", tag: "v1", implements: [{ name: "limb_motion", tag: "v1", link_id: "arm" }] }"#,
+            r#"{ name: "arm", tag: "v1", description: ["A test node."], implements: [{ name: "limb_motion", tag: "v1", link_id: "arm" }] }"#,
         );
 
         let minted = doc_pins_for_manifest_sets(

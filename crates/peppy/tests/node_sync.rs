@@ -22,6 +22,7 @@ fn add_emitted_topic(peppy_json5: &Path) {
     .expect("message format should deserialize");
     topics.push(EmittedTopic::Native(config::node::NativeEmittedTopic {
         name: "goodbye_world".to_string(),
+        description: config::description::Description::new("A test topic.").unwrap(),
         qos_profile: QoSProfile::Standard,
         retention: TopicRetention::LiveOnly,
         message_format: Some(message_format),
@@ -86,6 +87,7 @@ async fn node_sync_rust_command_succeeds() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -212,6 +214,7 @@ async fn node_sync_python_command_succeeds() {
     NodeInitBuilder::new(
         &node_ctx,
         NodeName::new(node_name).expect("valid node name"),
+        config::description::Description::new("A test node.").unwrap(),
         Toolchain::Uv,
         false,
     )
@@ -321,6 +324,7 @@ async fn node_sync_with_path_succeeds() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -394,12 +398,13 @@ async fn node_sync_with_include_repositories_prints_provenance() {
         camera_dir.path().join("peppy.json5"),
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "uvc_camera", tag: "v1" },
+            manifest: { name: "uvc_camera", tag: "v1", description: ["A test node."] },
             interfaces: {
                 topics: {
                     emits: [
                         {
                             name: "video_stream",
+                            description: "A test topic.",
                             qos_profile: "sensor_data",
                             message_format: { encoding: "string" }
                         }
@@ -430,6 +435,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: { nodes: [{ name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }] }
             },
             interfaces: {
@@ -475,6 +481,7 @@ const ROBOT_ARM_ON_ARM_LINK: &str = r#"{
     manifest: {
         name: "robot_arm",
         tag: "v1",
+        description: ["A test node."],
         depends_on: {
             pairings: [
                 { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }

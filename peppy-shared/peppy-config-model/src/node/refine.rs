@@ -832,7 +832,7 @@ mod tests {
 
     fn topic(message_format: &str) -> NativeEmittedTopic {
         serde_json5::from_str(&format!(
-            r#"{{ name: "joint_states", message_format: {message_format} }}"#
+            r#"{{ name: "joint_states", description: "A test member.", message_format: {message_format} }}"#
         ))
         .unwrap()
     }
@@ -1007,7 +1007,8 @@ mod tests {
 
     #[test]
     fn a_topic_without_a_format_has_nothing_to_pin() {
-        let bare: NativeEmittedTopic = serde_json5::from_str(r#"{ name: "tick" }"#).unwrap();
+        let bare: NativeEmittedTopic =
+            serde_json5::from_str(r#"{ name: "tick", description: "A test member." }"#).unwrap();
         let problems = topic_refinement(r#"{ x: { $length: 1 } }"#)
             .apply(bare)
             .expect_err("no format, no pin");
@@ -1022,6 +1023,7 @@ mod tests {
         let service: NativeExposedService = serde_json5::from_str(
             r#"{
                 name: "set_joints",
+                description: "A test member.",
                 request_message_format: { targets: { $type: "array", $items: "f64" } },
                 response_message_format: { measured: { $type: "array", $items: "f64" } },
             }"#,
@@ -1046,6 +1048,7 @@ mod tests {
         let action: NativeExposedAction = serde_json5::from_str(
             r#"{
                 name: "move_arm_joints",
+                description: "A test member.",
                 goal_service: {
                     request_message_format: { joint_positions: { $type: "array", $items: "f64" } },
                 },

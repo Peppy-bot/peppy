@@ -2,7 +2,8 @@
   peppy_schema: "pairing/v1",
   manifest: {
     name: "gripper_link",
-    tag: "v1"
+    tag: "v1",
+    description: ["A test pairing."],
   },
   // The gripper twin of `joint_link`: a separate pairing rather than more
   // topics on that one, because a limb can be teleoperated with no gripper at
@@ -12,6 +13,7 @@
     {
       emitted_by: "leader",
       name: "gripper_setpoints",
+      description: "A test topic.",
       qos_profile: "sensor_data",
       message_format: {
         stamp: "time",
@@ -22,6 +24,7 @@
     {
       emitted_by: "follower",
       name: "gripper_states",
+      description: "A test topic.",
       qos_profile: "sensor_data",
       message_format: {
         stamp: "time",

@@ -38,6 +38,7 @@ mod tests {
     fn test_parse_peppy_config() {
         let json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {
                     source: { name: "fake_robot_brain", tag: "v1" },
@@ -120,6 +121,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: []
         }"#;
 
@@ -133,6 +135,49 @@ mod tests {
         }
     }
 
+    /// A launcher has a description at the root of the document: the
+    /// parser refuses a launcher without one, or with a blank paragraph,
+    /// and a composed launcher keeps it through its flattening.
+    #[test]
+    fn a_launcher_requires_a_description() {
+        for (launcher, expected) in [
+            (
+                r#"{ peppy_schema: "launcher/v1", deployments: [] }"#,
+                "description",
+            ),
+            (
+                r#"{ peppy_schema: "launcher/v1", description: [" "], deployments: [] }"#,
+                "blank",
+            ),
+        ] {
+            let error = PeppyLauncherParser::from_content(launcher)
+                .expect_err(launcher)
+                .to_string();
+            assert!(error.contains(expected), "{launcher}: {error}");
+        }
+        let launcher = PeppyLauncherParser::from_content(
+            r#"{
+                peppy_schema: "launcher/v1",
+                description: ["A camera on a desk.", "It needs a USB camera."],
+                deployments: [],
+            }"#,
+        )
+        .expect("the launcher parses");
+        let paragraphs: Vec<&str> = launcher
+            .description
+            .paragraphs()
+            .iter()
+            .map(|paragraph| paragraph.as_str())
+            .collect();
+        assert_eq!(
+            paragraphs,
+            ["A camera on a desk.", "It needs a USB camera."]
+        );
+        let text = serde_json5::to_string(&launcher).expect("serialize");
+        let again = PeppyLauncherParser::from_content(&text).expect("re-parse");
+        assert_eq!(again.description, launcher.description);
+    }
+
     /// A file declaring `peppy_schema: "node/v1"` is not a launcher. The
     /// `peppy_schema` check refuses it before `deny_unknown_fields` sees the
     /// node fields, so a node config never parses as a launcher.
@@ -142,7 +187,7 @@ mod tests {
         let path = dir.path().join("anything.json5");
         let json5 = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "n", tag: "v1" },
+            manifest: { name: "n", tag: "v1", description: ["A test node."] },
             interfaces: {},
             execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
         }"#;
@@ -176,6 +221,7 @@ mod tests {
     fn test_invalid_deployment_source() {
         let json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {
                     source: { name: "" },
@@ -214,6 +260,7 @@ mod tests {
         format!(
             r#"{{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 {core_nodes}
                 deployments: [{{
                     source: {{ name: "uvc_camera", tag: "v1" }},
@@ -332,7 +379,7 @@ mod tests {
     #[test]
     fn unknown_top_level_keys_are_refused() {
         let error = parse_launcher(
-            r#"{ peppy_schema: "launcher/v1", core_node: "oops", deployments: [] }"#,
+            r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."], core_node: "oops", deployments: [] }"#,
         )
         .expect_err("unknown key must fail");
         assert!(error.contains("core_node"), "got: {error}");

@@ -5,6 +5,7 @@
 // directory with `peppy repo add <path>`.
 {
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: [
     {
       // the source property is mandatory

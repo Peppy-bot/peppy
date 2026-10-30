@@ -43,8 +43,9 @@ In the `examples/` directory, you'll find a launcher file for each language. Ope
 </Tabs>
 
  1. The file is identified by `peppy_schema: "launcher/v1"` at the root: peppy uses this to distinguish launcher files from node `peppy.json5` files (which use `"node/v1"`)
- 2. All deployments are defined in the `deployments` array
- 3. Each deployment requires a `source` (the node to run, or the MCP exposures to serve) and an `instances` array (how many copies to start, and how each one is configured). Every entry needs an `instance_id`; `arguments`, `env_vars`, `framework`, `core_node`, and `links` are optional. See [Instance attributes](#instance-attributes) for what each one does
+ 2. The `description` at the root says what the launcher starts and what it needs to run, such as a GPU, hardware or a simulation, as a list of paragraphs. It is required, and its first paragraph is the summary that `peppy repo search` prints. A launcher has no manifest, so its description sits at the root (see [Descriptions](/reference/concepts/#descriptions)). A [fragment](#fragments-splitting-a-launcher-across-files) has no description
+ 3. All deployments are defined in the `deployments` array
+ 4. Each deployment requires a `source` (the node to run, or the MCP exposures to serve) and an `instances` array (how many copies to start, and how each one is configured). Every entry needs an `instance_id`; `arguments`, `env_vars`, `framework`, `core_node`, and `links` are optional. See [Instance attributes](#instance-attributes) for what each one does
 
 The `source` attribute references a node from your configured repositories by `name` and `tag`. Specify them as separate fields, or use the combined `name: "<name>:<tag>"` shorthand. The node is resolved against your local nodes cache at `~/.peppy/cache/nodes.json5`. A source can instead list [MCP exposures](/advanced_guides/mcp/) to serve, as shown [below](#serving-mcp-exposures).
 
@@ -375,6 +376,7 @@ A launcher declares the timelines its instances read in a root-level `framework`
 ```json5 title="peppy_launcher.json5"
 {
   peppy_schema: "launcher/v1",
+  description: ["An OpenArm in the Waldo simulation, on the clock of the simulation. It needs a machine that runs the simulation."],
   framework: {
     clocks: {
       // One instance supplies this timeline, and naming it here is what

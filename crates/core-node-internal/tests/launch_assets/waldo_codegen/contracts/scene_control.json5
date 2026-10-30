@@ -13,6 +13,7 @@
   manifest: {
     name: "scene_control",
     tag: "v1",
+    description: ["A test contract."],
   },
   interfaces: {
     services: [
@@ -22,6 +23,7 @@
         // "object") and category; implementers may add engine-specific
         // fields.
         name: "get_assets_list",
+        description: "A test service.",
         response_message_format: {
           success: "bool",
           message: "string",
@@ -33,6 +35,7 @@
         // Every entry carries at least object_id, asset_id, position and
         // physics.
         name: "get_objects_list",
+        description: "A test service.",
         response_message_format: {
           success: "bool",
           message: "string",
@@ -45,6 +48,7 @@
         // Replace the current scene with the asset named by asset_id, which
         // must be of kind "scene". Spawned objects are removed first.
         name: "load_scene",
+        description: "A test action.",
         goal_service: {
           request_message_format: {
             asset_id: "string",
@@ -64,6 +68,7 @@
       {
         // Remove every spawned object and restore the default scene.
         name: "clear_scene",
+        description: "A test action.",
         goal_service: {},
         result_service: {
           response_message_format: {
@@ -75,6 +80,7 @@
       {
         // Place one instance of an "object" asset and report its new id.
         name: "spawn_object",
+        description: "A test action.",
         goal_service: {
           request_message_format: {
             asset_id: "string",
@@ -103,6 +109,7 @@
         // Teleport a spawned object to a new position, keeping its
         // orientation and zeroing its velocity.
         name: "move_object",
+        description: "A test action.",
         goal_service: {
           request_message_format: {
             object_id: "string",
@@ -119,6 +126,7 @@
       {
         // Delete a spawned object.
         name: "remove_object",
+        description: "A test action.",
         goal_service: {
           request_message_format: {
             object_id: "string",
@@ -136,6 +144,7 @@
         // duration_s seconds. The goal completes once the push is scheduled,
         // not when it ends.
         name: "apply_force",
+        description: "A test action.",
         goal_service: {
           request_message_format: {
             object_id: "string",
@@ -154,6 +163,7 @@
         // Relocate the robot's base to a new world-frame position, keeping
         // its joint configuration.
         name: "move_robot",
+        description: "A test action.",
         goal_service: {
           request_message_format: {
             position: { $type: "array", $items: "f64", $length: 3 },

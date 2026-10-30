@@ -272,6 +272,9 @@ struct NodeInitRequest {
     toolchain @3 :Text;
     # Whether to initialize the node with container support
     withContainer @4 :Bool;
+    # What the node does: the first paragraph of the description of its
+    # manifest. Not blank.
+    description @5 :Text;
 }
 
 # The response of a node init that succeeded. A failed init is an error

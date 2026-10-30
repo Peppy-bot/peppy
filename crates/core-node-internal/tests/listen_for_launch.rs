@@ -86,6 +86,7 @@ async fn seed_running_node(
 const LAUNCHER_EXAMPLE1: &str = r#"
 {
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: [
     {
       source: {
@@ -229,6 +230,7 @@ fn write_node_config_with_options(
               manifest: {
                 name: "{node_name}",
                 tag: "{node_tag}",
+                description: ["A test node."],
                 {depends_on}
               },
               {interfaces}
@@ -279,11 +281,12 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
               manifest: {
                 name: "uvc_camera",
                 tag: "{node_tag}",
+                description: ["A test node."],
               },
               interfaces: {
                 topics: {
                   emits: [
-                    { name: "camera_stream" }
+                    { name: "camera_stream", description: "A test topic." }
                   ]
                 }
               },
@@ -921,6 +924,7 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
     let launcher_json5 = format!(
         r#"{{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: [
     {{
       source: {{ name: "{BRAIN_NODE}", tag: "{NODE_TAG}" }},
@@ -1058,6 +1062,7 @@ async fn a_launcher_whose_options_fail_to_load_reports_why_in_the_feedback() {
         &launch_file_path,
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [{ name: "robot", cardinality: "zero_or_more", options: {
                 real: {
                     deployments: [{ source: { name: "named_robot", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
@@ -1119,6 +1124,7 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
     let launcher_json5 = r#"
     {
       peppy_schema: "launcher/v1",
+      description: ["A test launcher."],
       deployments: [
         { source: { name: "existing_node:v1" }, instances: [ { instance_id: "ok" } ] },
         { source: { name: "missing_node:v1" }, instances: [ { instance_id: "nope" } ] }
@@ -1182,6 +1188,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
     let launcher_json5 = r#"
     {
       peppy_schema: "launcher/v1",
+      description: ["A test launcher."],
       deployments: [
         { source: { name: "uvc_camera:v1" }, instances: [ { instance_id: "camera_front" } ] },
         { source: { name: "robot_brain:v1" }, instances: [ { instance_id: "main_robot_brain" } ] }
@@ -1230,12 +1237,12 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     responders.extend(answer_readiness(&started_core_node, "node_b", "b1").await);
 
     let launch_a = r#"
-    { peppy_schema: "launcher/v1", deployments: [ { source: { name: "node_a:v1" }, instances: [ { instance_id: "a1" } ] } ] }
+    { peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [ { source: { name: "node_a:v1" }, instances: [ { instance_id: "a1" } ] } ] }
     "#;
     let launch_file_path_a = nodes_dir.path().join("launch_a.json5");
     fs::write(&launch_file_path_a, launch_a).expect("failed to write launch file");
     let launch_b = r#"
-    { peppy_schema: "launcher/v1", deployments: [ { source: { name: "node_b:v1" }, instances: [ { instance_id: "b1" } ] } ] }
+    { peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [ { source: { name: "node_b:v1" }, instances: [ { instance_id: "b1" } ] } ] }
     "#;
     let launch_file_path_b = nodes_dir.path().join("launch_b.json5");
     fs::write(&launch_file_path_b, launch_b).expect("failed to write launch file");
@@ -1339,7 +1346,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     .await;
 
     let launch_b = r#"
-    { peppy_schema: "launcher/v1", deployments: [ { source: { name: "node_b:v1" }, instances: [ { instance_id: "b1" } ] } ] }
+    { peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [ { source: { name: "node_b:v1" }, instances: [ { instance_id: "b1" } ] } ] }
     "#;
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launch_b).expect("failed to write launch file");
@@ -1457,7 +1464,7 @@ async fn a_cancelled_launch_clears_the_stack_and_ends_cancelled() {
     let launcher = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(
         &launcher,
-        r#"{ peppy_schema: "launcher/v1", deployments: [ { source: { name: "waiting_node:v1" }, instances: [ { instance_id: "waiting_inst" } ] } ] }"#,
+        r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [ { source: { name: "waiting_node:v1" }, instances: [ { instance_id: "waiting_inst" } ] } ] }"#,
     )
     .expect("failed to write launch file");
     TestPackagesCache::new()
@@ -1528,7 +1535,7 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_clears_s
     );
 
     let launcher_json5 = r#"
-    { peppy_schema: "launcher/v1", deployments: [ { source: { name: "failing_node:v1" }, instances: [ { instance_id: "f1" } ] } ] }
+    { peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [ { source: { name: "failing_node:v1" }, instances: [ { instance_id: "f1" } ] } ] }
     "#;
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launcher_json5).expect("failed to write launch file");
@@ -1608,7 +1615,7 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     );
 
     let launcher_json5 = format!(
-        r#"{{ peppy_schema: "launcher/v1", deployments: [ {{ source: {{ name: "{NODE_NAME}:{NODE_TAG}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}" }} ] }} ] }}"#
+        r#"{{ peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [ {{ source: {{ name: "{NODE_NAME}:{NODE_TAG}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}" }} ] }} ] }}"#
     );
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, &launcher_json5).expect("failed to write launch file");
@@ -1736,7 +1743,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
         &["printout", "60"], // run_cmd that sleeps via printout
     );
     let launch_json5 = format!(
-        r#"{{ peppy_schema: "launcher/v1", deployments: [ {{ source: {{ name: "{NODE_NAME}:{NODE_TAG}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}" }} ] }} ] }}"#
+        r#"{{ peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [ {{ source: {{ name: "{NODE_NAME}:{NODE_TAG}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}" }} ] }} ] }}"#
     );
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, &launch_json5).expect("failed to write launch file");
@@ -1823,7 +1830,7 @@ async fn listen_for_launch_applies_per_instance_env_vars() {
     );
 
     let launcher_json5 = format!(
-        r#"{{ peppy_schema: "launcher/v1", deployments: [ {{ source: {{ name: "{NODE_NAME}:{NODE_TAG}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}", env_vars: {{ ESP32_DEVICE: "{INSTANCE_DEVICE}" }} }} ] }} ] }}"#
+        r#"{{ peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [ {{ source: {{ name: "{NODE_NAME}:{NODE_TAG}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}", env_vars: {{ ESP32_DEVICE: "{INSTANCE_DEVICE}" }} }} ] }} ] }}"#
     );
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, &launcher_json5).expect("failed to write launch file");
@@ -1889,6 +1896,7 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
     let launcher_json5 = format!(
         r#"{{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: [
     {{
       source: {{ name: "{ROBOT_NODE_NAME}:{NODE_TAG}" }},
@@ -1977,6 +1985,7 @@ async fn listen_for_launch_rejects_a_path_shaped_deployment_source() {
     let launcher_json5 = r#"
     {
       peppy_schema: "launcher/v1",
+      description: ["A test launcher."],
       deployments: [
         { source: { local: "./uvc_camera" }, instances: [ { instance_id: "camera_front" } ] }
       ]
@@ -2202,7 +2211,7 @@ async fn launch_scripted_node_above(
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(
         &launch_file_path,
-        r#"{ peppy_schema: "launcher/v1", deployments: [ { source: { name: "scripted_node:v1" }, instances: [ { instance_id: "s1" } ] } ] }"#,
+        r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [ { source: { name: "scripted_node:v1" }, instances: [ { instance_id: "s1" } ] } ] }"#,
     )
     .expect("failed to write launch file");
     TestPackagesCache::new()

@@ -1,5 +1,6 @@
 mod add;
 pub(crate) mod cache;
+pub(crate) mod descriptions;
 mod exclude;
 pub(crate) mod index;
 mod init;

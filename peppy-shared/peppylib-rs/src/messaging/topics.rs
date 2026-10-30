@@ -1,5 +1,6 @@
 use super::{MessengerHandle, PeerInfo, ProducerRef};
 use crate::error::{Error, Result};
+use crate::runtime::PeerPublisher;
 use crate::types::{Message, Payload};
 use config::node::{QoSProfile, TopicRetention};
 use pmi::{
@@ -301,31 +302,6 @@ impl TopicMessenger {
         Ok(Subscription::new(subscription))
     }
 
-    /// Declares the publisher for pairing emissions from this node's scalar
-    /// slot `link_id`: one wire publisher addressed to whichever peer holds
-    /// the slot's one pair, so a publish while unpaired reaches nobody.
-    pub async fn declare_sole_peer_publisher(
-        messenger: &MessengerHandle,
-        as_core_node: &str,
-        as_instance_id: &str,
-        pairing_target: SenderTarget,
-        link_id: &str,
-        as_topic_name: &str,
-        qos: QoSProfile,
-    ) -> Result<TopicPublisher> {
-        let sender = TopicWireSender::to_sole_peer(
-            as_core_node,
-            as_instance_id,
-            pairing_target,
-            link_id,
-            as_topic_name,
-        )?;
-        let inner = messenger
-            .declare_topic_publisher(&sender, qos.into(), TopicRetention::LiveOnly)
-            .await?;
-        Ok(TopicPublisher::new(Arc::new(inner)))
-    }
-
     /// Whether a subscriber matching a pairing emission from this node's
     /// slot `link_id` to `peer` is visible, within `timeout`.
     #[allow(clippy::too_many_arguments)]
@@ -503,20 +479,53 @@ fn pairing_sender(
 /// Cloneable so action handlers (e.g. feedback streams) can hand the same
 /// publisher to multiple background tasks; clones share the same underlying
 /// adapter handle (`Arc<zenoh::Session>` or mock `Arc<Mutex<HashMap>>`).
+///
+/// The publisher of a topic of a scalar pairing slot
+/// ([`crate::runtime::declare_sole_peer_publisher`]) addresses each publish
+/// to the one peer that holds the pair when it runs, and sends nothing while
+/// the slot is unpaired.
 #[derive(Clone)]
 pub struct TopicPublisher {
-    inner: Arc<MessengerPublisher>,
+    route: PublisherRoute,
+}
+
+#[derive(Clone)]
+enum PublisherRoute {
+    /// One wire publisher, whose key is fixed when it is declared.
+    Fixed(Arc<MessengerPublisher>),
+    /// A topic of a scalar pairing slot: one wire publisher per peer, each
+    /// with a key that names it.
+    SolePeer(Arc<PeerPublisher>),
 }
 
 impl TopicPublisher {
     pub(crate) fn new(inner: Arc<MessengerPublisher>) -> Self {
-        Self { inner }
+        Self {
+            route: PublisherRoute::Fixed(inner),
+        }
+    }
+
+    /// The publisher of a topic of a scalar pairing slot, which publishes
+    /// through `publisher` to the one peer of the slot. With
+    /// [`crate::runtime::declare_peer_publisher_with_watch`], the seam for
+    /// embedders and tests that manage peer state themselves.
+    pub fn to_sole_peer(publisher: PeerPublisher) -> Self {
+        Self {
+            route: PublisherRoute::SolePeer(Arc::new(publisher)),
+        }
     }
 
     pub async fn publish(&self, payload: Payload) -> Result<()> {
-        self.inner
-            .publish(payload.into_inner())
-            .await
-            .map_err(Error::PeppyMessagingInterface)
+        match &self.route {
+            PublisherRoute::Fixed(inner) => inner
+                .publish(payload.into_inner())
+                .await
+                .map_err(Error::PeppyMessagingInterface),
+            // Boxed: the peer publisher publishes through the fixed
+            // `TopicPublisher` of the peer, so its future holds this one.
+            PublisherRoute::SolePeer(publisher) => {
+                Box::pin(publisher.publish_to_sole_peer(payload)).await
+            }
+        }
     }
 }

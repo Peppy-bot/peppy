@@ -41,6 +41,7 @@ const NODE_CONFIG: &str = r#"{
   manifest: {
     name: "generated_node",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {
       nodes: [
         { name: "uvc_camera", tag: "v1", link_id: "camera" },
@@ -64,18 +65,21 @@ const NODE_CONFIG: &str = r#"{
 
 const EMITTED_STATUS: &str = r#"{
   name: "status",
+  description: "A test member.",
   qos_profile: "reliable",
   message_format: { outcome: "string" }
 }"#;
 
 const EMITTED_MARKER: &str = r#"{
   name: "marker",
+  description: "A test member.",
   qos_profile: "reliable",
   message_format: { statuses: "u32" }
 }"#;
 
 const EXPOSED_PING: &str = r#"{
   name: "ping",
+  description: "A test member.",
   request_message_format: { value: "u32" },
   response_message_format: { doubled: "u32" }
 }"#;
@@ -100,12 +104,14 @@ const PLAN_RESULT_FORMAT: &str = r#"{ success: "bool" }"#;
 
 const PEER_COMMANDS: &str = r#"{
   name: "joint_commands",
+  description: "A test member.",
   qos_profile: "reliable",
   message_format: { max_velocity: "f64" }
 }"#;
 
 const PEER_STATES: &str = r#"{
   name: "joint_states",
+  description: "A test member.",
   qos_profile: "sensor_data",
   message_format: { positions: { $type: "array", $items: "f64", $length: 3 } }
 }"#;

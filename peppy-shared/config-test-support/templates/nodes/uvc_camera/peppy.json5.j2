@@ -3,6 +3,7 @@
   manifest: {
     name: "{{ node_name }}",
     tag: "v1",
+    description: ["A test node."],
     labels: [
       "uvc",
       "camera",
@@ -14,6 +15,7 @@
       emits: [
         {
           name: "video_stream",
+          description: "A test topic.",
           qos_profile: "sensor_data",
           message_format: {
             header: {
@@ -36,6 +38,7 @@
       exposes: [
         {
           name: "enable_camera",
+          description: "A test service.",
           request_message_format: {
             enable: "bool",
           },
@@ -45,6 +48,7 @@
         },
         {
           name: "get_camera_info",
+          description: "A test service.",
           response_message_format: {
             card_type: "string",
             size: "string",

@@ -43,6 +43,7 @@ impl CountedNode {
         NodeCommand {
             command: NodeCommands::Init {
                 node_name: NodeName::new(name).expect("valid node name"),
+                description: config::description::Description::new("A test node.").unwrap(),
                 to_dir: Some(node_root.path().to_path_buf()),
                 toolchain,
                 with_container: false,
