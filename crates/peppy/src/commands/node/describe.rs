@@ -107,8 +107,7 @@ fn write_description(
     description: &DocumentDescription,
     max_width: Option<usize>,
 ) {
-    let paragraphs = description.paragraphs().iter().map(|p| p.as_str());
-    out.push_str(&prose::paragraphs(paragraphs, "  ", max_width));
+    out.push_str(&prose::paragraphs(description, "  ", max_width));
 }
 
 /// Each member under the full name that `peppy node call` and `echo` take

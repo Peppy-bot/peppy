@@ -259,10 +259,9 @@ fn description_block(
     descriptions: &CachedDescriptions,
     max_width: Option<usize>,
 ) -> String {
-    let paragraphs = descriptions.description.paragraphs().iter();
     let mut out = format!(
         "\n{}",
-        prose::paragraphs(paragraphs.map(|p| p.as_str()), "    ", max_width)
+        prose::paragraphs(&descriptions.description, "    ", max_width)
     );
     if descriptions.members.is_empty() {
         return out;

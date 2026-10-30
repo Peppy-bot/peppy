@@ -110,9 +110,8 @@ fn format_node_info(out: &mut String, response: &NodeInfo, max_width: Option<usi
     }
 
     write_section_heading(out, "Description");
-    let paragraphs = manifest.description.paragraphs().iter();
     out.push_str(&crate::commands::prose::paragraphs(
-        paragraphs.map(|paragraph| paragraph.as_str()),
+        &manifest.description,
         "",
         max_width,
     ));

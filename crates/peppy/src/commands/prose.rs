@@ -1,43 +1,36 @@
 //! The descriptions of documents as the commands print them: each paragraph
 //! wrapped at its spaces to the width of the terminal, under an indent.
 
-use unicode_width::UnicodeWidthStr;
+use super::table::{col_width, wrap};
+use config::description::DocumentDescription;
 
-/// `text` as lines that start with `indent`, wrapped at its spaces so no
-/// line is wider than `max_width` columns; a word that does not fit stays
-/// whole on a line of its own. `None` keeps the text on one line. The
-/// spaces of `text` collapse to one, and each line ends with a newline.
+/// `text` as lines that start with `indent`, wrapped by [`wrap`] so no line
+/// is wider than `max_width` columns; a word wider than a line breaks at the
+/// end of the line. `None` keeps the text on one line. The whitespace of
+/// `text` collapses to one space, and each line ends with a newline.
 pub(crate) fn wrapped(text: &str, indent: &str, max_width: Option<usize>) -> String {
-    let budget = max_width.map(|width| width.saturating_sub(indent.width()));
-    let mut out = String::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let fits = budget.is_none_or(|budget| line.width() + 1 + word.width() <= budget);
-        if !line.is_empty() && !fits {
-            out.push_str(&format!("{indent}{line}\n"));
-            line.clear();
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line.push_str(word);
-    }
-    if !line.is_empty() {
-        out.push_str(&format!("{indent}{line}\n"));
-    }
-    out
+    let words = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lines = match max_width {
+        Some(width) => wrap(&words, width.saturating_sub(col_width(indent))),
+        None => words,
+    };
+    lines
+        .lines()
+        .map(|line| format!("{indent}{line}\n"))
+        .collect()
 }
 
 /// The paragraphs of a document description, each [`wrapped`], with a
 /// blank line between two paragraphs.
-pub(crate) fn paragraphs<'a>(
-    paragraphs: impl IntoIterator<Item = &'a str>,
+pub(crate) fn paragraphs(
+    description: &DocumentDescription,
     indent: &str,
     max_width: Option<usize>,
 ) -> String {
-    paragraphs
-        .into_iter()
-        .map(|paragraph| wrapped(paragraph, indent, max_width))
+    description
+        .paragraphs()
+        .iter()
+        .map(|paragraph| wrapped(paragraph.as_str(), indent, max_width))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -45,6 +38,7 @@ pub(crate) fn paragraphs<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::description::Description;
 
     #[test]
     fn a_paragraph_wraps_at_its_spaces_under_the_indent() {
@@ -63,17 +57,22 @@ mod tests {
     }
 
     #[test]
-    fn a_word_wider_than_the_line_stays_whole() {
+    fn a_word_wider_than_the_line_breaks_at_the_end_of_the_line() {
         assert_eq!(
-            wrapped("see park_joint_positions now", "", Some(8)),
-            "see\npark_joint_positions\nnow\n"
+            wrapped("see park_joint_positions now", "  ", Some(10)),
+            "  see\n  park_joi\n  nt_posit\n  ions now\n"
         );
     }
 
     #[test]
     fn paragraphs_are_apart_by_a_blank_line() {
+        let description = DocumentDescription::new(vec![
+            Description::new("One.").unwrap(),
+            Description::new("Two.").unwrap(),
+        ])
+        .unwrap();
         assert_eq!(
-            paragraphs(["One.", "Two."], "    ", None),
+            paragraphs(&description, "    ", None),
             "    One.\n\n    Two.\n"
         );
     }
