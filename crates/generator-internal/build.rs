@@ -269,8 +269,6 @@ mod peppylib_build {
     }
 
     /// Extracts `_peppylib.abi3.so` from the newest `.whl` file in the given directory.
-    ///
-    /// Maturin wheels are zip archives containing the `.so` at `peppylib/_peppylib.abi3.so`.
     #[cfg(target_os = "macos")]
     fn extract_so_from_wheel(wheels_dir: &Path) -> Vec<u8> {
         let whl_path = std::fs::read_dir(wheels_dir)
@@ -281,22 +279,9 @@ mod peppylib_build {
             .map(|e| e.path())
             .expect("no .whl file found in wheels directory");
 
-        let file = std::fs::File::open(&whl_path).expect("failed to open wheel file");
-        let mut archive = zip::ZipArchive::new(file).expect("failed to read wheel as zip archive");
-
-        let so_entry_name = archive
-            .file_names()
-            .find(|name| name.ends_with("_peppylib.abi3.so"))
-            .expect("wheel does not contain _peppylib.abi3.so")
-            .to_string();
-
-        let mut entry = archive
-            .by_name(&so_entry_name)
-            .expect("failed to read .so entry from wheel");
-
-        let mut buf = Vec::with_capacity(entry.size() as usize);
-        std::io::Read::read_to_end(&mut entry, &mut buf).expect("failed to extract .so from wheel");
-        buf
+        let wheel = std::fs::File::open(&whl_path).expect("failed to open wheel file");
+        peppylib_build_policy::native_extension_of_wheel(wheel)
+            .unwrap_or_else(|e| panic!("failed to extract the .so from {whl_path:?}: {e}"))
     }
 
     /// A Linux cross-compilation target for peppylib.
