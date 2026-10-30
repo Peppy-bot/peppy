@@ -296,7 +296,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
             #[serde(default)]
             components: Vec<ComponentAxis>,
             #[serde(default, deserialize_with = "super::composition::written")]
-            adjustments: Option<Vec<Adjustment>>,
+            adjustments: Option<Vec<super::composition::WrittenAdjustment>>,
             #[serde(default)]
             constraints: Vec<SelectionConstraint>,
             #[serde(default)]

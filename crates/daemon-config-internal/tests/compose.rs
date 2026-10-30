@@ -168,6 +168,106 @@ fn the_file_deploys_the_flat_document() {
     );
 }
 
+/// One adjustment changes each instance its `target` list names, in the
+/// order of the list, and skips each one the selection does not define, as
+/// one adjustment per instance does.
+#[test]
+fn an_adjustment_target_list_changes_each_instance_and_skips_each_absent_one() {
+    let dir = tempdir().unwrap();
+    let (file, launcher) = write_launcher(
+        dir.path(),
+        "shared.json5",
+        r#"{
+            peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
+            components: [
+                { name: "extra", cardinality: "zero_or_one",
+                  options: { on: { deployments: [
+                      { source: { name: "relay", tag: "v1" }, instances: [{ instance_id: "c_inst" }] },
+                  ] } } },
+            ],
+            deployments: [
+                { source: { name: "relay", tag: "v1" },
+                  instances: [{ instance_id: "a_inst" }, { instance_id: "b_inst" }] },
+            ],
+            adjustments: [
+                { target: ["b_inst", "c_inst", "a_inst"], set_arguments: { rate: 5 } },
+            ],
+        }"#,
+    );
+    let (flat, report) = compose(&launcher, &file, &[]).expect("composes");
+    let five = AnyType::Int(5);
+    for id in ["a_inst", "b_inst"] {
+        let instance = flat
+            .deployments
+            .iter()
+            .flat_map(|d| d.instances.iter())
+            .find(|i| i.instance_id.as_str() == id)
+            .expect("deployed");
+        assert_eq!(instance.arguments.get("rate"), Some(&five), "{id}");
+    }
+    assert_eq!(rate_writes(&report), [(None, five.clone()), (None, five)]);
+    let targets: Vec<&str> = report.applied.iter().map(|a| a.target.as_str()).collect();
+    assert_eq!(targets, ["b_inst", "a_inst"], "in the order of the list");
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|s| s.target == "c_inst" && matches!(s.reason, SkipReason::TargetAbsent))
+    );
+}
+
+/// A `target` list names at least one instance, each once, each by its id.
+#[test]
+fn a_target_list_that_names_no_instance_or_one_twice_is_refused() {
+    for (target, refusal) in [
+        ("[]", "names no instance"),
+        (r#"["a_inst", "a_inst"]"#, "names `a_inst` twice"),
+        (r#"["a_inst", 7]"#, "holds 7; each item is an instance id"),
+        ("7", "an adjustment's `target` is 7"),
+    ] {
+        let error = PeppyLauncherParser::from_content(&format!(
+            r#"{{
+                peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
+                components: [{{ name: "a", options: {{ on: {{ deployments: [] }} }} }}],
+                deployments: [
+                    {{ a: "on" }},
+                    {{ source: {{ name: "relay", tag: "v1" }}, instances: [{{ instance_id: "a_inst" }}] }},
+                ],
+                adjustments: [{{ target: {target}, set_arguments: {{ rate: 5 }} }}],
+            }}"#
+        ))
+        .expect_err("refused")
+        .to_string();
+        assert!(error.contains(refusal), "{target}: {error}");
+    }
+}
+
+/// A written adjustment reads its changes as the adjustment of one instance
+/// does, whatever its `target` names: a change written twice is refused.
+#[test]
+fn an_adjustment_that_writes_a_change_twice_is_refused_for_one_target_or_a_list() {
+    for target in [r#""a_inst""#, r#"["a_inst"]"#] {
+        let error = PeppyLauncherParser::from_content(&format!(
+            r#"{{
+                peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
+                deployments: [
+                    {{ source: {{ name: "relay", tag: "v1" }}, instances: [{{ instance_id: "a_inst" }}] }},
+                ],
+                adjustments: [{{ target: {target}, set_arguments: {{ rate: 5 }}, set_arguments: {{ rate: 6 }} }}],
+            }}"#
+        ))
+        .expect_err("refused")
+        .to_string();
+        assert!(
+            error.contains("duplicate field `set_arguments`"),
+            "{target}: {error}"
+        );
+    }
+}
+
 /// A launcher's own `adjustments` name at least one entry, the rule a
 /// fragment and an option hold to as well.
 #[test]

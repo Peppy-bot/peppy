@@ -392,7 +392,7 @@ impl<'de> Deserialize<'de> for LauncherFragment {
             #[serde(default)]
             constraints: Vec<SelectionConstraint>,
             #[serde(default, deserialize_with = "written")]
-            adjustments: Option<Vec<Adjustment>>,
+            adjustments: Option<Vec<WrittenAdjustment>>,
             #[serde(default)]
             core_nodes: Vec<String>,
             #[serde(default)]
@@ -600,7 +600,7 @@ impl<'de> Deserialize<'de> for CopyEntry {
             #[serde(default)]
             arguments: ArgumentOverrides,
             #[serde(default, deserialize_with = "written")]
-            adjustments: Option<Vec<Adjustment>>,
+            adjustments: Option<Vec<WrittenAdjustment>>,
             #[serde(default, deserialize_with = "written")]
             core_node: Option<de::IgnoredAny>,
             #[serde(default, deserialize_with = "written")]
@@ -950,16 +950,18 @@ pub struct SelectionConstraint {
 
 /// One change to an instance the launcher's `deployments` or an option's
 /// fragments define. Every change names its operation; nothing is inferred
-/// from a value's JSON type.
+/// from a value's JSON type. A document writes an adjustment whose `target`
+/// names one instance or a list ([`WrittenAdjustment`]), and it reads as one
+/// adjustment per instance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Adjustment {
+pub struct Adjustment<T = Name> {
     /// The instance to change. Whether an instance exists is declared by the
     /// launcher's deployments and the axes' options, so an adjustment whose
     /// target the resolved selection does not define is skipped, not
     /// refused; a target nothing that runs beside the entry defines is a
     /// dead reference, refused when the composition loads.
-    pub target: Name,
+    pub target: T,
     /// Guard: every named axis must hold one of its named options for this
     /// adjustment to run. Absent means unconditional.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1027,13 +1029,99 @@ impl Serialize for OptionSpec {
 /// The `adjustments` a document declares: the key names at least one entry
 /// wherever it is written, a launcher, a fragment file, an option object, an
 /// option entry and a copy alike, so an empty list is refused.
-pub(crate) fn named_entries(written: Option<Vec<Adjustment>>) -> Result<Vec<Adjustment>, String> {
+pub(crate) fn named_entries(
+    written: Option<Vec<WrittenAdjustment>>,
+) -> Result<Vec<Adjustment>, String> {
     match written {
         Some(entries) if entries.is_empty() => Err(String::from(
             "`adjustments` names no entry; leave the key out, or name the entries it runs",
         )),
-        Some(entries) => Ok(entries),
+        Some(entries) => Ok(entries
+            .into_iter()
+            .flat_map(WrittenAdjustment::per_instance)
+            .collect()),
         None => Ok(Vec::new()),
+    }
+}
+
+/// An adjustment as a document writes it: its `target` names one instance,
+/// or a list of instances that each take the same changes, so a launcher
+/// writes a change that several instances share once.
+pub(crate) type WrittenAdjustment = Adjustment<Targets>;
+
+impl WrittenAdjustment {
+    /// One adjustment per instance of its `target`, in the order of the
+    /// list, each with the same changes; each one that the resolved
+    /// selection does not define is skipped on its own.
+    fn per_instance(self) -> Vec<Adjustment> {
+        let Adjustment {
+            target,
+            when,
+            set_arguments,
+            set_framework,
+            set_links,
+            add_links,
+            unset_links,
+            set_daemon_scopes,
+        } = self;
+        target
+            .0
+            .into_iter()
+            .map(|target| Adjustment {
+                target,
+                when: when.clone(),
+                set_arguments: set_arguments.clone(),
+                set_framework: set_framework.clone(),
+                set_links: set_links.clone(),
+                add_links: add_links.clone(),
+                unset_links: unset_links.clone(),
+                set_daemon_scopes: set_daemon_scopes.clone(),
+            })
+            .collect()
+    }
+}
+
+/// The instances that the written `target` of an adjustment names: one
+/// instance id, or a list of distinct ones, in its order.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Targets(Vec<Name>);
+
+impl<'de> Deserialize<'de> for Targets {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let written = serde_json::Value::deserialize(deserializer)?;
+        targets_of(written).map(Targets).map_err(de::Error::custom)
+    }
+}
+
+/// The instance ids of a written `target`.
+fn targets_of(target: serde_json::Value) -> Result<Vec<Name>, String> {
+    const EXPECTED: &str = "an instance id, such as \"backbone_inst\", or a list of instance ids, \
+         such as [\"framework_controls_inst\", \"applier_inst\"]";
+    let instance = |id: String| {
+        Name::try_from(id.clone())
+            .map_err(|error| format!("an adjustment's `target` names `{id}`: {error}"))
+    };
+    match target {
+        serde_json::Value::String(one) => Ok(vec![instance(one)?]),
+        serde_json::Value::Array(items) if items.is_empty() => Err(format!(
+            "an adjustment's `target` list names no instance: {EXPECTED}"
+        )),
+        serde_json::Value::Array(items) => {
+            let mut seen = HashSet::with_capacity(items.len());
+            items
+                .into_iter()
+                .map(|item| match item {
+                    serde_json::Value::String(id) if seen.insert(id.clone()) => instance(id),
+                    serde_json::Value::String(id) => Err(format!(
+                        "an adjustment's `target` list names `{id}` twice; name each instance once"
+                    )),
+                    other => Err(format!(
+                        "an adjustment's `target` list holds {other}; each item is an instance id"
+                    )),
+                })
+                .collect()
+        }
+        other => Err(format!("an adjustment's `target` is {other}: {EXPECTED}")),
     }
 }
 
@@ -1075,7 +1163,7 @@ struct RawOption {
     #[serde(default)]
     framework: LauncherFramework,
     #[serde(default, deserialize_with = "written")]
-    adjustments: Option<Vec<Adjustment>>,
+    adjustments: Option<Vec<WrittenAdjustment>>,
 }
 
 impl<'de> Deserialize<'de> for OptionSpec {

@@ -723,7 +723,16 @@ Three kinds of entry run in [copies](#copies), their target resolved inside each
 
 One routing is ambiguous, and it is refused when the launcher is read: an entry that names no axis that runs as copies, neither through the option it sits under nor in its guard, whose target an option of such an axis defines as well as an option that fills once on an axis other than the entry's own, when the entry's own option does not define the target: an entry writing an instance its own option defines is that option's write. The refusal names both, because either reading is a legal launcher: write the entry under the option that fills once to write that option's instance, or guard it on the axis that runs as copies to write each copy's.
 
-An adjustment whose target the current selection does not define is **skipped**, not refused: a top-level write to `recorder_inst` does not run when the recorder axis is off. A target nothing in the entry's reach defines is a dead reference and fails when the launcher is read. From the top level, or under an option that fills once, an entry reaches the launcher's deployments, its own option and every option of the other axes, those that run as copies included; under an option that runs as copies it reaches that option's instances and the stack's, never another copy's.
+An adjustment's `target` names one instance, or a list of instances that each take the same changes, such as one scope that two instances share:
+
+```json5
+{ target: ["framework_controls_inst", "applier_inst"],
+  set_daemon_scopes: { stack: { max_copies: 4, options: [ /* ... */ ] } } }
+```
+
+A list reads as one adjustment per instance, in its order, so every rule below holds for each instance on its own. A list names at least one instance, and each one once.
+
+An adjustment whose target the current selection does not define is **skipped**, not refused: a top-level write to `recorder_inst` does not run when the recorder axis is off, and a list skips each instance the selection does not define. A target nothing in the entry's reach defines is a dead reference and fails when the launcher is read. From the top level, or under an option that fills once, an entry reaches the launcher's deployments, its own option and every option of the other axes, those that run as copies included; under an option that runs as copies it reaches that option's instances and the stack's, never another copy's.
 
 An option's adjustments run when that option is selected, so the option is their guard. `when` is for conditions existence cannot express, mostly shape: two leaders may both provide `commander_inst`, but only the browser panel has motor health and alert slots to bind. A top-level guard names the launcher's axes; an option's names the launcher's other axes and [the option's own](#an-options-own-axes). Each axis accepts an option name or a nonempty list of option names: lists match **any** listed option (OR), and **every** named axis must match (AND).
 
