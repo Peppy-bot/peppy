@@ -29,14 +29,14 @@
         "type": "object",
         "properties": {
           "x_m": {
-            "type": "number"
+            "type": "number",
+            "description": "Forward of the base."
           }
         },
         "required": [
           "x_m"
         ],
-        "additionalProperties": false,
-        "description": "One point."
+        "additionalProperties": false
       },
       "description": "The points the arm passes, in order."
     },

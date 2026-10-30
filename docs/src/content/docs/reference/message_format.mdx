@@ -121,7 +121,7 @@ A mark name is 1 to 64 lowercase ASCII letters, digits and `_`: words that each 
 
 ## Description modifier
 
-A field can say what it holds with `$description` in the structured form of the field. A primitive, an array and an object take it. On an array it sits beside `$items`, and on an object beside the keys of the fields:
+A field can say what it holds with `$description` in the structured form of the field. A primitive, an array and an object take it. On an array it sits beside `$items`, and on an object beside the keys of the fields. The items of an array take none: an array and its items are one field, so the `$description` of the array says what its items hold, and each field of an object item takes its own:
 
 ```json5
 message_format: {
@@ -198,7 +198,7 @@ distances: {
 | Field       | Required | Description                                         |
 |-------------|----------|-----------------------------------------------------|
 | `$type`     | Yes      | Must be `"array"`                                   |
-| `$items`    | Yes      | A primitive type or an object schema. Nested arrays (arrays of arrays) are not supported |
+| `$items`    | Yes      | A primitive type or an object schema. Nested arrays (arrays of arrays) are not supported, and the items take no `$description`: the array has it |
 | `$length`   | No       | Fixed number of elements. Only supported when `$items` is a numeric or boolean primitive (not supported for `string`, `bytes`, `time`, or object items). Omit for variable-length; a node implementing or consuming the document may then pin it through its entry's `refine` block |
 | `$optional` | No       | When `true`, the entire array may be absent          |
 

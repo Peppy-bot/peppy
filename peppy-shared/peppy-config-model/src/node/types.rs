@@ -199,8 +199,8 @@ impl MessageFormat {
     /// Each field of the format that has a description (`$description`),
     /// depth first in the order of the format, with its path: the key of
     /// each object it sits in, from the root of the format, with the items
-    /// of an array passed through. An array and the object of its items
-    /// have one path.
+    /// of an array passed through. The items of an array take no
+    /// description, so each path names one description.
     pub fn field_descriptions(&self) -> Vec<(Vec<&str>, &Description)> {
         let mut found = Vec::new();
         for (key, field) in &self.0 {
@@ -484,6 +484,12 @@ where
     if matches!(schema, SchemaType::Array(_)) {
         return Err(de::Error::custom(
             "nested arrays (arrays of arrays) are not supported as array items",
+        ));
+    }
+    if schema.description().is_some() {
+        return Err(de::Error::custom(
+            "`$description` is not supported on array items: an array and its items are one \
+field, so the `$description` of the array says what its items hold",
         ));
     }
     Ok(Box::new(schema))
@@ -3386,6 +3392,20 @@ mod tests {
             ),
             (
                 r#"{
+                    points: {
+                      $type: "array",
+                      $description: "The way.",
+                      $items: {
+                        $type: "object",
+                        $description: "One point.",
+                        z: "f64"
+                      }
+                    }
+                }"#,
+                "a description on array items should fail",
+            ),
+            (
+                r#"{
                     frames: {
                         $type: "array",
                         $items: {
@@ -3950,7 +3970,8 @@ mod tests {
     }
 
     /// Each field with a `$description` is found by its path, at any
-    /// depth, an array item included; a field with none is left out.
+    /// depth, a field of an array item included; a field with none is left
+    /// out.
     #[test]
     fn a_format_gives_the_description_of_each_field_by_its_path() {
         let format: MessageFormat = serde_json5::from_str(
@@ -3965,7 +3986,7 @@ mod tests {
                 points: {
                     $type: "array",
                     $description: "The way.",
-                    $items: { $type: "object", $description: "One point.", z: { $type: "f64", $description: "Up." } },
+                    $items: { $type: "object", z: { $type: "f64", $description: "Up." } },
                 },
             }"#,
         )
@@ -3982,10 +4003,30 @@ mod tests {
                 (vec!["target"], "Where to go."),
                 (vec!["target", "x"], "Forward."),
                 (vec!["points"], "The way."),
-                (vec!["points"], "One point."),
                 (vec!["points", "z"], "Up."),
             ]
         );
+    }
+
+    /// The items of an array take no description: the array and its items
+    /// are one field, with one path, and the array says what they hold.
+    #[test]
+    fn a_description_on_the_items_of_an_array_is_refused() {
+        for items in [
+            r#"{ $type: "f64", $description: "One." }"#,
+            r#"{ $type: "object", $description: "One point.", z: "f64" }"#,
+        ] {
+            let error = serde_json5::from_str::<MessageFormat>(&format!(
+                r#"{{ points: {{ $type: "array", $items: {items} }} }}"#
+            ))
+            .expect_err("a description on array items is refused");
+            assert!(
+                error
+                    .to_string()
+                    .contains("`$description` is not supported on array items"),
+                "{error}"
+            );
+        }
     }
 
     /// The description of a field survives a serialization and a second

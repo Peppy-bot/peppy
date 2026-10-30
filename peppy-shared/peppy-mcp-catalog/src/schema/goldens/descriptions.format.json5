@@ -1,6 +1,6 @@
 // Descriptions: the `$description` of a field is the `description` of its
-// schema, at the root, in a nested object, on an array and on its items. A
-// field with no `$description` has no `description`.
+// schema, at the root, in a nested object, on an array and in the object of
+// its items. A field with no `$description` has no `description`.
 {
   speed: { $type: "f64", $description: "The speed of the move, in meters per second." },
   target: {
@@ -12,7 +12,7 @@
   waypoints: {
     $type: "array",
     $description: "The points the arm passes, in order.",
-    $items: { $type: "object", $description: "One point.", x_m: "f64" },
+    $items: { $type: "object", x_m: { $type: "f64", $description: "Forward of the base." } },
   },
   label: { $type: "string", $optional: true, $description: "A name for the move." },
   frames: { $type: "array", $items: "u8", $description: "One camera frame, JPEG." },
