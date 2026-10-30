@@ -38,7 +38,7 @@ pub fn search_rendered(
 ) -> Result<String> {
     let query = SearchQuery::parse(query).map_err(Error::ExecutionFailed)?;
     let query = match text {
-        true => query.with_descriptions(),
+        true => query.with_descriptions().map_err(Error::ExecutionFailed)?,
         false => query,
     };
     let outcome =
@@ -457,7 +457,9 @@ mod tests {
             ],
             excluded_hint: String::new(),
         };
-        let wrist = query("wrist").with_descriptions();
+        let wrist = query("wrist")
+            .with_descriptions()
+            .expect("a valid pattern with no regard to case");
         let doc: serde_json::Value =
             serde_json::from_str(&render_json(&wrist, &outcome)).expect("valid JSON");
         assert_eq!(doc["query"]["text"], true);

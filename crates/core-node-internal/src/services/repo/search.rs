@@ -94,8 +94,10 @@ impl SearchQuery {
         }
         Ok(Self {
             raw: raw.to_owned(),
-            name: compile_pattern(name)?,
-            tag: tag.map(compile_pattern).transpose()?,
+            name: compile_pattern(name, Case::Matched)?,
+            tag: tag
+                .map(|tag| compile_pattern(tag, Case::Matched))
+                .transpose()?,
             digest,
             text: None,
         })
@@ -106,13 +108,14 @@ impl SearchQuery {
     /// the paragraphs of the document, and for a contract or a pairing the
     /// description of each member or topic and of each field. A document
     /// found by its name still ranks ahead of one found by a description.
-    pub fn with_descriptions(mut self) -> Self {
-        let text = regex::RegexBuilder::new(self.name.as_str())
-            .case_insensitive(true)
-            .build()
-            .expect("the name pattern compiled once already compiles");
-        self.text = Some(text);
-        self
+    ///
+    /// Refused as [`Self::parse`] refuses an invalid pattern when the name
+    /// pattern does not compile with no regard to case: the folded cases
+    /// can make a pattern that compiled grow past the size limit of a
+    /// regular expression.
+    pub fn with_descriptions(mut self) -> Result<Self, String> {
+        self.text = Some(compile_pattern(self.name.as_str(), Case::Ignored)?);
+        Ok(self)
     }
 
     /// Whether the query also matches the descriptions.
@@ -173,9 +176,18 @@ impl SearchQuery {
     }
 }
 
+/// Whether a pattern of a query matches the case of the text.
+#[derive(Debug, Clone, Copy)]
+enum Case {
+    Matched,
+    Ignored,
+}
+
 /// Compiles one query part into its unanchored matcher.
-fn compile_pattern(part: &str) -> Result<regex::Regex, String> {
-    regex::Regex::new(part)
+fn compile_pattern(part: &str, case: Case) -> Result<regex::Regex, String> {
+    regex::RegexBuilder::new(part)
+        .case_insensitive(matches!(case, Case::Ignored))
+        .build()
         .map_err(|e| format!("search pattern `{part}` is not a valid regular expression: {e}"))
 }
 
@@ -877,7 +889,8 @@ mod tests {
     fn search_text(home: &Home, raw: &str) -> Result<SearchOutcome, String> {
         let query = SearchQuery::parse(raw)
             .expect("a valid query")
-            .with_descriptions();
+            .with_descriptions()
+            .expect("a valid pattern with no regard to case");
         search_repo_items(&home.dirs, &query)
     }
 
@@ -1057,6 +1070,17 @@ mod tests {
     fn parse_refuses_an_invalid_regex() {
         let err = SearchQuery::parse("cam[").expect_err("refuses");
         assert!(err.contains("`cam[`"), "got: {err}");
+        assert!(err.contains("not a valid regular expression"), "got: {err}");
+    }
+
+    /// A pattern that compiles as typed but grows past the size limit once
+    /// its cases fold (`k` also matches `K` and the Kelvin sign) is refused
+    /// for the descriptions as an invalid pattern is.
+    #[test]
+    fn a_pattern_too_large_with_no_regard_to_case_is_refused() {
+        let query = SearchQuery::parse("k{50000}").expect("compiles as typed");
+        let err = query.with_descriptions().expect_err("refuses");
+        assert!(err.contains("`k{50000}`"), "got: {err}");
         assert!(err.contains("not a valid regular expression"), "got: {err}");
     }
 
