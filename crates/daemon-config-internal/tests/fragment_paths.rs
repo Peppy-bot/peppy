@@ -25,6 +25,7 @@ fn prepare(file: &Path, reference: &str) -> Result<PreparedLauncher, String> {
     let document = format!(
         r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{{ name: "commander", options: {{ xr: {} }} }}],
         deployments: [{{ commander: "xr" }}],
     }}"#,

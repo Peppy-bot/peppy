@@ -3,7 +3,8 @@
 Every setpoint arrives tagged with the pair it came on; the hub logs the
 leader's instance and the copy the pair belongs to, and answers on that
 pair alone with the positions it was sent, so a leader hears its own
-values back and never another leader's. The pairs the slot holds are
+values back and never another leader's; a pair that ends before its answer
+gets none. The pairs the slot holds are
 logged whenever the set changes, in the order they were established,
 which is what the cross-daemon pairing test reads.
 
@@ -62,9 +63,20 @@ async def answer_setpoints(node_runner: NodeRunner) -> None:
             f"positions={list(message.positions)}",
             flush=True,
         )
-        await publisher.publish_to(
-            peer, joint_states.build_message(time.time(), list(message.positions), True)
-        )
+        answer = joint_states.build_message(time.time(), list(message.positions), True)
+        try:
+            await publisher.publish_to(peer, answer)
+        except ValueError:
+            # A pair can end between a setpoint and its answer, and the slot
+            # refuses an answer to a pair it no longer holds.
+            if any(
+                member.info == peer for member in joint_setpoints.peers(node_runner)
+            ):
+                raise
+            print(
+                f"{LOG} the pair with {peer.producer.instance_id} ended before its answer",
+                flush=True,
+            )
 
 
 async def setup(params: Parameters, node_runner: NodeRunner) -> list:

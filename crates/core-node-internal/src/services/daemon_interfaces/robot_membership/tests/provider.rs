@@ -51,7 +51,7 @@ const STACK_LOG: &str = "/home/peppy/.peppy/logs/stack/goal.log";
 
 const ROOT_CONFIG: &str = r#"{
     peppy_schema: "node/v1",
-    manifest: { name: "cn_desk", tag: "v1" },
+    manifest: { name: "cn_desk", tag: "v1", description: ["A test node."] },
     interfaces: {},
     execution: {
         language: "rust",

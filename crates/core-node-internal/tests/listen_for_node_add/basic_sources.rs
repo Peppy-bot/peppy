@@ -14,6 +14,7 @@ async fn listen_for_node_fs_add_success() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -153,11 +154,12 @@ async fn listen_for_node_http_add_success() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             interfaces: {
                 services: {
                     exposes: [
-                        { name: "new_service" }
+                        { name: "new_service", description: "A test service." }
                     ]
                 }
             },

@@ -177,6 +177,7 @@ mod tests {
             length: None,
             optional: false,
             marks: Default::default(),
+            description: None,
         });
         let invalid_array = SchemaType::Array(ArraySchema {
             kind: ArrayKind::Array,
@@ -184,6 +185,7 @@ mod tests {
             length: None,
             optional: false,
             marks: Default::default(),
+            description: None,
         });
         let mut fields = IndexMap::new();
         fields.insert("samples".to_string(), invalid_array);

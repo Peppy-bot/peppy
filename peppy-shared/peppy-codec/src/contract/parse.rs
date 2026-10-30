@@ -1,4 +1,3 @@
-use super::comments::ContractComments;
 use super::types::PeppyContract;
 use std::path::Path;
 
@@ -47,17 +46,14 @@ impl PeppyContractParser {
         Self::from_content(&content)
     }
 
-    /// Takes a JSON5 content string and parses it as a contract document,
-    /// with the comments of the text.
+    /// Takes a JSON5 content string and parses it as a contract document.
     pub fn from_content(content: &str) -> Result<PeppyContract, ContractError> {
-        let mut contract: PeppyContract = config::deserialize_json5_with_structured_errors(
+        config::deserialize_json5_with_structured_errors(
             content,
             |error| ContractError::Invalid(error.to_string()),
             |refusal: NoStructuredRefusal| match refusal {},
             ContractError::Invalid,
-        )?;
-        contract.comments = ContractComments::of_document(content);
-        Ok(contract)
+        )
     }
 }
 
@@ -71,10 +67,10 @@ mod tests {
     fn from_content_parses_contract() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "depth_camera", tag: "v1" },
+            manifest: { name: "depth_camera", tag: "v1", description: ["A test contract."] },
             interfaces: {
                 topics: [
-                    { name: "video_stream", qos_profile: "sensor_data" }
+                    { name: "video_stream", description: "A test topic.", qos_profile: "sensor_data" }
                 ]
             }
         }"#;
@@ -89,7 +85,7 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "ping", tag: "v1" },
+            manifest: { name: "ping", tag: "v1", description: ["A test contract."] },
             interfaces: {}
         }"#;
         std::fs::write(tmp.path(), json5).unwrap();
@@ -132,8 +128,8 @@ mod tests {
         let error = PeppyContractParser::from_content(
             r#"{
                 peppy_schema: "contract/v1",
-                manifest: { name: "arm", tag: "v1" },
-                interfaces: { services: [{ name: "move", request_message_format: { x: "f65" } }] },
+                manifest: { name: "arm", tag: "v1", description: ["A test contract."] },
+                interfaces: { services: [{ name: "move", description: "A test service.", request_message_format: { x: "f65" } }] },
             }"#,
         )
         .expect_err("`f65` is no type");
@@ -150,6 +146,7 @@ mod tests {
     fn launcher_document_rejected() {
         let json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: []
         }"#;
         let err = PeppyContractParser::from_content(json5)

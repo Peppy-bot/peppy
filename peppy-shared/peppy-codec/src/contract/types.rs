@@ -1,8 +1,9 @@
-use super::comments::{ContractComments, MessageSide};
+use super::side::MessageSide;
 use config::{
     contract_member::{
         ContractAction, ContractMarks, ContractMembers, ContractService, ContractTopic,
     },
+    description::{Description, DocumentDescription},
     failure_kind::{ContractFailureKinds, ContractKinds},
     node::{
         InterfaceKind, LinkedMember, MessageFormat, NativeEmittedTopic, NativeExposedAction,
@@ -46,12 +47,37 @@ pub struct PeppyContract {
     /// topic, service and action.
     pub marks: ContractMarks,
     pub interfaces: Interfaces,
-    /// The comments of the document, which [`super::PeppyContractParser`]
-    /// reads from its text. Empty for a contract that serde reads alone.
-    pub comments: ContractComments,
 }
 
 impl PeppyContract {
+    /// What the contract is for: its paragraphs, the first one the summary.
+    pub fn description(&self) -> &DocumentDescription {
+        &self.manifest.description
+    }
+
+    /// The description of the member `name` of `kind`, when the contract
+    /// declares one.
+    pub fn member_description(&self, kind: InterfaceKind, name: &str) -> Option<&Description> {
+        match kind {
+            InterfaceKind::Topic => self.topic(name).map(|topic| &topic.description),
+            InterfaceKind::Service => self.service(name).map(|service| &service.description),
+            InterfaceKind::Action => self.action(name).map(|action| &action.description),
+        }
+    }
+
+    /// The description (`$description`) of the field at `path` of the
+    /// message `side` of the member `name` of `kind`, when the field has
+    /// one. A path names a field as [`Self::field`] does.
+    pub fn field_description(
+        &self,
+        kind: InterfaceKind,
+        name: &str,
+        side: MessageSide,
+        path: &[&str],
+    ) -> Option<&Description> {
+        self.field(kind, name, side, path)?.description()
+    }
+
     /// The topic `name`, when the contract declares one.
     pub fn topic(&self, name: &str) -> Option<&NativeEmittedTopic> {
         self.interfaces
@@ -101,6 +127,12 @@ impl PeppyContract {
                 .as_ref()?
                 .request_message_format
                 .as_ref(),
+            (InterfaceKind::Action, MessageSide::GoalResponse) => self
+                .action(name)?
+                .goal_service
+                .as_ref()?
+                .response_message_format
+                .as_ref(),
             (InterfaceKind::Action, MessageSide::Feedback) => self
                 .action(name)?
                 .feedback_topic
@@ -117,9 +149,12 @@ impl PeppyContract {
     }
 
     /// The field at `path` of the message `side` of the member `name` of
-    /// `kind`, with its enum (`$enum`) and its marks (`$marks`). A path
-    /// names a field the way [`ContractComments::field`] does: the key of
-    /// each object it sits in, with the items of an array passed through.
+    /// `kind`, with its enum (`$enum`), its marks (`$marks`) and its
+    /// description (`$description`). A path names a field by the key of
+    /// each object it sits in, from the root of the format, with the items
+    /// of an array passed through, so the field `feature` of an item of
+    /// `features` of an item of `options` is
+    /// `["options", "features", "feature"]`.
     pub fn field(
         &self,
         kind: InterfaceKind,
@@ -240,7 +275,6 @@ impl TryFrom<ContractDocument> for PeppyContract {
                 services: members.services,
                 actions: members.actions,
             },
-            comments: ContractComments::default(),
         })
     }
 }
@@ -253,7 +287,6 @@ impl From<PeppyContract> for ContractDocument {
             failure_kinds,
             marks,
             interfaces,
-            comments: _,
         } = contract;
         let members = ContractMembers {
             topics: interfaces.topics,
@@ -275,16 +308,18 @@ impl From<PeppyContract> for ContractDocument {
     }
 }
 
-/// Identity of a contract document. Contracts do not have build/runtime
-/// concerns, so the manifest is narrower than a node manifest: `depends_on`
-/// is rejected because a contract is passive. `labels` are
-/// allowed as descriptive metadata to help discovery and filtering.
+/// Identity of a contract or a pairing document. These documents do not
+/// have build/runtime concerns, so the manifest is narrower than a node
+/// manifest: `depends_on` is rejected because a contract is passive. The
+/// description says what the document is for; `labels` are allowed as
+/// descriptive metadata to help discovery and filtering.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub name: Name,
     #[serde(deserialize_with = "deserialize_tag")]
     pub tag: String,
+    pub description: DocumentDescription,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
 }
@@ -368,12 +403,14 @@ mod tests {
             peppy_schema: "contract/v1",
             manifest: {
                 name: "depth_camera",
-                tag: "v1"
+                tag: "v1",
+                description: ["A test contract."],
             },
             interfaces: {
                 topics: [
                     {
                         name: "video_stream",
+                        description: "A test topic.",
                         qos_profile: "sensor_data",
                         message_format: {
                             header: {
@@ -395,6 +432,7 @@ mod tests {
                 services: [
                     {
                         name: "video_stream_info",
+                        description: "A test service.",
                         response_message_format: {
                             width: "u32",
                             height: "u32",
@@ -404,6 +442,7 @@ mod tests {
                     },
                     {
                         name: "set_contrast",
+                        description: "A test service.",
                         request_message_format: {
                             value: "i32",
                         },
@@ -457,12 +496,12 @@ mod tests {
     fn a_contract_topic_states_its_retention() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "robot_state", tag: "v1" },
+            manifest: { name: "robot_state", tag: "v1", description: ["A test contract."] },
             interfaces: {
                 topics: [
-                    { name: "joint_state", message_format: { position: "f64" } },
-                    { name: "robot_mode", retention: { latest: 1 }, message_format: { mode: "string" } },
-                    { name: "calibration", retention: { latest: 5 }, message_format: { offset: "f64" } },
+                    { name: "joint_state", description: "A test topic.", message_format: { position: "f64" } },
+                    { name: "robot_mode", description: "A test topic.", retention: { latest: 1 }, message_format: { mode: "string" } },
+                    { name: "calibration", description: "A test topic.", retention: { latest: 5 }, message_format: { offset: "f64" } },
                 ]
             }
         }"#;
@@ -489,7 +528,7 @@ mod tests {
     fn minimal_contract_with_only_manifest_parses() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "empty_iface", tag: "v1" },
+            manifest: { name: "empty_iface", tag: "v1", description: ["A test contract."] },
             interfaces: {}
         }"#;
 
@@ -503,11 +542,12 @@ mod tests {
     fn actions_can_be_declared() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "arm", tag: "v1" },
+            manifest: { name: "arm", tag: "v1", description: ["A test contract."] },
             interfaces: {
                 actions: [
                     {
                         name: "move_arm",
+                        description: "A test action.",
                         goal_service: {
                             request_message_format: { x: "f64" },
                             response_message_format: { accepted: "bool" },
@@ -537,11 +577,12 @@ mod tests {
     fn action_rejects_result_service_request_message_format() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "arm", tag: "v1" },
+            manifest: { name: "arm", tag: "v1", description: ["A test contract."] },
             interfaces: {
                 actions: [
                     {
                         name: "move_arm",
+                        description: "A test action.",
                         result_service: {
                             request_message_format: { include_diagnostics: "bool" },
                             response_message_format: { success: "bool" },
@@ -567,7 +608,7 @@ mod tests {
     fn rejects_wrong_schema_tag() {
         let json5 = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "x", tag: "v1" },
+            manifest: { name: "x", tag: "v1", description: ["A test node."] },
             interfaces: {}
         }"#;
         let err =
@@ -584,7 +625,7 @@ mod tests {
         format!(
             r#"{{
             peppy_schema: "contract/v1",
-            manifest: {{ name: "limb_motion", tag: "v1" }},
+            manifest: {{ name: "limb_motion", tag: "v1", description: ["A test contract."] }},
             failure_kinds: {{
                 unreachable: "No plan to the target",
                 leader_streaming: "A leader streams a limb of the goal",
@@ -598,7 +639,7 @@ mod tests {
     fn reads_the_failure_kinds_of_the_contract_in_their_order() {
         let json5 = motion_contract(
             "",
-            r#"{ name: "move_arm", failure_kinds: ["leader_streaming", "unreachable"] }"#,
+            r#"{ name: "move_arm", description: "A test member.", failure_kinds: ["leader_streaming", "unreachable"] }"#,
         );
         let contract: PeppyContract = serde_json5::from_str(&json5).expect("valid contract");
         let kinds: Vec<(&str, &str)> = contract
@@ -622,10 +663,10 @@ mod tests {
     #[test]
     fn each_member_gives_the_kinds_of_the_contract_that_it_lists() {
         let json5 = motion_contract(
-            r#"{ name: "check_arm_move", failure_kinds: ["leader_streaming"] },
-               { name: "stop" }"#,
-            r#"{ name: "move_arm", failure_kinds: ["unreachable", "leader_streaming"] },
-               { name: "check_arm_move" }"#,
+            r#"{ name: "check_arm_move", description: "A test member.", failure_kinds: ["leader_streaming"] },
+               { name: "stop", description: "A test member." }"#,
+            r#"{ name: "move_arm", description: "A test member.", failure_kinds: ["unreachable", "leader_streaming"] },
+               { name: "check_arm_move", description: "A test member." }"#,
         );
         let contract: PeppyContract = serde_json5::from_str(&json5).expect("valid contract");
         let kinds = &contract.failure_kinds;
@@ -650,7 +691,7 @@ mod tests {
     fn rejects_a_listed_kind_that_the_block_does_not_declare() {
         let json5 = motion_contract(
             "",
-            r#"{ name: "move_arm", failure_kinds: ["unreachable", "leader_streaming", "not_found"] }"#,
+            r#"{ name: "move_arm", description: "A test member.", failure_kinds: ["unreachable", "leader_streaming", "not_found"] }"#,
         );
         let err = serde_json5::from_str::<PeppyContract>(&json5)
             .expect_err("a member lists declared kinds only");
@@ -665,7 +706,7 @@ mod tests {
     fn rejects_a_declared_kind_that_no_member_lists() {
         let json5 = motion_contract(
             "",
-            r#"{ name: "move_arm", failure_kinds: ["unreachable"] }"#,
+            r#"{ name: "move_arm", description: "A test member.", failure_kinds: ["unreachable"] }"#,
         );
         let err = serde_json5::from_str::<PeppyContract>(&json5)
             .expect_err("each declared kind is listed");
@@ -680,7 +721,7 @@ mod tests {
     fn a_contract_without_failure_kinds_declares_none() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "x", tag: "v1" },
+            manifest: { name: "x", tag: "v1", description: ["A test contract."] },
             interfaces: {}
         }"#;
         let contract: PeppyContract = serde_json5::from_str(json5).expect("valid contract");
@@ -691,7 +732,7 @@ mod tests {
     fn rejects_a_failure_kind_of_peppy_in_the_contract() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "x", tag: "v1" },
+            manifest: { name: "x", tag: "v1", description: ["A test contract."] },
             failure_kinds: { timeout: "Too slow" },
             interfaces: {}
         }"#;
@@ -707,7 +748,7 @@ mod tests {
     fn rejects_unknown_top_level_fields() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "x", tag: "v1" },
+            manifest: { name: "x", tag: "v1", description: ["A test contract."] },
             interfaces: {},
             execution: { language: "rust" }
         }"#;
@@ -718,7 +759,7 @@ mod tests {
     fn rejects_unknown_interfaces_fields() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "x", tag: "v1" },
+            manifest: { name: "x", tag: "v1", description: ["A test contract."] },
             interfaces: { mystery: [] }
         }"#;
         assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
@@ -733,6 +774,7 @@ mod tests {
             manifest: {
                 name: "x",
                 tag: "v1",
+                description: ["A test contract."],
                 depends_on: { nodes: [] }
             },
             interfaces: {}
@@ -750,6 +792,7 @@ mod tests {
             manifest: {
                 name: "x",
                 tag: "v1",
+                description: ["A test contract."],
                 labels: ["a", "b"]
             },
             interfaces: {}
@@ -766,7 +809,7 @@ mod tests {
     fn rejects_invalid_manifest_name() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "bad/name", tag: "v1" },
+            manifest: { name: "bad/name", tag: "v1", description: ["A test contract."] },
             interfaces: {}
         }"#;
         assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
@@ -779,7 +822,7 @@ mod tests {
     fn rejects_invalid_manifest_tag() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "x", tag: "1bad" },
+            manifest: { name: "x", tag: "1bad", description: ["A test contract."] },
             interfaces: {}
         }"#;
         let err = serde_json5::from_str::<PeppyContract>(json5)
@@ -794,9 +837,9 @@ mod tests {
     fn rejects_empty_topic_name() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "x", tag: "v1" },
+            manifest: { name: "x", tag: "v1", description: ["A test contract."] },
             interfaces: {
-                topics: [ { name: " ", qos_profile: "standard" } ]
+                topics: [ { name: " ", description: "A test topic.", qos_profile: "standard" } ]
             }
         }"#;
         let err =
@@ -814,11 +857,11 @@ mod tests {
             let json5 = format!(
                 r#"{{
                     peppy_schema: "contract/v1",
-                    manifest: {{ name: "x", tag: "v1" }},
+                    manifest: {{ name: "x", tag: "v1", description: ["A test contract."] }},
                     interfaces: {{
                         {section}: [
-                            {{ name: "{name}" }},
-                            {{ name: "{name}" }}
+                            {{ name: "{name}", description: "One." }},
+                            {{ name: "{name}", description: "Two." }}
                         ]
                     }}
                 }}"#
@@ -840,11 +883,11 @@ mod tests {
     fn allows_same_name_across_kinds() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "x", tag: "v1" },
+            manifest: { name: "x", tag: "v1", description: ["A test contract."] },
             interfaces: {
-                topics: [ { name: "ping" } ],
-                services: [ { name: "ping" } ],
-                actions: [ { name: "ping" } ]
+                topics: [ { name: "ping", description: "A test topic." } ],
+                services: [ { name: "ping", description: "A test service." } ],
+                actions: [ { name: "ping", description: "A test action." } ]
             }
         }"#;
         let parsed: PeppyContract =
@@ -860,11 +903,11 @@ mod tests {
     fn members_keep_their_marks_through_a_round_trip() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
-            manifest: { name: "arm", tag: "v1" },
+            manifest: { name: "arm", tag: "v1", description: ["A test contract."] },
             interfaces: {
-                topics: [{ name: "state", marks: ["robot_state"] }],
-                services: [{ name: "move", marks: ["moves_robot"] }, { name: "read" }],
-                actions: [{ name: "move", marks: ["moves_robot", "long_motion"] }],
+                topics: [{ name: "state", description: "A test topic.", marks: ["robot_state"] }],
+                services: [{ name: "move", description: "A test service.", marks: ["moves_robot"] }, { name: "read", description: "A test service." }],
+                actions: [{ name: "move", description: "A test action.", marks: ["moves_robot", "long_motion"] }],
             },
         }"#;
         let parsed: PeppyContract = serde_json5::from_str(json5).expect("should parse");
@@ -894,7 +937,7 @@ mod tests {
             ),
         ] {
             let json5 = format!(
-                r#"{{ peppy_schema: "contract/v1", manifest: {{ name: "x", tag: "v1" }},
+                r#"{{ peppy_schema: "contract/v1", manifest: {{ name: "x", tag: "v1", description: ["A test contract."] }},
                     interfaces: {{ {members} }} }}"#
             );
             let error = serde_json5::from_str::<PeppyContract>(&json5)
@@ -905,34 +948,41 @@ mod tests {
     }
 
     /// A contract of an arm, with an enum, marks of fields and members,
-    /// and comments on the document, a member and a field.
-    const MARKED_ARM: &str = r#"// An arm with a gripper.
+    /// and descriptions of the document, of its members and of fields.
+    const MARKED_ARM: &str = r#"// A note for the maintainers, which no reader gets.
     {
         peppy_schema: "contract/v1",
-        manifest: { name: "arm", tag: "v1" },
+        manifest: {
+            name: "arm",
+            tag: "v1",
+            description: ["An arm with a gripper.", "Positions are in meters."],
+        },
         interfaces: {
             topics: [
                 {
                     name: "state",
+                    description: "The state of the arm, at each control step.",
                     message_format: {
-                        // The mode of the arm.
-                        mode: { $type: "string", $enum: ["idle", "moving"] },
+                        mode: { $type: "string", $enum: ["idle", "moving"], $description: "The mode of the arm." },
                         joints: { $type: "array", $items: { $type: "object", angle: { $type: "f64", $marks: ["joint_angle"] } } },
                     },
                 },
             ],
             actions: [
-                // Moves the gripper to a pose.
                 {
                     name: "move_gripper",
+                    description: "Moves the gripper to a pose.",
                     marks: ["moves_robot", "long_motion"],
                     goal_service: {
                         request_message_format: {
                             target: {
                                 $type: "object",
-                                // The item to grip.
-                                item: { $type: "string", $marks: ["item_id"] },
+                                $description: "Where the gripper goes.",
+                                item: { $type: "string", $marks: ["item_id"], $description: "The item to grip." },
                             },
+                        },
+                        response_message_format: {
+                            accepted_at: { $type: "time", $description: "When the arm took the goal." },
                         },
                     },
                     feedback_topic: { message_format: { progress: "f32" } },
@@ -942,9 +992,10 @@ mod tests {
     }"#;
 
     /// The parser API gives the enum of a field, the marks of a field and
-    /// of a member, and the comments of the document, a member and a field.
+    /// of a member, and the descriptions of the document, of a member and
+    /// of a field.
     #[test]
-    fn the_parser_gives_enums_marks_and_comments() {
+    fn the_parser_gives_enums_marks_and_descriptions() {
         let contract = super::super::PeppyContractParser::from_content(MARKED_ARM)
             .expect("the contract parses");
 
@@ -993,15 +1044,39 @@ mod tests {
         );
         assert!(contract.marks.of(InterfaceKind::Topic, "state").is_empty());
 
-        assert_eq!(contract.comments.document(), Some("An arm with a gripper."));
+        let paragraphs: Vec<&str> = contract
+            .description()
+            .paragraphs()
+            .iter()
+            .map(Description::as_str)
+            .collect();
         assert_eq!(
-            contract
-                .comments
-                .member(InterfaceKind::Action, "move_gripper"),
-            Some("Moves the gripper to a pose.")
+            paragraphs,
+            ["An arm with a gripper.", "Positions are in meters."]
         );
         assert_eq!(
-            contract.comments.field(
+            contract.description().summary().as_str(),
+            "An arm with a gripper."
+        );
+        assert_eq!(
+            contract
+                .member_description(InterfaceKind::Action, "move_gripper")
+                .map(Description::as_str),
+            Some("Moves the gripper to a pose.")
+        );
+        assert!(
+            contract
+                .member_description(InterfaceKind::Service, "move_gripper")
+                .is_none(),
+            "the contract declares no service of that name"
+        );
+        let field_description = |kind, name, side, path: &[&str]| {
+            contract
+                .field_description(kind, name, side, path)
+                .map(Description::as_str)
+        };
+        assert_eq!(
+            field_description(
                 InterfaceKind::Topic,
                 "state",
                 MessageSide::Message,
@@ -1010,13 +1085,42 @@ mod tests {
             Some("The mode of the arm.")
         );
         assert_eq!(
-            contract.comments.field(
+            field_description(
+                InterfaceKind::Action,
+                "move_gripper",
+                MessageSide::Goal,
+                &["target"]
+            ),
+            Some("Where the gripper goes.")
+        );
+        assert_eq!(
+            field_description(
                 InterfaceKind::Action,
                 "move_gripper",
                 MessageSide::Goal,
                 &["target", "item"]
             ),
             Some("The item to grip.")
+        );
+        assert_eq!(
+            field_description(
+                InterfaceKind::Action,
+                "move_gripper",
+                MessageSide::GoalResponse,
+                &["accepted_at"]
+            ),
+            Some("When the arm took the goal."),
+            "the goal response of an action is a side of its own"
+        );
+        assert_eq!(
+            field_description(
+                InterfaceKind::Topic,
+                "state",
+                MessageSide::Message,
+                &["joints", "angle"]
+            ),
+            None,
+            "a field with no `$description` has none"
         );
     }
 
@@ -1070,37 +1174,102 @@ mod tests {
         assert!(contract.service("state").is_none());
     }
 
-    /// The parser reads the comments of the text beside the document.
-    #[test]
-    fn the_parser_keeps_the_comments_of_the_text() {
-        let json5 = r#"// An arm.
-        {
+    /// A contract with `manifest`, a member of each kind and a field: each
+    /// `{manifest}`, `{topic}`, `{service}`, `{action}` and `{field}` is a
+    /// key text that the caller gives.
+    fn described_contract(
+        manifest: &str,
+        topic: &str,
+        service: &str,
+        action: &str,
+        field: &str,
+    ) -> String {
+        format!(
+            r#"{{
             peppy_schema: "contract/v1",
-            manifest: { name: "arm", tag: "v1" },
-            interfaces: {
-                services: [
-                    // Moves the arm.
-                    { name: "move", request_message_format: {
-                        // The target, in meters.
-                        x: "f64",
-                    } },
-                ],
-            },
-        }"#;
-        let parsed = super::super::PeppyContractParser::from_content(json5).expect("should parse");
-        assert_eq!(parsed.comments.document(), Some("An arm."));
-        assert_eq!(
-            parsed.comments.member(InterfaceKind::Service, "move"),
-            Some("Moves the arm.")
-        );
-        assert_eq!(
-            parsed.comments.field(
-                InterfaceKind::Service,
-                "move",
-                super::super::MessageSide::Request,
-                &["x"]
+            manifest: {{ name: "arm", tag: "v1"{manifest} }},
+            interfaces: {{
+                topics: [{{ name: "state"{topic}, message_format: {{ x: {{ $type: "f64"{field} }} }} }}],
+                services: [{{ name: "home"{service} }}],
+                actions: [{{ name: "reach"{action} }}],
+            }},
+        }}"#
+        )
+    }
+
+    const DOCUMENT: &str = r#", description: ["An arm."]"#;
+    const MEMBER: &str = r#", description: "A member.""#;
+
+    /// The parser refuses a contract, a member of each kind and a field
+    /// whose description is missing or blank, and the refusal names the
+    /// part by its path.
+    #[test]
+    fn the_parser_refuses_a_missing_or_blank_description_and_names_the_part() {
+        let blank_paragraph = r#", description: ["An arm.", " "]"#;
+        let no_paragraph = r#", description: []"#;
+        let blank_member = r#", description: """#;
+        let blank_field = r#", $description: "  ""#;
+        let cases = [
+            (("", MEMBER, MEMBER, MEMBER, ""), "manifest"),
+            (
+                (no_paragraph, MEMBER, MEMBER, MEMBER, ""),
+                "manifest.description",
             ),
-            Some("The target, in meters.")
+            (
+                (blank_paragraph, MEMBER, MEMBER, MEMBER, ""),
+                "manifest.description[1]",
+            ),
+            ((DOCUMENT, "", MEMBER, MEMBER, ""), "interfaces.topics[0]"),
+            ((DOCUMENT, MEMBER, "", MEMBER, ""), "interfaces.services[0]"),
+            ((DOCUMENT, MEMBER, MEMBER, "", ""), "interfaces.actions[0]"),
+            (
+                (DOCUMENT, MEMBER, blank_member, MEMBER, ""),
+                "interfaces.services[0].description",
+            ),
+            (
+                (DOCUMENT, MEMBER, MEMBER, MEMBER, blank_field),
+                "interfaces.topics[0].message_format",
+            ),
+        ];
+        for ((manifest, topic, service, action, field), path) in cases {
+            let text = described_contract(manifest, topic, service, action, field);
+            let error = super::super::PeppyContractParser::from_content(&text)
+                .expect_err(&text)
+                .to_string();
+            assert!(
+                error.contains(&format!("Cannot parse contract: {path}")),
+                "{path}: {error}"
+            );
+            assert!(
+                error.contains("description") || error.contains("blank"),
+                "{path}: {error}"
+            );
+        }
+        super::super::PeppyContractParser::from_content(&described_contract(
+            DOCUMENT, MEMBER, MEMBER, MEMBER, "",
+        ))
+        .expect("each part has its description, and a field needs none");
+    }
+
+    /// The descriptions stay the same through a parse, a serialization and
+    /// a second parse.
+    #[test]
+    fn the_descriptions_survive_a_serialization() {
+        let contract = super::super::PeppyContractParser::from_content(MARKED_ARM)
+            .expect("the contract parses");
+        let text = serde_json5::to_string(&contract).expect("serialize");
+        let reparsed = super::super::PeppyContractParser::from_content(&text).expect("re-parse");
+        assert_eq!(contract, reparsed);
+        assert_eq!(
+            reparsed
+                .field_description(
+                    InterfaceKind::Topic,
+                    "state",
+                    MessageSide::Message,
+                    &["mode"]
+                )
+                .map(Description::as_str),
+            Some("The mode of the arm.")
         );
     }
 
@@ -1113,6 +1282,8 @@ mod tests {
             manifest: Manifest {
                 name: Name::new("camera").unwrap(),
                 tag: "v123".to_string(),
+                description: DocumentDescription::new(vec![Description::new("A camera.").unwrap()])
+                    .unwrap(),
                 labels: Some(vec!["vendor".to_string(), "sensor".to_string()]),
             },
             failure_kinds: ContractKinds::new(
@@ -1129,10 +1300,10 @@ mod tests {
             )
             .unwrap(),
             marks: ContractMarks::default(),
-            comments: ContractComments::default(),
             interfaces: Interfaces {
                 topics: vec![NativeEmittedTopic {
                     name: "stream".to_string(),
+                    description: Description::new("The frames of the camera.").unwrap(),
                     qos_profile: QoSProfile::SensorData,
                     retention: TopicRetention::latest(5).unwrap(),
                     message_format: Some(MessageFormat(
@@ -1143,6 +1314,7 @@ mod tests {
                 }],
                 services: vec![NativeExposedService {
                     name: "capture".to_string(),
+                    description: Description::new("Take one picture.").unwrap(),
                     request_message_format: None,
                     response_message_format: None,
                 }],

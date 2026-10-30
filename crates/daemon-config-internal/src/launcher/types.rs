@@ -7,6 +7,7 @@ use config::validate_named_items;
 use config::{
     AnyType,
     consts::DEFAULT_LINK_ID_SENTINEL,
+    description::DocumentDescription,
     node::RestartDeclaration,
     runtime::{CoreNodeName, Name, SELF_CORE_NODE},
     schema::PeppySchema,
@@ -26,6 +27,11 @@ pub const EACH_TARGET_ONCE: &str = "a slot lists each target once";
 #[derive(Debug, Clone)]
 pub struct PeppyLauncher {
     pub peppy_schema: PeppySchema,
+    /// What the launcher brings up and what it needs to launch, such as
+    /// hardware or a simulation. A launcher has no `manifest`: its name
+    /// comes from the index of its repository, so the description sits at
+    /// the root of the document.
+    pub description: DocumentDescription,
     /// Named placeholders for the machines this launcher spans, wired to
     /// concrete federated core nodes at launch time by
     /// `stack launch --place <core-node-link>@<core-node>`.
@@ -232,6 +238,7 @@ impl Serialize for PeppyLauncher {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("peppy_schema", &self.peppy_schema)?;
+        map.serialize_entry("description", &self.description)?;
         if !self.core_nodes.is_empty() {
             map.serialize_entry("core_nodes", &self.core_nodes)?;
         }
@@ -281,6 +288,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
         struct RawPeppyLauncher {
             #[serde(deserialize_with = "deserialize_launcher_v1_schema")]
             peppy_schema: PeppySchema,
+            description: DocumentDescription,
             #[serde(default)]
             core_nodes: Vec<String>,
             #[serde(default)]
@@ -341,6 +349,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
 
         Ok(PeppyLauncher {
             peppy_schema: raw.peppy_schema,
+            description: raw.description,
             core_nodes: raw.core_nodes,
             deployments: raw.deployments.nodes,
             option_deployments: raw.deployments.options,
@@ -1433,6 +1442,7 @@ mod tests {
         let launcher: PeppyLauncher = serde_json5::from_str(
             r#"{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 framework: { clocks: {
                     physical_robot: "wall",
                     simulated_robot: { publisher: "sim_inst" },
@@ -1475,7 +1485,7 @@ mod tests {
         ];
         for (clocks, expected) in cases {
             let document = format!(
-                r#"{{ peppy_schema: "launcher/v1", framework: {{ clocks: {clocks} }}, deployments: [] }}"#
+                r#"{{ peppy_schema: "launcher/v1", description: ["A test launcher."], framework: {{ clocks: {clocks} }}, deployments: [] }}"#
             );
             let error = serde_json5::from_str::<PeppyLauncher>(&document)
                 .expect_err(&format!("`{clocks}` must be refused"));
@@ -1494,6 +1504,7 @@ mod tests {
     fn bindings_resolve_against_siblings() {
         let json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {
                     source: { name: "left_camera:v1" },
@@ -1666,6 +1677,7 @@ mod tests {
     fn bindings_reject_unknown_instance_id() {
         let json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {
                     source: { name: "backbone:v1" },
@@ -1745,6 +1757,7 @@ mod tests {
     fn bindings_reject_underscore_key() {
         let json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {
                     source: { name: "backbone:v1" },
@@ -1844,6 +1857,7 @@ mod tests {
     fn links_parse_every_value_shape() {
         let json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {
                     source: { name: "robot_arm:v1" },
@@ -1883,6 +1897,7 @@ mod tests {
         // The peer-slot suffix parses and still resolves the instance part.
         let json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {
                     source: { name: "robot_arm:v1" },
@@ -1915,6 +1930,7 @@ mod tests {
     fn pairings_reject_unknown_instance_id() {
         let json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [
                 {
                     source: { name: "arm_controller:v1" },

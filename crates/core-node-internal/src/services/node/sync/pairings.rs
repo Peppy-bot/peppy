@@ -566,11 +566,11 @@ mod tests {
 
     const ARM_LINK_BODY: &str = r#"{
         peppy_schema: "pairing/v1",
-        manifest: { name: "arm_link", tag: "v1" },
+        manifest: { name: "arm_link", tag: "v1", description: ["A test pairing."] },
         roles: ["controller", "arm"],
         topics: [
-            { emitted_by: "controller", name: "joint_commands" },
-            { emitted_by: "arm", name: "joint_states" }
+            { emitted_by: "controller", name: "joint_commands", description: "A test topic." },
+            { emitted_by: "arm", name: "joint_states", description: "A test topic." }
         ]
     }"#;
 
@@ -588,6 +588,7 @@ mod tests {
             sha256: daemon_config::repository::ManifestFingerprint::of_bytes(body.as_bytes()),
             origin: repo_cache::EntryOrigin::Fs { path: path.clone() },
             repo_id: 0,
+            descriptions: crate::services::repo::cache::test_support::descriptions("test pairing"),
         }
     }
 
@@ -604,7 +605,7 @@ mod tests {
     fn arm_manifest() -> config::node::Manifest {
         manifest(
             r#"{
-                name: "robot_arm", tag: "v1",
+                name: "robot_arm", tag: "v1", description: ["A test node."],
                 depends_on: {
                     pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }]
                 }
@@ -698,17 +699,19 @@ mod tests {
     /// setpoints, the follower streams its state back.
     const JOINT_LINK_BODY: &str = r#"{
         peppy_schema: "pairing/v1",
-        manifest: { name: "joint_link", tag: "v1" },
+        manifest: { name: "joint_link", tag: "v1", description: ["A test pairing."] },
         roles: ["leader", "follower"],
         topics: [
             {
                 emitted_by: "leader",
                 name: "joint_setpoints",
+                description: "A test topic.",
                 message_format: { positions: { $type: "array", $items: "f64" } }
             },
             {
                 emitted_by: "follower",
                 name: "joint_states",
+                description: "A test topic.",
                 message_format: { stamp: "time", positions: { $type: "array", $items: "f64" } }
             }
         ]
@@ -740,7 +743,7 @@ mod tests {
         let (_t, _c, dirs) = joint_link_dirs();
         let follower = manifest(
             r#"{
-                name: "seven_dof_arm", tag: "v1",
+                name: "seven_dof_arm", tag: "v1", description: ["A test node."],
                 depends_on: {
                     pairings: [{ name: "joint_link", tag: "v1", role: "follower", link_id: "leader" }]
                 }
@@ -772,7 +775,7 @@ mod tests {
         let (_t, _c, dirs) = joint_link_dirs();
         let recorder = manifest(
             r#"{
-                name: "recorder", tag: "v1",
+                name: "recorder", tag: "v1", description: ["A test node."],
                 depends_on: {
                     pairing_observers: [{ name: "joint_link", tag: "v1", role: "follower", link_id: "watch" }]
                 }
@@ -799,7 +802,7 @@ mod tests {
         let (_t, _c, dirs) = joint_link_dirs();
         let follower = manifest(
             r#"{
-                name: "seven_dof_arm", tag: "v1",
+                name: "seven_dof_arm", tag: "v1", description: ["A test node."],
                 depends_on: {
                     pairings: [{ name: "joint_link", tag: "v1", role: "follower", link_id: "leader" }]
                 }
@@ -995,7 +998,7 @@ mod tests {
         let (_t, _c, dirs) = seeded_dirs();
         let m = manifest(
             r#"{
-                name: "commander", tag: "v1",
+                name: "commander", tag: "v1", description: ["A test node."],
                 depends_on: { pairings: [
                     { name: "arm_link", tag: "v1", role: "controller", link_id: "left" },
                     { name: "arm_link", tag: "v1", role: "controller", link_id: "right" },
@@ -1017,7 +1020,7 @@ mod tests {
         let (_t, _c, dirs) = seeded_dirs();
         let m = manifest(
             r#"{
-                name: "commander", tag: "v1",
+                name: "commander", tag: "v1", description: ["A test node."],
                 depends_on: { pairings: [
                     { name: "arm_link", tag: "v1", role: "controller", link_id: "left" },
                     { name: "arm_link", tag: "v1", role: "controller", link_id: "right" },
@@ -1058,7 +1061,7 @@ mod tests {
             r#"{ topics: {
                 emits: [
                     { link_id: "controller", name: "joint_states" },
-                    { name: "native_telemetry" },
+                    { name: "native_telemetry", description: "A test topic." },
                 ],
                 consumes: [{ link_id: "some_node_dep", name: "unrelated" }],
             } }"#,
@@ -1076,7 +1079,7 @@ mod tests {
     #[test]
     fn no_pairing_slots_yields_no_interfaces() {
         let (_t, _c, dirs) = seeded_dirs();
-        let m = manifest(r#"{ name: "plain", tag: "v1" }"#);
+        let m = manifest(r#"{ name: "plain", tag: "v1", description: ["A test node."] }"#);
         let out = collect(&m, &config::node::Interfaces::default(), &dirs).expect("ok");
         assert!(out.is_empty());
     }
@@ -1096,7 +1099,7 @@ mod tests {
         let (_t, _c, dirs) = seeded_dirs();
         let m = manifest(
             r#"{
-                name: "robot_arm", tag: "v1",
+                name: "robot_arm", tag: "v1", description: ["A test node."],
                 depends_on: {
                     pairings: [{ name: "arm_link", tag: "v1", role: "gripper", link_id: "controller" }]
                 }

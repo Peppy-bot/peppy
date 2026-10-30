@@ -296,7 +296,7 @@ mod tests {
         let config: config::node::NodeConfig = serde_json5::from_str(&format!(
             r#"{{
                 peppy_schema: "node/v1",
-                manifest: {{ name: "panel_node", tag: "v1" }},
+                manifest: {{ name: "panel_node", tag: "v1", description: ["A test node."] }},
                 execution: {{ language: "rust", run_cmd: ["./bin"], endpoints: {json5} }}
             }}"#
         ))

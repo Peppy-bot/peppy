@@ -78,6 +78,7 @@ mod tests {
         let flat = PeppyLauncherParser::from_content(
             r#"{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 framework: { clocks: {
                     sim_a: { publisher: "ghost_a" },
                     sim_b: { publisher: "ghost_b" },

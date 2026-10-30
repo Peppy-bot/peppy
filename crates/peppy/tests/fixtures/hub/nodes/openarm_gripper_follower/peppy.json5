@@ -3,6 +3,7 @@
   manifest: {
     name: "openarm_gripper_follower",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {
       // One limb of a teleoperated pair, playing the `follower` role of
       // `gripper_link/v1` through its single participant slot.

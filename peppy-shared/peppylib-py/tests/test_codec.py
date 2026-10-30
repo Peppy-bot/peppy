@@ -1,8 +1,8 @@
 """
 Tests for `peppylib.codec`, the codec API of peppy.
 
-The parser of contracts gives the formats, the enums, the marks and the
-comments of a document; the codec converts canonical values to the wire and
+The parser of contracts gives the descriptions, the formats, the enums and
+the marks of a document; the codec converts canonical values to the wire and
 back; the clients call a service, follow an action and read a topic of a
 contract on one producer, whose side the low-level messengers of peppylib
 play here.
@@ -48,19 +48,28 @@ PROVIDER_ID = "arm_provider"
 CLIENT_ID = "codec_client"
 PROVIDER = ProducerRef(CORE_NODE, PROVIDER_ID)
 
-ARM = """// An arm with a gripper.
+ARM = """// A note for the maintainers, which no reader gets.
 {
     peppy_schema: "contract/v1",
-    manifest: { name: "arm", tag: "v1", labels: ["robot"] },
+    manifest: {
+        name: "arm",
+        tag: "v1",
+        description: ["An arm with a gripper.", "Positions are in meters."],
+        labels: ["robot"],
+    },
     failure_kinds: { unreachable: "No plan to the target" },
     interfaces: {
         topics: [
             {
                 name: "state",
+                description: "The state of the arm.",
                 retention: { latest: 1 },
                 message_format: {
-                    // The mode of the arm.
-                    mode: { $type: "string", $enum: ["idle", "moving"] },
+                    mode: {
+                        $type: "string",
+                        $enum: ["idle", "moving"],
+                        $description: "The mode of the arm.",
+                    },
                     joints: {
                         $type: "array",
                         $items: { $type: "object", angle: { $type: "f64", $marks: ["joint_angle"] } },
@@ -69,9 +78,9 @@ ARM = """// An arm with a gripper.
             },
         ],
         services: [
-            // Sends the arm home.
             {
                 name: "home",
+                description: "Sends the arm home.",
                 marks: ["moves_robot"],
                 request_message_format: { speed: "f32", since: "time" },
                 response_message_format: { moved: "bool", count: "u64" },
@@ -81,6 +90,7 @@ ARM = """// An arm with a gripper.
         actions: [
             {
                 name: "move",
+                description: "Moves the arm to x.",
                 marks: ["moves_robot", "long_motion"],
                 goal_service: { request_message_format: { x: "f64" } },
                 feedback_topic: { message_format: { progress: "f32" } },
@@ -114,9 +124,9 @@ def arm() -> Contract:
     return Contract.parse(ARM)
 
 
-def test_the_contract_gives_its_members_formats_enums_marks_and_comments(arm):
+def test_the_contract_gives_its_descriptions_formats_enums_and_marks(arm):
     assert (arm.name, arm.tag, arm.labels) == ("arm", "v1", ["robot"])
-    assert arm.comment == "An arm with a gripper."
+    assert arm.description == ["An arm with a gripper.", "Positions are in meters."]
     assert (arm.topics, arm.services, arm.actions) == (["state"], ["home"], ["move"])
     assert repr(arm) == 'Contract("arm", "v1")'
 
@@ -138,12 +148,17 @@ def test_the_contract_gives_its_members_formats_enums_marks_and_comments(arm):
 
     assert arm.member_marks("action", "move") == ["moves_robot", "long_motion"]
     assert arm.member_marks("topic", "state") == []
-    assert arm.member_comment("service", "home") == "Sends the arm home."
-    assert arm.member_comment("action", "move") is None
+    assert arm.member_description("service", "home") == "Sends the arm home."
+    assert arm.member_description("action", "move") == "Moves the arm to x."
+    with pytest.raises(KeyError):
+        arm.member_description("service", "move")
     assert (
-        arm.field_comment("topic", "state", "message", ["mode"])
+        arm.field_description("topic", "state", "message", ["mode"])
         == "The mode of the arm."
     )
+    assert arm.field_description("topic", "state", "message", ["joints"]) is None
+    with pytest.raises(KeyError):
+        arm.field_description("topic", "state", "message", ["pose"])
     assert arm.failure_kinds("action", "move") == [
         ("unreachable", "No plan to the target")
     ]
@@ -152,20 +167,36 @@ def test_the_contract_gives_its_members_formats_enums_marks_and_comments(arm):
         arm.member_marks("goal", "move")
     with pytest.raises(ValueError, match="unknown message side"):
         arm.message_format("service", "home", "reply")
+    # The goal response of an action is a side of its own; `move` declares
+    # no format for it.
+    assert arm.message_format("action", "move", "goal_response") is None
 
 
 def test_the_document_as_data_parses_to_the_same_contract(arm):
     again = Contract.parse(json.dumps(arm.to_dict()))
     assert again.to_dict() == arm.to_dict()
     assert again.member_marks("action", "move") == ["moves_robot", "long_motion"]
-    assert again.comment is None, "the data holds no comment"
+    assert again.description == arm.description
+    assert again.member_description("service", "home") == "Sends the arm home."
+    assert (
+        again.field_description("topic", "state", "message", ["mode"])
+        == "The mode of the arm."
+    )
 
 
 def test_a_text_that_is_no_contract_is_refused_with_the_key():
     with pytest.raises(ContractError, match="interfaces.services"):
         Contract.parse(
-            '{ peppy_schema: "contract/v1", manifest: { name: "x", tag: "v1" },'
-            ' interfaces: { services: [{ name: "s", request_message_format: { a: "f65" } }] } }'
+            '{ peppy_schema: "contract/v1",'
+            ' manifest: { name: "x", tag: "v1", description: ["A contract."] },'
+            ' interfaces: { services: [{ name: "s", description: "A service.",'
+            ' request_message_format: { a: "f65" } }] } }'
+        )
+    with pytest.raises(ContractError, match="interfaces.services"):
+        Contract.parse(
+            '{ peppy_schema: "contract/v1",'
+            ' manifest: { name: "x", tag: "v1", description: ["A contract."] },'
+            ' interfaces: { services: [{ name: "s" }] } }'
         )
     with pytest.raises(ValueError):
         Contract.parse("{")

@@ -1463,6 +1463,7 @@ fn container_launcher(file_name: &str) -> String {
 /// proves the machine works.
 const NODE_PROBE_LAUNCHER: &str = r#"{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: [
     {
       source: { name: "uvc_camera_python_mock", tag: "v1" },
@@ -1486,6 +1487,7 @@ const NAMED_CLOCK_LAUNCHER_FILE: &str = "named_clock_fleet.json5";
 const NAMED_FLEET_TWO_NODES_LAUNCHER_FILE: &str = "named_fleet_two_nodes.json5";
 const NAMED_FLEET_LAUNCHER: &str = r#"{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: [{ source: { name: "my_python_robot_arm", tag: "v1" },
     instances: [{ instance_id: "shared_inst" }] }],
   components: [{ name: "robot", cardinality: "zero_or_more", options: {
@@ -1498,6 +1500,7 @@ const NAMED_FLEET_LAUNCHER: &str = r#"{
 /// takes copies.
 const COPIES_ONLY_LAUNCHER: &str = r#"{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: [],
   components: [{ name: "robot", cardinality: "zero_or_more", options: {
     arm: { deployments: [{ source: { name: "my_python_robot_arm", tag: "v1" },
@@ -1512,6 +1515,7 @@ const PARTS_FLEET_LAUNCHER_FILE: &str = "parts_fleet.json5";
 /// and the `watcher` axis brings an observer of the leader's pair.
 const PARTS_FLEET_LAUNCHER: &str = r#"{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: [{ source: { name: "pairing_hub", tag: "v1" },
     instances: [{ instance_id: "hub_inst" }] }],
   components: [{ name: "robot", cardinality: "zero_or_more", options: {
@@ -1542,6 +1546,7 @@ const RESTART_FLEET_LAUNCHER_FILE: &str = "restart_fleet.json5";
 /// every leader that joins come back after a crash, under the same ids.
 const RESTART_FLEET_LAUNCHER: &str = r#"{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   framework: { restart: "on_failure" },
   deployments: [{ source: { name: "pairing_hub", tag: "v1" },
     instances: [{ instance_id: "hub_inst" }] }],
@@ -1561,6 +1566,7 @@ const BOUND_COUNTER: &str = "bound_counter_inst";
 /// of the restarted camera.
 const RESTART_BOUND_LAUNCHER: &str = r#"{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: [
     { source: { name: "uvc_camera_python_mock", tag: "v1" },
       instances: [{ instance_id: "bound_cam_inst", framework: { restart: "on_failure" } }] },
@@ -1575,6 +1581,7 @@ const RESTART_BOUND_LAUNCHER: &str = r#"{
 /// placed on. Every leader needs a value of its own, which the join sets.
 const PAIRING_FLEET_LAUNCHER: &str = r#"{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: [{ source: { name: "pairing_hub", tag: "v1" },
     instances: [{ instance_id: "hub_inst" }] }],
   components: [{ name: "leader", cardinality: "zero_or_more", options: {
@@ -1597,6 +1604,7 @@ fn isolation_fleet_launcher() -> String {
     format!(
         r#"{{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   core_nodes: ["{PEER_LABEL}"],
   deployments: [
     {{ source: {{ name: "{GATE_NODE}", tag: "{GATE_TAG}" }},
@@ -1624,6 +1632,7 @@ fn isolation_fleet_launcher() -> String {
 /// copy can bring a node a peer does not hold yet.
 const NAMED_FLEET_TWO_NODES_LAUNCHER: &str = r#"{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: [{ source: { name: "my_python_robot_arm", tag: "v1" },
     instances: [{ instance_id: "shared_inst" }] }],
   components: [{ name: "robot", cardinality: "zero_or_more", options: {
@@ -1640,6 +1649,7 @@ const NAMED_FLEET_TWO_NODES_LAUNCHER: &str = r#"{
 /// the caller's looks like.
 const CALLER_ENV_PROBE_LAUNCHER: &str = r#"{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   core_nodes: ["remote_worker"],
   deployments: [
     {
@@ -1664,6 +1674,7 @@ const PEER_RUN_FAILURE_INSTANCE: &str = "peer_fail_recon_inst";
 /// attribution rather than of every entry belonging to one machine.
 const PEER_RUN_FAILURE_LAUNCHER: &str = r#"{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   core_nodes: ["remote_worker"],
   deployments: [
     {
@@ -1697,6 +1708,7 @@ fn fleet_clock_launcher() -> String {
     format!(
         r#"{{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   core_nodes: ["station_a", "station_b"],
   framework: {{
     clocks: {{ {FLEET_CLOCK_DOMAIN}: {{ publisher: "{FLEET_CLOCK_SOURCE_INSTANCE}" }} }},
@@ -1797,6 +1809,7 @@ fn fully_placed_clock_launcher() -> String {
     format!(
         r#"{{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   core_nodes: ["station_a", "station_b"],
   framework: {{
     clocks: {{ {FLEET_CLOCK_DOMAIN}: {{ publisher: "{FLEET_CLOCK_SOURCE_INSTANCE}" }} }},
@@ -5053,6 +5066,7 @@ fn growing_gates_launcher() -> String {
     format!(
         r#"{{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   core_nodes: ["{PEER_LABEL}"],
   deployments: [
     {{ source: {{ name: "{GATE_NODE}", tag: "{GATE_TAG}" }},
@@ -5087,6 +5101,7 @@ fn set_watch_launcher() -> String {
     format!(
         r#"{{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   core_nodes: ["{PEER_LABEL}"],
   deployments: [
     {{ source: {{ name: "pairing_hub", tag: "v1" }}, instances: [{{ instance_id: "hub_inst" }}] }},

@@ -7,7 +7,7 @@ sidebar:
 
 Three commands reach the members of a running instance from the command line, with no code of your own:
 
-- `peppy node describe <instance>` shows the interfaces of the instance with their message formats.
+- `peppy node describe <instance>` shows the interfaces of the instance with their descriptions and their message formats.
 - `peppy node call <instance> <member>` calls one service or action and prints how the call ends.
 - `peppy node echo <instance> <topic>` prints the messages of one topic until Ctrl+C.
 
@@ -57,13 +57,20 @@ peppy node describe arm_inst
 ```text
 Instance arm_inst of arm:v1 on core node robot-7
 Manifest sha256: 3629…a5a7
+  An arm with three joints on a bench. It needs the arm on a USB port of its machine.
 
 Contract limb_motion:v1 through slot `motion` (sha256: d2d4…e307)
+  The motions of the arms and the grippers of a robot.
+
+  Each joint position is in radians.
+
   service motion.check_move
+    Check that the arm can reach the joint positions, with no motion.
     request: {
       joints: {
         $type: "array",
-        $items: "f64"
+        $items: "f64",
+        $description: "The target position of each joint."
       }
     }
     response: {
@@ -71,6 +78,7 @@ Contract limb_motion:v1 through slot `motion` (sha256: d2d4…e307)
     }
     failure kind unreachable: No plan to the target
   action motion.move_to
+    Move the arm to the joint positions. The goal gives the positions, each feedback gives the progress from 0 to 1, and the result says if the arm reached them.
     goal: {
       joints: {
         $type: "array",
@@ -78,6 +86,7 @@ Contract limb_motion:v1 through slot `motion` (sha256: d2d4…e307)
         $length: 3
       }
     }
+    goal_response: none
     feedback: {
       progress: "f64"
     }
@@ -88,6 +97,7 @@ Contract limb_motion:v1 through slot `motion` (sha256: d2d4…e307)
 
 Own members of arm:v1
   service set_gain
+    Set the gain of the joint controllers, and give the gain that the arm applied.
     request: {
       value: "i32"
     }
@@ -96,7 +106,10 @@ Own members of arm:v1
     }
 
 Pairing arm_link:v1 through slot `controller`, role `arm` (sha256: dbfa…d07c)
+  The link between one controller and one arm: the controller commands the joints of the arm, and the arm gives back the state of its joints.
+
   topic controller.joint_states (qos: SensorData)
+    The measured position of each joint of the arm.
     message: {
       positions: {
         $type: "array",
@@ -105,7 +118,7 @@ Pairing arm_link:v1 through slot `controller`, role `arm` (sha256: dbfa…d07c)
     }
 ```
 
-Each member shows the full name that `call` and `echo` take, its message formats, and the [failure kinds](/advanced_guides/actions/#how-a-goal-ends) of its contract that it lists. Every member can also give the failure kinds of peppy, which the listing does not repeat. `--json` prints the same as one JSON document, for a program.
+The [description](/reference/concepts/#descriptions) of the node follows the first lines, and the description of each contract and pairing follows its heading, one paragraph at a time. Each member shows the full name that `call` and `echo` take, its description, its message formats with the `$description` of their fields, and the [failure kinds](/advanced_guides/actions/#how-a-goal-ends) of its contract that it lists. Every member can also give the failure kinds of peppy, which the listing does not repeat. The descriptions wrap to the width of the terminal. `--json` prints the same as one JSON document, for a program: the node and each contract and pairing have `description`, the list of their paragraphs, and each member has `description`.
 
 ## `peppy node call`
 

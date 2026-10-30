@@ -3,6 +3,7 @@
 // the launch is up.
 {
   peppy_schema: "launcher/v1",
+  description: ["An OpenArm in the Waldo simulation, with a recorder of its episodes and an operator panel that reads the wall clock. It needs a machine that runs the simulation."],
 
   // The clock domains this launch declares. `simulation` is supplied by one
   // instance, and naming that instance here is what makes it the publisher.

@@ -28,6 +28,11 @@ const GOLDENS: &[(&str, &str, &str)] = &[
         include_str!("goldens/arrays.format.json5"),
         include_str!("goldens/arrays.schema.json"),
     ),
+    (
+        "descriptions",
+        include_str!("goldens/descriptions.format.json5"),
+        include_str!("goldens/descriptions.schema.json"),
+    ),
 ];
 
 fn parse_format(json5: &str) -> MessageFormat {

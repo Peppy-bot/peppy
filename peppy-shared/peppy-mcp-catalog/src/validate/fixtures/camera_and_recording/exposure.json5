@@ -10,7 +10,7 @@
             contract: {
                 name: "rgb_camera",
                 tag: "v1",
-                sha256: "c4db5cee269b64fa3da3618748b71b7d92211c1813978b220b3c09720895c607",
+                sha256: "fe5ca0e4eed27bf27c45d95595d6d2d2a85317390cd332bd58186dbbe6838870",
             },
             topics: [
                 {
@@ -59,7 +59,7 @@
             contract: {
                 name: "episode_recording",
                 tag: "v1",
-                sha256: "86f972761e3ea31ee918071b11bcd68440210f1ecc20a9c445e5a7486cb110be",
+                sha256: "434e39f63cce5a26f6ff2595cf2382d729744576f688f8047e7861e26275b805",
             },
             actions: [
                 {

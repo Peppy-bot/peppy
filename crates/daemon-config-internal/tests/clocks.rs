@@ -43,6 +43,7 @@ fn document(framework: &str, instances: &str) -> String {
     format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             {framework}
             deployments: [
                 {{ source: {{ name: "robot", tag: "v1" }}, instances: [{instances}] }},
@@ -120,6 +121,7 @@ fn an_options_adjustment_binds_a_clock() {
     );
     let launcher = r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         framework: { clocks: { simulation: { publisher: "engine_inst" } } },
         components: [
             { name: "engine", cardinality: "zero_or_one", options: { mujoco: {
@@ -229,6 +231,7 @@ fn a_publisher_the_launch_does_not_deploy_is_refused() {
     let empty = refusal(
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             framework: { clocks: { robot: { publisher: "sim_inst" } } },
             deployments: [],
         }"#,
@@ -337,6 +340,7 @@ fn two_documents_declaring_one_domain_must_agree() {
         format!(
             r#"{{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 framework: {{ clocks: {clocks} }},
                 components: [
                     {{ name: "engine", cardinality: "zero_or_one",
@@ -400,6 +404,7 @@ fn a_fragments_adjustment_binds_the_clock_of_an_instance_it_deploys() {
     );
     let launcher = r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         framework: { clocks: { simulation: { publisher: "engine_inst" } } },
         components: [
             { name: "engine", cardinality: "zero_or_one", options: { mujoco: "sim.json5" } },
@@ -448,6 +453,7 @@ fn a_copy_binds_a_launcher_domain_and_declares_none() {
         format!(
             r#"{{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 framework: {{ clocks: {{ simulation: {{ publisher: "engine_inst" }} }} }},
                 components: [
                     {{ name: "robot", cardinality: "zero_or_more",

@@ -3,6 +3,7 @@
   manifest: {
     name: "lerobot_recorder",
     tag: "v1",
+    description: ["A test node."],
     labels: ["recorder"]
   },
   execution: {
@@ -16,6 +17,7 @@
           // One dataset episode per goal: a task description in the request, a
           // running frame count as feedback, and the episode id in the result.
           name: "record_episode",
+          description: "A test action.",
           goal_service: {
             request_message_format: {
               task_description: "string"
@@ -41,6 +43,7 @@
           // Takes no request; the response carries the number of episodes
           // recorded.
           name: "finish_session",
+          description: "A test service.",
           response_message_format: {
             episodes_recorded: "u32"
           }

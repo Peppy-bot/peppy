@@ -3,6 +3,7 @@
   manifest: {
     name: "openarm_backbone",
     tag: "v1",
+    description: ["A test node."],
     labels: ["backbone"]
   },
   execution: {
@@ -16,6 +17,7 @@
       emits: [
         {
           name: "collision_status",
+          description: "A test topic.",
           qos_profile: "sensor_data",
           message_format: {
             stamp: "time",
@@ -33,6 +35,7 @@
         {
           // Joint-space move: the panel's "Send" button.
           name: "move_arm_joints",
+          description: "A test action.",
           goal_service: {
             request_message_format: {
               arm_id: "u16",
@@ -55,6 +58,7 @@
           // Cartesian move: a 6-element target pose in the request, remaining
           // distance as feedback.
           name: "move_arm",
+          description: "A test action.",
           goal_service: {
             request_message_format: {
               arm_id: "u16",
@@ -77,6 +81,7 @@
           // Gripper move: a single `opening` value in the request, no feedback
           // topic.
           name: "move_gripper",
+          description: "A test action.",
           goal_service: {
             request_message_format: {
               arm_id: "u16",

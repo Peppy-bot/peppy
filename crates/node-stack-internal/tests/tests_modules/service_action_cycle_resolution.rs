@@ -29,6 +29,7 @@ fn contract_node(
             manifest: {{
                 name: "{name}",
                 tag: "v1",
+                description: ["A test node."],
                 implements: [{{ name: "{implements}", tag: "v1", link_id: "impl" }}],
                 depends_on: {{
                     contracts: [{{ name: "{dep_contract}", tag: "v1", link_id: "{link_id}" }}]
@@ -175,7 +176,7 @@ fn one_directional_service_through_contract_allowed() {
         r#"{
             peppy_schema: "node/v1",
             manifest: {
-                name: "b", tag: "v1",
+                name: "b", tag: "v1", description: ["A test node."],
                 implements: [{ name: "contract_b", tag: "v1", link_id: "impl" }],
             },
             interfaces: {

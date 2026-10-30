@@ -55,7 +55,7 @@ fn write_the_waiting_launch(daemon: &ZenohDaemon) -> (tempfile::TempDir, PathBuf
     let manifest = format!(
         r#"{{
             peppy_schema: "node/v1",
-            manifest: {{ name: "{NODE_NAME}", tag: "{NODE_TAG}" }},
+            manifest: {{ name: "{NODE_NAME}", tag: "{NODE_TAG}", description: ["A test node."] }},
             execution: {{
                 language: "rust",
                 build_cmd: ["sh", "-c", "true"],
@@ -69,7 +69,7 @@ fn write_the_waiting_launch(daemon: &ZenohDaemon) -> (tempfile::TempDir, PathBuf
     std::fs::write(
         &launcher,
         format!(
-            r#"{{ peppy_schema: "launcher/v1", deployments: [ {{ source: {{ name: "{NODE_NAME}:{NODE_TAG}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}" }} ] }} ] }}"#
+            r#"{{ peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [ {{ source: {{ name: "{NODE_NAME}:{NODE_TAG}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}" }} ] }} ] }}"#
         ),
     )
     .expect("write the launcher");
@@ -178,7 +178,7 @@ fn piped_repository(root: &Path) -> (PathBuf, PipedIndex) {
         &repository,
         "piped_node",
         "unused-hash",
-        r#"{ peppy_schema: "node/v1", manifest: { name: "piped_node", tag: "v1" }, execution: { language: "rust", run_cmd: ["true"] } }"#,
+        r#"{ peppy_schema: "node/v1", manifest: { name: "piped_node", tag: "v1", description: ["A test node."] }, execution: { language: "rust", run_cmd: ["true"] } }"#,
     );
     assert!(node_dir.exists());
     publish_repo_index(&repository);

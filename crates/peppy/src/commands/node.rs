@@ -18,6 +18,7 @@ mod sync;
 mod test_fixtures;
 mod types;
 
+use config::description::Description;
 use config::node::RestartPolicy;
 use config::runtime::Name;
 use std::collections::BTreeMap;
@@ -140,6 +141,11 @@ fn parse_node_ref(s: &str) -> Result<(String, String), String> {
         ));
     }
     Ok((node_name, tag))
+}
+
+/// A description given on the command line: any text that is not blank.
+fn parse_description(s: &str) -> Result<Description, String> {
+    Description::new(s).map_err(|blank| blank.to_string())
 }
 
 /// Parses a key=value argument string into a tuple
@@ -290,6 +296,12 @@ pub enum NodeCommands {
     Init {
         /// Name of the node directory to create
         node_name: NodeName,
+        /// What the node does and what it needs to run, such as a GPU or a
+        /// device: the first paragraph of the description of its manifest,
+        /// which `peppy repo search` prints. Not blank. It can start with
+        /// `-`, as in "-90 to 90 degree scanner".
+        #[arg(value_parser = parse_description, allow_hyphen_values = true)]
+        description: Description,
         /// Build toolchain to use
         #[arg(long, default_value_t)]
         toolchain: Toolchain,
@@ -667,11 +679,12 @@ impl Command for NodeCommand {
             NodeCommands::Init {
                 to_dir,
                 node_name,
+                description,
                 toolchain,
                 with_container,
             } => {
                 let mut node_init_builder =
-                    NodeInitBuilder::new(ctx, node_name, toolchain, with_container);
+                    NodeInitBuilder::new(ctx, node_name, description, toolchain, with_container);
 
                 if let Some(dir) = to_dir {
                     node_init_builder = node_init_builder.with_dir(dir);

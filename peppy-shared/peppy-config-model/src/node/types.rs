@@ -8,6 +8,7 @@ use super::setup_timeout::SetupTimeout;
 use crate::{
     common::{ParameterSchema, ParameterSpec, resolve_parameter_path, type_token_name},
     error::ParsingError,
+    internal::description::{Description, DocumentDescription},
     internal::mark::{EnumValues, Marks},
     internal::runtime::Name,
     schema::PeppySchema,
@@ -194,6 +195,42 @@ a fixed-width Cap'n Proto scalar, which is always present on the wire. Only `str
     }
 }
 
+impl MessageFormat {
+    /// Each field of the format that has a description (`$description`),
+    /// depth first in the order of the format, with its path: the key of
+    /// each object it sits in, from the root of the format, with the items
+    /// of an array passed through. The items of an array take no
+    /// description, so each path names one description.
+    pub fn field_descriptions(&self) -> Vec<(Vec<&str>, &Description)> {
+        let mut found = Vec::new();
+        for (key, field) in &self.0 {
+            collect_field_descriptions(vec![key.as_str()], field, &mut found);
+        }
+        found
+    }
+}
+
+fn collect_field_descriptions<'a>(
+    path: Vec<&'a str>,
+    field: &'a SchemaType,
+    found: &mut Vec<(Vec<&'a str>, &'a Description)>,
+) {
+    if let Some(description) = field.description() {
+        found.push((path.clone(), description));
+    }
+    match field {
+        SchemaType::Array(array) => collect_field_descriptions(path, &array.items, found),
+        SchemaType::Object(object) => {
+            for (key, nested) in &object.fields {
+                let mut nested_path = path.clone();
+                nested_path.push(key.as_str());
+                collect_field_descriptions(nested_path, nested, found);
+            }
+        }
+        SchemaType::Type(_) | SchemaType::Primitive(_) => {}
+    }
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -316,7 +353,8 @@ impl<'de> Deserialize<'de> for SchemaType {
 /// `bytes`, `time`); [`MessageFormat`] enforces that, and
 /// [`TypeToken::is_scalar`] explains why a scalar cannot carry it. `$enum`
 /// is accepted only on `string`: the closed set of values the field holds.
-/// `$marks` names the marks of the field.
+/// `$marks` names the marks of the field, and `$description` says what the
+/// field holds.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(try_from = "RawPrimitiveSchema")]
 pub struct PrimitiveSchema {
@@ -328,6 +366,12 @@ pub struct PrimitiveSchema {
     pub enum_values: Option<EnumValues>,
     #[serde(rename = "$marks", default, skip_serializing_if = "Marks::is_empty")]
     pub marks: Marks,
+    #[serde(
+        rename = "$description",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub description: Option<Description>,
 }
 
 impl PrimitiveSchema {
@@ -338,6 +382,7 @@ impl PrimitiveSchema {
             optional: false,
             enum_values: None,
             marks: Marks::default(),
+            description: None,
         }
     }
 }
@@ -355,6 +400,8 @@ struct RawPrimitiveSchema {
     enum_values: Option<EnumValues>,
     #[serde(rename = "$marks", default)]
     marks: Marks,
+    #[serde(rename = "$description", default)]
+    description: Option<Description>,
 }
 
 impl TryFrom<RawPrimitiveSchema> for PrimitiveSchema {
@@ -372,6 +419,7 @@ impl TryFrom<RawPrimitiveSchema> for PrimitiveSchema {
             optional: raw.optional,
             enum_values: raw.enum_values,
             marks: raw.marks,
+            description: raw.description,
         })
     }
 }
@@ -389,6 +437,12 @@ pub struct ArraySchema {
     pub optional: bool,
     #[serde(rename = "$marks", default, skip_serializing_if = "Marks::is_empty")]
     pub marks: Marks,
+    #[serde(
+        rename = "$description",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub description: Option<Description>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -407,6 +461,8 @@ pub struct ObjectSchema {
     pub optional: bool,
     #[serde(rename = "$marks", skip_serializing_if = "Marks::is_empty")]
     pub marks: Marks,
+    #[serde(rename = "$description", skip_serializing_if = "Option::is_none")]
+    pub description: Option<Description>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -428,6 +484,12 @@ where
     if matches!(schema, SchemaType::Array(_)) {
         return Err(de::Error::custom(
             "nested arrays (arrays of arrays) are not supported as array items",
+        ));
+    }
+    if schema.description().is_some() {
+        return Err(de::Error::custom(
+            "`$description` is not supported on array items: an array and its items are one \
+field, so the `$description` of the array says what its items hold",
         ));
     }
     Ok(Box::new(schema))
@@ -458,6 +520,7 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
         let mut kind: Option<ObjectKind> = None;
         let mut optional = false;
         let mut marks = Marks::default();
+        let mut description = None;
         let mut fields = IndexMap::<String, SchemaType>::new();
 
         while let Some(key) = map.next_key::<String>()? {
@@ -475,10 +538,13 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
                 "$marks" => {
                     marks = map.next_value()?;
                 }
+                "$description" => {
+                    description = Some(map.next_value()?);
+                }
                 modifier if modifier.starts_with('$') => {
                     return Err(de::Error::custom(format!(
                         "unknown modifier `{modifier}` on an object; an object takes `$type`, \
-`$optional` and `$marks`"
+`$optional`, `$marks` and `$description`"
                     )));
                 }
                 _ => {
@@ -503,6 +569,7 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
             fields,
             optional,
             marks,
+            description,
         })
     }
 }
@@ -542,6 +609,16 @@ impl SchemaType {
             SchemaType::Primitive(schema) => &schema.marks,
             SchemaType::Array(schema) => &schema.marks,
             SchemaType::Object(schema) => &schema.marks,
+        }
+    }
+
+    /// What the field holds (`$description`), for a field that says it.
+    pub fn description(&self) -> Option<&Description> {
+        match self {
+            SchemaType::Type(_) => None,
+            SchemaType::Primitive(schema) => schema.description.as_ref(),
+            SchemaType::Array(schema) => schema.description.as_ref(),
+            SchemaType::Object(schema) => schema.description.as_ref(),
         }
     }
 }
@@ -657,11 +734,14 @@ impl LinkedMember<'_> {
     }
 }
 
-/// A natively-declared emitted topic (no `link_id`): the node owns the shape.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+/// A natively-declared emitted topic (no `link_id`): the node owns the shape
+/// and the description.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NativeEmittedTopic {
     pub name: String,
+    /// What the topic carries, and when it is published.
+    pub description: Description,
     #[serde(default)]
     pub qos_profile: QoSProfile,
     #[serde(default, skip_serializing_if = "TopicRetention::is_live_only")]
@@ -684,10 +764,12 @@ pub enum EmittedTopic {
 }
 
 /// A natively-declared exposed service (no `link_id`).
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NativeExposedService {
     pub name: String,
+    /// What the service does, and what it answers.
+    pub description: Description,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_message_format: Option<MessageFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -704,10 +786,12 @@ pub enum ExposedService {
 }
 
 /// A natively-declared exposed action (no `link_id`).
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NativeExposedAction {
     pub name: String,
+    /// The goal of the action, its feedback and its result.
+    pub description: Description,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_service: Option<GoalServiceEndpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -828,6 +912,7 @@ macro_rules! impl_produced_entry {
                     link_id: Option<String>,
                     name: Option<String>,
                     refine: Option<$refine>,
+                    description: Option<Description>,
                     $($field: $ty,)+
                 }
 
@@ -844,14 +929,20 @@ macro_rules! impl_produced_entry {
                             $entry::SECTION,
                             &link_id,
                             &name,
-                            &[$((stringify!($field), raw.$field.is_some()),)+],
+                            &[
+                                ("description", raw.description.is_some()),
+                                $((stringify!($field), raw.$field.is_some()),)+
+                            ],
                         )?;
                         Ok(Self::Linked(LinkedEntry { link_id, name, refine: raw.refine }))
                     }
                     None => {
                         reject_refine_on_native($entry::SECTION, &name, raw.refine.is_some())?;
+                        let description =
+                            require_native_description($entry::SECTION, &name, raw.description)?;
                         Ok(Self::Native(impl_produced_entry!(@native_wrap $wrap $native {
                             name,
+                            description,
                             $($field: impl_produced_entry!(@native_field $mode raw.$field),)+
                         })))
                     }
@@ -893,6 +984,24 @@ fn reject_refine_on_native<E: de::Error>(
         }
         .json5_message(),
     ))
+}
+
+/// The description of a native entry, which the entry requires: the node
+/// declares the member itself, so no document describes it.
+fn require_native_description<E: de::Error>(
+    section: &'static str,
+    name: &str,
+    description: Option<Description>,
+) -> Result<Description, E> {
+    description.ok_or_else(|| {
+        E::custom(
+            crate::error::StructuredError::NativeEntryWithoutDescription {
+                section: section.to_owned(),
+                name: name.to_owned(),
+            }
+            .json5_message(),
+        )
+    })
 }
 
 /// Validates the (required, non-empty) `name` of a produced-interface entry,
@@ -1921,6 +2030,9 @@ impl NodeFramework {
 pub struct Manifest {
     pub name: Name,
     pub tag: String,
+    /// What the node does and what it needs to run, such as a GPU or a
+    /// device. Notes for the implementer of the node stay comments.
+    pub description: DocumentDescription,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2576,15 +2688,14 @@ mod tests {
         // with an inline message_format and no link_id must fail to parse as
         // a consumed topic (message_format is an unknown field, link_id is
         // required).
-        let external_shape =
-            r#"{ name: "cmd_vel", message_format: { linear_x: "f64", angular_z: "f64" } }"#;
+        let external_shape = r#"{ name: "cmd_vel", description: "A test member.", message_format: { linear_x: "f64", angular_z: "f64" } }"#;
         assert!(
             serde_json5::from_str::<ConsumedTopic>(external_shape).is_err(),
             "external-shaped topic (no link_id, inline message_format) should be rejected"
         );
 
         // name-only (no link_id) must also fail.
-        let name_only = r#"{ name: "cmd_vel" }"#;
+        let name_only = r#"{ name: "cmd_vel", description: "A test member." }"#;
         assert!(
             serde_json5::from_str::<ConsumedTopic>(name_only).is_err(),
             "name-only (no link_id) should fail"
@@ -2638,7 +2749,7 @@ mod tests {
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
         assert_eq!(service.link_id, "uvc_camera");
 
-        let without_link_id = r#"{ name: "enable_camera" }"#;
+        let without_link_id = r#"{ name: "enable_camera", description: "A test member." }"#;
         assert!(serde_json5::from_str::<ConsumedService>(without_link_id).is_err());
 
         let blank_link_id = r#"{ link_id: "   ", name: "enable_camera" }"#;
@@ -2649,6 +2760,7 @@ mod tests {
     fn exposed_action_supports_optional_payloads() {
         let json5 = r#"{
             name: "move_arm",
+            description: "A test member.",
             goal_service: {
                 request_message_format: {
                     feedback_frequency: "u32",
@@ -2701,6 +2813,7 @@ mod tests {
     fn result_service_accepts_only_a_response_payload() {
         let json5 = r#"{
             name: "perform_scan",
+            description: "A test member.",
             result_service: {
                 response_message_format: {
                     success: "bool",
@@ -2725,6 +2838,7 @@ mod tests {
         // fail at parse time rather than being silently ignored.
         let json5 = r#"{
             name: "perform_scan",
+            description: "A test member.",
             result_service: {
                 request_message_format: {
                     include_diagnostics: "bool",
@@ -2754,6 +2868,7 @@ mod tests {
     fn exposed_action_rejects_empty_message_format_object() {
         let json5 = r#"{
             name: "calibrate",
+            description: "A test member.",
             goal_service: {
                 request_message_format: {},
                 response_message_format: { accepted: "bool" },
@@ -3158,6 +3273,7 @@ mod tests {
     fn feedback_topic_requires_a_message_format() {
         let json5 = r#"{
             name: "move_arm",
+            description: "A test member.",
             feedback_topic: { qos_profile: "sensor_data" }
         }"#;
 
@@ -3172,12 +3288,13 @@ mod tests {
         let error = serde_json5::from_str::<ExposedAction>(
             r#"{
                 name: "move_arm",
+                description: "A test member.",
                 feedback_topic: { retention: { latest: 1 }, message_format: { progress: "f64" } }
             }"#,
         )
         .expect_err("action feedback is live only");
         serde_json5::from_str::<ExposedAction>(
-            r#"{ name: "move_arm", feedback_topic: { retention: null, message_format: { progress: "f64" } } }"#,
+            r#"{ name: "move_arm", description: "A test member.", feedback_topic: { retention: null, message_format: { progress: "f64" } } }"#,
         )
         .expect_err("a null is a present key");
         assert!(
@@ -3192,6 +3309,7 @@ mod tests {
     fn feedback_topic_rejects_an_empty_message_format() {
         let json5 = r#"{
             name: "move_arm",
+            description: "A test member.",
             feedback_topic: { message_format: {} }
         }"#;
 
@@ -3207,6 +3325,7 @@ mod tests {
     fn feedback_topic_with_a_message_format_parses() {
         let json5 = r#"{
             name: "move_arm",
+            description: "A test member.",
             feedback_topic: {
                 qos_profile: "sensor_data",
                 message_format: { current_position: { $type: "array", $items: "i32", $length: 3 } }
@@ -3273,6 +3392,20 @@ mod tests {
             ),
             (
                 r#"{
+                    points: {
+                      $type: "array",
+                      $description: "The way.",
+                      $items: {
+                        $type: "object",
+                        $description: "One point.",
+                        z: "f64"
+                      }
+                    }
+                }"#,
+                "a description on array items should fail",
+            ),
+            (
+                r#"{
                     frames: {
                         $type: "array",
                         $items: {
@@ -3300,6 +3433,7 @@ mod tests {
         let json5 = r#"{
             name: "slam",
             tag: "v1",
+            description: ["A test node."],
             depends_on: {
                 nodes: [
                     { name: "lidar_driver", tag: "v1", link_id: "lidar" },
@@ -3763,6 +3897,7 @@ mod tests {
         let json5 = r#"{
             name: "camera_node",
             tag: "v1",
+            description: ["A test node."],
             implements: [
                 { name: "depth_camera", tag: "v1", link_id: "cam", sha256: "aaaa" }
             ]
@@ -3780,6 +3915,7 @@ mod tests {
         let json5 = r#"{
             name: "camera_node",
             tag: "v1",
+            description: ["A test node."],
             implements: [
                 { name: "depth_camera", tag: "v1", link_id: "cam" }
             ]
@@ -3797,7 +3933,9 @@ mod tests {
             r#"{ name: "depth_camera", tag: "v1", link_id: "" }"#,
             r#"{ name: "depth_camera", tag: "v1", link_id: "--" }"#,
         ] {
-            let json5 = format!(r#"{{ name: "n", tag: "v1", implements: [{entry}] }}"#);
+            let json5 = format!(
+                r#"{{ name: "n", tag: "v1", description: ["A test node."], implements: [{entry}] }}"#
+            );
             assert!(
                 serde_json5::from_str::<Manifest>(&json5).is_err(),
                 "implements entry should be rejected: {entry}"
@@ -3810,6 +3948,7 @@ mod tests {
         let json5 = r#"{
             name: "n",
             tag: "v1",
+            description: ["A test node."],
             implements: [
                 { name: "depth_camera", tag: "v1", link_id: "cam", extra: "bad" }
             ]
@@ -3830,6 +3969,85 @@ mod tests {
         assert!(serde_json5::from_str::<Interfaces>(json5).is_err());
     }
 
+    /// Each field with a `$description` is found by its path, at any
+    /// depth, a field of an array item included; a field with none is left
+    /// out.
+    #[test]
+    fn a_format_gives_the_description_of_each_field_by_its_path() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"{
+                speed: { $type: "f64", $description: "Meters per second." },
+                stamp: "time",
+                target: {
+                    $description: "Where to go.",
+                    x: { $type: "f64", $description: "Forward." },
+                    y: "f64",
+                },
+                points: {
+                    $type: "array",
+                    $description: "The way.",
+                    $items: { $type: "object", z: { $type: "f64", $description: "Up." } },
+                },
+            }"#,
+        )
+        .expect("the format parses");
+        let found: Vec<(Vec<&str>, &str)> = format
+            .field_descriptions()
+            .into_iter()
+            .map(|(path, description)| (path, description.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (vec!["speed"], "Meters per second."),
+                (vec!["target"], "Where to go."),
+                (vec!["target", "x"], "Forward."),
+                (vec!["points"], "The way."),
+                (vec!["points", "z"], "Up."),
+            ]
+        );
+    }
+
+    /// The items of an array take no description: the array and its items
+    /// are one field, with one path, and the array says what they hold.
+    #[test]
+    fn a_description_on_the_items_of_an_array_is_refused() {
+        for items in [
+            r#"{ $type: "f64", $description: "One." }"#,
+            r#"{ $type: "object", $description: "One point.", z: "f64" }"#,
+        ] {
+            let error = serde_json5::from_str::<MessageFormat>(&format!(
+                r#"{{ points: {{ $type: "array", $items: {items} }} }}"#
+            ))
+            .expect_err("a description on array items is refused");
+            assert!(
+                error
+                    .to_string()
+                    .contains("`$description` is not supported on array items"),
+                "{error}"
+            );
+        }
+    }
+
+    /// The description of a field survives a serialization and a second
+    /// parse, and a blank one is refused.
+    #[test]
+    fn a_field_description_round_trips_and_is_not_blank() {
+        let format: MessageFormat =
+            serde_json5::from_str(r#"{ x: { $type: "f64", $description: "Forward." } }"#).unwrap();
+        let text = serde_json5::to_string(&format).unwrap();
+        let again: MessageFormat = serde_json5::from_str(&text).unwrap();
+        assert_eq!(format, again);
+        assert_eq!(
+            again.0["x"].description().map(Description::as_str),
+            Some("Forward.")
+        );
+        let blank =
+            serde_json5::from_str::<MessageFormat>(r#"{ x: { $type: "f64", $description: " " } }"#)
+                .expect_err("a blank description is refused");
+        assert!(blank.to_string().contains("blank"), "{blank}");
+    }
+
     #[test]
     fn emitted_topic_two_variants_parse() {
         let contract: EmittedTopic =
@@ -3840,7 +4058,7 @@ mod tests {
         assert!(!contract.is_native());
 
         let native: EmittedTopic = serde_json5::from_str(
-            r#"{ name: "debug_stream", qos_profile: "sensor_data", message_format: { x: "f64" } }"#,
+            r#"{ name: "debug_stream", description: "A test member.", qos_profile: "sensor_data", message_format: { x: "f64" } }"#,
         )
         .expect("native emit should parse");
         assert_eq!(native.name(), "debug_stream");
@@ -3862,19 +4080,25 @@ mod tests {
         let latest = |depth| TopicRetention::latest(depth).expect("a depth in range");
 
         assert_eq!(
-            retention_of(r#"{ name: "robot_mode" }"#),
+            retention_of(r#"{ name: "robot_mode", description: "A test member." }"#),
             TopicRetention::LiveOnly
         );
         assert_eq!(
-            retention_of(r#"{ name: "robot_mode", retention: { latest: 0 } }"#),
+            retention_of(
+                r#"{ name: "robot_mode", description: "A test member.", retention: { latest: 0 } }"#
+            ),
             TopicRetention::LiveOnly
         );
         assert_eq!(
-            retention_of(r#"{ name: "robot_mode", retention: { latest: 1 } }"#),
+            retention_of(
+                r#"{ name: "robot_mode", description: "A test member.", retention: { latest: 1 } }"#
+            ),
             latest(1)
         );
         assert_eq!(
-            retention_of(r#"{ name: "robot_mode", retention: { latest: 5 } }"#),
+            retention_of(
+                r#"{ name: "robot_mode", description: "A test member.", retention: { latest: 5 } }"#
+            ),
             latest(5)
         );
     }
@@ -3888,15 +4112,19 @@ mod tests {
             serde_json5::to_string(&parsed).expect("should serialize")
         };
 
-        let live_only = serialized(r#"{ name: "robot_mode" }"#);
+        let live_only = serialized(r#"{ name: "robot_mode", description: "A test member." }"#);
         assert!(!live_only.contains("retention"), "{live_only}");
         assert_eq!(
-            serialized(r#"{ name: "robot_mode", retention: { latest: 0 } }"#),
+            serialized(
+                r#"{ name: "robot_mode", description: "A test member.", retention: { latest: 0 } }"#
+            ),
             live_only
         );
         assert!(
-            serialized(r#"{ name: "robot_mode", retention: { latest: 1 } }"#)
-                .contains(r#""retention":{"latest":1}"#)
+            serialized(
+                r#"{ name: "robot_mode", description: "A test member.", retention: { latest: 1 } }"#
+            )
+            .contains(r#""retention":{"latest":1}"#)
         );
     }
 
@@ -3932,20 +4160,33 @@ mod tests {
 
     #[test]
     fn produced_entries_require_non_empty_name() {
-        assert!(serde_json5::from_str::<EmittedTopic>(r#"{ name: "" }"#).is_err());
+        assert!(
+            serde_json5::from_str::<EmittedTopic>(r#"{ name: "", description: "A test member." }"#)
+                .is_err()
+        );
         assert!(serde_json5::from_str::<EmittedTopic>(r#"{}"#).is_err());
         assert!(serde_json5::from_str::<EmittedTopic>(r#"{ link_id: "cam", name: "" }"#).is_err());
-        assert!(serde_json5::from_str::<ExposedService>(r#"{ name: "   " }"#).is_err());
-        assert!(serde_json5::from_str::<ExposedAction>(r#"{ name: "" }"#).is_err());
+        assert!(
+            serde_json5::from_str::<ExposedService>(
+                r#"{ name: "   ", description: "A test member." }"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json5::from_str::<ExposedAction>(
+                r#"{ name: "", description: "A test member." }"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn produced_entries_round_trip_both_variants() {
         for source in [
             r#"{ link_id: "cam", name: "video_stream" }"#,
-            r#"{ name: "debug_stream", qos_profile: "sensor_data", message_format: { x: "f64" } }"#,
-            r#"{ name: "robot_mode", retention: { latest: 1 }, message_format: { mode: "string" } }"#,
-            r#"{ name: "calibration", retention: { latest: 5 }, message_format: { x: "f64" } }"#,
+            r#"{ name: "debug_stream", description: "A test member.", qos_profile: "sensor_data", message_format: { x: "f64" } }"#,
+            r#"{ name: "robot_mode", description: "A test member.", retention: { latest: 1 }, message_format: { mode: "string" } }"#,
+            r#"{ name: "calibration", description: "A test member.", retention: { latest: 5 }, message_format: { x: "f64" } }"#,
         ] {
             let parsed: EmittedTopic = serde_json5::from_str(source).expect("should parse");
             let serialized = serde_json5::to_string(&parsed).expect("should serialize");
@@ -3955,7 +4196,7 @@ mod tests {
         }
 
         let svc: ExposedService = serde_json5::from_str(
-            r#"{ name: "native_svc", request_message_format: { id: "u8" }, response_message_format: { ok: "bool" } }"#,
+            r#"{ name: "native_svc", description: "A test member.", request_message_format: { id: "u8" }, response_message_format: { ok: "bool" } }"#,
         )
         .expect("should parse");
         let reparsed: ExposedService =
@@ -3977,7 +4218,7 @@ mod tests {
             r#"{
                 topics: {
                     emits: [
-                        { name: "native_topic", message_format: { x: "f64" } },
+                        { name: "native_topic", description: "A test topic.", message_format: { x: "f64" } },
                         { link_id: "cam", name: "linked_topic" },
                     ],
                     consumes: [{ link_id: "dep", name: "consumed_topic" }],
@@ -3987,6 +4228,7 @@ mod tests {
                         { link_id: "cam", name: "linked_service" },
                         {
                             name: "native_service",
+                            description: "A test service.",
                             request_message_format: { id: "u8" },
                             response_message_format: { ok: "bool" },
                         },
@@ -3997,6 +4239,7 @@ mod tests {
                     exposes: [
                         {
                             name: "native_action",
+                            description: "A test action.",
                             result_service: { response_message_format: { ok: "bool" } },
                         },
                         { link_id: "arm", name: "linked_action" },
@@ -4079,6 +4322,7 @@ mod tests {
         let json5 = r#"{
             name: "node",
             tag: "v1",
+            description: ["A test node."],
             depends_on: {
                 nodes: [{ name: "dep", tag: "v1", link_id: "d", extra: "bad" }]
             }
@@ -4092,7 +4336,8 @@ mod tests {
     fn manifest_parses_minimal() {
         let json5 = r#"{
             name: "simple_node",
-            tag: "v1"
+            tag: "v1",
+            description: ["A test node."],
         }"#;
         let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
         assert_eq!(manifest.name.as_str(), "simple_node");
@@ -4101,11 +4346,104 @@ mod tests {
         assert!(manifest.implements.is_empty());
     }
 
+    /// A node manifest has a description: the parser refuses a manifest
+    /// without one, with a blank paragraph, or with a single string.
+    #[test]
+    fn manifest_requires_a_description() {
+        for (manifest, expected) in [
+            (r#"{ name: "n", tag: "v1" }"#, "missing field `description`"),
+            (
+                r#"{ name: "n", tag: "v1", description: [] }"#,
+                "no paragraph",
+            ),
+            (
+                r#"{ name: "n", tag: "v1", description: ["A node.", ""] }"#,
+                "blank",
+            ),
+            (
+                r#"{ name: "n", tag: "v1", description: "A node." }"#,
+                "sequence",
+            ),
+        ] {
+            let error = serde_json5::from_str::<Manifest>(manifest)
+                .expect_err(manifest)
+                .to_string();
+            assert!(error.contains(expected), "{manifest}: {error}");
+        }
+    }
+
+    /// A member that the node declares itself has a description, and a
+    /// document-backed entry has none: its document describes the member.
+    #[test]
+    fn a_native_entry_requires_a_description_and_a_linked_one_refuses_it() {
+        for (section, entry) in [
+            (
+                "topics.emits",
+                serde_json5::from_str::<EmittedTopic>(r#"{ name: "beat" }"#).map(|_| ()),
+            ),
+            (
+                "services.exposes",
+                serde_json5::from_str::<ExposedService>(r#"{ name: "gain" }"#).map(|_| ()),
+            ),
+            (
+                "actions.exposes",
+                serde_json5::from_str::<ExposedAction>(r#"{ name: "move" }"#).map(|_| ()),
+            ),
+        ] {
+            let error = entry.expect_err(section).to_string();
+            assert!(
+                error.contains("NativeEntryWithoutDescription"),
+                "{section}: {error}"
+            );
+            assert!(error.contains(section), "{section}: {error}");
+        }
+        let blank = serde_json5::from_str::<EmittedTopic>(r#"{ name: "beat", description: " " }"#)
+            .expect_err("a blank description");
+        assert!(blank.to_string().contains("blank"), "{blank}");
+
+        let linked = serde_json5::from_str::<EmittedTopic>(
+            r#"{ link_id: "cam", name: "video_stream", description: "Frames." }"#,
+        )
+        .expect_err("a document-backed entry takes its description from its document");
+        assert!(linked.to_string().contains("description"), "{linked}");
+        assert!(
+            linked.to_string().contains("LinkedEntryWithInlineShape"),
+            "{linked}"
+        );
+
+        let parsed: ExposedService =
+            serde_json5::from_str(r#"{ name: "gain", description: "Set the gain." }"#).unwrap();
+        assert_eq!(
+            parsed.as_native().map(|native| native.description.as_str()),
+            Some("Set the gain.")
+        );
+    }
+
+    /// The parser of a whole node document turns the refusal of a native
+    /// entry with no description into its error, which names the section
+    /// and the entry.
+    #[test]
+    fn a_node_document_with_an_undescribed_member_is_refused_by_name() {
+        let error = super::super::parse::NodeConfigParser::from_content(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "n", tag: "v1", description: ["A node."] },
+                interfaces: { topics: { emits: [{ name: "beat", message_format: { n: "u32" } }] } },
+                execution: { language: "rust", run_cmd: ["./run"] },
+            }"#,
+        )
+        .expect_err("the topic has no description")
+        .to_string();
+        assert!(error.contains("`beat`"), "{error}");
+        assert!(error.contains("`topics.emits`"), "{error}");
+        assert!(error.contains("has no `description`"), "{error}");
+    }
+
     #[test]
     fn node_config_rejects_unknown_fields() {
         let json5 = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "node", tag: "v1" },
+            manifest: { name: "node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["./run"] },
             extra: "bad"
         }"#;
@@ -4119,6 +4457,7 @@ mod tests {
     fn node_config_rejects_non_node_schema() {
         let json5 = r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             manifest: { name: "node", tag: "v1" },
             execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
         }"#;
@@ -4252,7 +4591,7 @@ mod tests {
     fn manifest_framework_restart_round_trips() {
         let json5 = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "cam", tag: "v1" },
+            manifest: { name: "cam", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["./cam"] },
             framework: { restart: { policy: "on_failure", max_restarts: 4 } },
         }"#;
@@ -4263,7 +4602,7 @@ mod tests {
 
         let without = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "cam", tag: "v1" },
+            manifest: { name: "cam", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["./cam"] },
         }"#;
         let config: NodeConfig = serde_json5::from_str(without).unwrap();
@@ -4273,7 +4612,7 @@ mod tests {
 
         let unknown = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "cam", tag: "v1" },
+            manifest: { name: "cam", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["./cam"] },
             framework: { clock: "wall" },
         }"#;

@@ -3,6 +3,7 @@
   manifest: {
     name: "deliberative_planner",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {
       // The same camera contract the policy consumes. Nothing here records
       // which machine the camera runs on: placement is declared once, on the

@@ -6,9 +6,10 @@
 //! any other contract, such as a contract that a document names, from its
 //! pinned contract document alone:
 //!
-//! - [`contract`] parses a contract document: the message formats of its
-//!   members, the enums and the marks of their fields, the marks of its
-//!   members, its failure kinds and the comments of its text.
+//! - [`contract`] parses a contract document: its description, the
+//!   descriptions and the message formats of its members, the enums, the
+//!   marks and the descriptions of their fields, the marks of its members
+//!   and its failure kinds.
 //! - [`MessageCodec`] converts between the canonical JSON of a message
 //!   format ([`value`]) and its wire bytes. The bytes it produces are the
 //!   bytes a generated node produces for the same values: both allocate the

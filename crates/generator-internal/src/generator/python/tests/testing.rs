@@ -268,8 +268,10 @@ fn a_retaining_topic_reaches_its_mock_publisher_and_its_fixture_subscription() {
 fn an_emitted_topic_named_after_a_rust_keyword_shares_its_production_schema() {
     let mut generator = PythonGenerator::new();
     generator.set_node_identity("node", "v1");
-    let topic: NativeEmittedTopic =
-        serde_json5::from_str(r#"{ name: "loop", message_format: { x: "u8" } }"#).unwrap();
+    let topic: NativeEmittedTopic = serde_json5::from_str(
+        r#"{ name: "loop", description: "A test member.", message_format: { x: "u8" } }"#,
+    )
+    .unwrap();
     generator.add_emitted_topic(&topic, None).unwrap();
 
     let registry = std::mem::take(&mut generator.testgen);

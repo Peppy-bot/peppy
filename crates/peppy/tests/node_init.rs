@@ -14,6 +14,7 @@ fn init_cargo_node(ctx: &Arc<AppContext>, node_name: &str, with_container: bool)
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             toolchain: Toolchain::Cargo,
             to_dir: None,
             with_container,
@@ -149,6 +150,7 @@ fn node_init_with_to_dir_creates_the_node_in_that_directory() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             toolchain: Toolchain::Cargo,
             to_dir: Some(target_dir.path().to_path_buf()),
             with_container: false,
@@ -193,6 +195,7 @@ fn node_init_refuses_an_existing_node_directory() {
     let err = NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             toolchain: Toolchain::Cargo,
             to_dir: None,
             with_container: false,
@@ -232,6 +235,7 @@ fn node_uv_init_command_success() {
     NodeInitBuilder::new(
         &node_ctx,
         NodeName::new(node_name).expect("valid node name"),
+        config::description::Description::new("A test node.").unwrap(),
         Toolchain::Uv,
         false,
     )

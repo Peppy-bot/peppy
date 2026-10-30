@@ -360,6 +360,7 @@ mod tests {
             length,
             optional: false,
             marks: Default::default(),
+            description: None,
         })
     }
 
@@ -418,6 +419,7 @@ mod tests {
                     fields,
                     optional: false,
                     marks: Default::default(),
+                    description: None,
                 }),
                 length,
             ),

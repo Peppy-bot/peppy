@@ -285,7 +285,7 @@ mod tests {
 
     const ROOT_CONFIG: &str = r#"{
         peppy_schema: "node/v1",
-        manifest: { name: "core_root", tag: "v1" },
+        manifest: { name: "core_root", tag: "v1", description: ["A test node."] },
         execution: { language: "rust", run_cmd: ["true"] },
     }"#;
 
@@ -298,8 +298,10 @@ mod tests {
         let node_stack = NodeStack::new(root_config, None, stack_dir.path());
         let peppy_home = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(peppy_home.path().to_path_buf());
-        let manifest: config::node::Manifest =
-            serde_json5::from_str(r#"{ name: "fresh_node", tag: "v1" }"#).unwrap();
+        let manifest: config::node::Manifest = serde_json5::from_str(
+            r#"{ name: "fresh_node", tag: "v1", description: ["A test node."] }"#,
+        )
+        .unwrap();
         let interfaces = config::node::Interfaces::default();
         auto_sync_if_missing(
             AutoSyncParams {

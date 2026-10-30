@@ -1,0 +1,60 @@
+{
+  "type": "object",
+  "properties": {
+    "speed": {
+      "type": "number",
+      "description": "The speed of the move, in meters per second."
+    },
+    "target": {
+      "type": "object",
+      "properties": {
+        "x_m": {
+          "type": "number",
+          "description": "Forward of the base."
+        },
+        "y_m": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x_m",
+        "y_m"
+      ],
+      "additionalProperties": false,
+      "description": "Where the arm goes."
+    },
+    "waypoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "x_m": {
+            "type": "number",
+            "description": "Forward of the base."
+          }
+        },
+        "required": [
+          "x_m"
+        ],
+        "additionalProperties": false
+      },
+      "description": "The points the arm passes, in order."
+    },
+    "label": {
+      "type": "string",
+      "description": "A name for the move."
+    },
+    "frames": {
+      "type": "string",
+      "contentEncoding": "base64",
+      "description": "One camera frame, JPEG."
+    }
+  },
+  "required": [
+    "speed",
+    "target",
+    "waypoints",
+    "frames"
+  ],
+  "additionalProperties": false
+}

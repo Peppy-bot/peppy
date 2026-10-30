@@ -17,6 +17,7 @@ use crate::helpers::{STUB_PYTHON_NODE_CONFIG, generate_node_project, run_python_
 const JOINT_COMMANDS: &str = r#"
 {
   name: "joint_commands",
+  description: "A test member.",
   qos_profile: "reliable",
   message_format: {
     target_positions: { $type: "array", $items: "f64", $length: 3 },
@@ -28,6 +29,7 @@ const JOINT_COMMANDS: &str = r#"
 const JOINT_STATES: &str = r#"
 {
   name: "joint_states",
+  description: "A test member.",
   qos_profile: "sensor_data",
   message_format: {
     positions: { $type: "array", $items: "f64", $length: 3 },

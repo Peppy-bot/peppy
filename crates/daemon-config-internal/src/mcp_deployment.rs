@@ -569,9 +569,15 @@ pub fn plan_deployment(
     if !contract_slots.is_empty() {
         depends_on["contracts"] = serde_json::json!(contract_slots);
     }
+    let served: Vec<String> = references.iter().map(ToString::to_string).collect();
     let manifest = serde_json::json!({
         "name": name.as_str(),
         "tag": tag,
+        "description": [format!(
+            "The built-in MCP server of peppy for the exposures {}: it gives their members \
+             to MCP clients as tools, resources and tasks.",
+            served.join(", ")
+        )],
         "depends_on": depends_on,
     });
     let document = serde_json::json!({
@@ -721,11 +727,12 @@ mod tests {
 
     const CAMERA_CONTRACT: &str = r#"{
         peppy_schema: "contract/v1",
-        manifest: { name: "rgb_camera", tag: "v1" },
+        manifest: { name: "rgb_camera", tag: "v1", description: ["A test contract."] },
         interfaces: {
             topics: [
                 {
                     name: "video_stream",
+                    description: "A test topic.",
                     message_format: {
                         frame: { $type: "array", $items: "u8" },
                         encoding: "string",
@@ -735,18 +742,19 @@ mod tests {
                 },
             ],
             services: [
-                { name: "video_stream_info", response_message_format: { width: "u32" } },
+                { name: "video_stream_info", description: "A test service.", response_message_format: { width: "u32" } },
             ],
         },
     }"#;
 
     const RECORDING_CONTRACT: &str = r#"{
         peppy_schema: "contract/v1",
-        manifest: { name: "episode_recording", tag: "v1" },
+        manifest: { name: "episode_recording", tag: "v1", description: ["A test contract."] },
         interfaces: {
             actions: [
                 {
                     name: "record_episode",
+                    description: "A test action.",
                     goal_service: { request_message_format: { episode_name: "string" } },
                     result_service: { response_message_format: { frames: "u32" } },
                 },

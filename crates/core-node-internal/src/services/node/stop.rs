@@ -607,7 +607,7 @@ async fn force_kill_leftovers(
     // We do take one snapshot here purely to classify which nodes are still
     // alive (i.e. ignored the cooperative shutdown) so the user is warned that
     // they were force-killed rather than having exited gracefully.
-    let mut snapshot = sysinfo::System::new();
+    let mut snapshot = empty_process_table();
     refresh_pids(&mut snapshot, &doomed_pids(doomed));
     let outcomes = doomed
         .iter()
@@ -1123,7 +1123,7 @@ async fn wait_until_all_gone(doomed: &[DoomedInstance]) {
     if pids.is_empty() {
         return;
     }
-    let mut system = sysinfo::System::new();
+    let mut system = empty_process_table();
     loop {
         refresh_pids(&mut system, &pids);
         if pids
@@ -1145,6 +1145,13 @@ fn doomed_pids(doomed: &[DoomedInstance]) -> Vec<sysinfo::Pid> {
         .collect()
 }
 
+/// A process table with no process in it yet, for [`refresh_pids`] to fill.
+/// sysinfo cannot make one only on a platform it does not support, and the
+/// daemon runs on Linux and macOS, which it supports.
+fn empty_process_table() -> sysinfo::System {
+    sysinfo::System::new().expect("sysinfo reads the process table of Linux and macOS")
+}
+
 /// Refreshes only `pids` in `system` (existence + status), reading just those
 /// `/proc` entries instead of rescanning every process on the machine. Dead
 /// pids are dropped from the set so [`pid_running_in`] reports them gone.
@@ -1160,7 +1167,7 @@ fn refresh_pids(system: &mut sysinfo::System, pids: &[sysinfo::Pid]) {
 /// process table and reaps nothing, so a child of the daemon that exited
 /// stays a zombie, which holds its pid, until the daemon reaps it.
 pub(super) fn process_runs(pid: u32) -> bool {
-    let mut system = sysinfo::System::new();
+    let mut system = empty_process_table();
     refresh_pids(&mut system, &[sysinfo::Pid::from_u32(pid)]);
     pid_running_in(&system, pid)
 }

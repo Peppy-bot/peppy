@@ -2,7 +2,8 @@
   peppy_schema: "contract/v1",
   manifest: {
     name: "rgb_camera",
-    tag: "v1"
+    tag: "v1",
+    description: ["A test contract."],
   },
   // The camera role the reactive policy and the deliberative planner consume.
   // Both name this contract rather than a node, which is what lets one camera
@@ -11,6 +12,7 @@
     topics: [
       {
         name: "video_stream",
+        description: "A test topic.",
         qos_profile: "sensor_data",
         message_format: {
           header: {
@@ -32,6 +34,7 @@
     services: [
       {
         name: "video_stream_info",
+        description: "A test service.",
         response_message_format: {
           width: "u32",
           height: "u32",

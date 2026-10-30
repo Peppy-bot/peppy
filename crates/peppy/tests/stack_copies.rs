@@ -250,6 +250,7 @@ fn stack_resolve_applies_a_launch_word_scoped_to_a_file_copy() {
     let launcher = directory.path().join("simulation.json5");
     std::fs::write(&launcher, r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {
             deployments: [
                 { source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },
@@ -343,6 +344,7 @@ fn stack_resolve_join_uses_shared_state_prefixes_and_launcher_adjustments() {
     let launcher = directory.path().join("fleet.json5");
     std::fs::write(&launcher, r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "simulation", cardinality: "zero_or_one", options: { sim: {
                 deployments: [{ source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] }]
             }}},
@@ -404,6 +406,7 @@ fn resolve_composes_launch_joins_in_order_over_what_the_last_one_left() {
     let launcher = directory.path().join("fleet.json5");
     std::fs::write(&launcher, r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "simulation", cardinality: "zero_or_one", options: { sim: {
                 deployments: [{ source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] }]
             }}},
@@ -482,6 +485,7 @@ fn stack_resolve_join_starts_from_the_launchers_entry_for_the_option() {
     let launcher = directory.path().join("fleet.json5");
     std::fs::write(&launcher, r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {
             deployments: [
                 { source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst", arguments: { speed: 0.1 } }] },
@@ -648,6 +652,7 @@ fn resolve_starts_the_copies_a_launch_time_join_names_from_the_options_entry() {
     let launcher = directory.path().join("fleet.json5");
     std::fs::write(&launcher, r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {
             deployments: [
                 { source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },

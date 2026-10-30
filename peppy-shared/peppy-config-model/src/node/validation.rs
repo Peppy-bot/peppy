@@ -419,7 +419,7 @@ mod tests {
             r#"{
                 peppy_schema: "node/v1",
                 manifest: {
-                    name: "uvc_camera_python_mock", tag: "v1",
+                    name: "uvc_camera_python_mock", tag: "v1", description: ["A test node."],
                     implements: [ { name: "uvc_camera", tag: "v1", link_id: "cam" } ]
                 },
                 execution: { language: "rust", run_cmd: ["camera"] },
@@ -438,7 +438,7 @@ mod tests {
             r#"{
                 peppy_schema: "node/v1",
                 manifest: {
-                    name: "brain", tag: "v1",
+                    name: "brain", tag: "v1", description: ["A test node."],
                     depends_on: {
                         contracts: [ { name: "uvc_camera", tag: "v1", link_id: "camera" } ]
                     }
@@ -456,7 +456,7 @@ mod tests {
         parse(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "other", tag: "v1" },
+                manifest: { name: "other", tag: "v1", description: ["A test node."] },
                 execution: { language: "rust", run_cmd: ["other"] }
             }"#,
         )
@@ -469,7 +469,7 @@ mod tests {
             r#"{{
                 peppy_schema: "node/v1",
                 manifest: {{
-                    name: "robot_arm", tag: "v1",
+                    name: "robot_arm", tag: "v1", description: ["A test node."],
                     depends_on: {{
                         pairings: [ {{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }} ]
                     }}
@@ -554,7 +554,7 @@ mod tests {
                 r#"{{
                     peppy_schema: "node/v1",
                     manifest: {{
-                        name: "lerobot_recorder", tag: "v1",
+                        name: "lerobot_recorder", tag: "v1", description: ["A test node."],
                         depends_on: {{
                             pairing_observers: [ {{ name: "arm_link", tag: "v1", role: "arm", link_id: "observed_arm" }} ]
                         }}
@@ -629,7 +629,7 @@ mod tests {
             r#"{
                 peppy_schema: "node/v1",
                 manifest: {
-                    name: "uvc_camera_other_mock", tag: "v1",
+                    name: "uvc_camera_other_mock", tag: "v1", description: ["A test node."],
                     implements: [ { name: "uvc_camera", tag: "v1", link_id: "cam" } ]
                 },
                 execution: { language: "rust", run_cmd: ["camera2"] },
@@ -663,14 +663,14 @@ mod tests {
             r#"{
                 peppy_schema: "node/v1",
                 manifest: {
-                    name: "hybrid", tag: "v1",
+                    name: "hybrid", tag: "v1", description: ["A test node."],
                     implements: [ { name: "uvc_camera", tag: "v1", link_id: "cam" } ]
                 },
                 execution: { language: "rust", run_cmd: ["hybrid"] },
                 interfaces: {
                     topics: { emits: [
                         { link_id: "cam", name: "video_stream" },
-                        { name: "debug_stream", message_format: { x: "f64" } }
+                        { name: "debug_stream", description: "A test topic.", message_format: { x: "f64" } }
                     ] }
                 }
             }"#,
@@ -683,7 +683,7 @@ mod tests {
             r#"{{
                 peppy_schema: "node/v1",
                 manifest: {{
-                    name: "consumer", tag: "v1",
+                    name: "consumer", tag: "v1", description: ["A test node."],
                     depends_on: {{
                         nodes: [ {{ name: "hybrid", tag: "v1", link_id: "producer" }} ]
                     }}
@@ -751,14 +751,14 @@ mod tests {
             r#"{
                 peppy_schema: "node/v1",
                 manifest: {
-                    name: "hybrid", tag: "v1",
+                    name: "hybrid", tag: "v1", description: ["A test node."],
                     implements: [ { name: "uvc_camera", tag: "v1", link_id: "cam" } ]
                 },
                 execution: { language: "rust", run_cmd: ["hybrid"] },
                 interfaces: {
                     topics: { emits: [
                         { link_id: "cam", name: "video_stream" },
-                        { name: "video_stream", message_format: { x: "f64" } }
+                        { name: "video_stream", description: "A test topic.", message_format: { x: "f64" } }
                     ] }
                 }
             }"#,
@@ -779,7 +779,7 @@ mod tests {
             r#"{{
                 peppy_schema: "node/v1",
                 manifest: {{
-                    name: "panel", tag: "v1",
+                    name: "panel", tag: "v1", description: ["A test node."],
                     depends_on: {{
                         nodes: [ {{ name: "recorder", tag: "v1", link_id: "rec", cardinality: "{cardinality}" }} ]
                     }}

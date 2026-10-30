@@ -29,6 +29,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
             manifest: {
                 name: "fs_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -160,6 +161,7 @@ async fn node_info_has_instance_ids() {
             manifest: {
                 name: "instance_ids_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -273,6 +275,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
             manifest: {
                 name: "fs_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -312,7 +315,7 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
         node_dir.path(),
         &r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "{NODE_NAME}", tag: "v1" },
+            manifest: { name: "{NODE_NAME}", tag: "v1", description: ["A test node."] },
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "300"],
@@ -381,10 +384,10 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
 
 const CAMERA_CONTRACT: &str = r#"{
     peppy_schema: "contract/v1",
-    manifest: { name: "uvc_camera", tag: "v1" },
+    manifest: { name: "uvc_camera", tag: "v1", description: ["A test contract."] },
     interfaces: {
         services: [
-            { name: "video_stream_info", response_message_format: { width: "u32" } }
+            { name: "video_stream_info", description: "A test service.", response_message_format: { width: "u32" } }
         ]
     }
 }"#;
@@ -392,7 +395,7 @@ const CAMERA_CONTRACT: &str = r#"{
 const CAMERA_NODE: &str = r#"{
     peppy_schema: "node/v1",
     manifest: {
-        name: "fake_uvc_camera", tag: "v1",
+        name: "fake_uvc_camera", tag: "v1", description: ["A test node."],
         implements: [
             { name: "uvc_camera", tag: "v1", link_id: "cam" }
         ]

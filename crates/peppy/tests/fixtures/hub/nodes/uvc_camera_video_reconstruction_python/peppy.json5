@@ -3,6 +3,7 @@
   manifest: {
     name: "uvc_camera_video_reconstruction_python",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {
       contracts: [
         { name: "rgb_camera", tag: "v1", link_id: "camera" }

@@ -27,6 +27,7 @@ pub fn lease_holder_manifest(name: &str, execution: &str) -> String {
   manifest: {{
     name: "{name}",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {{ daemon: [{{ name: "robot_leases", tag: "v1", link_id: "{LINK_ID}" }}] }},
   }},
   interfaces: {{

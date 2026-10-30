@@ -721,21 +721,22 @@ mod tests {
 
     const ARM: &str = r#"{
         peppy_schema: "contract/v1",
-        manifest: { name: "arm", tag: "v1" },
+        manifest: { name: "arm", tag: "v1", description: ["A test contract."] },
         failure_kinds: { unreachable: "No plan to the target" },
         interfaces: {
-            topics: [{ name: "state", message_format: { angle: "f64" } }, { name: "tick" }],
+            topics: [{ name: "state", description: "A test topic.", message_format: { angle: "f64" } }, { name: "tick", description: "A test topic." }],
             services: [
-                { name: "home", request_message_format: { speed: "f32" }, failure_kinds: ["unreachable"] },
+                { name: "home", description: "A test service.", request_message_format: { speed: "f32" }, failure_kinds: ["unreachable"] },
             ],
             actions: [
                 {
                     name: "move",
+                    description: "A test action.",
                     goal_service: { request_message_format: { x: "f64" } },
                     feedback_topic: { message_format: { progress: "f32" } },
                     failure_kinds: ["unreachable"],
                 },
-                { name: "wave" },
+                { name: "wave", description: "A test action." },
             ],
         },
     }"#;

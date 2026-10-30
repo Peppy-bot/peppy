@@ -1,5 +1,6 @@
 {
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: [
     {
       source: {

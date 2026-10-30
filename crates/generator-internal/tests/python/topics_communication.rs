@@ -26,7 +26,8 @@ const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
 const FRAME_RECEIVED_SERVICE: &str = "frame_received_ack";
 const EXPOSED_FRAME_RECEIVED_SERVICE_EXAMPLE: &str = r#"
 {
-  name: "frame_received_ack"
+  name: "frame_received_ack",
+  description: "A test member.",
 }
 "#;
 

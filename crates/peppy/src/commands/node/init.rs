@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::description::Description;
 use config::node::Toolchain;
 use core_node_api::encoding::NodeInitRequest;
 use tracing::info;
@@ -18,6 +19,7 @@ pub struct NodeInitBuilder {
     ctx: Arc<AppContext>,
     to_dir: PathBuf,
     node_name: NodeName,
+    description: Description,
     toolchain: Toolchain,
     with_container: bool,
     timeout: Option<Duration>,
@@ -27,6 +29,7 @@ impl NodeInitBuilder {
     pub fn new(
         ctx: &Arc<AppContext>,
         node_name: NodeName,
+        description: Description,
         toolchain: Toolchain,
         with_container: bool,
     ) -> Self {
@@ -34,6 +37,7 @@ impl NodeInitBuilder {
             ctx: Arc::clone(ctx),
             to_dir: ctx.root_dir.clone(),
             node_name,
+            description,
             toolchain,
             with_container,
             timeout: Some(REQUEST_TIMEOUT),
@@ -72,6 +76,7 @@ impl NodeInitBuilder {
         let request = NodeInitRequest::new(
             &self.to_dir,
             self.node_name.as_str(),
+            self.description.clone(),
             &conn.git_hash,
             self.with_container,
             self.toolchain,

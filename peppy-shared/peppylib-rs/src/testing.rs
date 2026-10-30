@@ -60,34 +60,6 @@ pub const READINESS_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_RETRIES: u32 = 5;
 const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(200);
 
-/// Pre-main: gives zenoh's global Net runtime more worker threads for every
-/// test binary that links this module. Stock zenoh 1.9.0 through 1.10.1 can
-/// deadlock its routing layer under peer-session churn: a thread holding the
-/// routing `ctrl_lock` parks in `block_in_place` waiting on the
-/// StartConditions mutex while the Net runtime's single default worker
-/// blocks on that same `ctrl_lock`, wedging the mutex queue. The upstream
-/// fix is https://github.com/eclipse-zenoh/zenoh/pull/2637, which none of
-/// those releases contains, and this workaround is needed only while the
-/// zenoh in use lacks it. With more Net workers a free worker can always
-/// drain the mutex queue, which un-parks the lock holder.
-///
-/// Runs before `main` so the variable is set before libtest spawns any
-/// thread and before zenoh's lazy global runtimes read it. Spawned zenohd
-/// child processes inherit it, which is harmless. An operator-provided
-/// `ZENOH_RUNTIME` wins.
-///
-/// One of the two scoped unsafe opt-outs in this module (see lib.rs): setting
-/// a process environment variable pre-main has no safe equivalent.
-#[allow(unsafe_code)]
-#[ctor::ctor(unsafe)]
-fn ensure_zenoh_net_runtime_workers() {
-    if std::env::var_os("ZENOH_RUNTIME").is_none() {
-        // SAFETY: runs pre-main on the only live thread, so no other thread
-        // can concurrently read or write the process environment.
-        unsafe { std::env::set_var("ZENOH_RUNTIME", "(net: (worker_threads: 4))") };
-    }
-}
-
 /// Raises the process soft `nofile` limit once per test binary. Test suites
 /// spawn ephemeral zenoh routers and per-mock sessions, and running them in
 /// parallel can exhaust file descriptors under the macOS default soft limit of
@@ -99,7 +71,7 @@ fn ensure_zenoh_net_runtime_workers() {
 /// Called by [`EphemeralRouter::start`]; public so binaries that open many
 /// sessions without a router can opt in directly.
 ///
-/// One of the two scoped unsafe opt-outs in this module (see lib.rs): the
+/// The one scoped unsafe opt-out of this module (see lib.rs): the
 /// get/setrlimit FFI has no safe equivalent.
 #[allow(unsafe_code)]
 pub fn ensure_test_fd_limit() {
@@ -132,15 +104,6 @@ pub fn ensure_test_fd_limit() {
 /// several independent peer meshes at once starves peer-mode gossip discovery
 /// (every peer opens listeners and forms links), which makes cold-start
 /// delivery flaky; one mesh at a time keeps discovery fast and deterministic.
-///
-/// KNOWN FLAKE: zenoh (1.9.0 through at least 1.10.1) can deadlock its
-/// routing layer under peer-session churn (see
-/// [`ensure_zenoh_net_runtime_workers`], which suppresses the trigger). If it
-/// ever fires anyway, the running test hangs forever and every later test
-/// queues on this mutex, so the whole binary looks stuck ("test has been
-/// running for over 60 seconds" for several tests at once). It cannot be
-/// contained in-process: session teardown needs the deadlocked locks. Kill
-/// the run and retry; do not debug peppy for it.
 static ZENOH_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Acquire the per-process mesh-serialization guard directly, for tests that

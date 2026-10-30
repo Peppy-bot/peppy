@@ -1142,7 +1142,7 @@ mod tests {
             r#"{
                 peppy_schema: "node/v1",
                 manifest: {
-                    name: "brain", tag: "v1",
+                    name: "brain", tag: "v1", description: ["A test node."],
                     depends_on: {
                         contracts: [ { name: "uvc_camera", tag: "v1", link_id: "camera" } ],
                         nodes: [ { name: "arm", tag: "v1", link_id: "robot_controller" } ]
@@ -1163,7 +1163,7 @@ mod tests {
             r#"{
                 peppy_schema: "node/v1",
                 manifest: {
-                    name: "uvc_camera_python_mock", tag: "v1",
+                    name: "uvc_camera_python_mock", tag: "v1", description: ["A test node."],
                     implements: [ { name: "uvc_camera", tag: "v1", link_id: "cam" } ]
                 },
                 execution: { language: "rust", run_cmd: ["camera"] },
@@ -1179,9 +1179,9 @@ mod tests {
         parse(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "arm", tag: "v1" },
+                manifest: { name: "arm", tag: "v1", description: ["A test node."] },
                 execution: { language: "rust", run_cmd: ["arm"] },
-                interfaces: { actions: { exposes: [ { name: "move_arm" } ] } }
+                interfaces: { actions: { exposes: [ { name: "move_arm", description: "A test action." } ] } }
             }"#,
         )
     }
@@ -1341,10 +1341,11 @@ mod tests {
         let provider = parse(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "camera", tag: "v1" },
+                manifest: { name: "camera", tag: "v1", description: ["A test node."] },
                 execution: { language: "rust", run_cmd: ["camera"] },
                 interfaces: { topics: { emits: [ {
                     name: "frames",
+                    description: "A test topic.",
                     message_format: {
                         width: "u32",
                         height: "u32",
@@ -1370,9 +1371,10 @@ mod tests {
         let doc = peppy_codec::contract::PeppyContractParser::from_content(
             r#"{
                 peppy_schema: "contract/v1",
-                manifest: { name: "uvc_camera", tag: "v1" },
+                manifest: { name: "uvc_camera", tag: "v1", description: ["A test contract."] },
                 interfaces: { topics: [ {
                     name: "video_stream",
+                    description: "A test topic.",
                     message_format: {
                         encoding: "string",
                         width: "u32",
@@ -1395,10 +1397,11 @@ mod tests {
         let provider = parse(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "arm", tag: "v1" },
+                manifest: { name: "arm", tag: "v1", description: ["A test node."] },
                 execution: { language: "rust", run_cmd: ["arm"] },
                 interfaces: { services: { exposes: [ {
                     name: "move_arm",
+                    description: "A test service.",
                     request_message_format: { x: "f64", y: "f64", z: "f64" },
                     response_message_format: { ok: "bool" }
                 } ] } }

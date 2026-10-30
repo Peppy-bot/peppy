@@ -2,7 +2,8 @@
   peppy_schema: "pairing/v1",
   manifest: {
     name: "joint_link",
-    tag: "v1"
+    tag: "v1",
+    description: ["A test pairing."],
   },
   // One teleoperated arm limb: the leader arm an operator backdrives, and the
   // follower arm that tracks it. A pairing rather than two producer links
@@ -13,6 +14,7 @@
     {
       emitted_by: "leader",
       name: "joint_setpoints",
+      description: "A test topic.",
       // Streamed at the leader's own rate: a follower that misses one sample
       // wants the next one, not a replay of the last.
       qos_profile: "sensor_data",
@@ -24,6 +26,7 @@
     {
       emitted_by: "follower",
       name: "joint_states",
+      description: "A test topic.",
       qos_profile: "sensor_data",
       message_format: {
         stamp: "time",

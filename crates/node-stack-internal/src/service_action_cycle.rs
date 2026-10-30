@@ -318,6 +318,7 @@ pub(crate) mod test_support {
                     manifest: {{
                         name: "{name}",
                         tag: "v1",
+                        description: ["A test node."],
                         implements: [{implements}],
                         depends_on: {{ nodes: [{node_deps}], contracts: [{contract_deps}] }},
                     }},

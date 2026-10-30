@@ -79,7 +79,7 @@ fn fixture_contract() -> String {
     format!(
         r#"{{
         peppy_schema: "contract/v1",
-        manifest: {{ name: "{CONTRACT_NAME}", tag: "{CONTRACT_TAG}" }},
+        manifest: {{ name: "{CONTRACT_NAME}", tag: "{CONTRACT_TAG}", description: ["A test contract."] }},
         failure_kinds: {{
             no_steps: "The goal asks for no step",
             unlucky: "The goal asks for an unlucky number of steps",
@@ -87,20 +87,22 @@ fn fixture_contract() -> String {
         }},
         interfaces: {{
             topics: [
-                {{ name: "frame", message_format: {FRAME_FORMAT} }},
+                {{ name: "frame", description: "A test topic.", message_format: {FRAME_FORMAT} }},
             ],
             services: [
                 {{
                     name: "echo_everything",
+                    description: "A test service.",
                     request_message_format: {EVERYTHING_FORMAT},
                     response_message_format: {EVERYTHING_FORMAT},
                 }},
-                {{ name: "ping" }},
-                {{ name: "busy", failure_kinds: ["busy"] }},
+                {{ name: "ping", description: "A test service." }},
+                {{ name: "busy", description: "A test service.", failure_kinds: ["busy"] }},
             ],
             actions: [
                 {{
                     name: "count",
+                    description: "A test action.",
                     goal_service: {{ request_message_format: {GOAL_FORMAT} }},
                     feedback_topic: {{ message_format: {FEEDBACK_FORMAT} }},
                     result_service: {{ response_message_format: {RESULT_FORMAT} }},

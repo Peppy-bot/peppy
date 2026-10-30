@@ -32,21 +32,21 @@ rand = "0.10"
 # ring 0.17, so this adds no new crate to the tree.
 ring = "0.17"
 # The text of a key file of a client (`call_proof::ClientCredential`).
-base64 = "0.22"
+base64 = "0.23"
 thiserror = "2.0"
 
 # Optional deps
-# Exact-pinned; peppylib pins the same `=1.10.1` in its [dev-dependencies] so
-# its test binaries share this build — bump the two together.
-zenoh = { version = "=1.10.1", optional = true }
+# Exact-pinned; peppylib pins the same `=1.10.2` in its [dev-dependencies] so
+# its test binaries share this build: bump the two together.
+zenoh = { version = "=1.10.2", optional = true }
 # The publisher and subscriber of a retaining topic. Its `unstable` feature
 # also enables `zenoh/unstable` and `zenoh/internal` for the whole build. It
 # requires the exact `zenoh` version above, so bump the two together.
-zenoh-ext = { version = "=1.10.1", features = ["unstable"], optional = true }
+zenoh-ext = { version = "=1.10.2", features = ["unstable"], optional = true }
 # Raw-TLS reachability probe (`probe_tls_reachable`): a real rustls handshake to
 # verify a federation link validates (zenoh client-mode `open` is not a usable
-# signal). Versions match what zenoh 1.10 already resolves (rustls 0.23.44,
-# tokio-rustls 0.26.5, rustls-pemfile 2.2.0, rustls-native-certs 0.8.4) so no
+# signal). Versions match what zenoh 1.10 already resolves (rustls 0.23.46,
+# tokio-rustls 0.26.6, rustls-pemfile 2.2.0, rustls-native-certs 0.8.5) so no
 # duplicate `rustls` enters the tree. tokio-rustls's default `ring` feature
 # provides the crypto provider, so `ClientConfig::builder()` works without
 # installing a process-default provider. rustls types are reached through

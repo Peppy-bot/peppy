@@ -240,9 +240,9 @@ fn every_entry_is_bound_to_the_failure_kinds_of_its_member() {
     // lists; the camera declares none.
     let recording = RECORDING_CONTRACT
         .replacen(
-            r#"manifest: { name: "episode_recording", tag: "v1" },"#,
-            r#"manifest: { name: "episode_recording", tag: "v1" },
-    failure_kinds: { disk_full: "The dataset disk is full" },"#,
+            r#"    interfaces: {"#,
+            r#"    failure_kinds: { disk_full: "The dataset disk is full" },
+    interfaces: {"#,
             1,
         )
         .replacen(
@@ -1018,11 +1018,12 @@ fn the_validation_error_renders_one_bullet_per_violation() {
 
 const STATUS_CONTRACT: &str = r#"{
     peppy_schema: "contract/v1",
-    manifest: { name: "robot_status", tag: "v1" },
+    manifest: { name: "robot_status", tag: "v1", description: ["A test contract."] },
     interfaces: {
         topics: [
             {
                 name: "status",
+                description: "A test topic.",
                 qos_profile: "sensor_data",
                 message_format: { battery: "u8", mode: "string" },
             },
@@ -1030,10 +1031,12 @@ const STATUS_CONTRACT: &str = r#"{
         services: [
             {
                 name: "get_identity",
+                description: "A test service.",
                 response_message_format: { robot: "string", model: "string" },
             },
             {
                 name: "rename",
+                description: "A test service.",
                 request_message_format: { robot: "string" },
                 response_message_format: { applied: "bool" },
             },
@@ -1320,11 +1323,12 @@ fn a_fixed_bundle_carries_no_robot_surface() {
 /// simulation's free viewpoint does.
 const VIEW_CONTRACT: &str = r#"{
     peppy_schema: "contract/v1",
-    manifest: { name: "scene_view", tag: "v1" },
+    manifest: { name: "scene_view", tag: "v1", description: ["A test contract."] },
     interfaces: {
         services: [
             {
                 name: "render_view",
+                description: "A test service.",
                 request_message_format: {
                     position: { $type: "array", $items: "f64" },
                     target: { $type: "array", $items: "f64" },

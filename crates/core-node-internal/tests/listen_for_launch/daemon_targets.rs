@@ -76,6 +76,7 @@ fn launcher(directory: &Path, deployments: &str) -> PathBuf {
         format!(
             r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             core_nodes: ["robot_pc"],
             deployments: [{deployments}],
             components: [{{ name: "robot", cardinality: "zero_or_more", options: {{

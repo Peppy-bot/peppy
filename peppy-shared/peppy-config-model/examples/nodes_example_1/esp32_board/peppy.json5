@@ -4,9 +4,9 @@
 {
   peppy_schema: "node/v1",
   manifest: {
-    // Here we assume a XIAO ESP32-C3 board connected to a servo and responsible for controlling it 
     name: "esp32_board",
     tag: "v1",
+    description: ["A node on a XIAO ESP32-C3 board that controls a servo. It needs the board, connected to the servo, and runs with no standard library."],
     labels: [
       "no_std",
       "STS3XIAO",
@@ -20,6 +20,7 @@
       emits: [
         {
           name: "actuator",
+          description: "The commands to the servo and the state that it measures.",
           qos_profile: "sensor_data",
           message_format: {
             header: {

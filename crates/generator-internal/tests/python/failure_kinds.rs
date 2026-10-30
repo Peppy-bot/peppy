@@ -32,6 +32,7 @@ const NODE_CONFIG: &str = r#"{
   manifest: {
     name: "arm_driver",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {
       contracts: [
         { name: "lens_contract", tag: "v1", link_id: "lens" }
@@ -386,16 +387,18 @@ fn python_members_give_and_take_their_declared_kinds_only() {
             .expect("the consumed service parses");
     // An action with a goal response and no request, and one with neither.
     let park_arm: NativeExposedAction = serde_json5::from_str(
-        r#"{ name: "park_arm", goal_service: { response_message_format: { parked: "bool" } } }"#,
+        r#"{ name: "park_arm", description: "A test member.", goal_service: { response_message_format: { parked: "bool" } } }"#,
     )
     .expect("the action parses");
     let home_arm: NativeExposedAction =
-        serde_json5::from_str(r#"{ name: "home_arm" }"#).expect("the action parses");
+        serde_json5::from_str(r#"{ name: "home_arm", description: "A test member." }"#)
+            .expect("the action parses");
     // A service with no response, and one with a response.
     let clean_lens: NativeExposedService =
-        serde_json5::from_str(r#"{ name: "clean_lens" }"#).expect("the service parses");
+        serde_json5::from_str(r#"{ name: "clean_lens", description: "A test member." }"#)
+            .expect("the service parses");
     let get_focus: NativeExposedService = serde_json5::from_str(
-        r#"{ name: "get_focus", response_message_format: { focused: "bool" } }"#,
+        r#"{ name: "get_focus", description: "A test member.", response_message_format: { focused: "bool" } }"#,
     )
     .expect("the service parses");
     let interfaces = vec![

@@ -29,6 +29,7 @@ async fn listen_for_node_remove_success() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -149,6 +150,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -257,6 +259,7 @@ async fn listen_for_node_remove_clears_a_terminal_instance() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -363,6 +366,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",

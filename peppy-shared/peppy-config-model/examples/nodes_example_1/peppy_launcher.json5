@@ -5,6 +5,7 @@
 // registering their parent directory with `peppy repo add <path>`.
 {
   peppy_schema: "launcher/v1",
+  description: ["The robot of the example: a brain, a controller, two UVC cameras, a video reconstruction and an ESP32 board that controls a servo."],
   deployments: [
     {
       // the source property is mandatory

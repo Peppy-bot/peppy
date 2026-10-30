@@ -53,14 +53,20 @@ pub async fn poll_until_explained<T>(
     }
 }
 
+/// Every process of the machine, with its status and parent.
+fn process_table() -> sysinfo::System {
+    sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+    )
+    .expect("sysinfo reads the process table of Linux and macOS")
+}
+
 /// True if a process exists and is not a zombie; matches the daemon's own
 /// liveness definition (sysinfo, status != Zombie), so tests agree with what
 /// `node_stop`/teardown consider "gone". A libc `kill(pid, 0)` check would
 /// report a reaped-but-unwaited zombie as still running.
 pub fn is_process_running(pid: u32) -> bool {
-    let system = sysinfo::System::new_with_specifics(
-        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
-    );
+    let system = process_table();
     match system.process(sysinfo::Pid::from_u32(pid)) {
         Some(process) => process.status() != sysinfo::ProcessStatus::Zombie,
         None => false,
@@ -79,9 +85,7 @@ pub async fn wait_until_process_exits(pid: u32, timeout: Duration, timeout_messa
 
 /// PIDs of live children of `parent_pid`, via sysinfo's parent links.
 pub fn children_of(parent_pid: u32) -> Vec<u32> {
-    let system = sysinfo::System::new_with_specifics(
-        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
-    );
+    let system = process_table();
     let parent = sysinfo::Pid::from_u32(parent_pid);
     system
         .processes()

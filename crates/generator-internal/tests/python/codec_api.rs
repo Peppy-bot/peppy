@@ -14,7 +14,7 @@ use crate::helpers;
 
 const NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
-  manifest: { name: "codec_node", tag: "v1" },
+  manifest: { name: "codec_node", tag: "v1", description: ["A test node."] },
   execution: {
     language: "python",
     run_cmd: ["uv", "run", "python", "main.py"],
@@ -27,10 +27,11 @@ from peppylib import codec
 
 contract = codec.Contract.parse('''{
     peppy_schema: "contract/v1",
-    manifest: { name: "arm", tag: "v1" },
+    manifest: { name: "arm", tag: "v1", description: ["An arm."] },
     interfaces: {
         services: [{
             name: "home",
+            description: "Send the arm home.",
             request_message_format: {
                 speed: "f32",
                 item: { $type: "string", $marks: ["item_id"] },
@@ -39,6 +40,7 @@ contract = codec.Contract.parse('''{
     },
 }''')
 assert contract.field_marks("service", "home", "request", ["item"]) == ["item_id"]
+assert contract.member_description("service", "home") == "Send the arm home."
 request = codec.MessageCodec("home_request", contract.message_format("service", "home", "request"))
 value = {"speed": 0.5, "item": "cup"}
 assert request.decode(request.encode(value)) == value

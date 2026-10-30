@@ -504,21 +504,36 @@ impl RobotMembershipScope {
             };
             match RobotMembershipMember::named(&task.member) {
                 Some(RobotMembershipMember::Join) => {
-                    properties.insert(
-                        "option".to_owned(),
+                    narrow_property(
+                        properties,
+                        "option",
                         serde_json::json!({ "type": "string", "enum": options }),
                     );
-                    properties.insert("name".to_owned(), name_rule.clone());
-                    properties.insert("core_node".to_owned(), name_rule.clone());
+                    narrow_property(properties, "name", name_rule.clone());
+                    narrow_property(properties, "core_node", name_rule.clone());
                     narrow_features(properties, &features, &name_rule);
                 }
                 Some(RobotMembershipMember::Remove) => {
-                    properties.insert("name".to_owned(), name_rule.clone());
+                    narrow_property(properties, "name", name_rule.clone());
                 }
                 Some(RobotMembershipMember::List) | None => {}
             }
         }
     }
+}
+
+/// Puts `rule` in place of the schema of the property `key`, with the
+/// description of the schema that it narrows: the caller still reads what
+/// the field holds.
+fn narrow_property(properties: &mut serde_json::Map<String, Value>, key: &str, mut rule: Value) {
+    let description = properties
+        .get(key)
+        .and_then(|schema| schema.get("description"))
+        .cloned();
+    if let (Some(description), Some(rule)) = (description, rule.as_object_mut()) {
+        rule.insert("description".to_owned(), description);
+    }
+    properties.insert(key.to_owned(), rule);
 }
 
 /// Narrows the `features` property of the join input: each item's `feature`
@@ -532,8 +547,9 @@ fn narrow_features(
     name_rule: &Value,
 ) {
     if features.is_empty() {
-        properties.insert(
-            "features".to_owned(),
+        narrow_property(
+            properties,
+            "features",
             serde_json::json!({ "type": "array", "maxItems": 0 }),
         );
         return;
@@ -546,11 +562,12 @@ fn narrow_features(
     else {
         return;
     };
-    item.insert(
-        "feature".to_owned(),
+    narrow_property(
+        item,
+        "feature",
         serde_json::json!({ "type": "string", "enum": features }),
     );
-    item.insert("core_node".to_owned(), name_rule.clone());
+    narrow_property(item, "core_node", name_rule.clone());
 }
 
 /// Step 2 of [`RobotMembershipScope::check_launch`] for one feature, with no

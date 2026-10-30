@@ -34,6 +34,7 @@ fn node_add_command_succeeds() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -106,6 +107,7 @@ fn node_add_command_with_run_arg_succeeds() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -204,6 +206,7 @@ fn node_add_after_failed_sync_succeeds() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -301,6 +304,7 @@ fn node_add_same_node_shutdown_existing_instances() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -456,6 +460,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -670,6 +675,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -841,6 +847,7 @@ fn write_consumer_with_pinned_depends_on(
     manifest: {{
         name: "{consumer_name}",
         tag: "v1",
+        description: ["A test node."],
         depends_on: {{
             nodes: [
 {entries}
@@ -879,6 +886,7 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(producer_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -979,6 +987,7 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(producer_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -1090,6 +1099,7 @@ fn node_add_with_run_rejects_dead_binding_key() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(producer_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -1194,6 +1204,7 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(producer_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -1355,6 +1366,7 @@ fn node_add_build_force_supersedes_inflight_build() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            description: config::description::Description::new("A test node.").unwrap(),
             to_dir: None,
             toolchain: Toolchain::Cargo,
             with_container: false,
@@ -1551,6 +1563,7 @@ fn node_add_resolves_absent_optional_dependency_through_the_repo_cache() {
         services: {
             exposes: [{
                 name: "finish_session",
+                description: "A test service.",
                 response_message_format: { episodes_recorded: "u32" }
             }]
         }

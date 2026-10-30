@@ -4,6 +4,7 @@ use config::node::{ConsumedService, MessageFormat, NativeExposedService};
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
   name: "enable_camera",
+  description: "A test member.",
   request_message_format: {
     enable: "bool"
   },
@@ -20,6 +21,7 @@ const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 const EXPOSED_SERVICE_EXAMPLE2: &str = r#"
 {
     name: "get_lidar_info",
+    description: "A test member.",
     request_message_format: {
       channels: "string",
       horizontal_fov: "string",
@@ -33,6 +35,7 @@ const EXPOSED_SERVICE_EXAMPLE2: &str = r#"
 const EXPOSED_SERVICE_EXAMPLE3: &str = r#"
 {
     name: "get_system_status",
+    description: "A test member.",
     response_message_format: {
         healthy: "bool"
     }

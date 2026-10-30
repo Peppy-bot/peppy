@@ -84,7 +84,7 @@ mod tests {
 
     const ROOT_CONFIG: &str = r#"{
         peppy_schema: "node/v1",
-        manifest: { name: "core_a", tag: "v1" },
+        manifest: { name: "core_a", tag: "v1", description: ["A test node."] },
         interfaces: {},
         execution: {
             language: "rust",

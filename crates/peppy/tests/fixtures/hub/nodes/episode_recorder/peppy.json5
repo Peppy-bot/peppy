@@ -3,6 +3,7 @@
   manifest: {
     name: "episode_recorder",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {
       // An OBSERVER slot, not a participant one. It taps whatever the
       // `executor` role publishes without joining the 1:1 pair: it claims no

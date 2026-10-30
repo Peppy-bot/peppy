@@ -2564,7 +2564,7 @@ mod tests {
         serde_json5::from_str::<NodeConfig>(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "sensor", tag: "v1" },
+                manifest: { name: "sensor", tag: "v1", description: ["A test node."] },
                 interfaces: {},
                 execution: { language: "rust", run_cmd: ["sensor"] }
             }"#,
@@ -2581,6 +2581,7 @@ mod tests {
                 manifest: {
                     name: "sensor",
                     tag: "v1",
+                    description: ["A test node."],
                     depends_on: {
                         pairings: [
                             { name: "arm_link", tag: "v1", role: "arm", link_id: "arm", cardinality: "zero_or_one" },
@@ -2611,7 +2612,7 @@ mod tests {
         serde_json5::from_str::<NodeConfig>(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "sensor", tag: "v1" },
+                manifest: { name: "sensor", tag: "v1", description: ["A test node."] },
                 interfaces: {},
                 execution: {
                     language: "python",

@@ -2027,7 +2027,7 @@ mod tests {
 
     #[test]
     fn an_inline_body_cannot_declare_a_schema() {
-        let error = parse_option(r#"{ peppy_schema: "launcher/v1", deployments: [] }"#)
+        let error = parse_option(r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [] }"#)
             .expect_err("inline bodies take no peppy_schema");
         assert!(error.contains("peppy_schema"), "got: {error}");
     }
@@ -2195,7 +2195,7 @@ mod tests {
     #[test]
     fn an_options_adjustment_names_the_other_axes_only() {
         let error = super::super::parse::PeppyLauncherParser::from_content(
-            r#"{ peppy_schema: "launcher/v1", deployments: [],
+            r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [],
                 components: [{ name: "robot", options: { sim: {
                     adjustments: [{ target: "arm_inst", when: { robot: "sim" }, set_arguments: { fast: true } }],
                 } } }] }"#,
@@ -2233,7 +2233,7 @@ mod tests {
     #[test]
     fn a_fragment_file_refuses_the_launcher_schema() {
         let error = LauncherFragmentParser::from_content(
-            r#"{ peppy_schema: "launcher/v1", deployments: [] }"#,
+            r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [] }"#,
         )
         .expect_err("a launcher is not a fragment");
         assert!(

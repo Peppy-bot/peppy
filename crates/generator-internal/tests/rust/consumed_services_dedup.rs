@@ -28,6 +28,7 @@ const NODE_CONFIG: &str = r#"{
   manifest: {
     name: "test_consumer",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {
       nodes: [
         { name: "uvc_camera", tag: "v1", link_id: "front_cam" },

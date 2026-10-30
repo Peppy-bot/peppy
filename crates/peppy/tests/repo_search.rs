@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 const RGB_CAMERA_CONTRACT: &str = r#"{
   peppy_schema: "contract/v1",
-  manifest: { name: "rgb_camera", tag: "v1" },
+  manifest: { name: "rgb_camera", tag: "v1", description: ["A test contract."] },
   interfaces: {}
 }"#;
 
@@ -14,6 +14,7 @@ const RGB_CAMERA_CONTRACT: &str = r#"{
 /// publishes an item of the one untagged kind.
 const DEMO_LAUNCHER: &str = r#"{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   deployments: [
     { source: { name: "plain:v1" }, instances: [{ instance_id: "plain_instance" }] }
   ]
@@ -56,7 +57,7 @@ fn write_node(dir: &Path, name: &str, manifest_extra: &str, interfaces: &str) {
         format!(
             r#"{{
   peppy_schema: "node/v1",
-  manifest: {{ name: "{name}", tag: "v1"{manifest_extra} }},
+  manifest: {{ name: "{name}", tag: "v1", description: ["A test node."]{manifest_extra} }},
   interfaces: {interfaces},
   execution: {{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }},
 }}"#
@@ -255,7 +256,7 @@ fn repo_show_reports_a_nodes_pairing_slot_peers() {
     );
 
     // The other end reports the mirror image, and a node with no pairing
-    // slot has nothing to add to its published line.
+    // slot has nothing to add to its published line and its description.
     let leader = show_rendered(&peppy_dirs, "leader_arm:v1", false, None).expect("shows");
     assert!(
         leader
@@ -268,7 +269,7 @@ fn repo_show_reports_a_nodes_pairing_slot_peers() {
     );
 
     let plain = show_rendered(&peppy_dirs, "plain:v1", false, None).expect("shows");
-    assert_eq!(plain.lines().count(), 2, "{plain}");
+    assert!(plain.ends_with("\n\n    A test node.\n"), "{plain}");
     assert!(!plain.contains("Slot "), "{plain}");
 }
 
@@ -299,7 +300,7 @@ fn repo_search_lists_partial_matches() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, repo_dir, contract_sha) = seeded(&serve, &ctx);
 
-    let text = search_rendered(&peppy_dirs, "camera", false, None).expect("searches");
+    let text = search_rendered(&peppy_dirs, "camera", false, false, None).expect("searches");
 
     assert!(
         text.starts_with("camera\n\n3 items match `camera`\n"),
@@ -369,7 +370,7 @@ fn repo_show_details_a_launcher() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, repo_dir, _) = seeded(&serve, &ctx);
 
-    let listed = search_rendered(&peppy_dirs, "demo", false, None).expect("searches");
+    let listed = search_rendered(&peppy_dirs, "demo", false, false, None).expect("searches");
     assert!(listed.contains("\n1 item matches `demo`\n"), "{listed}");
     assert!(listed.contains("│ launcher │ demo │"), "{listed}");
 
@@ -378,7 +379,7 @@ fn repo_show_details_a_launcher() {
     assert_eq!(
         text,
         format!(
-            "demo\n  launcher demo published by {} at {} (sha256 {})\n",
+            "demo\n  launcher demo published by {} at {} (sha256 {})\n\n    A test launcher.\n",
             repo_dir.display(),
             repo_dir.join("demo.json5").display(),
             config::fingerprint::fingerprint_for_bytes(DEMO_LAUNCHER.as_bytes())
@@ -407,8 +408,14 @@ fn repo_show_finds_a_pinned_digest() {
     assert!(text.contains("\nImplemented by 1 indexed node\n"), "{text}");
 
     let absent = "f".repeat(64);
-    let text = search_rendered(&peppy_dirs, &format!("rgb_camera:v1@{absent}"), false, None)
-        .expect("an empty answer");
+    let text = search_rendered(
+        &peppy_dirs,
+        &format!("rgb_camera:v1@{absent}"),
+        false,
+        false,
+        None,
+    )
+    .expect("an empty answer");
     assert!(
         text.contains("nothing in any configured repository's cache matches"),
         "{text}"
@@ -465,6 +472,112 @@ fn repo_show_json_carries_the_report() {
     assert_eq!(report["observers"][0]["cardinality"], "one");
 }
 
+/// A search with `--text` finds a contract by a member description and a
+/// pairing by a field description, after the hits by name, and a node by a
+/// word of its summary, with no regard to case; the table prints the summary
+/// of each match. A search without `--text` finds the names alone.
+#[test]
+fn repo_search_text_finds_documents_by_their_descriptions() {
+    let (_rt, serve, ctx, _work_dir) = setup();
+    let repo_dir = serve.temp_dir().join("described_hub");
+    std::fs::create_dir_all(&repo_dir).expect("create repo dir");
+    let repo_dir = std::fs::canonicalize(&repo_dir).expect("canonical repo dir");
+    let documents = [
+        (
+            "gripper_state.json5",
+            r#"{
+  peppy_schema: "contract/v1",
+  manifest: { name: "gripper_state", tag: "v1", description: ["The opening and the effort of one hand."] },
+  interfaces: { topics: [{ name: "state", description: "The state, at each control step." }] },
+}"#,
+        ),
+        (
+            "limb_motion.json5",
+            r#"{
+  peppy_schema: "contract/v1",
+  manifest: { name: "limb_motion", tag: "v1", description: ["The motion of the limbs of a robot."] },
+  interfaces: { services: [{ name: "move_gripper", description: "Open or close the Gripper." }] },
+}"#,
+        ),
+        (
+            "hand_link.json5",
+            r#"{
+  peppy_schema: "pairing/v1",
+  manifest: { name: "hand_link", tag: "v1", description: ["A leader and a follower hand."] },
+  roles: ["leader", "follower"],
+  topics: [{ emitted_by: "leader", name: "setpoints", description: "What the leader wants.",
+    message_format: { opening: { $type: "f64", $description: "The opening of the gripper." } } }],
+}"#,
+        ),
+    ];
+    for (file, text) in documents {
+        std::fs::write(repo_dir.join(file), text).expect("write a document");
+    }
+    for (name, summary) in [
+        (
+            "ai_brain_vla",
+            "A brain whose models run beside the robot, on its GPU.",
+        ),
+        (
+            "vlm_router_brain",
+            "A brain whose models are hosted vision-language models.",
+        ),
+    ] {
+        let dir = repo_dir.join(name);
+        std::fs::create_dir_all(&dir).expect("create node dir");
+        std::fs::write(
+            dir.join(NODE_CONFIG_FILE),
+            format!(
+                r#"{{
+  peppy_schema: "node/v1",
+  manifest: {{ name: "{name}", tag: "v1", description: ["{summary}"] }},
+  execution: {{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }},
+}}"#
+            ),
+        )
+        .expect("write peppy.json5");
+    }
+    seed_docs_repo(&serve, &ctx, &repo_dir);
+    let peppy_dirs = PeppyDirs::new(serve.temp_dir());
+    let names = |query: &str, text: bool| -> Vec<(String, bool)> {
+        let json = search_rendered(&peppy_dirs, query, text, true, None).expect("searches");
+        let doc: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        doc["matches"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|m| {
+                let name = m["name"].as_str().expect("a name").to_owned();
+                (name, m["by_name"].as_bool().expect("a bool"))
+            })
+            .collect()
+    };
+
+    assert_eq!(
+        names("gripper", false),
+        [("gripper_state".to_owned(), true)]
+    );
+    assert_eq!(
+        names("gripper", true),
+        [
+            ("gripper_state".to_owned(), true),
+            ("hand_link".to_owned(), false),
+            ("limb_motion".to_owned(), false),
+        ]
+    );
+    assert_eq!(names("gpu", true), [("ai_brain_vla".to_owned(), false)]);
+
+    let table = search_rendered(&peppy_dirs, "brain", false, false, None).expect("searches");
+    assert!(
+        table.contains("A brain whose models run beside the robot, on its GPU."),
+        "{table}"
+    );
+    assert!(
+        table.contains("A brain whose models are hosted vision-language models."),
+        "{table}"
+    );
+}
+
 /// The JSON of a search lists each kind with no usage report, and the
 /// launcher's missing tag is `null`.
 #[test]
@@ -472,7 +585,7 @@ fn repo_search_json_lists_matches() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, _repo_dir, _) = seeded(&serve, &ctx);
 
-    let text = search_rendered(&peppy_dirs, "camera|demo", true, None).expect("searches");
+    let text = search_rendered(&peppy_dirs, "camera|demo", false, true, None).expect("searches");
     let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
 
     assert_eq!(
@@ -504,7 +617,7 @@ fn repo_search_rejects_an_invalid_regex() {
     let (_rt, serve, _ctx, _work_dir) = setup();
     let peppy_dirs = PeppyDirs::new(serve.temp_dir());
 
-    let err = search_rendered(&peppy_dirs, "rgb_camera[", false, None)
+    let err = search_rendered(&peppy_dirs, "rgb_camera[", false, false, None)
         .expect_err("an unclosed class is not a pattern")
         .to_string();
 
@@ -521,7 +634,7 @@ fn repo_search_rejects_a_bad_digest() {
     let (_rt, serve, _ctx, _work_dir) = setup();
     let peppy_dirs = PeppyDirs::new(serve.temp_dir());
 
-    let err = search_rendered(&peppy_dirs, "rgb_camera@xyz", false, None)
+    let err = search_rendered(&peppy_dirs, "rgb_camera@xyz", false, false, None)
         .expect_err("`xyz` is not a fingerprint")
         .to_string();
 
@@ -535,7 +648,8 @@ fn repo_search_says_when_nothing_matches() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, _repo_dir, _) = seeded(&serve, &ctx);
 
-    let text = search_rendered(&peppy_dirs, "nobody:v1", false, None).expect("an empty answer");
+    let text =
+        search_rendered(&peppy_dirs, "nobody:v1", false, false, None).expect("an empty answer");
 
     assert_eq!(
         text,

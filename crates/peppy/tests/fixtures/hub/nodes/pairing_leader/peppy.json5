@@ -3,6 +3,7 @@
   manifest: {
     name: "pairing_leader",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {
       // The leader of one joint_link, paired into the hub's slot. Declared
       // `zero_or_one` so a leader can start before any hub exists and be

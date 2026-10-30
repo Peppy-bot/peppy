@@ -10,7 +10,7 @@ A **Node** is the fundamental unit of computation in Peppy. It represents a runn
 A node is defined by its **configuration** file (`peppy.json5`) which includes:
 
 - **`peppy_schema`**: The schema identifier, always `"node/v1"`
-- **Manifest**: The node's identity
+- **Manifest**: The node's identity and its description
 - **Execution**: Commands to build and run the node, plus the parameters it accepts
 - **Interfaces**: What the node exposes and consumes (optional; a node with no interfaces omits it)
 - **Framework**: the restart policy, a knob peppy reads the same way for every node (optional)
@@ -23,6 +23,7 @@ The manifest defines a node's identity:
 |-------|-------------|
 | `name` | A validated identifier (ASCII letters, digits, `_`, `-`) |
 | `tag` | A short contract identifier (e.g., `v1`, `donut`). Must start with an ASCII letter; allowed chars are letters, digits, `_`, `-`. Dots are forbidden. |
+| `description` | What the node does and what it needs to run, as a list of paragraphs. The first paragraph is the summary. Required; see [Descriptions](#descriptions) |
 | `labels` | Optional metadata labels |
 | `implements` | Optional list of contracts this node implements, making it eligible to fill contract slots; see [Contract implementation](/advanced_guides/contract_implementation/) |
 | `depends_on` | Optional dependency declarations, in five lists: `nodes`, `contracts`, `daemon`, `pairings`, and `pairing_observers`; see [Contract implementation](/advanced_guides/contract_implementation/), [Daemon targets](/advanced_guides/core_node_functions/#daemon-targets) and [Pairing](/advanced_guides/pairing/) |
@@ -66,6 +67,75 @@ Nodes communicate through three types of interfaces:
 A node can **expose** interfaces (make them available to others) and **consume** interfaces from other nodes.
 
 Three higher-level constructs build on these: [contract implementation](/advanced_guides/contract_implementation/), where the contract lives in a standalone document and any implementing producer can fill the consumer's slot; [pairing](/advanced_guides/pairing/), an exclusive 1:1 bidirectional topic exchange between two instances; and [observer slots](/advanced_guides/pairing/#observers-watching-a-pairing-without-joining-it), read-only taps on one role of an existing pairing. See [Choosing a communication pattern](/advanced_guides/communication_patterns/) for how to pick between all of them.
+
+## Descriptions
+
+A contract, a pairing, a node and a launcher give their meaning as data, in their **descriptions**. The people who choose a document read them, and so do the programs and the models that call its members.
+
+| Part | Key | Rule |
+| --- | --- | --- |
+| A contract, a pairing or a node | `manifest.description` | Required. A list of paragraphs, at least one. Each paragraph is a string that is not blank |
+| A launcher | `description`, at the root of the document, because a launcher has no manifest | Required. The same form as `manifest.description` |
+| A topic, a service or an action of a contract, and a topic of a pairing | `description`, after `name` | Required. One string that is not blank |
+| A member that a node declares itself: a native entry of `emits` or `exposes`, with no `link_id` | `description`, after `name` | Required. One string that is not blank |
+| A field of a message format | [`$description`](/reference/message_format/#description-modifier), beside `$type` | Optional. One string that is not blank |
+
+The first paragraph of a document is its summary: `peppy repo search` prints it. The summary of a node or a launcher also says what it needs to run, such as a GPU, a device or a simulation. The description of an action tells its goal, its feedback and its result.
+
+```json5
+// gripper/peppy.json5
+{
+  peppy_schema: "contract/v1",
+  manifest: {
+    name: "gripper",
+    tag: "v1",
+    description: [
+      "A gripper with two fingers: it moves its fingers to an opening and gives the measured opening.",
+      "Each opening is the distance between the two fingers, in meters.",
+    ],
+  },
+  interfaces: {
+    topics: [
+      {
+        name: "opening",
+        description: "The measured opening of the fingers, at the rate of the driver.",
+        qos_profile: "sensor_data",
+        message_format: {
+          opening: { $type: "f64", $description: "The distance between the fingers, in meters." },
+        },
+      },
+    ],
+    actions: [
+      {
+        name: "move_fingers",
+        description: "Move the fingers to an opening. The goal gives the target opening, each feedback gives the measured opening, and the result gives the opening at the end of the motion.",
+        goal_service: { request_message_format: { opening: "f64" } },
+        feedback_topic: { message_format: { opening: "f64" } },
+        result_service: { response_message_format: { opening: "f64" } },
+      },
+    ],
+  },
+}
+```
+
+The parser refuses a document whose description is missing or blank, and the error names the part by its path, for example `manifest.description[1]: the description is blank; write what it describes`, or ``Native entry `beat` in `topics.emits` has no `description` ``. Other rules:
+
+- An entry with a `link_id`, document-backed or consumed, takes no `description`, and the parser refuses the key on it. The contract, the pairing or the producer node that declares the member describes it.
+- A launcher fragment, an MCP exposure and a `peppy_repository.json5` have no description. The text of an exposure is already data.
+- The comments of a document are notes for its maintainers. No reader shows them.
+- Peppy reads no rule from a description. The rules stay in the data that the checkers read: [enums](/reference/message_format/#enum-modifier), [marks](/advanced_guides/contract_implementation/#marks) and [failure kinds](/advanced_guides/contract_implementation/#failure-kinds).
+
+These readers show the descriptions:
+
+| Reader | What it shows |
+| --- | --- |
+| [`peppy repo search`](/advanced_guides/repositories/#search-the-repositories) | The summary of each match. With `--text`, the query also finds a document by the words of its descriptions |
+| [`peppy repo show`](/advanced_guides/repositories/#show-what-a-query-matches) | Each paragraph, and each member of a contract or topic of a pairing with its description |
+| [`peppy node info`](/guides/node_stack/#inspecting-a-node-with-peppy-node-info) | Each paragraph of the description of the node |
+| [`peppy node describe`](/advanced_guides/calling_instances/#peppy-node-describe) | The description of the node, of each contract and pairing, of each member and of each field |
+| [The codec API](/advanced_guides/codec_api/#parse-a-contract) | The description of a contract, of each member and of each field |
+| [The MCP server](/advanced_guides/mcp/#the-published-schemas) | The `$description` of each field, as the `description` of its property in the published schemas |
+| [The fleet listing](/advanced_guides/fleet/#the-fleet-listing) | The pinned document of each contract of a robot, with its descriptions |
 
 ## Node Instance
 

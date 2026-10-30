@@ -251,6 +251,7 @@ fn fleet_with_a_director_and_copies(
         format!(
             r#"{{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         deployments: [
             {{ source: {{ name: "director", tag: "v1" }}, instances: [
                 {{ instance_id: "{DIRECTOR}", daemon_scopes: {{ fleet: {scope} }} }}

@@ -130,16 +130,17 @@ fn py_of<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
     Ok(pythonize::pythonize(py, value)?)
 }
 
-/// A pinned contract document, parsed: the message formats of its members
-/// with the enums and marks of their fields, the marks of its members, its
-/// failure kinds and the comments of its text.
+/// A pinned contract document, parsed: its description, the descriptions
+/// and the message formats of its members with the enums, the marks and
+/// the descriptions of their fields, the marks of its members and its
+/// failure kinds.
 ///
 /// A member is named by its kind (`"topic"`, `"service"` or `"action"`) and
 /// its name, a message side by its name (`"message"` of a topic,
-/// `"request"` and `"response"` of a service, `"goal"`, `"feedback"` and
-/// `"result"` of an action), and a field by its path in the format: the
-/// key of each object it sits in, with the items of an array passed
-/// through.
+/// `"request"` and `"response"` of a service, `"goal"`, `"goal_response"`,
+/// `"feedback"` and `"result"` of an action), and a field by its path in
+/// the format: the key of each object it sits in, with the items of an
+/// array passed through.
 #[pyclass(name = "Contract", frozen)]
 pub struct PyContract {
     inner: Arc<PeppyContract>,
@@ -197,10 +198,14 @@ impl PyContract {
         self.inner.manifest.labels.clone().unwrap_or_default()
     }
 
-    /// The comment before the document, or `None`.
+    /// What the contract is for: its paragraphs, the first one the summary.
     #[getter]
-    fn comment(&self) -> Option<&str> {
-        self.inner.comments.document()
+    fn description(&self) -> Vec<&str> {
+        let paragraphs = self.inner.description().paragraphs();
+        paragraphs
+            .iter()
+            .map(|paragraph| paragraph.as_str())
+            .collect()
     }
 
     /// The names of the topics, in the order of the document.
@@ -278,24 +283,27 @@ impl PyContract {
         Ok(marks.iter().map(|mark| mark.to_string()).collect())
     }
 
-    /// The comment of a member, or `None`.
-    fn member_comment(&self, kind: &str, name: &str) -> PyResult<Option<&str>> {
-        Ok(self.inner.comments.member(interface_kind(kind)?, name))
+    /// The description of a member. Raises `KeyError` for a member that the
+    /// contract does not declare.
+    fn member_description(&self, kind: &str, name: &str) -> PyResult<&str> {
+        self.inner
+            .member_description(interface_kind(kind)?, name)
+            .map(|description| description.as_str())
+            .ok_or_else(|| PyKeyError::new_err(format!("the contract has no {kind} `{name}`")))
     }
 
-    /// The comment of a field, or `None`.
-    fn field_comment(
+    /// The description of a field (`$description`), or `None` for a field
+    /// with none. Raises `KeyError` for a field that the format does not
+    /// have.
+    fn field_description(
         &self,
         kind: &str,
         name: &str,
         side: &str,
         path: Vec<String>,
     ) -> PyResult<Option<&str>> {
-        let keys: Vec<&str> = path.iter().map(String::as_str).collect();
-        Ok(self
-            .inner
-            .comments
-            .field(interface_kind(kind)?, name, message_side(side)?, &keys))
+        let field = self.field(kind, name, side, &path)?;
+        Ok(field.description().map(|description| description.as_str()))
     }
 
     /// The failure kinds of the contract that a service or an action lists,

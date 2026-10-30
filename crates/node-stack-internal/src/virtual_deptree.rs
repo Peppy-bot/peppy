@@ -174,6 +174,7 @@ mod tests {
                 manifest: {{
                     name: "{name}",
                     tag: "v1",
+                    description: ["A test node."],
                     {depends_on}
                 }},
                 interfaces: {{}},

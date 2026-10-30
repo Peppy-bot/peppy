@@ -26,6 +26,7 @@ async fn listen_for_node_sync_success() {
             manifest: {
                 name: "example_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             interfaces: {
                 topics: {
@@ -244,6 +245,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
+                description: ["A test node."],
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
@@ -320,6 +322,7 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
+                description: ["A test node."],
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
@@ -397,6 +400,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             manifest: {
                 name: "uvc_camera",
                 tag: "v1",
+                description: ["A test node."],
                 labels: ["camera"],
             },
             interfaces: {
@@ -404,6 +408,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                     emits: [
                       {
                         name: "video_stream",
+                        description: "A test topic.",
                         qos_profile: "sensor_data",
                         message_format: {
                             header: {
@@ -451,6 +456,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
+                description: ["A test node."],
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
@@ -555,6 +561,7 @@ const CAMERA_EMITS_VIDEO_STREAM: &str = r#"
             manifest: {
                 name: "uvc_camera",
                 tag: "v1",
+                description: ["A test node."],
                 labels: ["camera"],
             },
             interfaces: {
@@ -562,6 +569,7 @@ const CAMERA_EMITS_VIDEO_STREAM: &str = r#"
                     emits: [
                       {
                         name: "video_stream",
+                        description: "A test topic.",
                         qos_profile: "sensor_data",
                         message_format: {
                           width: "u32",
@@ -592,6 +600,7 @@ const BRAIN_CONSUMES_VIDEO_STREAM: &str = r#"
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
+                description: ["A test node."],
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
@@ -631,6 +640,7 @@ const CAMERA_EXPOSES_ENABLE_CAMERA: &str = r#"
             manifest: {
                 name: "uvc_camera",
                 tag: "v1",
+                description: ["A test node."],
                 labels: ["camera"],
             },
             interfaces: {
@@ -641,6 +651,7 @@ const CAMERA_EXPOSES_ENABLE_CAMERA: &str = r#"
                     exposes: [
                       {
                         name: "enable_camera",
+                        description: "A test service.",
                         request_message_format: {
                           enable: "bool",
                         },
@@ -666,6 +677,7 @@ const BRAIN_CONSUMES_ENABLE_CAMERA: &str = r#"
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
+                description: ["A test node."],
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
@@ -705,6 +717,7 @@ const BRAIN_EXPOSES_MOVE_ARM: &str = r#"
             manifest: {
                 name: "brain",
                 tag: "v1",
+                description: ["A test node."],
                 labels: ["brain"],
             },
             interfaces: {
@@ -718,6 +731,7 @@ const BRAIN_EXPOSES_MOVE_ARM: &str = r#"
                     exposes: [
                       {
                         name: "move_arm",
+                        description: "A test action.",
                         goal_service: {
                           request_message_format: { value: "u32" },
                           response_message_format: { accepted: "bool" },
@@ -748,6 +762,7 @@ const CONTROLLER_CONSUMES_MOVE_ARM: &str = r#"
             manifest: {
                 name: "controller",
                 tag: "v1",
+                description: ["A test node."],
                 labels: ["controller"],
                 depends_on: {
                     nodes: [
@@ -846,6 +861,7 @@ async fn listen_for_node_sync_generates_rust_parameters() {
             manifest: {
                 name: "uvc_camera",
                 tag: "v1",
+                description: ["A test node."],
                 labels: ["camera"],
             },
             execution: {
@@ -917,6 +933,7 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
             manifest: {
                 name: "example_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -993,6 +1010,7 @@ async fn listen_for_node_sync_undeclared_link_id_fails() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     nodes: []
                 },
@@ -1079,12 +1097,14 @@ fn camera_config() -> &'static str {
         manifest: {
             name: "uvc_camera",
             tag: "v1",
+            description: ["A test node."],
         },
         interfaces: {
             topics: {
                 emits: [
                   {
                     name: "video_stream",
+                    description: "A test topic.",
                     qos_profile: "sensor_data",
                     message_format: { encoding: "string", width: "u32" },
                   }
@@ -1112,6 +1132,7 @@ fn brain_consumes_camera_config() -> &'static str {
         manifest: {
             name: "my_robot_brain",
             tag: "v1",
+            description: ["A test node."],
             depends_on: {
                 nodes: [
                     { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
@@ -1236,10 +1257,10 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
         source_repo_dir.join("nodes/dep_a").join(NODE_CONFIG_FILE),
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "dep_a", tag: "v1" },
+            manifest: { name: "dep_a", tag: "v1", description: ["A test node."] },
             interfaces: {
                 topics: {
-                    emits: [{ name: "topic_a", qos_profile: "sensor_data", message_format: { v: "u32" } }],
+                    emits: [{ name: "topic_a", description: "A test topic.", qos_profile: "sensor_data", message_format: { v: "u32" } }],
                     consumes: [],
                 },
             },
@@ -1252,10 +1273,10 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
         source_repo_dir.join("nodes/dep_b").join(NODE_CONFIG_FILE),
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "dep_b", tag: "v1" },
+            manifest: { name: "dep_b", tag: "v1", description: ["A test node."] },
             interfaces: {
                 topics: {
-                    emits: [{ name: "topic_b", qos_profile: "sensor_data", message_format: { v: "u32" } }],
+                    emits: [{ name: "topic_b", description: "A test topic.", qos_profile: "sensor_data", message_format: { v: "u32" } }],
                     consumes: [],
                 },
             },
@@ -1283,6 +1304,7 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     nodes: [
                         { name: "dep_a", tag: "v1", link_id: "a" },
@@ -1338,12 +1360,12 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         r#"
         {
             peppy_schema: "node/v1",
-            manifest: { name: "uvc_camera", tag: "v1" },
+            manifest: { name: "uvc_camera", tag: "v1", description: ["A test node."] },
             interfaces: {
                 topics: {
                     emits: [
-                        { name: "topic_x", qos_profile: "sensor_data", message_format: { v: "u32" } },
-                        { name: "topic_y", qos_profile: "sensor_data", message_format: { v: "u32" } }
+                        { name: "topic_x", description: "A test topic.", qos_profile: "sensor_data", message_format: { v: "u32" } },
+                        { name: "topic_y", description: "A test topic.", qos_profile: "sensor_data", message_format: { v: "u32" } }
                     ],
                     consumes: [],
                 },
@@ -1371,11 +1393,11 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         r#"
         {
             peppy_schema: "node/v1",
-            manifest: { name: "uvc_camera", tag: "v1" },
+            manifest: { name: "uvc_camera", tag: "v1", description: ["A test node."] },
             interfaces: {
                 topics: {
                     emits: [
-                        { name: "topic_y", qos_profile: "sensor_data", message_format: { v: "u32" } }
+                        { name: "topic_y", description: "A test topic.", qos_profile: "sensor_data", message_format: { v: "u32" } }
                     ],
                     consumes: [],
                 },
@@ -1398,6 +1420,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     nodes: [{ name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }]
                 },
@@ -1448,10 +1471,10 @@ async fn include_repositories_true_walks_transitive_dep() {
         c_dir.path(),
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "dep_c", tag: "v1" },
+            manifest: { name: "dep_c", tag: "v1", description: ["A test node."] },
             interfaces: {
                 topics: {
-                    emits: [{ name: "topic_c", qos_profile: "sensor_data", message_format: { v: "u32" } }],
+                    emits: [{ name: "topic_c", description: "A test topic.", qos_profile: "sensor_data", message_format: { v: "u32" } }],
                     consumes: [],
                 },
             },
@@ -1466,11 +1489,12 @@ async fn include_repositories_true_walks_transitive_dep() {
             manifest: {
                 name: "dep_b",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: { nodes: [{ name: "dep_c", tag: "v1", link_id: "c" }] },
             },
             interfaces: {
                 topics: {
-                    emits: [{ name: "topic_b", qos_profile: "sensor_data", message_format: { v: "u32" } }],
+                    emits: [{ name: "topic_b", description: "A test topic.", qos_profile: "sensor_data", message_format: { v: "u32" } }],
                     consumes: [{ link_id: "c", name: "topic_c" }],
                 },
             },
@@ -1485,11 +1509,12 @@ async fn include_repositories_true_walks_transitive_dep() {
             manifest: {
                 name: "dep_a",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: { nodes: [{ name: "dep_b", tag: "v1", link_id: "b" }] },
             },
             interfaces: {
                 topics: {
-                    emits: [{ name: "topic_a", qos_profile: "sensor_data", message_format: { v: "u32" } }],
+                    emits: [{ name: "topic_a", description: "A test topic.", qos_profile: "sensor_data", message_format: { v: "u32" } }],
                     consumes: [{ link_id: "b", name: "topic_b" }],
                 },
             },
@@ -1510,6 +1535,7 @@ async fn include_repositories_true_walks_transitive_dep() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: { nodes: [{ name: "dep_a", tag: "v1", link_id: "a" }] },
             },
             interfaces: {
@@ -1621,10 +1647,10 @@ async fn node_sync_resolves_git_sourced_implements_contract() {
 
     const CONTRACT_BODY: &str = r#"{
         peppy_schema: "contract/v1",
-        manifest: { name: "depth_camera", tag: "v1" },
+        manifest: { name: "depth_camera", tag: "v1", description: ["A test contract."] },
         interfaces: {
             topics: [
-                { name: "video_stream", qos_profile: "sensor_data" }
+                { name: "video_stream", description: "A test topic.", qos_profile: "sensor_data" }
             ]
         }
     }"#;
@@ -1659,7 +1685,7 @@ async fn node_sync_resolves_git_sourced_implements_contract() {
         r#"{
             peppy_schema: "node/v1",
             manifest: {
-                name: "depth_publisher", tag: "v1",
+                name: "depth_publisher", tag: "v1", description: ["A test node."],
                 implements: [
                     { name: "depth_camera", tag: "v1", link_id: "depth" }
                 ],

@@ -241,6 +241,7 @@ mod tests {
   manifest: {
     name: "standalone",
     tag: "v1",
+    description: ["A test node."],
   },
   interfaces: {},
   execution: {
@@ -301,16 +302,16 @@ mod tests {
             .map(|(_, value)| value.as_str())
     }
 
-    /// A manifest without `execution.setup_timeout_secs` keeps the
-    /// fingerprint it has in every peppy release, so a federated launch
-    /// between daemons of two releases agrees on it. The value is pinned.
+    /// A manifest without `execution.setup_timeout_secs` serializes no setup
+    /// budget, so its fingerprint is the one of the same manifest that has no
+    /// such field. The value is pinned.
     #[test]
     fn a_manifest_without_a_setup_budget_keeps_its_fingerprint() {
         let config = config::node::NodeConfigParser::from_content(TEST_NODE_CONFIG)
             .expect("the test manifest parses");
         assert_eq!(
             manifest_fingerprint(&config).expect("the manifest serializes"),
-            "e370133366998fc3a940b41c5443d797728a4e1456be7fc5246acd92e00e027f"
+            "82b8299bc75e922b0a27f3256bae3705e8d188584d8236f4b10be163849fd556"
         );
     }
 

@@ -2,7 +2,8 @@
   peppy_schema: "pairing/v1",
   manifest: {
     name: "deliberation",
-    tag: "v1"
+    tag: "v1",
+    description: ["A test pairing."],
   },
   // The bidirectional, exclusive relationship between a slow planner and the
   // fast executor that acts on its subgoals. A pairing rather than two producer
@@ -13,6 +14,7 @@
     {
       emitted_by: "executor",
       name: "situation",
+      description: "A test topic.",
       // Sampled at the executor's own rate. A planner that misses one sample
       // wants the next one, not a replay of the last.
       qos_profile: "sensor_data",
@@ -38,6 +40,7 @@
     {
       emitted_by: "planner",
       name: "subgoal",
+      description: "A test topic.",
       // Low rate and individually meaningful: dropping one costs the executor a
       // whole planning cycle, so this direction is reliable.
       qos_profile: "reliable",

@@ -3,6 +3,7 @@
   manifest: {
     name: "pairing_hub",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {
       // One pair per leader that joins: the follower of every leader's
       // joint_link through a single slot that holds any number of pairs.

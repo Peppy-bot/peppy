@@ -20,6 +20,7 @@ pub fn make_video_stream_topic(distinguishing_field: &str) -> NativeEmittedTopic
     );
     NativeEmittedTopic {
         name: "video_stream".to_string(),
+        description: config::description::Description::new("A test topic.").unwrap(),
         qos_profile: QoSProfile::SensorData,
         retention: TopicRetention::LiveOnly,
         message_format: Some(MessageFormat(fields)),
@@ -35,6 +36,7 @@ pub fn make_control_service(marker: &str) -> NativeExposedService {
     response_fields.insert(format!("{marker}_ack"), SchemaType::Type(TypeToken::Bool));
     NativeExposedService {
         name: "control".to_string(),
+        description: config::description::Description::new("A test service.").unwrap(),
         request_message_format: Some(MessageFormat(request_fields)),
         response_message_format: Some(MessageFormat(response_fields)),
     }
@@ -49,6 +51,7 @@ pub fn make_move_arm_action(marker: &str) -> NativeExposedAction {
     response_fields.insert(format!("{marker}_ack"), SchemaType::Type(TypeToken::Bool));
     NativeExposedAction {
         name: "move_arm".to_string(),
+        description: config::description::Description::new("A test action.").unwrap(),
         goal_service: Some(GoalServiceEndpoint {
             request_message_format: Some(MessageFormat(request_fields)),
             response_message_format: Some(MessageFormat(response_fields)),

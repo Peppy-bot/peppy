@@ -41,7 +41,7 @@ fn write_peppy_config(dir: &TempDir) -> PathBuf {
         &path,
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "test_node", tag: "v1" },
+            manifest: { name: "test_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["./target/debug/test_node"] },
         }"#,
     )
@@ -501,7 +501,7 @@ async fn harness_core_node_reads_the_setup_budget_of_its_manifest() {
         &peppy_config_path,
         r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "test_node", tag: "v1" },
+            manifest: { name: "test_node", tag: "v1", description: ["A test node."] },
             execution: {
                 language: "rust",
                 run_cmd: ["./target/debug/test_node"],

@@ -475,6 +475,7 @@ mod tests {
             manifest: {
                 name: "test_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -498,11 +499,12 @@ mod tests {
             manifest: {
                 name: "camera_driver",
                 tag: "v21",
+                description: ["A test node."],
             },
             interfaces: {
                 topics: {
                     emits: [
-                        { name: "/camera/image_raw" }
+                        { name: "/camera/image_raw", description: "A test topic." }
                     ]
                 }
             },
@@ -564,6 +566,7 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -584,6 +587,7 @@ mod tests {
             manifest: {
                 name: "bad_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -606,6 +610,7 @@ mod tests {
             manifest: {
                 name: "bare_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -624,6 +629,7 @@ mod tests {
             manifest: {
                 name: "dup_node",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     nodes: [
                         { name: "alpha", tag: "v1", link_id: "shared" },
@@ -653,6 +659,7 @@ mod tests {
             manifest: {
                 name: "dup_node",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     nodes: [
                         { name: "alpha", tag: "v1", link_id: "shared" },
@@ -685,6 +692,7 @@ mod tests {
             manifest: {
                 name: "openarm01_backbone",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     nodes: [
                         { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
@@ -732,6 +740,7 @@ mod tests {
                 manifest: {{
                     name: "stale_node",
                     tag: "v1",
+                    description: ["A test node."],
                     depends_on: {{ {deps_block} }},
                 }},
                 execution: {{
@@ -755,6 +764,7 @@ mod tests {
             manifest: {
                 name: "robot_arm",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     pairings: [
                         { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" },
@@ -784,6 +794,7 @@ mod tests {
             manifest: {
                 name: "two_arm_commander",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     pairings: [
                         { name: "arm_link", tag: "v1", role: "controller", link_id: "left_arm" },
@@ -809,6 +820,7 @@ mod tests {
             manifest: {
                 name: "lerobot_recorder",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     pairing_observers: [
                         { name: "arm_link", tag: "v1", role: "arm", link_id: "observed_arm" },
@@ -841,6 +853,7 @@ mod tests {
             manifest: {
                 name: "lerobot_recorder",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     pairing_observers: [
                         { name: "arm_link", tag: "v1", role: "arm", link_id: "observed_arm" },
@@ -869,6 +882,7 @@ mod tests {
             manifest: {
                 name: "lerobot_recorder",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     pairing_observers: [
                         { name: "arm_link", tag: "v1", role: "arm", link_id: "observed_arm" },
@@ -904,6 +918,7 @@ mod tests {
             manifest: {
                 name: "dup_node",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     contracts: [
                         { name: "depth_camera", tag: "v1", link_id: "shared" },
@@ -938,6 +953,7 @@ mod tests {
             manifest: {
                 name: "bad_pairing_node",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     pairings: [
                         { name: "arm_link", tag: "v1", role: "arm", link_id: "ctrl@home" },
@@ -984,6 +1000,7 @@ mod tests {
                 manifest: {{
                     name: "bad_pairing_node",
                     tag: "v1",
+                    description: ["A test node."],
                     depends_on: {{
                         pairings: [
                             {{ name: "arm_link", tag: "v1", role: "arm", link_id: "{wildcard}" }},
@@ -1013,6 +1030,7 @@ mod tests {
             manifest: {
                 name: "bad_pairing_node",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     pairings: [
                         { name: "arm_link", tag: "v1", role: "arm", link_id: "_" },
@@ -1036,6 +1054,7 @@ mod tests {
             manifest: {
                 name: "bad_pairing_node",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     pairings: [
                         { name: "arm_link", tag: "v1", role: "arm", link_id: "controller", extra: true },
@@ -1057,6 +1076,7 @@ mod tests {
             manifest: {
                 name: "empty_cmd_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1077,6 +1097,7 @@ mod tests {
             manifest: {
                 name: "bad_mount_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1103,6 +1124,7 @@ mod tests {
             manifest: {
                 name: "bad_mount_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1126,6 +1148,7 @@ mod tests {
             manifest: {
                 name: "good_mount_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1150,6 +1173,7 @@ mod tests {
             manifest: {
                 name: "no_mount_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1173,6 +1197,7 @@ mod tests {
             manifest: {
                 name: "camera_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1200,6 +1225,7 @@ mod tests {
             manifest: {
                 name: "camera_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1230,6 +1256,7 @@ mod tests {
             manifest: {
                 name: "bad_ref_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1260,6 +1287,7 @@ mod tests {
             manifest: {
                 name: "bad_type_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1292,6 +1320,7 @@ mod tests {
             manifest: {
                 name: "dynamic_mount_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1319,6 +1348,7 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1340,6 +1370,7 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1374,6 +1405,7 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1406,7 +1438,7 @@ mod tests {
         format!(
             r#"{{
                 peppy_schema: "node/v1",
-                manifest: {{ name: "panel_node", tag: "v1" }},
+                manifest: {{ name: "panel_node", tag: "v1", description: ["A test node."] }},
                 execution: {{
                     language: "rust",
                     run_cmd: ["./bin"],
@@ -1456,7 +1488,7 @@ mod tests {
         let config = NodeConfigParser::from_content(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "plain_node", tag: "v1" },
+                manifest: { name: "plain_node", tag: "v1", description: ["A test node."] },
                 execution: { language: "rust", run_cmd: ["./bin"] },
             }"#,
         )
@@ -1602,7 +1634,7 @@ mod tests {
         format!(
             r#"{{
                 peppy_schema: "node/v1",
-                manifest: {{ name: "robot_initializer", tag: "v1" }},
+                manifest: {{ name: "robot_initializer", tag: "v1", description: ["A test node."] }},
                 execution: {{
                     language: "rust",
                     run_cmd: ["./bin"],
@@ -1716,6 +1748,7 @@ mod tests {
             manifest: {
                 name: "test_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 run_cmd: ["./bin"],
@@ -1735,6 +1768,7 @@ mod tests {
             manifest: {
                 name: "test_node",
                 tag: "v1",
+                description: ["A test node."],
             },
             execution: {
                 language: "rust",
@@ -1755,7 +1789,7 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let json5 = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "my_node", tag: "v1" },
+            manifest: { name: "my_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(tmp.path(), json5).unwrap();
@@ -1776,7 +1810,7 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let json5 = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "my_node", tag: "v1" },
+            manifest: { name: "my_node", tag: "v1", description: ["A test node."] },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(tmp.path(), json5).unwrap();
@@ -1813,6 +1847,7 @@ mod tests {
             manifest: {{
                 name: "camera_node",
                 tag: "v1",
+                description: ["A test node."],
                 implements: [{implements}],
             }},
             interfaces: {interfaces},
@@ -1842,7 +1877,7 @@ mod tests {
     fn test_conforms_to_in_interfaces_rejected_as_unknown_field() {
         let json5 = r#"{
             peppy_schema: "node/v1",
-            manifest: { name: "old_node", tag: "v1" },
+            manifest: { name: "old_node", tag: "v1", description: ["A test node."] },
             interfaces: {
                 conforms_to: [{ name: "uvc_camera", tag: "v1" }],
             },
@@ -1899,7 +1934,7 @@ mod tests {
         format!(
             r#"{{
             peppy_schema: "node/v1",
-            manifest: {{ name: "viewer", tag: "v1", depends_on: {depends_on} }},
+            manifest: {{ name: "viewer", tag: "v1", description: ["A test node."], depends_on: {depends_on} }},
             interfaces: {{}},
             execution: {{ language: "rust", run_cmd: ["./bin"] }},
         }}"#
@@ -2002,6 +2037,7 @@ mod tests {
             manifest: {
                 name: "dup_node",
                 tag: "v1",
+                description: ["A test node."],
                 implements: [{ name: "uvc_camera", tag: "v1", link_id: "shared" }],
                 depends_on: {
                     nodes: [{ name: "alpha", tag: "v1", link_id: "shared" }],
@@ -2037,6 +2073,7 @@ mod tests {
                 manifest: {{
                     name: "wrong_direction",
                     tag: "v1",
+                    description: ["A test node."],
                     depends_on: {{ {deps_block} }},
                 }},
                 interfaces: {{
@@ -2066,6 +2103,7 @@ mod tests {
             manifest: {{
                 name: "arm_controller",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {{
                     pairings: [{{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }}],
                 }},
@@ -2218,8 +2256,8 @@ mod tests {
             "",
             r#"{
                 topics: { emits: [
-                    { name: "stream", message_format: { x: "f64" } },
-                    { name: "stream", message_format: { y: "f64" } },
+                    { name: "stream", description: "A test topic.", message_format: { x: "f64" } },
+                    { name: "stream", description: "A test topic.", message_format: { y: "f64" } },
                 ] },
             }"#,
         );
@@ -2267,7 +2305,7 @@ mod tests {
             r#"{
                 topics: { emits: [
                     { link_id: "cam", name: "video_stream" },
-                    { name: "video_stream", message_format: { x: "f64" } },
+                    { name: "video_stream", description: "A test topic.", message_format: { x: "f64" } },
                 ] },
             }"#,
         );
@@ -2322,6 +2360,7 @@ mod tests {
             manifest: {
                 name: "relay",
                 tag: "v1",
+                description: ["A test node."],
                 implements: [{ name: "uvc_camera", tag: "v1", link_id: "cam_out" }],
                 depends_on: {
                     contracts: [{ name: "uvc_camera", tag: "v1", link_id: "cam_in" }],
@@ -2350,6 +2389,7 @@ mod tests {
             manifest: {
                 name: "seven_dof_arm",
                 tag: "v1",
+                description: ["A test node."],
                 implements: [{ name: "limb_motion", tag: "v1", link_id: "moves" }],
                 depends_on: {
                     contracts: [{ name: "limb_motion", tag: "v1", link_id: "upstream" }],
@@ -2484,15 +2524,15 @@ mod tests {
         for (section, interfaces) in [
             (
                 "topics.emits",
-                r#"{ topics: { emits: [{ name: "joint_states", message_format: { positions: { $type: "array", $items: "f64" } }, refine: { message_format: { positions: { $length: 7 } } } }] } }"#,
+                r#"{ topics: { emits: [{ name: "joint_states", description: "A test topic.", message_format: { positions: { $type: "array", $items: "f64" } }, refine: { message_format: { positions: { $length: 7 } } } }] } }"#,
             ),
             (
                 "services.exposes",
-                r#"{ services: { exposes: [{ name: "set_joints", refine: { request_message_format: { targets: { $length: 7 } } } }] } }"#,
+                r#"{ services: { exposes: [{ name: "set_joints", description: "A test service.", refine: { request_message_format: { targets: { $length: 7 } } } }] } }"#,
             ),
             (
                 "actions.exposes",
-                r#"{ actions: { exposes: [{ name: "move", refine: { goal_service: { request_message_format: { targets: { $length: 7 } } } } }] } }"#,
+                r#"{ actions: { exposes: [{ name: "move", description: "A test action.", refine: { goal_service: { request_message_format: { targets: { $length: 7 } } } } }] } }"#,
             ),
         ] {
             let error = parse_error(&node_with("", interfaces));
@@ -2531,6 +2571,7 @@ mod tests {
                     manifest: {{
                         name: "viewer",
                         tag: "v1",
+                        description: ["A test node."],
                         depends_on: {{ nodes: [{{ name: "uvc_camera", tag: "v1", link_id: "cam" }}] }},
                     }},
                     interfaces: {interfaces},
@@ -2592,7 +2633,7 @@ mod tests {
         format!(
             r#"{{
                 peppy_schema: "node/v1",
-                manifest: {{ name: "director", tag: "v1", depends_on: {depends_on} }},
+                manifest: {{ name: "director", tag: "v1", description: ["A test node."], depends_on: {depends_on} }},
                 interfaces: {interfaces},
                 execution: {{ language: "rust", run_cmd: ["./bin"] }},
             }}"#
@@ -2715,7 +2756,7 @@ mod tests {
             r#"{{
                 peppy_schema: "node/v1",
                 manifest: {{
-                    name: "director", tag: "v1",
+                    name: "director", tag: "v1", description: ["A test node."],
                     implements: [{{ name: "fleet_view", tag: "v1", link_id: "fleet" }}],
                     depends_on: {{ daemon: [{{ name: "robot_leases", tag: "v1", link_id: "fleet" }}] }},
                 }},

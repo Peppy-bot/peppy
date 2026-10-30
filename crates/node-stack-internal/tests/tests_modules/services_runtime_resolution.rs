@@ -15,6 +15,7 @@ fn brain_consuming_reset_sensor() -> config::node::NodeConfig {
             manifest: {
               name: "brain",
               tag: "v1",
+              description: ["A test node."],
               depends_on: {
                 nodes: [
                   { name: "lidar", tag: "v1", link_id: "lidar" }
@@ -50,12 +51,14 @@ fn service_dependency_resolved_when_dependency_added_first() {
             manifest: {
               name: "lidar",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 services: {
                     exposes: [
                         {
                           name: "reset_sensor",
+                          description: "A test service.",
                           request_message_format: {
                             force: "bool"
                           },
@@ -145,12 +148,14 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
             manifest: {
               name: "lidar",
               tag: "v1",
+              description: ["A test node."],
             },
             interfaces: {
                 services: {
                     exposes: [
                         {
                           name: "calibrate_sensor",
+                          description: "A test service.",
                           request_message_format: {
                             force: "bool"
                           },
@@ -208,6 +213,7 @@ fn service_dependency_fails_when_link_id_is_undeclared() {
             manifest: {
               name: "brain",
               tag: "v1",
+              description: ["A test node."],
               depends_on: {
                 nodes: []
               },

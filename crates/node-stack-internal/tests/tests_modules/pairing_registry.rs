@@ -23,6 +23,7 @@ fn robot_arm_config() -> config::node::NodeConfig {
             manifest: {
                 name: "robot_arm",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     pairings: [
                         { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }
@@ -42,6 +43,7 @@ fn arm_controller_config() -> config::node::NodeConfig {
             manifest: {
                 name: "arm_controller",
                 tag: "v1",
+                description: ["A test node."],
                 depends_on: {
                     pairings: [
                         { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }

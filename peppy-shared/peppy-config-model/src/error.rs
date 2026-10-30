@@ -469,7 +469,7 @@ pub enum ParsingError {
 
     // -- manifest.implements + produced-interface entries
     #[error(
-        "Document-backed entry `{name}` (link_id `{link_id}`) in `{section}` must not carry `{field}`: the contract or pairing document the slot resolves to declares the shape and QoS, and a contract declares the retention; a document-backed entry carries `link_id`, `name`, and at most a `refine` block pinning the length of arrays the document leaves generic"
+        "Document-backed entry `{name}` (link_id `{link_id}`) in `{section}` must not carry `{field}`: the contract or pairing document the slot resolves to declares the description, the shape and QoS, and a contract declares the retention; a document-backed entry carries `link_id`, `name`, and at most a `refine` block pinning the length of arrays the document leaves generic"
     )]
     LinkedEntryWithInlineShape {
         section: String,
@@ -481,6 +481,10 @@ pub enum ParsingError {
         "Native entry `{name}` in `{section}` carries `refine`, which pins the length of arrays a contract or pairing document leaves generic; a native entry owns its shape and sets `$length` in its own `message_format`"
     )]
     RefineWithoutLinkId { section: String, name: String },
+    #[error(
+        "Native entry `{name}` in `{section}` has no `description`: a member that the node declares itself says what it does in a `description`, one text that is not blank"
+    )]
+    NativeEntryWithoutDescription { section: String, name: String },
     #[error(
         "Consumed entry `{name}` (link_id `{link_id}`) in `{section}` carries `refine`, but the slot names a `depends_on.nodes` producer, whose native shape is taken as is; `refine` applies to entries whose slot resolves to a contract or pairing document"
     )]
@@ -573,6 +577,10 @@ pub enum StructuredError {
         section: String,
         name: String,
     },
+    NativeEntryWithoutDescription {
+        section: String,
+        name: String,
+    },
     EmptyInterfaceName {
         section: String,
     },
@@ -627,6 +635,9 @@ impl From<StructuredError> for ParsingError {
             },
             StructuredError::RefineWithoutLinkId { section, name } => {
                 ParsingError::RefineWithoutLinkId { section, name }
+            }
+            StructuredError::NativeEntryWithoutDescription { section, name } => {
+                ParsingError::NativeEntryWithoutDescription { section, name }
             }
             StructuredError::EmptyInterfaceName { section } => {
                 ParsingError::EmptyInterfaceName { section }

@@ -576,13 +576,13 @@ mod tests {
 
     const ROOT_CONFIG: &str = r#"{
         peppy_schema: "node/v1",
-        manifest: { name: "core_root", tag: "v1" },
+        manifest: { name: "core_root", tag: "v1", description: ["A test node."] },
         execution: { language: "rust", run_cmd: ["true"] },
     }"#;
 
     const UNSTAGED_CONFIG: &str = r#"{
         peppy_schema: "node/v1",
-        manifest: { name: "unstaged", tag: "v1" },
+        manifest: { name: "unstaged", tag: "v1", description: ["A test node."] },
         execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] },
     }"#;
 

@@ -3,6 +3,7 @@
   manifest: {
     name: "reactive_policy",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {
       // The camera by CONTRACT, not by node: any `rgb_camera:v1` implementation
       // can drive this policy, and the launcher picks which one.

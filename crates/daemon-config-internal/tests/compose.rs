@@ -100,6 +100,7 @@ fn composed_fixture(dir: &Path) -> (PathBuf, PeppyLauncher) {
         "teleop.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "robot",
                   provides: ["arm_inst"],
@@ -178,6 +179,7 @@ fn an_adjustment_target_list_changes_each_instance_and_skips_each_absent_one() {
         "shared.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "extra", cardinality: "zero_or_one",
                   options: { on: { deployments: [
@@ -227,6 +229,7 @@ fn a_target_list_that_names_no_instance_or_one_twice_is_refused() {
         let error = PeppyLauncherParser::from_content(&format!(
             r#"{{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 components: [{{ name: "a", options: {{ on: {{ deployments: [] }} }} }}],
                 deployments: [
                     {{ a: "on" }},
@@ -249,6 +252,7 @@ fn an_adjustment_that_writes_a_change_twice_is_refused_for_one_target_or_a_list(
         let error = PeppyLauncherParser::from_content(&format!(
             r#"{{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 deployments: [
                     {{ source: {{ name: "relay", tag: "v1" }}, instances: [{{ instance_id: "a_inst" }}] }},
                 ],
@@ -271,6 +275,7 @@ fn a_launchers_empty_adjustments_list_is_refused() {
     let error = PeppyLauncherParser::from_content(
         r#"{
         peppy_schema: "launcher/v1",
+        description: ["A test launcher."],
         components: [{ name: "a", options: { on: { deployments: [] } } }],
         adjustments: [],
         deployments: [{ a: "on" }]
@@ -290,19 +295,19 @@ fn a_launchers_empty_adjustments_list_is_refused() {
 fn a_null_adjustments_key_is_refused_wherever_it_is_written() {
     for (document, site) in [
         (
-            r#"{ peppy_schema: "launcher/v1",
+            r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."],
                components: [{ name: "a", options: { on: { deployments: [] } } }],
                adjustments: null, deployments: [{ a: "on" }] }"#,
             "the launcher",
         ),
         (
-            r#"{ peppy_schema: "launcher/v1",
+            r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."],
                components: [{ name: "a", options: { on: { deployments: [] } } }],
                deployments: [{ a: "on", adjustments: null }] }"#,
             "an option entry",
         ),
         (
-            r#"{ peppy_schema: "launcher/v1",
+            r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."],
                components: [{ name: "a", cardinality: "zero_or_more", options: { on: { deployments: [] } } }],
                deployments: [{ a: "on", instances: [{ instance_id: "alpha", adjustments: null }] }] }"#,
             "a copy",
@@ -321,7 +326,7 @@ fn a_null_adjustments_key_is_refused_wherever_it_is_written() {
     let (launcher, parsed) = write_launcher(
         dir.path(),
         "l.json5",
-        r#"{ peppy_schema: "launcher/v1",
+        r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."],
            components: [{ name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } }],
            deployments: [] }"#,
     );
@@ -344,6 +349,7 @@ fn an_option_entrys_null_key_is_refused_by_name() {
         let error = PeppyLauncherParser::from_content(&format!(
             r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [{{ name: "a", cardinality: "zero_or_more", options: {{ on: {{ deployments: [] }} }} }}],
             deployments: [{{ a: "on", {key}: null }}]
         }}"#
@@ -373,6 +379,7 @@ fn an_entrys_or_a_copys_empty_adjustments_list_is_refused() {
         let error = PeppyLauncherParser::from_content(&format!(
             r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [{{ name: "a", cardinality: "zero_or_more", options: {{ on: {{ deployments: [] }} }} }}],
             deployments: {deployments}
         }}"#
@@ -440,6 +447,7 @@ fn fragments_merge_into_a_base_deployment_of_the_same_source() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "cams", cardinality: "zero_or_one", provides: ["wrist"],
                   options: { on: "fragments/cam.json5" } },
@@ -480,6 +488,7 @@ fn a_duplicate_instance_id_names_both_origins() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "robot", cardinality: "zero_or_one", provides: ["arm_inst"],
                   options: { sim: "fragments/dup.json5" } },
@@ -507,6 +516,7 @@ fn add_links_appends_across_options_in_order() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "a", cardinality: "zero_or_one", options: { on: {
                     adjustments: [ { target: "panel", add_links: { observers: ["a_inst"] } } ] } } },
@@ -554,6 +564,7 @@ fn add_links_refuses_a_scalar_and_a_vacancy() {
             &format!(
                 r#"{{
                     peppy_schema: "launcher/v1",
+                    description: ["A test launcher."],
                     components: [
                         {{ name: "a", cardinality: "zero_or_one", options: {{ on: {{
                             adjustments: [ {{ target: "panel", add_links: {{ observers: ["a_inst"] }} }} ] }} }} }},
@@ -584,6 +595,7 @@ fn add_links_refuses_a_target_already_bound() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "a", cardinality: "zero_or_one", options: { on: {
                     adjustments: [ { target: "panel", add_links: { observers: ["seed_inst"] } } ] } } },
@@ -624,6 +636,7 @@ fn add_links_names_the_addition_the_slot_already_lists() {
             &format!(
                 r#"{{
                     peppy_schema: "launcher/v1",
+                    description: ["A test launcher."],
                     components: [
                         {{ name: "a", cardinality: "zero_or_one", options: {{ on: {{
                             adjustments: [ {{ target: "panel", add_links: {{ observers: {a_adds} }} }} ] }} }} }},
@@ -666,6 +679,7 @@ fn a_later_entry_appends_to_the_slot_an_earlier_one_set() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "a", cardinality: "zero_or_one", options: { on: { adjustments: [
                     { target: "panel", set_links: { observers: ["seed_inst"] } },
@@ -698,6 +712,7 @@ fn two_options_writing_one_key_apply_in_axis_order() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "zulu", cardinality: "zero_or_one", options: { on: {
                     adjustments: [ { target: "panel", set_arguments: { rate: 10 } } ] } } },
@@ -734,6 +749,7 @@ fn the_launchers_own_entries_apply_after_an_options_and_a_later_entry_wins() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "a", cardinality: "zero_or_one", options: { on: {
                     adjustments: [ { target: "panel", set_arguments: { rate: 10 } } ] } } },
@@ -789,6 +805,7 @@ fn a_fragments_own_guard_on_a_launcher_axis_applies_and_skips() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "simulation", cardinality: "zero_or_one",
                   options: { engine: { deployments: [] }, other: { deployments: [] } } },
@@ -841,6 +858,7 @@ fn guards_skip_and_absent_targets_skip() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "commander",
                   options: { web: { deployments: [] }, xr: {
@@ -953,6 +971,7 @@ fn an_option_missing_a_provides_id_is_refused() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "robot", provides: ["arm_inst"],
                   options: { sim: "fragments/bad.json5" } },
@@ -978,6 +997,7 @@ fn an_adjustment_target_defined_nowhere_is_refused() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "a", cardinality: "zero_or_one", options: { on: {
                     adjustments: [ { target: "ghost_inst", set_arguments: { x: 1 } } ] } } },
@@ -1019,6 +1039,7 @@ fn a_fragments_adjustments_run_before_the_options_and_the_options_win() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "a", cardinality: "zero_or_one", options: { on: {
                     fragments: ["fragments/a.json5"],
@@ -1065,6 +1086,7 @@ fn a_fragments_entries_apply_in_list_order_replace_then_append_included() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [{ name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } }],
             deployments: [],
         }"#,
@@ -1107,6 +1129,7 @@ fn a_fragment_adjusting_an_instance_it_does_not_deploy_is_refused() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } },
             ],
@@ -1147,6 +1170,7 @@ fn the_launchers_own_entries_apply_after_a_fragments_and_a_later_entry_wins() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } },
             ],
@@ -1198,6 +1222,7 @@ fn unsafe_fragment_paths_are_refused() {
         };
         let launcher = PeppyLauncher {
             peppy_schema: config::schema::PeppySchema::LauncherV1,
+            description: serde_json::from_str(r#"["A test launcher."]"#).unwrap(),
             core_nodes: Vec::new(),
             deployments: Vec::new(),
             option_deployments: Vec::new(),
@@ -1226,6 +1251,7 @@ fn an_inline_only_composition_needs_no_launcher_directory() {
     let launcher = parse_launcher(
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "robot",
                   options: { real: { deployments: [
@@ -1266,6 +1292,7 @@ fn a_symlink_escaping_the_launcher_directory_is_refused() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "robot", cardinality: "zero_or_one",
                   options: { sim: "fragments/escape.json5" } },
@@ -1296,6 +1323,7 @@ fn core_nodes_union_base_first() {
         "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } },
             ],
@@ -1311,7 +1339,7 @@ fn core_nodes_union_base_first() {
 
 fn inline_launcher(components: &str, deployments: &str) -> PeppyLauncher {
     parse_launcher(&format!(
-        r#"{{ peppy_schema: "launcher/v1", components: [{components}], deployments: [{deployments}] }}"#
+        r#"{{ peppy_schema: "launcher/v1", description: ["A test launcher."], components: [{components}], deployments: [{deployments}] }}"#
     ))
 }
 
@@ -1405,7 +1433,9 @@ fn a_required_axis_the_file_does_not_deploy_needs_a_word() {
 
 #[test]
 fn with_on_a_flat_launcher_is_refused() {
-    let launcher = parse_launcher(r#"{ peppy_schema: "launcher/v1", deployments: [] }"#);
+    let launcher = parse_launcher(
+        r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: [] }"#,
+    );
     let err = compose(&launcher, Path::new("/tmp/x.json5"), &words(&["mujoco"]))
         .expect_err("flat launcher has nothing to select");
     assert!(matches!(err, CompositionError::WithOnFlatLauncher));
@@ -1455,6 +1485,7 @@ fn nested_fixture(dir: &Path, commander_deployment: &str) -> (PathBuf, PeppyLaun
         "fleet.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "simulation", cardinality: "zero_or_one", options: {
                     engine: { deployments: [{ source: { name: "engine", tag: "v1" },
@@ -1542,7 +1573,7 @@ fn a_fragment_two_levels_down_declares_no_axes() {
     let (launcher, parsed) = write_launcher(
         dir.path(),
         "fleet.json5",
-        r#"{ peppy_schema: "launcher/v1",
+        r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."],
             components: [{ name: "robot", options: { openarm: "fragments/robot.json5" } }],
             deployments: [{ robot: "openarm" }] }"#,
     );
@@ -1579,6 +1610,7 @@ fn constrained_launcher(constraints: &str) -> PeppyLauncher {
     parse_launcher(&format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 {{ name: "robot",
                    options: {{
@@ -1758,6 +1790,7 @@ fn check_composition_holds_only_legal_selections_to_flattening() {
         parse_launcher(&format!(
             r#"{{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 components: [
                     {{ name: "robot",
                        options: {{
@@ -1815,6 +1848,7 @@ fn check_composition_holds_a_file_copy_only_to_the_stacks_that_admit_it() {
         parse_launcher(&format!(
             r#"{{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 components: [
                     {{ name: "simulation", cardinality: "one", provides: ["sim_inst"],
                        options: {{
@@ -1965,6 +1999,7 @@ fn check_composition_leaves_a_one_or_more_axis_to_the_command_line() {
         parse_launcher(&format!(
             r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [{{ name: "robot", cardinality: "one_or_more", options: {{
                 real: {{ deployments: [{{ source: {{ name: "can_arm", tag: "v1" }},
                                         instances: [{{ instance_id: "arm_inst" }}] }}] }}
@@ -2004,6 +2039,7 @@ fn check_composition_flags_a_refused_bare_launch_above_the_ceiling() {
     let launcher = parse_launcher(&format!(
         r#"{{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [{axes}],
             deployments: [{deployed}],
             constraints: [
@@ -2060,6 +2096,7 @@ fn check_composition_checks_a_fragments_own_axes_and_copies() {
         "copies.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "simulation", cardinality: "zero_or_one", options: {
                     engine: { deployments: [{ source: { name: "engine", tag: "v1" },
@@ -2091,6 +2128,7 @@ fn check_composition_names_its_copy_clear_of_the_launcher() {
         "placed.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             core_nodes: ["composition_check"],
             components: [
                 { name: "robot", cardinality: "zero_or_more", options: {
@@ -2108,6 +2146,7 @@ fn check_composition_names_its_copy_clear_of_the_launcher() {
         "prefixed.json5",
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             components: [
                 { name: "robot", cardinality: "zero_or_more", options: {
                     arm: { deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }] } } },
@@ -2125,6 +2164,7 @@ fn constraints_without_components_are_refused() {
     let err = PeppyLauncherParser::from_content(
         r#"{
             peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
             deployments: [],
             constraints: [
                 { requires: [{ robot: "real" }], reason: "r" } ],
@@ -2176,7 +2216,7 @@ fn the_check_tells_apart_fragment_files_that_share_a_name() {
     let (launcher, parsed) = write_launcher(
         dir.path(),
         "fleet.json5",
-        r#"{ peppy_schema: "launcher/v1",
+        r#"{ peppy_schema: "launcher/v1", description: ["A test launcher."],
             components: [
                 { name: "simulation", cardinality: "zero_or_one", options: { engine: { deployments: [
                     { source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] } ] } } },

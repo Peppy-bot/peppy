@@ -4,6 +4,7 @@
   manifest: {
     name: "{{ node_name }}",
     tag: "v1",
+    description: ["A test node."],
     labels: [
       "controller",
     ],
@@ -14,6 +15,7 @@
         {
           // The controller exposes this action for the brain to use it
           name: "move_right_arm",
+          description: "A test action.",
           goal_service: {
             // Services always use "reliable" qos (not configurable)
             request_message_format: {

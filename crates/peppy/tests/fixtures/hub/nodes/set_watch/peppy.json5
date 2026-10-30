@@ -3,6 +3,7 @@
   manifest: {
     name: "set_watch",
     tag: "v1",
+    description: ["A test node."],
     depends_on: {
       // Every arm a copy adds: one slot bound to each arm's own joint_states.
       nodes: [

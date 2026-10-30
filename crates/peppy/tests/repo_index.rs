@@ -12,7 +12,7 @@ fn write_contract(path: &Path, name: &str, tag: &str) {
         format!(
             r#"{{
   peppy_schema: "contract/v1",
-  manifest: {{ name: "{name}", tag: "{tag}" }},
+  manifest: {{ name: "{name}", tag: "{tag}", description: ["A test contract."] }},
   interfaces: {{}}
 }}"#
         ),
@@ -65,6 +65,7 @@ fn write_constrained_family(repo: &Path, constraints: &str) {
         format!(
             r#"{{
   peppy_schema: "launcher/v1",
+  description: ["A test launcher."],
   components: [
     {{ name: "robot",
        options: {{
@@ -252,11 +253,12 @@ mod exposures {
 
     const CAMERA_CONTRACT: &str = r#"{
         peppy_schema: "contract/v1",
-        manifest: { name: "rgb_camera", tag: "v1" },
+        manifest: { name: "rgb_camera", tag: "v1", description: ["A test contract."] },
         interfaces: {
             topics: [
                 {
                     name: "video_stream",
+                    description: "A test topic.",
                     message_format: {
                         frame: { $type: "array", $items: "u8" },
                         encoding: "string",
@@ -268,6 +270,7 @@ mod exposures {
             services: [
                 {
                     name: "set_brightness",
+                    description: "A test service.",
                     request_message_format: { value: "i32", label: "string" },
                     response_message_format: { applied: "bool" },
                 },
@@ -279,11 +282,12 @@ mod exposures {
     /// reserves: it cannot be converted to a public schema.
     const UNCONVERTIBLE_CONTRACT: &str = r#"{
         peppy_schema: "contract/v1",
-        manifest: { name: "tagged_readings", tag: "v1" },
+        manifest: { name: "tagged_readings", tag: "v1", description: ["A test contract."] },
         interfaces: {
             services: [
                 {
                     name: "read",
+                    description: "A test service.",
                     response_message_format: { instance_id: "u8" },
                 },
             ],
@@ -740,9 +744,13 @@ mod exposures {
             serde_json::json!({
                 "name": { "type": "string" },
                 "option": { "type": "string" },
-                "core_node": { "type": "string" },
+                "core_node": {
+                    "type": "string",
+                    "description": "The copy's machine, which runs its base.",
+                },
                 "features": {
                     "type": "array",
+                    "description": "The features of the copy, each with the machine of its part; empty for the copy of the launcher's entry.",
                     "items": {
                         "type": "object",
                         "properties": {

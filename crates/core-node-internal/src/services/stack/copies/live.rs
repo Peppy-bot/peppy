@@ -382,6 +382,7 @@ mod tests {
         let flat = PeppyLauncherParser::from_content(
             r#"{
                 peppy_schema: "launcher/v1",
+                description: ["A test launcher."],
                 deployments: [
                     { source: { name: "robot", tag: "v1" },
                       instances: [

@@ -168,45 +168,47 @@ fn topic_subscribe_observing_a_pair_pins_the_peer() {
 }
 
 #[test]
-fn topic_publish_from_a_scalar_slot_leaves_its_peer_open() {
-    // A scalar slot's emission names no peer: its one pair's peer selects it
-    // through the peer's own pinned subscription.
-    let sender = TopicWireSender::to_sole_peer(
-        "core_a",
-        "arm_1",
-        pairing("arm_link", "v1"),
-        "controller",
-        "joint_states",
-    )
-    .unwrap();
+fn a_pairing_emission_is_not_heard_by_an_instance_the_slot_does_not_pair_with() {
+    // `ctrl_2` once held the pair of the scalar slot of `arm_1`, which now
+    // pairs with `ctrl_1`. While ctrl_2 still pins arm_1 as its peer, as a
+    // restarted instance does until its daemon reverts a re-pair that the
+    // daemon of arm_1 refused, it hears none of the emissions to ctrl_1.
+    let to_ctrl_1 = ZenohWireFormat::topic_publish(
+        &TopicWireSender::to_peer(
+            "core_a",
+            "arm_1",
+            pairing("arm_link", "v1"),
+            "controller",
+            "joint_states",
+            WirePeer::new("core_b", "ctrl_1", "arm").unwrap(),
+        )
+        .unwrap(),
+    );
     assert_eq!(
-        ZenohWireFormat::topic_publish(&sender),
-        "*/core_a/*/arm_1/topic/pairing/arm_link/v1/controller/joint_states/*"
+        to_ctrl_1,
+        "core_b/core_a/ctrl_1/arm_1/topic/pairing/arm_link/v1/controller/joint_states/arm"
     );
-    let paired = ZenohWireFormat::topic_subscribe(
-        &TopicWireReceiver::paired(
-            "core_b",
-            "ctrl_1",
-            pairing("arm_link", "v1"),
-            &WirePeer::new("core_a", "arm_1", "controller").unwrap(),
-            "arm",
-            "joint_states",
+    let paired = |instance: &str| {
+        ZenohWireFormat::topic_subscribe(
+            &TopicWireReceiver::paired(
+                "core_b",
+                instance,
+                pairing("arm_link", "v1"),
+                &WirePeer::new("core_a", "arm_1", "controller").unwrap(),
+                "arm",
+                "joint_states",
+            )
+            .unwrap(),
         )
-        .unwrap(),
-    );
-    let observing = ZenohWireFormat::topic_subscribe(
-        &TopicWireReceiver::observing(
-            "core_c",
-            "rec_1",
-            pairing("arm_link", "v1"),
-            &WirePeer::new("core_a", "arm_1", "controller").unwrap(),
-            "joint_states",
-        )
-        .unwrap(),
-    );
-    let publish = ZenohWireFormat::topic_publish(&sender);
-    assert!(MockAdapter::key_exprs_intersect(&publish, &paired));
-    assert!(MockAdapter::key_exprs_intersect(&publish, &observing));
+    };
+    assert!(MockAdapter::key_exprs_intersect(
+        &to_ctrl_1,
+        &paired("ctrl_1")
+    ));
+    assert!(!MockAdapter::key_exprs_intersect(
+        &to_ctrl_1,
+        &paired("ctrl_2")
+    ));
 }
 
 #[test]
@@ -286,8 +288,7 @@ fn a_pairing_emission_checks_its_target_then_each_segment_in_order() {
     use crate::error::Error;
     use crate::wire::SegmentError;
 
-    type BuildEmission = fn(&str, SenderTarget, &str) -> crate::error::Result<TopicWireSender>;
-    let to_peer: BuildEmission = |core_node, target, link_id| {
+    let build = |core_node, target, link_id| {
         TopicWireSender::to_peer(
             core_node,
             "arm_1",
@@ -297,37 +298,19 @@ fn a_pairing_emission_checks_its_target_then_each_segment_in_order() {
             WirePeer::new("core_b", "ctrl_1", "arm").unwrap(),
         )
     };
-    let to_sole_peer: BuildEmission = |core_node, target, link_id| {
-        TopicWireSender::to_sole_peer(core_node, "arm_1", target, link_id, "joint_states")
-    };
-
-    for (constructor, build) in [("to_peer", to_peer), ("to_sole_peer", to_sole_peer)] {
-        assert!(
-            matches!(
-                build("core/a", node("uvc_camera", "v1"), "*"),
-                Err(Error::PeerOnNonPairingPublish)
-            ),
-            "{constructor}"
-        );
-        assert!(
-            matches!(
-                build("core/a", pairing("arm_link", "v1"), "*"),
-                Err(Error::InvalidSegment(SegmentError::ContainsSlash(_)))
-            ),
-            "{constructor}"
-        );
-        assert!(
-            matches!(
-                build("core_a", pairing("arm_link", "v1"), "*"),
-                Err(Error::InvalidSegment(SegmentError::ReservedSentinel(_)))
-            ),
-            "{constructor}"
-        );
-        assert!(
-            build("core_a", pairing("arm_link", "v1"), "controller").is_ok(),
-            "{constructor}"
-        );
-    }
+    assert!(matches!(
+        build("core/a", node("uvc_camera", "v1"), "*"),
+        Err(Error::PeerOnNonPairingPublish)
+    ));
+    assert!(matches!(
+        build("core/a", pairing("arm_link", "v1"), "*"),
+        Err(Error::InvalidSegment(SegmentError::ContainsSlash(_)))
+    ));
+    assert!(matches!(
+        build("core_a", pairing("arm_link", "v1"), "*"),
+        Err(Error::InvalidSegment(SegmentError::ReservedSentinel(_)))
+    ));
+    assert!(build("core_a", pairing("arm_link", "v1"), "controller").is_ok());
 }
 
 #[test]

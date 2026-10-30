@@ -203,17 +203,11 @@ def _started_mocks(group: object) -> Iterator[_StoppableMock]:
 def prepare_test_process() -> None:
     """One-time test-process environment setup; idempotent.
 
-    - Gives zenoh's global Net runtime more worker threads (stock zenoh 1.9.0
-      through at least 1.10.0 can deadlock its routing layer under
-      peer-session churn on the single-worker default; an operator-provided
-      ``ZENOH_RUNTIME`` wins). Must run before the first session or router
-      lazily initializes the native runtime; importing this module (or
-      calling :meth:`EphemeralRouter.start`) is early enough for test code.
-    - Raises the soft ``nofile`` limit toward the hard limit, best effort:
-      parallel routers/sessions can exhaust the macOS default soft limit of
-      256, surfacing as flaky EMFILE errors.
+    Raises the soft ``nofile`` limit toward the hard limit, best effort:
+    parallel routers/sessions can exhaust the macOS default soft limit of
+    256, surfacing as flaky EMFILE errors. :meth:`EphemeralRouter.start` calls
+    it; test code that opens many sessions without a router calls it itself.
     """
-    os.environ.setdefault("ZENOH_RUNTIME", "(net: (worker_threads: 4))")
     try:
         import resource
 
@@ -223,11 +217,6 @@ def prepare_test_process() -> None:
             resource.setrlimit(resource.RLIMIT_NOFILE, (ceiling, hard))
     except (ImportError, ValueError, OSError):
         pass
-
-
-# Run at import time so the environment is set before the native runtime can
-# lazily initialize: the Python stand-in for the Rust module's pre-main ctor.
-prepare_test_process()
 
 
 # One mesh-serialization lock per event loop (pytest-asyncio gives each test

@@ -24,6 +24,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
       manifest: {
         name: "controller",
         tag: "v1",
+        description: ["A controller that declares no topic, service or action yet."],
       },
       interfaces: {
         topics: {
@@ -54,6 +55,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
       manifest: {
         name: "controller",
         tag: "v1",
+        description: ["A controller that declares no topic, service or action yet."],
       },
       interfaces: {
         topics: {
@@ -79,7 +81,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
   </TabItem>
 </Tabs>
 
-Here we have `interfaces` organized by kind (`topics`, `services`, `actions`). Topics use `emits` and `consumes` lists, while services and actions use `exposes` and `consumes` lists. `interfaces` declares what a node produces and consumes; the `manifest.depends_on` block declares the dependency slots those `consumes` entries bind to through their `link_id`.
+Here we have `interfaces` organized by kind (`topics`, `services`, `actions`). Topics use `emits` and `consumes` lists, while services and actions use `exposes` and `consumes` lists. Each entry of `emits` and `exposes` that the node declares itself gives a [`description`](/reference/concepts/#descriptions) of the member. `interfaces` declares what a node produces and consumes; the `manifest.depends_on` block declares the dependency slots those `consumes` entries bind to through their `link_id`.
 
 ## Topics, services, and actions
 
@@ -111,12 +113,12 @@ We first need to initialize the `hello_receiver` node in a new folder:
    <Tabs>
      <TabItem label="Python">
        ```sh
-       peppy node init --toolchain uv hello_receiver
+       peppy node init --toolchain uv hello_receiver "A node that receives the greetings of one hello_world_param instance and prints them."
        ```
      </TabItem>
      <TabItem label="Rust">
        ```sh
-       peppy node init --toolchain cargo hello_receiver
+       peppy node init --toolchain cargo hello_receiver "A node that receives the greetings of one hello_world_param instance and prints them."
        ```
      </TabItem>
    </Tabs>

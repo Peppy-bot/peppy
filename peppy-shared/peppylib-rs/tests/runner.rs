@@ -37,6 +37,7 @@ const TEST_NODE_PEPPY_CONFIG: &str = r#"{
   manifest: {
     name: "test_node",
     tag: "v1",
+    description: ["A test node."],
   },
   execution: {
     language: "rust",
@@ -325,6 +326,7 @@ const ENDPOINTS_PEPPY_CONFIG: &str = r#"{
   manifest: {
     name: "test_node",
     tag: "v1",
+    description: ["A test node."],
   },
   execution: {
     language: "rust",
@@ -1326,7 +1328,7 @@ fn write_value_param_config(dir: &Path, parameter_type: &str) -> PathBuf {
     let content = format!(
         r#"{{
             peppy_schema: "node/v1",
-            manifest: {{ name: "test_node", tag: "v1" }},
+            manifest: {{ name: "test_node", tag: "v1", description: ["A test node."] }},
             execution: {{ language: "rust", parameters: {{ value: "{parameter_type}" }}, run_cmd: ["./test"] }},
         }}"#,
     );

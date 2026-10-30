@@ -6,6 +6,7 @@ use std::collections::HashMap;
 const EXPOSED_ACTION_EXAMPLE: &str = r#"
 {
   name: "move_arm",
+  description: "A test member.",
   goal_service: {
     request_message_format: {
       arm_id: "u16",
@@ -49,6 +50,7 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
 const EXPOSED_ACTION_EXAMPLE2: &str = r#"
 {
   name: "rotate_servo_clockwise",
+  description: "A test member.",
   goal_service: {
     response_message_format: {
       accepted: "bool"
@@ -76,6 +78,7 @@ const EXPOSED_ACTION_EXAMPLE2: &str = r#"
 const EXPOSED_ACTION_WITH_NESTED_FEEDBACK_EXAMPLE: &str = r#"
 {
   name: "move_gripper",
+  description: "A test member.",
   goal_service: {
     response_message_format: {
       accepted: "bool"
@@ -423,7 +426,8 @@ fn expose_action_without_request_body() {
 /// decision takes none, and raises for one.
 #[test]
 fn expose_action_without_goal_response_takes_no_response_in_its_decision() {
-    let action: NativeExposedAction = serde_json5::from_str(r#"{ name: "home_arm" }"#).unwrap();
+    let action: NativeExposedAction =
+        serde_json5::from_str(r#"{ name: "home_arm", description: "A test member." }"#).unwrap();
 
     let mut generator = PythonGenerator::new();
     generator.add_exposed_action(&action, None).unwrap();
