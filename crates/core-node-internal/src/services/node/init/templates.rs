@@ -68,12 +68,12 @@ pub struct PythonPeppyJson5<'a> {
     pub with_container: bool,
 }
 
-/// `text` as a JSON5 string literal, quoted and escaped, so a description
-/// with quotes or backslashes lands in the manifest as it was given. The
-/// manifest templates do not escape their values as HTML: a JSON5 file is
-/// not HTML.
+/// `text` as a JSON5 string literal, quoted and escaped by the JSON5 writer
+/// of peppy, so a description with quotes, backslashes or line separators
+/// lands in the manifest as it was given. The manifest templates do not
+/// escape their values as HTML: a JSON5 file is not HTML.
 fn string_literal(text: &Description) -> String {
-    serde_json::to_string(text.as_str()).expect("a string serializes")
+    json5_pretty::to_string_pretty(text.as_str()).expect("a string serializes")
 }
 
 /// Template for the Python `tests/test_smoke.py`: boots the node through the
@@ -265,10 +265,13 @@ mod tests {
     use super::*;
 
     /// The manifest of each toolchain parses, with the description as it
-    /// was given, quotes and a backslash included.
+    /// was given, quotes, a backslash and the line and paragraph
+    /// separators included.
     #[test]
     fn the_scaffolded_manifest_parses_with_its_description() {
-        let description = Description::new(r#"A node that says "hello" \ greets."#).unwrap();
+        let description =
+            Description::new("A node that says \"hello\" \\ greets\u{2028}each\u{2029}one.")
+                .unwrap();
         let literal = string_literal(&description);
         for with_container in [false, true] {
             let manifests = [
