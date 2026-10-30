@@ -9,7 +9,7 @@
 # `build-helpers` holds the generic build-script
 # helpers shared by both workspaces. It lives here, at the bottom of the dependency
 # graph, so the `peppy` crates depend on it rather than the reverse; only the
-# peppy-specific native-extension rebuild policy stays in `peppy`
+# peppy-specific build logic of the native extensions stays in `peppy`
 # (`crates/peppylib-build-policy`).
 
 [workspace]

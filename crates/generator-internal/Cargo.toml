@@ -42,7 +42,6 @@ serde = { version = "1", features = ["derive"] }
 build-helpers = { workspace = true }
 peppylib-build-policy = { workspace = true }
 sha2 = "0.11"
-zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 bytes = "1"

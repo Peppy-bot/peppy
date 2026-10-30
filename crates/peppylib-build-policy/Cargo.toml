@@ -4,10 +4,12 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
-# Pure decision logic for rebuilding peppylib's embedded native extensions,
-# used only by `generator`'s build script. It lives here in the `peppy`
-# workspace (next to its single consumer) rather than in the shared
-# `build-helpers` crate, which must not carry peppy-specific policy.
+# Build-time logic for peppylib's embedded native extensions (the rebuild
+# policy, and the reading of an extension out of its wheel), used only by
+# `generator`'s build script. It lives here in the `peppy` workspace (next to
+# its single consumer) rather than in the shared `build-helpers` crate, which
+# must not carry peppy-specific logic.
 [dependencies]
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
