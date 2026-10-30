@@ -175,20 +175,51 @@ pub(crate) fn kind_rank(kind: RepoItemKind) -> u8 {
 
 /// One item a repository publishes, resolved against the tree it was read
 /// from: the identity the index states, the fingerprint of the bytes that
-/// declare it, where those bytes live, and (for a node) the links its
-/// manifest declares.
+/// declare it, where those bytes live, and what its document records
+/// beyond its identity.
 #[derive(Debug)]
 pub(crate) struct PublishedItem {
-    pub kind: RepoItemKind,
     pub name: ItemName,
     /// `None` for a launcher, the only kind without a tag.
     pub tag: Option<ItemTag>,
     pub sha256: ManifestFingerprint,
     pub origin: EntryOrigin,
-    /// Empty for every kind but nodes.
-    pub links: DeclaredLinks,
-    /// `None` for an MCP exposure, the one kind with no description.
-    pub descriptions: Option<CachedDescriptions>,
+    pub content: DeclaredContent,
+}
+
+/// What the parse of a document records beyond its identity, which its
+/// kind decides: the contract and pairing links of a node, and the
+/// descriptions of every kind but an MCP exposure, whose text is not a
+/// description.
+#[derive(Debug)]
+pub(crate) enum DeclaredContent {
+    Node {
+        links: DeclaredLinks,
+        descriptions: CachedDescriptions,
+    },
+    Launcher {
+        descriptions: CachedDescriptions,
+    },
+    Contract {
+        descriptions: CachedDescriptions,
+    },
+    Pairing {
+        descriptions: CachedDescriptions,
+    },
+    McpExposure,
+}
+
+impl DeclaredContent {
+    /// The kind of the document that records this.
+    pub(crate) fn kind(&self) -> RepoItemKind {
+        match self {
+            Self::Node { .. } => RepoItemKind::Node,
+            Self::Launcher { .. } => RepoItemKind::Launcher,
+            Self::Contract { .. } => RepoItemKind::Contract,
+            Self::Pairing { .. } => RepoItemKind::Pairing,
+            Self::McpExposure => RepoItemKind::McpExposure,
+        }
+    }
 }
 
 /// Where the tree being read came from, which is all that separates reading
@@ -309,13 +340,11 @@ pub(crate) fn read_published_items(
         }
         match resolve_declared_item(&root, &item) {
             Ok(resolved) => items.push(PublishedItem {
-                kind: item.kind,
                 name: item.name.clone(),
                 tag: item.tag.cloned(),
                 sha256: ManifestFingerprint::of_bytes(&resolved.bytes),
                 origin,
-                links: resolved.links,
-                descriptions: resolved.descriptions,
+                content: resolved.content,
             }),
             Err(detail) => problems.push(format!("{item} points at {}, which {detail}", item.path)),
         }
@@ -341,54 +370,53 @@ pub(crate) fn build_cache_entries(
         // index nests those under one and launchers one level less deep.
         // Spelling the mismatch out keeps the conversion total rather than
         // resting the invariant on a panic.
-        let tagged = |item: &PublishedItem| -> std::result::Result<ItemTag, String> {
-            item.tag
-                .clone()
-                .ok_or_else(|| format!("{} `{}` is indexed without a tag", item.kind, item.name))
+        let kind = item.content.kind();
+        let tagged = |tag: Option<ItemTag>, name: &ItemName| {
+            tag.ok_or_else(|| format!("{kind} `{name}` is indexed without a tag"))
         };
-        // Descriptions are present for exactly the four kinds that have
-        // them, because `declaration_of` reads them from each of those.
-        let described = |item: &PublishedItem| -> std::result::Result<CachedDescriptions, String> {
-            item.descriptions.clone().ok_or_else(|| {
-                format!("{} `{}` is read without descriptions", item.kind, item.name)
-            })
-        };
-        match item.kind {
-            RepoItemKind::Node => built.nodes.push(NodeCacheEntry {
-                node_name: item.name.clone(),
-                node_tag: tagged(&item)?,
-                descriptions: described(&item)?,
+        match item.content {
+            DeclaredContent::Node {
+                links,
+                descriptions,
+            } => built.nodes.push(NodeCacheEntry {
+                node_tag: tagged(item.tag, &item.name)?,
+                node_name: item.name,
                 sha256: item.sha256,
                 origin: item.origin,
-                links: item.links,
+                links,
+                descriptions,
                 repo_id: 0,
             }),
-            RepoItemKind::Launcher => built.launchers.push(LauncherCacheEntry {
-                descriptions: described(&item)?,
-                launcher_name: item.name,
+            DeclaredContent::Launcher { descriptions } => {
+                built.launchers.push(LauncherCacheEntry {
+                    launcher_name: item.name,
+                    sha256: item.sha256,
+                    origin: item.origin,
+                    descriptions,
+                    repo_id: 0,
+                })
+            }
+            DeclaredContent::Contract { descriptions } => {
+                built.contracts.push(ContractCacheEntry {
+                    tag: tagged(item.tag, &item.name)?,
+                    contract_name: item.name,
+                    sha256: item.sha256,
+                    origin: item.origin,
+                    descriptions,
+                    repo_id: 0,
+                })
+            }
+            DeclaredContent::Pairing { descriptions } => built.pairings.push(PairingCacheEntry {
+                tag: tagged(item.tag, &item.name)?,
+                pairing_name: item.name,
                 sha256: item.sha256,
                 origin: item.origin,
+                descriptions,
                 repo_id: 0,
             }),
-            RepoItemKind::Contract => built.contracts.push(ContractCacheEntry {
-                contract_name: item.name.clone(),
-                tag: tagged(&item)?,
-                descriptions: described(&item)?,
-                sha256: item.sha256,
-                origin: item.origin,
-                repo_id: 0,
-            }),
-            RepoItemKind::Pairing => built.pairings.push(PairingCacheEntry {
-                pairing_name: item.name.clone(),
-                tag: tagged(&item)?,
-                descriptions: described(&item)?,
-                sha256: item.sha256,
-                origin: item.origin,
-                repo_id: 0,
-            }),
-            RepoItemKind::McpExposure => built.mcp_exposures.push(McpExposureCacheEntry {
-                exposure_name: item.name.clone(),
-                tag: tagged(&item)?,
+            DeclaredContent::McpExposure => built.mcp_exposures.push(McpExposureCacheEntry {
+                tag: tagged(item.tag, &item.name)?,
+                exposure_name: item.name,
                 sha256: item.sha256,
                 origin: item.origin,
                 repo_id: 0,
@@ -559,10 +587,7 @@ pub fn read_repository_index(root: &Path) -> Result<RepositoryIndex, IndexError>
 /// identity.
 pub(crate) struct ResolvedItem {
     pub bytes: Vec<u8>,
-    /// The links a node manifest declares; empty for every other kind.
-    pub links: DeclaredLinks,
-    /// The descriptions of the document; `None` for an MCP exposure.
-    pub descriptions: Option<CachedDescriptions>,
+    pub content: DeclaredContent,
 }
 
 /// Resolves one declared item against the tree at `root`, returning the
@@ -603,26 +628,21 @@ pub(crate) fn resolve_declared_item(
 
     Ok(ResolvedItem {
         bytes,
-        links: declared.links,
-        descriptions: declared.descriptions,
+        content: declared.content,
     })
 }
 
-/// What a document declares when read as `kind`: its identity, its
-/// descriptions, and for a node the contract and pairing links its manifest
-/// states.
+/// What a document declares when read as `kind`: its identity, and what
+/// it records beyond it.
 struct Declaration {
     name: String,
     /// Empty for a launcher.
     tag: String,
-    /// Empty for every kind but nodes.
-    links: DeclaredLinks,
-    /// `None` for an MCP exposure, the one kind with no description.
-    descriptions: Option<CachedDescriptions>,
+    content: DeclaredContent,
 }
 
 /// The declaration a document makes when read as `kind`: its `(name, tag)`,
-/// with an empty tag for a launcher, plus a node's links.
+/// with an empty tag for a launcher, plus what it records beyond them.
 ///
 /// The single place that maps a kind to its parser and pulls the declaration
 /// out. Both the walk (discovering items) and [`resolve_declared_item`]
@@ -636,23 +656,16 @@ fn declaration_of(
     content: &str,
     path: &Path,
 ) -> std::result::Result<Declaration, String> {
-    let identity =
-        |name: String, tag: String, descriptions: Option<CachedDescriptions>| Declaration {
-            name,
-            tag,
-            links: DeclaredLinks::default(),
-            descriptions,
-        };
     match kind {
         RepoItemKind::Node => {
             let parsed = NodeConfigParser::from_content(content).map_err(|e| e.to_string())?;
             Ok(Declaration {
                 name: parsed.manifest.name.as_str().to_owned(),
                 tag: parsed.manifest.tag.clone(),
-                links: DeclaredLinks::from(&parsed.manifest),
-                descriptions: Some(CachedDescriptions::of_document(
-                    &parsed.manifest.description,
-                )),
+                content: DeclaredContent::Node {
+                    links: DeclaredLinks::from(&parsed.manifest),
+                    descriptions: CachedDescriptions::of_document(&parsed.manifest.description),
+                },
             })
         }
         RepoItemKind::Launcher => {
@@ -669,36 +682,42 @@ fn declaration_of(
                 .and_then(|s| s.to_str())
                 .filter(|stem| !stem.is_empty())
                 .ok_or_else(|| "has no usable file stem".to_owned())?;
-            Ok(identity(
-                stem.to_owned(),
-                String::new(),
-                Some(CachedDescriptions::of_document(&parsed.description)),
-            ))
+            Ok(Declaration {
+                name: stem.to_owned(),
+                tag: String::new(),
+                content: DeclaredContent::Launcher {
+                    descriptions: CachedDescriptions::of_document(&parsed.description),
+                },
+            })
         }
         RepoItemKind::Contract => {
             let parsed = PeppyContractParser::from_content(content).map_err(|e| e.to_string())?;
-            Ok(identity(
-                parsed.manifest.name.as_str().to_owned(),
-                parsed.manifest.tag.clone(),
-                Some(CachedDescriptions::of_contract(&parsed)),
-            ))
+            Ok(Declaration {
+                name: parsed.manifest.name.as_str().to_owned(),
+                tag: parsed.manifest.tag.clone(),
+                content: DeclaredContent::Contract {
+                    descriptions: CachedDescriptions::of_contract(&parsed),
+                },
+            })
         }
         RepoItemKind::Pairing => {
             let parsed = PeppyPairingParser::from_content(content).map_err(|e| e.to_string())?;
-            Ok(identity(
-                parsed.manifest.name.as_str().to_owned(),
-                parsed.manifest.tag.clone(),
-                Some(CachedDescriptions::of_pairing(&parsed)),
-            ))
+            Ok(Declaration {
+                name: parsed.manifest.name.as_str().to_owned(),
+                tag: parsed.manifest.tag.clone(),
+                content: DeclaredContent::Pairing {
+                    descriptions: CachedDescriptions::of_pairing(&parsed),
+                },
+            })
         }
         RepoItemKind::McpExposure => {
             let parsed =
                 PeppyMcpExposureParser::from_content(content).map_err(|e| e.to_string())?;
-            Ok(identity(
-                parsed.manifest.name.as_str().to_owned(),
-                parsed.manifest.tag.clone(),
-                None,
-            ))
+            Ok(Declaration {
+                name: parsed.manifest.name.as_str().to_owned(),
+                tag: parsed.manifest.tag.clone(),
+                content: DeclaredContent::McpExposure,
+            })
         }
     }
 }
