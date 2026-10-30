@@ -163,6 +163,14 @@ fn write_members(
                 );
                 write_format(
                     out,
+                    "goal_response",
+                    shape
+                        .goal_service
+                        .as_ref()
+                        .and_then(|goal| goal.response_message_format.as_ref()),
+                );
+                write_format(
+                    out,
                     "feedback",
                     shape
                         .feedback_topic
@@ -259,6 +267,7 @@ Contract limb_motion:v1 through slot `motion` (sha256: {contract})
         $length: 3
       }}
     }}
+    goal_response: none
     feedback: {{
       progress: "f64"
     }}

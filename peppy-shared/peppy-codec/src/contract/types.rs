@@ -127,6 +127,12 @@ impl PeppyContract {
                 .as_ref()?
                 .request_message_format
                 .as_ref(),
+            (InterfaceKind::Action, MessageSide::GoalResponse) => self
+                .action(name)?
+                .goal_service
+                .as_ref()?
+                .response_message_format
+                .as_ref(),
             (InterfaceKind::Action, MessageSide::Feedback) => self
                 .action(name)?
                 .feedback_topic
@@ -975,6 +981,9 @@ mod tests {
                                 item: { $type: "string", $marks: ["item_id"], $description: "The item to grip." },
                             },
                         },
+                        response_message_format: {
+                            accepted_at: { $type: "time", $description: "When the arm took the goal." },
+                        },
                     },
                     feedback_topic: { message_format: { progress: "f32" } },
                 },
@@ -1092,6 +1101,16 @@ mod tests {
                 &["target", "item"]
             ),
             Some("The item to grip.")
+        );
+        assert_eq!(
+            field_description(
+                InterfaceKind::Action,
+                "move_gripper",
+                MessageSide::GoalResponse,
+                &["accepted_at"]
+            ),
+            Some("When the arm took the goal."),
+            "the goal response of an action is a side of its own"
         );
         assert_eq!(
             field_description(

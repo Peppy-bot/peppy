@@ -167,6 +167,9 @@ def test_the_contract_gives_its_descriptions_formats_enums_and_marks(arm):
         arm.member_marks("goal", "move")
     with pytest.raises(ValueError, match="unknown message side"):
         arm.message_format("service", "home", "reply")
+    # The goal response of an action is a side of its own; `move` declares
+    # no format for it.
+    assert arm.message_format("action", "move", "goal_response") is None
 
 
 def test_the_document_as_data_parses_to_the_same_contract(arm):

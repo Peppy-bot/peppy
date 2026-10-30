@@ -112,7 +112,7 @@ item_about = contract.field_description("action", "move_gripper", "goal", ["targ
 </TabItem>
 </Tabs>
 
-A member is named by its kind and its name. A message side is named by its member: `message` of a topic, `request` and `response` of a service, `goal`, `feedback` and `result` of an action. A field is named by its path in its format: the key of each object that it sits in, from the root of the format, with the items of an array passed through. So the field `angle` of each item of `joints` is `["joints", "angle"]`.
+A member is named by its kind and its name. A message side is named by its member: `message` of a topic, `request` and `response` of a service, `goal`, `goal_response` (the reply that accepts a goal), `feedback` and `result` of an action. A field is named by its path in its format: the key of each object that it sits in, from the root of the format, with the items of an array passed through. So the field `angle` of each item of `joints` is `["joints", "angle"]`.
 
 The parser gives each mark as written, `moves_robot` and the marks of your own alike. Your node defines the marks that it reads, and checks them.
 

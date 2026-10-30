@@ -203,7 +203,9 @@ mod tests {
                 speed: { $type: "f64", $description: "Meters per second." },
                 fast: "bool",
             }, response_message_format: { moved: { $type: "bool", $description: "It moved." } } }],
-            actions: [{ name: "reach", description: "Reach a pose.", feedback_topic: {
+            actions: [{ name: "reach", description: "Reach a pose.", goal_service: {
+                response_message_format: { queue: { $type: "u32", $description: "Goals ahead." } },
+            }, feedback_topic: {
                 message_format: { left: { $type: "f64", $description: "Meters left." } },
             } }],
         },
@@ -243,7 +245,13 @@ mod tests {
                 (MessageSide::Response, vec!["moved".to_owned()], "It moved."),
             ]
         );
-        assert_eq!(cached.members[2].fields[0].side, MessageSide::Feedback);
+        let action_sides: Vec<MessageSide> =
+            cached.members[2].fields.iter().map(|f| f.side).collect();
+        assert_eq!(
+            action_sides,
+            [MessageSide::GoalResponse, MessageSide::Feedback],
+            "the goal response of an action keeps its field descriptions"
+        );
         let texts: Vec<&str> = cached.texts().collect();
         assert_eq!(
             texts,
@@ -256,6 +264,7 @@ mod tests {
                 "Meters per second.",
                 "It moved.",
                 "Reach a pose.",
+                "Goals ahead.",
                 "Meters left.",
             ]
         );

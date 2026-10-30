@@ -137,10 +137,10 @@ fn py_of<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
 ///
 /// A member is named by its kind (`"topic"`, `"service"` or `"action"`) and
 /// its name, a message side by its name (`"message"` of a topic,
-/// `"request"` and `"response"` of a service, `"goal"`, `"feedback"` and
-/// `"result"` of an action), and a field by its path in the format: the
-/// key of each object it sits in, with the items of an array passed
-/// through.
+/// `"request"` and `"response"` of a service, `"goal"`, `"goal_response"`,
+/// `"feedback"` and `"result"` of an action), and a field by its path in
+/// the format: the key of each object it sits in, with the items of an
+/// array passed through.
 #[pyclass(name = "Contract", frozen)]
 pub struct PyContract {
     inner: Arc<PeppyContract>,
