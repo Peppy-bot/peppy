@@ -11,7 +11,7 @@
 
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
-use daemon_config::daemon_interface::RobotMembershipScope;
+use daemon_config::daemon_interface::{ProductSheet, RobotMembershipScope};
 use daemon_config::launcher::{LauncherFragmentParser, PeppyLauncherParser};
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use daemon_config::pairing::PeppyPairingParser;
@@ -27,14 +27,20 @@ const SNIPPETS_ROOT: &str = "docs/src/content/docs/guides/snippets";
 /// and the MCP guide show.
 const FRAMEWORK_CONTROLS_LAUNCHER: &str = "launchers/mcp_framework_controls.json5";
 
-/// Walk `root` recursively and collect every peppy document.
+/// The name of the directories of the product sheets that the launcher
+/// snippets include: a product sheet is a plain JSON5 value with no
+/// `peppy_schema`.
+const PRODUCT_SHEETS_DIR: &str = "products";
+
+/// Walk `root` recursively and collect every `.json5` file.
 ///
 /// Any `.json5` file, not only `peppy.json5`: a launcher, a launcher fragment,
 /// an MCP exposure and a repository index each have a file name of their own.
-/// The schema decides how a file is parsed (see
-/// [`assert_parses_with_matching_schema`]), so the walk only has to find the
-/// files.
-fn find_peppy_documents(root: &Path) -> Vec<PathBuf> {
+/// The schema decides how a peppy document is parsed (see
+/// [`assert_parses_with_matching_schema`]), and a product sheet is parsed as
+/// one (see [`assert_parses_as_product_sheet`]), so the walk only has to find
+/// the files.
+fn find_json5_files(root: &Path) -> Vec<PathBuf> {
     walkdir::WalkDir::new(root)
         .into_iter()
         .filter_map(Result::ok)
@@ -98,6 +104,23 @@ fn assert_parses_with_matching_schema(path: &Path) {
     }
 }
 
+/// Whether `path` is a product sheet: a file in a [`PRODUCT_SHEETS_DIR`]
+/// directory.
+fn is_product_sheet(path: &Path) -> bool {
+    path.parent()
+        .and_then(Path::file_name)
+        .is_some_and(|directory| directory == PRODUCT_SHEETS_DIR)
+}
+
+/// Parse the product sheet at `path`, as the scope of a launcher that
+/// includes it parses it.
+fn assert_parses_as_product_sheet(path: &Path) {
+    let content = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    let parsed = serde_json5::from_str::<ProductSheet>(&content);
+    assert_parsed("product sheet", path, parsed);
+}
+
 /// Fail with the document kind, its path and the parser's error, so that a
 /// failure names the snippet that drifted from its schema.
 fn assert_parsed<T, E: std::fmt::Debug>(kind: &str, path: &Path, parsed: Result<T, E>) {
@@ -116,7 +139,9 @@ fn docs_snippet_configs_parse() {
         snippets_root.display()
     );
 
-    let configs = find_peppy_documents(&snippets_root);
+    let (product_sheets, configs): (Vec<PathBuf>, Vec<PathBuf>) = find_json5_files(&snippets_root)
+        .into_iter()
+        .partition(|path| is_product_sheet(path));
 
     assert!(
         configs.len() >= 9,
@@ -127,6 +152,14 @@ fn docs_snippet_configs_parse() {
 
     for path in &configs {
         assert_parses_with_matching_schema(path);
+    }
+    assert!(
+        !product_sheets.is_empty(),
+        "expected a product sheet under {}",
+        snippets_root.display()
+    );
+    for path in &product_sheets {
+        assert_parses_as_product_sheet(path);
     }
 }
 
@@ -195,6 +228,30 @@ fn docs_robot_membership_scope_parses() {
         models,
         [("openarm_sim", "openarm_v2"), ("so101_sim", "so101")],
         "the scope names the robot model of each option"
+    );
+    let so101 = scope.option("so101_sim").expect("the option").product();
+    assert_eq!(
+        (
+            so101.vendor(),
+            so101
+                .price()
+                .map(|price| (price.amount(), price.currency()))
+        ),
+        (Some("WowRobo Robotics"), Some((299.0, "USD"))),
+        "the scope holds the product sheet that the launcher includes"
+    );
+    let openarm = scope.option("openarm_sim").expect("the option").product();
+    assert_eq!(
+        (
+            openarm.vendor(),
+            openarm.purchase_url(),
+            openarm.price(),
+            openarm.availability(),
+            openarm.mass_kg(),
+            openarm.height_m()
+        ),
+        (None, None, None, None, None, None),
+        "an option with no product has an empty sheet"
     );
     assert_eq!(scope.max_copies().get(), 4);
 }

@@ -169,6 +169,13 @@ impl ImageCodec {
         matches!(self, Self::Jpeg | Self::Png16)
     }
 
+    /// Whether a frame of this codec is an image, whose MIME type an MCP
+    /// image block takes. A `raw` frame is bytes of no image type: a tool
+    /// answers with it as an embedded resource.
+    pub fn is_image(self) -> bool {
+        matches!(self, Self::Jpeg | Self::Png16)
+    }
+
     /// The MIME type of the bytes a frame of this codec is published as.
     pub fn mime_type(self) -> &'static str {
         match self {

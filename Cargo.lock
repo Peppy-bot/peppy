@@ -1113,6 +1113,7 @@ dependencies = [
 name = "daemon-config"
 version = "0.0.1"
 dependencies = [
+ "chrono",
  "const_format",
  "core-node-api",
  "dirs 7.0.0",

@@ -59,7 +59,8 @@ use core_node_api::encoding::{
 use core_node_api::{DaemonFailure, DaemonFailureKind};
 use daemon_config::daemon_interface::robot_leases::RobotKind;
 use daemon_config::daemon_interface::{
-    DaemonInterface, DaemonScope, RobotMembershipMember, RobotMembershipScope, ScopedOption,
+    DaemonInterface, DaemonScope, ProductSheet, RobotMembershipMember, RobotMembershipScope,
+    ScopedOption,
 };
 use peppylib::messaging::{
     Failure, GoalContext, NonEmptyPayload, PendingGoal, ServiceAnswer, ServiceRequestContext,
@@ -142,6 +143,66 @@ struct ListedOption {
     description: String,
     features: Vec<ListedFeature>,
     kind: RobotKind,
+    product: ListedProduct,
+}
+
+/// The product sheet of the model of an option, as `list` answers it: a
+/// field below the root of a message is never optional, so each part that
+/// the sheet does not give is an empty string, or 0 for a number.
+#[derive(Serialize)]
+struct ListedProduct {
+    vendor: String,
+    purchase_url: String,
+    price: ListedPrice,
+    availability: ListedAvailability,
+    mass_kg: f64,
+    height_m: f64,
+}
+
+#[derive(Serialize)]
+struct ListedPrice {
+    amount: f64,
+    currency: String,
+    checked_on: String,
+}
+
+#[derive(Serialize)]
+struct ListedAvailability {
+    state: String,
+    checked_on: String,
+}
+
+impl From<&ProductSheet> for ListedProduct {
+    fn from(sheet: &ProductSheet) -> Self {
+        Self {
+            vendor: sheet.vendor().unwrap_or_default().to_owned(),
+            purchase_url: sheet.purchase_url().unwrap_or_default().to_owned(),
+            price: sheet.price().map_or(
+                ListedPrice {
+                    amount: 0.0,
+                    currency: String::new(),
+                    checked_on: String::new(),
+                },
+                |price| ListedPrice {
+                    amount: price.amount(),
+                    currency: price.currency().to_owned(),
+                    checked_on: price.checked_on().to_string(),
+                },
+            ),
+            availability: sheet.availability().map_or(
+                ListedAvailability {
+                    state: String::new(),
+                    checked_on: String::new(),
+                },
+                |availability| ListedAvailability {
+                    state: availability.state().as_str().to_owned(),
+                    checked_on: availability.checked_on().to_string(),
+                },
+            ),
+            mass_kg: sheet.mass_kg().unwrap_or_default(),
+            height_m: sheet.height_m().unwrap_or_default(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -250,6 +311,7 @@ pub(super) async fn answer(
                     })
                     .collect(),
                 kind: kind_of(entry.option().as_str()),
+                product: ListedProduct::from(entry.product()),
             })
             .collect(),
         core_nodes: machines,

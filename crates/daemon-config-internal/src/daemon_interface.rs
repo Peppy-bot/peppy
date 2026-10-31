@@ -9,16 +9,22 @@
 //! launcher gives a target that names it, the narrowing of its published
 //! schema by a scope, and the checks a launch runs on a scope.
 
+mod iso_4217;
+mod product_sheet;
 pub mod robot_leases;
 mod robot_membership;
 
 use crate::internal::launcher::{JoinableNodes, PreparedLauncher, UnitSelection, VacantReason};
+use chrono::NaiveDate;
 use config::node::{DaemonTargetDependency, DependsOn};
 use core_node_api::names;
 use peppy_codec::contract::{PeppyContract, PeppyContractParser};
 use peppy_mcp_catalog::{DaemonInterfaceRef, ExposureBundle, McpExposure, ResolvedInterface};
 use std::sync::LazyLock;
 
+pub use product_sheet::{
+    Availability, AvailabilityState, Price, ProductSheet, latest_date_on_earth,
+};
 use robot_leases::RobotLeasesScope;
 pub use robot_membership::{
     Description, MAX_DESCRIPTION_CHARS, MAX_FEATURES, PlacedFeature, RobotMembershipMember,
@@ -311,6 +317,20 @@ impl DaemonScope {
             // A `robot_leases` scope names members of the interface alone, so
             // every launcher holds it, and a member brings no node to join.
             Self::RobotLeases(_) => Ok(JoinableNodes::default()),
+        }
+    }
+
+    /// One refusal for each date of the scope that is after `today`, the
+    /// latest date on Earth at the launch or at `peppy stack resolve`: the
+    /// `checked_on` of each product sheet of a `robot_membership` scope.
+    /// `peppy stack resolve` refuses these dates and the launch warns about
+    /// them (see `DaemonScopeVerdict::future_dates`); the other reads of a
+    /// scope do not read them.
+    pub fn dates_after(&self, today: NaiveDate) -> Vec<String> {
+        match self {
+            Self::RobotMembership(scope) => scope.dates_after(today),
+            // A `robot_leases` scope holds no date.
+            Self::RobotLeases(_) => Vec::new(),
         }
     }
 

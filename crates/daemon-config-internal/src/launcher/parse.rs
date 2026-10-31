@@ -1,3 +1,4 @@
+use super::include::{DocumentSource, deserialize_launcher_document};
 use super::types::PeppyLauncher;
 use crate::{error::Result, parsing::read_non_empty_file};
 use std::path::Path;
@@ -10,18 +11,34 @@ use std::path::Path;
 /// (`#[serde(deny_unknown_fields)]` + the typed `PeppySchema` enum), so
 /// callers that walk a repository can just attempt to parse and treat
 /// failures as "not a launcher."
+///
+/// Each `$include` of the document is resolved before the parse (see
+/// [`super::include`]): against the directory of the launcher's file, so a
+/// document parsed from text holds no include.
 pub struct PeppyLauncherParser;
 
 impl PeppyLauncherParser {
+    /// The launcher at `file`, inside the repository of the nearest
+    /// `peppy_repository.json5` above it, or inside its own directory when
+    /// there is none.
     pub fn from_path(file: impl AsRef<Path>) -> Result<PeppyLauncher> {
         let path = file.as_ref();
         let content = read_non_empty_file(path)?;
-        Self::from_content(&content)
+        deserialize_launcher_document(&content, DocumentSource::File(path))
+    }
+
+    /// The launcher `content`, read from `file` of the repository whose root
+    /// is `root`: its includes stay inside that root, whether or not the
+    /// root holds its `peppy_repository.json5` yet. The walk of a repository
+    /// reads its launchers so.
+    pub fn from_repository_file(content: &str, file: &Path, root: &Path) -> Result<PeppyLauncher> {
+        deserialize_launcher_document(content, DocumentSource::RepositoryFile { file, root })
     }
 
     /// Takes a JSON5 content string and parses it as a launcher document.
+    /// The text has no directory, so an `$include` in it is refused.
     pub fn from_content(content: &str) -> Result<PeppyLauncher> {
-        crate::error::deserialize_json5_with_path(content)
+        deserialize_launcher_document(content, DocumentSource::Text)
     }
 }
 

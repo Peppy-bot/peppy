@@ -1,11 +1,14 @@
 //! `robot_membership:v1`: the copies of the running launch, listed, added and
 //! removed. Its scope names the launcher options a client may add, with the
-//! robot model and a description of each and the features a copy of it may
-//! hold, and the most copies of them the stack holds.
+//! robot model, the product sheet of that model and a description of each
+//! and the features a copy of it may hold, and the most copies of them the
+//! stack holds.
 
+use super::product_sheet::ProductSheet;
 use crate::internal::launcher::{
     CompositionError, JoinableNodes, PartRefusal, PreparedLauncher, UnitSelection,
 };
+use chrono::NaiveDate;
 use config::runtime::{CoreNodeName, CoreNodeTarget, Name};
 use core_node_api::encoding::{AxisSelection, OptionChoice, SelectionWord};
 use peppy_mcp_catalog::ExposureBundle;
@@ -100,9 +103,9 @@ impl Description {
 }
 
 /// The scope of a daemon target of `robot_membership:v1`: the launcher
-/// options a client may add, each once and with its robot model, a
-/// description and the features it offers, and the most copies of these
-/// options the stack holds. Parsing holds every rule, so a value of this type
+/// options a client may add, each once and with its robot model, the
+/// product sheet of that model, a description and the features it offers,
+/// and the most copies of these options the stack holds. Parsing holds every rule, so a value of this type
 /// is a scope the server can use.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "RawRobotMembershipScope")]
@@ -112,11 +115,13 @@ pub struct RobotMembershipScope {
 }
 
 /// One launcher option a client may add a copy of, the robot model a copy
-/// of it is, and the features a copy of it may hold.
+/// of it is with the product sheet of that model, and the features a copy of
+/// it may hold.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopedOption {
     option: Name,
     model: Name,
+    product: ProductSheet,
     description: Description,
     features: Vec<ScopedFeature>,
 }
@@ -154,6 +159,10 @@ struct RawRobotMembershipScope {
 struct RawScopedOption {
     option: Name,
     model: Name,
+    /// Read as a free value, and parsed with the model and the place of the
+    /// option known, which its refusals name.
+    #[serde(default)]
+    product: Option<Value>,
     description: String,
     #[serde(default)]
     features: Option<Vec<RawScopedFeature>>,
@@ -204,18 +213,30 @@ impl TryFrom<RawRobotMembershipScope> for RobotMembershipScope {
             options: raw
                 .options
                 .into_iter()
-                .map(ScopedOption::try_from)
+                .enumerate()
+                .map(|(index, raw)| ScopedOption::parse(raw, index))
                 .collect::<Result<_, _>>()?,
             max_copies,
         })
     }
 }
 
-impl TryFrom<RawScopedOption> for ScopedOption {
-    type Error = String;
+/// A refusal of the product sheet of the option at `index` of `options`,
+/// whose model is `model`: `options[1].product: the product sheet of model
+/// `so101`: price.currency: …`.
+fn product_refusal(index: usize, model: &Name, reason: &str) -> String {
+    format!("options[{index}].product: the product sheet of model `{model}`: {reason}")
+}
 
-    fn try_from(raw: RawScopedOption) -> Result<Self, String> {
+impl ScopedOption {
+    /// The option at `index` of the scope's `options`.
+    fn parse(raw: RawScopedOption, index: usize) -> Result<Self, String> {
         let option = raw.option;
+        let product = match &raw.product {
+            None => ProductSheet::empty(),
+            Some(value) => super::parse_value::<ProductSheet>(value)
+                .map_err(|reason| product_refusal(index, &raw.model, &reason))?,
+        };
         let description = Description::new(raw.description, &format!("option `{option}`"))?;
         let features = match raw.features {
             None => Vec::new(),
@@ -266,6 +287,7 @@ impl TryFrom<RawScopedOption> for ScopedOption {
         Ok(Self {
             option,
             model: raw.model,
+            product,
             description,
             features,
         })
@@ -281,6 +303,12 @@ impl ScopedOption {
     /// The robot model a copy of the option is, as the scope names it.
     pub fn model(&self) -> &Name {
         &self.model
+    }
+
+    /// The product sheet of the model, with every field absent when the
+    /// option gives none.
+    pub fn product(&self) -> &ProductSheet {
+        &self.product
     }
 
     /// One line that says what a copy of the option is.
@@ -369,6 +397,23 @@ impl RobotMembershipScope {
     /// The most copies of the scope's options the stack holds.
     pub fn max_copies(&self) -> NonZeroU16 {
         self.max_copies
+    }
+
+    /// One refusal for each date of a product sheet of the scope that is
+    /// after `today`, named as a refusal of the parse names a field of the
+    /// sheet.
+    pub(super) fn dates_after(&self, today: NaiveDate) -> Vec<String> {
+        self.options
+            .iter()
+            .enumerate()
+            .flat_map(|(index, entry)| {
+                entry
+                    .product
+                    .dates_after(today)
+                    .into_iter()
+                    .map(move |reason| product_refusal(index, &entry.model, &reason))
+            })
+            .collect()
     }
 
     /// The scope against the launcher and the stack `selection` resolves,

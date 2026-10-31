@@ -16,7 +16,10 @@ config = { workspace = true, features = ["atomic_write"] }
 # file the user wrote, not at spawn time.
 core-node-api = { workspace = true }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order`: a launcher document that holds an `$include` is read
+# into a JSON value and parsed from it, so its objects keep the order the
+# document writes them in.
+serde_json = { version = "1", features = ["preserve_order"] }
 serde_json5 = "0.2"
 serde_path_to_error = "0.1"
 thiserror = "2.0"
@@ -26,8 +29,12 @@ dirs = "7"
 # Compile-time string concatenation so the bundled peppy_config template
 # splices in its numeric defaults instead of duplicating the literals.
 const_format = "0.2"
-# Parses the packages base URL of the `pypi_mirror` setting.
+# Parses the packages base URL of the `pypi_mirror` setting and the purchase
+# URL of a product sheet.
 url = "2"
+# The dates of a product sheet: a `checked_on` is a calendar date, and the
+# launch refuses one after the latest date of any time zone.
+chrono = "0.4"
 # The exposure policy vocabulary (freshness, update rate, representation,
 # size handling, operation kinds) shared with the exposure bundle format and
 # the MCP server runtime; the document model re-exports it.

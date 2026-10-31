@@ -38,6 +38,7 @@ mod severity;
 
 pub use otlp_endpoint::OtlpEndpoint;
 pub use packages_base_url::PackagesBaseUrl;
+pub(crate) use packages_base_url::parse_https_url;
 pub use severity::{OtlpMinSeverity, Severity};
 
 use crate::consts::PeppyDirs;

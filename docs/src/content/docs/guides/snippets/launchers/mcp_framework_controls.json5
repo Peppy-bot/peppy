@@ -57,6 +57,9 @@
                 {
                   option: "so101_sim",
                   model: "so101",
+                  // The product sheet of the model, in one file that every
+                  // launcher that offers the model includes.
+                  product: { $include: "products/so101.json5" },
                   description: "A simulated SO-101 clamped on the edge of a table: one arm with a gripper",
                 },
               ],

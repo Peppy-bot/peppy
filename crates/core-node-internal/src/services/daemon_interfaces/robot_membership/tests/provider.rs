@@ -698,3 +698,78 @@ async fn list_gives_the_launch_copies_of_the_scope_as_join_goals() {
         "{listing}"
     );
 }
+
+/// `list` answers the product sheet of the model of each option through the
+/// codec of the interface: every part of a full sheet, the parts of a
+/// partial sheet with an empty value for each other part, and every part
+/// empty for an option with no sheet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn list_gives_the_product_sheet_of_each_option() {
+    let scope = json!({
+        "max_copies": 3,
+        "options": [
+            { "option": "openarm_sim", "model": "openarm_v2", "description": "An OpenArm.",
+              "product": {
+                "vendor": "Enactic",
+                "purchase_url": "https://openarm.dev/buy",
+                "price": { "amount": 6500, "currency": "USD", "checked_on": "2026-10-31" },
+                "availability": { "state": "in_stock", "checked_on": "2026-10-30" },
+                "mass_kg": 5.5,
+                "height_m": 1.2,
+              } },
+            { "option": "so101_sim", "model": "so101", "description": "An SO-101.",
+              "product": { "purchase_url": "https://shop.example.com/so101",
+                           "price": { "amount": 129.99, "currency": "EUR", "checked_on": "2026-09-15" } } },
+            { "option": "lekiwi_sim", "model": "lekiwi", "description": "A LeKiwi." },
+        ],
+    });
+    let mesh = mesh_of(active_launch_with_daemon_targets(
+        MANAGER,
+        &[("stack", DaemonInterface::RobotMembership, scope)],
+    ))
+    .await;
+    let listing = list(&mesh).await;
+    let products: Vec<&Value> = listing["options"]
+        .as_array()
+        .expect("the options")
+        .iter()
+        .map(|option| &option["product"])
+        .collect();
+    let no_price = json!({ "amount": 0.0, "currency": "", "checked_on": "" });
+    let no_availability = json!({ "state": "", "checked_on": "" });
+    assert_eq!(
+        products,
+        [
+            &json!({
+                "vendor": "Enactic",
+                "purchase_url": "https://openarm.dev/buy",
+                "price": { "amount": 6500.0, "currency": "USD", "checked_on": "2026-10-31" },
+                "availability": { "state": "in_stock", "checked_on": "2026-10-30" },
+                "mass_kg": 5.5,
+                "height_m": 1.2,
+            }),
+            &json!({
+                "vendor": "",
+                "purchase_url": "https://shop.example.com/so101",
+                "price": { "amount": 129.99, "currency": "EUR", "checked_on": "2026-09-15" },
+                "availability": no_availability,
+                "mass_kg": 0.0,
+                "height_m": 0.0,
+            }),
+            &json!({
+                "vendor": "",
+                "purchase_url": "",
+                "price": no_price,
+                "availability": no_availability,
+                "mass_kg": 0.0,
+                "height_m": 0.0,
+            }),
+        ],
+        "{listing}"
+    );
+    assert!(
+        listing["copies"].as_array().is_some_and(Vec::is_empty)
+            && listing["launch_copies"].is_array(),
+        "a copy and a launch copy hold no sheet: {listing}"
+    );
+}

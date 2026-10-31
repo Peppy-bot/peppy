@@ -7,11 +7,11 @@ use core_node_api::encoding::{CopyReference, LaunchWord, LauncherOrigin};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::DeploymentTargets;
 use daemon_config::launcher::{
-    AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, CopyMembership, Deployment,
-    DeploymentSource, ExternallyCoveredSlots, MemberAddressing, PairingValidationItem,
-    PeppyLauncher, Placements, PreparedLauncher, ResolvedClocks, ScopeCheck, UnitSelection,
-    check_daemon_scopes, instance_restart, resolve_clocks, resolve_restart, restart_request_of,
-    validate_link_plan,
+    AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, CopyMembership,
+    DaemonScopeVerdict, Deployment, DeploymentSource, ExternallyCoveredSlots, MemberAddressing,
+    PairingValidationItem, PeppyLauncher, Placements, PreparedLauncher, ResolvedClocks, ScopeCheck,
+    UnitSelection, check_daemon_scopes, instance_restart, resolve_clocks, resolve_restart,
+    restart_request_of, validate_link_plan,
 };
 use daemon_config::repository::EntryOrigin;
 
@@ -182,7 +182,9 @@ fn deployment_targets(
 /// machine's caches do not hold skips its checks, and the report names it,
 /// so a clean exit is never mistaken for checked scopes; the checks of every
 /// other deployment still run. A document or a manifest the launch would
-/// refuse fails the command with that refusal.
+/// refuse fails the command with that refusal. A date of a scope after the
+/// latest date on Earth, about which a launch warns, fails the command too,
+/// with every refusal of the rules.
 fn check_daemon_scope_rules(
     prepared: &PreparedLauncher,
     flat: &PeppyLauncher,
@@ -226,20 +228,34 @@ fn check_daemon_scope_rules(
             not_cached_nodes.join(", ")
         ));
     }
-    check_daemon_scopes(
+    let mut problems = Vec::new();
+    let DaemonScopeVerdict { held, future_dates } = check_daemon_scopes(
         prepared,
         checked
             .iter()
             .map(|(deployment, targets)| (*deployment, targets)),
         copies,
-        ScopeCheck::Launch(selection),
-    )
-    .map_err(|refusals| {
-        Error::ExecutionFailed(format!(
+        ScopeCheck::Launch {
+            selection,
+            today: daemon_config::daemon_interface::latest_date_on_earth(),
+        },
+    );
+    if let Err(refusals) = held {
+        problems.push(format!(
             "the flat launcher breaks daemon scope rules a launch would reject:{}",
             daemon_config::format_bulleted(&refusals.0)
-        ))
-    })?;
+        ));
+    }
+    if !future_dates.is_empty() {
+        problems.push(format!(
+            "the daemon scopes give dates after the latest date on Earth, which a launch \
+             warns about:{}",
+            daemon_config::format_bulleted(&future_dates)
+        ));
+    }
+    if !problems.is_empty() {
+        return Err(Error::ExecutionFailed(problems.join("\n")));
+    }
     let scoped: usize = checked.iter().map(|(_, served)| served.daemon.len()).sum();
     if scoped > 0 {
         report.push(format!(

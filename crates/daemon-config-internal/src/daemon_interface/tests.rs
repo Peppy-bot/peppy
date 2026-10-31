@@ -490,6 +490,86 @@ fn a_robot_membership_scope_holds_its_rules() {
     assert!(!error.is_empty());
 }
 
+/// The `product` of an option is the product sheet of its model: parsed
+/// into its type, empty when the option gives none, and refused with the
+/// place of the option, the model and the field of the sheet.
+#[test]
+fn the_product_of_an_option_is_the_product_sheet_of_its_model() {
+    let parsed = scope(json!({
+        "max_copies": 2,
+        "options": [
+            { "option": "openarm_sim", "model": "openarm_v2", "description": "An OpenArm",
+              "product": { "vendor": "Enactic", "purchase_url": "https://openarm.dev/buy",
+                           "price": { "amount": 6500, "currency": "USD", "checked_on": "2026-10-31" },
+                           "mass_kg": 5.5 } },
+            { "option": "so101_sim", "model": "so101", "description": "An SO-101" },
+        ],
+    }))
+    .expect("parses");
+    let openarm = parsed.option("openarm_sim").expect("the option").product();
+    assert_eq!(openarm.vendor(), Some("Enactic"));
+    assert_eq!(openarm.price().map(|price| price.currency()), Some("USD"));
+    assert_eq!(openarm.mass_kg(), Some(5.5));
+    assert_eq!(openarm.height_m(), None);
+    let so101 = parsed.option("so101_sim").expect("the option").product();
+    assert_eq!(
+        (
+            so101.vendor(),
+            so101.purchase_url(),
+            so101.price(),
+            so101.mass_kg()
+        ),
+        (None, None, None, None),
+        "an option with no product has an empty sheet"
+    );
+
+    let sheet = |product: serde_json::Value| {
+        scope(json!({
+            "max_copies": 2,
+            "options": [
+                { "option": "openarm_sim", "model": "openarm_v2", "description": "An OpenArm" },
+                { "option": "so101_sim", "model": "so101", "description": "An SO-101",
+                  "product": product },
+            ],
+        }))
+    };
+    assert_eq!(
+        sheet(json!({ "purchase_url": "https://shop.example.com",
+                      "price": { "amount": 130, "currency": "USX", "checked_on": "2026-10-31" } }))
+        .expect_err("refused"),
+        "options[1].product: the product sheet of model `so101`: price.currency: `USX` is no \
+         ISO 4217 currency; write the active code of the currency in three capital letters, \
+         such as `USD` or `EUR`"
+    );
+    assert_eq!(
+        sheet(
+            json!({ "mass_kg": 5.5, "price": { "amount": 130, "currency": "USD",
+                                                  "checked_on": "2026-10-31" } })
+        )
+        .expect_err("refused"),
+        "options[1].product: the product sheet of model `so101`: `price` is a fact of the offer \
+         that `purchase_url` opens, so a sheet that gives `price` gives `purchase_url`"
+    );
+    assert_eq!(
+        sheet(json!("Enactic")).expect_err("refused"),
+        "options[1].product: the product sheet of model `so101`: invalid type: string \
+         \"Enactic\", expected a product sheet object"
+    );
+
+    let dated = sheet(json!({ "purchase_url": "https://shop.example.com",
+        "availability": { "state": "in_stock", "checked_on": "2026-11-01" } }))
+    .expect("a date in the future parses: only a launch holds it to today");
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 31).unwrap();
+    assert_eq!(
+        DaemonScope::RobotMembership(dated).dates_after(today),
+        [
+            "options[1].product: the product sheet of model `so101`: availability.checked_on: \
+          `2026-11-01` is in the future: the latest date on Earth is `2026-10-31`, and a \
+          `checked_on` is the date of a check that took place"
+        ]
+    );
+}
+
 /// The rules of the features of an option: present means at least one, at
 /// most six, each with known keys, its own name, its own axis and a
 /// description that holds the rules of every description.
@@ -645,6 +725,61 @@ fn the_launch_copies_of_list_take_the_form_of_its_copies_without_running() {
             .expect("a required list")
             .contains(&json!("launch_copies")),
         "{list}"
+    );
+}
+
+/// `list` gives each option the product sheet of its model, every part of
+/// it required: the contract language allows `$optional` on root fields
+/// only, so a part that the sheet does not give is an empty value.
+#[test]
+fn the_options_of_list_give_the_product_sheet_with_every_part() {
+    let bundle = framework_controls_bundle();
+    let list = without_descriptions(tool_output_schema(&bundle, "stack.list").clone());
+    let option = &list["properties"]["options"]["items"];
+    assert!(
+        option["required"]
+            .as_array()
+            .expect("the option's required list")
+            .contains(&json!("product")),
+        "{option}"
+    );
+    let text = json!({ "type": "string" });
+    let number = json!({ "type": "number" });
+    let object = |properties: serde_json::Value, required: &[&str]| {
+        json!({
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": false,
+        })
+    };
+    assert_eq!(
+        option["properties"]["product"],
+        object(
+            json!({
+                "vendor": text,
+                "purchase_url": text,
+                "price": object(
+                    json!({ "amount": number, "currency": text, "checked_on": text }),
+                    &["amount", "currency", "checked_on"],
+                ),
+                "availability": object(
+                    json!({ "state": text, "checked_on": text }),
+                    &["state", "checked_on"],
+                ),
+                "mass_kg": number,
+                "height_m": number,
+            }),
+            &[
+                "vendor",
+                "purchase_url",
+                "price",
+                "availability",
+                "mass_kg",
+                "height_m"
+            ],
+        ),
+        "{option}"
     );
 }
 

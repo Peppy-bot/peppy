@@ -167,3 +167,61 @@ fn the_messages_of_a_change_name_it() {
          under the name `tidy`"
     );
 }
+
+/// The sheet of an option as `list` answers it: each part that the sheet
+/// gives, and an empty value for each part that it does not give.
+#[test]
+fn the_listed_product_gives_each_part_of_the_sheet_and_empty_values_for_the_others() {
+    let scope: RobotMembershipScope = serde_json::from_value(serde_json::json!({
+        "max_copies": 3,
+        "options": [
+            { "option": "openarm_sim", "model": "openarm_v2", "description": "An OpenArm.",
+              "product": {
+                "vendor": "Enactic",
+                "purchase_url": "https://openarm.dev/buy",
+                "price": { "amount": 6500, "currency": "USD", "checked_on": "2026-10-31" },
+                "availability": { "state": "preorder", "checked_on": "2026-10-30" },
+                "mass_kg": 5.5,
+                "height_m": 1.2,
+              } },
+            { "option": "so101_sim", "model": "so101", "description": "An SO-101.",
+              "product": { "vendor": "A seller", "mass_kg": 1.4 } },
+            { "option": "lekiwi_sim", "model": "lekiwi", "description": "A LeKiwi." }
+        ]
+    }))
+    .expect("the scope parses");
+    let listed: Vec<serde_json::Value> = scope
+        .options()
+        .iter()
+        .map(|entry| serde_json::to_value(ListedProduct::from(entry.product())).unwrap())
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            serde_json::json!({
+                "vendor": "Enactic",
+                "purchase_url": "https://openarm.dev/buy",
+                "price": { "amount": 6500.0, "currency": "USD", "checked_on": "2026-10-31" },
+                "availability": { "state": "preorder", "checked_on": "2026-10-30" },
+                "mass_kg": 5.5,
+                "height_m": 1.2,
+            }),
+            serde_json::json!({
+                "vendor": "A seller",
+                "purchase_url": "",
+                "price": { "amount": 0.0, "currency": "", "checked_on": "" },
+                "availability": { "state": "", "checked_on": "" },
+                "mass_kg": 1.4,
+                "height_m": 0.0,
+            }),
+            serde_json::json!({
+                "vendor": "",
+                "purchase_url": "",
+                "price": { "amount": 0.0, "currency": "", "checked_on": "" },
+                "availability": { "state": "", "checked_on": "" },
+                "mass_kg": 0.0,
+                "height_m": 0.0,
+            }),
+        ]
+    );
+}

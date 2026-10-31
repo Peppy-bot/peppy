@@ -49,7 +49,7 @@ mod internal {
 // -- error --
 pub use error::{
     BindingTargetMismatch, DuplicateInstanceIdAcrossStack, Error as DaemonConfigError,
-    LinkUnknownSlot, ParsingError, SlotKind, format_bulleted, format_quoted_list,
+    IncludeRefusal, LinkUnknownSlot, ParsingError, SlotKind, format_bulleted, format_quoted_list,
 };
 
 // -- env --
@@ -103,7 +103,7 @@ pub mod launcher {
         AlreadyPairedSlots, AppliedChange, AxisRole, BindingValidationItem, ClockIncarnations,
         ComponentAxis, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport,
         CopyInstance, CopyMembership, CopyRecord, DaemonScopeError, DaemonScopeRefusals,
-        Deployment, DeploymentInstance, DeploymentSource, DeploymentTargets,
+        DaemonScopeVerdict, Deployment, DeploymentInstance, DeploymentSource, DeploymentTargets,
         ExternallyCoveredSlots, FrameworkOverrides, JoinRequest, JoinableNode, JoinableNodes,
         LauncherFragmentParser, LinkTargets, LinkValue, MemberAddressing, OptionSpec,
         PairingValidationItem, PartMachines, PartRefusal, PeppyLauncher, PeppyLauncherParser,
@@ -123,9 +123,10 @@ pub mod launcher {
 // scope type, schema narrowing and launch checks.
 pub mod daemon_interface {
     pub use crate::internal::daemon_interface::{
-        DaemonInterface, DaemonScope, Description, MAX_DESCRIPTION_CHARS, MAX_FEATURES,
-        PlacedFeature, RobotMembershipMember, RobotMembershipScope, ScopedFeature, ScopedOption,
-        TargetScope, UnservedInterface, served_interfaces, served_targets,
+        Availability, AvailabilityState, DaemonInterface, DaemonScope, Description,
+        MAX_DESCRIPTION_CHARS, MAX_FEATURES, PlacedFeature, Price, ProductSheet,
+        RobotMembershipMember, RobotMembershipScope, ScopedFeature, ScopedOption, TargetScope,
+        UnservedInterface, latest_date_on_earth, served_interfaces, served_targets,
     };
 
     /// `robot_leases:v1`: its members, its scope and its messages.

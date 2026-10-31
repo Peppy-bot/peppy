@@ -165,3 +165,18 @@ fn internal_symlinks_keep_the_same_repository_boundary() {
         .is_ok()
     );
 }
+
+#[test]
+fn a_fragment_path_with_a_dot_segment_or_an_absolute_path_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    write_repository_index(root.path());
+    let fragment = root.path().join("commanders/xr.json5");
+    write_controller_fragment(&fragment);
+    let launcher = root.path().join("fleet.json5");
+    for reference in ["./commanders/xr.json5", "commanders/./xr.json5"] {
+        let error = prepare(&launcher, reference).unwrap_err();
+        assert!(error.contains("it contains a `.` segment"), "{error}");
+    }
+    let error = prepare(&launcher, &fragment.display().to_string()).unwrap_err();
+    assert!(error.contains("it is absolute"), "{error}");
+}

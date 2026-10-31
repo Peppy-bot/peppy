@@ -143,7 +143,8 @@ async fn join_inner(
         plan_clocks(&combined, &placements, &active.clocks).map_err(rejected)?;
     let copies = CopyMembership::of(active.copy_records().chain([&copy]));
     check_planned_daemon_scopes(&active.prepared, &planned, &copies, ScopeCheck::Join)
-        .map_err(rejected)?;
+        .held
+        .map_err(|refusals| rejected(refusals.to_string()))?;
     let ValidatedPlan {
         ordered,
         slot_bindings: bindings,
