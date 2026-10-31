@@ -324,8 +324,8 @@ impl DaemonScope {
     /// latest date on Earth at the launch or at `peppy stack resolve`: the
     /// `checked_on` of each product sheet of a `robot_membership` scope.
     /// `peppy stack resolve` refuses these dates and the launch warns about
-    /// them (see `daemon_scope_dates_after`); the other reads of a scope do
-    /// not read them.
+    /// them (see `DaemonScopeVerdict::future_dates`); the other reads of a
+    /// scope do not read them.
     pub fn dates_after(&self, today: NaiveDate) -> Vec<String> {
         match self {
             Self::RobotMembership(scope) => scope.dates_after(today),

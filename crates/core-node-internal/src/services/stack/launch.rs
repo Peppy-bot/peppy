@@ -33,7 +33,7 @@ use core_node_api::encoding::{
     NodeBuildLogEntry, NodeLogs, NodeRunLogEntry,
 };
 use daemon_config::launcher::{
-    ClockIncarnations, CopyMembership, Deployment, JoinableNodes, Placements, ScopeCheck,
+    ClockIncarnations, CopyMembership, DaemonScopeVerdict, Deployment, Placements, ScopeCheck,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -219,20 +219,20 @@ pub(super) fn planned_instance_ids(
 /// rules alone: the launcher and the stack selection of a launch do not
 /// change, so a join cannot change the launch's verdict.
 ///
-/// Returns the joinable nodes of a launch, and none for a join.
+/// The verdict holds the joinable nodes of a launch, and none for a join,
+/// and the dates of the scopes after the day of a launch.
 pub(super) fn check_planned_daemon_scopes(
     prepared: &daemon_config::launcher::PreparedLauncher,
     planned: &[PlannedDeployment],
     copies: &CopyMembership,
     check: ScopeCheck<'_>,
-) -> Result<JoinableNodes, String> {
+) -> DaemonScopeVerdict {
     daemon_config::launcher::check_daemon_scopes(
         prepared,
         planned.iter().map(|item| (&item.deployment, &item.targets)),
         copies,
         check,
     )
-    .map_err(|refusals| refusals.to_string())
 }
 
 impl PlannedDeployment {
@@ -305,24 +305,24 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // its options can bring. A date of a scope after the latest date on
     // Earth gets a warning alone: no node reads it, and the clock of this
     // machine does not stop the launch.
-    let joinable = match check_planned_daemon_scopes(
+    let DaemonScopeVerdict { held, future_dates } = check_planned_daemon_scopes(
         &prepared,
         &planned,
         &copy_membership,
         ScopeCheck::Launch {
             selection: &selection,
+            today: daemon_config::daemon_interface::latest_date_on_earth(),
         },
-    ) {
+    );
+    let joinable = match held {
         Ok(joinable) => joinable,
-        Err(reason) => {
+        Err(refusals) => {
+            let reason = refusals.to_string();
             publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
             return ChangeEnd::stopped(rejected(reason));
         }
     };
-    for future_date in daemon_config::launcher::daemon_scope_dates_after(
-        planned.iter().map(|item| (&item.deployment, &item.targets)),
-        daemon_config::daemon_interface::latest_date_on_earth(),
-    ) {
+    for future_date in future_dates {
         publish_warning(
             &ctx,
             future_date.to_string(),

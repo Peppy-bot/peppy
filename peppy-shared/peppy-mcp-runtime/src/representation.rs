@@ -71,7 +71,7 @@ pub(crate) struct SnapshotContent {
 /// codec.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Blob {
-    pub(crate) mime_type: &'static str,
+    pub(crate) codec: ImageCodec,
     /// The frame bytes as base64 text, the form a resource blob and an image
     /// block carry them in.
     pub(crate) base64: String,
@@ -82,9 +82,14 @@ impl Blob {
     /// of its encoded frame.
     fn new(representation: &ImageRepresentation, base64: String) -> Self {
         Self {
-            mime_type: representation.image.mime_type(),
+            codec: representation.image,
             base64,
         }
+    }
+
+    /// The MIME type of the frame, the one of its codec.
+    pub(crate) fn mime_type(&self) -> &'static str {
+        self.codec.mime_type()
     }
 }
 
@@ -684,7 +689,7 @@ mod tests {
     /// The frame bytes a snapshot's blob carries, held to its MIME type.
     fn blob_bytes(content: &SnapshotContent, mime_type: &str) -> Vec<u8> {
         let blob = content.blob.as_ref().expect("the snapshot holds a blob");
-        assert_eq!(blob.mime_type, mime_type);
+        assert_eq!(blob.mime_type(), mime_type);
         BASE64
             .decode(blob.base64.as_bytes())
             .expect("the blob is base64")
@@ -775,7 +780,7 @@ mod tests {
         assert_eq!(
             content.blob,
             Some(Blob {
-                mime_type: "image/png",
+                codec: ImageCodec::Png16,
                 base64: sixteen
             })
         );
@@ -852,7 +857,7 @@ mod tests {
         assert_eq!(
             content.blob,
             Some(Blob {
-                mime_type: "application/octet-stream",
+                codec: ImageCodec::Raw,
                 base64: frame
             })
         );
@@ -894,7 +899,7 @@ mod tests {
         assert_eq!(
             content.blob,
             Some(Blob {
-                mime_type: "image/jpeg",
+                codec: ImageCodec::Jpeg,
                 base64: frame
             })
         );

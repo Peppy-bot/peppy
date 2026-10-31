@@ -11,7 +11,8 @@
 //! repository. An included file includes no other file. A document that
 //! holds an include is read into a JSON value in which each object writes
 //! each key once, and its type is parsed from that value once each include
-//! is replaced; a document that holds none is parsed from its own text.
+//! is replaced; a document that holds none is parsed from its own text, once
+//! when its text cannot write the key `$include`.
 
 use super::repository_paths::{
     LauncherPaths, PathRefusal, canonical_directory_of, resolve_repository_path,
@@ -100,12 +101,13 @@ pub(super) fn deserialize_launcher_document<T: DeserializeOwned>(
     if !may_write_include_key(content) {
         return crate::error::deserialize_json5_with_path(content);
     }
-    let written: Value = parse_json5(content)?;
-    if first_include(&written).is_none() {
-        return crate::error::deserialize_json5_with_path(content);
-    }
-    let mut document = parse_with_unique_keys(content)
-        .map_err(|message| Error::Parsing(ParsingError::CannotParseConfig(message)))?;
+    let mut document = match written_includes(content) {
+        WrittenIncludes::None => return crate::error::deserialize_json5_with_path(content),
+        WrittenIncludes::Refused(message) => {
+            return Err(Error::Parsing(ParsingError::CannotParseConfig(message)));
+        }
+        WrittenIncludes::Some(document) => document,
+    };
     let reader = IncludeReader {
         document: source.label(),
         base: source.include_base(),
@@ -114,19 +116,95 @@ pub(super) fn deserialize_launcher_document<T: DeserializeOwned>(
     crate::error::deserialize_value_with_path(document)
 }
 
-/// Whether the text `content` can write the key `$include`: it holds the key
-/// as written, or a backslash, which starts an escape that can write any
-/// character of a JSON5 key. A text that holds neither holds no include, so
-/// it is parsed once, from its own text.
-fn may_write_include_key(content: &str) -> bool {
-    content.contains(INCLUDE_KEY) || content.contains('\\')
+/// Whether a document writes an include, as [`written_includes`] reads it.
+enum WrittenIncludes {
+    /// The document holds no include, or does not parse as JSON5: the parse
+    /// of its type from its text gives its refusal.
+    None,
+    /// The document holds an include, and is this JSON value, in which each
+    /// object writes each key once.
+    Some(Value),
+    /// The document holds an include, and an object of it writes a key twice
+    /// or a number that is not finite, which a JSON value cannot hold.
+    Refused(String),
 }
 
-/// `content` as a JSON value, with the refusal of a JSON5 syntax error.
-fn parse_json5(content: &str) -> Result<Value> {
-    let mut deserializer = serde_json5::Deserializer::from_str(content)
-        .map_err(|error| Error::Parsing(ParsingError::from(error)))?;
-    Value::deserialize(&mut deserializer).map_err(|error| Error::Parsing(ParsingError::from(error)))
+/// Whether the document `content` writes an include, read once into a JSON
+/// value in which each object writes each key once. That read refuses what
+/// the parse of a typed document from its text can take, such as a key that
+/// a free value writes twice, so its refusal counts only for a document that
+/// holds an include, which a second read without the unique keys tells.
+fn written_includes(content: &str) -> WrittenIncludes {
+    let refusal = match parse_with_unique_keys(content) {
+        Ok(document) if first_include(&document).is_some() => {
+            return WrittenIncludes::Some(document);
+        }
+        Ok(_) => return WrittenIncludes::None,
+        Err(refusal) => refusal,
+    };
+    match serde_json5::from_str::<Value>(content) {
+        Ok(written) if first_include(&written).is_some() => WrittenIncludes::Refused(refusal),
+        _ => WrittenIncludes::None,
+    }
+}
+
+/// Whether the text `content` can write the key `$include`: it holds the key
+/// once each escape of the text is read as the character that it writes. A
+/// text that cannot write the key holds no include, so it is parsed once,
+/// from its own text.
+fn may_write_include_key(content: &str) -> bool {
+    content.contains(INCLUDE_KEY)
+        || (content.contains('\\') && unescaped(content).contains(INCLUDE_KEY))
+}
+
+/// `content` with each JSON5 escape replaced by the character that it writes,
+/// wherever it stands: `\u0024` and `\x24` write `$`, `\n` a line feed, a
+/// backslash before a line terminator nothing, and a backslash before any
+/// other character that character. An escape outside a string, such as one
+/// in a comment, only makes [`may_write_include_key`] read a text that holds
+/// no include, which then parses as one that holds none.
+fn unescaped(content: &str) -> String {
+    let mut text = String::with_capacity(content.len());
+    let mut characters = content.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            text.push(character);
+            continue;
+        }
+        let Some(escaped) = characters.next() else {
+            break;
+        };
+        match escaped {
+            'u' => text.push(hex_escape(&mut characters, 4)),
+            'x' => text.push(hex_escape(&mut characters, 2)),
+            'b' => text.push('\u{8}'),
+            'f' => text.push('\u{c}'),
+            'n' => text.push('\n'),
+            'r' => text.push('\r'),
+            't' => text.push('\t'),
+            'v' => text.push('\u{b}'),
+            '0' => text.push('\0'),
+            '\r' => {
+                if characters.peek() == Some(&'\n') {
+                    characters.next();
+                }
+            }
+            '\n' | '\u{2028}' | '\u{2029}' => {}
+            other => text.push(other),
+        }
+    }
+    text
+}
+
+/// The character of the `digits` hexadecimal digits that `characters` gives
+/// next, or the replacement character when they write none, such as one half
+/// of a surrogate pair, which writes no character of `$include`.
+fn hex_escape(characters: &mut impl Iterator<Item = char>, digits: usize) -> char {
+    let hex: String = characters.take(digits).collect();
+    u32::from_str_radix(&hex, 16)
+        .ok()
+        .and_then(char::from_u32)
+        .unwrap_or(char::REPLACEMENT_CHARACTER)
 }
 
 /// `content` as a JSON value in which each object writes each key once. The
@@ -428,16 +506,50 @@ mod tests {
     }
 
     #[test]
-    fn only_a_text_with_the_include_key_or_a_backslash_can_write_an_include() {
+    fn only_a_text_that_writes_the_include_key_once_unescaped_can_write_an_include() {
         assert!(may_write_include_key(r#"{ a: { $include: "x.json5" } }"#));
         assert!(may_write_include_key(
             r#"{ a: { "\u0024include": "x.json5" } }"#
         ));
         assert!(may_write_include_key(
-            r#"{ a: { "$incl\ude": "x.json5" } }"#
+            r#"{ a: { "\x24inc\lude": "x.json5" } }"#
+        ));
+        assert!(may_write_include_key(
+            "{ a: { \"$incl\\\nude\": \"x.json5\" } }"
+        ));
+        assert!(may_write_include_key(
+            "{ a: { \"$incl\\\r\nude\": \"x.json5\" } }"
         ));
         assert!(!may_write_include_key(
             r#"{ a: { include: "x.json5" }, b: "$inc", c: "lude" }"#
+        ));
+        assert!(
+            !may_write_include_key(r#"{ description: "A \"quoted\" word", pattern: "^a\\d+$" }"#),
+            "escapes that write no `$include`"
+        );
+        assert!(!may_write_include_key(r#"{ a: "$incl\nude" }"#));
+        assert!(!may_write_include_key(
+            r#"{ a: "\uD83D\uDE00", b: "trailing \"#
+        ));
+    }
+
+    #[test]
+    fn a_document_writes_an_include_only_with_an_include_object() {
+        assert!(matches!(
+            written_includes(r#"{ a: { $include: "x.json5" } }"#),
+            WrittenIncludes::Some(_)
+        ));
+        assert!(matches!(
+            written_includes(r#"{ a: "the key $include", b: { c: 1, c: 2 } }"#),
+            WrittenIncludes::None
+        ));
+        assert!(matches!(
+            written_includes(r#"{ a: { $include: "x.json5" }, b: { c: 1, c: 2 } }"#),
+            WrittenIncludes::Refused(message) if message == "b: the key `c` is written twice in one object"
+        ));
+        assert!(matches!(
+            written_includes(r#"{ a: { $include: "x.json5" "#),
+            WrittenIncludes::None
         ));
     }
 

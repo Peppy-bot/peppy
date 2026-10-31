@@ -29,8 +29,8 @@ pub use compose::{
 };
 pub use composition::{AxisRole, ComponentAxis, LauncherFragmentParser, OptionSpec};
 pub use daemon_scopes::{
-    DaemonScopeError, DaemonScopeRefusals, DeploymentTargets, ScopeCheck, check_daemon_scopes,
-    daemon_scope_dates_after,
+    DaemonScopeError, DaemonScopeRefusals, DaemonScopeVerdict, DeploymentTargets, ScopeCheck,
+    check_daemon_scopes,
 };
 pub use joinable::{JoinableNode, JoinableNodes};
 pub use links::validate_link_plan;

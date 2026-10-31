@@ -7,11 +7,11 @@ use core_node_api::encoding::{CopyReference, LaunchWord, LauncherOrigin};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::DeploymentTargets;
 use daemon_config::launcher::{
-    AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, CopyMembership, Deployment,
-    DeploymentSource, ExternallyCoveredSlots, MemberAddressing, PairingValidationItem,
-    PeppyLauncher, Placements, PreparedLauncher, ResolvedClocks, ScopeCheck, UnitSelection,
-    check_daemon_scopes, daemon_scope_dates_after, instance_restart, resolve_clocks,
-    resolve_restart, restart_request_of, validate_link_plan,
+    AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, CopyMembership,
+    DaemonScopeVerdict, Deployment, DeploymentSource, ExternallyCoveredSlots, MemberAddressing,
+    PairingValidationItem, PeppyLauncher, Placements, PreparedLauncher, ResolvedClocks, ScopeCheck,
+    UnitSelection, check_daemon_scopes, instance_restart, resolve_clocks, resolve_restart,
+    restart_request_of, validate_link_plan,
 };
 use daemon_config::repository::EntryOrigin;
 
@@ -229,25 +229,23 @@ fn check_daemon_scope_rules(
         ));
     }
     let mut problems = Vec::new();
-    if let Err(refusals) = check_daemon_scopes(
+    let DaemonScopeVerdict { held, future_dates } = check_daemon_scopes(
         prepared,
         checked
             .iter()
             .map(|(deployment, targets)| (*deployment, targets)),
         copies,
-        ScopeCheck::Launch { selection },
-    ) {
+        ScopeCheck::Launch {
+            selection,
+            today: daemon_config::daemon_interface::latest_date_on_earth(),
+        },
+    );
+    if let Err(refusals) = held {
         problems.push(format!(
             "the flat launcher breaks daemon scope rules a launch would reject:{}",
             daemon_config::format_bulleted(&refusals.0)
         ));
     }
-    let future_dates = daemon_scope_dates_after(
-        checked
-            .iter()
-            .map(|(deployment, targets)| (*deployment, targets)),
-        daemon_config::daemon_interface::latest_date_on_earth(),
-    );
     if !future_dates.is_empty() {
         problems.push(format!(
             "the daemon scopes give dates after the latest date on Earth, which a launch \
