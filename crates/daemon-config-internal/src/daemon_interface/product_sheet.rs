@@ -337,9 +337,10 @@ impl TryFrom<String> for CalendarDate {
 /// The time zone whose date is the latest on Earth: UTC+14, the Line Islands.
 const LATEST_ZONE_HOURS: i64 = 14;
 
-/// The latest date on Earth now, the date in UTC+14, which the launch and
-/// `peppy stack resolve` hold the dates of the product sheets to: a sheet
-/// dated with the date of its writer in any time zone holds.
+/// The latest date on Earth now, the date in UTC+14, after which
+/// `peppy stack resolve` refuses a date of a product sheet and the launch
+/// warns about it: a sheet dated with the date of its writer in any time
+/// zone holds.
 pub fn latest_date_on_earth() -> NaiveDate {
     (chrono::Utc::now() + chrono::Duration::hours(LATEST_ZONE_HOURS)).date_naive()
 }
@@ -357,7 +358,10 @@ mod tests {
         let latest = latest_date_on_earth();
         let after = chrono::Utc::now().date_naive();
         assert!(latest >= before, "{latest} {before}");
-        assert!(latest <= after + chrono::Duration::days(1), "{latest} {after}");
+        assert!(
+            latest <= after + chrono::Duration::days(1),
+            "{latest} {after}"
+        );
     }
 
     fn sheet(value: serde_json::Value) -> Result<ProductSheet, String> {

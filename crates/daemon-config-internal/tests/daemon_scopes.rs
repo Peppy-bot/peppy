@@ -11,7 +11,7 @@ use daemon_config::launcher::{
     AppliedChange, ComposedLaunch, CompositionError, CopyMembership, DaemonScopeError,
     DaemonScopeRefusals, Deployment, DeploymentInstance, DeploymentSource, JoinRequest,
     JoinableNodes, PeppyLauncher, PeppyLauncherParser, PreparedLauncher, RunningStack, ScopeCheck,
-    SkipReason, UnitSelection, check_daemon_scopes,
+    SkipReason, UnitSelection, check_daemon_scopes, daemon_scope_dates_after,
 };
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -20,16 +20,12 @@ use std::path::Path;
 mod common;
 use common::{copy_name, name, words};
 
-/// The latest date on Earth at the launch checks of these tests.
+/// The latest date on Earth at the date checks of these tests.
 const TODAY: &str = "2026-10-31";
 
-/// The checks of a launch of the stack `selection` resolves, run on
-/// [`TODAY`].
+/// The checks of a launch of the stack `selection` resolves.
 fn launch(selection: &UnitSelection) -> ScopeCheck<'_> {
-    ScopeCheck::Launch {
-        selection,
-        today: chrono::NaiveDate::parse_from_str(TODAY, "%Y-%m-%d").expect("a date"),
-    }
+    ScopeCheck::Launch { selection }
 }
 
 /// The scope `simulation_mcp` gives its framework endpoint.
@@ -180,6 +176,15 @@ fn check(
         flat.deployments.iter().zip(&targets),
         copies,
         scope_check,
+    )
+}
+
+/// The dates of the daemon scopes of `flat` that are after [`TODAY`].
+fn dates_after_today(flat: &PeppyLauncher) -> Vec<DaemonScopeError> {
+    let targets: Vec<DeploymentTargets> = flat.deployments.iter().map(targets_of).collect();
+    daemon_scope_dates_after(
+        flat.deployments.iter().zip(&targets),
+        chrono::NaiveDate::parse_from_str(TODAY, "%Y-%m-%d").expect("a date"),
     )
 }
 
@@ -1435,11 +1440,13 @@ fn a_copy_the_launch_starts_leaves_the_joinable_nodes_as_they_are() {
     assert_eq!(labels, ["openarm:v1", "arm:v1", "brain:v1"]);
 }
 
-/// A launch, and `peppy stack resolve`, refuses a `checked_on` of a product
-/// sheet after the latest date on Earth at the run, naming the option and the field;
-/// a date of that day holds, and a join holds no date.
+/// A `checked_on` of a product sheet after the latest date on Earth is a
+/// date in the future, named with the option and the field; a date of that
+/// day is not. The checks of a launch and of a join hold the scope whatever
+/// its dates: `peppy stack resolve` refuses such a date, and the launch warns
+/// about it, through `daemon_scope_dates_after`.
 #[test]
-fn a_launch_refuses_a_product_sheet_dated_after_today() {
+fn a_product_sheet_dated_after_today_gives_a_date_in_the_future_alone() {
     let sheet = |checked_on: &str| {
         format!(
             r#"{{ target: "framework_controls_inst", set_daemon_scopes: {{ stack: {{
@@ -1454,17 +1461,16 @@ fn a_launch_refuses_a_product_sheet_dated_after_today() {
     };
     let prepared = load(&simulation_mcp(&sheet(TODAY), ""));
     let composed = prepared.launch(&[], &[]).expect("composes");
-    check(
-        &prepared,
-        &composed.launcher,
-        &CopyMembership::default(),
-        launch(&composed.selection),
-    )
-    .expect("a sheet dated today holds");
+    let future_dates = dates_after_today(&composed.launcher);
+    assert!(
+        future_dates.is_empty(),
+        "a sheet dated today gives no date in the future: {future_dates:?}"
+    );
 
     let prepared = load(&simulation_mcp(&sheet("2026-11-01"), ""));
+    let composed = prepared.launch(&[], &[]).expect("composes");
     assert_eq!(
-        refusals(&prepared, &prepared.launch(&[], &[]).unwrap().launcher)
+        dates_after_today(&composed.launcher)
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>(),
@@ -1475,14 +1481,38 @@ fn a_launch_refuses_a_product_sheet_dated_after_today() {
           date on Earth is `2026-10-31`, and a `checked_on` is the date of a check that took place"
         ]
     );
-    let composed = prepared.launch(&[], &[]).expect("composes");
-    check(
-        &prepared,
-        &composed.launcher,
-        &CopyMembership::default(),
-        ScopeCheck::Join,
-    )
-    .expect("a join holds no date");
+    for scope_check in [launch(&composed.selection), ScopeCheck::Join] {
+        check(
+            &prepared,
+            &composed.launcher,
+            &CopyMembership::default(),
+            scope_check,
+        )
+        .expect("the checks of a launch and of a join read no date");
+    }
+}
+
+/// A scope that does not parse gives no date in the future: the checks of
+/// the launch refuse it.
+#[test]
+fn a_scope_that_does_not_parse_gives_no_date_in_the_future() {
+    let prepared = load(&simulation_mcp(
+        r#"{ target: "framework_controls_inst", set_daemon_scopes: { stack: {
+            max_copies: 2, options: [
+                { option: "openarm_sim", model: "openarm_v2", description: "An OpenArm" },
+                { option: "so101_sim", model: "so101", description: "An SO-101",
+                  product: { purchase_url: "https://shop.example.com/so101",
+                             price: { amount: 130, currency: "USX", checked_on: "2099-10-01" } } },
+            ] } } },"#,
+        "",
+    ));
+    let flat = prepared.launch(&[], &[]).expect("composes").launcher;
+    let future_dates = dates_after_today(&flat);
+    assert!(future_dates.is_empty(), "{future_dates:?}");
+    assert!(matches!(
+        refusals(&prepared, &flat).as_slice(),
+        [DaemonScopeError::InvalidScope { .. }]
+    ));
 }
 
 /// A product sheet that breaks a rule of the sheet is refused as a scope

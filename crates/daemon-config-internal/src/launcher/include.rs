@@ -10,7 +10,8 @@
 //! document that holds the include, and it stays inside the launcher's
 //! repository. An included file includes no other file. A document that
 //! holds an include is read into a JSON value in which each object writes
-//! each key once; a document that holds none is parsed from its own text.
+//! each key once, and its type is parsed from that value once each include
+//! is replaced; a document that holds none is parsed from its own text.
 
 use super::repository_paths::{
     LauncherPaths, PathRefusal, canonical_directory_of, resolve_repository_path,
@@ -96,6 +97,9 @@ pub(super) fn deserialize_launcher_document<T: DeserializeOwned>(
     content: &str,
     source: DocumentSource<'_>,
 ) -> Result<T> {
+    if !may_write_include_key(content) {
+        return crate::error::deserialize_json5_with_path(content);
+    }
     let written: Value = parse_json5(content)?;
     if first_include(&written).is_none() {
         return crate::error::deserialize_json5_with_path(content);
@@ -107,9 +111,15 @@ pub(super) fn deserialize_launcher_document<T: DeserializeOwned>(
         base: source.include_base(),
     };
     reader.resolve(&mut document, &mut JsonPath::default())?;
-    let resolved = serde_json::to_string(&document)
-        .map_err(|error| Error::Serialize(format!("the resolved document: {error}")))?;
-    crate::error::deserialize_json5_with_path(&resolved)
+    crate::error::deserialize_value_with_path(document)
+}
+
+/// Whether the text `content` can write the key `$include`: it holds the key
+/// as written, or a backslash, which starts an escape that can write any
+/// character of a JSON5 key. A text that holds neither holds no include, so
+/// it is parsed once, from its own text.
+fn may_write_include_key(content: &str) -> bool {
+    content.contains(INCLUDE_KEY) || content.contains('\\')
 }
 
 /// `content` as a JSON value, with the refusal of a JSON5 syntax error.
@@ -129,11 +139,7 @@ fn parse_with_unique_keys(content: &str) -> std::result::Result<Value, String> {
         .map_err(|error| {
             let path = error.path().to_string();
             let serde_json5::Error::Message { msg, .. } = error.into_inner();
-            if path.is_empty() || path == "." {
-                msg
-            } else {
-                format!("{path}: {msg}")
-            }
+            crate::error::message_at_path(&path, msg)
         })
 }
 
@@ -419,6 +425,20 @@ mod tests {
         );
         let plain: Value = serde_json5::from_str(r#"{ a: [1, { b: "$include" }] }"#).unwrap();
         assert!(first_include(&plain).is_none());
+    }
+
+    #[test]
+    fn only_a_text_with_the_include_key_or_a_backslash_can_write_an_include() {
+        assert!(may_write_include_key(r#"{ a: { $include: "x.json5" } }"#));
+        assert!(may_write_include_key(
+            r#"{ a: { "\u0024include": "x.json5" } }"#
+        ));
+        assert!(may_write_include_key(
+            r#"{ a: { "$incl\ude": "x.json5" } }"#
+        ));
+        assert!(!may_write_include_key(
+            r#"{ a: { include: "x.json5" }, b: "$inc", c: "lude" }"#
+        ));
     }
 
     #[test]

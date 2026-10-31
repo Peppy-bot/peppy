@@ -501,3 +501,57 @@ fn an_included_value_is_parsed_at_its_place_in_the_document() {
     assert_eq!(error, written);
     assert!(error.contains("integer `42`"), "{error}");
 }
+
+/// A document that holds an include is parsed from its resolved value, so
+/// every string that JSON5 writes reaches the typed document as written:
+/// the line and paragraph separators U+2028 and U+2029 too, in the document
+/// and in the included file.
+#[test]
+fn a_document_with_an_include_keeps_each_character_of_its_strings() {
+    let root = tempfile::tempdir().unwrap();
+    write(
+        &root.path().join("gains.json5"),
+        r#"{ label: "three\u2029four" }"#,
+    );
+    let launcher = root.path().join("teleop.json5");
+    write(
+        &launcher,
+        &launcher_with_arguments(r#"{ note: "one\u2028two", gains: { $include: "gains.json5" } }"#),
+    );
+    let parsed = PeppyLauncherParser::from_path(&launcher).expect("the launcher parses");
+    assert_eq!(
+        first_arguments(&parsed),
+        json!({ "note": "one\u{2028}two", "gains": { "label": "three\u{2029}four" } })
+    );
+}
+
+/// The key `$include` written with an escape is the key `$include`.
+#[test]
+fn an_include_key_written_with_an_escape_is_an_include() {
+    let root = tempfile::tempdir().unwrap();
+    write(&root.path().join("rate.json5"), "30");
+    let launcher = root.path().join("teleop.json5");
+    write(
+        &launcher,
+        &launcher_with_arguments(r#"{ rate_hz: { "\u0024include": "rate.json5" } }"#),
+    );
+    let parsed = PeppyLauncherParser::from_path(&launcher).expect("the launcher parses");
+    assert_eq!(first_arguments(&parsed), json!({ "rate_hz": 30 }));
+}
+
+/// A document that writes `$include` in a string and holds no include
+/// object is read as a document with no include.
+#[test]
+fn the_text_of_an_include_key_in_a_string_is_no_include() {
+    let root = tempfile::tempdir().unwrap();
+    let launcher = root.path().join("teleop.json5");
+    write(
+        &launcher,
+        &launcher_with_arguments(r#"{ note: "write { $include: path } to include a file" }"#),
+    );
+    let parsed = PeppyLauncherParser::from_path(&launcher).expect("the launcher parses");
+    assert_eq!(
+        first_arguments(&parsed),
+        json!({ "note": "write { $include: path } to include a file" })
+    );
+}

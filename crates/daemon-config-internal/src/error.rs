@@ -62,20 +62,44 @@ where
     serde_path_to_error::deserialize(&mut deserializer).map_err(|path_err| {
         let path = path_err.path().to_string();
         let serde_json5::Error::Message { msg, .. } = path_err.into_inner();
-
-        // A structured refusal already has a rich message; don't prepend path.
-        if let Some(refusal) = structured_refusal(&msg) {
-            return Error::Parsing(refusal);
-        }
-
-        // Standard serde error: prepend path if non-empty.
-        let message = if path.is_empty() || path == "." {
-            msg
-        } else {
-            format!("{path}: {msg}")
-        };
-        Error::Parsing(ParsingError::CannotParseConfig(message))
+        refusal_at_path(&path, msg)
     })
+}
+
+/// Deserializes `value`, a document read from JSON5 into a JSON value, with
+/// the field-path tracking and the refusals of
+/// [`deserialize_json5_with_path`].
+pub fn deserialize_value_with_path<T>(value: serde_json::Value) -> Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_path_to_error::deserialize(value).map_err(|path_err| {
+        let path = path_err.path().to_string();
+        // An error raised on a JSON value has no position in a text, so its
+        // text is the message of the deserializer alone.
+        refusal_at_path(&path, path_err.into_inner().to_string())
+    })
+}
+
+/// The refusal of the deserializer message `msg`, raised at the JSON path
+/// `path`: the typed refusal that a custom deserializer encoded in it, which
+/// already names its place, else `msg` after its path.
+fn refusal_at_path(path: &str, msg: String) -> Error {
+    match structured_refusal(&msg) {
+        Some(refusal) => Error::Parsing(refusal),
+        None => Error::Parsing(ParsingError::CannotParseConfig(message_at_path(path, msg))),
+    }
+}
+
+/// `msg` after the JSON path `path` at which a deserializer raised it, as
+/// `execution.run_cmd: msg`, or `msg` alone when it was raised at the root
+/// of the document.
+pub(crate) fn message_at_path(path: &str, msg: String) -> String {
+    if path.is_empty() || path == "." {
+        msg
+    } else {
+        format!("{path}: {msg}")
+    }
 }
 
 /// The typed refusal a custom deserializer encoded in `msg` as a

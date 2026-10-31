@@ -11,7 +11,7 @@ pub(super) mod start;
 pub(super) mod watchers;
 
 use self::clock::{announce_clock_domains, plan_clocks};
-use self::feedback::{publish_error, publish_stdout};
+use self::feedback::{publish_error, publish_stdout, publish_warning};
 use self::joinable::{JoinableBuild, resolve_joinable_nodes};
 use self::nodes::add_nodes_to_stack;
 use self::orchestrate::{
@@ -301,16 +301,16 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
 
     // Step 2a: The resolution knows which targets are daemon targets, so
     // every scope is parsed into its interface's type here, before anything
-    // starts, and its dates are held to the latest date on Earth. A
-    // `robot_membership` scope that holds gives the nodes a join of its
-    // options can bring.
+    // starts. A `robot_membership` scope that holds gives the nodes a join of
+    // its options can bring. A date of a scope after the latest date on
+    // Earth gets a warning alone: no node reads it, and the clock of this
+    // machine does not stop the launch.
     let joinable = match check_planned_daemon_scopes(
         &prepared,
         &planned,
         &copy_membership,
         ScopeCheck::Launch {
             selection: &selection,
-            today: daemon_config::daemon_interface::latest_date_on_earth(),
         },
     ) {
         Ok(joinable) => joinable,
@@ -319,6 +319,17 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             return ChangeEnd::stopped(rejected(reason));
         }
     };
+    for future_date in daemon_config::launcher::daemon_scope_dates_after(
+        planned.iter().map(|item| (&item.deployment, &item.targets)),
+        daemon_config::daemon_interface::latest_date_on_earth(),
+    ) {
+        publish_warning(
+            &ctx,
+            future_date.to_string(),
+            LaunchFeedbackStep::LauncherStep,
+        )
+        .await;
+    }
 
     // Step 2b: The clock every instance reads, with a fresh lifetime minted
     // for each simulated domain this launch declares. A replacement therefore

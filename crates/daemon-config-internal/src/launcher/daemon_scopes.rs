@@ -15,11 +15,16 @@
 //!
 //! The launch and `peppy stack resolve` also hold each scope against the
 //! launcher and the stack selection ([`ScopeCheck::Launch`]), which gives the
-//! joinable nodes of the launch, and hold its dates against today's date in
-//! UTC. A join runs the rules of each instance alone ([`ScopeCheck::Join`]):
-//! the launcher and the stack selection of a launch do not change, so a join
-//! cannot change that verdict, and a date that held at the launch is not in
-//! the future at a later join.
+//! joinable nodes of the launch. A join runs the rules of each instance
+//! alone ([`ScopeCheck::Join`]): the launcher and the stack selection of a
+//! launch do not change, so a join cannot change that verdict.
+//!
+//! The dates of the scopes ([`daemon_scope_dates_after`]) are information
+//! for a buyer that no node reads, and the clock of the machine that runs a
+//! check sets the latest date that holds. `peppy stack resolve`, which the
+//! CI of a hub runs, refuses a date in the future; the launch warns about
+//! one and goes on, so the clock of a machine does not stop its launch; a
+//! join reads no date.
 
 use super::compose::{CopyMembership, PreparedLauncher, UnitSelection};
 use super::joinable::JoinableNodes;
@@ -185,13 +190,9 @@ pub struct DaemonScopeRefusals(pub Vec<DaemonScopeError>);
 #[derive(Debug, Clone, Copy)]
 pub enum ScopeCheck<'a> {
     /// A launch, or `peppy stack resolve`, of the stack `selection`
-    /// resolves: the rules of each instance, each scope against the launcher
-    /// and the stack, and the dates of each scope against `today`, the
-    /// latest date on Earth at the run (`latest_date_on_earth`).
-    Launch {
-        selection: &'a UnitSelection,
-        today: NaiveDate,
-    },
+    /// resolves: the rules of each instance, and each scope against the
+    /// launcher and the stack.
+    Launch { selection: &'a UnitSelection },
     /// A join: the rules of each instance alone.
     Join,
 }
@@ -232,6 +233,43 @@ pub fn check_daemon_scopes<'a>(
     } else {
         Err(DaemonScopeRefusals(verdicts.refusals))
     }
+}
+
+/// One [`DaemonScopeError::DateInFuture`] for each date of a daemon scope
+/// of the deployments `deployments` that is after `today`, each deployment
+/// beside its targets. A scope that is absent, vacant or that does not parse
+/// gives none, because [`check_daemon_scopes`] refuses it or reads no date
+/// of it.
+///
+/// `peppy stack resolve` refuses these dates, and the launch warns about
+/// them, both with `today` the latest date on Earth
+/// (`latest_date_on_earth`).
+pub fn daemon_scope_dates_after<'a>(
+    deployments: impl IntoIterator<Item = (&'a Deployment, &'a DeploymentTargets)>,
+    today: NaiveDate,
+) -> Vec<DaemonScopeError> {
+    let mut future_dates = Vec::new();
+    for (deployment, targets) in deployments {
+        for instance in &deployment.instances {
+            for (daemon_target, interface) in &targets.daemon {
+                let Some(scope) = instance.daemon_scopes.get(daemon_target) else {
+                    continue;
+                };
+                let Ok(TargetScope::Scoped(parsed)) = interface.parse_target_scope(scope) else {
+                    continue;
+                };
+                future_dates.extend(parsed.dates_after(today).into_iter().map(|reason| {
+                    DaemonScopeError::DateInFuture {
+                        instance: instance.instance_id.as_str().to_owned(),
+                        daemon_target: daemon_target.clone(),
+                        interface: interface.label(),
+                        reason,
+                    }
+                }));
+            }
+        }
+    }
+    future_dates
 }
 
 fn check_instance(
@@ -368,17 +406,9 @@ fn check_scope(
             return;
         }
     };
-    let ScopeCheck::Launch { selection, today } = check else {
+    let ScopeCheck::Launch { selection } = check else {
         return;
     };
-    refusals.extend(parsed.dates_after(today).into_iter().map(|reason| {
-        DaemonScopeError::DateInFuture {
-            instance: instance.to_owned(),
-            daemon_target: daemon_target.to_owned(),
-            interface: interface.label(),
-            reason,
-        }
-    }));
     match parsed.check_launch(prepared, selection) {
         Ok(joinable) => verdicts.joinable.merge(joinable),
         Err(reasons) => refusals.extend(reasons.into_iter().map(|reason| {

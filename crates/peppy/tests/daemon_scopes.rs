@@ -657,7 +657,8 @@ fn resolve_reads_the_product_sheet_that_the_launcher_includes() {
 
 /// `peppy stack resolve` holds the dates of a product sheet to the latest date
 /// on Earth: a date of the year 9999 is in the future on any machine that runs
-/// this test, and the refusal names the option, the model and the field.
+/// this test, and the refusal names the option, the model and the field. A
+/// launch only warns about such a date, so the refusal says so.
 #[test]
 fn resolve_refuses_a_product_sheet_dated_in_the_future() {
     let (dirs, root) = cold_home();
@@ -670,6 +671,13 @@ fn resolve_refuses_a_product_sheet_dated_in_the_future() {
     let error = refusal(
         &dirs,
         launcher(root.path(), ENDPOINT, &scoped(SCOPE_WITH_PRODUCT)),
+    );
+    assert!(
+        error.contains(
+            "the daemon scopes give dates after the latest date on Earth, which a launch warns \
+             about"
+        ) && !error.contains("a launch would reject"),
+        "{error}"
     );
     for field in ["price", "availability"] {
         assert!(
