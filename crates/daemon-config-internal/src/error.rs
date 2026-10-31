@@ -578,6 +578,18 @@ impl std::fmt::Display for ObservationSlotUncovered {
 
 impl std::error::Error for ObservationSlotUncovered {}
 
+/// Payload for [`ParsingError::Include`]: an `$include` of a launcher
+/// document that peppy does not resolve, with the document, the JSON path of
+/// the include object in it, the include path as written, and why.
+#[derive(Debug, Clone, Error)]
+#[error("{document}: the `$include` of `{include}` at `{at}` is refused: {reason}")]
+pub struct IncludeRefusal {
+    pub document: String,
+    pub at: String,
+    pub include: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Error, Clone)]
 pub enum ParsingError {
     // -- General document syntax
@@ -587,6 +599,9 @@ pub enum ParsingError {
     CannotParseConfig(String),
     #[error("Empty content found in: {0}")]
     EmptyContent(String),
+    /// An `$include` of a launcher document that peppy does not resolve.
+    #[error(transparent)]
+    Include(Box<IncludeRefusal>),
 
     // -- launcher instances
     #[error("Duplicate name: {0}")]

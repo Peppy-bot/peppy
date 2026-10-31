@@ -7,13 +7,14 @@ use super::super::composition::{
     OriginatedAdjustment, SelectionCondition, option_origin, validate_fragment_references,
     validate_guard,
 };
+use super::super::repository_paths::{LauncherPaths, PathRefusal, resolve_repository_path};
 use super::super::types::PeppyLauncher;
 use super::adjustments::{CopyAxis, LauncherAdjustment, Routed, ids_beside, route};
 use super::constraints::{constraint_names_axis, names_axis};
 use super::error::{AdjustmentTargetAmbiguous, CompositionError, CopyAdjustmentTargetUndefined};
 use super::select::{CopyOrigin, UnitSelection, resolve_copy};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::{Component as PathComponent, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// One fragment, loaded and paired with the label the resolve report and
 /// the error messages name it by.
@@ -855,7 +856,7 @@ struct FragmentReader<'a> {
     launcher_file: &'a Path,
     // Resolved at the first file reference. Inline-only compositions
     // perform no filesystem reads.
-    paths: Option<FragmentPaths>,
+    paths: Option<LauncherPaths>,
     // Several options may reference one fragment file (the relay fragment
     // under both simulated robots); it is read and parsed once, keyed by
     // its resolved path, and keeps the identity it was given.
@@ -909,7 +910,9 @@ impl FragmentReader<'_> {
         directory: Option<&Path>,
     ) -> Result<(usize, Fragment, PathBuf), CompositionError> {
         if self.paths.is_none() {
-            self.paths = Some(FragmentPaths::for_launcher(self.launcher_file)?);
+            let paths = LauncherPaths::of_launcher(self.launcher_file)
+                .map_err(|reason| CompositionError::LauncherDirectory { reason })?;
+            self.paths = Some(paths);
         }
         let paths = self.paths.as_ref().expect("resolved just above");
         let base = directory.unwrap_or(&paths.directory);
@@ -917,7 +920,7 @@ impl FragmentReader<'_> {
         if let Some((id, cached)) = self.files.get(&path) {
             return Ok((*id, cached.clone(), path));
         }
-        let body = read_fragment_file(&path, raw, origin)?;
+        let body = read_fragment_file(&path, paths, raw, origin)?;
         let id = self.fresh_id();
         self.files.insert(path.clone(), (id, body.clone()));
         Ok((id, body, path))
@@ -954,127 +957,54 @@ fn relative_path(base: &Path, path: &Path) -> String {
 }
 
 /// Reads and parses one `launcher_fragment/v1` file through the shared
-/// fragment parser (which owns the read-and-refuse-empty half).
-fn read_fragment_file(path: &Path, raw: &str, origin: &str) -> Result<Fragment, CompositionError> {
-    let parsed = LauncherFragmentParser::from_path(path).map_err(|e| match &e {
-        crate::error::Error::Parsing(
-            crate::error::ParsingError::CannotRead(..)
-            | crate::error::ParsingError::EmptyContent(..),
-        ) => CompositionError::FragmentUnreadable {
-            path: raw.to_owned(),
-            origin: origin.to_owned(),
-            detail: e.to_string(),
-        },
-        other => CompositionError::FragmentInvalid {
-            path: raw.to_owned(),
-            origin: origin.to_owned(),
-            detail: other.to_string(),
-        },
-    })?;
+/// fragment parser (which owns the read-and-refuse-empty half), its includes
+/// resolved inside the launcher's repository.
+fn read_fragment_file(
+    path: &Path,
+    paths: &LauncherPaths,
+    raw: &str,
+    origin: &str,
+) -> Result<Fragment, CompositionError> {
+    let parsed =
+        LauncherFragmentParser::from_launcher_fragment(path, paths).map_err(|e| match &e {
+            crate::error::Error::Parsing(
+                crate::error::ParsingError::CannotRead(..)
+                | crate::error::ParsingError::EmptyContent(..),
+            ) => CompositionError::FragmentUnreadable {
+                path: raw.to_owned(),
+                origin: origin.to_owned(),
+                detail: e.to_string(),
+            },
+            other => CompositionError::FragmentInvalid {
+                path: raw.to_owned(),
+                origin: origin.to_owned(),
+                detail: other.to_string(),
+            },
+        })?;
     Ok(parsed.body)
 }
 
-/// Canonical launch directory and the nearest enclosing Peppy repository.
-/// A standalone launcher's repository is its own directory.
-struct FragmentPaths {
-    directory: PathBuf,
-    boundary: PathBuf,
-}
-
-impl FragmentPaths {
-    fn for_launcher(file: &Path) -> Result<Self, CompositionError> {
-        let directory = launcher_dir_of(file).canonicalize().map_err(|error| {
-            CompositionError::LauncherDirectory {
-                reason: format!(
-                    "{} cannot be resolved: {error}",
-                    launcher_dir_of(file).display()
-                ),
-            }
-        })?;
-        for ancestor in directory.ancestors() {
-            let index = ancestor.join(crate::consts::REPOSITORY_INDEX_FILE);
-            match index.try_exists() {
-                Ok(false) => continue,
-                Err(error) => {
-                    return Err(CompositionError::LauncherDirectory {
-                        reason: format!("{} cannot be read: {error}", index.display()),
-                    });
-                }
-                Ok(true) => {}
-            }
-            crate::repository::PeppyRepositoryIndexParser::from_path(&index).map_err(|error| {
-                CompositionError::LauncherDirectory {
-                    reason: format!("{} does not parse: {error}", index.display()),
-                }
-            })?;
-            return Ok(Self {
-                boundary: ancestor.to_path_buf(),
-                directory,
-            });
-        }
-        Ok(Self {
-            boundary: directory.clone(),
-            directory,
-        })
-    }
-}
-
-/// The directory fragment paths resolve against: the launcher's own, or the
-/// working directory when the launcher path itself was elided.
-fn launcher_dir_of(launcher_file: &Path) -> PathBuf {
-    match launcher_file.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-        _ => PathBuf::from("."),
-    }
-}
-
-/// Paths are relative to the declaring document's directory. Both the
-/// written path and the resolved symlink target must stay inside the
-/// launcher's repository.
+/// The canonical file of the fragment path `raw` that `origin` writes in a
+/// document of `directory`, under the path rules of
+/// [`resolve_repository_path`].
 fn resolve_fragment_path(
-    paths: &FragmentPaths,
+    paths: &LauncherPaths,
     directory: &Path,
     raw: &str,
     origin: &str,
 ) -> Result<PathBuf, CompositionError> {
-    let refuse = |reason: &str| {
-        Err(CompositionError::FragmentPath {
+    resolve_repository_path(paths, directory, raw).map_err(|refusal| match refusal {
+        PathRefusal::Rule(reason) => CompositionError::FragmentPath {
             path: raw.to_owned(),
             origin: origin.to_owned(),
             reason: reason.to_owned(),
-        })
-    };
-
-    let relative = Path::new(raw);
-    if relative.is_absolute() {
-        return refuse("it is absolute");
-    }
-    let mut cleaned = directory.to_path_buf();
-    for component in relative.components() {
-        match component {
-            PathComponent::Normal(segment) => cleaned.push(segment),
-            PathComponent::CurDir => return refuse("it contains a `.` segment"),
-            PathComponent::ParentDir => {
-                if cleaned == paths.boundary {
-                    return refuse("it leaves the launcher's repository");
-                }
-                cleaned.pop();
-            }
-            _ => return refuse("it is not a plain relative path"),
-        }
-    }
-    let full = directory.join(relative);
-    let canonical = full
-        .canonicalize()
-        .map_err(|e| CompositionError::FragmentUnreadable {
+        },
+        PathRefusal::Unresolved(error) => CompositionError::FragmentUnreadable {
             path: raw.to_owned(),
             origin: origin.to_owned(),
-            detail: e.to_string(),
-        })?;
-    if !canonical.starts_with(&paths.boundary) {
-        return refuse("it leaves the launcher's repository through a symlink");
-    }
-    Ok(canonical)
+            detail: error.to_string(),
+        },
+    })
 }
 
 #[cfg(test)]

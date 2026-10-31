@@ -232,7 +232,10 @@ fn check_daemon_scope_rules(
             .iter()
             .map(|(deployment, targets)| (*deployment, targets)),
         copies,
-        ScopeCheck::Launch(selection),
+        ScopeCheck::Launch {
+            selection,
+            today: daemon_config::daemon_interface::latest_date_on_earth(),
+        },
     )
     .map_err(|refusals| {
         Error::ExecutionFailed(format!(

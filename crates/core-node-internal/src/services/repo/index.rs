@@ -618,7 +618,7 @@ pub(crate) fn resolve_declared_item(
     let bytes = std::fs::read(&canonical).map_err(|e| format!("cannot be read: {e}"))?;
     let content = std::str::from_utf8(&bytes).map_err(|e| format!("is not valid UTF-8: {e}"))?;
 
-    let declared = declaration_of(item.kind, content, item.path.as_path())
+    let declared = declaration_of(item.kind, content, root, &joined)
         .map_err(|detail| format!("is not a {}: {detail}", item.kind))?;
     let expected_tag = item.tag.map(ItemTag::as_str).unwrap_or_default();
     if declared.name != item.name.as_str() || declared.tag != expected_tag {
@@ -651,9 +651,14 @@ struct Declaration {
 /// disagree. `Err` carries why the file is not a usable `kind`: it does not
 /// parse as one, carries a `peppy_schema` that is not this kind's, or (for a
 /// launcher) has no usable file stem to take a name from.
+///
+/// `path` is the file of the document under the repository root `root`: a
+/// launcher takes its name from its file stem, and its includes resolve
+/// against its directory and stay inside `root`.
 fn declaration_of(
     kind: RepoItemKind,
     content: &str,
+    root: &Path,
     path: &Path,
 ) -> std::result::Result<Declaration, String> {
     match kind {
@@ -669,7 +674,8 @@ fn declaration_of(
             })
         }
         RepoItemKind::Launcher => {
-            let parsed = PeppyLauncherParser::from_content(content).map_err(|e| e.to_string())?;
+            let parsed = PeppyLauncherParser::from_repository_file(content, path, root)
+                .map_err(|e| e.to_string())?;
             if parsed.peppy_schema != PeppySchema::LauncherV1 {
                 return Err("wrong schema tag".to_owned());
             }
@@ -1015,13 +1021,14 @@ fn collect_item(
     };
     // The walk records where an identity is declared and nothing else, so
     // a node's links are not carried into the index.
-    let Declaration { name, tag, .. } = match declaration_of(kind, content, ctx.config_path) {
-        Ok(declaration) => declaration,
-        Err(e) => {
-            skip(e);
-            return;
-        }
-    };
+    let Declaration { name, tag, .. } =
+        match declaration_of(kind, content, ctx.root, ctx.config_path) {
+            Ok(declaration) => declaration,
+            Err(e) => {
+                skip(e);
+                return;
+            }
+        };
 
     let claimants = claims.entry((kind, name.clone(), tag.clone())).or_default();
     claimants.push(relative_path.clone());
@@ -1238,6 +1245,98 @@ mod tests {
 
         let item = &walked.items[0];
         assert_eq!(item.relative_path, "nodes/my_sensor/peppy.json5");
+    }
+
+    /// A launcher whose description is an include of a file in a sibling
+    /// directory, in a repository with no index yet.
+    fn write_launcher_with_included_description(repo: &Path) {
+        std::fs::create_dir_all(repo.join("launchers")).unwrap();
+        std::fs::create_dir_all(repo.join("shared")).unwrap();
+        std::fs::write(
+            repo.join("launchers/teleop.json5"),
+            r#"{
+  peppy_schema: "launcher/v1",
+  description: { $include: "../shared/description.json5" },
+  deployments: []
+}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            repo.join("shared/description.json5"),
+            r#"["A launcher whose description is shared."]"#,
+        )
+        .unwrap();
+    }
+
+    /// The walk reads a launcher with its includes inside the walked root,
+    /// also before the root holds its index, and an included file, which
+    /// declares no `peppy_schema`, is no item and no malformed document.
+    /// Reading the published repository then gives the launcher the included
+    /// description.
+    #[test]
+    fn walk_directory_reads_a_launcher_with_its_includes_inside_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("launchers-hub");
+        write_launcher_with_included_description(&repo);
+
+        let walked = walk_directory(&repo);
+        assert_eq!(found(&walked, RepoItemKind::Launcher), vec!["teleop"]);
+        assert_eq!(walked.items.len(), 1, "{:?}", walked.items);
+        assert!(walked.malformed.is_empty(), "{:?}", walked.malformed);
+
+        let index = generate_repository_index(&repo).expect("index the repository");
+        write_repository_index(&repo, &index).expect("write the index");
+        let published = read_published_items(
+            &repo,
+            &ReadSource::Fs {
+                excluded: Vec::new(),
+            },
+        )
+        .expect("read the published items");
+        let entries = build_cache_entries(published).expect("build cache entries");
+        assert_eq!(entries.launchers.len(), 1);
+        assert_eq!(
+            entries.launchers[0]
+                .descriptions
+                .description
+                .summary()
+                .as_str(),
+            "A launcher whose description is shared."
+        );
+    }
+
+    /// A launcher whose include leaves the walked root is a malformed
+    /// document, with the include named.
+    #[test]
+    fn walk_directory_reports_a_launcher_whose_include_leaves_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("launchers-hub");
+        write_launcher_json5(&repo.join("teleop.json5"));
+        std::fs::write(
+            repo.join("teleop.json5"),
+            r#"{
+  peppy_schema: "launcher/v1",
+  description: { $include: "../outside.json5" },
+  deployments: []
+}"#,
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("outside.json5"), r#"["Outside."]"#).unwrap();
+
+        let walked = walk_directory(&repo);
+        assert!(found(&walked, RepoItemKind::Launcher).is_empty());
+        let [malformed] = walked.malformed.as_slice() else {
+            panic!("one malformed document: {:?}", walked.malformed);
+        };
+        assert_eq!(malformed.path, "teleop.json5");
+        assert!(
+            malformed.reason.contains(
+                "the `$include` of `../outside.json5` at `description` is refused: it leaves \
+                 the launcher's repository"
+            ),
+            "{}",
+            malformed.reason
+        );
     }
 
     /// The repository's own index declares no item. It is the output of

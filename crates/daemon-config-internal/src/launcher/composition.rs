@@ -17,6 +17,8 @@
 //! the grammar and the checks that need no I/O and no selection.
 
 use super::compose::COPY_PLACEMENT;
+use super::include::{DocumentSource, deserialize_launcher_document};
+use super::repository_paths::LauncherPaths;
 use super::types::{
     Deployment, EACH_TARGET_ONCE, FrameworkOverrides, LauncherFramework, LinkValue,
 };
@@ -1249,16 +1251,35 @@ impl<'de> Deserialize<'de> for OptionSpec {
 /// Fragment files have no fixed name: any `.json5` file whose body declares
 /// the fragment schema is one. A fragment is inert on its own; it only ever
 /// contributes to the document whose option references it.
+///
+/// Each `$include` of the document is resolved before the parse (see
+/// [`super::include`]), against the directory of the fragment's file.
 pub struct LauncherFragmentParser;
 
 impl LauncherFragmentParser {
+    /// The fragment at `file` read alone: its includes stay inside the
+    /// repository of the nearest `peppy_repository.json5` above it, or
+    /// inside its own directory when there is none.
     pub fn from_path(file: impl AsRef<std::path::Path>) -> crate::error::Result<LauncherFragment> {
-        let content = crate::parsing::read_non_empty_file(file.as_ref())?;
-        Self::from_content(&content)
+        let path = file.as_ref();
+        let content = crate::parsing::read_non_empty_file(path)?;
+        deserialize_launcher_document(&content, DocumentSource::File(path))
     }
 
+    /// The fragment at `file` that the launcher whose paths are `paths`
+    /// references: its includes stay inside the launcher's repository.
+    pub(super) fn from_launcher_fragment(
+        file: &std::path::Path,
+        paths: &LauncherPaths,
+    ) -> crate::error::Result<LauncherFragment> {
+        let content = crate::parsing::read_non_empty_file(file)?;
+        deserialize_launcher_document(&content, DocumentSource::FragmentOf { file, paths })
+    }
+
+    /// The fragment `content`. The text has no directory, so an `$include`
+    /// in it is refused.
     pub fn from_content(content: &str) -> crate::error::Result<LauncherFragment> {
-        crate::error::deserialize_json5_with_path(content)
+        deserialize_launcher_document(content, DocumentSource::Text)
     }
 }
 

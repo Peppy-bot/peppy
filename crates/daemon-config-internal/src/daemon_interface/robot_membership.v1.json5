@@ -18,7 +18,7 @@
     services: [
       {
         name: "list",
-        description: "The options of the scope with their models and their features, the machines of the federation now, the copies of these options on the stack, in name order, the addition or removal of a copy of one of them that runs now, and the copies of them that the launch started. Each copy, without its `running`, and each launch copy is a valid `join` goal. For a copy that `join` added, the goal adds the same copy on the same machines. A copy that a word of the command line, or the copy's entry in the launcher, shaped with a part that no feature of the scope names, or with arguments or adjustments of its own, can come back different from the listed one.",
+        description: "The options of the scope with their models, the product sheets of these models and their features, the machines of the federation now, the copies of these options on the stack, in name order, the addition or removal of a copy of one of them that runs now, and the copies of them that the launch started. Each copy, without its `running`, and each launch copy is a valid `join` goal. For a copy that `join` added, the goal adds the same copy on the same machines. A copy that a word of the command line, or the copy's entry in the launcher, shaped with a part that no feature of the scope names, or with arguments or adjustments of its own, can come back different from the listed one.",
         response_message_format: {
           options: {
             $type: "array",
@@ -37,6 +37,30 @@
                 },
               },
               kind: { $type: "string", $enum: ["simulated", "physical"], $description: "simulated when every instance that the option and its features can bring reads the clock of a simulation, else physical." },
+              // Each part that the sheet does not give is an empty value,
+              // because a field below the root of a message is never
+              // optional.
+              product: {
+                $type: "object",
+                $description: "The product sheet of the model, as the scope gives it: what a buyer of a robot of the model reads. Each part that the sheet does not give is empty: an empty string, or 0 for a number; an option with no sheet has every part empty.",
+                vendor: { $type: "string", $description: "The name of the seller; empty when the sheet names none." },
+                purchase_url: { $type: "string", $description: "The https page of the offer; empty when the sheet gives none." },
+                price: {
+                  $type: "object",
+                  $description: "The price of the offer that purchase_url opens; every field empty when the sheet gives no price.",
+                  amount: { $type: "f64", $description: "The amount, more than 0; 0 when the sheet gives no price." },
+                  currency: { $type: "string", $description: "The ISO 4217 code of the currency of the amount; empty when the sheet gives no price." },
+                  checked_on: { $type: "string", $description: "The date of the last check of the price, as YYYY-MM-DD; empty when the sheet gives no price." },
+                },
+                availability: {
+                  $type: "object",
+                  $description: "Whether the offer that purchase_url opens can be bought; every field empty when the sheet gives no availability.",
+                  state: { $type: "string", $description: "in_stock, preorder, out_of_stock or discontinued; empty when the sheet gives no availability." },
+                  checked_on: { $type: "string", $description: "The date of the last check of the state, as YYYY-MM-DD; empty when the sheet gives no availability." },
+                },
+                mass_kg: { $type: "f64", $description: "The mass in kilograms of the robot of the offer, as the vendor states it; 0 when the sheet gives none." },
+                height_m: { $type: "f64", $description: "The height in metres of the robot of the offer, as the vendor states it; 0 when the sheet gives none." },
+              },
             },
           },
           core_nodes: { $type: "array", $items: "string", $description: "This machine and every live daemon of the same workspace or project, each once, in name order, read on every call." },

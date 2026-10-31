@@ -1,0 +1,12 @@
+// The product sheet of the SO-101, the model `so101`: one offer of the
+// robot, with the facts that its seller states and the date of each check.
+// Each launcher that offers the model includes this file in its scope as
+// `product: { $include: "products/so101.json5" }`, the path relative to the
+// directory of the launcher. Every field is optional: give only what the
+// seller states.
+{
+  vendor: "WowRobo Robotics",
+  purchase_url: "https://shop.wowrobo.com/products/so-arm101-diy-kit-assembled-version-1?variant=46588641607897",
+  price: { amount: 299, currency: "USD", checked_on: "2026-10-31" },
+  availability: { state: "in_stock", checked_on: "2026-10-31" },
+}

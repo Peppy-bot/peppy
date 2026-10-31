@@ -15,14 +15,17 @@
 //!
 //! The launch and `peppy stack resolve` also hold each scope against the
 //! launcher and the stack selection ([`ScopeCheck::Launch`]), which gives the
-//! joinable nodes of the launch. A join runs the rules of each instance alone
-//! ([`ScopeCheck::Join`]): the launcher and the stack selection of a launch
-//! do not change, so a join cannot change that verdict.
+//! joinable nodes of the launch, and hold its dates against today's date in
+//! UTC. A join runs the rules of each instance alone ([`ScopeCheck::Join`]):
+//! the launcher and the stack selection of a launch do not change, so a join
+//! cannot change that verdict, and a date that held at the launch is not in
+//! the future at a later join.
 
 use super::compose::{CopyMembership, PreparedLauncher, UnitSelection};
 use super::joinable::JoinableNodes;
 use super::types::Deployment;
 use crate::internal::daemon_interface::{DaemonInterface, TargetScope, served_targets};
+use chrono::NaiveDate;
 use config::node::Manifest;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -111,6 +114,16 @@ pub enum DaemonScopeError {
         reason: String,
     },
     #[error(
+        "the scope of daemon target `{daemon_target}` ({interface}) on instance `{instance}` \
+         gives a date in the future: {reason}"
+    )]
+    DateInFuture {
+        instance: String,
+        daemon_target: String,
+        interface: String,
+        reason: String,
+    },
+    #[error(
         "instance `{instance}` has daemon target `{daemon_target}` and declares `core_node: \
          \"{core_node}\"`; an instance with a daemon target runs on the coordinator, the \
          daemon whose stack it reads and changes, so remove `core_node`"
@@ -171,10 +184,14 @@ pub struct DaemonScopeRefusals(pub Vec<DaemonScopeError>);
 /// Which checks a run holds each scope to.
 #[derive(Debug, Clone, Copy)]
 pub enum ScopeCheck<'a> {
-    /// A launch, or `peppy stack resolve`, of the stack this selection
-    /// resolves: the rules of each instance, and each scope against the
-    /// launcher and the stack.
-    Launch(&'a UnitSelection),
+    /// A launch, or `peppy stack resolve`, of the stack `selection`
+    /// resolves: the rules of each instance, each scope against the launcher
+    /// and the stack, and the dates of each scope against `today`, the
+    /// latest date on Earth at the run (`latest_date_on_earth`).
+    Launch {
+        selection: &'a UnitSelection,
+        today: NaiveDate,
+    },
     /// A join: the rules of each instance alone.
     Join,
 }
@@ -351,9 +368,17 @@ fn check_scope(
             return;
         }
     };
-    let ScopeCheck::Launch(selection) = check else {
+    let ScopeCheck::Launch { selection, today } = check else {
         return;
     };
+    refusals.extend(parsed.dates_after(today).into_iter().map(|reason| {
+        DaemonScopeError::DateInFuture {
+            instance: instance.to_owned(),
+            daemon_target: daemon_target.to_owned(),
+            interface: interface.label(),
+            reason,
+        }
+    }));
     match parsed.check_launch(prepared, selection) {
         Ok(joinable) => verdicts.joinable.merge(joinable),
         Err(reasons) => refusals.extend(reasons.into_iter().map(|reason| {

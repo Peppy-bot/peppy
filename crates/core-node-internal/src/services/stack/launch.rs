@@ -301,13 +301,17 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
 
     // Step 2a: The resolution knows which targets are daemon targets, so
     // every scope is parsed into its interface's type here, before anything
-    // starts. A `robot_membership` scope that holds gives the nodes a join of
-    // its options can bring.
+    // starts, and its dates are held to the latest date on Earth. A
+    // `robot_membership` scope that holds gives the nodes a join of its
+    // options can bring.
     let joinable = match check_planned_daemon_scopes(
         &prepared,
         &planned,
         &copy_membership,
-        ScopeCheck::Launch(&selection),
+        ScopeCheck::Launch {
+            selection: &selection,
+            today: daemon_config::daemon_interface::latest_date_on_earth(),
+        },
     ) {
         Ok(joinable) => joinable,
         Err(reason) => {

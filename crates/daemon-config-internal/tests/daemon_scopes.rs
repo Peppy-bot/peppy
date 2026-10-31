@@ -20,6 +20,18 @@ use std::path::Path;
 mod common;
 use common::{copy_name, name, words};
 
+/// The latest date on Earth at the launch checks of these tests.
+const TODAY: &str = "2026-10-31";
+
+/// The checks of a launch of the stack `selection` resolves, run on
+/// [`TODAY`].
+fn launch(selection: &UnitSelection) -> ScopeCheck<'_> {
+    ScopeCheck::Launch {
+        selection,
+        today: chrono::NaiveDate::parse_from_str(TODAY, "%Y-%m-%d").expect("a date"),
+    }
+}
+
 /// The scope `simulation_mcp` gives its framework endpoint.
 const SCOPE: &str = r#"{
     max_copies: 4,
@@ -179,7 +191,7 @@ fn refusals(prepared: &PreparedLauncher, flat: &PeppyLauncher) -> Vec<DaemonScop
         prepared,
         flat,
         &CopyMembership::default(),
-        ScopeCheck::Launch(&selection),
+        launch(&selection),
     )
     .expect_err("the scopes are refused")
     .0
@@ -222,8 +234,7 @@ fn a_top_level_scope_runs_in_the_stack_and_copies_join_beside_it() {
     );
 
     let copies = CopyMembership::of(report.copies.iter());
-    check(&prepared, &flat, &copies, ScopeCheck::Launch(&selection))
-        .expect("the scopes hold at launch");
+    check(&prepared, &flat, &copies, launch(&selection)).expect("the scopes hold at launch");
 
     let joined = prepared
         .join(
@@ -280,7 +291,7 @@ fn a_scope_of_an_instance_the_selection_does_not_define_is_skipped() {
         &prepared,
         &composed.launcher,
         &CopyMembership::default(),
-        ScopeCheck::Launch(&composed.selection),
+        launch(&composed.selection),
     )
     .expect("no instance serves a daemon target");
 }
@@ -598,7 +609,7 @@ fn a_vacant_target_holds_with_a_reason_and_names_no_option() {
         &prepared,
         &launcher,
         &CopyMembership::default(),
-        ScopeCheck::Launch(&selection),
+        launch(&selection),
     )
     .expect("a vacant target holds");
     assert_eq!(
@@ -721,7 +732,7 @@ fn an_instance_that_serves_a_daemon_target_runs_on_the_coordinator() {
         &prepared,
         &composed.launcher,
         &copies,
-        ScopeCheck::Launch(&composed.selection),
+        launch(&composed.selection),
     )
     .expect_err("the copy's instance serves a daemon target")
     .0;
@@ -780,7 +791,7 @@ fn every_refusal_is_reported_at_once() {
         &prepared,
         &launcher,
         &CopyMembership::default(),
-        ScopeCheck::Launch(&UnitSelection::default()),
+        launch(&UnitSelection::default()),
     )
     .expect_err("refused");
     assert_eq!(error.0.len(), 3, "{error}");
@@ -861,7 +872,7 @@ fn the_daemon_target_of_a_node_takes_a_scope_or_a_vacancy() {
             &prepared,
             &launcher,
             &CopyMembership::default(),
-            ScopeCheck::Launch(&selection),
+            launch(&selection),
         )
         .unwrap_or_else(|refusals| panic!("{scope} holds: {refusals}"));
         assert_eq!(
@@ -949,7 +960,7 @@ fn a_node_with_a_daemon_target_runs_outside_every_copy() {
         &prepared,
         &composed.launcher,
         &copies,
-        ScopeCheck::Launch(&composed.selection),
+        launch(&composed.selection),
     )
     .expect_err("the copy's instance has a daemon target")
     .0;
@@ -1070,7 +1081,7 @@ fn scope_reasons(prepared: &PreparedLauncher) -> Vec<String> {
         prepared,
         &composed.launcher,
         &CopyMembership::default(),
-        ScopeCheck::Launch(&composed.selection),
+        launch(&composed.selection),
     ) {
         Ok(_) => Vec::new(),
         Err(refusals) => refusals
@@ -1234,7 +1245,7 @@ fn a_robot_named_like_the_trial_copy_passes_the_launch_checks() {
         &prepared,
         &composed.launcher,
         &copies,
-        ScopeCheck::Launch(&composed.selection),
+        launch(&composed.selection),
     )
     .expect("the scope holds");
 }
@@ -1288,7 +1299,7 @@ fn joinable_of(prepared: &PreparedLauncher) -> Vec<(String, Vec<String>)> {
         prepared,
         &composed.launcher,
         &CopyMembership::default(),
-        ScopeCheck::Launch(&composed.selection),
+        launch(&composed.selection),
     )
     .expect("the scopes hold")
     .iter()
@@ -1414,7 +1425,7 @@ fn a_copy_the_launch_starts_leaves_the_joinable_nodes_as_they_are() {
         &prepared,
         &composed.launcher,
         &CopyMembership::of(composed.copies()),
-        ScopeCheck::Launch(&composed.selection),
+        launch(&composed.selection),
     )
     .expect("the scopes hold");
     let labels: Vec<String> = launched
@@ -1422,4 +1433,84 @@ fn a_copy_the_launch_starts_leaves_the_joinable_nodes_as_they_are() {
         .map(|node| node.deployment.source.label())
         .collect();
     assert_eq!(labels, ["openarm:v1", "arm:v1", "brain:v1"]);
+}
+
+/// A launch, and `peppy stack resolve`, refuses a `checked_on` of a product
+/// sheet after the latest date on Earth at the run, naming the option and the field;
+/// a date of that day holds, and a join holds no date.
+#[test]
+fn a_launch_refuses_a_product_sheet_dated_after_today() {
+    let sheet = |checked_on: &str| {
+        format!(
+            r#"{{ target: "framework_controls_inst", set_daemon_scopes: {{ stack: {{
+                max_copies: 2, options: [
+                    {{ option: "openarm_sim", model: "openarm_v2", description: "An OpenArm" }},
+                    {{ option: "so101_sim", model: "so101", description: "An SO-101",
+                       product: {{ purchase_url: "https://shop.example.com/so101",
+                                   price: {{ amount: 130, currency: "USD", checked_on: "{checked_on}" }},
+                                   availability: {{ state: "in_stock", checked_on: "{TODAY}" }} }} }},
+                ] }} }} }},"#
+        )
+    };
+    let prepared = load(&simulation_mcp(&sheet(TODAY), ""));
+    let composed = prepared.launch(&[], &[]).expect("composes");
+    check(
+        &prepared,
+        &composed.launcher,
+        &CopyMembership::default(),
+        launch(&composed.selection),
+    )
+    .expect("a sheet dated today holds");
+
+    let prepared = load(&simulation_mcp(&sheet("2026-11-01"), ""));
+    assert_eq!(
+        refusals(&prepared, &prepared.launch(&[], &[]).unwrap().launcher)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        [
+            "the scope of daemon target `stack` (robot_membership:v1) on instance \
+          `framework_controls_inst` gives a date in the future: options[1].product: the product \
+          sheet of model `so101`: price.checked_on: `2026-11-01` is in the future: the latest \
+          date on Earth is `2026-10-31`, and a `checked_on` is the date of a check that took place"
+        ]
+    );
+    let composed = prepared.launch(&[], &[]).expect("composes");
+    check(
+        &prepared,
+        &composed.launcher,
+        &CopyMembership::default(),
+        ScopeCheck::Join,
+    )
+    .expect("a join holds no date");
+}
+
+/// A product sheet that breaks a rule of the sheet is refused as a scope
+/// that does not parse, with the place of the option, its model and the
+/// field.
+#[test]
+fn a_launch_refuses_a_product_sheet_that_does_not_parse() {
+    let prepared = load(&simulation_mcp(
+        r#"{ target: "framework_controls_inst", set_daemon_scopes: { stack: {
+            max_copies: 2, options: [
+                { option: "openarm_sim", model: "openarm_v2", description: "An OpenArm" },
+                { option: "so101_sim", model: "so101", description: "An SO-101",
+                  product: { purchase_url: "https://shop.example.com/so101",
+                             price: { amount: 130, currency: "USX", checked_on: "2026-10-01" } } },
+            ] } } },"#,
+        "",
+    ));
+    let flat = prepared.launch(&[], &[]).unwrap().launcher;
+    assert_eq!(
+        refusals(&prepared, &flat)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        [
+            "the scope of daemon target `stack` (robot_membership:v1) on instance \
+          `framework_controls_inst` does not parse: options[1].product: the product sheet of \
+          model `so101`: price.currency: `USX` is no ISO 4217 currency; write the active code \
+          of the currency in three capital letters, such as `USD` or `EUR`"
+        ]
+    );
 }

@@ -606,3 +606,80 @@ fn the_daemon_target_of_a_cached_node_is_checked_and_an_uncached_one_is_reported
         "{report}"
     );
 }
+
+/// The scope of [`SCOPE`] with the product sheet of `so101` given by an
+/// include of `products/so101.json5`, beside the launcher.
+const SCOPE_WITH_PRODUCT: &str = r#"{
+    max_copies: 4,
+    options: [
+        { option: "openarm_sim", model: "openarm_v2", description: "A simulated OpenArm v2 standing on the floor" },
+        { option: "so101_sim", model: "so101", description: "A simulated SO-101 clamped on the edge of a table",
+          product: { $include: "products/so101.json5" } },
+    ],
+}"#;
+
+/// The product sheet of `so101`, with its two dates `checked_on`.
+fn so101_sheet(checked_on: &str) -> String {
+    format!(
+        r#"{{
+        vendor: "A seller",
+        purchase_url: "https://shop.example.com/so101",
+        price: {{ amount: 130, currency: "USD", checked_on: "{checked_on}" }},
+        availability: {{ state: "in_stock", checked_on: "{checked_on}" }},
+        mass_kg: 1.4,
+    }}"#
+    )
+}
+
+/// `peppy stack resolve` reads the included product sheet into the scope,
+/// and the flat launcher carries its value.
+#[test]
+fn resolve_reads_the_product_sheet_that_the_launcher_includes() {
+    let (dirs, root) = cold_home();
+    fs::create_dir_all(root.path().join("products")).expect("products dir");
+    fs::write(
+        root.path().join("products/so101.json5"),
+        so101_sheet("2026-10-01"),
+    )
+    .expect("sheet");
+    let (document, _report) = resolve_rendered(
+        &dirs,
+        launcher(root.path(), ENDPOINT, &scoped(SCOPE_WITH_PRODUCT)),
+        &[],
+        &[],
+    )
+    .expect("the scope holds");
+    assert!(
+        document.contains("https://shop.example.com/so101") && !document.contains("$include"),
+        "the flat launcher carries the value of the include: {document}"
+    );
+}
+
+/// `peppy stack resolve` holds the dates of a product sheet to the latest date
+/// on Earth: a date of the year 9999 is in the future on any machine that runs
+/// this test, and the refusal names the option, the model and the field.
+#[test]
+fn resolve_refuses_a_product_sheet_dated_in_the_future() {
+    let (dirs, root) = cold_home();
+    fs::create_dir_all(root.path().join("products")).expect("products dir");
+    fs::write(
+        root.path().join("products/so101.json5"),
+        so101_sheet("9999-12-31"),
+    )
+    .expect("sheet");
+    let error = refusal(
+        &dirs,
+        launcher(root.path(), ENDPOINT, &scoped(SCOPE_WITH_PRODUCT)),
+    );
+    for field in ["price", "availability"] {
+        assert!(
+            error.contains(&format!(
+                "the scope of daemon target `stack` (robot_membership:v1) on instance \
+                 `framework_controls_inst` gives a date in the future: options[1].product: the \
+                 product sheet of model `so101`: {field}.checked_on: `9999-12-31` is in the \
+                 future"
+            )),
+            "{error}"
+        );
+    }
+}

@@ -23,7 +23,8 @@ use std::sync::Arc;
 const SERVER_INSTANCE: &str = "framework_controls_inst";
 
 /// The scope `simulation_mcp` gives its framework endpoint: the OpenArm
-/// offers its brain and a recorder, the SO-101 no feature.
+/// offers its brain and a recorder, the SO-101 no feature and the product
+/// sheet of its model.
 fn simulation_scope() -> Value {
     json!({
         "max_copies": 4,
@@ -40,7 +41,10 @@ fn simulation_scope() -> Value {
                 ],
             },
             { "option": "so101_sim", "model": "so101",
-              "description": "A simulated SO-101 clamped on the edge of a table" },
+              "description": "A simulated SO-101 clamped on the edge of a table",
+              "product": { "vendor": "A seller", "purchase_url": "https://shop.example.com/so101",
+                           "price": { "amount": 130, "currency": "USD", "checked_on": "2026-10-01" },
+                           "mass_kg": 1.4 } },
         ],
     })
 }

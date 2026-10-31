@@ -31,11 +31,7 @@ impl PackagesBaseUrl {
     /// Parses `value` as the packages base URL of a PyPI mirror. The error
     /// says what is wrong with the value.
     pub fn parse(value: &str) -> Result<Self, String> {
-        let url = url::Url::parse(value).map_err(|e| format!("is not a URL ({e})"))?;
-        if url.scheme() != "https" {
-            return Err(format!("uses {}, not https", url.scheme()));
-        }
-        Self::from_url(url)
+        Self::from_url(parse_https_url(value)?)
     }
 
     /// A packages base URL on a loopback test server that speaks plain HTTP,
@@ -81,6 +77,17 @@ impl PackagesBaseUrl {
     pub fn host(&self) -> &str {
         &self.host
     }
+}
+
+/// Parses `value` as an `https` URL. The error says what is wrong with the
+/// value, as the end of a sentence that names it: "is not a URL (...)" or
+/// "uses http, not https".
+pub(crate) fn parse_https_url(value: &str) -> Result<url::Url, String> {
+    let url = url::Url::parse(value).map_err(|e| format!("is not a URL ({e})"))?;
+    if url.scheme() != "https" {
+        return Err(format!("uses {}, not https", url.scheme()));
+    }
+    Ok(url)
 }
 
 impl std::fmt::Display for PackagesBaseUrl {
