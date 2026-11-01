@@ -54,13 +54,18 @@ env:
 # writes a pull request's run back to dev. The sticky disk cleanup of the
 # RunsOn stack (infraops) deletes every snapshot of a disk once a week, so the
 # disk starts blank again, and deletes the snapshot of a pull request that has
-# not run for 2 days. Between two resets, the cargo-cache action empties a disk
-# restored more than half full, so a run always has room to build. Each job
-# writes what its disk holds and what grew in it to its summary (the
-# sticky-disk-report action). A pull request from a fork runs on the same
-# runners, so what holds fork code is the repository's fork-PR approval
-# policy, which holds every outside contributor's run until a maintainer
-# approves it.
+# not run for 2 days. Between two resets, the cargo-cache action empties a
+# disk restored more than half full, so a run always has room to build. Each
+# job writes what its disk holds and what grew in it to its summary (the
+# sticky-disk-report action). Each disk restores lazily (`lazy-init` in the
+# job's label), so RunsOn asks AWS for no provisioned initialization rate and
+# a block comes from the snapshot when the job first reads it. The disk
+# attaches and mounts at the same speed either way, and a suite reads a part
+# of its cache and not all of it. A provisioned rate writes every block of the
+# snapshot up front instead, at a charge per GiB of snapshot data on every
+# restore. A pull request from a fork runs on the same runners, so what holds
+# fork code is the repository's fork-PR approval policy, which holds every
+# outside contributor's run until a maintainer approves it.
 #
 # From attempt 3 of a run, each RunsOn job runs on demand and not on spot,
 # because RunsOn runs an interrupted job again only after attempt 1 or 2 (see
@@ -178,7 +183,7 @@ jobs:
   workspace-tests:
     needs: changes
     if: needs.changes.outputs.workspace == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=80gb:gp3:500mbs:6000iops/sticky=workspace-tests:80gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=80gb:gp3:500mbs:6000iops/sticky=workspace-tests:80gb:lazy-init${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
 
@@ -203,7 +208,7 @@ jobs:
   container-e2e:
     needs: changes
     if: needs.changes.outputs.container_e2e == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=container-e2e:30gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=container-e2e:30gb:lazy-init${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
 
@@ -226,7 +231,7 @@ jobs:
   multi-daemon-e2e:
     needs: changes
     if: needs.changes.outputs.multi_daemon_e2e == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=100gb:gp3:500mbs:6000iops/sticky=multi-daemon-e2e:40gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=100gb:gp3:500mbs:6000iops/sticky=multi-daemon-e2e:40gb:lazy-init${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
     # The suite waits for every answer of the Docker engine (engine_client in
@@ -257,7 +262,7 @@ jobs:
   docs-integration:
     needs: changes
     if: needs.changes.outputs.docs_integration == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=60gb:gp3:500mbs:6000iops/sticky=docs-integration:50gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=60gb:gp3:500mbs:6000iops/sticky=docs-integration:50gb:lazy-init${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
 
@@ -330,7 +335,7 @@ jobs:
   install-archive:
     needs: changes
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/dev' || needs.changes.outputs.install_script == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=install-archive:50gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=install-archive:50gb:lazy-init${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
     timeout-minutes: 60
@@ -399,7 +404,7 @@ jobs:
   install-archive-aarch64:
     needs: changes
     if: needs.changes.outputs.install_script == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=release-arm64/volume=50gb:gp3:500mbs:6000iops/sticky=install-archive-aarch64:50gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # image (via runner): peppy-ubuntu24-aarch64, custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=release-arm64/volume=50gb:gp3:500mbs:6000iops/sticky=install-archive-aarch64:50gb:lazy-init${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # image (via runner): peppy-ubuntu24-aarch64, custom Peppy AMI
     permissions:
       contents: read
     timeout-minutes: 60
@@ -472,7 +477,7 @@ jobs:
   peppy-shared:
     needs: changes
     if: needs.changes.outputs.peppy_shared_packages != '' || needs.changes.outputs.peppy_shared_peppylib_py == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=peppy-shared:40gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=peppy-shared:40gb:lazy-init${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
 
@@ -559,7 +564,7 @@ jobs:
   cross-check:
     needs: changes
     if: needs.changes.outputs.cross_check == 'true'
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=cross-check:20gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=cross-check:20gb:lazy-init${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
 
