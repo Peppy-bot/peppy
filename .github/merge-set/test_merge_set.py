@@ -1591,6 +1591,101 @@ class FreshnessOfMergedBranches(unittest.TestCase):
         self.assertEqual(self.asked, [])
 
 
+class FreshnessOfDepartedBranches(unittest.TestCase):
+    """nodes-hub#1 and contracts-hub#1 are open. launchers-hub and peppy are
+    neither members nor merged members of the set: a pull request from their
+    branch of the set closed without a merge, and the branch was deleted."""
+
+    def setUp(self):
+        self.state = set_state(
+            member(NODES_HUB, pull_request(NODES_HUB)),
+            member(CONTRACTS_HUB, pull_request(CONTRACTS_HUB)),
+        )
+
+    def stale_of(self, hubs=None, peppy=None):
+        tested = tested_set(
+            hubs={
+                "nodes-hub": TestedRef("checkout", commit(NODES_HUB)),
+                "contracts-hub": TestedRef(SET_NAME, commit(CONTRACTS_HUB)),
+                **(hubs or {}),
+            },
+            peppy=peppy,
+        )
+        run = hub_run(NODES_HUB, records=[JobRecord("check-index", tested)])
+        return merge_set.stale_jobs(
+            self.state, [run], no_clean_base_merge, holds_nothing
+        )
+
+    def test_a_job_that_ran_a_hub_branch_that_left_the_set_is_stale(self):
+        departed = TestedRef(SET_NAME, commit(LAUNCHERS_HUB))
+        (stale,) = self.stale_of({"launchers-hub": departed})
+        self.assertEqual(stale.mismatches, ())
+        self.assertEqual(
+            stale.departed, (merge_set.DepartedBranch(LAUNCHERS_HUB, departed),)
+        )
+        self.assertFalse(stale.record_expired)
+        self.assertEqual(
+            merge_set.stale_job_text("nodes-hub#1", stale),
+            f"The job `check-index` of [Tests #10]({run_url(NODES_HUB, 10)}) of "
+            f"nodes-hub#1 ran with launchers-hub at `{SET_NAME}` "
+            f"`{departed.commit[:7]}`, whose branch is no longer in the set: "
+            "re-run it.",
+        )
+
+    def test_a_job_that_ran_the_peppy_dev_build_of_a_departed_branch_is_stale(self):
+        departed = TestedRef(SET_NAME, commit(PEPPY))
+        (stale,) = self.stale_of(peppy=departed)
+        self.assertEqual(stale.departed, (merge_set.DepartedBranch(PEPPY, departed),))
+        self.assertIn(
+            f"ran with peppy at `{SET_NAME}` `{departed.commit[:7]}`, whose branch "
+            "is no longer in the set: re-run it.",
+            merge_set.stale_job_text("nodes-hub#1", stale),
+        )
+
+    def test_a_job_that_ran_the_base_of_a_repository_with_no_branch_is_fresh(self):
+        self.assertEqual(
+            self.stale_of(
+                {"launchers-hub": TestedRef("main", commit(LAUNCHERS_HUB, "main"))},
+                peppy=TestedRef("dev", commit(PEPPY, "dev")),
+            ),
+            [],
+        )
+
+    def test_a_branch_left_behind_by_an_earlier_set_makes_no_job_stale(self):
+        self.state = replace(self.state, left_behind=(PEPPY, LAUNCHERS_HUB))
+        self.assertEqual(
+            self.stale_of(
+                {"launchers-hub": TestedRef(SET_NAME, commit(LAUNCHERS_HUB))},
+                peppy=TestedRef(SET_NAME, commit(PEPPY)),
+            ),
+            [],
+        )
+
+    def test_a_job_names_a_moved_branch_and_a_departed_branch_together(self):
+        old = TestedRef(SET_NAME, commit(CONTRACTS_HUB, "old"))
+        departed = TestedRef(SET_NAME, commit(LAUNCHERS_HUB))
+        (stale,) = self.stale_of({"contracts-hub": old, "launchers-hub": departed})
+        self.assertIn(
+            f"ran with contracts-hub at `{SET_NAME}` `{old.commit[:7]}`, and its "
+            f"branch of the set is now at `{commit(CONTRACTS_HUB)[:7]}`; "
+            f"launchers-hub at `{SET_NAME}` `{departed.commit[:7]}`, whose branch "
+            "is no longer in the set: re-run it.",
+            merge_set.stale_job_text("nodes-hub#1", stale),
+        )
+
+    def test_the_departed_branches_follow_the_order_of_the_repositories(self):
+        departed_hub = TestedRef(SET_NAME, commit(LAUNCHERS_HUB))
+        departed_peppy = TestedRef(SET_NAME, commit(PEPPY))
+        (stale,) = self.stale_of({"launchers-hub": departed_hub}, peppy=departed_peppy)
+        self.assertEqual(
+            stale.departed,
+            (
+                merge_set.DepartedBranch(PEPPY, departed_peppy),
+                merge_set.DepartedBranch(LAUNCHERS_HUB, departed_hub),
+            ),
+        )
+
+
 class Blockers(unittest.TestCase):
     def two_member_state(self, nodes=None):
         return set_state(
@@ -1623,6 +1718,7 @@ class Blockers(unittest.TestCase):
                     False,
                 ),
             ),
+            (),
             record_expired=False,
         )
         cases = [
@@ -1906,7 +2002,7 @@ class Dashboards(unittest.TestCase):
             left_behind=(LAUNCHERS_HUB,),
         )
         stale = merge_set.StaleJob(
-            hub_run(NODES_HUB), "check-index", (), record_expired=True
+            hub_run(NODES_HUB), "check-index", (), (), record_expired=True
         )
         body = merge_set.render_set_dashboard(
             state, reports_by_label(report(peppy), report(nodes, stale=(stale,)))
@@ -1968,7 +2064,7 @@ class Dashboards(unittest.TestCase):
 
     def test_the_state_of_a_member_names_a_re_run_when_it_alone_clears_it(self):
         stale = merge_set.StaleJob(
-            hub_run(NODES_HUB), "check-index", (), record_expired=True
+            hub_run(NODES_HUB), "check-index", (), (), record_expired=True
         )
         nodes = pull_request(NODES_HUB)
         cases = [
@@ -2230,15 +2326,19 @@ class FakeGitHub:
         pulls[pulls.index(pr)] = opened
         return opened
 
+    def close_and_delete_the_branch(self, pr, merged_at=None):
+        """Close the pull request, merged at `merged_at` or not merged at
+        all, delete its branch, and return it closed."""
+        pulls = self.pulls[pr.repository.name]
+        closed = replace(pr, is_open=False, merged_at=merged_at)
+        pulls[pulls.index(pr)] = closed
+        del self.heads[(pr.repository.name, pr.head_branch)]
+        return closed
+
     def merge_on_its_own(self, pr):
         """Merge the pull request as its own merge button does, and return
-        it merged."""
-        pulls = self.pulls[pr.repository.name]
-        merged = replace(pr, is_open=False, merged_at=MERGED_AT)
-        pulls[pulls.index(pr)] = merged
-        # GitHub deletes the branch of a merged pull request.
-        del self.heads[(pr.repository.name, pr.head_branch)]
-        return merged
+        it merged. GitHub deletes the branch of a merged pull request."""
+        return self.close_and_delete_the_branch(pr, merged_at=MERGED_AT)
 
     def dashboard_comment(self, pr, body):
         comment = FakeComment(len(self.comments) + 1, pr, BOT, body)
@@ -3244,7 +3344,7 @@ class SyncRerun(unittest.TestCase):
             f"Re-run now:\n- [Tests #10]({self.stale_run.url}) of nodes-hub",
             report_text,
         )
-        self.assertIn("Still running with an old commit", report_text)
+        self.assertIn("Still running, so not re-run", report_text)
         self.assertIn(
             f"- [Tests #11]({self.running_run.url}) of nodes-hub", report_text
         )
@@ -3260,6 +3360,81 @@ class SyncRerun(unittest.TestCase):
             "no CI of the set `feat/gripper-force` is out of date", report_text
         )
         self.assertNotIn("merge-set:rerun", self.github.dashboard_body(self.peppy))
+
+
+class SyncDepartedBranch(unittest.TestCase):
+    """The set of peppy#512, nodes-hub#88 and launchers-hub#143. The run of
+    nodes-hub#88 ran with the head of every branch of the set. Then
+    launchers-hub#143 closes without a merge, and its branch is deleted."""
+
+    def setUp(self):
+        self.github = FakeGitHub(self)
+        self.peppy = self.github.open_pull_request(PEPPY, 512)
+        self.nodes = self.github.open_pull_request(NODES_HUB, 88)
+        launchers = self.github.open_pull_request(LAUNCHERS_HUB, 143)
+        self.launchers_at_the_branch = TestedRef(SET_NAME, launchers.head_commit)
+        self.run = self.nodes_run(self.launchers_at_the_branch)
+        sync(self.github)
+        self.assertIn("**Ready to merge.**", self.github.dashboard_body(self.peppy))
+        self.github.close_and_delete_the_branch(launchers)
+        sync(self.github, LAUNCHERS_HUB, pull_request=143)
+
+    def nodes_run(self, launchers):
+        """The one run of nodes-hub#88, which ran launchers-hub as
+        `launchers`."""
+        tested = TestedSet(
+            hubs={
+                "nodes-hub": TestedRef("checkout", self.nodes.head_commit),
+                "launchers-hub": launchers,
+            },
+            peppy=TestedRef(SET_NAME, self.peppy.head_commit),
+        )
+        run = hub_run(NODES_HUB, 10, records=[JobRecord("check-index", tested)])
+        self.github.runs[self.nodes.label] = [run]
+        return run
+
+    def tick(self, action):
+        (comment,) = self.github.comments_on(self.peppy)
+        self.github.tick(comment, action)
+        sync(self.github)
+
+    def test_the_dashboard_names_the_run_out_of_date_and_offers_its_re_run(self):
+        body = self.github.dashboard_body(self.peppy)
+        self.assertIn(
+            f"The job `check-index` of [Tests #10]({self.run.url}) of nodes-hub#88 "
+            f"ran with launchers-hub at `{SET_NAME}` "
+            f"`{self.launchers_at_the_branch.commit[:7]}`, whose branch is no "
+            "longer in the set: re-run it.",
+            body,
+        )
+        self.assertIn(
+            f"| `{self.nodes.head_commit[:7]}` | [passed]({run_url(NODES_HUB, 10)}) "
+            "| CI out of date |",
+            body,
+        )
+        self.assertIn("Re-run the out-of-date CI of this set (1 run)", body)
+        self.assertIn("Merge the 2 pull requests of this set together", body)
+
+    def test_the_re_run_re_runs_it(self):
+        self.tick(Action.RERUN)
+        self.assertEqual(self.github.reruns, [("nodes-hub", 10)])
+        (report_text,) = self.github.reports_on(self.peppy)
+        self.assertIn(
+            f"Re-run now:\n- [Tests #10]({self.run.url}) of nodes-hub", report_text
+        )
+
+    def test_the_merge_waits_for_the_re_run(self):
+        self.tick(Action.MERGE)
+        self.assertEqual(self.github.merged, [])
+        (refusal,) = self.github.reports_on(self.peppy)
+        self.assertIn("whose branch is no longer in the set: re-run it.", refusal)
+
+    def test_a_re_run_that_reads_the_base_in_place_of_the_branch_is_fresh(self):
+        self.nodes_run(TestedRef("main", commit(LAUNCHERS_HUB, "main")))
+        sync(self.github)
+        body = self.github.dashboard_body(self.peppy)
+        self.assertIn("**Ready to merge.**", body)
+        self.assertNotIn("merge-set:rerun", body)
 
 
 class FakeApi:
