@@ -66,19 +66,24 @@ commit by a clean merge of its base alone. The head of a branch that merged is
 the head of the pull request that merged it. GitHub deletes that branch, and a
 job then reads the base of its repository in its place: a job that ran that
 base at a commit that holds the head that merged ran the change of the branch,
-so it is not out of date. The bot does not ask a pull request
-to be up to date with its base, so a branch that merges its base in does not
-ask a re-run either: the merge of the set takes in that base all the same. The
-bot asks git to merge the commit and the base again, in a scratch repository
-(GitMerges), and compares the result with the head, so a conflict resolved by
-hand or any other change of the branch counts. A job reads the branches of
-peppy and the hubs alone, so a change of the public-peppy-libs or platform
-branch of a set makes no hub run out of date. Every job that runs the
-hub-ci-peppy action uploads the set it ran with, its set record, named after
-the check run of the job. A job that does not run the action reads no other
-repository, so it has no record and is never out of date; nor has the first
-job of each hub run, which runs the action with `wait-only` to wait for the
-peppy dev build of the set and installs nothing. Ticking "Re-run" re-runs
+so it is not out of date. A job that ran the branch of the set of a repository
+that is no longer part of the set, because that branch was deleted (as when its
+pull request closed without a merge), is out of date: the set merges with the
+base of that repository, which the job did not run, and a re-run reads that
+base. A branch left behind by an earlier set makes no job out of date: it
+merged before the set opened, and a re-run reads it all the same. The bot does
+not ask a pull request to be up to date with its base, so a branch that merges
+its base in does not ask a re-run either: the merge of the set takes in that
+base all the same. The bot asks git to merge the commit and the base again, in
+a scratch repository (GitMerges), and compares the result with the head, so a
+conflict resolved by hand or any other change of the branch counts. A job reads
+the branches of peppy and the hubs alone, so a change of the public-peppy-libs
+or platform branch of a set makes no hub run out of date. Every job that runs
+the hub-ci-peppy action uploads the set it ran with, its set record, named
+after the check run of the job. A job that does not run the action reads no
+other repository, so it has no record and is never out of date; nor has the
+first job of each hub run, which runs the action with `wait-only` to wait for
+the peppy dev build of the set and installs nothing. Ticking "Re-run" re-runs
 every finished hub run that is out of date, at once: a re-run whose peppy dev
 build is not uploaded yet waits for it in that first job.
 
@@ -1122,10 +1127,21 @@ class Mismatch:
 
 
 @dataclass(frozen=True)
+class DepartedBranch:
+    """A repository a job ran at its branch of the set, whose branch then left
+    the set (see branch_left_the_set). The set merges with its integration
+    branch, which the job did not run."""
+
+    repository: Repository
+    tested: TestedRef
+
+
+@dataclass(frozen=True)
 class StaleJob:
     run: HubRun
     job: str
     mismatches: tuple[Mismatch, ...]
+    departed: tuple[DepartedBranch, ...]
     record_expired: bool
 
 
@@ -1196,6 +1212,34 @@ def mismatches_of(
     )
 
 
+def branch_left_the_set(state: SetState, repository: Repository) -> bool:
+    """Whether the repository has neither a branch of the set nor a change of
+    the set that merged: its branch of the set was deleted, as when its pull
+    request closed without a merge. A branch left behind by an earlier set did
+    not leave the set: it merged before the set opened, and a re-run reads it
+    all the same."""
+    return (
+        state.member_of(repository) is None
+        and all(merged.repository is not repository for merged in state.merged)
+        and repository not in state.left_behind
+    )
+
+
+def departed_branches_of(
+    tested: TestedSet, state: SetState
+) -> tuple[DepartedBranch, ...]:
+    """What a job ran at the branch of the set of each repository whose
+    branch then left the set, in the order of REPOSITORIES."""
+    departed = []
+    for repository in REPOSITORIES:
+        recorded = tested_ref_of(tested, repository)
+        if recorded is None or recorded.ref != state.name:
+            continue
+        if branch_left_the_set(state, repository):
+            departed.append(DepartedBranch(repository, recorded))
+    return tuple(departed)
+
+
 def stale_jobs(
     state: SetState,
     runs: Sequence[HubRun],
@@ -1203,23 +1247,27 @@ def stale_jobs(
     holds: Holds,
 ) -> list[StaleJob]:
     """The jobs of the runs of a hub pull request that did not run with the
-    head of every branch of the set. A job that ran a branch at an older
-    commit is not stale when `is_clean_base_merge` tells that the head differs
-    from that commit by a clean merge of its base alone, nor, for a merged
-    member, when `holds` tells that the job ran its integration branch at a
-    commit that holds the head that merged."""
+    head of every branch of the set, or that ran a branch that then left the
+    set. A job that ran a branch at an older commit is not stale when
+    `is_clean_base_merge` tells that the head differs from that commit by a
+    clean merge of its base alone, nor, for a merged member, when `holds`
+    tells that the job ran its integration branch at a commit that holds the
+    head that merged."""
     stale = []
     for run in runs:
         for record in run.records:
             if record.tested is None:
-                stale.append(StaleJob(run, record.job, (), record_expired=True))
+                stale.append(StaleJob(run, record.job, (), (), record_expired=True))
                 continue
             mismatches = mismatches_of(
                 record.tested, state, run.repository, is_clean_base_merge, holds
             )
-            if mismatches:
+            departed = departed_branches_of(record.tested, state)
+            if mismatches or departed:
                 stale.append(
-                    StaleJob(run, record.job, mismatches, record_expired=False)
+                    StaleJob(
+                        run, record.job, mismatches, departed, record_expired=False
+                    )
                 )
     return stale
 
@@ -1270,8 +1318,9 @@ class BlockerKind(Enum):
     # A missing approval that only rulesets the App bypasses require, so an
     # admin of every repository of the set merges without it.
     MISSING_APPROVAL = "missing approval"
-    # A hub job that ran with another commit of a branch of the set, or whose
-    # set record expired: a re-run of its run clears it.
+    # A hub job that ran with another commit of a branch of the set, or with a
+    # branch that left the set, or whose set record expired: a re-run of its
+    # run clears it.
     OUT_OF_DATE_CI = "out-of-date CI"
 
 
@@ -1305,18 +1354,29 @@ def stale_job_text(label: str, stale: StaleJob) -> str:
             f"{where} has an expired set record, so nothing tells what it ran "
             "with: re-run it."
         )
-    ran = "; ".join(mismatch_text(mismatch) for mismatch in stale.mismatches)
+    ran = "; ".join(
+        [
+            *(mismatch_text(mismatch) for mismatch in stale.mismatches),
+            *(departed_branch_text(departed) for departed in stale.departed),
+        ]
+    )
     return f"{where} ran with {ran}: re-run it."
 
 
+def tested_ref_text(repository: Repository, tested: TestedRef) -> str:
+    return f"{repository.name} at `{tested.ref}` `{short(tested.commit)}`"
+
+
 def mismatch_text(mismatch: Mismatch) -> str:
-    ran = (
-        f"{mismatch.repository.name} at `{mismatch.tested.ref}` "
-        f"`{short(mismatch.tested.commit)}`"
-    )
+    ran = tested_ref_text(mismatch.repository, mismatch.tested)
     if mismatch.merged:
         return f"{ran}, and its branch of the set merged at `{short(mismatch.current)}`"
     return f"{ran}, and its branch of the set is now at `{short(mismatch.current)}`"
+
+
+def departed_branch_text(departed: DepartedBranch) -> str:
+    ran = tested_ref_text(departed.repository, departed.tested)
+    return f"{ran}, whose branch is no longer in the set"
 
 
 CHECK_STATE_TEXTS = {
@@ -1608,7 +1668,7 @@ CURRENT_HUB_RUNS = (
     "each hub run ran with the head of every branch of the set that it reads, "
     "or with a commit that differs from that head by a clean merge of its base "
     "alone, or, for a branch that merged, with a commit of its base that holds "
-    "that head"
+    "that head, and with no branch that is no longer in the set"
 )
 
 
@@ -1960,10 +2020,7 @@ def render_rerun_report(
     if running:
         if rerun:
             lines.append("")
-        lines.append(
-            "Still running with an old commit, so not re-run (tick the box again "
-            "when it ends):"
-        )
+        lines.append("Still running, so not re-run (tick the box again when it ends):")
         lines.extend(f"- {run_link(run)} of {run.repository.name}" for run in running)
     return "\n".join(lines) + "\n"
 
