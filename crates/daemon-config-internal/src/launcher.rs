@@ -3,13 +3,11 @@ mod clocks;
 mod compose;
 mod composition;
 mod daemon_scopes;
-mod include;
 mod joinable;
 mod links;
 mod observations;
 mod pairings;
 mod parse;
-mod repository_paths;
 mod restart;
 mod types;
 
@@ -29,8 +27,7 @@ pub use compose::{
 };
 pub use composition::{AxisRole, ComponentAxis, LauncherFragmentParser, OptionSpec};
 pub use daemon_scopes::{
-    DaemonScopeError, DaemonScopeRefusals, DaemonScopeVerdict, DeploymentTargets, ScopeCheck,
-    check_daemon_scopes,
+    DaemonScopeError, DaemonScopeRefusals, DeploymentTargets, ScopeCheck, check_daemon_scopes,
 };
 pub use joinable::{JoinableNode, JoinableNodes};
 pub use links::validate_link_plan;

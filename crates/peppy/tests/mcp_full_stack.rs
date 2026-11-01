@@ -3498,19 +3498,6 @@ async fn listed_items(client: &FrameworkClient) -> Vec<Value> {
         .collect()
 }
 
-/// The product sheet `stack.list` gives an option whose scope gives none:
-/// every part empty.
-fn empty_product_sheet() -> Value {
-    json!({
-        "vendor": "",
-        "purchase_url": "",
-        "price": { "amount": 0.0, "currency": "", "checked_on": "" },
-        "availability": { "state": "", "checked_on": "" },
-        "mass_kg": 0.0,
-        "height_m": 0.0,
-    })
-}
-
 /// The names of the copies `stack.list` reports.
 async fn listed_copies(client: &FrameworkClient) -> Vec<String> {
     structured(client, "stack.list").await["copies"]
@@ -3548,9 +3535,9 @@ async fn a_client_adds_robots_with_features_on_the_machines_it_names() {
         json!([
             { "option": "featured_robot", "model": "featured", "description": "A robot that records episodes",
               "features": [{ "feature": "spare", "description": "A second recorder of the same episodes" }],
-              "kind": "physical", "product": empty_product_sheet() },
+              "kind": "physical" },
             { "option": "recorder_robot", "model": "recorder", "description": "A robot that records episodes",
-              "features": [], "kind": "physical", "product": empty_product_sheet() },
+              "features": [], "kind": "physical" },
         ])
     );
 
@@ -3715,9 +3702,9 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
         json!({
             "options": [
                 { "option": "recorder_robot", "model": "recorder", "description": "A robot that records episodes",
-                  "features": [], "kind": "physical", "product": empty_product_sheet() },
+                  "features": [], "kind": "physical" },
                 { "option": "broken_robot", "model": "broken", "description": "A robot whose software cannot start",
-                  "features": [], "kind": "physical", "product": empty_product_sheet() },
+                  "features": [], "kind": "physical" },
             ],
             "core_nodes": [this],
             "this_core_node": this,
