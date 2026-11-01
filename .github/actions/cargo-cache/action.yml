@@ -6,8 +6,8 @@ description: >-
   a disk restored more than half full, so a run always has room to build, and
   reports what the disk holds in the job summary (the sticky-disk-report
   action). The job's runs-on label must request the suite's sticky disk
-  (`sticky=<suite>:<size>`). Expects the checkout and the Rust toolchain to be
-  in place, and must precede every cargo step.
+  (`sticky=<suite>:<size>:lazy-init`). Expects the checkout and the Rust
+  toolchain to be in place, and must precede every cargo step.
 
 inputs:
   suite:
