@@ -75,7 +75,7 @@ on:
         type: boolean
         default: false
       extra_args:
-        description: Extra arguments for the prepare stage (example --skip-prod-cert-check)
+        description: Extra arguments for the prepare stage (example --skip-docs-check)
         required: false
         type: string
         default: ""
@@ -167,14 +167,11 @@ jobs:
 
       # Every input reaches the script through the environment, never
       # interpolated into the script body. Stdin is /dev/null, so a question
-      # the options do not answer fails the run at once. PEPPY_PROD_ROUTER_ENDPOINT
-      # is empty unless the repository variable is set, and the stage then
-      # stops unless --skip-prod-cert-check is among the extra arguments.
+      # the options do not answer fails the run at once.
       - name: Check the release and draft its notes
         env:
           PEPPY_RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          PEPPY_PROD_ROUTER_ENDPOINT: ${{ vars.PEPPY_PROD_ROUTER_ENDPOINT }}
           TAG: ${{ inputs.tag }}
           MINOR_DOCS_PR: ${{ inputs.minor_docs_pr }}
           EXTRA_ARGS: ${{ inputs.extra_args }}

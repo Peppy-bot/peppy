@@ -5,8 +5,6 @@ from __future__ import annotations
 import os
 import platform
 import shutil
-import socket
-import ssl
 import sys
 from collections.abc import Callable, Sequence
 
@@ -14,13 +12,6 @@ from rich.console import Console
 from rich.prompt import Confirm, Prompt
 
 console = Console(stderr=True)
-
-# Host:port of a live prod per-user-router gateway that presents the prod
-# `*.zenoh.<domain>` wildcard certificate. The release gate connects here to
-# prove the prod routers are publicly trusted before shipping a system-store-only
-# CLI. The gateway is SNI-passthrough, so this must be a routable router/capability
-# that actually serves the wildcard leaf (e.g. a stable health router).
-PROD_ROUTER_ENDPOINT_ENV = "PEPPY_PROD_ROUTER_ENDPOINT"
 
 # Env var the release scripts read the GitHub release token from. The release
 # workflow sets it to an installation token of the peppy-release-bot GitHub
@@ -75,81 +66,6 @@ def prompt_yn(label: str, default_yes: bool = False) -> bool:
     return Confirm.ask(label, default=default_yes)
 
 
-def _probe_publicly_trusted_tls(host: str, port: int, timeout: float = 10.0) -> None:
-    """Open a TLS connection to host:port using ONLY the system trust store and
-    verify the presented chain is valid, unexpired, and matches `host`.
-
-    This is exactly the validation the shipped (release) CLI does at runtime (it
-    bakes in no custom CA and validates router certs against the system store), run
-    once at release time. A completed handshake means the chain validated against a
-    public root and the name matched. Raises ReleaseError on any failure
-    (unreachable, self-signed, private CA, expired, name mismatch).
-
-    Factored out (and using the module-level `socket`/`ssl`) so tests can stub the
-    network layer. NOTE: the release host's system trust store must be populated;
-    no custom CA is consulted, by design.
-    """
-    ctx = ssl.create_default_context()  # system roots, verify on, check_hostname on
-    try:
-        with (
-            socket.create_connection((host, port), timeout=timeout) as sock,
-            # wrap_socket performs the handshake (and cert + hostname validation)
-            # immediately for a connected socket; a clean return means it passed.
-            ctx.wrap_socket(sock, server_hostname=host),
-        ):
-            pass
-    except ssl.SSLCertVerificationError as e:
-        raise ReleaseError(
-            f"prod router {host}:{port} is NOT publicly trusted: {e}. The shipped CLI "
-            "validates router certificates against the system trust store only, so the "
-            "prod routers must present a publicly-trusted *.zenoh.<domain> certificate "
-            "(e.g. issued via ACME/cert-manager) before this release can ship."
-        ) from e
-    except (ssl.SSLError, OSError) as e:
-        raise ReleaseError(
-            f"could not verify prod router {host}:{port} over TLS: {e}. It must be a live, "
-            "routable endpoint presenting the prod wildcard certificate (the SNI-passthrough "
-            f"gateway needs a real router behind {host})."
-        ) from e
-
-
-def verify_prod_router_publicly_trusted() -> None:
-    """Release gate: prove the prod per-user routers present a publicly-trusted,
-    valid TLS certificate before shipping a system-store-only CLI.
-
-    A release CLI bakes in no custom CA, so it MUST NOT ship against a deployment
-    whose routers aren't publicly trusted (it could never federate to them). Reads
-    PEPPY_PROD_ROUTER_ENDPOINT (host:port) and validates it against the system trust
-    store. Raises ReleaseError if the env var is unset or the endpoint cannot be
-    validated.
-    """
-    endpoint = os.environ.get(PROD_ROUTER_ENDPOINT_ENV, "").strip()
-    if not endpoint:
-        raise ReleaseError(
-            f"{PROD_ROUTER_ENDPOINT_ENV} is required for a prod release: the shipped CLI "
-            "trusts only the system trust store, so the release must first prove the prod "
-            "routers present a publicly-trusted certificate. Set it to the prod router "
-            "gateway host:port (e.g. health.zenoh.<prod-domain>:7443), or pass "
-            "--skip-prod-cert-check to bypass this verification."
-        )
-    host, _, port_str = endpoint.rpartition(":")
-    if not host or not port_str:
-        raise ReleaseError(
-            f"{PROD_ROUTER_ENDPOINT_ENV} must be host:port, got {endpoint!r}"
-        )
-    try:
-        port = int(port_str)
-    except ValueError:
-        raise ReleaseError(
-            f"{PROD_ROUTER_ENDPOINT_ENV} has a non-numeric port: {endpoint!r}"
-        ) from None
-    if not 1 <= port <= 65535:
-        raise ReleaseError(
-            f"{PROD_ROUTER_ENDPOINT_ENV} port must be in 1-65535, got {port} in {endpoint!r}"
-        )
-    _probe_publicly_trusted_tls(host, port)
-
-
 def _require_token(env_var: str) -> str:
     token = os.environ.get(env_var, "").strip()
     if not token:
@@ -173,38 +89,11 @@ def require_job_token() -> str:
     return _require_token(JOB_TOKEN_ENV)
 
 
-def validate_release_environment(
-    required_commands: Sequence[str],
-    *,
-    skip_prod_router_check: bool = False,
-) -> str:
-    """Check what a release needs before it starts: the prod routers, the token,
-    and the commands.
-
-    The publicly-trusted prod-router gate runs first
-    (`verify_prod_router_publicly_trusted`), so a system-store-only CLI can
-    never be shipped against a deployment whose routers aren't publicly
-    trusted: the release stops before anything is built.
-
-    Passing skip_prod_router_check=True (the `--skip-prod-cert-check` flag)
-    bypasses that gate while keeping every other check. It exists for releases
-    against a deployment whose routers are known-good or not yet publicly
-    trusted; a loud warning is printed because a CLI shipped this way cannot
-    federate to routers that are not publicly trusted.
+def validate_release_environment(required_commands: Sequence[str]) -> str:
+    """Check what a release needs before it starts: the token and the commands.
 
     Returns the release token. Raises ReleaseError if any check fails.
     """
-    if skip_prod_router_check:
-        console.print(
-            "[yellow]WARNING: skipping the prod-router publicly-trusted "
-            "certificate check (--skip-prod-cert-check). The shipped CLI trusts "
-            "only the system trust store; if the prod routers are not publicly "
-            "trusted, this release will be unable to federate to them.[/yellow]"
-        )
-    else:
-        # Prove the prod routers are publicly trusted *before* building anything.
-        verify_prod_router_publicly_trusted()
-
     token = require_release_token()
 
     for cmd in required_commands:

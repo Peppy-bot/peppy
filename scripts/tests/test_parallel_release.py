@@ -201,7 +201,6 @@ def test_prepare_takes_every_answer_up_front() -> None:
             "--release-commit",
             RELEASE_COMMIT.upper(),
             "--no-minor-docs-pr",
-            "--skip-prod-cert-check",
             "--plan",
             "plan.json",
         ]
@@ -210,7 +209,6 @@ def test_prepare_takes_every_answer_up_front() -> None:
     assert args.tag == "v0.3.0"
     assert args.release_commit == RELEASE_COMMIT
     assert args.minor_docs_pr is False
-    assert args.skip_prod_cert_check is True
     assert args.skip_docs_check is False
 
 
@@ -319,7 +317,6 @@ def _prepare(
     tmp_path: Path,
     *,
     open_minor_docs_pr: bool = False,
-    skip_prod_cert_check: bool = False,
     skip_docs_check: bool = False,
 ) -> Path:
     plan_path = tmp_path / "out" / "release-plan.json"
@@ -327,7 +324,6 @@ def _prepare(
         tag="v0.3.0",
         release_commit=RELEASE_COMMIT,
         open_minor_docs_pr=open_minor_docs_pr,
-        skip_prod_cert_check=skip_prod_cert_check,
         skip_docs_check=skip_docs_check,
         plan_path=plan_path,
     )
@@ -387,13 +383,10 @@ def prepare_mocks(tmp_path: Path) -> Iterator[PrepareMocks]:
 def test_prepare_writes_the_plan_without_asking_anything(
     tmp_path: Path, prepare_mocks: PrepareMocks, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    plan_path = _prepare(tmp_path, open_minor_docs_pr=True, skip_prod_cert_check=True)
+    plan_path = _prepare(tmp_path, open_minor_docs_pr=True)
 
     assert ReleasePlan.load(plan_path) == PLAN
-    prepare_mocks.validate.assert_called_once_with(
-        required_commands=("git", "claude"),
-        skip_prod_router_check=True,
-    )
+    prepare_mocks.validate.assert_called_once_with(required_commands=("git", "claude"))
     prepare_mocks.unused_tag.assert_called_once_with("v0.3.0")
     prepare_mocks.docs_gate.assert_called_once_with(
         prepare_mocks.client.return_value,

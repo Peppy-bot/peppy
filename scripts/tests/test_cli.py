@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import os
-import ssl
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from functions.cli import (
-    PROD_ROUTER_ENDPOINT_ENV,
     RELEASE_TRIPLES,
     ReleaseError,
-    _probe_publicly_trusted_tls,
     get_native_triple,
     get_targets_for_platform,
     is_linux,
@@ -23,7 +20,6 @@ from functions.cli import (
     require_job_token,
     run_with_error_handling,
     validate_release_environment,
-    verify_prod_router_publicly_trusted,
 )
 
 
@@ -64,66 +60,23 @@ def test_prompt_yn_default_no() -> None:
         mock_ask.assert_called_once_with("Continue?", default=False)
 
 
-# The prod-router gate runs first; patch it out for the tests
-# that exercise the token/command checks (the gate has its own tests below).
 def test_validate_release_environment_missing_token() -> None:
     with (
         patch.dict(os.environ, {}, clear=True),
-        patch("functions.cli.verify_prod_router_publicly_trusted"),
         pytest.raises(ReleaseError, match="PEPPY_RELEASE_TOKEN"),
     ):
         validate_release_environment(required_commands=())
 
 
 def test_validate_release_environment_valid_token() -> None:
-    with (
-        patch.dict(os.environ, {"PEPPY_RELEASE_TOKEN": "test-token"}),
-        patch("functions.cli.verify_prod_router_publicly_trusted"),
-    ):
+    with patch.dict(os.environ, {"PEPPY_RELEASE_TOKEN": "test-token"}):
         token = validate_release_environment(required_commands=())
     assert token == "test-token"
-
-
-def test_validate_release_environment_runs_prod_gate() -> None:
-    # The gate runs before anything else.
-    with (
-        patch.dict(os.environ, {"PEPPY_RELEASE_TOKEN": "test-token"}),
-        patch("functions.cli.verify_prod_router_publicly_trusted") as gate,
-    ):
-        validate_release_environment(required_commands=())
-    gate.assert_called_once_with()
-
-
-def test_validate_release_environment_skip_prod_router_check_bypasses_gate() -> None:
-    # --skip-prod-cert-check bypasses the prod-router gate but keeps the token check.
-    with (
-        patch.dict(os.environ, {"PEPPY_RELEASE_TOKEN": "test-token"}),
-        patch("functions.cli.verify_prod_router_publicly_trusted") as gate,
-    ):
-        token = validate_release_environment(
-            required_commands=(), skip_prod_router_check=True
-        )
-    assert token == "test-token"
-    gate.assert_not_called()
-
-
-def test_validate_release_environment_skip_prod_router_check_still_requires_token() -> (
-    None
-):
-    # Skipping the cert gate must not weaken the other checks.
-    with (
-        patch.dict(os.environ, {}, clear=True),
-        patch("functions.cli.verify_prod_router_publicly_trusted") as gate,
-        pytest.raises(ReleaseError, match="PEPPY_RELEASE_TOKEN"),
-    ):
-        validate_release_environment(required_commands=(), skip_prod_router_check=True)
-    gate.assert_not_called()
 
 
 def test_validate_release_environment_missing_command() -> None:
     with (
         patch.dict(os.environ, {"PEPPY_RELEASE_TOKEN": "test-token"}),
-        patch("functions.cli.verify_prod_router_publicly_trusted"),
         pytest.raises(ReleaseError, match="missing required command"),
     ):
         validate_release_environment(required_commands=("nonexistent_cmd_xyz",))
@@ -132,7 +85,6 @@ def test_validate_release_environment_missing_command() -> None:
 def test_validate_release_environment_whitespace_token_is_empty() -> None:
     with (
         patch.dict(os.environ, {"PEPPY_RELEASE_TOKEN": "  "}),
-        patch("functions.cli.verify_prod_router_publicly_trusted"),
         pytest.raises(ReleaseError, match="PEPPY_RELEASE_TOKEN"),
     ):
         validate_release_environment(required_commands=())
@@ -150,105 +102,6 @@ def test_require_job_token_refuses_a_missing_token(environment: dict[str, str]) 
         pytest.raises(ReleaseError, match="PEPPY_JOB_TOKEN env var is required"),
     ):
         require_job_token()
-
-
-# --- Publicly-trusted prod-router release gate ---
-
-
-def test_prod_gate_unset_endpoint_raises() -> None:
-    with (
-        patch.dict(os.environ, {}, clear=True),
-        pytest.raises(ReleaseError, match=PROD_ROUTER_ENDPOINT_ENV),
-    ):
-        verify_prod_router_publicly_trusted()
-
-
-def test_prod_gate_malformed_endpoint_raises() -> None:
-    with (
-        patch.dict(os.environ, {PROD_ROUTER_ENDPOINT_ENV: "no-port-here"}),
-        pytest.raises(ReleaseError, match="host:port"),
-    ):
-        verify_prod_router_publicly_trusted()
-
-
-@pytest.mark.parametrize("bad_port", ["0", "-1", "65536", "99999"])
-def test_prod_gate_out_of_range_port_raises(bad_port: str) -> None:
-    # A numeric but out-of-range TCP port is rejected up front, before the probe
-    # is ever attempted.
-    with (
-        patch.dict(
-            os.environ, {PROD_ROUTER_ENDPOINT_ENV: f"health.zenoh.example:{bad_port}"}
-        ),
-        patch("functions.cli._probe_publicly_trusted_tls") as probe,
-        pytest.raises(ReleaseError, match="1-65535"),
-    ):
-        verify_prod_router_publicly_trusted()
-    probe.assert_not_called()
-
-
-def test_prod_gate_valid_chain_passes() -> None:
-    # A valid, publicly-trusted endpoint: the probe completes without raising.
-    with (
-        patch.dict(os.environ, {PROD_ROUTER_ENDPOINT_ENV: "health.zenoh.example:7443"}),
-        patch("functions.cli._probe_publicly_trusted_tls") as probe,
-    ):
-        verify_prod_router_publicly_trusted()
-    probe.assert_called_once_with("health.zenoh.example", 7443)
-
-
-def test_prod_gate_trusted_cert_passes_after_the_handshake() -> None:
-    # The handshake runs on the connected socket and checks the certificate
-    # against the name of the host. A probe that returns has passed it, and
-    # leaves neither socket open.
-    connected = MagicMock()
-    conn_cm = MagicMock()
-    conn_cm.__enter__.return_value = connected
-    conn_cm.__exit__.return_value = False
-    fake_ctx = MagicMock()
-    with (
-        patch("functions.cli.ssl.create_default_context", return_value=fake_ctx),
-        patch(
-            "functions.cli.socket.create_connection", return_value=conn_cm
-        ) as connect,
-    ):
-        _probe_publicly_trusted_tls("health.zenoh.example", 7443)
-
-    connect.assert_called_once_with(("health.zenoh.example", 7443), timeout=10.0)
-    fake_ctx.wrap_socket.assert_called_once_with(
-        connected, server_hostname="health.zenoh.example"
-    )
-    fake_ctx.wrap_socket.return_value.__exit__.assert_called_once()
-    conn_cm.__exit__.assert_called_once()
-
-
-def test_prod_gate_untrusted_cert_raises() -> None:
-    # A self-signed / private-CA / expired / wrong-name cert surfaces as an
-    # SSLCertVerificationError ⇒ "NOT publicly trusted" ReleaseError.
-    fake_ctx = MagicMock()
-    fake_ctx.wrap_socket.side_effect = ssl.SSLCertVerificationError(
-        "self-signed certificate"
-    )
-    conn_cm = MagicMock()
-    conn_cm.__enter__.return_value = MagicMock()  # the connected socket
-    conn_cm.__exit__.return_value = False  # do not suppress the raised error
-    with (
-        patch("functions.cli.ssl.create_default_context", return_value=fake_ctx),
-        patch("functions.cli.socket.create_connection", return_value=conn_cm),
-        pytest.raises(ReleaseError, match="NOT publicly trusted"),
-    ):
-        _probe_publicly_trusted_tls("health.zenoh.example", 7443)
-
-
-def test_prod_gate_unreachable_raises() -> None:
-    # An unreachable / refused endpoint surfaces as OSError ⇒ "could not verify".
-    with (
-        patch(
-            "functions.cli.socket.create_connection",
-            side_effect=OSError("connection refused"),
-        ),
-        pytest.raises(ReleaseError, match="could not verify"),
-    ):
-        _probe_publicly_trusted_tls("health.zenoh.example", 7443)
 
 
 def test_run_with_error_handling_catches_release_error() -> None:
