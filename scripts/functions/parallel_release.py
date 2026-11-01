@@ -351,15 +351,11 @@ def run_prepare(
     tag: str,
     release_commit: str,
     open_minor_docs_pr: bool,
-    skip_prod_cert_check: bool,
     skip_docs_check: bool,
     plan_path: Path,
 ) -> None:
     """Check the release can start from *release_commit* and write its plan."""
-    token = validate_release_environment(
-        required_commands=("git", "claude"),
-        skip_prod_router_check=skip_prod_cert_check,
-    )
+    token = validate_release_environment(required_commands=("git", "claude"))
     repo_root = get_repo_root()
     os.chdir(repo_root)
 
@@ -1197,15 +1193,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     prepare.add_argument(
-        "--skip-prod-cert-check",
-        action="store_true",
-        help=(
-            "Skip the publicly-trusted prod-router certificate gate. The "
-            "shipped CLI cannot federate to routers that are not publicly "
-            "trusted."
-        ),
-    )
-    prepare.add_argument(
         "--skip-docs-check",
         action="store_true",
         help=(
@@ -1313,7 +1300,6 @@ def _run_stage(args: argparse.Namespace) -> None:
                 tag=args.tag,
                 release_commit=args.release_commit,
                 open_minor_docs_pr=args.minor_docs_pr,
-                skip_prod_cert_check=args.skip_prod_cert_check,
                 skip_docs_check=args.skip_docs_check,
                 plan_path=args.plan,
             )
