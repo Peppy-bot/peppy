@@ -720,7 +720,8 @@ impl ExposureServer {
             ResourceContents::text(view.content.document, uri).with_mime_type(DOCUMENT_MIME_TYPE),
         ];
         if let Some(blob) = view.content.blob {
-            contents.push(ResourceContents::blob(blob.base64, uri).with_mime_type(blob.mime_type));
+            let mime_type = blob.mime_type();
+            contents.push(ResourceContents::blob(blob.base64, uri).with_mime_type(mime_type));
         }
         Ok(ReadResourceResult::new(contents)
             .with_ttl_ms(view.remaining_fresh_ms)
@@ -739,7 +740,7 @@ impl ExposureServer {
         let input = validated_input(&picture.entry.name, &picture.validator, arguments)?;
         let (uri, resource) = self.pictured_resource(&picture.entry, input)?;
         match self.snapshot_now(&uri, resource.as_deref()).await {
-            Ok(view) => Ok(picture_result(view.content)),
+            Ok(view) => Ok(frame_result(view.content, &uri)),
             Err(unavailable) => Ok(tool_error(unavailable)),
         }
     }
@@ -1000,19 +1001,35 @@ impl ExposureServer {
     }
 }
 
-/// The result of a tool that answers with a picture: the blob as an image
-/// block, the document as the text and as the structured content. Content
-/// without a blob is the document alone.
-fn picture_result(content: SnapshotContent) -> CallToolResult {
+/// The result of a tool that answers with a frame: the blob first, then the
+/// document as the text and as the structured content. Content without a
+/// blob is the document alone. The blob of an image codec is an image block;
+/// the blob of a `raw` frame, bytes of no image type, is an embedded resource
+/// at `uri`, because an MCP image block holds an image, and a client hands
+/// the image of a tool result to its model.
+fn frame_result(content: SnapshotContent, uri: &str) -> CallToolResult {
     let document = serde_json::from_str(&content.document)
         .expect("a snapshot's document is the JSON this runtime serialized");
     let mut result = CallToolResult::structured(document);
     if let Some(blob) = content.blob {
-        result
-            .content
-            .insert(0, ContentBlock::image(blob.base64, blob.mime_type));
+        let mime_type = blob.mime_type();
+        let block = if blob.codec.is_image() {
+            ContentBlock::image(blob.base64, mime_type)
+        } else {
+            ContentBlock::resource(
+                ResourceContents::blob(blob.base64, uri).with_mime_type(mime_type),
+            )
+        };
+        result.content.insert(0, block);
     }
     result
+}
+
+/// The URI of the frame that a call of the service tool `tool` answers
+/// with, which the embedded resource of a `raw` frame names: the frame is
+/// the answer of one call, which no resource of the exposure serves.
+fn tool_frame_uri(tool: &str) -> String {
+    format!("peppy://tool/{tool}/frame")
 }
 
 /// The result a service tool answers with `value`, the provider's
@@ -1024,7 +1041,7 @@ fn tool_answer(entry: &ToolEntry, value: Value) -> Result<CallToolResult, String
         return within_result_limit(entry, value).map(CallToolResult::structured);
     }
     apply_response_policies(entry.content(), value)
-        .map(picture_result)
+        .map(|content| frame_result(content, &tool_frame_uri(&entry.name)))
         .map_err(|error| match error {
             PublishError::Oversize { size, limit } => oversize_result(size, limit),
             other => other.to_string(),
@@ -4529,6 +4546,20 @@ mod tests {
     /// `test_bundle` plus a service that answers with a picture, under the
     /// same representation the picture resources take.
     fn snap_bundle() -> ExposureBundle {
+        snap_bundle_under(
+            json!({
+                "image": "jpeg",
+                "quality": 80,
+                "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
+            }),
+            "downscale",
+        )
+    }
+
+    /// `test_bundle` plus a service that answers with a frame under
+    /// `representation`, and a result larger than 4096 bytes under
+    /// `on_oversize`.
+    fn snap_bundle_under(representation: Value, on_oversize: &str) -> ExposureBundle {
         let mut bundle = test_bundle();
         bundle.tools.push(
             serde_json::from_value(json!({
@@ -4538,13 +4569,9 @@ mod tests {
                 "member": "snap",
                 "operation": "read_only",
                 "deadline_ms": 2000,
-                "representation": {
-                    "image": "jpeg",
-                    "quality": 80,
-                    "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
-                },
+                "representation": representation,
                 "max_result_bytes": 4096,
-                "on_oversize": "downscale",
+                "on_oversize": on_oversize,
                 "input_schema": { "type": "object", "properties": {}, "additionalProperties": false },
                 "output_schema": { "type": "object" }
             }))
@@ -4555,7 +4582,12 @@ mod tests {
 
     /// A server whose `front_camera.snap` answers `response`.
     fn snap_server(response: Value) -> ExposureServer {
-        ExposureServer::builder(snap_bundle())
+        snap_server_of(snap_bundle(), response)
+    }
+
+    /// A server of `bundle`, whose `front_camera.snap` answers `response`.
+    fn snap_server_of(bundle: ExposureBundle, response: Value) -> ExposureServer {
+        ExposureServer::builder(bundle)
             .with_tool("front_camera.set_brightness", brightness_handler)
             .with_tool("front_camera.snap", move |_call: ToolCall| {
                 let response = response.clone();
@@ -4584,6 +4616,42 @@ mod tests {
         let image = image.as_image().expect("the image comes first");
         assert_eq!(image.mime_type, "image/jpeg");
         assert_is_jpeg(&image.data);
+        let text = &text.as_text().expect("the document comes second").text;
+        assert_eq!(
+            serde_json::from_str::<Value>(text).expect("the text is JSON"),
+            document
+        );
+    }
+
+    /// The bytes of a `raw` frame have no image type, so the service answers
+    /// with them as an embedded resource of their own MIME type, and with no
+    /// image block, which a client hands to its model as a picture.
+    #[tokio::test]
+    async fn a_service_with_a_raw_representation_answers_with_an_embedded_resource() {
+        let bundle = snap_bundle_under(
+            json!({
+                "image": "raw",
+                "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
+            }),
+            "reject",
+        );
+        let frame = rgb8_frame();
+        let bytes = frame["frame"].as_str().expect("base64 text").to_owned();
+        let result = snap(&snap_server_of(bundle, frame)).await;
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let document =
+            json!({ "header": { "frame_id": 7 }, "encoding": "rgb8", "width": 8, "height": 8 });
+        assert_eq!(result.structured_content, Some(document.clone()));
+        let [embedded, text] = result.content.as_slice() else {
+            panic!("expected a resource and a text, got {:?}", result.content);
+        };
+        assert!(embedded.as_image().is_none());
+        let embedded = embedded.as_resource().expect("the frame comes first");
+        assert_eq!(
+            embedded.resource,
+            ResourceContents::blob(bytes, "peppy://tool/front_camera.snap/frame")
+                .with_mime_type("application/octet-stream")
+        );
         let text = &text.as_text().expect("the document comes second").text;
         assert_eq!(
             serde_json::from_str::<Value>(text).expect("the text is JSON"),
