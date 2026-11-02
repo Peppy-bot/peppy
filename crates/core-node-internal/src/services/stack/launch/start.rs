@@ -12,49 +12,50 @@ use core_node_api::encoding::{
     InstanceEndpoints, LaunchFeedbackStep, NodeRunGoal, NodeRunLogEntry, NodeRunResult,
     ObservationTarget, ObservationTargets, PairTarget, RemotePeerPairing,
 };
-use daemon_config::launcher::{DeploymentInstance, LaunchValues};
+use daemon_config::launcher::{DeploymentInstance, ForwardedEnv, LaunchValues};
 use node_stack::ActionLog;
 use std::collections::{BTreeMap, HashMap};
 
 /// The environment one launched instance is started with: the forwarded
-/// caller environment, when the instance runs on the coordinator's own
-/// machine, then the kept value of each launch variable the instance takes
-/// and the forwarded environment does not hold, then the instance's own
-/// `env_vars`, so a deployment can pin what differs per instance (a device
-/// path, a board id) without depending on whoever ran the launch. An
-/// instance placed on a peer starts from an empty forwarded set and no kept
-/// value, because the caller's environment describes the caller's machine
-/// and no other; a launch and a join refuse to place an instance with launch
-/// variables there.
+/// caller environment without its launch variables, when the instance runs
+/// on the coordinator's own machine, then the value of each launch variable
+/// the instance takes, then the instance's own `env_vars`, so a deployment
+/// can pin what differs per instance (a device path, a board id) without
+/// depending on whoever ran the launch. A launch variable that the instance
+/// does not name does not reach it: the launcher states which instances
+/// take each one. An instance placed on a peer starts from an empty forwarded
+/// set and no kept value, because the caller's environment describes the
+/// caller's machine and no other; a launch and a join refuse to place an
+/// instance with launch variables there.
 ///
 /// The forwarded value of a launch variable wins over the kept one: the
 /// caller of a join gives the newer value. A key declared by the instance
 /// replaces the forwarded one rather than appearing twice: the spawn paths
 /// differ on duplicates (a process node's `Command::env` keeps the last,
 /// apptainer's `--env` flags are order-dependent in their own way), so the
-/// ambiguity is resolved here, once. Forwarded order is preserved, the kept
-/// values follow in the order the instance names them, and the instance's own
-/// entries follow in name order, which keeps the resulting command line
-/// stable for a given launcher file.
+/// ambiguity is resolved here, once. Forwarded order is preserved, the launch
+/// variables follow in name order, and the instance's own entries follow in
+/// name order, which keeps the resulting command line stable for a given
+/// launcher file.
 ///
 /// Only `node_run` takes this: `env_vars` and launch variables belong to an
 /// instance, while adding and building a node happen once for every instance
 /// that deploys it.
 fn instance_environment(
-    forwarded: &[(String, String)],
+    forwarded: &ForwardedEnv,
     kept: &LaunchValues,
     instance: &DeploymentInstance,
 ) -> Vec<(String, String)> {
-    let forwarded_holds = |name: &str| forwarded.iter().any(|(key, _)| key == name);
-    let from_launch = instance
-        .env_from_launch
-        .iter()
-        .filter(|variable| !forwarded_holds(variable.as_str()))
-        .filter_map(|variable| {
-            kept.value_of(variable.as_str())
-                .map(|value| (variable.to_string(), value.to_owned()))
-        });
+    let from_launch = instance.env_from_launch.iter().filter_map(|variable| {
+        let name = variable.as_str();
+        forwarded
+            .launch_values()
+            .value_of(name)
+            .or_else(|| kept.value_of(name))
+            .map(|value| (name.to_owned(), value.to_owned()))
+    });
     forwarded
+        .common()
         .iter()
         .filter(|(key, _)| !instance.env_vars.contains_key(key))
         .cloned()
@@ -291,11 +292,12 @@ pub(in crate::services::stack) async fn start_node_instances(
             // apply to instances started on this machine, which they
             // describe. An instance on a peer gets only the env_vars its
             // launcher file declares for it.
-            let no_launch_values = LaunchValues::default();
-            let (forwarded_env, kept): (&[(String, String)], _) = if local {
-                (&ctx.env_vars, launch_values)
+            let (no_environment, no_launch_values) =
+                (ForwardedEnv::default(), LaunchValues::default());
+            let (forwarded_env, kept) = if local {
+                (&phase.environment, launch_values)
             } else {
-                (&[], &no_launch_values)
+                (&no_environment, &no_launch_values)
             };
             let node_run_goal = if local {
                 NodeRunGoal::for_internal_execution(
@@ -453,6 +455,7 @@ mod tests {
     use super::*;
     use config::runtime::Name;
     use daemon_config::launcher::{LaunchVariable, LaunchVariables};
+    use std::collections::BTreeSet;
 
     fn variable(name: &str) -> LaunchVariable {
         LaunchVariable::try_from(name.to_owned()).unwrap()
@@ -482,15 +485,24 @@ mod tests {
             .collect()
     }
 
+    /// `entries` as the forwarded environment of a launcher whose launch
+    /// variables are `GEMINI_API_KEY` and `OTHER_KEY`.
+    fn forwarded(forwarded: &[(&str, &str)]) -> ForwardedEnv {
+        ForwardedEnv::parse(
+            entries(forwarded),
+            &BTreeSet::from([variable("GEMINI_API_KEY"), variable("OTHER_KEY")]),
+        )
+    }
+
     /// An instance's `env_vars` are added to the forwarded caller environment
     /// and win on a shared key, leaving exactly one entry per key so the spawn
     /// path has nothing to disambiguate.
     #[test]
     fn instance_env_vars_override_the_forwarded_caller_environment() {
-        let forwarded = entries(&[("PATH", "/usr/bin"), ("ESP32_DEVICE", "/dev/from_caller")]);
+        let caller = forwarded(&[("PATH", "/usr/bin"), ("ESP32_DEVICE", "/dev/from_caller")]);
         let declared = instance(&[("ESP32_DEVICE", "/dev/ttyUSB0"), ("BOARD_ID", "3")], &[]);
 
-        let merged = instance_environment(&forwarded, &LaunchValues::default(), &declared);
+        let merged = instance_environment(&caller, &LaunchValues::default(), &declared);
 
         assert_eq!(
             merged,
@@ -510,7 +522,11 @@ mod tests {
         let declared = instance(&[("ESP32_DEVICE", "/dev/ttyUSB0")], &[]);
 
         assert_eq!(
-            instance_environment(&[], &LaunchValues::default(), &declared),
+            instance_environment(
+                &ForwardedEnv::default(),
+                &LaunchValues::default(),
+                &declared
+            ),
             entries(&[("ESP32_DEVICE", "/dev/ttyUSB0")])
         );
     }
@@ -519,11 +535,40 @@ mod tests {
     /// environment unchanged, in the order it arrived.
     #[test]
     fn instance_without_env_vars_keeps_the_forwarded_environment() {
-        let forwarded = entries(&[("PATH", "/usr/bin"), ("HOME", "/home/user")]);
+        let caller = [("PATH", "/usr/bin"), ("HOME", "/home/user")];
 
         assert_eq!(
-            instance_environment(&forwarded, &LaunchValues::default(), &instance(&[], &[])),
-            forwarded
+            instance_environment(
+                &forwarded(&caller),
+                &LaunchValues::default(),
+                &instance(&[], &[])
+            ),
+            entries(&caller)
+        );
+    }
+
+    /// A launch variable of the forwarded environment reaches the instance
+    /// that names it, and no instance that does not; every other entry
+    /// reaches both.
+    #[test]
+    fn a_forwarded_launch_variable_reaches_only_the_instances_that_name_it() {
+        let caller = forwarded(&[
+            ("PATH", "/usr/bin"),
+            ("GEMINI_API_KEY", "launch-key"),
+            ("OTHER_KEY", "other"),
+        ]);
+
+        assert_eq!(
+            instance_environment(
+                &caller,
+                &LaunchValues::default(),
+                &instance(&[], &["GEMINI_API_KEY"])
+            ),
+            entries(&[("PATH", "/usr/bin"), ("GEMINI_API_KEY", "launch-key")])
+        );
+        assert_eq!(
+            instance_environment(&caller, &LaunchValues::default(), &instance(&[], &[])),
+            entries(&[("PATH", "/usr/bin")])
         );
     }
 
@@ -532,29 +577,37 @@ mod tests {
     /// value.
     #[test]
     fn an_instance_takes_the_kept_values_of_the_variables_it_names() {
-        let names = [variable("GEMINI_API_KEY"), variable("OTHER_KEY")];
-        let kept = LaunchValues::kept(
-            &names,
-            &entries(&[("GEMINI_API_KEY", "kept-key"), ("OTHER_KEY", "other")]),
-        );
+        let kept = forwarded(&[("GEMINI_API_KEY", "kept-key"), ("OTHER_KEY", "other")])
+            .launch_values()
+            .clone();
         let brain = instance(&[("MODE", "fast")], &["GEMINI_API_KEY"]);
 
         assert_eq!(
-            instance_environment(&[], &kept, &brain),
+            instance_environment(&ForwardedEnv::default(), &kept, &brain),
             entries(&[("GEMINI_API_KEY", "kept-key"), ("MODE", "fast")])
         );
     }
 
-    /// The value a CLI join forwards wins over the kept one.
+    /// The value a CLI join forwards wins over the kept one, and an empty
+    /// value it forwards is no value, so the kept one applies.
     #[test]
     fn the_forwarded_value_of_a_launch_variable_wins_over_the_kept_one() {
-        let names = [variable("GEMINI_API_KEY")];
-        let kept = LaunchValues::kept(&names, &entries(&[("GEMINI_API_KEY", "kept-key")]));
+        let kept = forwarded(&[("GEMINI_API_KEY", "kept-key")])
+            .launch_values()
+            .clone();
         let brain = instance(&[], &["GEMINI_API_KEY"]);
 
         assert_eq!(
-            instance_environment(&entries(&[("GEMINI_API_KEY", "joined-key")]), &kept, &brain),
+            instance_environment(
+                &forwarded(&[("GEMINI_API_KEY", "joined-key")]),
+                &kept,
+                &brain
+            ),
             entries(&[("GEMINI_API_KEY", "joined-key")])
+        );
+        assert_eq!(
+            instance_environment(&forwarded(&[("GEMINI_API_KEY", "")]), &kept, &brain),
+            entries(&[("GEMINI_API_KEY", "kept-key")])
         );
     }
 }

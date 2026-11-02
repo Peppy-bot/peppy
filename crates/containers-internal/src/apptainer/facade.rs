@@ -983,6 +983,13 @@ impl Apptainer {
     /// as a process-group leader recording its PGID there; see
     /// [`lima::lima_guest_pgid_argv`]. The native backend ignores it (the host
     /// process group already covers the whole tree in the shared namespace).
+    ///
+    /// `apptainer_env` reaches apptainer as `APPTAINERENV_` variables: in the
+    /// process environment on Linux, and under Lima on the standard input of
+    /// the guest command, never on a command line (see
+    /// [`lima::lima_guest_env_args`]). The standard input of the command is
+    /// set: the null device, or under Lima with an environment, the pipe that
+    /// carries it.
     fn command(
         &self,
         args: &[&str],
@@ -1003,6 +1010,7 @@ impl Apptainer {
                     cmd.env(format!("APPTAINERENV_{key}"), value);
                 }
                 cmd.args(args);
+                cmd.stdin(Stdio::null());
                 if let Some(dir) = working_dir {
                     cmd.current_dir(dir);
                 }
@@ -1014,24 +1022,25 @@ impl Apptainer {
                 lima_home,
                 ..
             } => {
-                // Host process environment does not cross `limactl shell`, so
-                // APPTAINERENV_ variables ride the guest argv instead: the
-                // guest `env` utility sets them and execs apptainer. Every
-                // wrapper below passes its tail through as positional
-                // parameters, so the pairs are never re-tokenized.
-                let (guest_bin, guest_args_owned): (&Path, Vec<String>) =
+                // Host process environment does not cross `limactl shell`, and
+                // a command line shows in the process list, so the
+                // APPTAINERENV_ pairs ride the standard input of the guest
+                // command: a guest shell exports them and execs apptainer.
+                // Every wrapper below passes its tail through as positional
+                // parameters, so the command is never re-tokenized.
+                let (guest_bin, guest_args_owned, env_lines): (&Path, Vec<String>, _) =
                     if apptainer_env.is_empty() {
-                        (apptainer_bin, args.iter().map(|s| s.to_string()).collect())
+                        (
+                            apptainer_bin,
+                            args.iter().map(|s| s.to_string()).collect(),
+                            None,
+                        )
                     } else {
-                        let env_argv = apptainer_env
-                            .iter()
-                            .map(|(key, value)| format!("APPTAINERENV_{key}={value}"))
-                            .chain(std::iter::once(
-                                apptainer_bin.to_string_lossy().into_owned(),
-                            ))
-                            .chain(args.iter().map(|s| s.to_string()))
-                            .collect();
-                        (Path::new("env"), env_argv)
+                        (
+                            Path::new(lima::GUEST_SHELL),
+                            lima::lima_guest_env_args(apptainer_bin, args),
+                            Some(lima::guest_env_lines(apptainer_env)?),
+                        )
                     };
                 let guest_args: Vec<&str> = guest_args_owned.iter().map(|s| s.as_str()).collect();
 
@@ -1064,6 +1073,10 @@ impl Apptainer {
                         cmd.args(guest_args);
                     }
                 }
+                cmd.stdin(match env_lines {
+                    Some(lines) => lima::stdin_carrying(lines)?,
+                    None => Stdio::null(),
+                });
                 Ok(cmd)
             }
         }
@@ -1445,9 +1458,12 @@ impl<'a> ApptainerCommand<'a> {
     /// comma-separated list of pairs and splits a value at every comma, each
     /// fragment becoming a variable of its own. It also reaches a build's
     /// `%post` scriptlet, which `apptainer build` offers no `--env` flag for.
-    /// The native backend sets it on the spawned process; the Lima backend
-    /// prefixes the guest command with `env APPTAINERENV_{key}={value}`,
-    /// since host process environment does not cross `limactl shell`.
+    /// The native backend sets it on the spawned process. The Lima backend
+    /// writes `{key}={value}` lines to the standard input of the guest
+    /// command, whose shell exports each one before it execs apptainer: host
+    /// process environment does not cross `limactl shell`, and a value on a
+    /// command line shows in the process list. Under Lima, a key or a value
+    /// that would break a line fails the terminal method.
     pub fn apptainer_env(mut self, key: &str, value: &str) -> Self {
         self.apptainer_env
             .push((key.to_string(), value.to_string()));
@@ -1561,7 +1577,8 @@ impl<'a> ApptainerCommand<'a> {
     /// Spawn the command, returning a handle to the child process.
     ///
     /// Stdout and stderr are inherited (not piped), so build/run progress
-    /// output flows directly to the terminal.
+    /// output flows directly to the terminal. Stdin is the null device, or
+    /// under Lima with an environment, the pipe that carries it.
     pub fn spawn(self) -> Result<Child> {
         let mut cmd = self.assemble_command()?;
         cmd.spawn().map_err(Error::from)
@@ -1611,8 +1628,10 @@ impl<'a> ApptainerCommand<'a> {
     /// async output capture via `tokio::process::Command`) or add additional
     /// process-level configuration before spawning.
     ///
-    /// The returned command has **no stdio overrides**: stdout, stderr, and
-    /// stdin all default to `Inherit`.
+    /// The standard input of the returned command is set, and a caller must
+    /// not replace it: the null device, or under Lima with an environment,
+    /// the pipe that carries that environment to the guest. Stdout and stderr
+    /// default to `Inherit`.
     pub fn into_std_command(self) -> Result<Command> {
         self.assemble_command()
     }

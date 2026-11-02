@@ -1,7 +1,9 @@
 //! Launch variables end to end: a launch keeps the value of each variable
 //! its launcher names, refuses to start when an instance that it or a join
 //! through its scope can start lacks one, and a later join gives the kept
-//! value to the run of each instance that names it, and to nothing else.
+//! value to the run of each instance that names it, and to nothing else. A
+//! forwarded launch variable reaches no build and no instance that does not
+//! name it.
 //! The probe nodes write what their processes received to files outside
 //! the data root, so each assertion reads the environment of a real process.
 
@@ -29,8 +31,8 @@ const TOOL_KEY: &str = "TOOL_KEY";
 struct Fleet {
     _directory: tempfile::TempDir,
     launcher: PathBuf,
-    /// `<PROBE_KEY>|<OTHER_KEY>` of each run of a brain, `unset` for a
-    /// variable its environment does not hold.
+    /// `<PROBE_KEY>|<OTHER_KEY>|<TOOL_KEY>` of each run of a brain, `unset`
+    /// for a variable its environment does not hold.
     brain_runs: PathBuf,
     /// `<PROBE_KEY>` of each build of the brain node.
     brain_builds: PathBuf,
@@ -72,7 +74,8 @@ impl Fleet {
             },
         );
         let brain_run = format!(
-            "printf '%s|%s\\n' \"${{{KEY}-unset}}\" \"${{{OTHER}-unset}}\" >> {}; exec sleep 300",
+            "printf '%s|%s|%s\\n' \"${{{KEY}-unset}}\" \"${{{OTHER}-unset}}\" \"${{{TOOL_KEY}-unset}}\" \
+             >> {}; exec sleep 300",
             brain_runs.display()
         );
         let brain_build = format!(
@@ -275,7 +278,7 @@ async fn a_join_through_the_scope_gives_the_run_of_the_brain_the_kept_value() {
 
     assert_eq!(
         probe_lines(&fleet.brain_runs, 1).await,
-        [format!("{SENTINEL}|unset")],
+        [format!("{SENTINEL}|unset|unset")],
         "the run takes the kept value of the variable it names, and no other"
     );
     assert_eq!(
@@ -307,10 +310,10 @@ async fn a_join_through_the_scope_gives_the_run_of_the_brain_the_kept_value() {
     );
 }
 
-/// A launch without the key is refused before it builds anything, naming
-/// the variable, the brain, its option and the manager whose scope offers
-/// it; the running stack stays, and a join after the refusal reads the
-/// value that the running stack keeps.
+/// A launch without the key, or with an empty one, is refused before it
+/// builds anything, naming the variable, the brain, its option and the
+/// manager whose scope offers it; the running stack stays, and a join after
+/// the refusals reads the value that the running stack keeps.
 #[tokio::test]
 async fn a_launch_without_the_key_is_refused_and_the_running_stack_keeps_its_value() {
     let started = start_core_node_with_mock_messenger().await;
@@ -327,22 +330,32 @@ async fn a_launch_without_the_key_is_refused_and_the_running_stack_keeps_its_val
         GoalOutcome::Completed(json!({}))
     );
     let builds = probe_lines(&fleet.brain_builds, 1).await;
-
-    let refused = execute(&started, &fleet.launch("second", &[(OTHER, "other")])).await;
-    refused.assert_failed(
-        PeppyFailureKind::Rejected,
-        "the launch needs `PROBE_KEY`, and the launch environment does not hold it, or holds a \
-         value with characters that a node cannot receive: `brain_inst` of option `arm` takes it \
-         from the launch, and stack.join through `manager_inst` can add a copy of `arm`. Export \
-         `PROBE_KEY` in the shell that launches",
+    assert_eq!(
+        builds,
+        ["unset"],
+        "the build of the launch gets no launch variable"
     );
+
+    // Without the key, and with an empty key, as a shell that sources a
+    // `.env` template with an unset key exports it.
+    for (launch_id, environment) in [("second", (OTHER, "other")), ("third", (KEY, ""))] {
+        execute(&started, &fleet.launch(launch_id, &[environment]))
+            .await
+            .assert_failed(
+                PeppyFailureKind::Rejected,
+                "the launch needs `PROBE_KEY`, and the launch environment does not hold it, or \
+                 holds it empty or with characters that a node cannot receive: `brain_inst` of \
+                 option `arm` takes it from the launch, and stack.join through `manager_inst` can \
+                 add a copy of `arm`. Export `PROBE_KEY` in the shell that launches",
+            );
+    }
     assert_eq!(
         fs::read_to_string(&fleet.brain_builds)
             .unwrap()
             .lines()
             .count(),
         builds.len(),
-        "the refused launch builds nothing"
+        "the refused launches build nothing"
     );
     assert_eq!(copies_on_the_stack(&started).await, ["alpha"]);
 
@@ -352,7 +365,7 @@ async fn a_launch_without_the_key_is_refused_and_the_running_stack_keeps_its_val
     );
     assert_eq!(
         probe_lines(&fleet.brain_runs, 2).await,
-        ["first-value|unset", "first-value|unset"]
+        ["first-value|unset|unset", "first-value|unset|unset"]
     );
 }
 
@@ -380,9 +393,10 @@ async fn a_launch_that_no_join_can_add_a_brain_to_and_a_build_need_no_key() {
 
 /// A tool that only a CLI word selects makes no launch need its key. A CLI
 /// join that does not forward the key is refused while the launch kept no
-/// value, and one that forwards it starts the tool with it. After a launch
-/// with the key, a CLI join that forwards none starts the tool with the
-/// kept value, and one that forwards another value starts it with that one.
+/// value, and one that forwards it starts the tool with it, and not the
+/// brain, which does not name it. After a launch with the key, a CLI join
+/// that forwards none starts the tool with the kept value, and one that
+/// forwards another value starts it with that one.
 #[tokio::test]
 async fn a_cli_join_reads_its_own_value_then_the_one_the_launch_kept() {
     let started = start_core_node_with_mock_messenger().await;
@@ -409,20 +423,21 @@ async fn a_cli_join_reads_its_own_value_then_the_one_the_launch_kept() {
     .assert_failed(
         PeppyFailureKind::Rejected,
         "the join needs `TOOL_KEY`, and neither the join environment nor the launch environment \
-         holds it, or they hold a value with characters that a node cannot receive: \
+         holds it, or they hold it empty or with characters that a node cannot receive: \
          `alpha_tool_inst` takes it from the launch, and the join starts it",
     );
     execute(
         &started,
-        &cli_join_with_the_tool("bravo", &[(TOOL_KEY, "joined-value")]),
+        &cli_join_with_the_tool("bravo", &[(TOOL_KEY, "joined-value"), (OTHER, "other")]),
     )
     .await
     .assert_completed();
     assert_eq!(probe_lines(&fleet.tool_runs, 1).await, ["joined-value"]);
     assert_eq!(
         probe_lines(&fleet.brain_runs, 1).await,
-        ["brain-value|unset"],
-        "the brain of the CLI join takes the kept value"
+        ["brain-value|other|unset"],
+        "the brain of the CLI join takes the kept value and the other entries of the join, \
+         and not the launch variable of the tool"
     );
 
     execute(
@@ -437,6 +452,13 @@ async fn a_cli_join_reads_its_own_value_then_the_one_the_launch_kept() {
     execute(&started, &cli_join_with_the_tool("charlie", &[]))
         .await
         .assert_completed();
+    // A join ends when its instances answer readiness, which can come
+    // before a tool writes its line: the next join waits for that line, so
+    // the order of the lines is the order of the joins.
+    assert_eq!(
+        probe_lines(&fleet.tool_runs, 2).await,
+        ["joined-value", "kept-value"]
+    );
     execute(
         &started,
         &cli_join_with_the_tool("delta", &[(TOOL_KEY, "newer-value")]),
@@ -469,5 +491,8 @@ async fn a_new_launch_after_a_reset_gives_its_own_value() {
         join_through_the_scope(&started, "alpha").await,
         GoalOutcome::Completed(json!({}))
     );
-    assert_eq!(probe_lines(&fleet.brain_runs, 1).await, ["new-value|unset"]);
+    assert_eq!(
+        probe_lines(&fleet.brain_runs, 1).await,
+        ["new-value|unset|unset"]
+    );
 }

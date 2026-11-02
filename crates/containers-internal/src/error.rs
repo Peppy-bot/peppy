@@ -71,6 +71,12 @@ pub enum Error {
         delimiter: char,
     },
 
+    #[error(
+        "the environment entry `{key}` cannot reach a node in the Lima VM: its name is empty or \
+         holds `=` or a line break, or its value holds a line break"
+    )]
+    GuestEnvEntryUnsendable { key: String },
+
     #[error("Failed to prepare the apptainer scratch directory {path}: {source}")]
     ScratchDirUnavailable {
         path: String,

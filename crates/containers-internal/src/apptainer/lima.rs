@@ -2,7 +2,7 @@ use super::super::error::{Error, Result};
 use super::facade::wait_for_child_bounded;
 use config::node::is_blocked_mount_source;
 use std::collections::HashSet;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -105,6 +105,79 @@ pub(crate) fn lima_guest_pgid_argv(
     argv.push(apptainer_bin.display().to_string());
     argv.extend(apptainer_args.iter().map(|arg| arg.to_string()));
     argv
+}
+
+/// The program of the guest command that [`lima_guest_env_args`] runs.
+pub(crate) const GUEST_SHELL: &str = "sh";
+
+/// The fixed guest script that takes the `APPTAINERENV_` pairs of a command
+/// from its standard input, one `KEY=value` line each ([`guest_env_lines`]),
+/// exports each one, and then execs the command that follows as positional
+/// parameters. The command finds its standard input at its end, as it finds
+/// the null device.
+const GUEST_ENV_FROM_STDIN_SCRIPT: &str =
+    "while IFS= read -r pair; do export \"APPTAINERENV_$pair\"; done; exec \"$@\"";
+
+/// The arguments of [`GUEST_SHELL`] (after the `limactl shell ... --`
+/// separator) that run `apptainer_bin` with `apptainer_args` once it has
+/// exported the pairs that its standard input carries.
+///
+/// The host process environment does not cross `limactl shell`, and a value
+/// on the command line of `limactl` or of the guest shell shows in the
+/// process list of the host and of the guest, which every user of the
+/// machine can read. So no value is an argument: each one rides the standard
+/// input of the guest command ([`stdin_carrying`]). The script and the
+/// command are positional parameters, so they are never re-tokenized, and
+/// the wrappers of the working directory and of the process group take
+/// these as the command that they run.
+pub(crate) fn lima_guest_env_args(apptainer_bin: &Path, apptainer_args: &[&str]) -> Vec<String> {
+    let mut args = vec![
+        "-c".to_string(),
+        GUEST_ENV_FROM_STDIN_SCRIPT.to_string(),
+        GUEST_SHELL.to_string(),
+        apptainer_bin.display().to_string(),
+    ];
+    args.extend(apptainer_args.iter().map(|arg| arg.to_string()));
+    args
+}
+
+/// The `APPTAINERENV_` pairs of a Lima command as the guest script of
+/// [`lima_guest_env_args`] reads them: one `KEY=value` line each, without the
+/// prefix, which the script adds. A line break would split an entry into
+/// other entries, so a name that is empty or holds `=` or a line break, and a
+/// value that holds a line break, is refused, naming the variable, and so is
+/// a NUL byte, which no process environment holds.
+pub(crate) fn guest_env_lines(apptainer_env: &[(String, String)]) -> Result<String> {
+    let breaks_a_line = |text: &str| text.contains(['\n', '\0']);
+    let mut lines = String::new();
+    for (key, value) in apptainer_env {
+        if key.is_empty() || key.contains('=') || breaks_a_line(key) || breaks_a_line(value) {
+            return Err(Error::GuestEnvEntryUnsendable { key: key.clone() });
+        }
+        lines.push_str(key);
+        lines.push('=');
+        lines.push_str(value);
+        lines.push('\n');
+    }
+    Ok(lines)
+}
+
+/// The standard input of a child that carries `payload` and then ends: the
+/// read end of a pipe whose write end a thread fills and then closes, so the
+/// whole payload arrives whatever the size of the pipe buffer. The thread
+/// ends once it has written the payload, or once no process holds the read
+/// end any more: the command never ran, or its process ended before it read
+/// everything.
+pub(crate) fn stdin_carrying(payload: String) -> Result<Stdio> {
+    let (reader, mut writer) = std::io::pipe()?;
+    std::thread::Builder::new()
+        .name("guest-stdin".to_string())
+        .spawn(move || {
+            // A process that ends before it reads the whole payload has no
+            // use for the rest, so a failed write has nothing to report.
+            let _ = writer.write_all(payload.as_bytes());
+        })?;
+    Ok(Stdio::from(reader))
 }
 
 /// Guest-side argv (after the `limactl shell ... --` separator) that runs a

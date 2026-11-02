@@ -34,7 +34,8 @@ use core_node_api::encoding::{
     NodeBuildLogEntry, NodeLogs, NodeRunLogEntry,
 };
 use daemon_config::launcher::{
-    ClockIncarnations, CopyMembership, Deployment, Joinable, LaunchValues, Placements, ScopeCheck,
+    ClockIncarnations, CopyMembership, Deployment, ForwardedEnv, Joinable, LaunchValues,
+    Placements, ScopeCheck,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -91,6 +92,11 @@ impl<'a> PhaseChange<'a> {
 pub(super) struct PhaseGoal {
     pub(super) launch_id: String,
     pub(super) rebuild: bool,
+    /// The forwarded environment of the goal, parsed against the launch
+    /// variables of the stack. The adds and builds on this machine get its
+    /// other entries, and the run of each instance on this machine also gets
+    /// the value of each launch variable that it names.
+    pub(super) environment: ForwardedEnv,
 }
 
 /// One node on one machine.
@@ -323,12 +329,15 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         }
     };
 
-    // Step 2b: Each instance that the launch or a join through one of its
-    // scopes can start gets the value of each launch variable it takes from
-    // the forwarded environment of this launch, so a missing one refuses the
-    // launch here, while the running stack and its kept values stay as they
-    // are, and not when a join fails in the middle of a session. A build
-    // starts nothing, so it checks none and keeps none.
+    // Step 2b: The forwarded environment of this launch, parsed against the
+    // launch variables of the launcher, so the value of each one reaches the
+    // run of the instances that name it and no other node. Each instance
+    // that the launch or a join through one of its scopes can start gets the
+    // value of each launch variable it takes from that environment, so a
+    // missing one refuses the launch here, while the running stack and its
+    // kept values stay as they are, and not when a join fails in the middle
+    // of a session. A build starts nothing, so it checks none and keeps none.
+    let environment = ForwardedEnv::parse(ctx.env_vars.clone(), &prepared.launch_variable_names());
     let launch_values = if builds_only {
         LaunchValues::default()
     } else {
@@ -338,12 +347,12 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
                 .flat_map(|deployment| &deployment.instances),
             &placements,
             variable_needs,
-            &ctx.env_vars,
+            &environment,
         ) {
             publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
             return ChangeEnd::stopped(rejected(reason));
         }
-        LaunchValues::kept(&prepared.launch_variable_names(), &ctx.env_vars)
+        environment.launch_values().clone()
     };
 
     // Step 2c: The clock every instance reads, with a fresh lifetime minted
@@ -573,6 +582,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     let phase = PhaseGoal {
         launch_id: goal.launch_id.clone(),
         rebuild: goal.rebuild,
+        environment,
     };
     let planned_by_key: HashMap<NodeKey, PlannedDeployment> =
         planned.into_iter().map(|item| (item.key(), item)).collect();

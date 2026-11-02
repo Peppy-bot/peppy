@@ -2,16 +2,17 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use config::node::{NodeConfig, NodeConfigParser};
+use config::runtime::CoreNodeTarget;
 use core_node::{ExposureDocumentsError, NodeCacheEntry};
 use core_node_api::encoding::{CopyReference, LaunchWord, LauncherOrigin};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::DeploymentTargets;
 use daemon_config::launcher::{
-    AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, CopyMembership, Deployment,
-    DeploymentSource, ExternallyCoveredSlots, MemberAddressing, PairingValidationItem,
-    PeppyLauncher, Placements, PreparedLauncher, ResolvedClocks, ScopeCheck, UnitSelection,
-    check_daemon_scopes, instance_restart, resolve_clocks, resolve_restart, restart_request_of,
-    validate_link_plan,
+    AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, ComposedLaunch, CopyMembership,
+    Deployment, DeploymentInstance, DeploymentSource, ExternallyCoveredSlots, MemberAddressing,
+    PairingValidationItem, PeppyLauncher, Placements, PreparedLauncher, ResolvedClocks, ScopeCheck,
+    Starter, UnitSelection, VariableNeed, VariableNeeds, check_daemon_scopes, instance_restart,
+    resolve_clocks, resolve_restart, restart_request_of, validate_link_plan,
 };
 use daemon_config::repository::EntryOrigin;
 
@@ -48,7 +49,10 @@ const PREVIEW_CORE_NODE: &str = "cn-preview";
 ///
 /// The flat plan is then held to the launch checks of daemon scopes, which
 /// read the exposure documents and the node manifests alone, so those of the
-/// exposure deployments run with a cold nodes cache too, and to the
+/// exposure deployments run with a cold nodes cache too. The report then
+/// names the launch variables that the launch needs and each instance with
+/// launch variables that the launch can place off the coordinator (see
+/// [`report_launch_variables`]). The plan is then held to the
 /// launch-time link rules that need no daemon: slot-key and
 /// vacancy legality, and the pairing rules, coverage included, so a launcher that leaves a `zero_or_one` pairing slot neither
 /// paired nor vacant fails here instead of minutes later at launch. The
@@ -100,7 +104,7 @@ pub fn resolve_rendered(
     // Both checks read the node manifests of the plan through one load of
     // this machine's nodes cache.
     let node_cache = core_node::load_node_cache(dirs).map_err(|e| e.to_string());
-    check_daemon_scope_rules(
+    let scoped_needs = check_daemon_scope_rules(
         &prepared,
         &composed.launcher,
         &composed.selection,
@@ -111,6 +115,7 @@ pub fn resolve_rendered(
         },
         &mut lines,
     )?;
+    report_launch_variables(&composed, joins, scoped_needs, &mut lines);
     check_link_plan(&composed.launcher, &copies, dirs, &node_cache, &mut lines)?;
 
     let document = json5_pretty::to_string_pretty(&composed.launcher)
@@ -183,6 +188,9 @@ fn deployment_targets(
 /// so a clean exit is never mistaken for checked scopes; the checks of every
 /// other deployment still run. A document or a manifest the launch would
 /// refuse fails the command with that refusal.
+///
+/// Returns the instances with launch variables that a join through a scope
+/// of the checked deployments can start.
 fn check_daemon_scope_rules(
     prepared: &PreparedLauncher,
     flat: &PeppyLauncher,
@@ -190,7 +198,7 @@ fn check_daemon_scope_rules(
     copies: &CopyMembership,
     sources: ScopeSources<'_>,
     report: &mut Vec<String>,
-) -> Result<()> {
+) -> Result<VariableNeeds> {
     let mut checked: Vec<(&Deployment, DeploymentTargets)> =
         Vec::with_capacity(flat.deployments.len());
     let mut not_cached_exposures: Vec<String> = Vec::new();
@@ -226,7 +234,7 @@ fn check_daemon_scope_rules(
             not_cached_nodes.join(", ")
         ));
     }
-    check_daemon_scopes(
+    let joinable = check_daemon_scopes(
         prepared,
         checked
             .iter()
@@ -246,7 +254,99 @@ fn check_daemon_scope_rules(
             "daemon scopes hold: {scoped} daemon target(s) scoped and placed on the coordinator"
         ));
     }
-    Ok(())
+    Ok(joinable.variable_needs)
+}
+
+/// Report the launch variables of the plan, as a launch checks them. First,
+/// one line for each variable that the launch needs from the shell that
+/// launches: each instance that takes it and what can start that instance,
+/// the launch itself or a join through a scope of the launch (`scoped`).
+/// Then one line for each instance with launch variables that a core node
+/// link or a word places off the coordinator, which the launch refuses: this
+/// command reads no daemon and no `--place` wiring, so the line names the
+/// link or the machine as the file or the word writes it, and the condition
+/// under which the launch runs the instance on the coordinator.
+fn report_launch_variables(
+    composed: &ComposedLaunch,
+    joins: &[CopyReference],
+    scoped: VariableNeeds,
+    report: &mut Vec<String>,
+) {
+    let instances = || {
+        composed
+            .launcher
+            .deployments
+            .iter()
+            .flat_map(|deployment| &deployment.instances)
+    };
+    let mut needs = VariableNeeds::default();
+    for instance in instances() {
+        needs.extend(VariableNeed::each_of(
+            instance.instance_id.as_str(),
+            instance,
+            &Starter::Launch,
+        ));
+    }
+    needs.extend(scoped);
+    for (variable, reasons) in needs.reasons() {
+        report.push(format!(
+            "launch variables: the launch needs `{variable}` from the shell that launches: \
+             {reasons}"
+        ));
+    }
+    for instance in instances().filter(|instance| !instance.env_from_launch.is_empty()) {
+        let Some(placement) = placement_off_the_coordinator(composed, joins, instance) else {
+            continue;
+        };
+        report.push(format!(
+            "launch variables: `{}` takes {} from the launch and {placement}; an instance with \
+             launch variables runs on the coordinator only",
+            instance.instance_id,
+            daemon_config::format_quoted_list(instance.env_from_launch.iter()),
+        ));
+    }
+}
+
+/// Where the launch can place `instance` off the coordinator, as a clause of
+/// the report, or `None` when it runs on the coordinator. An instance with no
+/// `core_node` runs there. An instance of a copy runs on the machine of its
+/// part's word, else on the machine of the copy's `--join` word, else on the
+/// coordinator, unless `--place` names the copy, which this command does not
+/// read. An instance on any other core node link runs where `--place` wires
+/// that link.
+fn placement_off_the_coordinator(
+    composed: &ComposedLaunch,
+    joins: &[CopyReference],
+    instance: &DeploymentInstance,
+) -> Option<String> {
+    let link = instance.core_node.as_deref()?;
+    let Some(copy) = composed
+        .copies()
+        .iter()
+        .find(|copy| copy.name.as_str() == link)
+    else {
+        return Some(format!(
+            "runs on core node link `{link}`, so the launch refuses it unless `--place \
+             {link}@self` or `--local` puts that link on the coordinator"
+        ));
+    };
+    let own_axis = copy
+        .instances
+        .iter()
+        .find(|owned| owned.instance_id == instance.instance_id)
+        .and_then(|owned| owned.own_axis.as_ref());
+    let part_machine = own_axis.and_then(|axis| composed.part_machines_of(&copy.name).get(axis));
+    let copy_machine = joins
+        .iter()
+        .find(|join| join.name == copy.name)
+        .map(|join| &join.core_node);
+    match part_machine.or(copy_machine) {
+        Some(CoreNodeTarget::Named(machine)) => Some(format!(
+            "a word places it on `{machine}`, so the launch refuses it unless `{machine}` is the \
+             coordinator"
+        )),
+        Some(CoreNodeTarget::Coordinator) | None => None,
+    }
 }
 
 /// One deployment's manifest as [`check_link_plan`] resolved it: the

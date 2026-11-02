@@ -431,7 +431,9 @@ pub(super) struct StackChangeContext {
     pub(super) log: ActionLog,
     /// The caller's forwarded environment. It describes the machine the change
     /// was typed on, so it reaches goals executed on this daemon and stays off
-    /// every goal dispatched to a peer.
+    /// every goal dispatched to a peer. A launch and a join parse it against
+    /// the launch variables of the stack into the `environment` of their
+    /// phase goal, which is what their nodes get.
     pub(super) env_vars: Vec<(String, String)>,
     pub(super) timeouts: StackChangeTimeouts,
     /// Whole-change deadline. `None` means the user did not opt into a max; only idle timeouts

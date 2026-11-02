@@ -301,14 +301,16 @@ impl DaemonScope {
     /// against the launcher that gives it and the stack `selection`
     /// resolves: one refusal per problem. When the scope holds, returns what
     /// a join the scope allows can start: the nodes it can bring, and the
-    /// instances of these that take launch variables.
+    /// instances of these that take launch variables, each offered by
+    /// `scope_instance`, the instance whose daemon target holds the scope.
     pub fn check_launch(
         &self,
         prepared: &PreparedLauncher,
         selection: &UnitSelection,
+        scope_instance: &str,
     ) -> Result<Joinable, Vec<String>> {
         match self {
-            Self::RobotMembership(scope) => scope.check_launch(prepared, selection),
+            Self::RobotMembership(scope) => scope.check_launch(prepared, selection, scope_instance),
             // A `robot_leases` scope names members of the interface alone, so
             // every launcher holds it, and a member starts nothing.
             Self::RobotLeases(_) => Ok(Joinable::default()),

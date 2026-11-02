@@ -2,7 +2,7 @@ use super::composition::{
     Adjustment, AxisScope, ComponentAxis, DeploymentEntries, DeploymentEntriesRef,
     OptionDeployment, SelectionConstraint,
 };
-use super::launch_variables::LaunchVariables;
+use super::launch_variables::{LaunchVariables, VariableGivenTwoValues, VariablesGivenTwoValues};
 use crate::error::StructuredError;
 use config::validate_named_items;
 use config::{
@@ -398,21 +398,20 @@ fn cross_check_flat_document(
         .flat_map(|deployment| &deployment.instances)
         .map(|instance| instance.instance_id.as_str())
         .collect();
-    for instance in deployments
-        .iter()
-        .flat_map(|deployment| &deployment.instances)
-    {
+    let instances = || {
+        deployments
+            .iter()
+            .flat_map(|deployment| &deployment.instances)
+    };
+    for instance in instances() {
         check_instance_links(instance, &known_ids)?;
-        if let Some(variable) = instance.env_from_launch.given_in(&instance.env_vars) {
-            return Err(super::launch_variables::given_two_values(
-                instance.instance_id.as_str(),
-                variable,
-                None,
-            ));
-        }
     }
-
-    Ok(())
+    VariablesGivenTwoValues::refuse(
+        instances()
+            .flat_map(|instance| VariableGivenTwoValues::each_of(instance, None))
+            .collect(),
+    )
+    .map_err(|refusal| refusal.to_string())
 }
 
 /// The link checks of one instance of a flat launcher: no link key is the

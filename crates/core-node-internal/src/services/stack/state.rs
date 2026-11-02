@@ -679,10 +679,12 @@ mod tests {
     fn the_debug_output_of_a_launch_names_its_launch_variables_only() {
         let key = daemon_config::launcher::LaunchVariable::try_from("GEMINI_API_KEY".to_owned())
             .expect("a launch variable");
-        let active = launch_of_alpha_and_bravo().with_launch_values(LaunchValues::kept(
-            [&key],
-            &[("GEMINI_API_KEY".to_owned(), "sentinel-value".to_owned())],
-        ));
+        let forwarded = daemon_config::launcher::ForwardedEnv::parse(
+            vec![("GEMINI_API_KEY".to_owned(), "sentinel-value".to_owned())],
+            &std::collections::BTreeSet::from([key]),
+        );
+        let active =
+            launch_of_alpha_and_bravo().with_launch_values(forwarded.launch_values().clone());
 
         assert_eq!(
             active.launch_values.value_of("GEMINI_API_KEY"),

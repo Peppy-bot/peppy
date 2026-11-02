@@ -358,8 +358,8 @@ fn check_scope(
     let ScopeCheck::Launch(selection) = check else {
         return;
     };
-    match parsed.check_launch(prepared, selection) {
-        Ok(joinable) => verdicts.joinable.merge_offered_by(instance, joinable),
+    match parsed.check_launch(prepared, selection, instance) {
+        Ok(joinable) => verdicts.joinable.merge(joinable),
         Err(reasons) => refusals.extend(reasons.into_iter().map(|reason| {
             DaemonScopeError::ScopeRefusedByLauncher {
                 instance: instance.to_owned(),

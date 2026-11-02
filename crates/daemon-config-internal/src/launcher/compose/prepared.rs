@@ -379,10 +379,16 @@ impl PreparedLauncher {
     /// keeps.
     pub fn launch_variable_names(&self) -> BTreeSet<LaunchVariable> {
         let launcher = &self.launcher;
-        let adjustments = self
-            .routed()
-            .into_iter()
-            .map(|routed| routed.entry.adjustment)
+        let adjustments = launcher
+            .adjustments
+            .iter()
+            .chain(
+                launcher
+                    .components
+                    .iter()
+                    .flat_map(|axis| axis.options.values())
+                    .flat_map(|option| &option.adjustments),
+            )
             .chain(option_entry_adjustments(&launcher.option_deployments))
             .chain(self.loaded.all_fragments().flat_map(|fragment| {
                 fragment

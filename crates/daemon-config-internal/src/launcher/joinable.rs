@@ -6,7 +6,7 @@
 //! do not depend on the other copies of the stack, so the set is exact and
 //! closed when the launch starts.
 
-use super::launch_variables::{Starter, VariableNeeds};
+use super::launch_variables::VariableNeeds;
 use super::types::{Deployment, DeploymentSource};
 use config::runtime::Name;
 
@@ -19,17 +19,10 @@ pub struct Joinable {
 }
 
 impl Joinable {
-    /// Adds what the joins through the scope of the instance `scope` can
-    /// start: each need of `other` gets that instance as a scope.
-    pub fn merge_offered_by(&mut self, scope: &str, other: Self) {
+    /// Adds what the joins of another scope can start.
+    pub fn merge(&mut self, other: Self) {
         self.nodes.merge(other.nodes);
-        self.variable_needs
-            .extend(other.variable_needs.into_iter().map(|mut need| {
-                if let Starter::ScopedJoin { scopes, .. } = &mut need.starter {
-                    *scopes = vec![scope.to_owned()];
-                }
-                need
-            }));
+        self.variable_needs.extend(other.variable_needs);
     }
 }
 

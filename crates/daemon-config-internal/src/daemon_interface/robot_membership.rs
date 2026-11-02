@@ -385,11 +385,12 @@ impl RobotMembershipScope {
     /// When the scope holds, returns what the trial copies of step 3 start:
     /// every node that a join of a scoped option can bring, and every
     /// instance of theirs that takes launch variables, with the smallest
-    /// feature sets that start it.
+    /// feature sets that start it, through the scope of `scope_instance`.
     pub(super) fn check_launch(
         &self,
         prepared: &PreparedLauncher,
         selection: &UnitSelection,
+        scope_instance: &str,
     ) -> Result<Joinable, Vec<String>> {
         let errors: Vec<CompositionError> = self
             .options
@@ -419,7 +420,7 @@ impl RobotMembershipScope {
         if !features.is_empty() {
             return Err(features);
         }
-        self.check_trial_joins(prepared, selection)
+        self.check_trial_joins(prepared, selection, scope_instance)
     }
 
     /// Step 3 of [`Self::check_launch`]: one trial join of each feature set
@@ -430,6 +431,7 @@ impl RobotMembershipScope {
         &self,
         prepared: &PreparedLauncher,
         selection: &UnitSelection,
+        scope_instance: &str,
     ) -> Result<Joinable, Vec<String>> {
         let trials = prepared
             .trial_stack(selection)
@@ -447,12 +449,10 @@ impl RobotMembershipScope {
                         continue;
                     }
                 };
-                // The scope that offers the option is the instance that
-                // serves it, which the launch checks of daemon scopes add.
                 let starter = Starter::ScopedJoin {
                     option: entry.option.clone(),
                     features: set.iter().map(|feature| feature.feature.clone()).collect(),
-                    scopes: Vec::new(),
+                    scopes: vec![scope_instance.to_owned()],
                 };
                 joinable
                     .variable_needs

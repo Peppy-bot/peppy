@@ -221,10 +221,10 @@ fn the_example_needs_the_key_of_the_brain_that_a_join_can_add() {
     assert_eq!(
         refusal,
         "the launch needs `GEMINI_API_KEY`, and the launch environment does not hold it, or \
-         holds a value with characters that a node cannot receive: `brain_inst` of option \
+         holds it empty or with characters that a node cannot receive: `brain_inst` of option \
          `demo_arm` takes it from the launch, and stack.join through `framework_controls_inst` \
-         can add a copy of `demo_arm`. Export `GEMINI_API_KEY` in the shell that launches, with \
-         a value of letters, digits and `_ - . / : , = @ + %` only"
+         can add a copy of `demo_arm`. Export `GEMINI_API_KEY` in the shell that launches. A \
+         value must not be empty, and must hold letters, digits and `_ - . / : , = @ + %` only"
     );
 }
 
@@ -352,7 +352,8 @@ fn set_env_from_launch_replaces_the_list_under_its_guard() {
         .expect("composes");
     assert_eq!(
         names(instance(&composed.launcher, "alpha_brain_inst")),
-        ["OPENROUTER_API_KEY", "GEMINI_API_KEY"]
+        ["GEMINI_API_KEY", "OPENROUTER_API_KEY"],
+        "a list is a set, in name order"
     );
     let written: Vec<(&str, &AppliedChange)> = composed
         .report
@@ -366,7 +367,7 @@ fn set_env_from_launch_replaces_the_list_under_its_guard() {
     let rendered = composed.report.render_lines().join("\n");
     assert!(
         rendered.contains(
-            r#"alpha_brain_inst.env_from_launch: ["GEMINI_API_KEY"] -> ["OPENROUTER_API_KEY","GEMINI_API_KEY"]"#
+            r#"alpha_brain_inst.env_from_launch: ["GEMINI_API_KEY"] -> ["GEMINI_API_KEY","OPENROUTER_API_KEY"]"#
         ),
         "{rendered}"
     );
@@ -375,8 +376,8 @@ fn set_env_from_launch_replaces_the_list_under_its_guard() {
     assert_eq!(
         joinable.variable_needs.iter().cloned().collect::<Vec<_>>(),
         [
-            scoped_need("OPENROUTER_API_KEY", "brain_inst", &[]),
             scoped_need("GEMINI_API_KEY", "brain_inst", &[]),
+            scoped_need("OPENROUTER_API_KEY", "brain_inst", &[]),
         ]
     );
 }
@@ -481,7 +482,7 @@ fn a_variable_in_env_vars_and_the_list_is_refused_at_the_launch() {
     );
     let refusal = prepared.launch(&[], &[]).expect_err("two values");
     assert!(
-        matches!(&refusal, CompositionError::VariableGivenTwoValues { .. }),
+        matches!(&refusal, CompositionError::VariablesGivenTwoValues(_)),
         "{refusal:?}"
     );
     assert_eq!(
@@ -546,7 +547,7 @@ fn a_variable_given_two_values_is_refused_at_a_join_and_in_a_flat_file() {
         )
         .expect_err("two values");
     assert!(
-        matches!(refusal, CompositionError::VariableGivenTwoValues { .. }),
+        matches!(refusal, CompositionError::VariablesGivenTwoValues(_)),
         "{refusal}"
     );
 
@@ -567,6 +568,129 @@ fn a_variable_given_two_values_is_refused_at_a_join_and_in_a_flat_file() {
              and gives it a value in `env_vars`"
         ),
         "{refusal}"
+    );
+}
+
+/// One refusal names every variable that an instance of the stack would get
+/// two values of, each with the adjustment that wrote its list.
+#[test]
+fn every_variable_given_two_values_is_refused_at_once() {
+    let prepared = load(
+        &Demo {
+            adjustments: r#"{ target: "simulation_inst",
+                set_env_from_launch: ["SIM_KEY", "OTHER_KEY", "FREE_KEY"] },"#,
+            ..Demo::default()
+        }
+        .document()
+        .replace(
+            r#"{ instance_id: "simulation_inst" }"#,
+            r#"{ instance_id: "simulation_inst", env_vars: { SIM_KEY: "s", OTHER_KEY: "o" } }"#,
+        ),
+    );
+    let refusal = prepared.launch(&[], &[]).expect_err("two values");
+    assert_eq!(
+        refusal.to_string(),
+        "these instances take a variable from the launch and give it a value in `env_vars`, so \
+         each of these variables would get two values; take each one out of one of the two:\n  \
+         - instance `simulation_inst` takes `OTHER_KEY` from the launch in `env_from_launch` \
+         (set by the adjustment in demo.json5, top-level `adjustments`) and gives it a value in \
+         `env_vars`\n  - instance `simulation_inst` takes `SIM_KEY` from the launch in \
+         `env_from_launch` (set by the adjustment in demo.json5, top-level `adjustments`) and \
+         gives it a value in `env_vars`"
+    );
+}
+
+/// A flat file names every instance that would give a variable two values.
+#[test]
+fn a_flat_file_names_every_instance_given_two_values() {
+    let refusal = PeppyLauncherParser::from_content(
+        r#"{
+            peppy_schema: "launcher/v1",
+            description: ["A flat launcher."],
+            deployments: [{ source: { name: "brain", tag: "v1" }, instances: [
+                { instance_id: "alpha_inst", env_vars: { A_KEY: "a" }, env_from_launch: ["A_KEY"] },
+                { instance_id: "bravo_inst", env_vars: { B_KEY: "b" }, env_from_launch: ["B_KEY"] },
+            ] }],
+        }"#,
+    )
+    .expect_err("two values")
+    .to_string();
+    for expected in [
+        "instance `alpha_inst` takes `A_KEY` from the launch in `env_from_launch` and gives it a \
+         value in `env_vars`",
+        "instance `bravo_inst` takes `B_KEY` from the launch in `env_from_launch` and gives it a \
+         value in `env_vars`",
+    ] {
+        assert!(refusal.contains(expected), "{refusal}");
+    }
+}
+
+// -- copies that write the list of a stack instance ----------------------
+
+/// A launcher whose stack instance `simulation_inst` takes `A_KEY` and
+/// `B_KEY` from the launch, and whose `demo_arm` writes the same two names
+/// on it in another order; with the feature `hosted_model`, a later
+/// adjustment writes them in the first order again.
+fn copies_write_the_simulation_list() -> PreparedLauncher {
+    load(
+        &Demo {
+            own_axes: MODEL_AXIS,
+            option_adjustments: r#"{ target: "simulation_inst", set_env_from_launch: ["B_KEY", "A_KEY"] },
+                { target: "simulation_inst", when: { model: "hosted" },
+                  set_env_from_launch: ["A_KEY", "B_KEY"] }"#,
+            ..Demo::default()
+        }
+        .document()
+        .replace(
+            r#"{ instance_id: "simulation_inst" }"#,
+            r#"{ instance_id: "simulation_inst", env_from_launch: ["A_KEY", "B_KEY"] }"#,
+        ),
+    )
+}
+
+/// A join whose copy writes the names of a running instance in another
+/// order changes nothing on it, so it is no change to a running instance.
+#[test]
+fn a_join_that_writes_the_same_names_in_another_order_changes_nothing() {
+    let prepared = copies_write_the_simulation_list();
+    let composed = prepared.launch(&[], &[]).expect("composes");
+    let joined = prepared
+        .join(
+            JoinRequest {
+                option: &name("demo_arm"),
+                name: &copy_name("alpha"),
+                words: &[],
+                arguments: &[],
+            },
+            RunningStack {
+                selection: &composed.selection,
+                launcher: &composed.launcher,
+            },
+        )
+        .expect("the same names are no change");
+    assert_eq!(
+        names(instance(&joined.launcher, "simulation_inst")),
+        ["A_KEY", "B_KEY"]
+    );
+}
+
+/// Two copies that write the same names in another order on one stack
+/// instance agree.
+#[test]
+fn two_copies_that_write_the_same_names_in_another_order_agree() {
+    let prepared = copies_write_the_simulation_list();
+    let composed = prepared
+        .launch(
+            &words(&["bravo.model=hosted"]),
+            &[
+                "demo_arm:alpha".parse().unwrap(),
+                "demo_arm:bravo".parse().unwrap(),
+            ],
+        )
+        .expect("the copies agree");
+    assert_eq!(
+        names(instance(&composed.launcher, "simulation_inst")),
+        ["A_KEY", "B_KEY"]
     );
 }
 

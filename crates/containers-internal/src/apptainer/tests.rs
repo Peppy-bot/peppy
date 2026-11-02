@@ -328,8 +328,12 @@ fn test_apptainer_env_sets_process_env_on_native_build() {
     );
 }
 
+/// Under Lima, no value rides a command line, which the process list shows:
+/// the guest argv holds the fixed script that reads the pairs from standard
+/// input, then apptainer and its arguments, and the host process environment,
+/// which does not cross `limactl shell`, holds no pair either.
 #[test]
-fn test_apptainer_env_rides_the_guest_argv_on_lima_build() {
+fn test_apptainer_env_rides_no_command_line_on_lima_build() {
     let facade = lima_facade();
 
     let (output, def) = build_paths_under_home();
@@ -340,21 +344,119 @@ fn test_apptainer_env_rides_the_guest_argv_on_lima_build() {
         .expect("command should assemble");
 
     let args = argv_of(&std_cmd);
-    let env_pos = args
-        .iter()
-        .position(|a| a == "env")
-        .expect("guest argv must invoke env");
-    assert_eq!(
-        args[env_pos + 1],
-        "APPTAINERENV_RUSTC_WRAPPER=/peppy-cache/sccache",
-        "env must set the APPTAINERENV_ pair before execing apptainer, got: {:?}",
-        args
+    assert!(
+        args.iter().all(|arg| !arg.contains("/peppy-cache/sccache")),
+        "no value may ride the argv, got: {args:?}"
     );
+    let separator = args
+        .iter()
+        .position(|arg| arg == "--")
+        .expect("limactl argv must contain the -- separator");
+    let guest = &args[separator + 1..];
+    let script = guest
+        .iter()
+        .position(|arg| arg.contains("read -r pair"))
+        .expect("the guest argv runs the script that reads the pairs");
+    assert_eq!(guest[script - 2], "sh");
+    assert_eq!(guest[script - 1], "-c");
+    assert_eq!(
+        guest[script + 1],
+        "sh",
+        "the `$0` placeholder of the script"
+    );
+    assert_eq!(guest[script + 2], "/tmp/peppy/apptainer/bin/apptainer");
+    assert_eq!(guest[script + 3], "build");
     assert!(
         std_cmd
             .get_envs()
             .all(|(key, _)| !key.to_string_lossy().starts_with("APPTAINERENV_")),
         "process env on limactl does not reach the guest and must stay unset"
+    );
+}
+
+/// Under Lima, an entry that would break a line of the pairs that standard
+/// input carries is refused when the command is assembled, naming it.
+#[test]
+fn a_lima_entry_that_would_break_a_line_is_refused() {
+    let facade = lima_facade();
+    let (output, def) = build_paths_under_home();
+
+    for (key, value) in [("SPLIT", "a\nINJECTED=b"), ("A=B", "c"), ("", "d")] {
+        let error = facade
+            .build(&output, &def)
+            .apptainer_env(key, value)
+            .into_std_command()
+            .expect_err("an entry that breaks a line is refused");
+        assert!(
+            matches!(&error, Error::GuestEnvEntryUnsendable { key: refused } if refused == key),
+            "{key}: {error}"
+        );
+    }
+}
+
+/// The guest script exports each pair that its standard input carries,
+/// whole, and the command it then runs finds its standard input at its end.
+/// Driven through the system `sh`, `env` and `cat`, so the test writes no
+/// program and runs no Lima VM.
+#[test]
+fn the_guest_script_exports_the_pairs_of_its_standard_input_and_runs_the_command() {
+    let pairs = [
+        (
+            "WORDS".to_string(),
+            "simulation=mujoco,alpha.robot_commander=mcp_commander".to_string(),
+        ),
+        (
+            "GEMINI_API_KEY".to_string(),
+            "key-with_all:the/safe.chars@+%=,".to_string(),
+        ),
+        ("EMPTY".to_string(), String::new()),
+    ];
+    let run = |program: &str| {
+        let lines = super::lima::guest_env_lines(&pairs).expect("the pairs break no line");
+        Command::new(super::lima::GUEST_SHELL)
+            .args(super::lima::lima_guest_env_args(Path::new(program), &[]))
+            .stdin(super::lima::stdin_carrying(lines).expect("a pipe"))
+            .stderr(Stdio::inherit())
+            .output()
+            .expect("the system sh runs")
+    };
+
+    let printed = run("env");
+    assert!(printed.status.success(), "{printed:?}");
+    let printed = String::from_utf8(printed.stdout).expect("utf-8");
+    for (key, value) in &pairs {
+        let line = format!("APPTAINERENV_{key}={value}");
+        assert!(
+            printed.lines().any(|printed_line| printed_line == line),
+            "{line} in:\n{printed}"
+        );
+    }
+
+    let leftover = run("cat");
+    assert!(leftover.status.success(), "{leftover:?}");
+    assert!(
+        leftover.stdout.is_empty(),
+        "the command reads no pair: {:?}",
+        String::from_utf8_lossy(&leftover.stdout)
+    );
+}
+
+/// The standard input that carries a payload delivers all of it, also when
+/// the payload is larger than a pipe buffer.
+#[test]
+fn the_standard_input_carries_a_payload_larger_than_a_pipe_buffer() {
+    let payload: String = (0..64_000).map(|line| format!("K{line}=v\n")).collect();
+    assert!(payload.len() > 512 * 1024, "{}", payload.len());
+
+    let echoed = Command::new("cat")
+        .stdin(super::lima::stdin_carrying(payload.clone()).expect("a pipe"))
+        .output()
+        .expect("the system cat runs");
+
+    assert!(echoed.status.success(), "{echoed:?}");
+    assert!(
+        echoed.stdout == payload.as_bytes(),
+        "the payload arrives whole"
     );
 }
 

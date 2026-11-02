@@ -398,14 +398,16 @@ fn bind_build_cache<'a>(
     )
 }
 
-/// Spawns `std_cmd` with its output piped and no input, as the leader of a
-/// process group (see [`spawn_in_process_group`]). With no input, a
-/// misbehaving child cannot read from (or block on) the daemon's stdin.
+/// Spawns `std_cmd` with its output piped, as the leader of a process group
+/// (see [`spawn_in_process_group`]). Its input is the one `std_cmd` sets,
+/// never the daemon's stdin, so a misbehaving child cannot read from (or
+/// block on) it: the null device for a `build_cmd`, and for an apptainer
+/// command the input its facade sets, the null device or under Lima the pipe
+/// that carries the environment of the build to the guest.
 fn spawn_piped(std_cmd: std::process::Command) -> std::io::Result<Box<dyn ChildWrapper>> {
     let mut cmd = tokio::process::Command::from(std_cmd);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    cmd.stdin(Stdio::null());
     spawn_in_process_group(cmd)
 }
 
@@ -674,6 +676,7 @@ pub(super) async fn run_build_cmd(
     let mut command = std::process::Command::new(&program);
     command.args(&args);
     command.current_dir(working_dir);
+    command.stdin(Stdio::null());
     // The cargo settings go first, so the goal's own values for them, set
     // next, take precedence.
     for (key, value) in CARGO_PROGRESS_ENV {

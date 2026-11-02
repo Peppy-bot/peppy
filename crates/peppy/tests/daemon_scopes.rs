@@ -606,3 +606,63 @@ fn the_daemon_target_of_a_cached_node_is_checked_and_an_uncached_one_is_reported
         "{report}"
     );
 }
+
+/// `peppy stack resolve` names each launch variable that the launch needs
+/// from the shell that launches: of each instance that the launch starts,
+/// and of each instance that a join through a scope can add, with the
+/// instance whose scope offers it. It also names each instance with launch
+/// variables that a core node link or a word places off the coordinator,
+/// which the launch refuses, and no instance that runs on the coordinator.
+#[test]
+fn resolve_reports_the_launch_variables_and_where_their_instances_run() {
+    let (dirs, root) = cold_home();
+    let path = launcher_with(
+        root.path(),
+        ENDPOINT,
+        &scoped(SCOPE),
+        r#"{ source: { name: "planner", tag: "v1" }, instances: [
+            { instance_id: "planner_inst", env_from_launch: ["PLANNER_KEY"] },
+            { instance_id: "relay_inst", core_node: "robot_pc", env_from_launch: ["RELAY_KEY"] },
+        ] }"#,
+    );
+    fs::write(
+        &path,
+        fs::read_to_string(&path).unwrap().replace(
+            r#"{ instance_id: "arm_inst" }"#,
+            r#"{ instance_id: "arm_inst", env_from_launch: ["ARM_KEY"] }"#,
+        ),
+    )
+    .unwrap();
+    let joins = [
+        "openarm_sim:alpha@cn-gpu".parse().unwrap(),
+        "openarm_sim:bravo@self".parse().unwrap(),
+    ];
+
+    let (_document, report) =
+        resolve_rendered(&dirs, path, &[], &joins).expect("resolve reports, it does not refuse");
+    let report = report.join("\n");
+    for expected in [
+        "launch variables: the launch needs `ARM_KEY` from the shell that launches: \
+         `alpha_arm_inst` takes it from the launch, and the launch starts it; `bravo_arm_inst` \
+         takes it from the launch, and the launch starts it; `arm_inst` of option `openarm_sim` \
+         takes it from the launch, and stack.join through `framework_controls_inst` can add a \
+         copy of `openarm_sim`; `arm_inst` of option `so101_sim` takes it from the launch, and \
+         stack.join through `framework_controls_inst` can add a copy of `so101_sim`",
+        "launch variables: the launch needs `PLANNER_KEY` from the shell that launches: \
+         `planner_inst` takes it from the launch, and the launch starts it",
+        "launch variables: the launch needs `RELAY_KEY` from the shell that launches: \
+         `relay_inst` takes it from the launch, and the launch starts it",
+        "launch variables: `relay_inst` takes `RELAY_KEY` from the launch and runs on core node \
+         link `robot_pc`, so the launch refuses it unless `--place robot_pc@self` or `--local` \
+         puts that link on the coordinator; an instance with launch variables runs on the \
+         coordinator only",
+        "launch variables: `alpha_arm_inst` takes `ARM_KEY` from the launch and a word places it \
+         on `cn-gpu`, so the launch refuses it unless `cn-gpu` is the coordinator; an instance \
+         with launch variables runs on the coordinator only",
+    ] {
+        assert!(report.contains(expected), "{expected}\n---\n{report}");
+    }
+    for runs_on_the_coordinator in ["`planner_inst` takes `", "`bravo_arm_inst` takes `"] {
+        assert!(!report.contains(runs_on_the_coordinator), "{report}");
+    }
+}

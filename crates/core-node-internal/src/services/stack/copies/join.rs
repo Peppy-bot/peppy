@@ -132,6 +132,7 @@ async fn join_inner(
         copy_core_node,
         copy,
         resolved,
+        environment,
     } = ResolvedJoin::resolve(ctx, active, goal).await?;
     let grown_slots = changed_slots(&copy, &planned, Change::Join).map_err(rejected)?;
     let live = live_machines(ctx, &placements).await?;
@@ -192,6 +193,7 @@ async fn join_inner(
     let phase = PhaseGoal {
         launch_id: active.launch_id.clone(),
         rebuild: false,
+        environment,
     };
     let previous = active.clone();
     // Set once the machines start changing: from then on a failure has

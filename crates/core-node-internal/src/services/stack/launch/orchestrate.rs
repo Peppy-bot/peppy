@@ -1,6 +1,6 @@
 use super::feedback::{publish_error, publish_stdout, spawn_feedback_forwarder};
 use super::phases::{DrainOnCancel, run_phase};
-use super::{NodeKey, PlannedDeployment};
+use super::{NodeKey, PhaseGoal, PlannedDeployment};
 use crate::services::action_loop::WorkStop;
 use crate::services::node::{
     NodeAddActionContext, NodeBuildActionContext, NodeRunActionContext, create_add_log,
@@ -79,22 +79,22 @@ pub(in crate::services::stack) async fn add_node_directly(
     (result, Some(log_for_timeout.path()))
 }
 
-/// Builds one node the change added on this machine. Each line of its output
-/// reaches the launch feedback as `[<name>:<tag>] <line>`: a machine builds
-/// several nodes at once, and their lines interleave.
+/// Builds one node the change added on this machine, with the forwarded
+/// environment of `phase` without its launch variables. Each line of its
+/// output reaches the launch feedback as `[<name>:<tag>] <line>`: a machine
+/// builds several nodes at once, and their lines interleave.
 pub(in crate::services::stack) async fn build_node_directly(
     ctx: &StackChangeContext,
-    launch_id: &str,
+    phase: &PhaseGoal,
     node_name: String,
     node_tag: String,
-    rebuild: bool,
 ) -> (ChangeResult<()>, Option<PathBuf>) {
     let log = match ActionLog::for_build(
         &ctx.peppy_dirs,
         ctx.node_stack.log_exporter().clone(),
         &node_name,
         &node_tag,
-        Some(launch_id),
+        Some(&phase.launch_id),
     ) {
         Ok(log) => log,
         Err(e) => return (Err(attempt_failed(e).into()), None),
@@ -121,8 +121,8 @@ pub(in crate::services::stack) async fn build_node_directly(
         Box::pin(run_node_build_for_entity(
             node_name.clone(),
             node_tag.clone(),
-            ctx.env_vars.clone(),
-            rebuild,
+            phase.environment.common().to_vec(),
+            phase.rebuild,
             action_context,
             Announcer::new(log, feedback_tx),
         )),

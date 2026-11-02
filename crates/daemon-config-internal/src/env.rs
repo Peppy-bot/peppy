@@ -138,6 +138,18 @@ pub enum InvalidEnvVar {
 /// node is rejected where the user wrote it, not at spawn time with the node
 /// half-deployed.
 pub fn check_env_var(name: &str, value: &str) -> Result<(), InvalidEnvVar> {
+    check_env_name(name)?;
+    if !is_safe_env_value(value) {
+        return Err(InvalidEnvVar::Value {
+            name: name.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Checks the name of one explicitly declared environment variable: a shell
+/// identifier, and not a forbidden key.
+pub fn check_env_name(name: &str) -> Result<(), InvalidEnvVar> {
     if !is_valid_env_name(name) {
         return Err(InvalidEnvVar::Name {
             name: name.to_string(),
@@ -148,21 +160,17 @@ pub fn check_env_var(name: &str, value: &str) -> Result<(), InvalidEnvVar> {
             name: name.to_string(),
         });
     }
-    if !is_safe_env_value(value) {
-        return Err(InvalidEnvVar::Value {
-            name: name.to_string(),
-        });
-    }
     Ok(())
 }
 
 /// Checks the name of a variable that an instance takes from the launch
-/// environment: a name [`check_env_var`] accepts, which the forwarded
+/// environment: a name [`check_env_name`] accepts, which the forwarded
 /// environment of a launch can hold, so not one of the
 /// [`NEVER_FORWARDED_ENV_KEYS`]. The value is checked where it arrives: the
-/// CLI forwards only a value [`is_safe_env_value`] accepts.
+/// CLI forwards only a value [`is_safe_env_value`] accepts, and the daemon
+/// counts an empty value as no value.
 pub fn check_launch_variable_name(name: &str) -> Result<(), InvalidEnvVar> {
-    check_env_var(name, "")?;
+    check_env_name(name)?;
     if is_never_forwarded_env_name(name) {
         return Err(InvalidEnvVar::NeverForwarded {
             name: name.to_string(),
