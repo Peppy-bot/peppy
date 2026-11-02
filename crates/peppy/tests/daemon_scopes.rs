@@ -14,7 +14,7 @@ const FRAMEWORK_CONTROLS: &str = include_str!(
     "../../daemon-config-internal/src/daemon_interface/fixtures/framework_controls.json5"
 );
 
-/// The scope `simulation_mcp` gives its framework endpoint.
+/// A scope of the framework's endpoint: two robot options of simulated robots, up to four robots.
 const SCOPE: &str = r#"{
     max_copies: 4,
     options: [
