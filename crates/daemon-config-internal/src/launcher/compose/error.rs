@@ -381,6 +381,12 @@ pub enum CompositionError {
         origin: String,
     },
 
+    /// Instances that take a variable from the launch and also give it a
+    /// value in their `env_vars`, after the adjustments, each with what
+    /// wrote its `env_from_launch`.
+    #[error("{0}")]
+    VariablesGivenTwoValues(super::super::launch_variables::VariablesGivenTwoValues),
+
     #[error(
         "{origin} writes `framework.restart` at its root, which only the launcher's own root \
          takes; write `framework: {{ restart: ... }}` on its instance entries, or move it to the \

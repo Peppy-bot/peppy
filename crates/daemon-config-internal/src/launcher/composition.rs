@@ -17,6 +17,7 @@
 //! the grammar and the checks that need no I/O and no selection.
 
 use super::compose::COPY_PLACEMENT;
+use super::launch_variables::LaunchVariables;
 use super::types::{
     Deployment, EACH_TARGET_ONCE, FrameworkOverrides, LauncherFramework, LinkValue,
 };
@@ -994,6 +995,13 @@ pub struct Adjustment<T = Name> {
     /// so a copy's composition that applies one is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set_daemon_scopes: Option<BTreeMap<String, serde_json::Value>>,
+    /// Replaces the target's `env_from_launch`: the variables it takes from
+    /// the environment of the launch. How a launcher that sets the model of
+    /// an instance of a shared fragment names the keys of that model. An
+    /// empty list is an operation: the target then takes no variable from
+    /// the launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_env_from_launch: Option<LaunchVariables>,
 }
 
 /// Written back in the shortest shape that holds it: a lone file as its
@@ -1063,6 +1071,7 @@ impl WrittenAdjustment {
             add_links,
             unset_links,
             set_daemon_scopes,
+            set_env_from_launch,
         } = self;
         target
             .0
@@ -1076,6 +1085,7 @@ impl WrittenAdjustment {
                 add_links: add_links.clone(),
                 unset_links: unset_links.clone(),
                 set_daemon_scopes: set_daemon_scopes.clone(),
+                set_env_from_launch: set_env_from_launch.clone(),
             })
             .collect()
     }
@@ -1516,12 +1526,15 @@ fn validate_adjustment(adjustment: &Adjustment, origin: &str) -> Result<(), Stri
         || adjustment
             .set_daemon_scopes
             .as_ref()
-            .is_some_and(|m| !m.is_empty());
+            .is_some_and(|m| !m.is_empty())
+        // An empty list takes every launch variable from the target, so
+        // it is an operation.
+        || adjustment.set_env_from_launch.is_some();
     if !has_operation {
         return Err(format!(
             "adjustment on `{}` in {origin} names no operation: state at least one of \
              `set_arguments`, `set_framework`, `set_links`, `add_links`, `unset_links`, \
-             `set_daemon_scopes`",
+             `set_daemon_scopes`, `set_env_from_launch`",
             adjustment.target
         ));
     }

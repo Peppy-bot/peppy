@@ -8,6 +8,7 @@ pub(super) mod phases;
 pub(super) mod preflight;
 pub(super) mod resolve;
 pub(super) mod start;
+pub(super) mod variables;
 pub(super) mod watchers;
 
 use self::clock::{announce_clock_domains, plan_clocks};
@@ -33,7 +34,8 @@ use core_node_api::encoding::{
     NodeBuildLogEntry, NodeLogs, NodeRunLogEntry,
 };
 use daemon_config::launcher::{
-    ClockIncarnations, CopyMembership, Deployment, JoinableNodes, Placements, ScopeCheck,
+    ClockIncarnations, CopyMembership, Deployment, ForwardedEnv, Joinable, LaunchValues,
+    Placements, ScopeCheck,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -90,6 +92,11 @@ impl<'a> PhaseChange<'a> {
 pub(super) struct PhaseGoal {
     pub(super) launch_id: String,
     pub(super) rebuild: bool,
+    /// The forwarded environment of the goal, parsed against the launch
+    /// variables of the stack. The adds and builds on this machine get its
+    /// other entries, and the run of each instance on this machine also gets
+    /// the value of each launch variable that it names.
+    pub(super) environment: ForwardedEnv,
 }
 
 /// One node on one machine.
@@ -219,13 +226,13 @@ pub(super) fn planned_instance_ids(
 /// rules alone: the launcher and the stack selection of a launch do not
 /// change, so a join cannot change the launch's verdict.
 ///
-/// Returns the joinable nodes of a launch, and none for a join.
+/// Returns what the joins of a launch can start, and nothing for a join.
 pub(super) fn check_planned_daemon_scopes(
     prepared: &daemon_config::launcher::PreparedLauncher,
     planned: &[PlannedDeployment],
     copies: &CopyMembership,
     check: ScopeCheck<'_>,
-) -> Result<JoinableNodes, String> {
+) -> Result<Joinable, String> {
     daemon_config::launcher::check_daemon_scopes(
         prepared,
         planned.iter().map(|item| (&item.deployment, &item.targets)),
@@ -248,7 +255,9 @@ impl PlannedDeployment {
 /// This function orchestrates the complete launch sequence:
 /// 1. Parse launcher configuration
 /// 2. Resolve deployments and mint their node pins, then check the scopes
-///    of the daemon targets, which gives the joinable nodes
+///    of the daemon targets, which gives what the joins of the launch can
+///    start, then the launch variables of the instances the launch and these
+///    joins can start
 /// 3. Validate dependencies and compute order, then mint the doc pins, then
 ///    resolve the joinable nodes and mint theirs
 /// 4. Federated preflight, carrying the pins
@@ -302,8 +311,12 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // Step 2a: The resolution knows which targets are daemon targets, so
     // every scope is parsed into its interface's type here, before anything
     // starts. A `robot_membership` scope that holds gives the nodes a join of
-    // its options can bring.
-    let joinable = match check_planned_daemon_scopes(
+    // its options can bring, and the instances of these joins that take
+    // launch variables.
+    let Joinable {
+        nodes: joinable,
+        variable_needs,
+    } = match check_planned_daemon_scopes(
         &prepared,
         &planned,
         &copy_membership,
@@ -316,7 +329,33 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         }
     };
 
-    // Step 2b: The clock every instance reads, with a fresh lifetime minted
+    // Step 2b: The forwarded environment of this launch, parsed against the
+    // launch variables of the launcher, so the value of each one reaches the
+    // run of the instances that name it and no other node. Each instance
+    // that the launch or a join through one of its scopes can start gets the
+    // value of each launch variable it takes from that environment, so a
+    // missing one refuses the launch here, while the running stack and its
+    // kept values stay as they are, and not when a join fails in the middle
+    // of a session. A build starts nothing, so it checks none and keeps none.
+    let environment = ForwardedEnv::parse(ctx.env_vars.clone(), &prepared.launch_variable_names());
+    let launch_values = if builds_only {
+        LaunchValues::default()
+    } else {
+        if let Err(reason) = variables::check_launch(
+            flat.deployments
+                .iter()
+                .flat_map(|deployment| &deployment.instances),
+            &placements,
+            variable_needs,
+            &environment,
+        ) {
+            publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+            return ChangeEnd::stopped(rejected(reason));
+        }
+        environment.launch_values().clone()
+    };
+
+    // Step 2c: The clock every instance reads, with a fresh lifetime minted
     // for each simulated domain this launch declares. A replacement therefore
     // starts a new timeline even under the old names, and the consumers of
     // the one it replaces are never silently rebound to it.
@@ -357,6 +396,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
                 planned,
             )
             .with_clocks(clocks, incarnations)
+            .with_launch_values(launch_values)
             .with_launcher(goal.launcher_origin.label()),
         );
         publish_stdout(
@@ -525,6 +565,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     .with_clocks(clocks.clone(), incarnations)
     .with_watchers(watchers)
     .with_joinable_resolutions(&joinable_builds)
+    .with_launch_values(launch_values.clone())
     .with_launcher(goal.launcher_origin.label());
     active.record_copies(copies, &ordered, &copy_core_nodes);
     let watchers = active.watchers.clone();
@@ -541,6 +582,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     let phase = PhaseGoal {
         launch_id: goal.launch_id.clone(),
         rebuild: goal.rebuild,
+        environment,
     };
     let planned_by_key: HashMap<NodeKey, PlannedDeployment> =
         planned.into_iter().map(|item| (item.key(), item)).collect();
@@ -623,6 +665,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             &placements,
             &clocks,
             restart,
+            &launch_values,
         )
         .await
     }

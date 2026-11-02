@@ -1,56 +1,18 @@
-use daemon_config::env::check_env_var;
-
-/// Env vars that are meaningless or misleading when forwarded to a spawned node
-/// because the node runs somewhere the caller's paths do not describe: a
-/// different working directory (the instance dir) and, for a container node, a
-/// different filesystem and often a different OS.
-///
-/// The temp-dir trio is the second kind. A node that asks for scratch space
-/// resolves it from these, and the caller's value names a host path the
-/// container cannot write: on macOS `TMPDIR` is always `/var/folders/…`,
-/// which inside the guest exists at most as the read-only parent of a
-/// bind-mounted peppy root, so the node dies with `EROFS` the first time it
-/// wants a temp file. Dropping them lets resolution fall back to the
-/// container's own writable `/tmp`. Apptainer's `--cleanenv` does not cover
-/// this: these arrive as `APPTAINERENV_` variables the daemon sets on purpose,
-/// which it has no reason to strip. All three are listed because the Rust and Python lookups differ
-/// (`TMPDIR` alone, versus `TMPDIR`, `TEMP`, `TMP` in order) and this stack
-/// runs both kinds of node.
-///
-/// The Python pair is a third kind: worse than naming host paths the node
-/// cannot see, a forwarded value *displaces* the image's own. Apptainer
-/// gives `--env` precedence over the image's `%environment`, so a caller
-/// shell that exports `PYTHONPATH` (a ROS `setup.bash`, say) erases the
-/// vendored `peppylib`/`peppygen` entries a Python container node boots
-/// from: the node dies at import time with `No module named 'peppylib'`,
-/// and only on machines whose shell exports one, which is why it escapes
-/// local reproduction. `PYTHONHOME` fails harder still: it points the
-/// container's interpreter at a host prefix, and Python cannot even find
-/// its stdlib. A node that genuinely wants either var gets it deliberately,
-/// via the launcher's `env_vars`.
-const CALLER_ONLY_ENV_KEYS: [&str; 7] = [
-    "PWD",
-    "OLDPWD",
-    "TMPDIR",
-    "TEMP",
-    "TMP",
-    "PYTHONPATH",
-    "PYTHONHOME",
-];
+use daemon_config::env::{check_env_var, is_never_forwarded_env_name};
 
 /// Whether a caller env var should be forwarded to a spawned node: it must
 /// carry a name and a value a node can receive intact (see [`daemon_config::env`],
 /// which states why and is the same rule the launcher's `env_vars` are parsed
 /// against), must not be a code injection vector, and must not be a caller-only
-/// var that is wrong in the node's working directory.
+/// var that is wrong in the node's working directory
+/// ([`daemon_config::env::NEVER_FORWARDED_ENV_KEYS`]).
 ///
 /// This side filters rather than rejects. The caller environment is ambient and
 /// full of entries nobody asked a node to see, so a failing entry is dropped
 /// silently; an `env_vars` entry a user wrote in a launcher file meets the same
 /// rules but fails loudly, while the file is being parsed.
 fn should_forward_env(key: &str, value: &str) -> bool {
-    let normalized = key.trim().to_ascii_uppercase();
-    check_env_var(key, value).is_ok() && !CALLER_ONLY_ENV_KEYS.contains(&normalized.as_str())
+    check_env_var(key, value).is_ok() && !is_never_forwarded_env_name(key)
 }
 
 /// Collects environment variables from the caller's environment to pass to the daemon.
@@ -125,6 +87,9 @@ mod tests {
         // Space-valued var (e.g. OAuth scopes): dropped because the shell
         // that sources it reads the space as the end of the value.
         assert!(!should_forward_env("OAUTH_SCOPES", "read write admin"));
+        // A `~` is expanded by the shell that sources the value, so a key
+        // that holds one is dropped, and a launch that needs it says so.
+        assert!(!should_forward_env("GEMINI_API_KEY", "key~with-tilde"));
         // Code-injection vector: dropped by the forbidden list.
         assert!(!should_forward_env("LD_PRELOAD", "/evil.so"));
         // Caller-only: dropped because it is wrong in the node's working dir.

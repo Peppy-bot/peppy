@@ -6,11 +6,14 @@
 use super::super::action::StackChangeContext;
 use super::super::launch::PlannedDeployment;
 use super::super::launch::resolve::{self, resolve_deployments};
+use super::super::launch::variables as launch_variables;
 use super::super::state::ActiveLaunch;
 use super::super::{ChangeResult, attempt_failed, rejected};
 use config::runtime::{CoreNodeName, Name};
 use core_node_api::encoding::StackJoinGoal;
-use daemon_config::launcher::{CopyRecord, JoinRequest, PeppyLauncher, Placements, RunningStack};
+use daemon_config::launcher::{
+    CopyRecord, ForwardedEnv, JoinRequest, PeppyLauncher, Placements, RunningStack,
+};
 use std::collections::{BTreeMap, HashSet};
 
 /// A join composed and planned: the stack's flat document with the copy,
@@ -26,6 +29,9 @@ pub(super) struct ResolvedJoin {
     /// The sources this join resolved for the first time, as the launch's
     /// record keeps them.
     pub resolved: Vec<PlannedDeployment>,
+    /// The forwarded environment of the join, parsed against the launch
+    /// variables of the stack's launcher.
+    pub environment: ForwardedEnv,
 }
 
 impl ResolvedJoin {
@@ -98,6 +104,25 @@ impl ResolvedJoin {
                 })
                 .collect(),
         );
+        // Each instance the join starts runs on the coordinator when it
+        // takes launch variables, and gets a value for each one, from the
+        // join's forwarded environment or the values the launch kept. Checked
+        // before anything is resolved, so a refusal costs nothing.
+        let environment = ForwardedEnv::parse(
+            ctx.env_vars.clone(),
+            &active.prepared.launch_variable_names(),
+        );
+        launch_variables::check_join(
+            combined
+                .deployments
+                .iter()
+                .flat_map(|deployment| &deployment.instances)
+                .filter(|instance| new_ids.contains(instance.instance_id.as_str())),
+            &placements,
+            &environment,
+            &active.launch_values,
+        )
+        .map_err(rejected)?;
         // A source the launch resolved runs the launch's node, with its
         // pins, however many joins and removals came between.
         let missing: Vec<_> = combined
@@ -127,6 +152,7 @@ impl ResolvedJoin {
             copy_core_node,
             copy,
             resolved,
+            environment,
         })
     }
 }

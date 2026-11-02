@@ -9,16 +9,16 @@ use daemon_config::daemon_interface::DaemonInterface;
 use daemon_config::launcher::DeploymentTargets;
 use daemon_config::launcher::{
     AppliedChange, ComposedLaunch, CompositionError, CopyMembership, DaemonScopeError,
-    DaemonScopeRefusals, Deployment, DeploymentInstance, DeploymentSource, JoinRequest,
-    JoinableNodes, PeppyLauncher, PeppyLauncherParser, PreparedLauncher, RunningStack, ScopeCheck,
-    SkipReason, UnitSelection, check_daemon_scopes,
+    DaemonScopeRefusals, Deployment, DeploymentInstance, DeploymentSource, JoinRequest, Joinable,
+    PeppyLauncher, PeppyLauncherParser, PreparedLauncher, RunningStack, ScopeCheck, SkipReason,
+    UnitSelection, check_daemon_scopes,
 };
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::path::Path;
 
 mod common;
-use common::{copy_name, name, words};
+use common::{copy_name, exposure_targets, name, words};
 
 /// The scope `simulation_mcp` gives its framework endpoint.
 const SCOPE: &str = r#"{
@@ -129,31 +129,11 @@ fn director_targets() -> DeploymentTargets {
 /// endpoint the contract target `front_camera`, the director its manifest's
 /// targets, and every other node none.
 fn targets_of(deployment: &Deployment) -> DeploymentTargets {
-    let exposures = match &deployment.source {
-        DeploymentSource::Exposures { exposures } => exposures,
-        DeploymentSource::Node { name, .. } if name == "director" => return director_targets(),
-        DeploymentSource::Node { .. } => return DeploymentTargets::default(),
-    };
-    let mut targets = DeploymentTargets::default();
-    for exposure in exposures {
-        match exposure.name.as_str() {
-            "framework_controls" => {
-                targets
-                    .daemon
-                    .insert("stack".to_owned(), DaemonInterface::RobotMembership);
-            }
-            "copies_controls" => {
-                targets
-                    .daemon
-                    .insert("copies".to_owned(), DaemonInterface::RobotMembership);
-            }
-            "camera" => {
-                targets.linked.insert("front_camera".to_owned());
-            }
-            other => panic!("no targets known for exposure `{other}`"),
-        }
+    match &deployment.source {
+        DeploymentSource::Exposures { exposures } => exposure_targets(exposures),
+        DeploymentSource::Node { name, .. } if name == "director" => director_targets(),
+        DeploymentSource::Node { .. } => DeploymentTargets::default(),
     }
-    targets
 }
 
 fn check(
@@ -161,7 +141,7 @@ fn check(
     flat: &PeppyLauncher,
     copies: &CopyMembership,
     scope_check: ScopeCheck<'_>,
-) -> Result<JoinableNodes, DaemonScopeRefusals> {
+) -> Result<Joinable, DaemonScopeRefusals> {
     let targets: Vec<DeploymentTargets> = flat.deployments.iter().map(targets_of).collect();
     check_daemon_scopes(
         prepared,
@@ -601,11 +581,7 @@ fn a_vacant_target_holds_with_a_reason_and_names_no_option() {
         ScopeCheck::Launch(&selection),
     )
     .expect("a vacant target holds");
-    assert_eq!(
-        joinable,
-        JoinableNodes::default(),
-        "a vacancy brings no node"
-    );
+    assert_eq!(joinable, Joinable::default(), "a vacancy starts nothing");
 
     let (prepared, launcher) = flat(&format!(
         r#"{FRAMEWORK} {{ instance_id: "mcp_inst", daemon_scopes: {{ stack: {{ vacant: " " }} }} }} ] }}"#
@@ -866,8 +842,8 @@ fn the_daemon_target_of_a_node_takes_a_scope_or_a_vacancy() {
         .unwrap_or_else(|refusals| panic!("{scope} holds: {refusals}"));
         assert_eq!(
             joinable,
-            JoinableNodes::default(),
-            "a robot_leases scope brings no node"
+            Joinable::default(),
+            "a robot_leases scope starts nothing"
         );
     }
 }
@@ -1258,7 +1234,11 @@ fn a_join_runs_no_trial() {
         ScopeCheck::Join,
     )
     .expect("a join runs no check against the launcher");
-    assert!(joinable.is_empty(), "a join composes no trial copy");
+    assert_eq!(
+        joinable,
+        Joinable::default(),
+        "a join composes no trial copy"
+    );
 
     let (prepared, launcher) = flat(&format!(
         r#"{FRAMEWORK} {{ instance_id: "mcp_inst", daemon_scopes: {{ stack: {{
@@ -1291,6 +1271,7 @@ fn joinable_of(prepared: &PreparedLauncher) -> Vec<(String, Vec<String>)> {
         ScopeCheck::Launch(&composed.selection),
     )
     .expect("the scopes hold")
+    .nodes
     .iter()
     .map(|node| {
         (
@@ -1418,6 +1399,7 @@ fn a_copy_the_launch_starts_leaves_the_joinable_nodes_as_they_are() {
     )
     .expect("the scopes hold");
     let labels: Vec<String> = launched
+        .nodes
         .iter()
         .map(|node| node.deployment.source.label())
         .collect();

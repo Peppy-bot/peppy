@@ -3,7 +3,9 @@
 
 use config::runtime::{CopyName, Name};
 use core_node_api::encoding::{LaunchWord, SelectionWord};
-use daemon_config::launcher::{PeppyLauncherParser, PreparedLauncher};
+use daemon_config::daemon_interface::DaemonInterface;
+use daemon_config::launcher::{DeploymentTargets, PeppyLauncherParser, PreparedLauncher};
+use daemon_config::source::ExposureRef;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -45,4 +47,31 @@ pub fn name(value: &str) -> Name {
 /// `value` as a validated copy name.
 pub fn copy_name(value: &str) -> CopyName {
     CopyName::new(value).expect("a copy name")
+}
+
+/// The targets of a built-in MCP deployment of `exposures`, for the test
+/// exposures these binaries deploy: `framework_controls` and
+/// `copies_controls` serve one `robot_membership` daemon target each,
+/// `stack` and `copies`, and `camera` links `front_camera`.
+pub fn exposure_targets(exposures: &[ExposureRef]) -> DeploymentTargets {
+    let mut targets = DeploymentTargets::default();
+    for exposure in exposures {
+        match exposure.name.as_str() {
+            "framework_controls" => {
+                targets
+                    .daemon
+                    .insert("stack".to_owned(), DaemonInterface::RobotMembership);
+            }
+            "copies_controls" => {
+                targets
+                    .daemon
+                    .insert("copies".to_owned(), DaemonInterface::RobotMembership);
+            }
+            "camera" => {
+                targets.linked.insert("front_camera".to_owned());
+            }
+            other => panic!("no targets known for exposure `{other}`"),
+        }
+    }
+    targets
 }

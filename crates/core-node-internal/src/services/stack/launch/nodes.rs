@@ -329,12 +329,14 @@ async fn add_locally(
     // must not get to differ from the dispatched one. The environment is
     // the one deliberate difference: the caller's env vars describe this
     // machine, so they apply here and stay off the goals a peer receives.
+    // A launch variable reaches only the run of the instances that name it,
+    // so the add gets the other entries.
     let (source, pins) = pinned_source(key, item)
         .and_then(|source| encode_pins(&item.closure_pins).map(|pins| (source, pins)))
         .map_err(attempt_failed)?;
     let node_add_goal = NodeAddGoal::for_internal_execution(source, STACK_LAUNCH_GIT_HASH)
         .with_launch_id(&phase.launch_id)
-        .with_env_vars(ctx.env_vars.clone())
+        .with_env_vars(phase.environment.common().to_vec())
         .with_pins(pins);
 
     let (result, log_path) = add_node_directly(ctx, node_add_goal).await;
@@ -379,15 +381,7 @@ async fn build_locally(
         nodes,
         ctx.bound_core_node.as_str(),
         MAX_CONCURRENT_LOCAL_BUILDS,
-        |node| {
-            build_node_directly(
-                ctx,
-                &phase.launch_id,
-                node.node_name.clone(),
-                node.node_tag.clone(),
-                phase.rebuild,
-            )
-        },
+        |node| build_node_directly(ctx, phase, node.node_name.clone(), node.node_tag.clone()),
         outcome,
     )
     .await;
@@ -582,6 +576,7 @@ async fn add_and_build_remotely(
 mod tests {
     use super::*;
     use core_node_api::encoding::LaunchGoal;
+    use daemon_config::launcher::ForwardedEnv;
     use std::sync::Mutex;
     use tokio::sync::{mpsc, oneshot};
 
@@ -1013,6 +1008,7 @@ mod tests {
             &PhaseGoal {
                 launch_id: launch.launch_id.clone(),
                 rebuild: launch.rebuild,
+                environment: ForwardedEnv::default(),
             },
             "waldo".to_string(),
             "v1".to_string(),
@@ -1033,6 +1029,7 @@ mod tests {
             &PhaseGoal {
                 launch_id: launch.launch_id.clone(),
                 rebuild: false,
+                environment: ForwardedEnv::default(),
             },
             "waldo".to_string(),
             "v1".to_string(),

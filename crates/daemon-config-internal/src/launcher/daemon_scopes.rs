@@ -14,13 +14,15 @@
 //! deployment alone.
 //!
 //! The launch and `peppy stack resolve` also hold each scope against the
-//! launcher and the stack selection ([`ScopeCheck::Launch`]), which gives the
-//! joinable nodes of the launch. A join runs the rules of each instance alone
+//! launcher and the stack selection ([`ScopeCheck::Launch`]), which gives what
+//! the joins of the launch can start: its joinable nodes, and the instances
+//! of these joins that take launch variables. A join runs the rules of each
+//! instance alone
 //! ([`ScopeCheck::Join`]): the launcher and the stack selection of a launch
 //! do not change, so a join cannot change that verdict.
 
 use super::compose::{CopyMembership, PreparedLauncher, UnitSelection};
-use super::joinable::JoinableNodes;
+use super::joinable::Joinable;
 use super::types::Deployment;
 use crate::internal::daemon_interface::{DaemonInterface, TargetScope, served_targets};
 use config::node::Manifest;
@@ -180,11 +182,11 @@ pub enum ScopeCheck<'a> {
 }
 
 /// What the checks of the daemon scopes of one run gather: every refusal,
-/// and the joinable nodes of the scopes that hold.
+/// and what the joins of the scopes that hold can start.
 #[derive(Default)]
 struct ScopeVerdicts {
     refusals: Vec<DaemonScopeError>,
-    joinable: JoinableNodes,
+    joinable: Joinable,
 }
 
 /// Checks the daemon scopes of the flat launcher whose deployments
@@ -195,15 +197,17 @@ struct ScopeVerdicts {
 /// tells which instances belong to a copy. Every refusal is reported at
 /// once.
 ///
-/// When the scopes hold, returns the joinable nodes of the launch: the union
-/// of the nodes that a join each scope allows can bring. A join runs no check
-/// against the launcher, so it gets none.
+/// When the scopes hold, returns what the joins of the launch can start: the
+/// union of the nodes that a join each scope allows can bring, and of the
+/// instances of these joins that take launch variables, each with the scopes
+/// that offer it. A join runs no check against the launcher, so it gets
+/// nothing.
 pub fn check_daemon_scopes<'a>(
     prepared: &PreparedLauncher,
     deployments: impl IntoIterator<Item = (&'a Deployment, &'a DeploymentTargets)>,
     copies: &CopyMembership,
     check: ScopeCheck<'_>,
-) -> Result<JoinableNodes, DaemonScopeRefusals> {
+) -> Result<Joinable, DaemonScopeRefusals> {
     let mut verdicts = ScopeVerdicts::default();
     for (deployment, targets) in deployments {
         for instance in &deployment.instances {
@@ -316,8 +320,8 @@ fn targets_of_one_interface(
 
 /// One daemon target's scope: present, a vacancy or parsed into its
 /// interface's type, and, at a launch, held to the interface's checks
-/// against the launcher, whose joinable nodes join those of the other
-/// scopes.
+/// against the launcher, whose joins start what the joins of the other
+/// scopes start, offered by `instance`.
 fn check_scope(
     prepared: &PreparedLauncher,
     instance: &str,
@@ -354,7 +358,7 @@ fn check_scope(
     let ScopeCheck::Launch(selection) = check else {
         return;
     };
-    match parsed.check_launch(prepared, selection) {
+    match parsed.check_launch(prepared, selection, instance) {
         Ok(joinable) => verdicts.joinable.merge(joinable),
         Err(reasons) => refusals.extend(reasons.into_iter().map(|reason| {
             DaemonScopeError::ScopeRefusedByLauncher {

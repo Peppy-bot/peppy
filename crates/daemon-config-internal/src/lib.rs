@@ -55,7 +55,9 @@ pub use error::{
 // -- env --
 pub mod env {
     pub use crate::internal::env::{
-        InvalidEnvVar, check_env_var, is_forbidden_env_name, is_safe_env_value, is_valid_env_name,
+        InvalidEnvVar, NEVER_FORWARDED_ENV_KEYS, SAFE_ENV_VALUE_CHARACTERS, check_env_var,
+        check_launch_variable_name, is_forbidden_env_name, is_never_forwarded_env_name,
+        is_safe_env_value, is_valid_env_name,
     };
 }
 
@@ -104,14 +106,17 @@ pub mod launcher {
         ComponentAxis, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport,
         CopyInstance, CopyMembership, CopyRecord, DaemonScopeError, DaemonScopeRefusals,
         Deployment, DeploymentInstance, DeploymentSource, DeploymentTargets,
-        ExternallyCoveredSlots, FrameworkOverrides, JoinRequest, JoinableNode, JoinableNodes,
-        LauncherFragmentParser, LinkTargets, LinkValue, MemberAddressing, OptionSpec,
-        PairingValidationItem, PartMachines, PartRefusal, PeppyLauncher, PeppyLauncherParser,
-        Placements, PlannedObservation, PlannedPairEndpoint, PlannedPairing, PreparedLauncher,
-        ResolvedClocks, RunningStack, SETS_READ_WHOLE, ScopeCheck, Selection, SkipReason,
-        SkippedAdjustment, TrialCopy, TrialStack, UnitSelection, VacantReason, WALL_CLOCK,
-        WrittenWord, check_composition, check_daemon_scopes, instance_restart, mint_incarnation,
-        participant_vacancies, resolve_clocks, resolve_restart, restart_request_of,
+        ExternallyCoveredSlots, ForwardedEnv, FrameworkOverrides, JoinRequest, Joinable,
+        JoinableNode, JoinableNodes, LaunchValues, LaunchVariable, LaunchVariables,
+        LauncherFragmentParser, LinkTargets, LinkValue, MemberAddressing, MissingLaunchVariables,
+        OptionSpec, PairingValidationItem, PartMachines, PartRefusal, PeppyLauncher,
+        PeppyLauncherParser, Placements, PlannedObservation, PlannedPairEndpoint, PlannedPairing,
+        PreparedLauncher, RepeatedLaunchVariable, ResolvedClocks, RunningStack, SETS_READ_WHOLE,
+        ScopeCheck, Selection, SkipReason, SkippedAdjustment, Starter, TrialCopy, TrialStack,
+        UnitSelection, VacantReason, VariableChange, VariableGivenTwoValues, VariableNeed,
+        VariableNeeds, VariablesGivenTwoValues, WALL_CLOCK, WrittenWord, check_composition,
+        check_daemon_scopes, instance_restart, mint_incarnation, participant_vacancies,
+        refuse_peer_placements, resolve_clocks, resolve_restart, restart_request_of,
         split_link_target, validate_bindings, validate_clock_connections, validate_link_plan,
         validate_pairings,
     };

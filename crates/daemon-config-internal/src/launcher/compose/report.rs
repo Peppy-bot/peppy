@@ -3,6 +3,7 @@
 //! why). `peppy stack resolve` prints it; a launch holds it for the echo.
 
 use super::super::composition::copy_adjustments_origin;
+use super::super::launch_variables::LaunchVariables;
 use super::super::types::LinkValue;
 use super::copy::CopyRecord;
 use super::select::{PartMachines, UnitSelection};
@@ -47,11 +48,17 @@ pub enum AppliedChange {
         old: Option<RestartDeclaration>,
         new: RestartDeclaration,
     },
+    /// The variables the instance takes from the launch environment.
+    EnvFromLaunch {
+        old: LaunchVariables,
+        new: LaunchVariables,
+    },
 }
 
 impl AppliedChange {
     /// The written field, `arguments.<key>`, `links.<slot>`,
-    /// `framework.clock`, `framework.restart` or `daemon_scopes.<target>`.
+    /// `framework.clock`, `framework.restart`, `daemon_scopes.<target>` or
+    /// `env_from_launch`.
     pub fn field(&self) -> String {
         match self {
             AppliedChange::Argument { key, .. } => format!("arguments.{key}"),
@@ -63,6 +70,7 @@ impl AppliedChange {
                 format!("daemon_scopes.{daemon_target}")
             }
             AppliedChange::Restart { .. } => String::from("framework.restart"),
+            AppliedChange::EnvFromLaunch { .. } => String::from("env_from_launch"),
         }
     }
 
@@ -76,6 +84,7 @@ impl AppliedChange {
             AppliedChange::Clock { new, .. } => new.to_string(),
             AppliedChange::DaemonScope { new, .. } => render(new),
             AppliedChange::Restart { new, .. } => new.launcher_spelling(),
+            AppliedChange::EnvFromLaunch { new, .. } => render(new),
         }
     }
 
@@ -98,6 +107,9 @@ impl AppliedChange {
             ),
             AppliedChange::DaemonScope { old, new, .. } => {
                 format!("{} -> {}", render_option(old.as_ref()), render(new))
+            }
+            AppliedChange::EnvFromLaunch { old, new } => {
+                format!("{} -> {}", render(old), render(new))
             }
         }
     }

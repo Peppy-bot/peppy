@@ -9,6 +9,7 @@ import { Code } from '@astrojs/starlight/components';
 import viewerLauncher from './snippets/launchers/viewer.json5?raw';
 import zedCameraFragment from './snippets/launchers/viewer_zed_camera.json5?raw';
 import frameworkControlsLauncher from './snippets/launchers/mcp_framework_controls.json5?raw';
+import hostedBrainLauncher from './snippets/launchers/hosted_brain_arm.json5?raw';
 import wristCameraNode from './snippets/nodes/wrist_camera/peppy.json5?raw';
 import camerasLauncher from './snippets/launchers/cameras.json5?raw';
 
@@ -45,7 +46,7 @@ In the `examples/` directory, you'll find a launcher file for each language. Ope
  1. The file is identified by `peppy_schema: "launcher/v1"` at the root: peppy uses this to distinguish launcher files from node `peppy.json5` files (which use `"node/v1"`)
  2. The `description` at the root says what the launcher starts and what it needs to run, such as a GPU, hardware or a simulation, as a list of paragraphs. It is required, and its first paragraph is the summary that `peppy repo search` prints. A launcher has no manifest, so its description sits at the root (see [Descriptions](/reference/concepts/#descriptions)). A [fragment](#fragments-splitting-a-launcher-across-files) has no description
  3. All deployments are defined in the `deployments` array
- 4. Each deployment requires a `source` (the node to run, or the MCP exposures to serve) and an `instances` array (how many copies to start, and how each one is configured). Every entry needs an `instance_id`; `arguments`, `env_vars`, `framework`, `core_node`, and `links` are optional. See [Instance attributes](#instance-attributes) for what each one does
+ 4. Each deployment requires a `source` (the node to run, or the MCP exposures to serve) and an `instances` array (how many copies to start, and how each one is configured). Every entry needs an `instance_id`; `arguments`, `env_vars`, `env_from_launch`, `framework`, `core_node`, and `links` are optional. See [Instance attributes](#instance-attributes) for what each one does
 
 The `source` attribute references a node from your configured repositories by `name` and `tag`. Specify them as separate fields, or use the combined `name: "<name>:<tag>"` shorthand. The node is resolved against your local nodes cache at `~/.peppy/cache/nodes.json5`. A source can instead list [MCP exposures](/advanced_guides/mcp/) to serve, as shown [below](#serving-mcp-exposures).
 
@@ -267,7 +268,57 @@ Entries are checked when the launcher file is read, before the running stack is 
 The name and value rules exist because a container node receives its environment through Apptainer, which forwards each variable under the `APPTAINERENV_` prefix into a script the container sources at startup, where the shell expands the value. A name that is not a shell identifier would not parse as an assignment, and a value carrying `$`, a backtick or a quote would be expanded or run inside the container rather than arriving as written. The same rule applies to process nodes so that adding a `container` block to a node later cannot break the launchers that already deploy it.
 :::
 
-`env_vars` reach the instance when it starts. Fetching and building a node happen once for the node, not once per instance, so a variable your build needs (a registry token, a toolchain path) belongs in the shell you run `peppy stack launch` or `peppy stack build` from, where it is forwarded to build steps on that machine too. A build on another machine sees none of your caller environment: your environment describes your machine, so it stays there.
+`env_vars` reach the instance when it starts. Fetching and building a node happen once for the node, not once per instance, so a variable your build needs (a registry token, a toolchain path) belongs in the shell you run `peppy stack launch` or `peppy stack build` from, where it is forwarded to build steps on that machine too, unless the launcher names it in an [`env_from_launch`](#env_from_launch-optional): such a variable reaches only the run of the instances that name it. A build on another machine sees none of your caller environment: your environment describes your machine, so it stays there.
+
+A value that must not be in a launcher file, such as the API key of a hosted model, goes in [`env_from_launch`](#env_from_launch-optional) instead.
+
+### `env_from_launch` (optional)
+
+The variables this instance takes from the environment of the launch, by name. Use it for a value that no launcher file holds: a secret, such as the API key of a hosted model, or a value that each user sets in their own shell. Use `env_vars` for a value that the launcher file can hold, such as a device path or a log level.
+
+<Code code={hostedBrainLauncher} lang="json5" title="hosted_brain_arm.json5" />
+
+The launch gives the instance the value of each variable from the environment that `peppy stack launch` forwards. A launch variable is each name that an `env_from_launch` or a `set_env_from_launch` of the launcher or of the fragments of its options holds. Its value reaches the run of each instance that names it, and nothing else: no other instance, and no add or build step, gets it, also on the coordinator. An empty value counts as no value, as when a shell sources a `.env` template that leaves the key unset. The daemon keeps, in memory only, the value of each launch variable that the forwarded environment of the launch holds. A later join gives each instance that it starts the kept value of each variable that the instance names. So a robot that a client adds through `stack.join` gets the key of its brain, and no file holds the key. The values belong to the stack: `peppy stack reset` and a stop of the daemon drop them. A launch that replaces the running stack drops the values of that stack and keeps the values of its own forwarded environment.
+
+A launcher that deploys an instance from a shared fragment names its variables with a [`set_env_from_launch`](#adjustments) adjustment, for example beside the models that it sets:
+
+```json5
+{ target: "brain_inst", when: { brain: "vlm_router_brain" },
+  set_arguments: {
+    perception_model: "gemini-robotics-er-2-preview",
+    manipulation_model: "gemini-robotics-er-2-preview",
+  },
+  set_env_from_launch: ["GEMINI_API_KEY"] },
+```
+
+A node that changes the service that it calls while it runs, for example a brain that switches its model, needs the key of each service that it can switch to: the launcher names them all. A switch to a model whose key the instance does not have fails in the node, with the node's message.
+
+The environment of an instance in each case:
+
+| The instance starts | Its environment |
+|---|---|
+| In the launch, on the coordinator | The forwarded environment of the launch without its launch variables, then the value of each variable of its `env_from_launch`, then its `env_vars`. The launch environment holds each variable of its `env_from_launch`, or the launch does not start. |
+| In `peppy stack join`, on the coordinator | The forwarded environment of the join without its launch variables, then the value of each variable of its `env_from_launch`: the one that the join forwards, else the kept one, then its `env_vars`. |
+| In a join through `robot_membership:v1`, from the framework's endpoint or from the applier of worlds | The kept value of each variable of its `env_from_launch`, then its `env_vars`. Such a join forwards no environment, so a variable of the launch environment that the instance does not name does not reach it. |
+| On a peer | Its `env_vars` only. An instance with `env_from_launch` does not run on a peer. |
+
+Launch variables reach the run of an instance only. The add and build steps of a join through `robot_membership:v1` get no environment, and the add and build steps of a launch and of `peppy stack join` get the forwarded environment of that command without its launch variables.
+
+A name follows the name rules of `env_vars` and is none of the names that the CLI never forwards: `PWD`, `OLDPWD`, `TMPDIR`, `TEMP`, `TMP`, `PYTHONPATH` and `PYTHONHOME`. A list names each variable once, and an empty list is the same as no list. A list is a set: its order does not matter, `peppy stack resolve` writes it in name order, and two lists of the same names in another order are the same list, so a copy that writes them on a running instance changes nothing. Each refusal names the launcher file, the instance or the adjustment, and the variable. A name that is in the `env_vars` and in the `env_from_launch` of the same instance after the adjustments is refused, because the variable would get two values: the launch checks it on the stack and on each trial copy of its scopes, each join on the copy that it composes, and [`peppy stack resolve`](#auditing-a-composed-launch) on the file that it prints. One refusal names every such instance and variable. `peppy stack resolve` prints the `env_from_launch` of each instance after the adjustments, names only, so the flat file launches the same.
+
+The launch is refused when an instance that it starts, or that a join through a `robot_membership` scope of the launch can start, takes a variable that its forwarded environment does not hold. The instances that a join can start are those of the trial copies of the scope, each option with its launcher entry and with each set of its features (see [Building the nodes a join brings](#building-the-nodes-a-join-brings)), also with `--no-prebuild`. So a `set_env_from_launch` under the `when` of a feature counts. The refusal comes before the launch stops the running stack, builds or starts anything: the running stack and its kept values stay as they are. One message names each missing variable, each instance that needs it, and the option or the feature that can start that instance, with each instance whose scope offers it. Without `GEMINI_API_KEY`, the launch of the example above stops with:
+
+```
+the launch needs `GEMINI_API_KEY`, and the launch environment does not hold it, or holds it empty or with characters that a node cannot receive: `brain_inst` of option `demo_arm` takes it from the launch, and stack.join through `framework_controls_inst` can add a copy of `demo_arm`. Export `GEMINI_API_KEY` in the shell that launches. A value must not be empty, and must hold letters, digits and `_ - . / : , = @ + %` only
+```
+
+The CLI does not forward a value with characters that a node cannot receive (see [`env_vars`](#env_vars-optional)), and the daemon counts an empty value as no value, so the message names these causes too. [`peppy stack resolve`](#auditing-a-composed-launch) names each variable that a launch needs before you launch. With `robot_control=none`, no `stack.join` can add an arm, so the same launch needs no key.
+
+An instance that only a word of the CLI selects, such as an option of an own axis that no feature of a scope offers, does not make each launch need its variables. A `peppy stack join` that starts it is refused, with the same message, when neither the forwarded environment of the join nor the kept values hold one of them. `peppy stack build` starts nothing, so it checks no variable and keeps no value.
+
+An instance with launch variables runs on the coordinator's machine only: a value of the launching shell stays on the machine where you typed it. A launch or a join that places such an instance on a peer is refused, naming the instance and the peer.
+
+No value of a launch variable appears in a log line, a feedback line, an error, the output of `peppy stack list`, the fleet listing, an MCP answer, a file of the data root or a command line: logs and errors name the variables only. On macOS, the environment of a container node reaches apptainer in the Lima VM on the standard input of the command, not on a command line that the process list shows.
 
 ### `framework` (optional)
 
@@ -712,6 +763,7 @@ The launcher's own top-level `adjustments` list takes the same entries, guarded 
 | `add_links` | Appends targets to each named slot's array binding, creating the binding when the slot has no entry. Refused when the slot holds a scalar or a vacancy: replacing is `set_links`'s job. Appending is what lets independent options each contribute bindings to one multi-cardinality slot, and what lets a [copy](#copies) that joins add its own instances to a running instance's set. |
 | `unset_links` | Drops each named slot's entry entirely, returning the slot to absent. |
 | `set_daemon_scopes` | Replaces the [scope](#daemon_scopes-optional) of each named daemon target, creating it when absent. No operation removes a scope. Refused in the composition of a copy, because a scope belongs to the stack: write it at the top level, under an option of an axis that does not run as copies, or in the instance's own `daemon_scopes`. |
+| `set_env_from_launch` | Replaces the target's [`env_from_launch`](#env_from_launch-optional) with the list, so a launcher names exactly the keys of the models that its instances can use. An empty list is an operation: the target then takes no variable from the launch, for example an instance of a shared fragment whose model calls no service. |
 
 A fragment's own entries run first, in the order its files are read, then the launcher's: the options' entries in the order `components` declares their axes, then the top-level list. The order is what decides a field two entries both write, the later one winning, so a launcher's entry overrides the fragment's and its top-level list overrides its options'.
 
@@ -1081,5 +1133,7 @@ link rules hold: slot keys, vacancies, pairing coverage, observation sources and
 Every applied adjustment is listed with the value it replaced and where it was written, the fragment's own entries under the fragment's path and the launcher's under the option that carries them, and every skip says why. Because stdout is a plain launcher, it doubles as the escape hatch: flatten, hand-edit, launch the flat file. The one exception is a launcher with a [`robot_membership` scope](/advanced_guides/mcp/#scopes): the flat file keeps the scope and declares no axis, so no option of the scope runs as copies in it, and its launch refuses the scope and says why. Launch such a launcher itself, or take the instance that serves the target out of the flat file before you launch it. A launcher that deploys copies resolves with them, one `copy NAME:` line each, and `--join OPTION:NAME` resolves one more, repeatable and comma-separated, each joined onto the plan the ones before it left, exactly as `stack launch` composes them. A copy `--join` names takes its own axes from `--with NAME.option`. A `copy NAME:` line writes `@machine` after each part that a word places, as the word wrote it: `brain=ai_brain_vla@cn-gpu-box`. `stack resolve` reads no daemon, so it prints `@self` as written, and its lines name no machine for a copy, which `--join OPTION:NAME@CORE_NODE` or `--place NAME@CORE_NODE` gives at launch. The words that a launch refuses, a part placed twice or a placed part that brings nothing, fail `stack resolve` too. The resulting flat launcher declares each copy's name in `core_nodes` and places each copy whole on its name's link, so a part that a word places runs with its copy when you launch the flat file; launch that file with `--place NAME@CORE_NODE` or `--local`.
 
 The report then holds the flat plan to the [checks of `daemon_scopes`](#daemon_scopes-optional). They read the exposure documents and the node manifests alone, so those of the exposure deployments run whatever the nodes and contracts caches hold, and a plan that breaks one fails with the launch's own refusal. The `daemon scopes hold` line says how many daemon targets were scoped. When this machine's caches do not hold an exposure document, or the manifest of a node, the report says `daemon scopes not checked` and names the deployment, whose checks it skips; the checks of every other deployment still run. A document or a manifest in the caches that a launch refuses, for example one that does not parse or that names an interface this peppy does not serve, fails `stack resolve` with that refusal.
+
+The report then names the [launch variables](#env_from_launch-optional) of the plan. A `launch variables: the launch needs` line names each variable that the launch needs from the shell that launches, with each instance that takes it and what can start that instance: the launch, or a `stack.join` through a scope of the launch, with the instance whose scope offers the option. A line follows for each instance with launch variables that the launch places off the coordinator, which it refuses: an instance on a core node link that is not a copy's, unless `--place LINK@self` or `--local` puts that link on the coordinator, and an instance of a copy or of a part that a word places on a named machine, unless that machine is the coordinator. `stack resolve` reads no daemon and no `--place`, so a copy that `--place` puts on a peer at launch is refused then, and not named here.
 
 The report ends by holding the flat plan to the launch-time link rules that need no daemon. `stack resolve` reads this machine's nodes cache at `~/.peppy/cache/nodes.json5`, loads each deployed node's manifest, and checks slot-key legality, vacancies, and pairing coverage across them; the `link rules hold` line names how many manifests it checked. A node published by a git repository is read out of the checkout the caches already hold, `peppy repo refresh` handing every clone it makes to the checkout cache, so the nodes and launchers a hub publishes are checked against each other without the command ever reaching the network. The contract-binding rules stay launch-only, because satisfying them can involve the root node that only a running daemon knows. When the plan breaks a rule a launch would reject, say a `zero_or_one` pairing slot left neither paired nor vacant, `stack resolve` fails with that launch's own error instead of surfacing it minutes later at launch. When a manifest cannot be read locally the check is skipped rather than run on a partial picture: the report says `link rules not checked`, names the missing manifest, and advises `peppy repo refresh`, which is what fills both the nodes cache and the checkouts the git-backed manifests are read from.

@@ -602,11 +602,10 @@ pub(super) async fn build_container_command(
         .into_std_command()
         .map_err(|e| std::io::Error::other(format!("Failed to build apptainer command: {}", e)))?;
 
+    // The facade set the standard input: the null device, or under Lima
+    // the pipe that carries the environment of the node to the guest.
     let mut command = Command::from(std_cmd);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     // Process-group leader, like the process-node path. On Linux (native
     // apptainer, shared namespace) the host group kill reaches the container's
     // processes directly. On macOS the workload runs inside the Lima VM, so a

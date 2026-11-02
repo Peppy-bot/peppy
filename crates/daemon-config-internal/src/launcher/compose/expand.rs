@@ -3,6 +3,7 @@
 //! order, and the report of what they did.
 
 use super::super::composition::OriginatedAdjustment;
+use super::super::launch_variables::{VariableGivenTwoValues, VariablesGivenTwoValues};
 use super::super::types::{
     ClockDeclaration, Deployment, DeploymentInstance, LauncherFramework, LinkTargets, LinkValue,
     Selection, WALL_CLOCK,
@@ -67,6 +68,7 @@ pub(super) fn expand_unit(
         let instance = instance_named(&mut merged, step.adjustment.target.as_str());
         apply_adjustment(instance, step, &mut applied)?;
     }
+    refuse_variables_given_two_values(&merged, &defined, &applied)?;
     Ok(Expanded {
         deployments: merged,
         core_nodes: links,
@@ -381,6 +383,13 @@ fn apply_adjustment(
             }
         }
     }
+    if let Some(variables) = &step.adjustment.set_env_from_launch {
+        record(AppliedChange::EnvFromLaunch {
+            old: instance.env_from_launch.clone(),
+            new: variables.clone(),
+        });
+        instance.env_from_launch = variables.clone();
+    }
     if let Some(scopes) = &step.adjustment.set_daemon_scopes {
         for (daemon_target, scope) in scopes {
             record(AppliedChange::DaemonScope {
@@ -394,6 +403,46 @@ fn apply_adjustment(
         }
     }
     Ok(())
+}
+
+/// Refuses the instances that take a variable from the launch and also give
+/// it a value in their `env_vars`, once every adjustment has run: an
+/// adjustment can set or clear the list. One refusal names every such
+/// instance and variable, each with the adjustment that wrote its list last,
+/// or the document that defines the instance when none did.
+fn refuse_variables_given_two_values(
+    deployments: &[Deployment],
+    defined: &HashMap<&str, &str>,
+    applied: &[AppliedAdjustment],
+) -> Result<(), CompositionError> {
+    let list_origin = |id: &str| {
+        applied
+            .iter()
+            .rev()
+            .find(|entry| {
+                entry.target == id && matches!(entry.change, AppliedChange::EnvFromLaunch { .. })
+            })
+            .map(|entry| format!("the adjustment in {}", entry.origin))
+            .unwrap_or_else(|| {
+                let document = defined
+                    .get(id)
+                    .expect("every instance of the unit is defined once");
+                format!("its entry in {document}")
+            })
+    };
+    let mut found = Vec::new();
+    for instance in deployments
+        .iter()
+        .flat_map(|deployment| &deployment.instances)
+    {
+        let given_two_values = instance.env_from_launch.given_in(&instance.env_vars);
+        if given_two_values.count() == 0 {
+            continue;
+        }
+        let origin = list_origin(instance.instance_id.as_str());
+        found.extend(VariableGivenTwoValues::each_of(instance, Some(&origin)));
+    }
+    VariablesGivenTwoValues::refuse(found).map_err(CompositionError::VariablesGivenTwoValues)
 }
 
 /// Appending is for array bindings: an absent slot starts one, an existing

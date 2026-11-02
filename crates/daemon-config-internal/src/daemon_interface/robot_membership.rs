@@ -4,7 +4,7 @@
 //! hold, and the most copies of them the stack holds.
 
 use crate::internal::launcher::{
-    CompositionError, JoinableNodes, PartRefusal, PreparedLauncher, UnitSelection,
+    CompositionError, Joinable, PartRefusal, PreparedLauncher, Starter, UnitSelection,
 };
 use config::runtime::{CoreNodeName, CoreNodeTarget, Name};
 use core_node_api::encoding::{AxisSelection, OptionChoice, SelectionWord};
@@ -382,13 +382,16 @@ impl RobotMembershipScope {
     ///    with no feature holds none of its option's features.
     ///
     /// The verdict depends only on the launcher and the stack selection.
-    /// When the scope holds, returns the nodes of the trial copies of step 3:
-    /// every node that a join of a scoped option can bring.
+    /// When the scope holds, returns what the trial copies of step 3 start:
+    /// every node that a join of a scoped option can bring, and every
+    /// instance of theirs that takes launch variables, with the smallest
+    /// feature sets that start it, through the scope of `scope_instance`.
     pub(super) fn check_launch(
         &self,
         prepared: &PreparedLauncher,
         selection: &UnitSelection,
-    ) -> Result<JoinableNodes, Vec<String>> {
+        scope_instance: &str,
+    ) -> Result<Joinable, Vec<String>> {
         let errors: Vec<CompositionError> = self
             .options
             .iter()
@@ -417,21 +420,23 @@ impl RobotMembershipScope {
         if !features.is_empty() {
             return Err(features);
         }
-        self.check_trial_joins(prepared, selection)
+        self.check_trial_joins(prepared, selection, scope_instance)
     }
 
     /// Step 3 of [`Self::check_launch`]: one trial join of each feature set
     /// of each option over the bare stack, whose nodes are the joinable
-    /// nodes of the scope.
+    /// nodes of the scope, and whose instances with launch variables are the
+    /// ones its joins can start.
     fn check_trial_joins(
         &self,
         prepared: &PreparedLauncher,
         selection: &UnitSelection,
-    ) -> Result<JoinableNodes, Vec<String>> {
+        scope_instance: &str,
+    ) -> Result<Joinable, Vec<String>> {
         let trials = prepared
             .trial_stack(selection)
             .map_err(|error| vec![format!("the stack does not compose: {error}")])?;
-        let mut joinable = JoinableNodes::default();
+        let mut joinable = Joinable::default();
         let mut refusals = Vec::new();
         for entry in &self.options {
             for set in feature_sets(&entry.features) {
@@ -444,7 +449,15 @@ impl RobotMembershipScope {
                         continue;
                     }
                 };
-                joinable.add_copy(&entry.option, trial.deployments);
+                let starter = Starter::ScopedJoin {
+                    option: entry.option.clone(),
+                    features: set.iter().map(|feature| feature.feature.clone()).collect(),
+                    scopes: vec![scope_instance.to_owned()],
+                };
+                joinable
+                    .variable_needs
+                    .extend(trial.variable_needs(&starter));
+                joinable.nodes.add_copy(&entry.option, trial.deployments);
                 if !set.is_empty() {
                     continue;
                 }
