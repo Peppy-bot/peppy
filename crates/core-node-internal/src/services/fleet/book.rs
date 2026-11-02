@@ -215,9 +215,13 @@ impl FleetBook {
     /// Sets the part of the listing that the record of the launch gives:
     /// the launcher, the robots, the options, the documents and the nodes.
     /// The book gives the version, the machine, the halt, the leases and the
-    /// software of each robot.
-    pub(crate) fn set_launch(&mut self, launch: FleetListing) {
+    /// software of each robot. It reads the software of `robots`, the robots
+    /// of the same record, in the same step ([`Self::sync_software`]): the
+    /// listing of each change after it, such as the join of a robot whose
+    /// processes run already, gives the software state of each robot.
+    pub(crate) fn set_launch(&mut self, launch: FleetListing, robots: &[RobotProcesses]) {
         self.launch = launch;
+        self.sync_software(robots);
     }
 
     /// The fleet listing now.
@@ -286,7 +290,7 @@ impl FleetBook {
     /// software start or stop of each robot whose state changed; a robot
     /// that joined the stack gets its state with no change, as the listing
     /// of its join gives it.
-    pub(crate) fn sync_software(&mut self, robots: &[RobotProcesses]) {
+    fn sync_software(&mut self, robots: &[RobotProcesses]) {
         let mut next = BTreeMap::new();
         let mut changed = Vec::new();
         for robot in robots {

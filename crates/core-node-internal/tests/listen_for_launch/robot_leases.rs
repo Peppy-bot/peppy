@@ -363,6 +363,42 @@ async fn an_instance_calls_robot_leases_within_its_scope_while_its_launch_starts
     );
 }
 
+/// The process of each instance of a copy runs before its join commits, so
+/// a follower of the changes reads the robot that joined as running in the
+/// change of its join, with no other change of the fleet.
+#[tokio::test]
+async fn a_follower_reads_the_software_of_a_robot_that_joined_as_running_in_its_join() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, launcher) =
+        fleet_with_a_director(&started, r#"{ members: ["list", "lease"] }"#);
+    let mut responders = answer_readiness(&started, "director", DIRECTOR).await;
+    execute(
+        &started,
+        &fleet_launch(launcher, "fleet-join-software-test"),
+    )
+    .await
+    .assert_completed();
+    let command_line =
+        RobotLeasesClient::sending_as(&started, core_node_api::names::COMMAND_LINE_INSTANCE_ID)
+            .await;
+    let mut changes = command_line.goal(RobotLeasesMember::Changes).await;
+    let first = next_change(&mut changes).await;
+    assert!(first.listing.robots.is_empty(), "no copy joined yet");
+
+    responders.extend(answer_readiness(&started, "named_robot", ALPHA_ARM).await);
+    execute(&started, &robot_goal("alpha", "real"))
+        .await
+        .assert_completed();
+    let joined = next_change(&mut changes).await;
+    assert_eq!(serde_json::to_value(joined.change).unwrap(), json!("join"));
+    assert_eq!(joined.robot, "alpha");
+    assert_eq!(
+        serde_json::to_value(joined.listing.robots[0].software).unwrap(),
+        json!("running"),
+        "the process of alpha runs before its join commits"
+    );
+}
+
 /// The listing gives each robot with its software and the halt; the halt
 /// refuses every move until it is cleared; and the daemon checks each call
 /// against the scope of its sender.

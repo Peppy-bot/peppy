@@ -344,19 +344,18 @@ pub(crate) fn drop_active_launch(ownership: &SliceOwnership, cause: &str) {
         .unwrap_or_default();
     ownership.fleet.with(|book| {
         book.end_every_lease(cause);
-        book.set_launch(FleetListing::default());
+        book.set_launch(FleetListing::default(), &[]);
         for robot in &removed {
             book.note(ChangeKind::Removal, robot);
         }
-        book.sync_software(&[]);
     });
 }
 
 /// Makes `active` the launch this daemon coordinates, from the commit point
 /// of the launch on, while its instances still start: its instances call the
 /// daemon within the scopes of the launch, and the followers of the fleet
-/// read the join of each of its copies. `node_stack` gives the documents of
-/// the listing.
+/// read the join of each of its copies, with the software of each robot as
+/// its processes give it. `node_stack` gives the documents of the listing.
 pub(super) fn commit_active_launch(
     ownership: &SliceOwnership,
     node_stack: &NodeStack,
@@ -372,11 +371,10 @@ pub(super) fn commit_active_launch(
     let mut record = ownership.active.lock();
     *record = Some(active);
     ownership.fleet.with(|book| {
-        book.set_launch(listing);
+        book.set_launch(listing, &robots);
         for robot in &joined {
             book.note(ChangeKind::Join, robot);
         }
-        book.sync_software(&robots);
     });
 }
 
@@ -387,13 +385,16 @@ pub(super) fn refresh_launch_listing(ownership: &SliceOwnership, node_stack: &No
     let Some(active) = ownership.active.lock().clone() else {
         return;
     };
+    let robots = active.robot_processes();
     let listing = launch_listing(&active, node_stack);
     let record = ownership.active.lock();
     if record
         .as_ref()
         .is_some_and(|current| current.launch_id == active.launch_id)
     {
-        ownership.fleet.with(|book| book.set_launch(listing));
+        ownership
+            .fleet
+            .with(|book| book.set_launch(listing, &robots));
     }
 }
 
