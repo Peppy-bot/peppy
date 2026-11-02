@@ -622,7 +622,8 @@ fn rewrite_report(
                 AppliedChange::Argument { .. }
                 | AppliedChange::Clock { .. }
                 | AppliedChange::DaemonScope { .. }
-                | AppliedChange::Restart { .. } => {}
+                | AppliedChange::Restart { .. }
+                | AppliedChange::EnvFromLaunch { .. } => {}
                 AppliedChange::LinkSet { old, new, .. } => {
                     if let Some(old) = old {
                         rewrite_link(old, rewrite).map_err(collide)?;
@@ -756,6 +757,9 @@ fn apply_write(
         AppliedChange::Restart { new, .. } => {
             instance.framework.restart = Some(*new);
         }
+        AppliedChange::EnvFromLaunch { new, .. } => {
+            instance.env_from_launch = new.clone();
+        }
     }
     Ok(())
 }
@@ -855,6 +859,16 @@ pub(super) fn attach(
                     )));
                 }
             }
+            AppliedChange::EnvFromLaunch { new, .. } => {
+                let old = &running.env_from_launch;
+                if old != new {
+                    return Err(refusal(format!(
+                        "{field}: {} -> {}",
+                        render(old),
+                        render(new)
+                    )));
+                }
+            }
             // A copy's composition that sets a scope is refused before it
             // writes anything (`refuse_daemon_scopes`), so a composed copy
             // carries none: the arm holds the copy to what runs, as every
@@ -917,6 +931,9 @@ pub(super) fn against_running(
                 }
                 AppliedChange::Restart { old, .. } => {
                     *old = running.framework.restart;
+                }
+                AppliedChange::EnvFromLaunch { old, .. } => {
+                    *old = running.env_from_launch.clone();
                 }
                 AppliedChange::LinkAdded { .. } => {}
             }

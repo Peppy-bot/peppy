@@ -176,6 +176,15 @@ impl LoadedComposition {
         self.options.get(axis).into_iter().flatten()
     }
 
+    /// Every fragment of every option of every axis, its own axes' options
+    /// included, once for each option that names it.
+    pub(super) fn all_fragments(&self) -> impl Iterator<Item = &LoadedFragment> {
+        self.options
+            .values()
+            .flat_map(BTreeMap::values)
+            .flat_map(LoadedOption::all_fragments)
+    }
+
     /// The fragments the stack runs under `selection`: those of every
     /// launcher axis's selected option, and of the options selected on
     /// their own axes.

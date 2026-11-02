@@ -3,6 +3,8 @@ mod common;
 mod copies;
 #[path = "listen_for_launch/daemon_targets.rs"]
 mod daemon_targets;
+#[path = "listen_for_launch/launch_variables.rs"]
+mod launch_variables;
 #[path = "listen_for_launch/robot_leases.rs"]
 mod robot_leases;
 #[path = "listen_for_launch/robot_membership.rs"]

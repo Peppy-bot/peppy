@@ -1,12 +1,37 @@
-//! The joinable nodes of a launch: every node that a join of an option of a
-//! `robot_membership` scope can bring. The launch checks of the scope compose
-//! one trial copy of each feature set of each scoped option over the bare
-//! stack, and the nodes of these copies are the joinable nodes. The nodes of
-//! a copy do not depend on the other copies of the stack, so the set is exact
-//! and closed when the launch starts.
+//! What the joins of a launch can start: every node that a join of an option
+//! of a `robot_membership` scope can bring, and every instance of such a join
+//! that takes launch variables. The launch checks of the scope compose one
+//! trial copy of each feature set of each scoped option over the bare stack,
+//! and the nodes of these copies are the joinable nodes. The nodes of a copy
+//! do not depend on the other copies of the stack, so the set is exact and
+//! closed when the launch starts.
 
+use super::launch_variables::{Starter, VariableNeeds};
 use super::types::{Deployment, DeploymentSource};
 use config::runtime::Name;
+
+/// What the joins that the scopes of a launch allow can start: the nodes
+/// they bring, and the instances of theirs that take launch variables.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Joinable {
+    pub nodes: JoinableNodes,
+    pub variable_needs: VariableNeeds,
+}
+
+impl Joinable {
+    /// Adds what the joins through the scope of the instance `scope` can
+    /// start: each need of `other` gets that instance as a scope.
+    pub fn merge_offered_by(&mut self, scope: &str, other: Self) {
+        self.nodes.merge(other.nodes);
+        self.variable_needs
+            .extend(other.variable_needs.into_iter().map(|mut need| {
+                if let Starter::ScopedJoin { scopes, .. } = &mut need.starter {
+                    *scopes = vec![scope.to_owned()];
+                }
+                need
+            }));
+    }
+}
 
 /// One node that a join of a scoped option can bring, and the scoped
 /// options whose copies bring it.

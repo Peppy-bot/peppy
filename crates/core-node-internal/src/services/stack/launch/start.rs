@@ -12,36 +12,56 @@ use core_node_api::encoding::{
     InstanceEndpoints, LaunchFeedbackStep, NodeRunGoal, NodeRunLogEntry, NodeRunResult,
     ObservationTarget, ObservationTargets, PairTarget, RemotePeerPairing,
 };
+use daemon_config::launcher::{DeploymentInstance, LaunchValues};
 use node_stack::ActionLog;
 use std::collections::{BTreeMap, HashMap};
 
 /// The environment one launched instance is started with: the forwarded
 /// caller environment, when the instance runs on the coordinator's own
-/// machine, with the instance's own `env_vars` layered on top so a deployment
-/// can pin what differs per instance (a device path, a board id) without
-/// depending on whoever ran the launch. An instance placed on a peer starts
-/// from an empty forwarded set, because the caller's environment describes
-/// the caller's machine and no other.
+/// machine, then the kept value of each launch variable the instance takes
+/// and the forwarded environment does not hold, then the instance's own
+/// `env_vars`, so a deployment can pin what differs per instance (a device
+/// path, a board id) without depending on whoever ran the launch. An
+/// instance placed on a peer starts from an empty forwarded set and no kept
+/// value, because the caller's environment describes the caller's machine
+/// and no other; a launch and a join refuse to place an instance with launch
+/// variables there.
 ///
-/// A key declared by the instance replaces the forwarded one rather than
-/// appearing twice: the spawn paths differ on duplicates (a process node's
-/// `Command::env` keeps the last, apptainer's `--env` flags are order-dependent
-/// in their own way), so the ambiguity is resolved here, once. Forwarded order
-/// is preserved and the instance's own entries follow in name order, which
-/// keeps the resulting command line stable for a given launcher file.
+/// The forwarded value of a launch variable wins over the kept one: the
+/// caller of a join gives the newer value. A key declared by the instance
+/// replaces the forwarded one rather than appearing twice: the spawn paths
+/// differ on duplicates (a process node's `Command::env` keeps the last,
+/// apptainer's `--env` flags are order-dependent in their own way), so the
+/// ambiguity is resolved here, once. Forwarded order is preserved, the kept
+/// values follow in the order the instance names them, and the instance's own
+/// entries follow in name order, which keeps the resulting command line
+/// stable for a given launcher file.
 ///
-/// Only `node_run` takes this: `env_vars` belong to an instance, while adding
-/// and building a node happen once for every instance that deploys it.
+/// Only `node_run` takes this: `env_vars` and launch variables belong to an
+/// instance, while adding and building a node happen once for every instance
+/// that deploys it.
 fn instance_environment(
     forwarded: &[(String, String)],
-    instance_env: &BTreeMap<String, String>,
+    kept: &LaunchValues,
+    instance: &DeploymentInstance,
 ) -> Vec<(String, String)> {
+    let forwarded_holds = |name: &str| forwarded.iter().any(|(key, _)| key == name);
+    let from_launch = instance
+        .env_from_launch
+        .iter()
+        .filter(|variable| !forwarded_holds(variable.as_str()))
+        .filter_map(|variable| {
+            kept.value_of(variable.as_str())
+                .map(|value| (variable.to_string(), value.to_owned()))
+        });
     forwarded
         .iter()
-        .filter(|(key, _)| !instance_env.contains_key(key))
+        .filter(|(key, _)| !instance.env_vars.contains_key(key))
         .cloned()
+        .chain(from_launch)
         .chain(
-            instance_env
+            instance
+                .env_vars
                 .iter()
                 .map(|(key, value)| (key.clone(), value.clone())),
         )
@@ -74,6 +94,10 @@ pub(in crate::services::stack) async fn start_node_instances(
     // The launcher root's restart policy, which rides each goal with the
     // instance entry's own say for the spawning daemon to resolve.
     root_restart: Option<config::node::RestartDeclaration>,
+    // The values of the launch variables the launch kept, which an instance
+    // on this machine takes when the forwarded environment does not hold
+    // them.
+    launch_values: &LaunchValues,
 ) -> ChangeResult<()> {
     // Register the planned observations whose OBSERVER runs on this daemon,
     // keyed by observer instance. As each instance reaches Running its
@@ -263,10 +287,16 @@ pub(in crate::services::stack) async fn start_node_instances(
             };
 
             let local = core_node == ctx.bound_core_node;
-            // The caller's forwarded environment applies to instances started
-            // on this machine, which it describes. An instance on a peer gets
-            // only the env_vars its launcher file declares for it.
-            let forwarded_env: &[(String, String)] = if local { &ctx.env_vars } else { &[] };
+            // The caller's forwarded environment and the kept launch values
+            // apply to instances started on this machine, which they
+            // describe. An instance on a peer gets only the env_vars its
+            // launcher file declares for it.
+            let no_launch_values = LaunchValues::default();
+            let (forwarded_env, kept): (&[(String, String)], _) = if local {
+                (&ctx.env_vars, launch_values)
+            } else {
+                (&[], &no_launch_values)
+            };
             let node_run_goal = if local {
                 NodeRunGoal::for_internal_execution(
                     instance_plan,
@@ -287,7 +317,7 @@ pub(in crate::services::stack) async fn start_node_instances(
             // runs: the daemon spawning it admits it as part of that launch,
             // and records that launch as the owner of a domain it publishes.
             .with_launch_id(&phase.launch_id)
-            .with_env_vars(instance_environment(forwarded_env, &instance.env_vars))
+            .with_env_vars(instance_environment(forwarded_env, kept, instance))
             .with_restart(daemon_config::launcher::restart_request_of(
                 root_restart,
                 instance,
@@ -421,29 +451,54 @@ async fn start_remotely(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::runtime::Name;
+    use daemon_config::launcher::{LaunchVariable, LaunchVariables};
+
+    fn variable(name: &str) -> LaunchVariable {
+        LaunchVariable::try_from(name.to_owned()).unwrap()
+    }
+
+    /// An instance with `env_vars` and the launch variables `variables`.
+    fn instance(env_vars: &[(&str, &str)], variables: &[&str]) -> DeploymentInstance {
+        let mut instance = DeploymentInstance::empty(Name::new("brain_inst").unwrap());
+        instance.env_vars = env_vars
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect();
+        instance.env_from_launch = LaunchVariables::try_from(
+            variables
+                .iter()
+                .map(|name| variable(name))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        instance
+    }
+
+    fn entries(entries: &[(&str, &str)]) -> Vec<(String, String)> {
+        entries
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect()
+    }
 
     /// An instance's `env_vars` are added to the forwarded caller environment
     /// and win on a shared key, leaving exactly one entry per key so the spawn
     /// path has nothing to disambiguate.
     #[test]
     fn instance_env_vars_override_the_forwarded_caller_environment() {
-        let forwarded = vec![
-            ("PATH".to_string(), "/usr/bin".to_string()),
-            ("ESP32_DEVICE".to_string(), "/dev/from_caller".to_string()),
-        ];
-        let mut instance_env = BTreeMap::new();
-        instance_env.insert("ESP32_DEVICE".to_string(), "/dev/ttyUSB0".to_string());
-        instance_env.insert("BOARD_ID".to_string(), "3".to_string());
+        let forwarded = entries(&[("PATH", "/usr/bin"), ("ESP32_DEVICE", "/dev/from_caller")]);
+        let declared = instance(&[("ESP32_DEVICE", "/dev/ttyUSB0"), ("BOARD_ID", "3")], &[]);
 
-        let merged = instance_environment(&forwarded, &instance_env);
+        let merged = instance_environment(&forwarded, &LaunchValues::default(), &declared);
 
         assert_eq!(
             merged,
-            vec![
-                ("PATH".to_string(), "/usr/bin".to_string()),
-                ("BOARD_ID".to_string(), "3".to_string()),
-                ("ESP32_DEVICE".to_string(), "/dev/ttyUSB0".to_string()),
-            ]
+            entries(&[
+                ("PATH", "/usr/bin"),
+                ("BOARD_ID", "3"),
+                ("ESP32_DEVICE", "/dev/ttyUSB0"),
+            ])
         );
     }
 
@@ -452,12 +507,11 @@ mod tests {
     /// goal carries.
     #[test]
     fn a_peer_instance_carries_only_its_declared_env_vars() {
-        let mut instance_env = BTreeMap::new();
-        instance_env.insert("ESP32_DEVICE".to_string(), "/dev/ttyUSB0".to_string());
+        let declared = instance(&[("ESP32_DEVICE", "/dev/ttyUSB0")], &[]);
 
         assert_eq!(
-            instance_environment(&[], &instance_env),
-            vec![("ESP32_DEVICE".to_string(), "/dev/ttyUSB0".to_string())]
+            instance_environment(&[], &LaunchValues::default(), &declared),
+            entries(&[("ESP32_DEVICE", "/dev/ttyUSB0")])
         );
     }
 
@@ -465,14 +519,42 @@ mod tests {
     /// environment unchanged, in the order it arrived.
     #[test]
     fn instance_without_env_vars_keeps_the_forwarded_environment() {
-        let forwarded = vec![
-            ("PATH".to_string(), "/usr/bin".to_string()),
-            ("HOME".to_string(), "/home/user".to_string()),
-        ];
+        let forwarded = entries(&[("PATH", "/usr/bin"), ("HOME", "/home/user")]);
 
         assert_eq!(
-            instance_environment(&forwarded, &BTreeMap::new()),
+            instance_environment(&forwarded, &LaunchValues::default(), &instance(&[], &[])),
             forwarded
+        );
+    }
+
+    /// A join through `robot_membership:v1` forwards nothing: the instance
+    /// gets the kept value of each variable it names, and no other kept
+    /// value.
+    #[test]
+    fn an_instance_takes_the_kept_values_of_the_variables_it_names() {
+        let names = [variable("GEMINI_API_KEY"), variable("OTHER_KEY")];
+        let kept = LaunchValues::kept(
+            &names,
+            &entries(&[("GEMINI_API_KEY", "kept-key"), ("OTHER_KEY", "other")]),
+        );
+        let brain = instance(&[("MODE", "fast")], &["GEMINI_API_KEY"]);
+
+        assert_eq!(
+            instance_environment(&[], &kept, &brain),
+            entries(&[("GEMINI_API_KEY", "kept-key"), ("MODE", "fast")])
+        );
+    }
+
+    /// The value a CLI join forwards wins over the kept one.
+    #[test]
+    fn the_forwarded_value_of_a_launch_variable_wins_over_the_kept_one() {
+        let names = [variable("GEMINI_API_KEY")];
+        let kept = LaunchValues::kept(&names, &entries(&[("GEMINI_API_KEY", "kept-key")]));
+        let brain = instance(&[], &["GEMINI_API_KEY"]);
+
+        assert_eq!(
+            instance_environment(&entries(&[("GEMINI_API_KEY", "joined-key")]), &kept, &brain),
+            entries(&[("GEMINI_API_KEY", "joined-key")])
         );
     }
 }

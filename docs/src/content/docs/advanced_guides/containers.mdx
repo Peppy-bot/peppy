@@ -260,7 +260,7 @@ Starting a container node also uses the same command:
 peppy node run my_node:v1
 ```
 
-Peppy runs the `.sif` image with `apptainer run` and a clean environment: the daemon's own environment is not inherited. The instance's declared `env_vars` (minus `HOME`, which is dropped) and `PEPPY_RUNTIME_CONFIG` are passed in explicitly, and the image's `%environment` section applies as usual.
+Peppy runs the `.sif` image with `apptainer run` and a clean environment: the daemon's own environment is not inherited. The environment of the instance (the forwarded environment on the coordinator, the values of its [`env_from_launch`](/guides/launch_files/#env_from_launch-optional) and its declared [`env_vars`](/guides/launch_files/#env_vars-optional), minus `HOME`, which is dropped) and `PEPPY_RUNTIME_CONFIG` are passed in explicitly, and the image's `%environment` section applies as usual.
 
 The container executes the `%runscript` section, which runs the compiled binary (Rust) or the Python module entry point.
 

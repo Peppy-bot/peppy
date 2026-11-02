@@ -206,6 +206,11 @@ missing program. The one way to hand a value to a remote instance is the
 `env_vars` of that instance in the launcher file, which apply wherever the
 instance is placed.
 
+An instance with [`env_from_launch`](/guides/launch_files/#env_from_launch-optional)
+runs on the coordinator's machine only: a value of the launching shell stays on
+the machine where you typed it. A launch or a join that places such an instance
+on a peer is refused, naming the instance and the peer.
+
 ## Verifying placement
 
 `peppy stack list` from either machine shows both slices, each attributed to the

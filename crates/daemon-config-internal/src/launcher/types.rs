@@ -2,6 +2,7 @@ use super::composition::{
     Adjustment, AxisScope, ComponentAxis, DeploymentEntries, DeploymentEntriesRef,
     OptionDeployment, SelectionConstraint,
 };
+use super::launch_variables::LaunchVariables;
 use crate::error::StructuredError;
 use config::validate_named_items;
 use config::{
@@ -363,9 +364,10 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
 
 /// The whole-document cross-checks of a flat launcher: every `core_node`
 /// names a declared link, no link key is the reserved producer-default
-/// sentinel, and every link target names a known instance. Kept apart from
-/// [`PeppyLauncher`]'s deserializer so a composed launcher can defer exactly
-/// these checks to the flattened document.
+/// sentinel, every link target names a known instance, and no instance takes
+/// a variable from the launch that its `env_vars` also give a value. Kept
+/// apart from [`PeppyLauncher`]'s deserializer so a composed launcher can
+/// defer exactly these checks to the flattened document.
 fn cross_check_flat_document(
     deployments: &[Deployment],
     core_nodes: &[String],
@@ -401,6 +403,13 @@ fn cross_check_flat_document(
         .flat_map(|deployment| &deployment.instances)
     {
         check_instance_links(instance, &known_ids)?;
+        if let Some(variable) = instance.env_from_launch.given_in(&instance.env_vars) {
+            return Err(super::launch_variables::given_two_values(
+                instance.instance_id.as_str(),
+                variable,
+                None,
+            ));
+        }
     }
 
     Ok(())
@@ -550,6 +559,7 @@ impl DeploymentInstance {
             instance_id,
             arguments: BTreeMap::new(),
             env_vars: BTreeMap::new(),
+            env_from_launch: LaunchVariables::default(),
             framework: FrameworkOverrides::default(),
             links: BTreeMap::new(),
             daemon_scopes: BTreeMap::new(),
@@ -970,6 +980,15 @@ pub struct DeploymentInstance {
     /// receive.
     #[serde(default, deserialize_with = "deserialize_env_vars")]
     pub env_vars: BTreeMap<String, String>,
+    /// The variables this instance takes from the environment of the launch,
+    /// by name, so no launcher file holds a value: an API key, for example.
+    /// The launch gives this instance the value of each one; the daemon keeps
+    /// them, in memory, and a later join that starts this instance gives
+    /// it each one that the join's own forwarded environment does not hold.
+    /// A name is never also a key of `env_vars`, which would give the
+    /// variable two values.
+    #[serde(default, skip_serializing_if = "LaunchVariables::is_empty")]
+    pub env_from_launch: LaunchVariables,
     #[serde(default)]
     pub framework: FrameworkOverrides,
     /// The unified per-instance link map: own `link_id` → target(s). One
@@ -1200,11 +1219,18 @@ pub struct FrameworkOverrides {
     pub restart: Option<RestartDeclaration>,
 }
 
+/// The `instances` of one deployment, each read by [`read_instance`], so a
+/// refusal of one of its fields names the instance; an instance id is used
+/// once.
 fn deserialize_instances<'de, D>(deserializer: D) -> Result<Vec<DeploymentInstance>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let instances = Vec::<DeploymentInstance>::deserialize(deserializer)?;
+    let instances = Vec::<serde_json::Value>::deserialize(deserializer)?
+        .into_iter()
+        .map(read_instance)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(de::Error::custom)?;
     let mut seen = HashSet::with_capacity(instances.len());
     for instance in &instances {
         if !seen.insert(instance.instance_id.as_str()) {
@@ -1214,6 +1240,25 @@ where
         }
     }
     Ok(instances)
+}
+
+/// One written instance. A refusal of one of its fields names the instance by
+/// its `instance_id` when it has one, except a structured refusal, which names
+/// what it refuses itself.
+fn read_instance(written: serde_json::Value) -> Result<DeploymentInstance, String> {
+    let id = written
+        .get("instance_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    DeploymentInstance::deserialize(written).map_err(|error| {
+        let message = error.to_string();
+        match id {
+            Some(id) if !crate::error::is_structured_refusal(&message) => {
+                format!("instance `{id}`: {message}")
+            }
+            _ => message,
+        }
+    })
 }
 
 /// Where every instance of one launch runs.

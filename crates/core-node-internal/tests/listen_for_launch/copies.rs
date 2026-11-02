@@ -62,7 +62,7 @@ pub(super) async fn execute(
 
 /// Runs `goal` to its end, with every output line the daemon sent for it as
 /// feedback, in order.
-async fn execute_reporting(
+pub(super) async fn execute_reporting(
     started: &StartedCoreNode,
     goal: &impl core_node_api::ActionGoal,
 ) -> (StackGoalEnd, Vec<LaunchOutput>) {

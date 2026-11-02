@@ -2,9 +2,10 @@
 //!
 //! Two callers share them. The CLI filters the caller environment it forwards
 //! with a launch or run goal, and the launcher parser rejects a per-instance
-//! `env_vars` entry a node could not receive intact. One definition keeps the
-//! two in step: what the CLI silently drops from the ambient environment is not
-//! something a launcher file can smuggle through.
+//! `env_vars` entry a node could not receive intact, and an `env_from_launch`
+//! name that the forwarded environment can never hold. One definition keeps
+//! the two in step: what the CLI silently drops from the ambient environment is
+//! not something a launcher file can smuggle through, or wait for.
 //!
 //! The rules follow the strictest consumer, a container node. A variable
 //! reaches one through the `APPTAINERENV_` prefix, and apptainer writes it into
@@ -33,6 +34,9 @@ pub fn is_valid_env_name(name: &str) -> bool {
     chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
+/// The characters [`is_safe_env_value`] accepts, as a message names them.
+pub const SAFE_ENV_VALUE_CHARACTERS: &str = "letters, digits and `_ - . / : , = @ + %`";
+
 /// Whether `value` reaches a node as written: letters, digits, and the
 /// punctuation that appears in the values nodes actually take (device paths,
 /// hosts, ports, search paths, log filters, tokens). The shell inside the
@@ -52,10 +56,58 @@ pub fn is_forbidden_env_name(name: &str) -> bool {
     FORBIDDEN_ENV_KEYS.contains(&name.trim().to_ascii_uppercase().as_str())
 }
 
+/// The variables of the caller's environment that the CLI never forwards to a
+/// node, because the node runs somewhere the caller's paths do not describe: a
+/// different working directory (the instance dir) and, for a container node, a
+/// different filesystem and often a different OS.
+///
+/// The temp-dir trio is the second kind. A node that asks for scratch space
+/// resolves it from these, and the caller's value names a host path the
+/// container cannot write: on macOS `TMPDIR` is always `/var/folders/…`,
+/// which inside the guest exists at most as the read-only parent of a
+/// bind-mounted peppy root, so the node dies with `EROFS` the first time it
+/// wants a temp file. Dropping them lets resolution fall back to the
+/// container's own writable `/tmp`. Apptainer's `--cleanenv` does not cover
+/// this: these arrive as `APPTAINERENV_` variables the daemon sets on purpose,
+/// which it has no reason to strip. All three are listed because the Rust and
+/// Python lookups differ (`TMPDIR` alone, versus `TMPDIR`, `TEMP`, `TMP` in
+/// order) and this stack runs both kinds of node.
+///
+/// The Python pair is a third kind: worse than naming host paths the node
+/// cannot see, a forwarded value *displaces* the image's own. Apptainer
+/// gives `--env` precedence over the image's `%environment`, so a caller
+/// shell that exports `PYTHONPATH` (a ROS `setup.bash`, say) erases the
+/// vendored `peppylib`/`peppygen` entries a Python container node boots
+/// from: the node dies at import time with `No module named 'peppylib'`,
+/// and only on machines whose shell exports one, which is why it escapes
+/// local reproduction. `PYTHONHOME` fails harder still: it points the
+/// container's interpreter at a host prefix, and Python cannot even find
+/// its stdlib. A node that genuinely wants either var gets it deliberately,
+/// via the launcher's `env_vars`.
+///
+/// The launch environment never holds these names, so a launcher cannot take
+/// one of them from it either.
+pub const NEVER_FORWARDED_ENV_KEYS: [&str; 7] = [
+    "PWD",
+    "OLDPWD",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "PYTHONPATH",
+    "PYTHONHOME",
+];
+
+/// Whether `name` is one of the [`NEVER_FORWARDED_ENV_KEYS`].
+/// Case-insensitive, as [`is_forbidden_env_name`] is.
+pub fn is_never_forwarded_env_name(name: &str) -> bool {
+    NEVER_FORWARDED_ENV_KEYS.contains(&name.trim().to_ascii_uppercase().as_str())
+}
+
 /// Why an explicitly declared environment variable cannot be given to a node.
-/// Only declarations a human wrote (a launcher instance's `env_vars`) produce
-/// this: the ambient caller environment is filtered, not rejected, because it
-/// carries entries the user never asked a node to see.
+/// Only declarations a human wrote (a launcher instance's `env_vars` and the
+/// names its `env_from_launch` takes) produce this: the ambient caller
+/// environment is filtered, not rejected, because it carries entries the user
+/// never asked a node to see.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum InvalidEnvVar {
     #[error(
@@ -70,10 +122,15 @@ pub enum InvalidEnvVar {
     Forbidden { name: String },
     #[error(
         "value of env var `{name}` contains characters a node cannot receive intact: a value may \
-         hold letters, digits, and `_ - . / : , = @ + %` (no whitespace, quotes, or shell \
-         metacharacters)"
+         hold {SAFE_ENV_VALUE_CHARACTERS} (no whitespace, quotes, or shell metacharacters)"
     )]
     Value { name: String },
+    #[error(
+        "env var `{name}` is never forwarded by the CLI: it names a working directory, a temp \
+         dir or a Python installation of the caller's machine, so the launch environment never \
+         holds it"
+    )]
+    NeverForwarded { name: String },
 }
 
 /// Checks one explicitly declared environment variable against the rules above.
@@ -93,6 +150,21 @@ pub fn check_env_var(name: &str, value: &str) -> Result<(), InvalidEnvVar> {
     }
     if !is_safe_env_value(value) {
         return Err(InvalidEnvVar::Value {
+            name: name.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Checks the name of a variable that an instance takes from the launch
+/// environment: a name [`check_env_var`] accepts, which the forwarded
+/// environment of a launch can hold, so not one of the
+/// [`NEVER_FORWARDED_ENV_KEYS`]. The value is checked where it arrives: the
+/// CLI forwards only a value [`is_safe_env_value`] accepts.
+pub fn check_launch_variable_name(name: &str) -> Result<(), InvalidEnvVar> {
+    check_env_var(name, "")?;
+    if is_never_forwarded_env_name(name) {
+        return Err(InvalidEnvVar::NeverForwarded {
             name: name.to_string(),
         });
     }
@@ -189,5 +261,35 @@ mod tests {
             })
         );
         assert_eq!(check_env_var("ESP32_DEVICE", "/dev/ttyUSB0"), Ok(()));
+    }
+
+    /// A launch variable follows the name rules of `env_vars`, and is no
+    /// name that the forwarded environment of a launch can never hold.
+    #[test]
+    fn a_launch_variable_name_is_one_the_launch_environment_can_hold() {
+        assert_eq!(check_launch_variable_name("GEMINI_API_KEY"), Ok(()));
+        assert_eq!(
+            check_launch_variable_name("has-dash"),
+            Err(InvalidEnvVar::Name {
+                name: "has-dash".to_string()
+            })
+        );
+        assert_eq!(
+            check_launch_variable_name("LD_PRELOAD"),
+            Err(InvalidEnvVar::Forbidden {
+                name: "LD_PRELOAD".to_string()
+            })
+        );
+        for name in NEVER_FORWARDED_ENV_KEYS
+            .iter()
+            .map(|name| name.to_string())
+            .chain(["pythonpath".to_string()])
+        {
+            assert_eq!(
+                check_launch_variable_name(&name),
+                Err(InvalidEnvVar::NeverForwarded { name: name.clone() }),
+                "`{name}` is never forwarded"
+            );
+        }
     }
 }

@@ -4,6 +4,7 @@ mod compose;
 mod composition;
 mod daemon_scopes;
 mod joinable;
+mod launch_variables;
 mod links;
 mod observations;
 mod pairings;
@@ -29,7 +30,11 @@ pub use composition::{AxisRole, ComponentAxis, LauncherFragmentParser, OptionSpe
 pub use daemon_scopes::{
     DaemonScopeError, DaemonScopeRefusals, DeploymentTargets, ScopeCheck, check_daemon_scopes,
 };
-pub use joinable::{JoinableNode, JoinableNodes};
+pub use joinable::{Joinable, JoinableNode, JoinableNodes};
+pub use launch_variables::{
+    LaunchValues, LaunchVariable, LaunchVariables, MissingLaunchVariables, RepeatedLaunchVariable,
+    Starter, VariableChange, VariableNeed, VariableNeeds, refuse_peer_placements,
+};
 pub use links::validate_link_plan;
 pub use observations::PlannedObservation;
 pub use pairings::{

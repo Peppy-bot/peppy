@@ -1,8 +1,8 @@
 //! What this daemon remembers of the launch it coordinates: the launcher it
 //! composed, the plan it resolved, where each instance runs, the copies on
-//! the stack, the copies the launch started, and the clock and watchers the
-//! plan established. Every stack change reads it, changes it, and writes it
-//! back.
+//! the stack, the copies the launch started, the clock and watchers the plan
+//! established, and the values of the launch variables the launch kept.
+//! Every stack change reads it, changes it, and writes it back.
 
 use super::ChangeResult;
 use super::action::StackChangeContext;
@@ -16,8 +16,8 @@ use config::runtime::{CopyName, CoreNodeName};
 use core_node_api::encoding::{AxisSelection, CopyInfo};
 use daemon_config::daemon_interface::robot_leases::{ChangeKind, FleetListing};
 use daemon_config::launcher::{
-    ClockIncarnations, CopyRecord, DeploymentInstance, PeppyLauncher, Placements, PreparedLauncher,
-    ResolvedClocks, UnitSelection,
+    ClockIncarnations, CopyRecord, DeploymentInstance, LaunchValues, PeppyLauncher, Placements,
+    PreparedLauncher, ResolvedClocks, UnitSelection,
 };
 use node_stack::NodeStack;
 use std::collections::BTreeMap;
@@ -61,6 +61,12 @@ pub(crate) struct ActiveLaunch {
     /// The machines watching each source of this plan, as every machine of
     /// the launch was told them. A failed join puts these back.
     pub(super) watchers: LifecycleWatchers,
+    /// The values of the launch variables of the launcher that the forwarded
+    /// environment of the launch held. A join gives each instance that it
+    /// starts the value of each variable the instance names and the join's
+    /// own environment does not hold. They live as long as this record, in
+    /// memory only.
+    pub(super) launch_values: LaunchValues,
 }
 
 /// The daemon targets of one instance of a launch, each with the interface
@@ -152,6 +158,7 @@ impl ActiveLaunch {
             clocks: ClockIncarnations::new(),
             resolved_clocks: ResolvedClocks::default(),
             watchers: LifecycleWatchers::new(),
+            launch_values: LaunchValues::default(),
         }
     }
 
@@ -170,6 +177,12 @@ impl ActiveLaunch {
     /// Records the launcher the launch ran, as the listings name it.
     pub(super) fn with_launcher(mut self, launcher: String) -> Self {
         self.launcher = launcher;
+        self
+    }
+
+    /// Records the values of the launch variables that the launch kept.
+    pub(super) fn with_launch_values(mut self, values: LaunchValues) -> Self {
+        self.launch_values = values;
         self
     }
 
@@ -658,5 +671,25 @@ mod tests {
                 ("bravo".to_owned(), SoftwareState::Running),
             ]
         );
+    }
+
+    /// The record of a launch keeps the values of its launch variables, and
+    /// its debug output names the variables only.
+    #[test]
+    fn the_debug_output_of_a_launch_names_its_launch_variables_only() {
+        let key = daemon_config::launcher::LaunchVariable::try_from("GEMINI_API_KEY".to_owned())
+            .expect("a launch variable");
+        let active = launch_of_alpha_and_bravo().with_launch_values(LaunchValues::kept(
+            [&key],
+            &[("GEMINI_API_KEY".to_owned(), "sentinel-value".to_owned())],
+        ));
+
+        assert_eq!(
+            active.launch_values.value_of("GEMINI_API_KEY"),
+            Some("sentinel-value")
+        );
+        let debug = format!("{active:?}");
+        assert!(debug.contains("GEMINI_API_KEY"), "{debug}");
+        assert!(!debug.contains("sentinel-value"), "{debug}");
     }
 }

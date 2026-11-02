@@ -3661,6 +3661,86 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
     );
 }
 
+/// `peppy stack resolve` prints the `env_from_launch` of each instance after
+/// the adjustments, names only, so the flat file launches the same: here
+/// the list a launcher gives the brain of a shared fragment with the
+/// adjustment that sets its models. A name the launch environment cannot
+/// give is refused with the file, the instance and the variable.
+#[test]
+fn stack_resolve_prints_the_launch_variables_after_the_adjustments() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::create_dir_all(dir.path().join("fragments")).expect("fragments dir");
+    std::fs::write(
+        dir.path().join("fragments/brain.json5"),
+        r#"{
+            peppy_schema: "launcher_fragment/v1",
+            deployments: [
+                { source: { name: "vlm_router_brain", tag: "v1" },
+                  instances: [{ instance_id: "brain_inst" }] },
+            ],
+        }"#,
+    )
+    .expect("fragment");
+    let launcher = dir.path().join("arm.json5");
+    std::fs::write(
+        &launcher,
+        r#"{
+            peppy_schema: "launcher/v1",
+            description: ["A test launcher."],
+            components: [
+                { name: "brain", options: { vlm_router_brain: "fragments/brain.json5" } },
+            ],
+            adjustments: [
+                { target: "brain_inst", when: { brain: "vlm_router_brain" },
+                  set_arguments: { perception_model: "gemini-robotics-er-2-preview",
+                                   manipulation_model: "gemini-robotics-er-2-preview" },
+                  set_env_from_launch: ["GEMINI_API_KEY"] },
+            ],
+            deployments: [{ brain: "vlm_router_brain" }],
+        }"#,
+    )
+    .expect("launcher");
+
+    let (dirs, _root) = empty_peppy_root();
+    let (document, report) =
+        peppy::commands::stack::resolve_rendered(&dirs, launcher.clone(), &[], &[])
+            .expect("resolves");
+    let flat = daemon_config::launcher::PeppyLauncherParser::from_content(&document)
+        .expect("the flat document parses");
+    let brain = &flat.deployments[0].instances[0];
+    assert_eq!(
+        brain
+            .env_from_launch
+            .iter()
+            .map(|variable| variable.as_str())
+            .collect::<Vec<_>>(),
+        ["GEMINI_API_KEY"],
+        "{document}"
+    );
+    let report_text = report.join("\n");
+    assert!(
+        report_text.contains(r#"brain_inst.env_from_launch: [] -> ["GEMINI_API_KEY"]"#),
+        "{report_text}"
+    );
+
+    std::fs::write(
+        &launcher,
+        std::fs::read_to_string(&launcher)
+            .unwrap()
+            .replace(r#"["GEMINI_API_KEY"]"#, r#"["PYTHONPATH"]"#),
+    )
+    .unwrap();
+    let refusal = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
+        .expect_err("a name the CLI never forwards")
+        .to_string();
+    assert!(
+        refusal.contains("arm.json5")
+            && refusal.contains("adjustments[0].set_env_from_launch")
+            && refusal.contains("`PYTHONPATH` is never forwarded by the CLI"),
+        "{refusal}"
+    );
+}
+
 /// A constraint refusal reaches `stack resolve` through the same `compose`
 /// a launch runs, with no daemon involved; a legal sibling still flattens,
 /// and the flat document carries no composition keys.

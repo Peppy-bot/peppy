@@ -1,0 +1,87 @@
+// A simulated arm whose brain asks a hosted model: the launch starts no arm,
+// and each stack.join of the framework's endpoint adds one.
+//
+//   GEMINI_API_KEY=... peppy stack launch hosted_brain_arm
+{
+  peppy_schema: "launcher/v1",
+  description: [
+    "A simulated arm whose brain asks a hosted model, added over MCP with stack.join.",
+    "The shell that launches exports GEMINI_API_KEY: the daemon keeps it and gives it to the brain of each arm that joins.",
+  ],
+
+  components: [
+    {
+      name: "simulation",
+      cardinality: "one",
+      provides: ["simulation_inst"],
+      options: { waldo: "../simulation/fragments/waldo.json5" },
+    },
+    {
+      name: "robot_control",
+      cardinality: "one",
+      options: {
+        robot_control: {
+          fragments: ["fragments/framework_controls.json5", "fragments/robot_control.json5"],
+        },
+        none: "../common/fragments/none.json5",
+      },
+    },
+    {
+      name: "robot",
+      cardinality: "zero_or_more",
+      options: {
+        demo_arm: {
+          deployments: [
+            {
+              source: { name: "demo_arm_backbone", tag: "v1" },
+              instances: [
+                { instance_id: "backbone_inst", links: { arm: "simulation_inst/arms" } },
+              ],
+            },
+            {
+              source: { name: "demo_hosted_brain", tag: "v1" },
+              instances: [
+                {
+                  instance_id: "brain_inst",
+                  arguments: { model: "gemini-robotics-er-2-preview" },
+                  links: { limb_motion: "backbone_inst" },
+                  // The key of the provider of the model: the daemon takes it
+                  // from the launch environment and gives it to this instance
+                  // in the launch and in each later join.
+                  env_from_launch: ["GEMINI_API_KEY"],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  ],
+
+  // No copy is listed: the launch starts no arm, and each stack.join adds one.
+  deployments: [
+    { simulation: "waldo" },
+    { robot_control: "robot_control" },
+    { robot: "demo_arm" },
+  ],
+
+  adjustments: [
+    // The framework's endpoint adds up to two arms.
+    {
+      target: "framework_controls_inst",
+      when: { robot_control: "robot_control" },
+      set_daemon_scopes: {
+        stack: {
+          max_copies: 2,
+          options: [
+            {
+              option: "demo_arm",
+              model: "demo_arm",
+              description: "A simulated arm with a brain on a hosted model",
+            },
+          ],
+        },
+      },
+    },
+  ],
+}

@@ -88,6 +88,12 @@ fn structured_refusal(msg: &str) -> Option<ParsingError> {
         .map(ParsingError::from)
 }
 
+/// Whether `msg` encodes a [`StructuredError`], which a reader of the
+/// message decodes and so must find as the serializer wrote it.
+pub(crate) fn is_structured_refusal(msg: &str) -> bool {
+    structured_refusal(msg).is_some()
+}
+
 /// Whether a declared slot is a node dep (matched by `(name, tag)` identity)
 /// or a contract dep (matched against the producer's `manifest.implements`). Used
 /// in error payloads so messages can name the expected category in singular
