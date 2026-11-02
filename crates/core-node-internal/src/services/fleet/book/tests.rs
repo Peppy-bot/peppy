@@ -438,14 +438,11 @@ fn the_software_of_a_robot_runs_while_each_of_its_processes_runs_and_each_change
     let mut follower = book.follow().changes;
     let arm = Process::new("cn-desk", "alpha_arm");
     let camera = Process::new("cn-arm", "alpha_camera");
-    let robots = [RobotProcesses {
-        robot: "alpha".to_owned(),
-        processes: vec![arm.clone(), camera.clone()],
-    }];
+    let robots = [robot_processes("alpha", &[&arm, &camera])];
 
     book.note_process(arm.clone(), true, &[]);
     book.note_process(camera.clone(), true, &[]);
-    book.sync_software(&robots);
+    book.set_launch(launch_of(&["alpha"]), &robots);
     assert_eq!(book.software_of("alpha"), Some(SoftwareState::Running));
     assert!(
         changes(&mut follower).is_empty(),
@@ -460,10 +457,6 @@ fn the_software_of_a_robot_runs_while_each_of_its_processes_runs_and_each_change
         [(ChangeKind::SoftwareStop, "alpha".to_owned())],
         "one stop, and no start while one process of two runs"
     );
-    book.set_launch(FleetListing {
-        robots: vec![robot_listed("alpha")],
-        ..FleetListing::default()
-    });
     let mut listings = book.follow().changes;
     book.note_process(arm.clone(), false, &robots);
     book.note_process(arm.clone(), true, &robots);
@@ -493,7 +486,7 @@ fn the_software_of_a_robot_runs_while_each_of_its_processes_runs_and_each_change
     );
     assert_eq!(book.software_of("alpha"), Some(SoftwareState::Running));
 
-    book.sync_software(&[]);
+    book.set_launch(FleetListing::default(), &[]);
     assert_eq!(book.software_of("alpha"), None, "the robot left the stack");
     assert!(changes(&mut follower).is_empty());
 }
@@ -658,23 +651,158 @@ fn robot_listed(name: &str) -> FleetRobot {
     }
 }
 
+/// The launch part of a listing that gives each of `robots`.
+fn launch_of(robots: &[&str]) -> FleetListing {
+    FleetListing {
+        robots: robots.iter().map(|robot| robot_listed(robot)).collect(),
+        ..FleetListing::default()
+    }
+}
+
+/// The robot `robot`, whose instances run as `processes`.
+fn robot_processes(robot: &str, processes: &[&Process]) -> RobotProcesses {
+    RobotProcesses {
+        robot: robot.to_owned(),
+        processes: processes.iter().map(|&process| process.clone()).collect(),
+    }
+}
+
+/// A change as a follower reads it: its kind, its robot, and the software
+/// of each robot that its listing gives.
+type ChangeWithSoftware = (ChangeKind, String, Vec<(String, SoftwareState)>);
+
+/// Each change that `follower` reads, with the software of each robot that
+/// its listing gives.
+fn changes_with_software(follower: &mut UnboundedReceiver<Change>) -> Vec<ChangeWithSoftware> {
+    let mut read = Vec::new();
+    while let Ok(change) = follower.try_recv() {
+        let software = change
+            .listing
+            .robots
+            .iter()
+            .map(|robot| (robot.name.clone(), robot.software))
+            .collect();
+        read.push((change.kind, change.robot, software));
+    }
+    read
+}
+
+#[test]
+fn the_join_of_a_robot_whose_processes_run_gives_it_as_running_with_no_start_of_its_own() {
+    let (mut book, _goals) = book_with(&["director"]);
+    let mut follower = book.follow().changes;
+    let arm = Process::new("cn-one", "alpha_arm");
+    let camera = Process::new("cn-one", "alpha_camera");
+
+    // Each process of the copy runs before its join commits, while the
+    // record of the launch does not hold the copy yet.
+    book.note_process(arm.clone(), true, &[]);
+    book.note_process(camera.clone(), true, &[]);
+    book.set_launch(
+        launch_of(&["alpha"]),
+        &[robot_processes("alpha", &[&arm, &camera])],
+    );
+    book.note(ChangeKind::Join, "alpha");
+    book.lease_joined(Some(&client("director")), "alpha");
+
+    let running = vec![("alpha".to_owned(), SoftwareState::Running)];
+    assert_eq!(
+        changes_with_software(&mut follower),
+        [
+            (ChangeKind::Join, "alpha".to_owned(), running.clone()),
+            (ChangeKind::LeaseStart, "alpha".to_owned(), running),
+        ],
+        "the listing of the join gives the software that runs, and no start follows"
+    );
+}
+
+#[test]
+fn the_join_of_a_robot_whose_process_does_not_run_gives_it_as_stopped_until_its_start() {
+    let mut book = FleetBook::default();
+    let mut follower = book.follow().changes;
+    let arm = Process::new("cn-one", "alpha_arm");
+    let camera = Process::new("cn-one", "alpha_camera");
+    let robots = [robot_processes("alpha", &[&arm, &camera])];
+
+    book.note_process(arm, true, &[]);
+    book.set_launch(launch_of(&["alpha"]), &robots);
+    book.note(ChangeKind::Join, "alpha");
+    book.note_process(camera, true, &robots);
+
+    assert_eq!(
+        changes_with_software(&mut follower),
+        [
+            (
+                ChangeKind::Join,
+                "alpha".to_owned(),
+                vec![("alpha".to_owned(), SoftwareState::Stopped)],
+            ),
+            (
+                ChangeKind::SoftwareStart,
+                "alpha".to_owned(),
+                vec![("alpha".to_owned(), SoftwareState::Running)],
+            ),
+        ]
+    );
+}
+
+#[test]
+fn the_removal_of_a_robot_gives_the_robots_that_stay_with_their_software() {
+    let mut book = FleetBook::default();
+    let alpha_arm = Process::new("cn-one", "alpha_arm");
+    let beta_arm = Process::new("cn-one", "beta_arm");
+    let both = [
+        robot_processes("alpha", &[&alpha_arm]),
+        robot_processes("beta", &[&beta_arm]),
+    ];
+    book.note_process(alpha_arm.clone(), true, &[]);
+    book.note_process(beta_arm.clone(), true, &[]);
+    book.set_launch(launch_of(&["alpha", "beta"]), &both);
+    let mut follower = book.follow().changes;
+
+    // The removal stops the process of the copy while the record of the
+    // launch still holds it, then takes the copy off the record.
+    book.note_process(alpha_arm, false, &both);
+    book.set_launch(
+        launch_of(&["beta"]),
+        &[robot_processes("beta", &[&beta_arm])],
+    );
+    book.note(ChangeKind::Removal, "alpha");
+
+    assert_eq!(
+        changes_with_software(&mut follower),
+        [
+            (
+                ChangeKind::SoftwareStop,
+                "alpha".to_owned(),
+                vec![
+                    ("alpha".to_owned(), SoftwareState::Stopped),
+                    ("beta".to_owned(), SoftwareState::Running),
+                ],
+            ),
+            (
+                ChangeKind::Removal,
+                "alpha".to_owned(),
+                vec![("beta".to_owned(), SoftwareState::Running)],
+            ),
+        ]
+    );
+    assert_eq!(book.software_of("alpha"), None, "alpha left the stack");
+}
+
 #[test]
 fn each_change_carries_its_revision_and_the_listing_after_it() {
     let (mut book, _goals) = book_with(&["director"]);
-    book.set_launch(FleetListing {
-        launcher: "desk".to_owned(),
-        robots: vec![robot_listed("alpha")],
-        ..FleetListing::default()
-    });
     let arm = Process::new("cn-one", "alpha_arm");
-    book.note_process(
-        arm.clone(),
-        true,
-        &[RobotProcesses {
-            robot: "alpha".to_owned(),
-            processes: vec![arm],
-        }],
+    let robots = [robot_processes("alpha", &[&arm])];
+    book.set_launch(
+        FleetListing {
+            launcher: "desk".to_owned(),
+            ..launch_of(&["alpha"])
+        },
+        &robots,
     );
+    book.note_process(arm, true, &robots);
     book.take(&client("director"), "alpha", "run").unwrap();
     let Following {
         revision,

@@ -344,19 +344,18 @@ pub(crate) fn drop_active_launch(ownership: &SliceOwnership, cause: &str) {
         .unwrap_or_default();
     ownership.fleet.with(|book| {
         book.end_every_lease(cause);
-        book.set_launch(FleetListing::default());
+        book.set_launch(FleetListing::default(), &[]);
         for robot in &removed {
             book.note(ChangeKind::Removal, robot);
         }
-        book.sync_software(&[]);
     });
 }
 
 /// Makes `active` the launch this daemon coordinates, from the commit point
 /// of the launch on, while its instances still start: its instances call the
 /// daemon within the scopes of the launch, and the followers of the fleet
-/// read the join of each of its copies. `node_stack` gives the documents of
-/// the listing.
+/// read the join of each of its copies, with the software of each robot as
+/// its processes give it. `node_stack` gives the documents of the listing.
 pub(super) fn commit_active_launch(
     ownership: &SliceOwnership,
     node_stack: &NodeStack,
@@ -372,29 +371,28 @@ pub(super) fn commit_active_launch(
     let mut record = ownership.active.lock();
     *record = Some(active);
     ownership.fleet.with(|book| {
-        book.set_launch(listing);
+        book.set_launch(listing, &robots);
         for robot in &joined {
             book.note(ChangeKind::Join, robot);
         }
-        book.sync_software(&robots);
     });
 }
 
 /// Reads the part of the fleet listing that the record of the launch gives
 /// again, once the nodes of the launch hold their documents, with no change
-/// of the fleet: the record did not change.
+/// of the fleet: the record did not change. It reads the listing and the
+/// software of the robots from the record under its lock, so a change that
+/// commits before it, such as a join or a removal, stays in the book.
 pub(super) fn refresh_launch_listing(ownership: &SliceOwnership, node_stack: &NodeStack) {
-    let Some(active) = ownership.active.lock().clone() else {
+    let record = ownership.active.lock();
+    let Some(active) = record.as_ref() else {
         return;
     };
-    let listing = launch_listing(&active, node_stack);
-    let record = ownership.active.lock();
-    if record
-        .as_ref()
-        .is_some_and(|current| current.launch_id == active.launch_id)
-    {
-        ownership.fleet.with(|book| book.set_launch(listing));
-    }
+    let robots = active.robot_processes();
+    let listing = launch_listing(active, node_stack);
+    ownership
+        .fleet
+        .with(|book| book.set_launch(listing, &robots));
 }
 
 pub(super) fn active_launch(ctx: &StackChangeContext) -> ChangeResult<ActiveLaunch> {
@@ -437,6 +435,7 @@ pub(super) fn copy_in_start_order(
 mod tests {
     use super::*;
     use crate::services::stack::fixtures::{placements_with, planned_deployment, robots};
+    use daemon_config::daemon_interface::robot_leases::SoftwareState;
     use daemon_config::launcher::CopyInstance;
 
     /// A copy of `alpha` owning the instances its fragment wrote as
@@ -510,26 +509,24 @@ mod tests {
         );
     }
 
-    /// The launch copies are the copies as the launch recorded them, the
-    /// file's copy and the `--join` one, each with its machine and the
-    /// machine of each part as the launch's placements gave them. A removal
-    /// and a join change the copies and the placements and leave the launch
-    /// copies as they were.
-    #[test]
-    fn the_launch_copies_keep_the_copies_as_the_launch_recorded_them() {
+    /// The instances of bravo, both on `cn-jetson-2`.
+    const BRAVO_ON_JETSON_2: [(&str, &str); 2] = [
+        ("bravo_arm_inst", "cn-jetson-2"),
+        ("bravo_commander_inst", "cn-jetson-2"),
+    ];
+
+    /// The launch of the file's copy bravo and the `--join` copy alpha, whose
+    /// commander runs on `cn-gpu-box`.
+    fn launch_of_alpha_and_bravo() -> ActiveLaunch {
         let words = ["alpha.pad@cn-gpu-box".parse().unwrap()];
         let joins = ["arm:alpha@cn-jetson-1".parse().unwrap()];
         let composed = robots()
             .launch(&words, &joins)
             .expect("the launch composes");
-        let on_jetson_2 = [
-            ("bravo_arm_inst", "cn-jetson-2"),
-            ("bravo_commander_inst", "cn-jetson-2"),
-        ];
         let placements = placements_with(
             "cn-desk",
             &[
-                &on_jetson_2[..],
+                &BRAVO_ON_JETSON_2[..],
                 &[
                     ("alpha_arm_inst", "cn-jetson-1"),
                     ("alpha_commander_inst", "cn-gpu-box"),
@@ -567,6 +564,17 @@ mod tests {
             planned,
         );
         active.record_copies(composed.report.copies, &ordered, &copy_core_nodes);
+        active
+    }
+
+    /// The launch copies are the copies as the launch recorded them, the
+    /// file's copy and the `--join` one, each with its machine and the
+    /// machine of each part as the launch's placements gave them. A removal
+    /// and a join change the copies and the placements and leave the launch
+    /// copies as they were.
+    #[test]
+    fn the_launch_copies_keep_the_copies_as_the_launch_recorded_them() {
+        let mut active = launch_of_alpha_and_bravo();
 
         let launched = |name: &str, machine: &str, part: &str| CopyInfo {
             name: CopyName::new(name).unwrap(),
@@ -602,7 +610,7 @@ mod tests {
         // A removal of alpha, then a join: the join rebuilds the placements
         // from the instances that run.
         active.copies.remove(&CopyName::new("alpha").unwrap());
-        active.placements = placements_with("cn-desk", &on_jetson_2);
+        active.placements = placements_with("cn-desk", &BRAVO_ON_JETSON_2);
         assert_eq!(
             active.copies(),
             vec![as_launched[&CopyName::new("bravo").unwrap()].clone()]
@@ -610,6 +618,45 @@ mod tests {
         assert_eq!(
             active.launch_copies, as_launched,
             "a removal and a join leave the launch copies as the launch recorded them"
+        );
+    }
+
+    /// A refresh of the listing reads the record as it stands under its
+    /// lock: the listing names each robot of the record, with the software
+    /// state that the processes of the robot give.
+    #[test]
+    fn a_refresh_of_the_listing_reads_the_record_as_it_stands() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = config::node::NodeConfigParser::from_content(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "core_root", tag: "v1", description: ["A test node."] },
+                execution: { language: "rust", run_cmd: ["true"] },
+            }"#,
+        )
+        .expect("root config parses");
+        let node_stack = NodeStack::new(root, None, dir.path());
+        let ownership = SliceOwnership::new("cn-desk");
+        *ownership.active.lock() = Some(launch_of_alpha_and_bravo());
+        for (instance, machine) in BRAVO_ON_JETSON_2 {
+            crate::services::fleet::note_process(&ownership, machine, instance, true);
+        }
+
+        refresh_launch_listing(&ownership, &node_stack);
+
+        let robots: Vec<(String, SoftwareState)> = ownership.fleet.with(|book| {
+            book.listing()
+                .robots
+                .into_iter()
+                .map(|robot| (robot.name, robot.software))
+                .collect()
+        });
+        assert_eq!(
+            robots,
+            [
+                ("alpha".to_owned(), SoftwareState::Stopped),
+                ("bravo".to_owned(), SoftwareState::Running),
+            ]
         );
     }
 }
