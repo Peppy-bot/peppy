@@ -22,8 +22,9 @@ use std::sync::Arc;
 
 const SERVER_INSTANCE: &str = "framework_controls_inst";
 
-/// The scope `simulation_mcp` gives its framework endpoint: the OpenArm
-/// offers its brain and a recorder, the SO-101 no feature.
+/// A scope of the framework's endpoint with two robot options of simulated
+/// robots: the OpenArm offers a brain and a recorder as features, the SO-101
+/// no feature.
 fn simulation_scope() -> Value {
     json!({
         "max_copies": 4,

@@ -20,7 +20,7 @@ use std::path::Path;
 mod common;
 use common::{copy_name, exposure_targets, name, words};
 
-/// The scope `simulation_mcp` gives its framework endpoint.
+/// A scope of the framework's endpoint: two robot options of simulated robots, up to four robots.
 const SCOPE: &str = r#"{
     max_copies: 4,
     options: [
