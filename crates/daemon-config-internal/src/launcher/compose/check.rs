@@ -26,7 +26,7 @@ use std::path::Path;
 /// exists, parses, provides, and guards cleanly), and the skipped
 /// cross-combination checks are reported as a problem: a check that skips
 /// combinations must fail or it looks like it checked them all.
-const COMBINATION_CEILING: usize = 4096;
+const COMBINATION_CEILING: usize = 8192;
 
 /// The name a checked copy runs under, numbered past a stack that
 /// declares it as a core node link or prefixes an instance id with it.

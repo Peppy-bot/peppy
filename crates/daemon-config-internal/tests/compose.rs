@@ -2023,7 +2023,7 @@ fn check_composition_leaves_a_one_or_more_axis_to_the_command_line() {
 #[test]
 fn check_composition_flags_a_refused_bare_launch_above_the_ceiling() {
     // Enough binary axes to exceed the enumeration budget.
-    let count = 4096usize.ilog2() + 1;
+    let count = 8192usize.ilog2() + 1;
     let axes = (0..count)
         .map(|i| {
             format!(
