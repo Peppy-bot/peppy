@@ -946,11 +946,12 @@ async fn run_post_setup_services(
     // connects to messaging, before `setup_fn` runs, and the test's
     // subsequent `send_shutdown` cancels `setup_fn` mid-flight. Keeping
     // health post-setup preserves the "I've finished setup" contract.
-    // The corollary: a `setup_fn` that intentionally blocks forever
-    // (e.g. `handle_next_request` on a discover-then-pin loser) never
-    // exposes `node_health`. Tests covering that case must skip the
-    // health probe and either rely on pre-setup signals (`shutdown` /
-    // `node_ready`) or wait on a domain-specific signal instead.
+    // The corollary: a `setup_fn` that intentionally blocks forever (e.g.
+    // one that awaits the `handle_requests` of a generated service instead
+    // of spawning it) never exposes `node_health`. Tests covering that case
+    // must skip the health probe and either rely on pre-setup signals
+    // (`shutdown` / `node_ready`) or wait on a domain-specific signal
+    // instead.
     let health_handle = listen_for_node_health(
         node_runner.messenger(),
         processor.bound_core_node(),

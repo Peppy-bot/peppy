@@ -231,15 +231,18 @@ async def _handle_request_payload(payload: bytes, handler: Callable[[Request], R
         capnp_msg.errorMsg = response.error_msg
     return capnp_msg.to_bytes()
 
-async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Response | Failure]) -> None:
-    """Answers the next request of this service with `handler`.
+async def handle_requests(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Response | Failure]) -> None:
+    """Answers each request of this service with `handler`.
 
-    The response of the handler is a success. A `Failure` that it raises or
-    returns gives the caller an error reply of its kind. So does any
-    `peppylib.FailureError`, such as the `Failure` of another member, when
-    this member declares its kind. A request that does not decode gets an
-    error reply of the kind `rejected`, and any other exception, or a kind
-    that this member does not declare, one of the kind `attempt_failed`.
+    The service listens once and serves until its request stream ends, so it
+    stays reachable between two requests. The response of the handler is a
+    success. A `Failure` that it raises or returns gives the caller an error
+    reply of its kind. So does any `peppylib.FailureError`, such as the
+    `Failure` of another member, when this member declares its kind. A request
+    that does not decode gets an error reply of the kind `rejected`, and any
+    other exception, or a kind that this member does not declare, one of the
+    kind `attempt_failed`. Returns when the request stream ends. Raises when
+    the service cannot listen or cannot send a reply.
     """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
@@ -254,7 +257,8 @@ async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callabl
         core_node = message.core_node
         instance_id = message.instance_id
         return await _handle_request_payload(payload, handler, core_node, instance_id)
-    await endpoint.handle_next_request(_on_request)
+    while await endpoint.handle_next_request(_on_request):
+        pass
 
 ================================================================
 ExposedService :: set_mode
@@ -358,15 +362,18 @@ async def _handle_request_payload(payload: bytes, handler: Callable[[Request], F
         raise Failure(*response.args) from None
     return b""
 
-async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Failure | None]) -> None:
-    """Answers the next request of this service with `handler`.
+async def handle_requests(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Failure | None]) -> None:
+    """Answers each request of this service with `handler`.
 
-    The response of the handler is a success. A `Failure` that it raises or
-    returns gives the caller an error reply of its kind. So does any
-    `peppylib.FailureError`, such as the `Failure` of another member, when
-    this member declares its kind. A request that does not decode gets an
-    error reply of the kind `rejected`, and any other exception, or a kind
-    that this member does not declare, one of the kind `attempt_failed`.
+    The service listens once and serves until its request stream ends, so it
+    stays reachable between two requests. The response of the handler is a
+    success. A `Failure` that it raises or returns gives the caller an error
+    reply of its kind. So does any `peppylib.FailureError`, such as the
+    `Failure` of another member, when this member declares its kind. A request
+    that does not decode gets an error reply of the kind `rejected`, and any
+    other exception, or a kind that this member does not declare, one of the
+    kind `attempt_failed`. Returns when the request stream ends. Raises when
+    the service cannot listen or cannot send a reply.
     """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
@@ -381,7 +388,8 @@ async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callabl
         core_node = message.core_node
         instance_id = message.instance_id
         return await _handle_request_payload(payload, handler, core_node, instance_id)
-    await endpoint.handle_next_request(_on_request)
+    while await endpoint.handle_next_request(_on_request):
+        pass
 
 ================================================================
 ExposedService :: get_system_status
@@ -477,15 +485,18 @@ async def _handle_request_payload(handler: Callable[[Request], Response | Failur
     capnp_msg.healthy = response.healthy
     return capnp_msg.to_bytes()
 
-async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Response | Failure]) -> None:
-    """Answers the next request of this service with `handler`.
+async def handle_requests(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Response | Failure]) -> None:
+    """Answers each request of this service with `handler`.
 
-    The response of the handler is a success. A `Failure` that it raises or
-    returns gives the caller an error reply of its kind. So does any
-    `peppylib.FailureError`, such as the `Failure` of another member, when
-    this member declares its kind. A request that does not decode gets an
-    error reply of the kind `rejected`, and any other exception, or a kind
-    that this member does not declare, one of the kind `attempt_failed`.
+    The service listens once and serves until its request stream ends, so it
+    stays reachable between two requests. The response of the handler is a
+    success. A `Failure` that it raises or returns gives the caller an error
+    reply of its kind. So does any `peppylib.FailureError`, such as the
+    `Failure` of another member, when this member declares its kind. A request
+    that does not decode gets an error reply of the kind `rejected`, and any
+    other exception, or a kind that this member does not declare, one of the
+    kind `attempt_failed`. Returns when the request stream ends. Raises when
+    the service cannot listen or cannot send a reply.
     """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
@@ -499,7 +510,8 @@ async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callabl
         core_node = message.core_node
         instance_id = message.instance_id
         return await _handle_request_payload(handler, core_node, instance_id)
-    await endpoint.handle_next_request(_on_request)
+    while await endpoint.handle_next_request(_on_request):
+        pass
 
 ================================================================
 ExposedService :: ping
@@ -581,15 +593,18 @@ async def _handle_request_payload(handler: Callable[[Request], Failure | None], 
         raise Failure(*response.args) from None
     return b""
 
-async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Failure | None]) -> None:
-    """Answers the next request of this service with `handler`.
+async def handle_requests(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Failure | None]) -> None:
+    """Answers each request of this service with `handler`.
 
-    The response of the handler is a success. A `Failure` that it raises or
-    returns gives the caller an error reply of its kind. So does any
-    `peppylib.FailureError`, such as the `Failure` of another member, when
-    this member declares its kind. A request that does not decode gets an
-    error reply of the kind `rejected`, and any other exception, or a kind
-    that this member does not declare, one of the kind `attempt_failed`.
+    The service listens once and serves until its request stream ends, so it
+    stays reachable between two requests. The response of the handler is a
+    success. A `Failure` that it raises or returns gives the caller an error
+    reply of its kind. So does any `peppylib.FailureError`, such as the
+    `Failure` of another member, when this member declares its kind. A request
+    that does not decode gets an error reply of the kind `rejected`, and any
+    other exception, or a kind that this member does not declare, one of the
+    kind `attempt_failed`. Returns when the request stream ends. Raises when
+    the service cannot listen or cannot send a reply.
     """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
@@ -603,7 +618,8 @@ async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callabl
         core_node = message.core_node
         instance_id = message.instance_id
         return await _handle_request_payload(handler, core_node, instance_id)
-    await endpoint.handle_next_request(_on_request)
+    while await endpoint.handle_next_request(_on_request):
+        pass
 
 ================================================================
 ExposedService :: feed/enable_camera
@@ -723,15 +739,18 @@ async def _handle_request_payload(payload: bytes, handler: Callable[[Request], R
         capnp_msg.errorMsg = response.error_msg
     return capnp_msg.to_bytes()
 
-async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Response | Failure]) -> None:
-    """Answers the next request of this service with `handler`.
+async def handle_requests(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Response | Failure]) -> None:
+    """Answers each request of this service with `handler`.
 
-    The response of the handler is a success. A `Failure` that it raises or
-    returns gives the caller an error reply of its kind. So does any
-    `peppylib.FailureError`, such as the `Failure` of another member, when
-    this member declares its kind. A request that does not decode gets an
-    error reply of the kind `rejected`, and any other exception, or a kind
-    that this member does not declare, one of the kind `attempt_failed`.
+    The service listens once and serves until its request stream ends, so it
+    stays reachable between two requests. The response of the handler is a
+    success. A `Failure` that it raises or returns gives the caller an error
+    reply of its kind. So does any `peppylib.FailureError`, such as the
+    `Failure` of another member, when this member declares its kind. A request
+    that does not decode gets an error reply of the kind `rejected`, and any
+    other exception, or a kind that this member does not declare, one of the
+    kind `attempt_failed`. Returns when the request stream ends. Raises when
+    the service cannot listen or cannot send a reply.
     """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
@@ -746,7 +765,8 @@ async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callabl
         core_node = message.core_node
         instance_id = message.instance_id
         return await _handle_request_payload(payload, handler, core_node, instance_id)
-    await endpoint.handle_next_request(_on_request)
+    while await endpoint.handle_next_request(_on_request):
+        pass
 
 ================================================================
 ExposedAction :: move_arm

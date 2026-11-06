@@ -301,45 +301,39 @@ fn main() -> Result<()> {
         });
         let runner = node_runner.clone();
         tokio::spawn(async move {
-            loop {
-                video_stream_info::handle_next_request(&runner, |_request| {
-                    Ok(video_stream_info::Response::new(
-                        640,
-                        480,
-                        30.0,
-                        format!("/dev/{}", runner.processor().bound_instance_id()),
-                    ))
-                })
-                .await
-                .expect("handle video_stream_info");
-            }
+            video_stream_info::handle_requests(&runner, |_request| {
+                Ok(video_stream_info::Response::new(
+                    640,
+                    480,
+                    30.0,
+                    format!("/dev/{}", runner.processor().bound_instance_id()),
+                ))
+            })
+            .await
+            .expect("serve video_stream_info");
         });
         let runner = node_runner.clone();
         tokio::spawn(async move {
-            loop {
-                set_brightness::handle_next_request(&runner, |request| {
-                    Ok(set_brightness::Response::new(request.data.value >= 0))
-                })
-                .await
-                .expect("handle set_brightness");
-            }
+            set_brightness::handle_requests(&runner, |request| {
+                Ok(set_brightness::Response::new(request.data.value >= 0))
+            })
+            .await
+            .expect("serve set_brightness");
         });
         let runner = node_runner.clone();
         tokio::spawn(async move {
-            loop {
-                snapshot::handle_next_request(&runner, |request| {
-                    if request.data.blank {
-                        return Err(snapshot::Failure::new(
-                            snapshot::FailureKind::ShutterClosed,
-                            "the shutter is closed",
-                        ));
-                    }
-                    let frame: Vec<u8> = (0..8u32 * 8 * 3).map(|i| (i % 251) as u8).collect();
-                    Ok(snapshot::Response::new(frame, "rgb8".to_owned(), 8, 8))
-                })
-                .await
-                .expect("handle snapshot");
-            }
+            snapshot::handle_requests(&runner, |request| {
+                if request.data.blank {
+                    return Err(snapshot::Failure::new(
+                        snapshot::FailureKind::ShutterClosed,
+                        "the shutter is closed",
+                    ));
+                }
+                let frame: Vec<u8> = (0..8u32 * 8 * 3).map(|i| (i % 251) as u8).collect();
+                Ok(snapshot::Response::new(frame, "rgb8".to_owned(), 8, 8))
+            })
+            .await
+            .expect("serve snapshot");
         });
         Ok(())
     })
@@ -406,13 +400,11 @@ fn main() -> Result<()> {
         });
         let runner = node_runner.clone();
         tokio::spawn(async move {
-            loop {
-                finish_session::handle_next_request(&runner, |_request| {
-                    Ok(finish_session::Response::new(1))
-                })
-                .await
-                .expect("handle finish_session");
-            }
+            finish_session::handle_requests(&runner, |_request| {
+                Ok(finish_session::Response::new(1))
+            })
+            .await
+            .expect("serve finish_session");
         });
         Ok(())
     })

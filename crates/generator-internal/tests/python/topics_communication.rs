@@ -177,7 +177,7 @@ async def receive_frames(node_runner, frame_received):
 
 async def expose_frame_received_ack(node_runner, frame_received):
     await frame_received.wait()
-    await frame_received_ack.handle_next_request(node_runner, lambda _request: None)
+    await frame_received_ack.handle_requests(node_runner, lambda _request: None)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     frame_received = asyncio.Event()

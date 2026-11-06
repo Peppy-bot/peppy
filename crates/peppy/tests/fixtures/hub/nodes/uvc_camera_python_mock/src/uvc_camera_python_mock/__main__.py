@@ -71,34 +71,34 @@ async def emit_frames(node_runner: NodeRunner, params: Parameters) -> None:
 async def serve_stream_info(node_runner: NodeRunner, params: Parameters) -> None:
     """Answers `video_stream_info` for as long as the node runs.
 
-    Each request is raced against the cancellation token: `handle_next_request`
-    parks until a caller arrives, and at shutdown there is no caller, so without
-    the race this task would still be parked when the runtime tears it down.
+    The service is raced against the cancellation token: `handle_requests`
+    serves until its request stream ends, and at shutdown the stream is still
+    open, so without the race this task would still be parked when the runtime
+    tears it down.
     """
     video = params.video
-    token = node_runner.cancellation_token()
-    cancelled = asyncio.ensure_future(token.cancelled())
+    serving = asyncio.ensure_future(
+        video_stream_info.handle_requests(
+            node_runner,
+            lambda _request: video_stream_info.Response(
+                width=video.resolution.width,
+                height=video.resolution.height,
+                frames_per_second=video.frame_rate,
+                encoding=video.topic_encoding,
+            ),
+        )
+    )
+    cancelled = asyncio.ensure_future(node_runner.cancellation_token().cancelled())
     try:
-        while not token.is_cancelled():
-            request = asyncio.ensure_future(
-                video_stream_info.handle_next_request(
-                    node_runner,
-                    lambda _request: video_stream_info.Response(
-                        width=video.resolution.width,
-                        height=video.resolution.height,
-                        frames_per_second=video.frame_rate,
-                        encoding=video.topic_encoding,
-                    ),
-                )
-            )
-            await asyncio.wait(
-                [cancelled, request], return_when=asyncio.FIRST_COMPLETED
-            )
-            if not request.done():
-                request.cancel()
-                break
+        done, _pending = await asyncio.wait(
+            [cancelled, serving], return_when=asyncio.FIRST_COMPLETED
+        )
+        if serving in done:
+            # Raises the error of the service when it stopped on one.
+            serving.result()
     finally:
         cancelled.cancel()
+        serving.cancel()
 
 
 async def setup(params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:

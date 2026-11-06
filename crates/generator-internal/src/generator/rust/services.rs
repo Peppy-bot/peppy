@@ -52,7 +52,7 @@ pub fn build_exposed_service_method(
     } = *spec;
     let target_expr = sender_target_expression(origin);
 
-    let handler_fn_name = Ident::new("handle_next_request", Span::call_site());
+    let handler_fn_name = Ident::new("handle_requests", Span::call_site());
     let handler_helper_name = Ident::new("handle_request_payload", Span::call_site());
     let request_deserializer_name = Ident::new("deserialize_request", Span::call_site());
 
@@ -157,20 +157,20 @@ pub fn build_exposed_service_method(
     helper_args.push(quote!(core_node));
     helper_args.push(quote!(instance_id));
 
-    let helper_call_tokens = quote!({
-        #(#call_preamble)*
-        #handler_helper_name(#(#helper_args),*)
-    });
-
     let service_name_ref = quote!(SERVICE_NAME);
 
     let method = quote! {
-            /// Answers the next request of this service with `handler`. The
-            /// response of the handler is a success; its `Failure` gives the
-            /// caller an error reply of a kind that this member declares. A
-            /// request that does not decode gets an error reply of the kind
-            /// `rejected`, and a response that does not serialize one of
-            /// the kind `attempt_failed`.
+            /// Answers each request of this service with `handler` until the
+            /// request stream of the service ends. The service listens once,
+            /// so it stays reachable between two requests. The response of
+            /// the handler is a success; its `Failure` gives the caller an
+            /// error reply of a kind that this member declares. A request
+            /// that does not decode gets an error reply of the kind
+            /// `rejected`, and a response that does not serialize one of the
+            /// kind `attempt_failed`. A reply that does not reach its caller
+            /// is logged, and the service answers the next request. Returns
+            /// `Ok(())` when the request stream ends, and an error when the
+            /// service cannot listen.
             pub async fn #handler_fn_name<F>(
                 node_runner: &crate::NodeRunner,
                 handler: F,
@@ -188,8 +188,11 @@ pub fn build_exposed_service_method(
                 .await?;
 
                 service
-                    .handle_next_request(move |#request_context_ident| {
-                        async move { #helper_call_tokens.map_err(|failure| failure.to_wire()) }
+                    .handle_requests(move |#request_context_ident| {
+                        #(#call_preamble)*
+                        let answer = #handler_helper_name(#(#helper_args),*)
+                            .map_err(|failure| failure.to_wire());
+                        std::future::ready(answer)
                     })
                     .await?;
 

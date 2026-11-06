@@ -280,19 +280,17 @@ fn main() -> Result<()> {
 
         let service_runner = node_runner.clone();
         tokio::spawn(async move {
-            loop {
-                enable_camera::handle_next_request(
-                    &service_runner,
-                    |request| -> std::result::Result<enable_camera::Response, enable_camera::Failure> {
-                        Ok(enable_camera::Response::new(
-                            request.data.enable,
-                            Some("handled".to_owned()),
-                        ))
-                    },
-                )
-                .await
-                .expect("handle enable_camera request");
-            }
+            enable_camera::handle_requests(
+                &service_runner,
+                |request| -> std::result::Result<enable_camera::Response, enable_camera::Failure> {
+                    Ok(enable_camera::Response::new(
+                        request.data.enable,
+                        Some("handled".to_owned()),
+                    ))
+                },
+            )
+            .await
+            .expect("serve enable_camera");
         });
 
         Ok(())

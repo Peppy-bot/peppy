@@ -16,7 +16,8 @@
 //! the `count` action through admission, feedback, completion, cancellation
 //! with its reason, a refusal and a failure with a kind of the contract.
 //! The `busy` service answers with an error reply of a kind of the
-//! contract.
+//! contract, and the `ping` service answers two calls with no deadline, the
+//! second sent right after the first reply.
 
 use crate::helpers::{
     DEFAULT_WAIT_TIMEOUT, SHUTDOWN_SENDER_INSTANCE_ID, STUB_NODE_CONFIG, TEST_CORE_NODE,
@@ -195,29 +196,23 @@ fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let runner = node_runner.clone();
         tokio::spawn(async move {
-            loop {
-                echo_everything::handle_next_request(&runner, |request| Ok(echo(request.data)))
-                    .await
-                    .expect("handle echo_everything");
-            }
-        });
-        let runner = node_runner.clone();
-        tokio::spawn(async move {
-            loop {
-                ping::handle_next_request(&runner, |_request| Ok(()))
-                    .await
-                    .expect("handle ping");
-            }
-        });
-        let runner = node_runner.clone();
-        tokio::spawn(async move {
-            loop {
-                busy::handle_next_request(&runner, |_request| {
-                    Err(busy::Failure::new(busy::FailureKind::Busy, "the stub only counts"))
-                })
+            echo_everything::handle_requests(&runner, |request| Ok(echo(request.data)))
                 .await
-                .expect("handle busy");
-            }
+                .expect("serve echo_everything");
+        });
+        let runner = node_runner.clone();
+        tokio::spawn(async move {
+            ping::handle_requests(&runner, |_request| Ok(()))
+                .await
+                .expect("serve ping");
+        });
+        let runner = node_runner.clone();
+        tokio::spawn(async move {
+            busy::handle_requests(&runner, |_request| {
+                Err(busy::Failure::new(busy::FailureKind::Busy, "the stub only counts"))
+            })
+            .await
+            .expect("serve busy");
         });
         let runner = node_runner.clone();
         tokio::spawn(async move {
@@ -443,6 +438,27 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
     .await
     .expect("ping succeeds");
     assert_eq!(answer, json!({}));
+
+    // A call with no deadline gets no retry: when no queryable of the
+    // provider receives it, the caller is unreachable at once. The second
+    // call goes out right after the first reply, so the provider answers it
+    // only when its endpoint stays declared between two requests.
+    for call in ["first", "second"] {
+        let answer = bounded(
+            "ping answers a call with no deadline",
+            ping.call(
+                &messenger,
+                &identity,
+                &binding("ping"),
+                &producer,
+                &json!({}),
+                None::<Duration>,
+            ),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("the {call} call with no deadline is answered: {error:?}"));
+        assert_eq!(answer, json!({}));
+    }
 
     // An error reply of the generated provider reaches the runtime with its
     // kind and message.

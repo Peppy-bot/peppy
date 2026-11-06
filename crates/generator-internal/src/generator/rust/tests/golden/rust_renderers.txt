@@ -404,13 +404,18 @@ impl Response {
 pub struct RequestData {
     pub enable: bool,
 }
-/// Answers the next request of this service with `handler`. The
-/// response of the handler is a success; its `Failure` gives the
-/// caller an error reply of a kind that this member declares. A
-/// request that does not decode gets an error reply of the kind
-/// `rejected`, and a response that does not serialize one of
-/// the kind `attempt_failed`.
-pub async fn handle_next_request<F>(
+/// Answers each request of this service with `handler` until the
+/// request stream of the service ends. The service listens once,
+/// so it stays reachable between two requests. The response of
+/// the handler is a success; its `Failure` gives the caller an
+/// error reply of a kind that this member declares. A request
+/// that does not decode gets an error reply of the kind
+/// `rejected`, and a response that does not serialize one of the
+/// kind `attempt_failed`. A reply that does not reach its caller
+/// is logged, and the service answers the next request. Returns
+/// `Ok(())` when the request stream ends, and an error when the
+/// service cannot listen.
+pub async fn handle_requests<F>(
     node_runner: &crate::NodeRunner,
     handler: F,
 ) -> crate::Result<()>
@@ -429,22 +434,19 @@ where
         )
         .await?;
     service
-        .handle_next_request(move |request_context| {
-            async move {
-                {
-                    let message = request_context.message();
-                    let payload = message.payload_bytes();
-                    let core_node = message.core_node().to_string();
-                    let instance_id = message.instance_id().to_string();
-                    handle_request_payload(
-                        payload.as_ref(),
-                        &handler,
-                        core_node,
-                        instance_id,
-                    )
-                }
-                    .map_err(|failure| failure.to_wire())
-            }
+        .handle_requests(move |request_context| {
+            let message = request_context.message();
+            let payload = message.payload_bytes();
+            let core_node = message.core_node().to_string();
+            let instance_id = message.instance_id().to_string();
+            let answer = handle_request_payload(
+                    payload.as_ref(),
+                    &handler,
+                    core_node,
+                    instance_id,
+                )
+                .map_err(|failure| failure.to_wire());
+            std::future::ready(answer)
         })
         .await?;
     Ok(())
@@ -654,13 +656,18 @@ pub struct Request {
 pub struct RequestData {
     pub mode: u8,
 }
-/// Answers the next request of this service with `handler`. The
-/// response of the handler is a success; its `Failure` gives the
-/// caller an error reply of a kind that this member declares. A
-/// request that does not decode gets an error reply of the kind
-/// `rejected`, and a response that does not serialize one of
-/// the kind `attempt_failed`.
-pub async fn handle_next_request<F>(
+/// Answers each request of this service with `handler` until the
+/// request stream of the service ends. The service listens once,
+/// so it stays reachable between two requests. The response of
+/// the handler is a success; its `Failure` gives the caller an
+/// error reply of a kind that this member declares. A request
+/// that does not decode gets an error reply of the kind
+/// `rejected`, and a response that does not serialize one of the
+/// kind `attempt_failed`. A reply that does not reach its caller
+/// is logged, and the service answers the next request. Returns
+/// `Ok(())` when the request stream ends, and an error when the
+/// service cannot listen.
+pub async fn handle_requests<F>(
     node_runner: &crate::NodeRunner,
     handler: F,
 ) -> crate::Result<()>
@@ -679,22 +686,19 @@ where
         )
         .await?;
     service
-        .handle_next_request(move |request_context| {
-            async move {
-                {
-                    let message = request_context.message();
-                    let payload = message.payload_bytes();
-                    let core_node = message.core_node().to_string();
-                    let instance_id = message.instance_id().to_string();
-                    handle_request_payload(
-                        payload.as_ref(),
-                        &handler,
-                        core_node,
-                        instance_id,
-                    )
-                }
-                    .map_err(|failure| failure.to_wire())
-            }
+        .handle_requests(move |request_context| {
+            let message = request_context.message();
+            let payload = message.payload_bytes();
+            let core_node = message.core_node().to_string();
+            let instance_id = message.instance_id().to_string();
+            let answer = handle_request_payload(
+                    payload.as_ref(),
+                    &handler,
+                    core_node,
+                    instance_id,
+                )
+                .map_err(|failure| failure.to_wire());
+            std::future::ready(answer)
         })
         .await?;
     Ok(())
@@ -878,13 +882,18 @@ impl Response {
         Self { healthy }
     }
 }
-/// Answers the next request of this service with `handler`. The
-/// response of the handler is a success; its `Failure` gives the
-/// caller an error reply of a kind that this member declares. A
-/// request that does not decode gets an error reply of the kind
-/// `rejected`, and a response that does not serialize one of
-/// the kind `attempt_failed`.
-pub async fn handle_next_request<F>(
+/// Answers each request of this service with `handler` until the
+/// request stream of the service ends. The service listens once,
+/// so it stays reachable between two requests. The response of
+/// the handler is a success; its `Failure` gives the caller an
+/// error reply of a kind that this member declares. A request
+/// that does not decode gets an error reply of the kind
+/// `rejected`, and a response that does not serialize one of the
+/// kind `attempt_failed`. A reply that does not reach its caller
+/// is logged, and the service answers the next request. Returns
+/// `Ok(())` when the request stream ends, and an error when the
+/// service cannot listen.
+pub async fn handle_requests<F>(
     node_runner: &crate::NodeRunner,
     handler: F,
 ) -> crate::Result<()>
@@ -903,16 +912,13 @@ where
         )
         .await?;
     service
-        .handle_next_request(move |request_context| {
-            async move {
-                {
-                    let message = request_context.message();
-                    let core_node = message.core_node().to_string();
-                    let instance_id = message.instance_id().to_string();
-                    handle_request_payload(&handler, core_node, instance_id)
-                }
-                    .map_err(|failure| failure.to_wire())
-            }
+        .handle_requests(move |request_context| {
+            let message = request_context.message();
+            let core_node = message.core_node().to_string();
+            let instance_id = message.instance_id().to_string();
+            let answer = handle_request_payload(&handler, core_node, instance_id)
+                .map_err(|failure| failure.to_wire());
+            std::future::ready(answer)
         })
         .await?;
     Ok(())
@@ -1080,13 +1086,18 @@ pub struct Request {
     pub instance_id: String,
     pub core_node: String,
 }
-/// Answers the next request of this service with `handler`. The
-/// response of the handler is a success; its `Failure` gives the
-/// caller an error reply of a kind that this member declares. A
-/// request that does not decode gets an error reply of the kind
-/// `rejected`, and a response that does not serialize one of
-/// the kind `attempt_failed`.
-pub async fn handle_next_request<F>(
+/// Answers each request of this service with `handler` until the
+/// request stream of the service ends. The service listens once,
+/// so it stays reachable between two requests. The response of
+/// the handler is a success; its `Failure` gives the caller an
+/// error reply of a kind that this member declares. A request
+/// that does not decode gets an error reply of the kind
+/// `rejected`, and a response that does not serialize one of the
+/// kind `attempt_failed`. A reply that does not reach its caller
+/// is logged, and the service answers the next request. Returns
+/// `Ok(())` when the request stream ends, and an error when the
+/// service cannot listen.
+pub async fn handle_requests<F>(
     node_runner: &crate::NodeRunner,
     handler: F,
 ) -> crate::Result<()>
@@ -1105,16 +1116,13 @@ where
         )
         .await?;
     service
-        .handle_next_request(move |request_context| {
-            async move {
-                {
-                    let message = request_context.message();
-                    let core_node = message.core_node().to_string();
-                    let instance_id = message.instance_id().to_string();
-                    handle_request_payload(&handler, core_node, instance_id)
-                }
-                    .map_err(|failure| failure.to_wire())
-            }
+        .handle_requests(move |request_context| {
+            let message = request_context.message();
+            let core_node = message.core_node().to_string();
+            let instance_id = message.instance_id().to_string();
+            let answer = handle_request_payload(&handler, core_node, instance_id)
+                .map_err(|failure| failure.to_wire());
+            std::future::ready(answer)
         })
         .await?;
     Ok(())
@@ -1278,13 +1286,18 @@ impl Response {
 pub struct RequestData {
     pub enable: bool,
 }
-/// Answers the next request of this service with `handler`. The
-/// response of the handler is a success; its `Failure` gives the
-/// caller an error reply of a kind that this member declares. A
-/// request that does not decode gets an error reply of the kind
-/// `rejected`, and a response that does not serialize one of
-/// the kind `attempt_failed`.
-pub async fn handle_next_request<F>(
+/// Answers each request of this service with `handler` until the
+/// request stream of the service ends. The service listens once,
+/// so it stays reachable between two requests. The response of
+/// the handler is a success; its `Failure` gives the caller an
+/// error reply of a kind that this member declares. A request
+/// that does not decode gets an error reply of the kind
+/// `rejected`, and a response that does not serialize one of the
+/// kind `attempt_failed`. A reply that does not reach its caller
+/// is logged, and the service answers the next request. Returns
+/// `Ok(())` when the request stream ends, and an error when the
+/// service cannot listen.
+pub async fn handle_requests<F>(
     node_runner: &crate::NodeRunner,
     handler: F,
 ) -> crate::Result<()>
@@ -1300,22 +1313,19 @@ where
         )
         .await?;
     service
-        .handle_next_request(move |request_context| {
-            async move {
-                {
-                    let message = request_context.message();
-                    let payload = message.payload_bytes();
-                    let core_node = message.core_node().to_string();
-                    let instance_id = message.instance_id().to_string();
-                    handle_request_payload(
-                        payload.as_ref(),
-                        &handler,
-                        core_node,
-                        instance_id,
-                    )
-                }
-                    .map_err(|failure| failure.to_wire())
-            }
+        .handle_requests(move |request_context| {
+            let message = request_context.message();
+            let payload = message.payload_bytes();
+            let core_node = message.core_node().to_string();
+            let instance_id = message.instance_id().to_string();
+            let answer = handle_request_payload(
+                    payload.as_ref(),
+                    &handler,
+                    core_node,
+                    instance_id,
+                )
+                .map_err(|failure| failure.to_wire());
+            std::future::ready(answer)
         })
         .await?;
     Ok(())
@@ -13787,13 +13797,18 @@ pub struct RequestData {
     pub limits: Option<Vec<f64>>,
     pub points: Vec<RichServicePointsItem>,
 }
-/// Answers the next request of this service with `handler`. The
-/// response of the handler is a success; its `Failure` gives the
-/// caller an error reply of a kind that this member declares. A
-/// request that does not decode gets an error reply of the kind
-/// `rejected`, and a response that does not serialize one of
-/// the kind `attempt_failed`.
-pub async fn handle_next_request<F>(
+/// Answers each request of this service with `handler` until the
+/// request stream of the service ends. The service listens once,
+/// so it stays reachable between two requests. The response of
+/// the handler is a success; its `Failure` gives the caller an
+/// error reply of a kind that this member declares. A request
+/// that does not decode gets an error reply of the kind
+/// `rejected`, and a response that does not serialize one of the
+/// kind `attempt_failed`. A reply that does not reach its caller
+/// is logged, and the service answers the next request. Returns
+/// `Ok(())` when the request stream ends, and an error when the
+/// service cannot listen.
+pub async fn handle_requests<F>(
     node_runner: &crate::NodeRunner,
     handler: F,
 ) -> crate::Result<()>
@@ -13812,22 +13827,19 @@ where
         )
         .await?;
     service
-        .handle_next_request(move |request_context| {
-            async move {
-                {
-                    let message = request_context.message();
-                    let payload = message.payload_bytes();
-                    let core_node = message.core_node().to_string();
-                    let instance_id = message.instance_id().to_string();
-                    handle_request_payload(
-                        payload.as_ref(),
-                        &handler,
-                        core_node,
-                        instance_id,
-                    )
-                }
-                    .map_err(|failure| failure.to_wire())
-            }
+        .handle_requests(move |request_context| {
+            let message = request_context.message();
+            let payload = message.payload_bytes();
+            let core_node = message.core_node().to_string();
+            let instance_id = message.instance_id().to_string();
+            let answer = handle_request_payload(
+                    payload.as_ref(),
+                    &handler,
+                    core_node,
+                    instance_id,
+                )
+                .map_err(|failure| failure.to_wire());
+            std::future::ready(answer)
         })
         .await?;
     Ok(())
