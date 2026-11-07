@@ -3,11 +3,15 @@ use crate::helpers::{
     SOLE_EXPOSER_INSTANCE_ID, STUB_PYTHON_NODE_CONFIG, ServicePair, TEST_CORE_NODE,
     assert_exited_successfully, bind_slot, generate_node_project, init_python_project_venv,
     init_python_user_node, native_dep, python_consumer_stub_node_config, save_runtime_config,
-    shut_down_test_node, spawn_python_run, test_node_runtime_config, test_wait_context,
-    wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
+    shut_down_test_node, spawn_python_run, test_node_runtime_config, test_node_target,
+    test_wait_context, wait_for_child, wait_for_health_service_reachable_or_exit,
+    wait_for_service_reachable_or_exit,
 };
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
 use generator::LanguageGenerator;
+use peppylib::ServiceMessenger;
+use peppylib::messaging::{ProducerRef, ServiceTarget};
+use peppylib::types::Payload;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
 
@@ -208,7 +212,7 @@ import asyncio
 from peppygen import NodeBuilder
 from peppygen.exposed_services import enable_camera
 
-async def handle_requests(node_runner):
+async def serve_requests(node_runner):
     def handler(request):
         print(
             f"received enable_camera request from {request.instance_id}: enable = {request.data.enable}",
@@ -218,11 +222,10 @@ async def handle_requests(node_runner):
             enabled=request.data.enable,
             error_msg="handled",
         )
-    await enable_camera.handle_next_request(node_runner, handler)
-    print("enable_camera handler finished", flush=True)
+    await enable_camera.handle_requests(node_runner, handler)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
-    return [asyncio.create_task(handle_requests(node_runner))]
+    return [asyncio.create_task(serve_requests(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
@@ -261,8 +264,7 @@ if __name__ == "__main__":
     let expected_request_log =
         format!("received enable_camera request from {SOLE_CONSUMER_INSTANCE_ID}: enable = True");
     assert!(
-        exposer_stdout.contains(&expected_request_log)
-            && exposer_stdout.contains("enable_camera handler finished"),
+        exposer_stdout.contains(&expected_request_log),
         "exposer did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
         exposer_stdout,
         exposer_stderr
@@ -316,7 +318,7 @@ import peppylib
 from peppygen import NodeBuilder
 from peppygen.exposed_services import enable_camera
 
-async def handle_requests(node_runner):
+async def serve_requests(node_runner):
     def raising_handler(request):
         raise enable_camera.Failure(enable_camera.FailureKind.PRECONDITION_FAILED, "the lens cap is on")
 
@@ -332,18 +334,23 @@ async def handle_requests(node_runner):
     def message_not_a_str_handler(request):
         raise enable_camera.Failure(enable_camera.FailureKind.TIMEOUT, TimeoutError("the shutter is stuck"))
 
-    for handler in (
-        raising_handler,
-        returning_handler,
-        returning_foreign_handler,
-        returning_undeclared_handler,
-        message_not_a_str_handler,
-    ):
-        await enable_camera.handle_next_request(node_runner, handler)
-    print("enable_camera handlers finished", flush=True)
+    handlers = iter(
+        (
+            raising_handler,
+            returning_handler,
+            returning_foreign_handler,
+            returning_undeclared_handler,
+            message_not_a_str_handler,
+        )
+    )
+
+    def handler(request):
+        return next(handlers)(request)
+
+    await enable_camera.handle_requests(node_runner, handler)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
-    return [asyncio.create_task(handle_requests(node_runner))]
+    return [asyncio.create_task(serve_requests(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
@@ -378,11 +385,128 @@ if __name__ == "__main__":
             "returned_undeclared error reply kind=attempt_failed message=ValueError: 'lens_covered' is not a failure kind of enable_camera (message: 'tape on the lens')",
             expected_consumer_log,
         ],
-        "consumer did not read each error reply typed, in order.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
+        "consumer did not read each error reply typed, in order.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}\nexposer stdout:\n{exposer_stdout}\nexposer stderr:\n{exposer_stderr}"
     );
-    assert!(
-        exposer_stdout.contains("enable_camera handlers finished"),
-        "exposer did not answer every request.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
+}
+
+/// A call with no deadline gets no retry: when no queryable of the exposer
+/// receives it, the caller is unreachable at once. The exposer listens once
+/// with `handle_requests`, so the two calls with no deadline of the test, the
+/// second sent right after the first reply, are both answered. Runs the peer
+/// topology only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn services_communication_answers_calls_with_no_deadline_back_to_back() {
+    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
+    let service = ServicePair::get_system_status();
+
+    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
+    let user_node_exposer = generate_node_project::<generator::PythonGenerator>(
+        &temp_dir_exposer,
+        STUB_PYTHON_NODE_CONFIG,
+        |generator| {
+            generator
+                .add_exposed_service(&service.exposed, None)
+                .unwrap();
+        },
+    );
+    let exposer_runtime_config = test_node_runtime_config(
+        &router_host,
+        router_port,
+        UVC_CAMERA_NODE_NAME,
+        SOLE_EXPOSER_INSTANCE_ID,
+    );
+    let exposer_runtime_config = crate::helpers::apply_topology(
+        exposer_runtime_config,
+        crate::helpers::LocalNodesTopology::Peer,
+    );
+    let exposer_runtime_config_str =
+        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
+    init_python_user_node(&user_node_exposer);
+    let exposer_main = r#"
+import asyncio
+from peppygen import NodeBuilder
+from peppygen.exposed_services import get_system_status
+
+async def serve_requests(node_runner):
+    def handler(request):
+        print(f"received get_system_status request from {request.instance_id}", flush=True)
+        return get_system_status.Response(healthy=True)
+    await get_system_status.handle_requests(node_runner, handler)
+
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(serve_requests(node_runner))]
+
+def main():
+    NodeBuilder().run(setup)
+
+if __name__ == "__main__":
+    main()
+"#;
+    fs::write(user_node_exposer.join("main.py"), exposer_main)
+        .expect("failed to write exposer main.py");
+    init_python_project_venv(&user_node_exposer);
+
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for test control");
+    let ctx = test_wait_context(&messenger);
+    let mut exposer_child = spawn_python_run(
+        &user_node_exposer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
+    );
+    wait_for_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        &service.exposed.name,
+        Some(SOLE_EXPOSER_INSTANCE_ID),
+        &mut exposer_child,
+        &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+
+    let producer = ProducerRef::new(TEST_CORE_NODE, SOLE_EXPOSER_INSTANCE_ID);
+    for call in ["first", "second"] {
+        let reply = tokio::time::timeout(
+            DEFAULT_WAIT_TIMEOUT,
+            ServiceMessenger::poll(
+                &messenger,
+                TEST_CORE_NODE,
+                CONSUMER_INSTANCE_ID,
+                test_node_target(UVC_CAMERA_NODE_NAME),
+                &service.exposed.name,
+                ServiceTarget::Producer(&producer),
+                Payload::new(),
+                None::<Duration>,
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("the {call} call did not end within {DEFAULT_WAIT_TIMEOUT:?}"));
+        reply.unwrap_or_else(|error| {
+            panic!("the {call} call with no deadline is answered: {error:?}")
+        });
+    }
+
+    shut_down_test_node(&messenger, UVC_CAMERA_NODE_NAME, SOLE_EXPOSER_INSTANCE_ID).await;
+    let exposer_output = wait_for_child(
+        &mut exposer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_exposer,
+    );
+    let (exposer_stdout, exposer_stderr) =
+        assert_exited_successfully("exposer process", &exposer_output);
+    let expected_request_log =
+        format!("received get_system_status request from {CONSUMER_INSTANCE_ID}");
+    assert_eq!(
+        exposer_stdout
+            .lines()
+            .filter(|line| line.trim_end() == expected_request_log)
+            .count(),
+        2,
+        "exposer did not answer both calls.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
     );
 }
 
@@ -421,18 +545,17 @@ import asyncio
 from peppygen import NodeBuilder
 from peppygen.exposed_services import get_system_status
 
-async def handle_requests(node_runner):
+async def serve_requests(node_runner):
     def handler(request):
         print(
             f"received get_system_status request from {request.instance_id}",
             flush=True,
         )
         return get_system_status.Response(healthy=True)
-    await get_system_status.handle_next_request(node_runner, handler)
-    print("get_system_status handler finished", flush=True)
+    await get_system_status.handle_requests(node_runner, handler)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
-    return [asyncio.create_task(handle_requests(node_runner))]
+    return [asyncio.create_task(serve_requests(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
@@ -470,8 +593,7 @@ if __name__ == "__main__":
     let expected_request_log =
         format!("received get_system_status request from {SOLE_CONSUMER_INSTANCE_ID}");
     assert!(
-        exposer_stdout.contains(&expected_request_log)
-            && exposer_stdout.contains("get_system_status handler finished"),
+        exposer_stdout.contains(&expected_request_log),
         "exposer did not process the get_system_status request.\nstdout:\n{}\nstderr:\n{}",
         exposer_stdout,
         exposer_stderr
@@ -586,7 +708,7 @@ import asyncio
 from peppygen import NodeBuilder
 from peppygen.exposed_services import enable_camera
 
-async def handle_requests(node_runner):
+async def serve_requests(node_runner):
     def handler(request):
         print(
             f"received enable_camera request for {request.instance_id}: {request.data.enable}",
@@ -596,11 +718,10 @@ async def handle_requests(node_runner):
             enabled=request.data.enable,
             error_msg="handled",
         )
-    await enable_camera.handle_next_request(node_runner, handler)
-    print("enable_camera handler finished", flush=True)
+    await enable_camera.handle_requests(node_runner, handler)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
-    return [asyncio.create_task(handle_requests(node_runner))]
+    return [asyncio.create_task(serve_requests(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
@@ -640,7 +761,7 @@ import asyncio
 from peppygen import NodeBuilder
 from peppygen.exposed_services import enable_camera
 
-async def handle_requests(node_runner):
+async def serve_requests(node_runner):
     def handler(request):
         print(
             f"received enable_camera request for {request.instance_id}: {request.data.enable}",
@@ -650,11 +771,10 @@ async def handle_requests(node_runner):
             enabled=request.data.enable,
             error_msg="handled_by_exposer2",
         )
-    await enable_camera.handle_next_request(node_runner, handler)
-    print("enable_camera handler finished", flush=True)
+    await enable_camera.handle_requests(node_runner, handler)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
-    return [asyncio.create_task(handle_requests(node_runner))]
+    return [asyncio.create_task(serve_requests(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
@@ -720,15 +840,7 @@ if __name__ == "__main__":
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    // Do NOT wait for health on the exposers here. Only the bound
-    // exposer's `handle_next_request` returns and lets `setup` complete;
-    // the unbound one stays parked on its queryable, so
-    // `run_post_setup_services` (which registers the health endpoint)
-    // never runs there. Probing health on it would panic with a
-    // wait-timeout instead of hanging, but it's still the wrong question
-    // to ask. The pre-setup shutdown queryable is up on both exposers, so
-    // the shutdown requests below land cleanly. The
-    // `wait_for_stdout_contains` below guarantees the bound exposer
+    // The `wait_for_stdout_contains` below guarantees the bound exposer
     // already produced the response that the consumer's poll observed.
 
     // Consumer's poll runs as a background task created in `setup`. Wait

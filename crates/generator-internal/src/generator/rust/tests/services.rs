@@ -123,7 +123,7 @@ fn expose_service() {
         &rendered,
         &[
             "const SERVICE_NAME: &str = \"enable_camera\";",
-            "pub async fn handle_next_request<F>",
+            "pub async fn handle_requests<F>",
             "F: Fn(Request) -> std::result::Result<Response, Failure>",
             "pub enum FailureKind",
             "pub struct Failure",
@@ -149,13 +149,29 @@ fn expose_service() {
         ],
     );
 
-    // Messenger integration
+    // Messenger integration: the service listens once and answers every
+    // request on that endpoint. An endpoint per request leaves a window with
+    // no queryable after each answer, where a caller with no deadline is
+    // unreachable at once.
     assert_contains_all(
         &rendered,
         &[
             "peppylib::ServiceMessenger::listen",
-            ".handle_next_request(move |request_context|",
+            ".handle_requests(move |request_context|",
+            "std::future::ready(answer)",
         ],
+    );
+    assert_eq!(
+        rendered
+            .matches("peppylib::ServiceMessenger::listen(")
+            .count(),
+        1,
+        "the service must listen once, not once per request; got: {rendered}"
+    );
+    assert_rendered!(
+        !rendered.contains("handle_next_request"),
+        &rendered,
+        "expected no per-request endpoint"
     );
 }
 

@@ -359,7 +359,7 @@ async def consume_action(node_runner, done):
 
 async def ack_when_done(node_runner, done):
     await done.wait()
-    await result_received.handle_next_request(node_runner, lambda _: None)
+    await result_received.handle_requests(node_runner, lambda _: None)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     done = asyncio.Event()
@@ -545,7 +545,7 @@ import asyncio
 from peppygen import NodeBuilder
 from peppygen.exposed_services import report_status
 
-async def handle_requests(node_runner):
+async def serve_requests(node_runner):
     def handler(request):
         print(f"server received report_status request detail={request.data.detail}", flush=True)
         return report_status.Response(
@@ -554,11 +554,10 @@ async def handle_requests(node_runner):
             measurements=[0.1, 0.2, 0.3],
             elapsed=12.5,
         )
-    await report_status.handle_next_request(node_runner, handler)
-    print("server handled report_status request", flush=True)
+    await report_status.handle_requests(node_runner, handler)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
-    return [asyncio.create_task(handle_requests(node_runner))]
+    return [asyncio.create_task(serve_requests(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
@@ -619,7 +618,7 @@ async def poll_service(node_runner, done):
 
 async def ack_when_done(node_runner, done):
     await done.wait()
-    await response_received.handle_next_request(node_runner, lambda _: None)
+    await response_received.handle_requests(node_runner, lambda _: None)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     done = asyncio.Event()
@@ -882,7 +881,7 @@ async def receive_one(node_runner, msg_received):
 
 async def ack_when_ready(node_runner, msg_received):
     await msg_received.wait()
-    await received_ack.handle_next_request(node_runner, lambda _: None)
+    await received_ack.handle_requests(node_runner, lambda _: None)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     msg_received = asyncio.Event()

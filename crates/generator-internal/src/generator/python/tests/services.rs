@@ -163,7 +163,7 @@ fn expose_service() {
         &rendered,
         &[
             "\"enable_camera\"",
-            "async def handle_next_request(",
+            "async def handle_requests(",
             "node_runner: peppylib.NodeRunner",
             "handler: Callable[[Request], Response | Failure]",
             ") -> None:",
@@ -221,14 +221,24 @@ fn expose_service() {
         ],
     );
 
-    // _on_request wrapper inside handle_next_request
+    // _on_request wrapper inside handle_requests, which listens once and
+    // answers every request on that endpoint. An endpoint per request leaves
+    // a window with no queryable after each answer, where a caller with no
+    // deadline is unreachable at once.
     assert_contains_all(
         &rendered,
         &[
             "async def _on_request(request_context):",
             "return await _handle_request_payload(payload, handler, core_node, instance_id)",
-            "await endpoint.handle_next_request(_on_request)",
+            "await endpoint.handle_requests(_on_request)",
         ],
+    );
+    assert_eq!(
+        rendered
+            .matches("peppylib.ServiceMessenger.listen(")
+            .count(),
+        1,
+        "the service must listen once, not once per request; got: {rendered}"
     );
 }
 
@@ -272,11 +282,11 @@ fn expose_service_without_request_body() {
         ],
     );
 
-    // handler parameter in handle_next_request with return type
+    // handler parameter in handle_requests with return type
     assert_contains_all(
         &rendered,
         &[
-            "async def handle_next_request(",
+            "async def handle_requests(",
             "handler: Callable[[Request], Response | Failure]",
             ") -> None:",
         ],
@@ -288,7 +298,7 @@ fn expose_service_without_request_body() {
         &[
             "async def _on_request(request_context):",
             "return await _handle_request_payload(handler, core_node, instance_id)",
-            "await endpoint.handle_next_request(_on_request)",
+            "await endpoint.handle_requests(_on_request)",
         ],
     );
 }
@@ -328,7 +338,7 @@ fn expose_two_services() {
         camera_rendered,
         &[
             "\"enable_camera\"",
-            "async def handle_next_request(",
+            "async def handle_requests(",
             "peppylib.ServiceMessenger.listen(",
             "enable: bool",
         ],
@@ -342,7 +352,7 @@ fn expose_two_services() {
         lidar_rendered,
         &[
             "\"get_lidar_info\"",
-            "async def handle_next_request(",
+            "async def handle_requests(",
             "peppylib.ServiceMessenger.listen(",
             "channels: str",
         ],

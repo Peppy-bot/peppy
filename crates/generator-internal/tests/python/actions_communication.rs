@@ -38,7 +38,7 @@ const CONSUMED_ACTION_EXAMPLE: &str = r#"
 
 /// Runs one native move_arm action flow. The consumer fires goals at the
 /// exposer of [`EXPOSED_ACTION_EXAMPLE`] through its `brain` slot, bound to
-/// that exposer, and exposes `flow_done_service`, which its script answers
+/// that exposer, and exposes `flow_done_service`, which its script serves
 /// once it has run the flow. The exposer starts first, and both nodes are
 /// shut down once the consumer's flow-done service is reachable. Returns
 /// what the two nodes printed; both exited successfully.
@@ -246,7 +246,7 @@ async def run_consumer(node_runner):
         f"result success={result.data.success} error={result.data.error_msg} final_position={result.data.final_position}",
         flush=True,
     )
-    await move_arm_flow_done.handle_next_request(node_runner, lambda _request: None)
+    await move_arm_flow_done.handle_requests(node_runner, lambda _request: None)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_consumer(node_runner))]
@@ -358,7 +358,7 @@ async def run_consumer(node_runner):
         f"cancel accepted={accepted} error=<none>",
         flush=True,
     )
-    await move_arm_cancel_flow_done.handle_next_request(node_runner, lambda _request: None)
+    await move_arm_cancel_flow_done.handle_requests(node_runner, lambda _request: None)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_consumer(node_runner))]
@@ -467,7 +467,7 @@ async def run_consumer(node_runner):
         f"result success={result.data.success} final_position={result.data.final_position}",
         flush=True,
     )
-    await move_arm_in_handler_flow_done.handle_next_request(node_runner, lambda _request: None)
+    await move_arm_in_handler_flow_done.handle_requests(node_runner, lambda _request: None)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_consumer(node_runner))]
@@ -605,7 +605,7 @@ async def run_consumer(node_runner):
     except Exception as e:
         print(f"feedback closed after cancel-accept err={type(e).__name__}", flush=True)
 
-    await move_arm_cancel_accept_flow_done.handle_next_request(node_runner, lambda _request: None)
+    await move_arm_cancel_accept_flow_done.handle_requests(node_runner, lambda _request: None)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_consumer(node_runner))]
@@ -758,7 +758,7 @@ async def run_consumer(node_runner):
     except Exception as e:
         print(f"feedback closed after result err={type(e).__name__}", flush=True)
 
-    await move_arm_cancel_reject_flow_done.handle_next_request(node_runner, lambda _request: None)
+    await move_arm_cancel_reject_flow_done.handle_requests(node_runner, lambda _request: None)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_consumer(node_runner))]
@@ -919,7 +919,7 @@ async def run_consumer(node_runner):
         flush=True,
     )
 
-    await move_arm_drain_loop_flow_done.handle_next_request(node_runner, lambda _request: None)
+    await move_arm_drain_loop_flow_done.handle_requests(node_runner, lambda _request: None)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_consumer(node_runner))]
@@ -1439,7 +1439,7 @@ async def run_consumer(node_runner):
         flush=True,
     )
 
-    await move_arm_contract_flow_done.handle_next_request(node_runner, lambda _request: None)
+    await move_arm_contract_flow_done.handle_requests(node_runner, lambda _request: None)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_consumer(node_runner))]
@@ -1767,7 +1767,7 @@ async def run_consumer(node_runner):
     assert result.status == joints.ResultStatus.COMPLETED, f"unexpected status {result.status}"
     print(f"result 3 success={result.data.success}", flush=True)
 
-    await joints_flow_done.handle_next_request(node_runner, lambda _request: None)
+    await joints_flow_done.handle_requests(node_runner, lambda _request: None)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_consumer(node_runner))]

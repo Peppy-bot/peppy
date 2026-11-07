@@ -160,6 +160,54 @@ async def test_service_poll_rejects_invalid_timeout():
             )
 
 
+@pytest.mark.asyncio
+async def test_handle_requests_answers_each_request_from_one_endpoint_until_cancelled():
+    """One `handle_requests` answers every call of the service, an error
+    reply among them, with the sync or async handler, and keeps listening
+    after each until its task is cancelled."""
+
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        server_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        service = await ServiceMessenger.listen(
+            server_handle,
+            CORE_NODE,
+            INSTANCE_ID,
+            SenderTarget.node(NODE_NAME, NODE_TAG),
+            SERVICE_NAME,
+        )
+
+        async def echo_or_refuse(request):
+            if request.payload == b"refuse":
+                raise FailureError("rejected", "this request is refused")
+            return request.payload
+
+        serving = asyncio.ensure_future(service.handle_requests(echo_or_refuse))
+
+        async def call(payload: bytes):
+            return await ServiceMessenger.poll(
+                client_handle,
+                CORE_NODE,
+                INSTANCE_ID,
+                SenderTarget.node(NODE_NAME, NODE_TAG),
+                SERVICE_NAME,
+                ProducerRef(CORE_NODE, INSTANCE_ID),
+                payload,
+                2.0,
+            )
+
+        assert (await call(b"first")).payload == b"first"
+        with pytest.raises(FailureError) as raised:
+            await call(b"refuse")
+        assert raised.value.args == ("rejected", "this request is refused")
+        assert (await call(b"second")).payload == b"second"
+        assert not serving.done(), "the endpoint still serves"
+
+        serving.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await serving
+
+
 async def _poll_once_against(handler, timeout: float = 2.0):
     """Answers one request with `handler` and polls the service once. Returns
     the poll's exception, or raises when the poll succeeds."""

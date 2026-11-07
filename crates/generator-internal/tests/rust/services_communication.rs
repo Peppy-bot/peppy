@@ -235,16 +235,16 @@ use peppygen::Result;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        enable_camera::handle_next_request(&node_runner, |request| -> std::result::Result<enable_camera::Response, enable_camera::Failure> {
-            println!("received enable_camera request from {}: enable = {}", request.instance_id, request.data.enable);
-            Ok(enable_camera::Response::new(
-                request.data.enable,
-                Some("handled".to_owned()),
-            ))
-        })
-        .await?;
-
-        println!("enable_camera handler finished");
+        tokio::spawn(async move {
+            enable_camera::handle_requests(&node_runner, |request| -> std::result::Result<enable_camera::Response, enable_camera::Failure> {
+                println!("received enable_camera request from {}: enable = {}", request.instance_id, request.data.enable);
+                Ok(enable_camera::Response::new(
+                    request.data.enable,
+                    Some("handled".to_owned()),
+                ))
+            })
+            .await
+        });
 
         Ok(())
     })
@@ -273,8 +273,7 @@ fn main() -> Result<()> {
         SOLE_CONSUMER_INSTANCE_ID
     );
     assert!(
-        exposer_stdout.contains(&expected_request_log)
-            && exposer_stdout.contains("enable_camera handler finished"),
+        exposer_stdout.contains(&expected_request_log),
         "exposer did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
         exposer_stdout,
         exposer_stderr
@@ -317,13 +316,13 @@ use peppygen::Result;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        get_system_status::handle_next_request(&node_runner, |request| -> std::result::Result<get_system_status::Response, get_system_status::Failure> {
-            println!("received get_system_status request from {}", request.instance_id);
-            Ok(get_system_status::Response::new(true))
-        })
-        .await?;
-
-        println!("get_system_status handler finished");
+        tokio::spawn(async move {
+            get_system_status::handle_requests(&node_runner, |request| -> std::result::Result<get_system_status::Response, get_system_status::Failure> {
+                println!("received get_system_status request from {}", request.instance_id);
+                Ok(get_system_status::Response::new(true))
+            })
+            .await
+        });
 
         Ok(())
     })
@@ -352,8 +351,7 @@ fn main() -> Result<()> {
         SOLE_CONSUMER_INSTANCE_ID
     );
     assert!(
-        exposer_stdout.contains(&expected_request_log)
-            && exposer_stdout.contains("get_system_status handler finished"),
+        exposer_stdout.contains(&expected_request_log),
         "exposer did not process the get_system_status request.\nstdout:\n{}\nstderr:\n{}",
         exposer_stdout,
         exposer_stderr
@@ -423,16 +421,16 @@ use peppygen::Result;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        enable_camera::handle_next_request(&node_runner, |request| -> std::result::Result<enable_camera::Response, enable_camera::Failure> {
-            println!("received enable_camera request for {}: {}", request.instance_id, request.data.enable);
-            Ok(enable_camera::Response::new(
-                request.data.enable,
-                Some("handled".to_owned()),
-            ))
-        })
-        .await?;
-
-        println!("enable_camera handler finished");
+        tokio::spawn(async move {
+            enable_camera::handle_requests(&node_runner, |request| -> std::result::Result<enable_camera::Response, enable_camera::Failure> {
+                println!("received enable_camera request for {}: {}", request.instance_id, request.data.enable);
+                Ok(enable_camera::Response::new(
+                    request.data.enable,
+                    Some("handled".to_owned()),
+                ))
+            })
+            .await
+        });
 
         Ok(())
     })
@@ -455,16 +453,16 @@ use peppygen::Result;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        enable_camera::handle_next_request(&node_runner, |request| -> std::result::Result<enable_camera::Response, enable_camera::Failure> {
-            println!("received enable_camera request for {}: {}", request.instance_id, request.data.enable);
-            Ok(enable_camera::Response::new(
-                request.data.enable,
-                Some("handled_by_exposer2".to_owned()),
-            ))
-        })
-        .await?;
-
-        println!("enable_camera handler finished");
+        tokio::spawn(async move {
+            enable_camera::handle_requests(&node_runner, |request| -> std::result::Result<enable_camera::Response, enable_camera::Failure> {
+                println!("received enable_camera request for {}: {}", request.instance_id, request.data.enable);
+                Ok(enable_camera::Response::new(
+                    request.data.enable,
+                    Some("handled_by_exposer2".to_owned()),
+                ))
+            })
+            .await
+        });
 
         Ok(())
     })
@@ -534,16 +532,9 @@ fn main() -> Result<()> {
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    // Do NOT wait for health on the exposers here. The consumer's slot is
-    // bound to exposer1, so exposer2 never receives a request: its
-    // `handle_next_request` never returns, `setup_fn` never completes, and
-    // `run_post_setup_services` (which registers the health endpoint) never
-    // runs there, so probing health on exposer2 would panic with a
-    // wait-timeout. The pre-setup shutdown queryable is up on both
-    // exposers, so the shutdown requests below land cleanly. The
-    // consumer's health probe above already implies the response
-    // round-trip completed, which guarantees exposer1 printed
-    // `enable_camera handler finished` before we send shutdown.
+    // The consumer's health probe above already implies the response
+    // round-trip completed: exposer1 printed the request it answered before
+    // its reply left, so the line is in its output before we send shutdown.
 
     shut_down_test_node(&messenger, CONSUMER_NODE_NAME, CONSUMER_INSTANCE_ID).await;
     shut_down_test_node(&messenger, UVC_CAMERA_NODE_NAME, exposer1_instance_id).await;
@@ -596,8 +587,7 @@ fn main() -> Result<()> {
     );
 
     assert!(
-        exposer1_stdout.contains(&expected_request_log)
-            && exposer1_stdout.contains("enable_camera handler finished"),
+        exposer1_stdout.contains(&expected_request_log),
         "exposer1 is the bound producer but did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
         exposer1_stdout,
         exposer1_stderr

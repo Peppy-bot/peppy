@@ -250,25 +250,29 @@ if isinstance(response, peppylib.FailureError):
         },
     );
 
-    // handle_next_request async function
+    // handle_requests async function: one endpoint for the whole loop.
     builder.add_import("import peppylib");
     builder.blank_line();
     let target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
     builder.block(
         &format!(
-            "async def handle_next_request(node_runner: peppylib.NodeRunner, handler: {handler_type}) -> None:"
+            "async def handle_requests(node_runner: peppylib.NodeRunner, handler: {handler_type}) -> None:"
         ),
         |builder| {
             builder.multiline_docstring(
-                "Answers the next request of this service with `handler`.",
+                "Answers each request of this service with `handler`.",
                 [
-                    "The response of the handler is a success. A `Failure` that it raises or",
-                    "returns gives the caller an error reply of its kind. So does any",
-                    "`peppylib.FailureError`, such as the `Failure` of another member, when",
-                    "this member declares its kind. A request that does not decode gets an",
-                    "error reply of the kind `rejected`, and any other exception, or a kind",
-                    "that this member does not declare, one of the kind `attempt_failed`.",
+                    "The service listens once and serves until its request stream ends, so it",
+                    "stays reachable between two requests. The response of the handler is a",
+                    "success. A `Failure` that it raises or returns gives the caller an error",
+                    "reply of its kind. So does any `peppylib.FailureError`, such as the",
+                    "`Failure` of another member, when this member declares its kind. A request",
+                    "that does not decode gets an error reply of the kind `rejected`, and any",
+                    "other exception, or a kind that this member does not declare, one of the",
+                    "kind `attempt_failed`. A reply that does not reach its caller is logged,",
+                    "and the service answers the next request. Returns when the request stream",
+                    "ends. Raises when the service cannot listen.",
                 ],
             );
             builder.call(
@@ -299,7 +303,7 @@ if isinstance(response, peppylib.FailureError):
                 ));
             });
 
-            builder.line("await endpoint.handle_next_request(_on_request)");
+            builder.line("await endpoint.handle_requests(_on_request)");
         },
     );
 

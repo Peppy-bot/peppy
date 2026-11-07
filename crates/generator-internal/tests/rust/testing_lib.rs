@@ -143,21 +143,16 @@ pub async fn setup(
     let ping_runner = Arc::clone(&node_runner);
     tokio::spawn(async move {
         use peppygen::exposed_services::ping;
-        loop {
-            let answered = ping::handle_next_request(&ping_runner, |request| {
-                if request.data.value == 0 {
-                    return Err(ping::Failure::new(
-                        ping::FailureKind::PreconditionFailed,
-                        "nothing to double",
-                    ));
-                }
-                Ok(ping::Response::new(request.data.value * 2))
-            })
-            .await;
-            if answered.is_err() {
-                break;
+        ping::handle_requests(&ping_runner, |request| {
+            if request.data.value == 0 {
+                return Err(ping::Failure::new(
+                    ping::FailureKind::PreconditionFailed,
+                    "nothing to double",
+                ));
             }
-        }
+            Ok(ping::Response::new(request.data.value * 2))
+        })
+        .await
     });
     let mut frames =
         peppygen::consumed_topics::camera::video_stream::subscribe(&node_runner).await?;

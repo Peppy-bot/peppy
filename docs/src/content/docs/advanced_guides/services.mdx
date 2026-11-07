@@ -113,8 +113,8 @@ A service with no request body acts like a simple getter, and a service with no 
 ### Handling requests
 
 After running `peppy node sync`, the code generator creates a module for each exposed service under `peppygen.exposed_services` (Python) / `peppygen::exposed_services` (Rust).
-Use `handle_next_request` to process incoming requests.
-Each request is handled in a separate task so that the main async block is not blocked:
+Use `handle_requests` to serve the service: it listens once and answers each request with your handler, so the service stays reachable between two requests.
+Run it in a separate task so that the main async block is not blocked:
 
 <Tabs>
   <TabItem label="Python">
@@ -126,7 +126,7 @@ from peppygen.parameters import Parameters
 from peppygen.exposed_services import enable_camera
 
 
-async def handle_requests(node_runner: NodeRunner):
+async def serve_requests(node_runner: NodeRunner):
     def handler(request):
         print(
             f"enable_camera request from {request.instance_id}: "
@@ -134,11 +134,11 @@ async def handle_requests(node_runner: NodeRunner):
         )
         return enable_camera.Response(enabled=request.data.enable)
 
-    await enable_camera.handle_next_request(node_runner, handler)
+    await enable_camera.handle_requests(node_runner, handler)
 
 
 async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:
-    return [asyncio.create_task(handle_requests(node_runner))]
+    return [asyncio.create_task(serve_requests(node_runner))]
 
 
 def main():
@@ -159,7 +159,7 @@ use peppygen::{NodeBuilder, Parameters, Result};
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
         tokio::spawn(async move {
-            enable_camera::handle_next_request(
+            enable_camera::handle_requests(
                 &node_runner,
                 |request| -> std::result::Result<enable_camera::Response, enable_camera::Failure> {
                     println!(
@@ -186,34 +186,9 @@ The `request` argument contains:
 
 The handler answers with its response, a success, or with a failure. A failure gives the caller an **error reply**: a failure kind and a message for a person (see [Error replies](#error-replies)).
 
-`handle_next_request` processes a single request and returns.
-To serve requests continuously, call it in a loop inside a spawned task:
-
-<Tabs>
-  <TabItem label="Python">
-```python
-async def serve_requests(node_runner: NodeRunner):
-    while True:
-        await enable_camera.handle_next_request(node_runner, handler)
-
-
-# in setup:
-return [asyncio.create_task(serve_requests(node_runner))]
-```
-  </TabItem>
-  <TabItem label="Rust">
-```rust
-tokio::spawn(async move {
-    loop {
-        let _ = enable_camera::handle_next_request(&node_runner, |request| {
-            // ...
-        })
-        .await;
-    }
-});
-```
-  </TabItem>
-</Tabs>
+`handle_requests` answers one request at a time: a request that arrives while the handler runs waits until the handler is done with the request before it.
+A reply that does not reach its caller, such as one to a caller that has gone, is logged, and the service answers the next request.
+It returns when the request stream of the service ends, and gives an error (Rust) or raises (Python) when the service cannot listen.
 
 For a service without a request body, the handler receives a `Request` with only the request context (`instance_id` and `core_node`):
 
@@ -223,7 +198,7 @@ For a service without a request body, the handler receives a `Request` with only
 from peppygen.exposed_services import get_camera_info
 
 
-async def handle_info_requests(node_runner: NodeRunner):
+async def serve_info_requests(node_runner: NodeRunner):
     def handler(request):
         print(f"get_camera_info request from {request.instance_id}")
         return get_camera_info.Response(
@@ -232,7 +207,7 @@ async def handle_info_requests(node_runner: NodeRunner):
             interval="30fps",
         )
 
-    await get_camera_info.handle_next_request(node_runner, handler)
+    await get_camera_info.handle_requests(node_runner, handler)
 ```
   </TabItem>
   <TabItem label="Rust">
@@ -240,7 +215,7 @@ async def handle_info_requests(node_runner: NodeRunner):
 use peppygen::exposed_services::get_camera_info;
 
 tokio::spawn(async move {
-    get_camera_info::handle_next_request(
+    get_camera_info::handle_requests(
         &node_runner,
         |request| -> std::result::Result<get_camera_info::Response, get_camera_info::Failure> {
             println!("get_camera_info request from {}", request.instance_id);

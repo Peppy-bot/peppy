@@ -8,9 +8,10 @@ use peppylib::messaging::{
     ServiceTarget, SessionScope,
 };
 use peppylib::types::Payload;
-use pmi::ZenohAdapter;
+use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter, ZenohAdapter};
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
+use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 
 /// Spawns the task that answers the next request `endpoint` receives with
@@ -136,6 +137,85 @@ async fn a_failure_answer_reaches_the_caller_with_its_kind_and_message() {
     let reply = call(b"second").await.expect("the next request is served");
     assert_eq!(reply.payload_bytes().as_ref(), b"second");
     handler.await.expect("handler task should not panic");
+}
+
+/// The keyexpr of each queryable that the mock `session` declared, in order.
+async fn queryable_declarations(session: &Mutex<Messenger>) -> Vec<String> {
+    match &session.lock().await.adapter {
+        MessengerAdapter::Mock(adapter) => adapter.queryable_declarations(),
+        _ => unreachable!("the session is a mock"),
+    }
+}
+
+/// A call with no deadline gets no retry: the mock session ends a query that
+/// no queryable receives at once, and the caller is unreachable. An endpoint
+/// that answers its requests with `handle_requests` stays declared between
+/// two requests, so a call sent right after the reply to the call before it
+/// is answered, and the session declares the queryable of the service once.
+/// When the endpoint is gone, the next call with no deadline is unreachable.
+#[tokio::test]
+async fn an_endpoint_that_handles_its_requests_answers_calls_with_no_deadline_back_to_back() {
+    let mut messenger = Messenger::new(MessengerAdapter::Mock(MockAdapter::default()));
+    messenger
+        .start_session()
+        .await
+        .expect("the mock session starts");
+    let session = Arc::new(Mutex::new(messenger));
+    let handle = MessengerHandle::from_shared(Arc::clone(&session));
+    let (core_node, instance_id, service_name) = ("test_core", "test_instance", "check_positions");
+    let mut endpoint = ServiceMessenger::listen(
+        &handle,
+        core_node,
+        instance_id,
+        test_node_target("test_node"),
+        service_name,
+    )
+    .await
+    .expect("listen should succeed");
+    let serving = tokio::spawn(async move {
+        endpoint
+            .handle_requests(|request| async move { Ok(request.message().payload()) })
+            .await
+    });
+    let producer = ProducerRef::new(core_node, instance_id);
+    let call = |request: &'static [u8]| {
+        ServiceMessenger::poll(
+            &handle,
+            core_node,
+            "caller",
+            test_node_target("test_node"),
+            service_name,
+            ServiceTarget::Producer(&producer),
+            Payload::from_static(request),
+            None::<Duration>,
+        )
+    };
+
+    for request in [b"first".as_slice(), b"second"] {
+        let reply = call(request)
+            .await
+            .expect("a call with no deadline is answered");
+        assert_eq!(reply.payload_bytes().as_ref(), request);
+    }
+    let declarations = queryable_declarations(&session).await;
+    assert_eq!(
+        declarations
+            .iter()
+            .filter(|keyexpr| keyexpr.rsplit('/').next() == Some(service_name))
+            .count(),
+        1,
+        "the service listens once for both requests: {declarations:?}"
+    );
+
+    serving.abort();
+    let _ = serving.await;
+    let error = call(b"third")
+        .await
+        .expect_err("no queryable receives the call");
+    assert!(
+        matches!(error, PeppyError::ServiceUnreachable { .. }),
+        "a call with no deadline to a service that does not listen is unreachable: {error:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

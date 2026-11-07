@@ -63,8 +63,7 @@ async def answer_echo(node_runner: NodeRunner, me: str) -> None:
         )
         return echo.Response(token=request.data.token)
 
-    while True:
-        await echo.handle_next_request(node_runner, handler)
+    await echo.handle_requests(node_runner, handler)
 
 
 async def answer_release(node_runner: NodeRunner, releases: Releases, me: str) -> None:
@@ -79,8 +78,7 @@ async def answer_release(node_runner: NodeRunner, releases: Releases, me: str) -
         held.set()
         return release.Response(token=token)
 
-    while True:
-        await release.handle_next_request(node_runner, handler)
+    await release.handle_requests(node_runner, handler)
 
 
 async def drive(ctx, releases: Releases, me: str) -> None:

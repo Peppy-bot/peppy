@@ -147,8 +147,7 @@ async def answer_move_on(node_runner: NodeRunner, held: CurrentlyHeld) -> None:
             raise RuntimeError(refusal)
         return move_on.Response(token=current.token)
 
-    while True:
-        await move_on.handle_next_request(node_runner, handler)
+    await move_on.handle_requests(node_runner, handler)
 
 
 async def exercise_arm(
