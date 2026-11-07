@@ -187,7 +187,8 @@ The `request` argument contains:
 The handler answers with its response, a success, or with a failure. A failure gives the caller an **error reply**: a failure kind and a message for a person (see [Error replies](#error-replies)).
 
 `handle_requests` answers one request at a time: a request that arrives while the handler runs waits until the handler is done with the request before it.
-It returns when the request stream of the service ends, and gives an error when the service cannot listen.
+A reply that does not reach its caller, such as one to a caller that has gone, is logged, and the service answers the next request.
+It returns when the request stream of the service ends, and gives an error (Rust) or raises (Python) when the service cannot listen.
 
 For a service without a request body, the handler receives a `Request` with only the request context (`instance_id` and `core_node`):
 

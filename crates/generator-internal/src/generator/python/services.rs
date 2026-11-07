@@ -270,8 +270,9 @@ if isinstance(response, peppylib.FailureError):
                     "`Failure` of another member, when this member declares its kind. A request",
                     "that does not decode gets an error reply of the kind `rejected`, and any",
                     "other exception, or a kind that this member does not declare, one of the",
-                    "kind `attempt_failed`. Returns when the request stream ends. Raises when",
-                    "the service cannot listen or cannot send a reply.",
+                    "kind `attempt_failed`. A reply that does not reach its caller is logged,",
+                    "and the service answers the next request. Returns when the request stream",
+                    "ends. Raises when the service cannot listen.",
                 ],
             );
             builder.call(
@@ -302,10 +303,7 @@ if isinstance(response, peppylib.FailureError):
                 ));
             });
 
-            builder.block(
-                "while await endpoint.handle_next_request(_on_request):",
-                |builder| builder.line("pass"),
-            );
+            builder.line("await endpoint.handle_requests(_on_request)");
         },
     );
 

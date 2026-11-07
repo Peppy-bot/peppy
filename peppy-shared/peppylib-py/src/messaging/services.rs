@@ -162,6 +162,7 @@ impl PyServiceEndpoint {
     /// Both sync and async handlers are supported.
     ///
     /// Returns `True` after processing a request, or `False` if the listener was closed.
+    /// Raises when the reply cannot be sent.
     fn handle_next_request<'py>(
         &self,
         py: Python<'py>,
@@ -179,29 +180,14 @@ impl PyServiceEndpoint {
                 return Ok(false);
             };
 
-            // Phase 2: call Python handler (supports sync and async callables).
-            // Gated attach: during interpreter shutdown the handler can no
-            // longer run, so drop the request and report the listener closed.
-            let py_context = PyServiceRequestContext::from(context);
-            let Some(handler_call) = crate::py_future::try_attach_gated(|py| -> PyResult<_> {
-                let result = handler.call1(py, (py_context,))?;
-                if !result.bind(py).hasattr("__await__")? {
-                    return Ok(HandlerReply::Ready(result.extract::<Vec<u8>>(py)?));
-                }
-                let future = pyo3_async_runtimes::tokio::into_future(result.into_bound(py))?;
-                Ok(HandlerReply::Pending(future))
-            }) else {
+            // Phase 2: call the Python handler. During interpreter shutdown
+            // the handler can no longer run, so drop the request and report
+            // the listener closed.
+            let Some(answer) = python_answer(&handler, context).await else {
                 return Ok(false);
             };
-            // Phase 3: send response (pure Rust). A handler that raises
-            // gives an error reply: a `FailureError` with its kind, any other
-            // exception with `attempt_failed`.
-            let response = match handler_call {
-                Ok(HandlerReply::Ready(bytes)) => Ok(bytes),
-                Ok(HandlerReply::Pending(future)) => awaited_response_bytes(future.await),
-                Err(err) => Err(super::failure_of_py_err(err)),
-            };
-            let send_result = match response {
+            // Phase 3: send response (pure Rust).
+            let send_result = match answer {
                 Ok(bytes) => responder.respond(Payload::from(bytes)).await,
                 Err(failure) => responder.respond_failure(failure).await,
             };
@@ -210,6 +196,71 @@ impl PyServiceEndpoint {
             Ok(true)
         })
     }
+
+    /// Answer each incoming request with the provided handler callable, from
+    /// this one endpoint, until the listener closes.
+    ///
+    /// The handler is the one `handle_next_request` takes. A reply that does
+    /// not reach its caller is logged, and the endpoint answers the next
+    /// request; during interpreter shutdown, when the handler can no longer
+    /// run, a request gets an error reply of the kind `resource_unavailable`.
+    ///
+    /// Returns `None` when the listener has closed, and raises when the
+    /// endpoint cannot receive a request.
+    fn handle_requests<'py>(
+        &self,
+        py: Python<'py>,
+        handler: Py<PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        super::future_into_py_unit(py, async move {
+            let handler = &handler;
+            let mut endpoint = inner.lock().await;
+            endpoint
+                .handle_requests(|context| async move {
+                    let answer = python_answer(handler, context)
+                        .await
+                        .unwrap_or_else(|| Err(shutting_down()))?;
+                    Ok(Payload::from(answer))
+                })
+                .await
+                .map_err(to_py_err)
+        })
+    }
+}
+
+/// The answer of the Python `handler` to the request of `context`: its
+/// response bytes, or the failure its caller receives as an error reply, a
+/// `FailureError` with its kind and any other exception with
+/// `attempt_failed`. Sync and async handlers are supported. None during
+/// interpreter shutdown, when the handler can no longer run: the call
+/// attaches to the interpreter through the shutdown gate.
+async fn python_answer(
+    handler: &Py<PyAny>,
+    context: ServiceRequestContext,
+) -> Option<Result<Vec<u8>, Failure>> {
+    let py_context = PyServiceRequestContext::from(context);
+    let handler_call = crate::py_future::try_attach_gated(|py| -> PyResult<_> {
+        let result = handler.call1(py, (py_context,))?;
+        if !result.bind(py).hasattr("__await__")? {
+            return Ok(HandlerReply::Ready(result.extract::<Vec<u8>>(py)?));
+        }
+        let future = pyo3_async_runtimes::tokio::into_future(result.into_bound(py))?;
+        Ok(HandlerReply::Pending(future))
+    })?;
+    Some(match handler_call {
+        Ok(HandlerReply::Ready(bytes)) => Ok(bytes),
+        Ok(HandlerReply::Pending(future)) => awaited_response_bytes(future.await),
+        Err(err) => Err(super::failure_of_py_err(err)),
+    })
+}
+
+/// The failure of a request a node that shuts down cannot answer.
+fn shutting_down() -> Failure {
+    Failure::new(
+        PeppyFailureKind::ResourceUnavailable,
+        "node is shutting down",
+    )
 }
 
 /// What a Python service handler returned: the response bytes of a
@@ -229,10 +280,7 @@ fn awaited_response_bytes(awaited: PyResult<Py<PyAny>>) -> Result<Vec<u8>, Failu
         Some(extracted) => {
             extracted.map_err(|err| Failure::new(PeppyFailureKind::AttemptFailed, err.to_string()))
         }
-        None => Err(Failure::new(
-            PeppyFailureKind::ResourceUnavailable,
-            "node is shutting down",
-        )),
+        None => Err(shutting_down()),
     }
 }
 

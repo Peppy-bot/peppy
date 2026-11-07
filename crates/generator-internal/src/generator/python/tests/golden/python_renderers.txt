@@ -241,8 +241,9 @@ async def handle_requests(node_runner: peppylib.NodeRunner, handler: Callable[[R
     `Failure` of another member, when this member declares its kind. A request
     that does not decode gets an error reply of the kind `rejected`, and any
     other exception, or a kind that this member does not declare, one of the
-    kind `attempt_failed`. Returns when the request stream ends. Raises when
-    the service cannot listen or cannot send a reply.
+    kind `attempt_failed`. A reply that does not reach its caller is logged,
+    and the service answers the next request. Returns when the request stream
+    ends. Raises when the service cannot listen.
     """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
@@ -257,8 +258,7 @@ async def handle_requests(node_runner: peppylib.NodeRunner, handler: Callable[[R
         core_node = message.core_node
         instance_id = message.instance_id
         return await _handle_request_payload(payload, handler, core_node, instance_id)
-    while await endpoint.handle_next_request(_on_request):
-        pass
+    await endpoint.handle_requests(_on_request)
 
 ================================================================
 ExposedService :: set_mode
@@ -372,8 +372,9 @@ async def handle_requests(node_runner: peppylib.NodeRunner, handler: Callable[[R
     `Failure` of another member, when this member declares its kind. A request
     that does not decode gets an error reply of the kind `rejected`, and any
     other exception, or a kind that this member does not declare, one of the
-    kind `attempt_failed`. Returns when the request stream ends. Raises when
-    the service cannot listen or cannot send a reply.
+    kind `attempt_failed`. A reply that does not reach its caller is logged,
+    and the service answers the next request. Returns when the request stream
+    ends. Raises when the service cannot listen.
     """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
@@ -388,8 +389,7 @@ async def handle_requests(node_runner: peppylib.NodeRunner, handler: Callable[[R
         core_node = message.core_node
         instance_id = message.instance_id
         return await _handle_request_payload(payload, handler, core_node, instance_id)
-    while await endpoint.handle_next_request(_on_request):
-        pass
+    await endpoint.handle_requests(_on_request)
 
 ================================================================
 ExposedService :: get_system_status
@@ -495,8 +495,9 @@ async def handle_requests(node_runner: peppylib.NodeRunner, handler: Callable[[R
     `Failure` of another member, when this member declares its kind. A request
     that does not decode gets an error reply of the kind `rejected`, and any
     other exception, or a kind that this member does not declare, one of the
-    kind `attempt_failed`. Returns when the request stream ends. Raises when
-    the service cannot listen or cannot send a reply.
+    kind `attempt_failed`. A reply that does not reach its caller is logged,
+    and the service answers the next request. Returns when the request stream
+    ends. Raises when the service cannot listen.
     """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
@@ -510,8 +511,7 @@ async def handle_requests(node_runner: peppylib.NodeRunner, handler: Callable[[R
         core_node = message.core_node
         instance_id = message.instance_id
         return await _handle_request_payload(handler, core_node, instance_id)
-    while await endpoint.handle_next_request(_on_request):
-        pass
+    await endpoint.handle_requests(_on_request)
 
 ================================================================
 ExposedService :: ping
@@ -603,8 +603,9 @@ async def handle_requests(node_runner: peppylib.NodeRunner, handler: Callable[[R
     `Failure` of another member, when this member declares its kind. A request
     that does not decode gets an error reply of the kind `rejected`, and any
     other exception, or a kind that this member does not declare, one of the
-    kind `attempt_failed`. Returns when the request stream ends. Raises when
-    the service cannot listen or cannot send a reply.
+    kind `attempt_failed`. A reply that does not reach its caller is logged,
+    and the service answers the next request. Returns when the request stream
+    ends. Raises when the service cannot listen.
     """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
@@ -618,8 +619,7 @@ async def handle_requests(node_runner: peppylib.NodeRunner, handler: Callable[[R
         core_node = message.core_node
         instance_id = message.instance_id
         return await _handle_request_payload(handler, core_node, instance_id)
-    while await endpoint.handle_next_request(_on_request):
-        pass
+    await endpoint.handle_requests(_on_request)
 
 ================================================================
 ExposedService :: feed/enable_camera
@@ -749,8 +749,9 @@ async def handle_requests(node_runner: peppylib.NodeRunner, handler: Callable[[R
     `Failure` of another member, when this member declares its kind. A request
     that does not decode gets an error reply of the kind `rejected`, and any
     other exception, or a kind that this member does not declare, one of the
-    kind `attempt_failed`. Returns when the request stream ends. Raises when
-    the service cannot listen or cannot send a reply.
+    kind `attempt_failed`. A reply that does not reach its caller is logged,
+    and the service answers the next request. Returns when the request stream
+    ends. Raises when the service cannot listen.
     """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
@@ -765,8 +766,7 @@ async def handle_requests(node_runner: peppylib.NodeRunner, handler: Callable[[R
         core_node = message.core_node
         instance_id = message.instance_id
         return await _handle_request_payload(payload, handler, core_node, instance_id)
-    while await endpoint.handle_next_request(_on_request):
-        pass
+    await endpoint.handle_requests(_on_request)
 
 ================================================================
 ExposedAction :: move_arm

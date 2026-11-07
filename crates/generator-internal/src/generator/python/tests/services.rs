@@ -230,7 +230,7 @@ fn expose_service() {
         &[
             "async def _on_request(request_context):",
             "return await _handle_request_payload(payload, handler, core_node, instance_id)",
-            "while await endpoint.handle_next_request(_on_request):",
+            "await endpoint.handle_requests(_on_request)",
         ],
     );
     assert_eq!(
@@ -298,7 +298,7 @@ fn expose_service_without_request_body() {
         &[
             "async def _on_request(request_context):",
             "return await _handle_request_payload(handler, core_node, instance_id)",
-            "while await endpoint.handle_next_request(_on_request):",
+            "await endpoint.handle_requests(_on_request)",
         ],
     );
 }
