@@ -252,7 +252,10 @@ impl NodeBuildFeedback {
 /// failure kind and a message, and no result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeBuildResult {
-    pub artifact_path: PathBuf,
+    /// The artifact of the platform of the daemon. `None` for a publish whose
+    /// artifact of that platform is in the repository already, which builds
+    /// nothing for it.
+    pub artifact_path: Option<PathBuf>,
     /// One entry per platform, the host platform first. Empty for a goal
     /// that asks for no publish.
     pub published: Vec<PlatformPublish>,
@@ -261,7 +264,16 @@ pub struct NodeBuildResult {
 impl NodeBuildResult {
     pub fn new(artifact_path: impl Into<PathBuf>) -> Self {
         Self {
-            artifact_path: artifact_path.into(),
+            artifact_path: Some(artifact_path.into()),
+            published: Vec::new(),
+        }
+    }
+
+    /// The result of a publish that built nothing for the platform of the
+    /// daemon.
+    pub fn without_host_artifact() -> Self {
+        Self {
+            artifact_path: None,
             published: Vec::new(),
         }
     }
@@ -275,7 +287,9 @@ impl NodeBuildResult {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<node_capnp::node_build_result::Builder>();
-            result.set_artifact_path(self.artifact_path.to_string_lossy().as_ref());
+            if let Some(path) = &self.artifact_path {
+                result.set_artifact_path(path.to_string_lossy().as_ref());
+            }
             let count = capnp_list_len(self.published.len(), "NodeBuildResult.published")?;
             let mut published = result.reborrow().init_published(count);
             for (index, platform) in self.published.iter().enumerate() {
@@ -289,7 +303,7 @@ impl NodeBuildResult {
         let reader = decode_message(data)?;
         let result = reader.get_root::<node_capnp::node_build_result::Reader>()?;
         Ok(Self {
-            artifact_path: PathBuf::from(result.get_artifact_path()?.to_str()?),
+            artifact_path: optional_text(result.get_artifact_path()?.to_str()?).map(PathBuf::from),
             published: result
                 .get_published()?
                 .iter()
@@ -452,6 +466,13 @@ mod tests {
     }
 
     #[test]
+    fn a_result_without_an_artifact_of_the_host_round_trips() {
+        let result = NodeBuildResult::without_host_artifact();
+        let decoded = NodeBuildResult::decode(&result.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.artifact_path, None);
+    }
+
+    #[test]
     fn node_build_result_round_trips_every_publish_outcome() {
         use crate::encoding::{
             ArtifactPlatform, NotPublishedReason, OciDigest, PlatformPublish, PublishOutcome,
@@ -551,7 +572,10 @@ mod tests {
     #[test]
     fn node_build_result_roundtrip() {
         let result = NodeBuildResult::new("/artifacts/node.bin");
-        assert_eq!(result.artifact_path, PathBuf::from("/artifacts/node.bin"));
+        assert_eq!(
+            result.artifact_path,
+            Some(PathBuf::from("/artifacts/node.bin"))
+        );
         let encoded = result.encode().expect("encode");
         let decoded = NodeBuildResult::decode(&encoded).expect("decode");
         assert_eq!(decoded, result);

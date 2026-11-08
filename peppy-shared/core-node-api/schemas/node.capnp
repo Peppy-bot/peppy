@@ -308,7 +308,9 @@ struct NodeBuildFeedback {
 # and a message, and no result; a cancelled build gives its reason, and no
 # result.
 struct NodeBuildResult {
-    # Path to the resulting .sif/archive in storage
+    # Path to the resulting .sif/archive in storage. Empty for a publish
+    # whose artifact of the platform of the daemon is in the repository
+    # already, which builds nothing for it.
     artifactPath @0 :Text;
     # What the publish of the goal did, one entry per platform, the host
     # platform first. Empty for a goal that asks for no publish.

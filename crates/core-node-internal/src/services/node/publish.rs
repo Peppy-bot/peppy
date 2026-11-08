@@ -104,12 +104,21 @@ pub(crate) struct PublishPlan {
     pending: Vec<ArtifactPlatform>,
     /// What the checks decided for the other platforms of the request.
     decided: BTreeMap<ArtifactPlatform, PublishOutcome>,
+    refusals: PublishRefusals,
 }
 
 impl PublishPlan {
     /// Whether the platform of this machine is to be pushed.
     pub(crate) fn pushes_host_platform(&self) -> bool {
         self.pending.contains(&HOST_ARTIFACT_PLATFORM)
+    }
+
+    /// Whether the node builds for this machine: always in a stack build,
+    /// which builds every node as a build does, and for `peppy node publish`
+    /// only when that platform is to be pushed, since a platform published
+    /// already is skipped.
+    pub(crate) fn builds_host_platform(&self) -> bool {
+        self.refusals == PublishRefusals::Report || self.pushes_host_platform()
     }
 
     /// The platforms beside the one of this machine to build and push.
@@ -264,6 +273,7 @@ pub(crate) async fn plan(inputs: PlanInputs<'_>) -> Result<PublishPlan, Failure>
         node_manifest,
         pending,
         decided,
+        refusals,
     })
 }
 

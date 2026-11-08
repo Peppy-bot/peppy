@@ -127,7 +127,8 @@ struct PublishRun<'a> {
         std::result::Result<tempfile::TempDir, String>,
     )>,
     config: &'a config::node::NodeConfig,
-    host_artifact: &'a std::path::Path,
+    /// The artifact of this machine, `None` when the publish built none.
+    host_artifact: Option<&'a std::path::Path>,
     env_vars: &'a [(String, String)],
     action_context: &'a NodeBuildActionContext,
     announcer: &'a Announcer,
@@ -141,12 +142,14 @@ struct PublishRun<'a> {
 /// fails is reported, and the others go on.
 async fn publish_built_node(run: PublishRun<'_>) -> Vec<core_node_api::encoding::PlatformPublish> {
     let mut pushed = Vec::new();
-    if run.plan.pushes_host_platform() {
+    if let Some(host_artifact) = run.host_artifact
+        && run.plan.pushes_host_platform()
+    {
         pushed.push(
             super::publish::push_platform(
                 run.plan,
                 daemon_config::consts::HOST_ARTIFACT_PLATFORM,
-                run.host_artifact,
+                host_artifact,
                 run.announcer,
             )
             .await,
@@ -610,6 +613,35 @@ async fn run_node_build(run: NodeBuildRun) -> std::result::Result<NodeBuildResul
             None => None,
         };
 
+        // A publish whose artifact of this machine is in the repository
+        // already builds nothing for it: the node stays staged, and only the
+        // other platforms build.
+        if let Some((plan, _)) = &publish
+            && !plan.builds_host_platform()
+        {
+            let (plan, copies) = publish.expect("matched just above");
+            let published = publish_built_node(PublishRun {
+                plan: &plan,
+                copies,
+                config: &config,
+                host_artifact: None,
+                env_vars: &env_vars,
+                action_context: &action_context,
+                announcer: &announcer,
+                cancel_token: &cancel_token,
+                rebuild,
+            })
+            .await;
+            if cancel_token.is_cancelled() {
+                return Err(WorkStop::Cancelled(record_build_failure(
+                    &log,
+                    PeppyFailureKind::AttemptFailed,
+                    "publish cancelled".to_owned(),
+                )));
+            }
+            return Ok(NodeBuildResult::without_host_artifact().with_published(published));
+        }
+
         // Atomically detach the entity-side working dir AND verify the
         // generation hasn't changed since Phase 1. If a concurrent
         // push_config_impl replaced the entity in-place, the generation
@@ -666,7 +698,7 @@ async fn run_node_build(run: NodeBuildRun) -> std::result::Result<NodeBuildResul
                     plan: &plan,
                     copies,
                     config: &config,
-                    host_artifact: &artifact_path,
+                    host_artifact: Some(&artifact_path),
                     env_vars: &env_vars,
                     action_context: &action_context,
                     announcer: &announcer,
