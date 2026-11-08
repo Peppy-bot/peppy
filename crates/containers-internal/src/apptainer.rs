@@ -15,7 +15,7 @@ pub(crate) fn scratch_dir() -> tempfile::TempDir {
 }
 
 pub use activity::{BuildActivity, BuildActivityProbe};
-pub use facade::{Apptainer, ApptainerCommand};
+pub use facade::{Apptainer, ApptainerCommand, emulation_problem};
 #[cfg(target_os = "linux")]
 pub use facade::{SetupStatus, check_setup_status};
 pub use registry_auth::RegistryAuthFile;

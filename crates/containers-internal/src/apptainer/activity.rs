@@ -97,6 +97,8 @@ pub struct BuildActivityProbe {
 pub(super) struct GuestActivityProbe {
     pub(super) limactl_path: PathBuf,
     pub(super) lima_home: PathBuf,
+    /// The Lima instance the build runs in.
+    pub(super) instance: String,
     /// Guest-native file holding the pid of the guest build's leader, which is
     /// also its PGID, written by the guest wrapper (see
     /// [`lima::lima_guest_pgid_argv`]). `None` samples no guest CPU.
@@ -134,6 +136,7 @@ impl Apptainer {
             Backend::Lima {
                 limactl_path,
                 lima_home,
+                vm,
                 ..
             } => BuildActivityProbe {
                 host_roots: extra_host_roots,
@@ -141,6 +144,7 @@ impl Apptainer {
                 guest: Some(GuestActivityProbe {
                     limactl_path: limactl_path.clone(),
                     lima_home: lima_home.clone(),
+                    instance: vm.name.clone(),
                     pgid_file: build_key.map(lima::guest_pgid_path),
                 }),
             },
@@ -195,7 +199,7 @@ impl GuestActivityProbe {
     /// [`lima::lima_guest_activity_argv`]). Any failure (VM unreachable, tools
     /// missing, unparseable output) reads as no bytes and no CPU time.
     fn sample(&self) -> BuildActivity {
-        let output = lima::lima_shell_cmd(&self.limactl_path, &self.lima_home, lima::LIMA_INSTANCE)
+        let output = lima::lima_shell_cmd(&self.limactl_path, &self.lima_home, &self.instance)
             .args(lima::lima_guest_activity_argv(self.pgid_file.as_deref()))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

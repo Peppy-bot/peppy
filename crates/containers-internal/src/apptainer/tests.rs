@@ -141,6 +141,7 @@ fn lima_facade() -> Apptainer {
             apptainer_bin: PathBuf::from("/tmp/peppy/apptainer/bin/apptainer"),
             limactl_path: PathBuf::from("/opt/lima/bin/limactl"),
             lima_home: PathBuf::from("/home/u/.lima"),
+            vm: super::lima::LimaVm::host(),
         },
         extra_mounts: Vec::new(),
     }
@@ -3189,4 +3190,56 @@ fn guest_activity_script_reports_the_cache_size_and_the_builds_cpu_time() {
         reading.bytes_on_disk
     );
     assert_eq!(reading.cpu_time, Duration::ZERO);
+}
+
+#[test]
+fn the_os_family_comes_from_the_id_and_id_like_of_os_release() {
+    use super::facade::{HostOsFamily, os_family_of_release};
+    assert_eq!(
+        os_family_of_release("NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n"),
+        HostOsFamily::Debian
+    );
+    assert_eq!(
+        os_family_of_release("ID=pop\nID_LIKE=\"ubuntu debian\"\n"),
+        HostOsFamily::Debian
+    );
+    assert_eq!(
+        os_family_of_release("ID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\n"),
+        HostOsFamily::Fedora
+    );
+    assert_eq!(os_family_of_release("ID=arch\n"), HostOsFamily::Arch);
+    assert_eq!(
+        os_family_of_release("ID=alpine\n"),
+        HostOsFamily::OtherLinux
+    );
+}
+
+#[test]
+fn the_emulation_packages_name_the_emulator_and_the_firmware_of_each_family() {
+    use super::facade::{HostOsFamily, emulation_packages};
+    use core_node_api::encoding::ArtifactPlatform::{LinuxAmd64, LinuxArm64};
+    assert_eq!(
+        emulation_packages(LinuxArm64, &HostOsFamily::Debian),
+        "`sudo apt install qemu-system-arm qemu-efi-aarch64`"
+    );
+    assert_eq!(
+        emulation_packages(LinuxAmd64, &HostOsFamily::Debian),
+        "`sudo apt install qemu-system-x86 ovmf`"
+    );
+    assert!(emulation_packages(LinuxAmd64, &HostOsFamily::MacOs).contains("brew install qemu"));
+    assert!(emulation_packages(LinuxArm64, &HostOsFamily::Fedora).contains("edk2-aarch64"));
+    assert!(emulation_packages(LinuxAmd64, &HostOsFamily::Arch).contains("edk2-ovmf"));
+}
+
+#[test]
+fn an_emulated_vm_is_named_after_its_architecture_and_runs_under_qemu() {
+    let vm = super::lima::LimaVm::emulated("aarch64");
+    assert_eq!(vm.name, format!("{}-aarch64", super::lima::LIMA_INSTANCE));
+    assert_eq!(
+        vm.config_path(Path::new("/home/u/.lima")),
+        PathBuf::from(format!(
+            "/home/u/.lima/{}-aarch64/lima.yaml",
+            super::lima::LIMA_INSTANCE
+        ))
+    );
 }

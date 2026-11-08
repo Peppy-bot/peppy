@@ -2,6 +2,7 @@ use super::super::error::{Error, Result};
 use super::l4t_manifest::{self, L4T_MANIFEST_DIR, NVLIBLIST_PATH, NvliblistSync};
 use super::lima;
 use super::registry_auth::{APPTAINER_AUTH_FILE_ENV, RegistryAuth};
+use core_node_api::encoding::ArtifactPlatform;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::Mutex;
@@ -142,7 +143,8 @@ pub(crate) enum Backend {
         /// counterpart: its guest is a VM on a Mac, never a Jetson.
         l4t_manifest_dir: PathBuf,
     },
-    /// macOS: route commands through a Lima VM.
+    /// macOS, and a build for another architecture: route commands through
+    /// a Lima VM.
     Lima {
         /// Path to `bin/apptainer` used for invocation (guest-side inside the VM).
         apptainer_bin: PathBuf,
@@ -150,6 +152,8 @@ pub(crate) enum Backend {
         limactl_path: PathBuf,
         /// LIMA_HOME directory for VM instance data.
         lima_home: PathBuf,
+        /// The VM the commands run in.
+        vm: lima::LimaVm,
     },
 }
 
@@ -482,6 +486,53 @@ impl Apptainer {
         Self::from_dir(apptainer_dir)
     }
 
+    /// The `Apptainer` that builds containers for `platform`.
+    ///
+    /// For the platform of this machine it is [`Apptainer::new`]. For the
+    /// other Linux platform it is the apptainer of that architecture in a Lima
+    /// VM of that architecture, under QEMU system emulation, on Linux and on
+    /// macOS: created at the first build that needs it and kept for the later
+    /// ones. A build under emulation is many times slower than a native one.
+    ///
+    /// # Blocking
+    ///
+    /// As [`Apptainer::new`], and more so: the first emulated build boots the
+    /// VM and syncs apptainer into it, which takes many minutes.
+    pub fn for_platform(platform: ArtifactPlatform) -> Result<Self> {
+        if platform == daemon_config::consts::HOST_ARTIFACT_PLATFORM {
+            return Self::new();
+        }
+        if let Some(problem) = emulation_problem(platform) {
+            return Err(Error::ConfigurationError(problem));
+        }
+        let arch = platform.architecture();
+        let apptainer_dir = Self::resolve_apptainer_dir_of(arch)?;
+        if !apptainer_dir.join("bin/apptainer").exists() {
+            return Err(Error::ApptainerNotFound(format!(
+                "bin/apptainer not found in the {arch} installation directory: {}",
+                apptainer_dir.display()
+            )));
+        }
+        let limactl_path = lima::resolve_lima_dir()?.join("bin/limactl");
+        if !limactl_path.exists() {
+            return Err(Error::LimaRequired);
+        }
+        let lima_home = lima::resolve_lima_home()?;
+        lima::check_lima_version(&limactl_path)?;
+        let mut facade = Self {
+            apptainer_dir,
+            backend: Backend::Lima {
+                apptainer_bin: PathBuf::from(env!("GUEST_APPTAINER_DIR")).join("bin/apptainer"),
+                limactl_path,
+                lima_home,
+                vm: lima::LimaVm::emulated(arch),
+            },
+            extra_mounts: Vec::new(),
+        };
+        facade.ensure_ready()?;
+        Ok(facade)
+    }
+
     /// Creates a new `Apptainer` from an explicit installation directory.
     ///
     /// Crate-internal: production callers use [`new`](Self::new); this is the
@@ -510,6 +561,7 @@ impl Apptainer {
                 apptainer_bin: PathBuf::from(env!("GUEST_APPTAINER_DIR")).join("bin/apptainer"),
                 limactl_path,
                 lima_home,
+                vm: lima::LimaVm::host(),
             }
         } else {
             Backend::Native {
@@ -555,19 +607,19 @@ impl Apptainer {
                 limactl_path,
                 lima_home,
                 apptainer_bin,
-                ..
+                vm,
             } => {
                 let _guard = LIMA_INIT.lock().unwrap_or_else(|e| e.into_inner());
 
-                lima::ensure_lima_instance(limactl_path, lima_home, lima::LIMA_TEMPLATE)?;
-                lima::ensure_guest_userns(limactl_path, lima_home, lima::LIMA_INSTANCE)?;
-                lima::ensure_guest_uidmap(limactl_path, lima_home, lima::LIMA_INSTANCE)?;
+                lima::ensure_lima_instance(limactl_path, lima_home, vm, lima::LIMA_TEMPLATE)?;
+                lima::ensure_guest_userns(limactl_path, lima_home, &vm.name)?;
+                lima::ensure_guest_uidmap(limactl_path, lima_home, &vm.name)?;
 
                 *apptainer_bin = lima::ensure_guest_apptainer(
                     &self.apptainer_dir,
                     limactl_path,
                     lima_home,
-                    lima::LIMA_INSTANCE,
+                    &vm.name,
                 )?;
 
                 Ok(())
@@ -605,6 +657,7 @@ impl Apptainer {
             Backend::Lima {
                 limactl_path,
                 lima_home,
+                vm,
                 ..
             } => {
                 let external_paths = paths_lima_must_mount(mount_src_paths)?;
@@ -616,19 +669,25 @@ impl Apptainer {
 
                 let limactl_path = limactl_path.clone();
                 let lima_home = lima_home.clone();
-                let config_path = lima_home.join(lima::LIMA_INSTANCE).join("lima.yaml");
+                let vm = vm.clone();
+                let config_path = vm.config_path(&lima_home);
 
                 let modified = lima::ensure_extra_mounts(&config_path, &external_paths)?;
                 if modified {
                     tracing::info!("Lima config updated with new mounts, restarting VM...");
-                    lima::stop_instance(&limactl_path, &lima_home, lima::LIMA_INSTANCE)?;
-                    lima::ensure_lima_instance(&limactl_path, &lima_home, lima::LIMA_TEMPLATE)?;
-                    lima::ensure_guest_userns(&limactl_path, &lima_home, lima::LIMA_INSTANCE)?;
+                    lima::stop_instance(&limactl_path, &lima_home, &vm.name)?;
+                    lima::ensure_lima_instance(
+                        &limactl_path,
+                        &lima_home,
+                        &vm,
+                        lima::LIMA_TEMPLATE,
+                    )?;
+                    lima::ensure_guest_userns(&limactl_path, &lima_home, &vm.name)?;
                     let apptainer_bin = lima::ensure_guest_apptainer(
                         &self.apptainer_dir,
                         &limactl_path,
                         &lima_home,
-                        lima::LIMA_INSTANCE,
+                        &vm.name,
                     )?;
                     if let Backend::Lima {
                         apptainer_bin: ref mut bin,
@@ -662,12 +721,12 @@ impl Apptainer {
     pub fn host_mounts_need_restart(&self, mount_src_paths: &[&str]) -> Result<bool> {
         match &self.backend {
             Backend::Native { .. } => Ok(false),
-            Backend::Lima { lima_home, .. } => {
+            Backend::Lima { lima_home, vm, .. } => {
                 let external_paths = paths_lima_must_mount(mount_src_paths)?;
                 if external_paths.is_empty() {
                     return Ok(false);
                 }
-                let config_path = lima_home.join(lima::LIMA_INSTANCE).join("lima.yaml");
+                let config_path = vm.config_path(lima_home);
                 lima::extra_mounts_would_change(&config_path, &external_paths)
             }
         }
@@ -713,8 +772,9 @@ impl Apptainer {
             Backend::Lima {
                 limactl_path,
                 lima_home,
+                vm,
                 ..
-            } => signal_guest_pgid(limactl_path, lima_home, key, GuestSignal::Kill),
+            } => signal_guest_pgid(limactl_path, lima_home, &vm.name, key, GuestSignal::Kill),
         }
     }
 
@@ -771,8 +831,9 @@ impl Apptainer {
             Backend::Lima {
                 limactl_path,
                 lima_home,
+                vm,
                 ..
-            } => lima::lima_shell_cmd(limactl_path, lima_home, lima::LIMA_INSTANCE)
+            } => lima::lima_shell_cmd(limactl_path, lima_home, &vm.name)
                 .args(args)
                 .output()
                 .map_err(Error::from),
@@ -1020,7 +1081,7 @@ impl Apptainer {
                 apptainer_bin,
                 limactl_path,
                 lima_home,
-                ..
+                vm,
             } => {
                 // Host process environment does not cross `limactl shell`, and
                 // a command line shows in the process list, so the
@@ -1047,7 +1108,7 @@ impl Apptainer {
                 let guest_workdir = working_dir
                     .map(|dir| self.translate_path(dir))
                     .transpose()?;
-                let mut cmd = lima::lima_shell_base(limactl_path, lima_home, lima::LIMA_INSTANCE);
+                let mut cmd = lima::lima_shell_base(limactl_path, lima_home, &vm.name);
                 for arg in lima_shell_extra_args {
                     cmd.arg(arg);
                 }
@@ -1086,6 +1147,41 @@ impl Apptainer {
     // Path resolution
     // -----------------------------------------------------------------------
 
+    /// The apptainer installation of the Linux architecture `arch`
+    /// (`x86_64`, `aarch64`), which a build for that platform runs in a VM of
+    /// that architecture.
+    ///
+    /// Resolution order:
+    /// 1. `PEPPY_APPTAINER_DIR_<ARCH>` environment variable
+    /// 2. `apptainer-<arch>/` relative to the current executable (installed
+    ///    layout)
+    /// 3. The apptainer build cache of `arch` under `~/.peppy/tmp`
+    pub fn resolve_apptainer_dir_of(arch: &str) -> Result<PathBuf> {
+        let cache_dir_name = match arch {
+            "x86_64" => env!("APPTAINER_CACHE_DIR_NAME_X86_64"),
+            "aarch64" => env!("APPTAINER_CACHE_DIR_NAME_AARCH64"),
+            other => {
+                return Err(Error::ApptainerNotFound(format!(
+                    "peppy ships no apptainer for the architecture {other}"
+                )));
+            }
+        };
+        lima::resolve_install_dir(
+            &format!("PEPPY_APPTAINER_DIR_{}", arch.to_ascii_uppercase()),
+            &format!("apptainer-{arch}"),
+            lima::peppy_home_dir(&format!("tmp/{cache_dir_name}")),
+            "apptainer build cache",
+            || {
+                Error::ApptainerNotFound(format!(
+                    "The apptainer installation of {arch} is not found: a release of peppy ships \
+                     it in apptainer-{arch}/ beside the peppy binary. Set \
+                     PEPPY_APPTAINER_DIR_{} to use another one.",
+                    arch.to_ascii_uppercase()
+                ))
+            },
+        )
+    }
+
     pub fn resolve_apptainer_dir() -> Result<PathBuf> {
         lima::resolve_install_dir(
             "PEPPY_APPTAINER_DIR",
@@ -1100,6 +1196,107 @@ impl Apptainer {
             },
         )
     }
+}
+
+/// Why this machine cannot build for `platform` under emulation, with the
+/// packages to install, or `None` when it can. Lima starts a VM of another
+/// architecture with the QEMU system emulator of that architecture, and the
+/// UEFI firmware of an arm64 guest.
+pub fn emulation_problem(platform: ArtifactPlatform) -> Option<String> {
+    let arch = platform.architecture();
+    let emulator = format!("qemu-system-{arch}");
+    if find_on_path(&emulator).is_some() {
+        return None;
+    }
+    let packages = emulation_packages(platform, &host_os_family());
+    Some(format!(
+        "building for {platform} on this machine needs the QEMU system emulator `{emulator}`, \
+         which is not on PATH: install {packages}"
+    ))
+}
+
+/// The family of the operating system of this machine, as its package
+/// manager names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HostOsFamily {
+    MacOs,
+    Debian,
+    Fedora,
+    Arch,
+    OtherLinux,
+}
+
+fn host_os_family() -> HostOsFamily {
+    if cfg!(target_os = "macos") {
+        return HostOsFamily::MacOs;
+    }
+    let release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    os_family_of_release(&release)
+}
+
+/// The family that the `ID` and `ID_LIKE` of an `/etc/os-release` name.
+pub(crate) fn os_family_of_release(release: &str) -> HostOsFamily {
+    let ids: Vec<String> = release
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("ID=")
+                .or_else(|| line.strip_prefix("ID_LIKE="))
+        })
+        .flat_map(|value| {
+            value
+                .trim_matches('"')
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let has = |id: &str| ids.iter().any(|known| known == id);
+    if has("debian") || has("ubuntu") {
+        HostOsFamily::Debian
+    } else if has("fedora") || has("rhel") || has("centos") {
+        HostOsFamily::Fedora
+    } else if has("arch") {
+        HostOsFamily::Arch
+    } else {
+        HostOsFamily::OtherLinux
+    }
+}
+
+/// The packages that give the QEMU system emulator and the UEFI firmware of
+/// `platform` on a machine of `family`, as its install command spells them.
+pub(crate) fn emulation_packages(platform: ArtifactPlatform, family: &HostOsFamily) -> String {
+    let arm = platform == ArtifactPlatform::LinuxArm64;
+    match family {
+        HostOsFamily::MacOs => "QEMU: `brew install qemu`".to_owned(),
+        HostOsFamily::Debian if arm => {
+            "`sudo apt install qemu-system-arm qemu-efi-aarch64`".to_owned()
+        }
+        HostOsFamily::Debian => "`sudo apt install qemu-system-x86 ovmf`".to_owned(),
+        HostOsFamily::Fedora if arm => {
+            "`sudo dnf install qemu-system-aarch64-core edk2-aarch64`".to_owned()
+        }
+        HostOsFamily::Fedora => "`sudo dnf install qemu-system-x86-core edk2-ovmf`".to_owned(),
+        HostOsFamily::Arch if arm => "`sudo pacman -S qemu-system-aarch64 edk2-aarch64`".to_owned(),
+        HostOsFamily::Arch => "`sudo pacman -S qemu-system-x86 edk2-ovmf`".to_owned(),
+        HostOsFamily::OtherLinux if arm => {
+            "the QEMU system emulator for aarch64 and the AArch64 UEFI firmware (EDK2) of your \
+             distribution"
+                .to_owned()
+        }
+        HostOsFamily::OtherLinux => {
+            "the QEMU system emulator for x86_64 and the x86_64 UEFI firmware (OVMF) of your \
+             distribution"
+                .to_owned()
+        }
+    }
+}
+
+/// The first `program` in the directories of `PATH`.
+fn find_on_path(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
 }
 
 /// The signal a stop or cancel path sends to the guest process group that the
@@ -1157,6 +1354,7 @@ fn running_lima() -> Option<(PathBuf, PathBuf)> {
 fn signal_guest_pgid(
     limactl_path: &Path,
     lima_home: &Path,
+    instance: &str,
     key: &str,
     signal: GuestSignal,
 ) -> Result<()> {
@@ -1166,7 +1364,7 @@ fn signal_guest_pgid(
     const SIGNAL_GUEST_PGID_POLL: Duration = Duration::from_millis(50);
 
     let guest_pgid = lima::guest_pgid_path(key);
-    let mut child = lima::lima_shell_cmd(limactl_path, lima_home, lima::LIMA_INSTANCE)
+    let mut child = lima::lima_shell_cmd(limactl_path, lima_home, instance)
         .args(signal.argv(&guest_pgid))
         .spawn()
         .map_err(Error::from)?;
@@ -1195,7 +1393,9 @@ fn signal_guest_process_groups_best_effort(keys: &[String], signal: GuestSignal)
         return false;
     };
     for key in keys {
-        if let Err(e) = signal_guest_pgid(&limactl_path, &lima_home, key, signal) {
+        if let Err(e) =
+            signal_guest_pgid(&limactl_path, &lima_home, lima::LIMA_INSTANCE, key, signal)
+        {
             tracing::debug!(
                 "In-VM guest group {} failed for '{key}': {e}",
                 signal.name()

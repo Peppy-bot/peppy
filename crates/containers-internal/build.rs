@@ -2119,6 +2119,17 @@ echo "=== Apptainer build complete ==="
             "cargo:rustc-env=APPTAINER_CACHE_DIR_NAME={}",
             apptainer_cache_dir_name(APPTAINER_VERSION, &target_arch)
         );
+        // The apptainer of each Linux architecture, which a build for that
+        // platform runs in a VM of that architecture.
+        for (variable, arch) in [
+            ("APPTAINER_CACHE_DIR_NAME_X86_64", "x86_64"),
+            ("APPTAINER_CACHE_DIR_NAME_AARCH64", "aarch64"),
+        ] {
+            println!(
+                "cargo:rustc-env={variable}={}",
+                apptainer_cache_dir_name(APPTAINER_VERSION, arch)
+            );
+        }
         println!(
             "cargo:rustc-env=APPTAINER_CACHE_SENTINEL_NAME={}",
             apptainer_cache_sentinel_name(APPTAINER_VERSION)

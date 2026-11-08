@@ -11,6 +11,69 @@ pub(crate) const LIMA_INSTANCE: &str = env!("LIMA_INSTANCE");
 pub(crate) const LIMA_TEMPLATE: &str = env!("LIMA_TEMPLATE");
 pub(crate) const MIN_LIMA_VERSION: (u32, u32, u32) = (2, 1, 0);
 
+/// The memory, in GiB, of the VM that runs the containers of the host
+/// platform on macOS.
+const HOST_VM_MEMORY_GIB: &str = "12";
+
+/// The memory, in GiB, of a VM that builds for another architecture under
+/// QEMU emulation.
+const EMULATED_VM_MEMORY_GIB: &str = "8";
+
+/// One Lima VM: its instance name and the `limactl start` flags that create
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LimaVm {
+    pub(crate) name: String,
+    create_flags: Vec<String>,
+}
+
+impl LimaVm {
+    /// The VM that runs the containers of the host platform on macOS: of the
+    /// architecture of the host, with the VM type Lima picks for it.
+    pub(crate) fn host() -> Self {
+        Self {
+            name: LIMA_INSTANCE.to_owned(),
+            create_flags: vec![
+                "--tty=false".to_owned(),
+                "--mount-writable".to_owned(),
+                format!("--memory={HOST_VM_MEMORY_GIB}"),
+            ],
+        }
+    }
+
+    /// The VM that builds for the Linux platform of architecture `arch`
+    /// (`x86_64`, `aarch64`) on a host of another architecture: a QEMU
+    /// system emulation of that architecture, on Linux and on macOS. Named
+    /// after the architecture, so each one is created once and kept.
+    pub(crate) fn emulated(arch: &str) -> Self {
+        let cpus = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+        Self {
+            name: format!("{LIMA_INSTANCE}-{arch}"),
+            create_flags: vec![
+                "--tty=false".to_owned(),
+                "--mount-writable".to_owned(),
+                "--vm-type=qemu".to_owned(),
+                format!("--arch={arch}"),
+                format!("--memory={EMULATED_VM_MEMORY_GIB}"),
+                format!("--cpus={cpus}"),
+            ],
+        }
+    }
+
+    /// The `limactl start` arguments that create this VM from `template`.
+    fn create_args(&self, template: &str) -> Vec<String> {
+        let mut args = vec!["start".to_owned(), format!("--name={}", self.name)];
+        args.extend(self.create_flags.iter().cloned());
+        args.push(template.to_owned());
+        args
+    }
+
+    /// The path of the Lima config of this VM under `lima_home`.
+    pub(crate) fn config_path(&self, lima_home: &Path) -> PathBuf {
+        lima_home.join(&self.name).join("lima.yaml")
+    }
+}
+
 /// Upper bound for a single `limactl` VM-liveness probe (`limactl list` and the
 /// `limactl shell ... true` SSH check) on the stop/teardown gate. Both reach the
 /// VM driver or SSH into the guest, which can wedge, and they run on a blocking
@@ -466,77 +529,75 @@ pub(crate) fn is_lima_instance_running(limactl: &Path, lima_home: &Path) -> bool
         && is_ssh_alive(limactl, lima_home, LIMA_INSTANCE)
 }
 
-pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &str) -> Result<()> {
+pub(crate) fn ensure_lima_instance(
+    limactl: &Path,
+    lima_home: &Path,
+    vm: &LimaVm,
+    template: &str,
+) -> Result<()> {
     std::fs::create_dir_all(lima_home).map_err(|e| {
         Error::LimaInstanceError(format!(
             "failed to create LIMA_HOME {}: {e}",
             lima_home.display()
         ))
     })?;
+    let instance = vm.name.as_str();
 
-    let instance_status = query_instance_status(limactl, lima_home, LIMA_INSTANCE)?;
+    let instance_status = query_instance_status(limactl, lima_home, instance)?;
 
     match instance_status.as_deref() {
         Some("Running") => {
-            if is_ssh_alive(limactl, lima_home, LIMA_INSTANCE) {
+            if is_ssh_alive(limactl, lima_home, instance) {
                 return Ok(());
             }
             // VM reports Running but SSH is dead (zombie VM: VZ process crashed).
             // Force-stop and restart.
             tracing::warn!(
                 "Lima {} instance reports Running but SSH is unresponsive; restarting...",
-                LIMA_INSTANCE
+                instance
             );
             let _ = limactl_command(limactl, lima_home)
-                .args(["stop", "--force", LIMA_INSTANCE])
+                .args(["stop", "--force", instance])
                 .output();
 
             let start = limactl_command(limactl, lima_home)
-                .args(["start", LIMA_INSTANCE])
+                .args(["start", instance])
                 .output()?;
 
             check_output(&start, |stderr| {
                 Error::LimaInstanceError(format!(
                     "failed to restart zombie Lima {} instance: {stderr}",
-                    LIMA_INSTANCE
+                    instance
                 ))
             })
         }
         Some(_) => {
-            tracing::info!("Starting Lima {} instance...", LIMA_INSTANCE);
+            tracing::info!("Starting Lima {} instance...", instance);
             let start = limactl_command(limactl, lima_home)
-                .args(["start", LIMA_INSTANCE])
+                .args(["start", instance])
                 .output()?;
 
             check_output(&start, |stderr| {
                 Error::LimaInstanceError(format!(
                     "failed to start Lima {} instance: {stderr}",
-                    LIMA_INSTANCE
+                    instance
                 ))
             })
         }
         None => {
             tracing::info!(
                 "Creating Lima {} instance with {} (first run, may take a few minutes)...",
-                LIMA_INSTANCE,
+                instance,
                 template
             );
-            let name_flag = format!("--name={}", LIMA_INSTANCE);
             let create = limactl_command(limactl, lima_home)
-                .args([
-                    "start",
-                    &name_flag,
-                    "--tty=false",
-                    "--mount-writable",
-                    "--memory=12",
-                    template,
-                ])
+                .args(vm.create_args(template))
                 .output()?;
 
             check_output(&create, |stderr| {
                 Error::LimaInstanceError(format!(
                     "failed to create Lima {} instance: {stderr}",
-                    LIMA_INSTANCE
+                    instance
                 ))
             })
         }

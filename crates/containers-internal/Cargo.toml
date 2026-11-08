@@ -10,6 +10,8 @@ config = { workspace = true, features = ["atomic_write"] }
 # `APPTAINER_TMPDIR`, so it lands on the same peppy-owned tree as every other
 # peppy temporary instead of the host's `/tmp`.
 daemon-config = { workspace = true }
+# The platforms of container builds.
+core-node-api = { workspace = true }
 # Home lookup for `~` expansion in mount-spec sources. `dirs` falls back to
 # the passwd database when `$HOME` is unset (daemons under systemd/cron).
 dirs = "7"
