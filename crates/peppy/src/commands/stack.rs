@@ -152,7 +152,12 @@ pub struct StackBuildArgs {
     pub publish: bool,
     /// Platforms each machine builds and pushes beside its own,
     /// comma-separated: linux/amd64, linux/arm64. Needs `--publish`.
-    #[arg(long, value_delimiter = ',', requires = "publish", value_parser = parse_platform)]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        requires = "publish",
+        value_parser = core_node_api::encoding::ArtifactPlatform::parse
+    )]
     pub platforms: Vec<core_node_api::encoding::ArtifactPlatform>,
 }
 
@@ -165,13 +170,6 @@ impl From<LauncherArgs> for StackBuildArgs {
             platforms: Vec::new(),
         }
     }
-}
-
-/// Parses a `--platforms` value: `linux/amd64` or `linux/arm64`.
-fn parse_platform(
-    raw: &str,
-) -> std::result::Result<core_node_api::encoding::ArtifactPlatform, String> {
-    core_node_api::encoding::ArtifactPlatform::parse(raw).map_err(|e| e.to_string())
 }
 
 /// What `stack launch` and `stack build` take.

@@ -52,6 +52,7 @@ The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if
   { id: 1, type: "fs",  path: "/home/user" },
   { id: 2, type: "git", url: "https://github.com/Peppy-bot/nodes-hub.git", ref: "@{peppy-release}" },
   { id: 3, type: "git", url: "https://github.com/org/robot-nodes.git", ref: "feature/gripper" },
+  { id: 4, type: "oci", url: "oci://ghcr.io/acme/peppy-nodes" },
 ]
 ```
 
@@ -61,8 +62,9 @@ The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if
 |------|--------|-------------|
 | `fs` | `path` | A local directory, read through its committed [`peppy_repository.json5`](#the-repository-index). |
 | `git` | `url`, `ref` (optional) | A git repository. Peppy fetches the one commit that `ref` names, without its history, and reads the same committed index. Use `ref` to pin a branch, tag, or commit, or write `@{peppy-release}` to read the hub content released with your Peppy version (see below). The `url` is HTTPS or an SSH URL (see [Private git repositories over SSH](#private-git-repositories-over-ssh)). |
+| `oci` | `url` | An OCI repository of a container registry, `oci://<registry host>/<repository path>`, that holds the prebuilt `.sif` images of container nodes. Peppy pulls the image of a node instead of building it. It holds nodes only, and has no `ref` and no index (see [OCI repositories](#oci-repositories)). |
 
-These are the only two source types. An entry with any other `type` fails its read as `unreachable` with an "unrecognized repository entry" detail.
+These are the only three source types. An entry with any other `type` fails its read as `unreachable` with an "unrecognized repository entry" detail.
 
 `ref: "@{peppy-release}"` always resolves to a tag, never to a branch. In a release build of Peppy it reads the tag `peppy-release/<version>` of that build; in a build without a release version it reads `main`. Only the Peppy-bot hubs carry `peppy-release/` tags, so for a repository of another organization, `ref` names a branch, a tag, or a commit. Git refuses every branch or tag name that contains `@{`, so no ref of a repository can clash with `@{peppy-release}`; any other `ref` value that contains `@{` (such as `main@{1}` or `@{upstream}`) is refused, and the entry fails its read as `unreachable`. Of the other `ref` values, 40 hexadecimal characters name a commit, and any other value is looked up among the refs of the repository as written (such as `refs/tags/v1`), then as a branch, then as a tag, so `ref: "peppy-release/v0.31.2"` pins the hubs of that one release. Without `ref`, Peppy reads the commit of the repository's `HEAD`.
 
@@ -101,6 +103,31 @@ agent is refused by name; give every host the same `IdentityAgent` and restart t
 Load a key the remote accepts into the agent `ssh` uses, or keep an unencrypted identity file at one
 of the configured paths, and both [`peppy repo add`](#add-a-repository) and `peppy node add` reach the
 repository over SSH.
+
+### OCI repositories
+
+An `oci` repository holds container nodes as prebuilt Apptainer images: one artifact for each node, Peppy version and platform, which [`peppy node publish`](/advanced_guides/publishing/) pushes. A machine that reads the repository pulls the image of a node in the time of a download, instead of building it. Add one with its URL:
+
+```sh
+peppy repo add oci://ghcr.io/acme/peppy-nodes --top
+peppy repo refresh
+```
+
+The URL has the form `oci://<registry host>/<repository path>`. The host is lowercase and can have a port. Each component of the path holds lowercase letters and digits, joined by `.`, `_`, `__` or `-`. The URL holds no credentials, query, or fragment: Peppy reads the credentials of the registry from the auth file of Apptainer (see [Registry credentials](/advanced_guides/publishing/#registry-credentials)), and a public repository needs none. Peppy reaches a registry on this machine (`localhost`, a `127.0.0.0/8` address, or `::1`) over plain HTTP, and every other registry over HTTPS. An `oci` entry has no `ref`, so `--ref` is refused for it.
+
+The artifacts of a repository are made for one Peppy version each, so only a release build of Peppy reads an `oci` repository. A build of Peppy without a release version refuses `peppy repo add` of an `oci` URL, and a refresh reports an `oci` entry of `repositories.json5` as `unreachable`.
+
+A refresh lists the tags of the repository and reads the artifacts of the version of this Peppy only: Peppy `v0.32.0` reads the tags that end with `.v0.32.0.linux-amd64` and `.v0.32.0.linux-arm64`. It records a node when the repository holds an artifact of the node for the platform of this machine: `linux/amd64` or `linux/arm64`, after the architecture of the machine, also on macOS. A node that the repository holds no artifact of for this platform is not recorded, and the refresh shows a line for it, so a repository with a higher `id` that holds the sources of the node supplies it. The refresh also leaves out a node, with a line that tells why, when one of its tags holds no node artifact, when two of its tags claim the same platform, or when its platforms were built from different revisions of the node. Without that last rule, a stack across an amd64 and an arm64 machine could run two revisions of one node.
+
+The refresh keeps the `peppy.json5` of each node it records in `~/.peppy/cache/oci_node_manifests/`, so `peppy repo search`, `peppy repo show` and `peppy stack resolve` read it without the registry.
+
+`peppy node add <name>:<tag>` of a node that an `oci` repository supplies pulls the `.sif` of the platform of this machine by its digest, checks the bytes against the digest while they arrive, and adds the node ready to start: there is nothing to stage, generate or build. A pull that fails fails the add, with the repository, the tag, the digest and the cause; Peppy does not build the node from sources instead. A machine of a federated launch pulls the artifact of its own platform.
+
+A node of an `oci` repository has no sources on this machine, so:
+
+- `peppy node build` and `peppy node rebuild` refuse it: `` `<name>:<tag>` comes from the oci repository `<url>` and has no sources. To build it, add a git or fs repository that holds it, with a lower id. ``
+- `peppy node publish` refuses it, and `peppy stack build --publish` shows it in its report as not published.
+- A repository with a lower `id` that holds the same `name:tag` supplies the node, as for every other source type. To pull a node that a `git` repository also holds, give the `oci` repository the lower `id` (`--top`). To build it from its sources again, give the `git` or `fs` repository the lower `id`.
 
 ## Commands
 
@@ -251,8 +278,9 @@ Re-scans all configured repositories and rebuilds the node, launcher, contract, 
 - Resolves `ref: "@{peppy-release}"` to the ref this Peppy reads: the tag `peppy-release/<version>` in a release build, `main` in any other build.
 - Skips any repository or path listed in `excluded_repositories.json5`.
 - Reads local directories in place. Of each git repository, it fetches only the commit that its `ref` names, at depth 1: no history, no other branch, and no other tag.
+- Of each `oci` repository, lists the tags and reads the manifests of the artifacts of this Peppy version, and records the container nodes that have an artifact for the platform of this machine (see [OCI repositories](#oci-repositories)).
 - Reads up to 8 repositories at once, so a refresh takes about as long as its slowest repository.
-- Records what each repository's committed [`peppy_repository.json5`](#the-repository-index) publishes: nodes and their tags, together with the contract and pairing links each node's manifest declares, launchers (one per name, no tag), and contracts, pairings, and MCP exposures (keyed by their manifest `name:tag`). A repository without that file fails its read with instructions to run `peppy repo index`.
+- Records what each `fs` and `git` repository's committed [`peppy_repository.json5`](#the-repository-index) publishes: nodes and their tags, together with the contract and pairing links each node's manifest declares, launchers (one per name, no tag), and contracts, pairings, and MCP exposures (keyed by their manifest `name:tag`). A repository without that file fails its read with instructions to run `peppy repo index`.
 - Keeps the [descriptions](/reference/concepts/#descriptions) of each node, launcher, contract and pairing in the caches, so `peppy repo search` and `peppy repo show` read no document.
 - Reports each excluded repository and the progress of each read in real time, and each discovered node, launcher, contract, pairing, and MCP exposure when every repository is read, in priority order.
 - Caches results in `~/.peppy/cache/nodes.json5`, `~/.peppy/cache/launchers.json5`, `~/.peppy/cache/contracts.json5`, `~/.peppy/cache/pairings.json5`, and `~/.peppy/cache/mcp_exposures.json5`, and records per-repository read status in `~/.peppy/cache/repo_status.json5`.
@@ -295,7 +323,7 @@ Two read failures are reported, and the distinction matters because they send yo
 
 | Read failure | Meaning | Typical cause |
 | --- | --- | --- |
-| `unreachable` | The repository could not be read at all. | Network outage, a bad git ref, a `peppy-release/<version>` tag that the hub does not carry, a local path that is not mounted, a root with no committed `peppy_repository.json5`, an unrecognized entry in `repositories.json5`. |
+| `unreachable` | The repository could not be read at all. | Network outage, a bad git ref, a `peppy-release/<version>` tag that the hub does not carry, a local path that is not mounted, a root with no committed `peppy_repository.json5`, an unrecognized entry in `repositories.json5`, a registry that refuses the credentials of this machine, an `oci` repository read by a build of Peppy without a release version. |
 | `conflict` | The repository was read fine, but its committed index contradicts itself or the tree. | An index that fails to parse (a duplicate key, an unknown field, an illegal path), or a listed path that is missing, is of another kind, or declares another identity. |
 
 An `unreachable` repository is an outage, so the fix is usually to wait or fix connectivity. A `conflict` is a content bug in the repository, and the message names the exact files, so the fix is a change to that repository.
@@ -326,6 +354,9 @@ peppy repo add git@github.com:org/private-repo.git
 
 # Git repository pinned to a branch or tag
 peppy repo add https://github.com/org/repo.git --ref v2.0
+
+# OCI repository of prebuilt container nodes (see "OCI repositories" above)
+peppy repo add oci://ghcr.io/acme/peppy-nodes
 
 # A Peppy-bot hub that follows the Peppy release, at a pinned id
 peppy repo add git@github.com:Peppy-bot/private-nodes-hub.git --ref @{peppy-release} --id 2000

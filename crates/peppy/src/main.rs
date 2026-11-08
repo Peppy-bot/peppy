@@ -721,6 +721,46 @@ mod tests {
         );
     }
 
+    /// `node publish --platforms` takes the OCI spelling of each platform,
+    /// comma-separated, and refuses any other spelling.
+    #[test]
+    fn node_publish_takes_platforms_in_their_oci_spelling() {
+        let cli = Cli::try_parse_from([
+            "peppy",
+            "node",
+            "publish",
+            "camera:v1",
+            "--platforms",
+            "linux/arm64,linux/amd64",
+        ])
+        .expect("`node publish --platforms` parses");
+        let Commands::Node {
+            command: node::NodeCommands::Publish { platforms, .. },
+        } = cli.command
+        else {
+            panic!("`node publish` parses as a publish");
+        };
+        assert_eq!(
+            platforms,
+            [
+                core_node_api::encoding::ArtifactPlatform::LinuxArm64,
+                core_node_api::encoding::ArtifactPlatform::LinuxAmd64
+            ]
+        );
+        assert!(
+            Cli::try_parse_from([
+                "peppy",
+                "node",
+                "publish",
+                "camera:v1",
+                "--platforms",
+                "arm64"
+            ])
+            .is_err(),
+            "a platform without its OS is refused"
+        );
+    }
+
     /// `--local` is the other half of the placement grammar, and a build
     /// takes it exactly as a launch does.
     #[test]

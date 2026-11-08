@@ -907,7 +907,9 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         daemon_config::consts::HOST_ARTIFACT_PLATFORM.tag_suffix()
     );
     let fingerprint = file_name.strip_suffix(&suffix).unwrap_or_else(|| {
-        panic!("stored image should end in {suffix}, the platform of this machine, got: {file_name}")
+        panic!(
+            "stored image should end in {suffix}, the platform of this machine, got: {file_name}"
+        )
     });
     assert_eq!(
         fingerprint.len(),

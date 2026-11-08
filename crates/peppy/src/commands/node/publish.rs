@@ -105,11 +105,6 @@ fn report_publish(node_name: &str, node_tag: &str, published: &[PlatformPublish]
     )))
 }
 
-/// Parses a `--platforms` value: `linux/amd64` or `linux/arm64`.
-pub(crate) fn parse_platform(raw: &str) -> std::result::Result<ArtifactPlatform, String> {
-    ArtifactPlatform::parse(raw).map_err(|e| e.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,14 +157,5 @@ mod tests {
             error.to_string().contains("1 platform(s) of waldo:v1"),
             "{error}"
         );
-    }
-
-    #[test]
-    fn platforms_parse_from_their_oci_spelling() {
-        assert_eq!(
-            parse_platform("linux/arm64"),
-            Ok(ArtifactPlatform::LinuxArm64)
-        );
-        assert!(parse_platform("arm64").is_err());
     }
 }

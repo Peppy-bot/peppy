@@ -477,7 +477,7 @@ pub enum NodeCommands {
         node_ref: (String, String),
         /// Platforms to build and push beside the one of the daemon,
         /// comma-separated: linux/amd64, linux/arm64
-        #[arg(long, value_delimiter = ',', value_parser = publish::parse_platform)]
+        #[arg(long, value_delimiter = ',', value_parser = core_node_api::encoding::ArtifactPlatform::parse)]
         platforms: Vec<core_node_api::encoding::ArtifactPlatform>,
         /// Idle timeout in seconds of each platform build; resets on build output, bytes written to disk, or CPU time the build burns
         #[arg(long, default_value_t = DEFAULT_BUILD_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]

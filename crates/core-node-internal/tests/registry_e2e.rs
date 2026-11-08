@@ -21,10 +21,10 @@ mod registry_e2e_tests {
     use config::failure_kind::PeppyFailureKind;
     use config::node::Toolchain;
     use core_node_api::encoding::{
-        ArtifactPlatform, ArtifactVersion, NodeBuildFeedback, NodeBuildGoal,
-        NodeBuildGoalResponse, NodeBuildResult, NodeInitRequest, NodePublishRequest,
-        OciRepository, PublishOutcome, PublishRefusals, RepoRefreshFeedback, RepoRefreshGoal,
-        RepoRefreshGoalResponse, RepoRefreshResult,
+        ArtifactPlatform, ArtifactVersion, NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse,
+        NodeBuildResult, NodeInitRequest, NodePublishRequest, OciRepository, PublishOutcome,
+        PublishRefusals, RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse,
+        RepoRefreshResult,
     };
     use daemon_config::consts::{HOST_ARTIFACT_PLATFORM, artifact_version};
     use oci_registry::manifest::{
@@ -44,9 +44,7 @@ mod registry_e2e_tests {
     /// The version of the artifacts of this peppy.
     fn version() -> ArtifactVersion {
         artifact_version().unwrap_or_else(|reason| {
-            panic!(
-                "the registry tests need a peppy built with PEPPY_GIT_TAG set: {reason}"
-            )
+            panic!("the registry tests need a peppy built with PEPPY_GIT_TAG set: {reason}")
         })
     }
 
@@ -213,7 +211,10 @@ mod registry_e2e_tests {
             .push_blob_bytes(manifest.as_bytes())
             .await
             .expect("push peppy.json5");
-        client.push_blob_bytes(EMPTY_CONFIG).await.expect("push config");
+        client
+            .push_blob_bytes(EMPTY_CONFIG)
+            .await
+            .expect("push config");
         let artifact = NodeArtifactManifest {
             artifact: NodeArtifact {
                 node_name: node.to_owned(),
@@ -290,8 +291,13 @@ mod registry_e2e_tests {
         let node_dir = nodes_root.path().join("hello_oci");
         add_path(&publisher, &node_dir).await;
 
-        let first = publish(&publisher, "hello_oci", Vec::new()).await.completed();
-        let host_artifact = first.artifact_path.clone().expect("the host artifact is built");
+        let first = publish(&publisher, "hello_oci", Vec::new())
+            .await
+            .completed();
+        let host_artifact = first
+            .artifact_path
+            .clone()
+            .expect("the host artifact is built");
         let [published] = first.published.as_slice() else {
             panic!("one platform: {first:?}");
         };
@@ -301,14 +307,25 @@ mod registry_e2e_tests {
         };
         assert_eq!(
             tag,
-            &format!("hello_oci.v1.{version}.{}", HOST_ARTIFACT_PLATFORM.tag_suffix())
+            &format!(
+                "hello_oci.v1.{version}.{}",
+                HOST_ARTIFACT_PLATFORM.tag_suffix()
+            )
         );
 
         add_path(&publisher, &node_dir).await;
-        let again = publish(&publisher, "hello_oci", Vec::new()).await.completed();
-        assert_eq!(again.artifact_path, None, "a platform published already builds nothing");
+        let again = publish(&publisher, "hello_oci", Vec::new())
+            .await
+            .completed();
+        assert_eq!(
+            again.artifact_path, None,
+            "a platform published already builds nothing"
+        );
         assert!(
-            matches!(again.published[0].outcome, PublishOutcome::AlreadyPublished { .. }),
+            matches!(
+                again.published[0].outcome,
+                PublishOutcome::AlreadyPublished { .. }
+            ),
             "{again:?}"
         );
 
@@ -350,10 +367,16 @@ mod registry_e2e_tests {
         .expect("the add ends");
         assert!(end.is_completed(), "{end:?}");
         let entity = puller.node_stack.find("hello_oci", "v1").expect("added");
-        let pulled = entity.read().artifact_path().expect("an image").to_path_buf();
+        let pulled = entity
+            .read()
+            .artifact_path()
+            .expect("an image")
+            .to_path_buf();
         assert_eq!(
             oci_registry::digest::of_file(&pulled).expect("hash").0,
-            oci_registry::digest::of_file(&host_artifact).expect("hash").0,
+            oci_registry::digest::of_file(&host_artifact)
+                .expect("hash")
+                .0,
             "the pulled image is the published one"
         );
 
@@ -415,8 +438,7 @@ mod registry_e2e_tests {
         assert!(platforms.contains_key(host.as_str()) && platforms.contains_key(other.as_str()));
         assert!(cached_node(&started, "older").is_none(), "another version");
         assert_eq!(
-            cached_node(&started, "elsewhere").expect("from the fs repository")["origin"]
-                ["source_type"],
+            cached_node(&started, "elsewhere").expect("from the fs repository")["origin"]["source_type"],
             "fs"
         );
         assert!(cached_node(&started, "split").is_none(), "two revisions");
@@ -461,8 +483,15 @@ mod registry_e2e_tests {
         let version = version();
         let registry = LocalRegistry::start(RegistryAuth::Anonymous);
         let sif = vec![7u8; 4096];
-        push_fake_artifact(&registry, "tampered", HOST_ARTIFACT_PLATFORM, &version, "r1", &sif)
-            .await;
+        push_fake_artifact(
+            &registry,
+            "tampered",
+            HOST_ARTIFACT_PLATFORM,
+            &version,
+            "r1",
+            &sif,
+        )
+        .await;
         let digest = oci_registry::digest::of_bytes(&sif);
         let blob = registry.storage_dir().join(format!(
             "docker/registry/v2/blobs/sha256/{}/{}/data",
@@ -488,7 +517,10 @@ mod registry_e2e_tests {
         .await
         .expect("the add ends");
         let message = end.failure_message().to_owned();
-        assert!(message.contains(&repository(&registry).to_string()), "{message}");
+        assert!(
+            message.contains(&repository(&registry).to_string()),
+            "{message}"
+        );
         assert!(message.contains(digest.as_str()), "{message}");
         assert!(message.contains("tampered.v1."), "{message}");
         let stored = started.peppy_dirs.built_node_dir("tampered", "v1");

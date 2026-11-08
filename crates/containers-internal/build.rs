@@ -320,7 +320,11 @@ mod apptainer_build {
     /// The other Linux architecture than `arch`, whose platform a build of
     /// this host makes in an emulated VM.
     fn other_linux_arch(arch: &str) -> &'static str {
-        if arch == "x86_64" { "aarch64" } else { "x86_64" }
+        if arch == "x86_64" {
+            "aarch64"
+        } else {
+            "x86_64"
+        }
     }
 
     /// Stable digest of a cache path, for `.copy-source` sentinels. The
@@ -464,9 +468,7 @@ mod apptainer_build {
         match (version, os, arch) {
             ("2.2.0", "Darwin", "arm64") => Some(LIMA_ADDITIONAL_GUESTAGENTS_DARWIN_ARM64_SHA256),
             ("2.2.0", "Linux", "x86_64") => Some(LIMA_ADDITIONAL_GUESTAGENTS_LINUX_X86_64_SHA256),
-            ("2.2.0", "Linux", "aarch64") => {
-                Some(LIMA_ADDITIONAL_GUESTAGENTS_LINUX_AARCH64_SHA256)
-            }
+            ("2.2.0", "Linux", "aarch64") => Some(LIMA_ADDITIONAL_GUESTAGENTS_LINUX_AARCH64_SHA256),
             _ => None,
         }
     }
@@ -2205,11 +2207,7 @@ echo "=== Apptainer build complete ==="
     /// with the guest agent of the Linux architecture `other_arch`, which a
     /// VM of that architecture runs, and copies it to OUT_DIR for release
     /// packaging. `None` when Lima cannot be downloaded.
-    fn setup_lima(
-        out_dir: &str,
-        lima_host: (&str, &str),
-        other_arch: &str,
-    ) -> Option<LimaConfig> {
+    fn setup_lima(out_dir: &str, lima_host: (&str, &str), other_arch: &str) -> Option<LimaConfig> {
         let (os, arch) = lima_host;
         let lima_cache_dir = ensure_lima_cached(LIMA_VERSION, os, arch)?;
         let lima_share = lima_cache_dir.join("share/lima");
