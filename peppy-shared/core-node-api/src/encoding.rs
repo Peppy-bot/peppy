@@ -38,11 +38,13 @@ pub use node::{
     builder::NodeBuildGoalResponse, builder::NodeBuildResult, documents::InstanceDocuments,
     documents::InstanceDocumentsRequest, documents::PinnedDocument, info::NodeInfo,
     info::NodeInfoRequest, info::NodeInfoResponse, info::NodeInstanceInfo, init::NodeInitRequest,
-    init::NodeInitResponse, remove::NodeRemoveRequest, remove::NodeRemoveResponse,
-    run::DuplicateObservationTarget, run::NodeRunFeedback, run::NodeRunGoal,
-    run::NodeRunGoalResponse, run::NodeRunResult, run::ObservationTarget, run::ObservationTargets,
-    run::PairTarget, run::RemotePeerPairing, stop::NodeStopRequest, stop::NodeStopResponse,
-    sync::NodeSyncRequest, sync::NodeSyncResponse, sync::RepoResolvedEntry,
+    init::NodeInitResponse, publish::NodePublishRequest, publish::NotPublishedReason,
+    publish::PlatformPublish, publish::PublishOutcome, publish::PublishRefusals,
+    remove::NodeRemoveRequest, remove::NodeRemoveResponse, run::DuplicateObservationTarget,
+    run::NodeRunFeedback, run::NodeRunGoal, run::NodeRunGoalResponse, run::NodeRunResult,
+    run::ObservationTarget, run::ObservationTargets, run::PairTarget, run::RemotePeerPairing,
+    stop::NodeStopRequest, stop::NodeStopResponse, sync::NodeSyncRequest, sync::NodeSyncResponse,
+    sync::RepoResolvedEntry,
 };
 pub use repo::{
     ArtifactPlatform, ArtifactPlatformError, ArtifactTag, ArtifactTagError, ArtifactVersion,

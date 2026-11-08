@@ -238,6 +238,58 @@ struct NodeBuildGoal {
     # which reuses such an artifact. Unrelated to `force`, which only cancels
     # an in-flight build of the same node.
     rebuild @6 :Bool;
+    # Publish the .sif of the node to an OCI repository with its build.
+    # Absent: the goal builds only.
+    publish @7 :NodePublishRequest;
+}
+
+# The publish a build goal asks for, of a container node.
+struct NodePublishRequest {
+    # The URL of the OCI repository to push to, oci://<host>/<path>. Empty:
+    # the publish_repository of the daemon that builds.
+    repository @0 :Text;
+    # The platforms to build and push beside the one of the host, each
+    # "linux/amd64" or "linux/arm64".
+    extraPlatforms @1 :List(Text);
+    # How a platform that cannot be published ends the goal. False (peppy
+    # node publish): the daemon checks every platform before any build, and
+    # the goal fails at the first refusal. True (peppy stack build
+    # --publish): the node builds as a build does, and the result reports
+    # each platform that was not published.
+    reportRefusals @2 :Bool;
+}
+
+# Why a platform of a node was not published.
+enum NotPublishedReason {
+    buildFailed @0;
+    baseImageLacksPlatform @1;
+    emulatorMissing @2;
+    publishedWithAnotherSourceDigest @3;
+    registryRefused @4;
+    registryUnreachable @5;
+    noCredential @6;
+    peppylibMissing @7;
+}
+
+# What the publish of a build goal did for one platform.
+struct PlatformPublish {
+    # "linux/amd64" or "linux/arm64".
+    platform @0 :Text;
+    outcome :union {
+        pushed :group {
+            # The tag the artifact has in the repository.
+            tag @1 :Text;
+            # The digest of its manifest, sha256:<hex>.
+            manifestDigest @2 :Text;
+        }
+        # The repository holds the artifact of this revision already; its
+        # tag.
+        alreadyPublished @3 :Text;
+        notPublished :group {
+            reason @4 :NotPublishedReason;
+            detail @5 :Text;
+        }
+    }
 }
 
 # The goal response of an accepted node build. The daemon refuses a goal
@@ -258,6 +310,9 @@ struct NodeBuildFeedback {
 struct NodeBuildResult {
     # Path to the resulting .sif/archive in storage
     artifactPath @0 :Text;
+    # What the publish of the goal did, one entry per platform, the host
+    # platform first. Empty for a goal that asks for no publish.
+    published @1 :List(PlatformPublish);
 }
 
 # Node Init service

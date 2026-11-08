@@ -4,6 +4,7 @@ pub mod builder;
 pub mod documents;
 pub mod info;
 pub mod init;
+pub mod publish;
 pub mod remove;
 pub mod run;
 pub mod stop;
