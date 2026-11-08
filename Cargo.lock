@@ -3435,6 +3435,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "oci-registry"
+version = "0.0.1"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "containers",
+ "core-node-api",
+ "daemon-config",
+ "httpmock",
+ "peppy-config-model",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "oid-registry"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

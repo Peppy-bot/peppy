@@ -1,0 +1,35 @@
+[package]
+name = "oci-registry"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Reads the Docker style auth file apptainer reads, with the same sanitisation,
+# so that peppy and apptainer see the same registry credentials.
+containers = { workspace = true }
+# The repository, platform, tag and digest types of a publish repository.
+core-node-api = { workspace = true }
+config = { workspace = true }
+# The version the user agent of the requests names.
+daemon-config = { workspace = true }
+# The OCI distribution API over HTTP(S). Like the PyPI mirror check, the
+# requests go through the proxy that ALL_PROXY, HTTPS_PROXY or HTTP_PROXY of
+# the daemon names; `socks` lets that proxy be a SOCKS one.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "socks"] }
+bytes = "1"
+tokio = { version = "1", features = ["fs", "io-util", "process", "sync"] }
+sha2 = "0.11"
+base64 = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2.0"
+tracing = "0.1"
+url = "2"
+# The temporary file a pulled blob is written to before it is checked and
+# moved into place.
+tempfile = "3"
+
+[dev-dependencies]
+httpmock = "0.9"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

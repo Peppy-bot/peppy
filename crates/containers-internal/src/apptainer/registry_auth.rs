@@ -178,6 +178,56 @@ impl RegistryAuth {
     }
 }
 
+/// The registry credentials of the auth file apptainer would read right now,
+/// without Docker CLI's OAuth token entries.
+///
+/// What peppy's own registry client reads before each pull and push, so that
+/// it and apptainer see the same credentials, and a `docker login` made while
+/// the daemon runs applies to the next pull or push.
+#[derive(Debug, Default, PartialEq)]
+pub struct RegistryAuthFile {
+    credentials: AuthFileCredentials,
+}
+
+impl RegistryAuthFile {
+    /// Reads the file apptainer would read, located from this process's
+    /// environment. A missing file holds no credentials.
+    pub fn read_from_env() -> Result<Self> {
+        Self::read(RegistryAuthSource::from_env()?.current_path())
+    }
+
+    /// Reads `path` as apptainer would. A missing file holds no credentials.
+    pub fn read(path: &Path) -> Result<Self> {
+        Ok(Self {
+            credentials: read_registry_credentials(path)?.file,
+        })
+    }
+
+    /// The entries under `auths`, by the key the file names each registry
+    /// with (`ghcr.io`, `https://ghcr.io`, `https://index.docker.io/v1/`).
+    pub fn auths(&self) -> impl Iterator<Item = (&str, &serde_json::Value)> {
+        self.credentials
+            .auths
+            .iter()
+            .flatten()
+            .map(|(key, entry)| (key.as_str(), entry))
+    }
+
+    /// The credential helper `credHelpers` names for `registry`.
+    pub fn credential_helper(&self, registry: &str) -> Option<&str> {
+        self.credentials
+            .cred_helpers
+            .as_ref()?
+            .get(registry)
+            .map(String::as_str)
+    }
+
+    /// The credential helper `credsStore` names for every registry.
+    pub fn credentials_store(&self) -> Option<&str> {
+        self.credentials.creds_store.as_deref()
+    }
+}
+
 /// A Docker-style auth file reduced to the fields apptainer reads credentials
 /// from. Entries under `auths` stay opaque: peppy only decides which keys to
 /// keep, never what an entry holds.
@@ -326,6 +376,32 @@ mod tests {
             "credHelpers": {"123456789012.dkr.ecr.us-east-1.amazonaws.com": "ecr-login"},
             "credsStore": "secretservice"
         })
+    }
+
+    #[test]
+    fn the_auth_file_reader_sees_every_credential_but_the_oauth_tokens() {
+        let dir = scratch_dir();
+        let path = dir.path().join("config.json");
+        fs::write(&path, WEB_LOGIN_CONFIG).expect("write config");
+
+        let file = RegistryAuthFile::read(&path).expect("read");
+
+        let keys: Vec<&str> = file.auths().map(|(key, _)| key).collect();
+        assert_eq!(keys, ["ghcr.io", "https://index.docker.io/v1/"]);
+        assert_eq!(
+            file.credential_helper("123456789012.dkr.ecr.us-east-1.amazonaws.com"),
+            Some("ecr-login")
+        );
+        assert_eq!(file.credential_helper("ghcr.io"), None);
+        assert_eq!(file.credentials_store(), Some("secretservice"));
+    }
+
+    #[test]
+    fn a_missing_auth_file_holds_no_credentials() {
+        let dir = scratch_dir();
+        let file = RegistryAuthFile::read(&dir.path().join("absent.json")).expect("read");
+        assert_eq!(file, RegistryAuthFile::default());
+        assert_eq!(file.auths().count(), 0);
     }
 
     // -----------------------------------------------------------------------
