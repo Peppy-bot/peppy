@@ -562,6 +562,8 @@ On Linux the daemon derives its default core node name from the machine id the d
 
 After a build, `peppy stack list` shows each node at stage `Ready` with `0` instances, under a `Slice of launch <id>` line naming the build that replaced this machine's stack. A build records no launcher, so `peppy stack join` is refused until `peppy stack launch` starts the stack. A machine booted from the image starts with an empty stack: its builds wait under `~/.peppy/built_nodes/`, and its launch names each one it reuses with a `Reusing cached build of` line.
 
+`peppy stack build --publish` also pushes the image of each container node that each machine builds to an OCI registry, from which other machines pull the node instead of building it. See [Publish the nodes of a stack](/advanced_guides/publishing/#publish-the-nodes-of-a-stack).
+
 ### Building the nodes a join brings
 
 A launcher whose MCP endpoint serves a [`robot_membership` daemon target](/advanced_guides/mcp/#daemon-targets) lets a client add robots after the launch. The launch builds their nodes first, so that a join on the coordinator adds and starts nodes and builds none.
