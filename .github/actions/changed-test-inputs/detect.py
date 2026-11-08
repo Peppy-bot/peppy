@@ -81,9 +81,10 @@ TREE_SUITES = {
     # it installs (`build_release.sh --local --tag dev-<commit>`), with its
     # build cache kept by the cargo-cache action and reported by the
     # sticky-disk-report action it runs, and verify_release checks that
-    # archive before the build hands it on; the install-test action,
-    # run_tests.sh, conftest, the helpers and the three test modules are what
-    # drives it; and the manifests pin the pixi environment the tests run in.
+    # archive before the build hands it on; the install-test action, the
+    # run_installer.sh it installs pixi with, run_tests.sh, conftest, the
+    # helpers and the three test modules are what drives it; and the
+    # manifests pin the pixi environment the tests run in.
     "install_script": [
         "scripts/install.sh",
         "scripts/build_release.sh",
@@ -91,6 +92,7 @@ TREE_SUITES = {
         "scripts/functions/build_release.py",
         "scripts/functions/cli.py",
         "scripts/functions/verify_release.py",
+        "scripts/run_installer.sh",
         "scripts/run_tests.sh",
         "scripts/tests/conftest.py",
         "scripts/tests/install_helpers.py",

@@ -56,14 +56,15 @@ runs:
     #
     # The script names its install directories on $GITHUB_PATH itself, so the
     # steps after this one find what it installed.
+    #
+    # The installers the script runs, that of pixi among them, download with
+    # no retry of their own, so run_installer.sh runs the script again when it
+    # fails. A second run installs only what the first one did not.
     - name: Provision this host the way the CI image is provisioned
       shell: bash
       env:
         SETUP_MACHINE_URL: https://gist.githubusercontent.com/godardt/b20a8817e2991eba0bd0d613855627e0/raw/setup_machine.sh
-      run: |
-        set -euo pipefail
-        curl -fsSL --retry 3 --retry-connrefused "$SETUP_MACHINE_URL" |
-          bash -s -- --build-only
+      run: ./scripts/run_installer.sh "$SETUP_MACHINE_URL" --build-only
 
     # Linux builds in the same environment as every cargo job of this
     # repository, which is also what checks the step above left a complete
@@ -76,7 +77,7 @@ runs:
       if: inputs.claude == 'true'
       shell: bash
       run: |
-        curl -fsSL https://claude.ai/install.sh | bash
+        ./scripts/run_installer.sh https://claude.ai/install.sh
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
     - name: Configure the commit author

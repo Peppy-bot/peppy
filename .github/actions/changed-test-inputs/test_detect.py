@@ -259,6 +259,7 @@ class Detection(unittest.TestCase):
         for path in (
             "scripts/install.sh",
             "scripts/build_release.sh",
+            "scripts/run_installer.sh",
             "scripts/run_tests.sh",
             "scripts/tests/install_helpers.py",
             "scripts/tests/raspberry_pi_os.py",

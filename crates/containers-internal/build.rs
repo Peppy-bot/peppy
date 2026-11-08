@@ -531,34 +531,13 @@ mod apptainer_build {
     /// mismatch (so a corrupt download is never reused). `label` names the
     /// artifact in log messages.
     fn download_and_verify(url: &str, dest: &Path, expected_sha256: &str, label: &str) -> bool {
-        let status = Command::new("curl")
-            .args(["-fsSL", url, "-o"])
-            .arg(dest)
-            .status();
-
-        match status {
-            Ok(s) if s.success() => {
-                if build_helpers::verify_sha256(dest, expected_sha256, label) {
-                    return true;
-                }
-                std::fs::remove_file(dest).ok();
-                false
-            }
-            Ok(s) => {
-                println!(
-                    "cargo:warning=Failed to download {} from {} (exit: {})",
-                    label, url, s
-                );
-                false
-            }
-            Err(e) => {
-                println!(
-                    "cargo:warning=Failed to run curl to download {}: {}",
-                    label, e
-                );
-                false
-            }
+        if build_helpers::download_file(url, dest, label)
+            && build_helpers::verify_sha256(dest, expected_sha256, label)
+        {
+            return true;
         }
+        std::fs::remove_file(dest).ok();
+        false
     }
 
     /// Extract a Lima tarball into `dest_dir`.
@@ -943,21 +922,6 @@ mod apptainer_build {
     }
 
     // -----------------------------------------------------------------------
-    // Apptainer tarball integrity
-    // -----------------------------------------------------------------------
-
-    /// Verify a downloaded apptainer source tarball against the pinned
-    /// [`APPTAINER_SHA256`]. Returns `true` on match. On mismatch, deletes
-    /// the file (so a stale corrupted download isn't reused) and returns false.
-    fn verify_apptainer_checksum(tarball: &Path) -> bool {
-        if build_helpers::verify_sha256(tarball, APPTAINER_SHA256, "apptainer source tarball") {
-            return true;
-        }
-        std::fs::remove_file(tarball).ok();
-        false
-    }
-
-    // -----------------------------------------------------------------------
     // libseccomp: bundled alongside the binaries that link it
     // -----------------------------------------------------------------------
 
@@ -1154,34 +1118,7 @@ mod apptainer_build {
         }
 
         let url = gocryptfs_archive_url(version, arch);
-        let status = Command::new("curl")
-            .args(["-fsSL", &url, "-o"])
-            .arg(dest)
-            .status();
-
-        match status {
-            Ok(s) if s.success() => {
-                if !build_helpers::verify_sha256(dest, expected_sha256, "gocryptfs archive") {
-                    std::fs::remove_file(dest).ok();
-                    return false;
-                }
-                true
-            }
-            Ok(s) => {
-                println!(
-                    "cargo:warning=Failed to download gocryptfs from {} (exit: {})",
-                    url, s
-                );
-                false
-            }
-            Err(e) => {
-                println!(
-                    "cargo:warning=Failed to invoke curl for gocryptfs download: {}",
-                    e
-                );
-                false
-            }
-        }
+        download_and_verify(&url, dest, expected_sha256, "gocryptfs archive")
     }
 
     /// Extract `gocryptfs` and `gocryptfs-xray` from the release tarball
@@ -1374,18 +1311,7 @@ mod apptainer_build {
         }
 
         let url = squashfuse_source_url(SQUASHFUSE_VERSION);
-        if !build_helpers::run_command(
-            Command::new("curl").args(["-fsSL", &url, "-o"]).arg(dest),
-            &format!("download squashfuse {} source archive", SQUASHFUSE_VERSION),
-        ) {
-            return false;
-        }
-
-        if !build_helpers::verify_sha256(dest, SQUASHFUSE_SHA256, "squashfuse source archive") {
-            std::fs::remove_file(dest).ok();
-            return false;
-        }
-        true
+        download_and_verify(&url, dest, SQUASHFUSE_SHA256, "squashfuse source archive")
     }
 
     /// Copy the freshly built `squashfuse_ll` into apptainer's search directory.
@@ -1622,17 +1548,13 @@ mod apptainer_build {
             std::fs::remove_dir_all(&source_dir).ok();
         }
 
-        if !build_helpers::run_command(
-            Command::new("curl")
-                .args(["-fsSL", &tarball_url, "-o"])
-                .arg(&tarball_path),
-            &format!("download apptainer {version} source tarball"),
+        // Verified before anything reads the contents.
+        if !download_and_verify(
+            &tarball_url,
+            &tarball_path,
+            APPTAINER_SHA256,
+            "apptainer source tarball",
         ) {
-            return false;
-        }
-
-        // Verify integrity before touching the contents.
-        if !verify_apptainer_checksum(&tarball_path) {
             return false;
         }
 
@@ -1906,7 +1828,7 @@ go_root=/tmp/peppy/go-{go_version}
 if [ ! -x "$go_root/bin/go" ]; then
   rm -rf "$go_root"
   mkdir -p "$go_root"
-  curl -fsSL "https://go.dev/dl/go{go_version}.linux-$go_arch.tar.gz" -o /tmp/go-{go_version}.tar.gz
+  curl {curl_options} "https://go.dev/dl/go{go_version}.linux-$go_arch.tar.gz" -o /tmp/go-{go_version}.tar.gz
   echo "$go_sha  /tmp/go-{go_version}.tar.gz" | sha256sum -c -
   tar -C "$go_root" --strip-components=1 -xzf /tmp/go-{go_version}.tar.gz
   rm -f /tmp/go-{go_version}.tar.gz
@@ -1916,7 +1838,7 @@ export GOTOOLCHAIN=local
 cd /tmp
 rm -rf apptainer-{version} apptainer-{version}.tar.gz {install_dir}
 echo "=== Downloading apptainer {version} source ==="
-curl -fsSL https://github.com/apptainer/apptainer/releases/download/v{version}/apptainer-{version}.tar.gz -o apptainer-{version}.tar.gz
+curl {curl_options} https://github.com/apptainer/apptainer/releases/download/v{version}/apptainer-{version}.tar.gz -o apptainer-{version}.tar.gz
 echo "=== Verifying apptainer source tarball SHA-256 ==="
 echo "{sha}  apptainer-{version}.tar.gz" | sha256sum -c -
 tar -xzf apptainer-{version}.tar.gz
@@ -1957,7 +1879,7 @@ echo "=== Building squashfuse {sq_version} ==="
 # `build_and_install_squashfuse`; the recipe is apptainer's own.
 cd /tmp
 rm -rf squashfuse-{sq_version} squashfuse-{sq_version}.tar.gz
-curl -fsSL {sq_url} -o squashfuse-{sq_version}.tar.gz
+curl {curl_options} {sq_url} -o squashfuse-{sq_version}.tar.gz
 echo "=== Verifying squashfuse source archive SHA-256 ==="
 echo "{sq_sha}  squashfuse-{sq_version}.tar.gz" | sha256sum -c -
 tar -xzf squashfuse-{sq_version}.tar.gz
@@ -1982,6 +1904,7 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
             sq_sha = SQUASHFUSE_SHA256,
             sq_version = SQUASHFUSE_VERSION,
             sq_url = squashfuse_source_url(SQUASHFUSE_VERSION),
+            curl_options = build_helpers::CURL_DOWNLOAD_OPTIONS,
         )
     }
 
@@ -2045,7 +1968,7 @@ trap peppy_teardown_root EXIT
 echo "=== Preparing pinned amd64 rootfs (Rosetta) ==="
 peppy_teardown_root
 sudo mkdir -p "$ROOT"
-curl -fsSL {rootfs_url} -o /tmp/amd64base.tar.gz
+curl {curl_options} {rootfs_url} -o /tmp/amd64base.tar.gz
 echo "=== Verifying amd64 rootfs SHA-256 ==="
 echo "{rootfs_sha}  /tmp/amd64base.tar.gz" | sha256sum -c -
 sudo tar -xzf /tmp/amd64base.tar.gz -C "$ROOT"
@@ -2075,6 +1998,7 @@ echo "=== Apptainer build complete ==="
 "#,
             rootfs_url = ubuntu_base_amd64_url(UBUNTU_BASE_VERSION),
             rootfs_sha = UBUNTU_BASE_AMD64_SHA256,
+            curl_options = build_helpers::CURL_DOWNLOAD_OPTIONS,
             deps = apptainer_build_deps_apt(),
             compile = apptainer_compile_steps(version, install_dir),
         )

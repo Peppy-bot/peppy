@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
-import hashlib
 import json
 import os
 import re
@@ -79,6 +78,7 @@ from .cli import (
     run_with_error_handling,
     validate_release_environment,
 )
+from .download import download
 from .github import (
     ReleaseInfo,
     RepoSlug,
@@ -453,21 +453,6 @@ _GO_TARBALLS = {
 }
 
 
-def _download(url: str, destination: Path) -> str:
-    """Download *url* to *destination* and return the file's SHA-256."""
-    digest = hashlib.sha256()
-    try:
-        with httpx.stream("GET", url, follow_redirects=True, timeout=60.0) as response:
-            response.raise_for_status()
-            with destination.open("wb") as out:
-                for chunk in response.iter_bytes():
-                    digest.update(chunk)
-                    out.write(chunk)
-    except httpx.HTTPError as e:
-        raise ReleaseError(f"failed to download {url}: {e}") from e
-    return digest.hexdigest()
-
-
 def _install_pinned_go(arch: str) -> Path:
     """Install the Go toolchain the Lima builds pin and return its bin directory.
 
@@ -487,7 +472,7 @@ def _install_pinned_go(arch: str) -> Path:
     go_root.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=go_root.parent) as scratch:
         tarball = Path(scratch) / "go.tar.gz"
-        if _download(url, tarball) != sha256:
+        if download(url, tarball) != sha256:
             raise ReleaseError(f"{url} does not match its pinned SHA-256")
         tree = _extract_tree(tarball, Path(scratch) / "tree")
         shutil.rmtree(go_root, ignore_errors=True)

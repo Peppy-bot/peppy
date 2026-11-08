@@ -489,7 +489,7 @@ def _fake_go_download(tmp_path: Path, digest: str):
 
 def test_install_pinned_go_verifies_and_installs_the_toolchain(tmp_path: Path) -> None:
     with patch(
-        "functions.parallel_release._download",
+        "functions.parallel_release.download",
         side_effect=_fake_go_download(tmp_path, GO_LINUX_ARM64_SHA256),
     ) as download:
         go_bin = _install_pinned_go("aarch64")
@@ -504,7 +504,7 @@ def test_install_pinned_go_verifies_and_installs_the_toolchain(tmp_path: Path) -
 def test_install_pinned_go_rejects_a_download_off_its_checksum(tmp_path: Path) -> None:
     with (
         patch(
-            "functions.parallel_release._download",
+            "functions.parallel_release.download",
             side_effect=_fake_go_download(tmp_path, "0" * 64),
         ),
         pytest.raises(ReleaseError, match="pinned SHA-256"),
@@ -519,7 +519,7 @@ def test_install_pinned_go_reuses_the_installed_toolchain(tmp_path: Path) -> Non
     go_bin.mkdir(parents=True)
     (go_bin / "go").write_text("installed")
 
-    with patch("functions.parallel_release._download") as download:
+    with patch("functions.parallel_release.download") as download:
         assert _install_pinned_go("x86_64") == go_bin
 
     download.assert_not_called()
