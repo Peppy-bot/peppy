@@ -173,8 +173,9 @@ pub mod repository {
     pub use crate::internal::repository::{
         DeclaredItem, DeclaredPaths, DeploymentPins, DeploymentRoot, EntryOrigin, GitCommit,
         GitCommitError, IndexedItem, ItemName, ItemTag, ManifestFingerprint,
-        ManifestFingerprintError, PeppyRepositoryIndexParser, PinKind, PinnedDocument, PinnedItem,
-        RepoItemKind, RepoPathError, RepoRelativePath, RepositoryIndex, TaggedSection, UniqueMap,
+        ManifestFingerprintError, OciArtifact, PeppyRepositoryIndexParser, PinKind, PinnedDocument,
+        PinnedItem, RepoItemKind, RepoPathError, RepoRelativePath, RepositoryIndex, TaggedSection,
+        UniqueMap,
     };
 }
 

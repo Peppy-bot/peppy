@@ -7,7 +7,11 @@
 //! from drifting apart.
 
 use super::types::{GitCommit, RepoRelativePath};
-use core_node_api::encoding::{ReadRef, RepoSourceKind};
+use core_node_api::encoding::{
+    ArtifactPlatform, ArtifactTag, OciDigest, OciRepository, ReadRef, RepoSourceKind,
+};
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// Where an item's bytes live, and which revision they were read at.
@@ -47,6 +51,29 @@ pub enum EntryOrigin {
         /// Path within the repository to the file that declares the item.
         path: RepoRelativePath,
     },
+    /// Prebuilt `.sif` artifacts of a container node in an OCI repository,
+    /// one for each platform the repository holds for the peppy version
+    /// that read it. Only nodes have this origin.
+    Oci {
+        url: OciRepository,
+        /// The revision of the node that every artifact was built from: the
+        /// sha256 of its staged tree without the vendored peppylib. The
+        /// artifacts of all platforms share it.
+        source_digest: OciDigest,
+        /// The artifact of each platform. A machine runs the one of its own
+        /// platform.
+        platforms: BTreeMap<ArtifactPlatform, OciArtifact>,
+    },
+}
+
+/// One artifact of a node in an OCI repository: its tag, the digest of its
+/// manifest, and the digest of the `.sif` layer that the manifest holds.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OciArtifact {
+    pub tag: ArtifactTag,
+    pub manifest_digest: OciDigest,
+    pub sif_digest: OciDigest,
 }
 
 impl EntryOrigin {
@@ -54,20 +81,29 @@ impl EntryOrigin {
         match self {
             EntryOrigin::Fs { .. } => RepoSourceKind::Fs,
             EntryOrigin::Git { .. } => RepoSourceKind::Git,
+            EntryOrigin::Oci { .. } => RepoSourceKind::Oci,
         }
     }
 
-    /// The path as the cache spells it: absolute for fs, repository-relative
-    /// for git. What error messages, listings, search results and refresh
-    /// reports quote.
-    pub fn path_str(&self) -> &str {
+    /// Where the item is within its repository, as the cache spells it: the
+    /// absolute path of the declaring file for fs, its repository-relative
+    /// path for git, and the artifact tags for oci. What error messages,
+    /// listings, search results and refresh reports quote.
+    pub fn path_str(&self) -> Cow<'_, str> {
         match self {
             // A path that is not valid UTF-8 renders as the fixed text
             // `<non-UTF-8 path>` rather than failing the whole cache: the
             // value is only shown to the user, and repository attribution
             // matches the `PathBuf` itself.
-            EntryOrigin::Fs { path } => path.to_str().unwrap_or("<non-UTF-8 path>"),
-            EntryOrigin::Git { path, .. } => path.as_str(),
+            EntryOrigin::Fs { path } => Cow::Borrowed(path.to_str().unwrap_or("<non-UTF-8 path>")),
+            EntryOrigin::Git { path, .. } => Cow::Borrowed(path.as_str()),
+            EntryOrigin::Oci { platforms, .. } => Cow::Owned(
+                platforms
+                    .values()
+                    .map(|artifact| artifact.tag.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
         }
     }
 
@@ -79,46 +115,60 @@ impl EntryOrigin {
     /// does.
     pub fn checkout(&self) -> Option<(&str, &GitCommit)> {
         match self {
-            EntryOrigin::Fs { .. } => None,
+            EntryOrigin::Fs { .. } | EntryOrigin::Oci { .. } => None,
             EntryOrigin::Git {
                 repo_url, commit, ..
             } => Some((repo_url, commit)),
         }
     }
 
-    /// Whether resolving this origin to an on-disk path can block on the
-    /// network: a git origin may clone or fetch, while a filesystem origin
-    /// already names a file on this machine. Callers inside tokio use it to
-    /// decide whether resolution needs [`tokio::task::spawn_blocking`].
+    /// Whether resolving this origin to bytes on disk can block on the
+    /// network: a git origin may clone or fetch, and an oci origin may read
+    /// a blob from its registry, while a filesystem origin already names a
+    /// file on this machine. Callers inside tokio use it to decide whether
+    /// resolution needs [`tokio::task::spawn_blocking`].
     pub fn resolution_may_block(&self) -> bool {
-        self.checkout().is_some()
+        match self {
+            EntryOrigin::Fs { .. } => false,
+            EntryOrigin::Git { .. } | EntryOrigin::Oci { .. } => true,
+        }
     }
 
-    /// The remote a git origin was read from. `None` for a filesystem
-    /// origin, which has no remote.
+    /// The remote a git origin was read from. `None` for a filesystem or an
+    /// oci origin, which [`EntryOrigin::oci_repository`] names.
     pub fn repo_url(&self) -> Option<&str> {
         match self {
-            EntryOrigin::Fs { .. } => None,
+            EntryOrigin::Fs { .. } | EntryOrigin::Oci { .. } => None,
             EntryOrigin::Git { repo_url, .. } => Some(repo_url),
         }
     }
 
     /// The ref a git origin is configured to follow. `None` for a
-    /// filesystem origin, and for a git origin that follows the remote's
-    /// default branch.
+    /// filesystem or an oci origin, and for a git origin that follows the
+    /// remote's default branch.
     pub fn repo_ref(&self) -> Option<&str> {
         match self {
-            EntryOrigin::Fs { .. } => None,
+            EntryOrigin::Fs { .. } | EntryOrigin::Oci { .. } => None,
             EntryOrigin::Git { repo_ref, .. } => repo_ref.as_deref(),
         }
     }
 
-    /// The commit a git origin was read at. `None` for a filesystem
-    /// origin, which has no revision to record.
+    /// The commit a git origin was read at. `None` for a filesystem origin,
+    /// which has no revision to record, and for an oci origin, whose
+    /// revision is its source digest.
     pub fn commit(&self) -> Option<&GitCommit> {
         match self {
-            EntryOrigin::Fs { .. } => None,
+            EntryOrigin::Fs { .. } | EntryOrigin::Oci { .. } => None,
             EntryOrigin::Git { commit, .. } => Some(commit),
+        }
+    }
+
+    /// The OCI repository an oci origin holds its artifacts in. `None` for
+    /// a filesystem or a git origin.
+    pub fn oci_repository(&self) -> Option<&OciRepository> {
+        match self {
+            EntryOrigin::Oci { url, .. } => Some(url),
+            EntryOrigin::Fs { .. } | EntryOrigin::Git { .. } => None,
         }
     }
 }

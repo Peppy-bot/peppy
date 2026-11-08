@@ -44,11 +44,12 @@ pub enum OciRepositoryError {
     NoHost(String),
     #[error("`{0}` names no repository path: expected oci://<registry host>/<repository path>")]
     NoPath(String),
+    /// The URL stays out of the message: it holds the credentials.
     #[error(
-        "`{0}` holds credentials: peppy reads registry credentials from the Docker style auth \
+        "the URL holds credentials: peppy reads registry credentials from the Docker style auth \
          file, never from the URL"
     )]
-    Credentials(String),
+    Credentials,
     #[error("`{0}` has a query or a fragment, which an OCI repository URL does not have")]
     QueryOrFragment(String),
     #[error(
@@ -74,7 +75,7 @@ impl OciRepository {
             return Err(OciRepositoryError::NotOciScheme(text.to_owned()));
         }
         if !url.username().is_empty() || url.password().is_some() {
-            return Err(OciRepositoryError::Credentials(text.to_owned()));
+            return Err(OciRepositoryError::Credentials);
         }
         if url.query().is_some() || url.fragment().is_some() {
             return Err(OciRepositoryError::QueryOrFragment(text.to_owned()));
@@ -631,9 +632,12 @@ mod tests {
         );
         assert_eq!(
             OciRepository::parse("oci://user:secret@ghcr.io/acme/nodes"),
-            Err(OciRepositoryError::Credentials(
-                "oci://user:secret@ghcr.io/acme/nodes".to_owned()
-            ))
+            Err(OciRepositoryError::Credentials)
+        );
+        assert!(
+            !OciRepositoryError::Credentials
+                .to_string()
+                .contains("secret")
         );
         assert_eq!(
             OciRepository::parse("oci://ghcr.io/acme/nodes?x=1"),

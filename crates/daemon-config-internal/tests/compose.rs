@@ -422,7 +422,9 @@ fn a_selection_swaps_the_deployed_option_and_pulls_in_fragments_in_order() {
         .find(|d| node_name(d) == "backbone")
         .unwrap();
     assert_eq!(
-        backbone.instances[0].arguments.get("max_stream_ee_velocity_m_s"),
+        backbone.instances[0]
+            .arguments
+            .get("max_stream_ee_velocity_m_s"),
         Some(&AnyType::Float(0.5))
     );
     assert_eq!(report.selection.echo(), "robot=mujoco  recorder=(off)");
