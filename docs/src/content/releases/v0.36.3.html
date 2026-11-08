@@ -1,0 +1,34 @@
+<entry>
+  <title>v0.36.3</title>
+  <id>https://docs.peppy.bot/releases/v0-36-3/</id>
+  <updated>2026-11-08T00:00:00Z</updated>
+
+  <summary>Publish container node images to OCI registries and pull them on other machines instead of building them.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.36.3&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Publish container node images to OCI registries and pull them on other machines instead of building them.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on November 8, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;The generated exposed-service method &lt;code&gt;handle_next_request&lt;/code&gt; is renamed to &lt;code&gt;handle_requests&lt;/code&gt; and now serves requests continuously from one endpoint; after &lt;code&gt;peppy node sync&lt;/code&gt;, rename your calls and remove any loop around them.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Publishing and pulling container nodes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;peppy node publish &amp;lt;name&amp;gt;:&amp;lt;tag&amp;gt;&lt;/code&gt; builds a container node and pushes its &lt;code&gt;.sif&lt;/code&gt; image to an OCI registry, so other machines can pull it instead of building it.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy stack build --publish&lt;/code&gt; pushes the image of each container node every machine builds to the registry.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--platforms linux/amd64,linux/arm64&lt;/code&gt; on a publish also builds and pushes the other architecture in an emulated VM.&lt;/li&gt;
+&lt;li&gt;Add an &lt;code&gt;oci&lt;/code&gt; repository (&lt;code&gt;peppy repo add oci://...&lt;/code&gt;) whose nodes are pulled as prebuilt images rather than built from sources.&lt;/li&gt;
+&lt;li&gt;Set &lt;code&gt;publish_repository&lt;/code&gt; in &lt;code&gt;peppy_config.json5&lt;/code&gt; to name the OCI repository that publishes push to.&lt;/li&gt;
+&lt;li&gt;Registry credentials come from the Docker or Apptainer auth file, so &lt;code&gt;docker login&lt;/code&gt; or &lt;code&gt;apptainer registry login&lt;/code&gt; authorizes pulls and pushes.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Launcher check&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;peppy launcher check&lt;/code&gt; fully verifies launchers with up to 8192 selection combinations, raised from 4096.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
