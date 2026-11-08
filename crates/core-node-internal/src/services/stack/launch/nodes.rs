@@ -17,7 +17,7 @@ use config::runtime::CoreNodeName;
 use core_node_api::encoding::{
     LaunchFeedbackStep, NodeAddGoal, NodeAddLogEntry, NodeBuildGoal, NodeBuildLogEntry, NodeSource,
 };
-use daemon_config::repository::DeploymentRoot;
+use daemon_config::repository::{DeploymentRoot, EntryOrigin};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::{BTreeMap, HashMap};
@@ -65,10 +65,14 @@ fn pinned_source(
     }
 }
 
-/// Whether a deployment is the built-in MCP server, which is registered by
-/// its add and has no build stage.
-fn is_built_in(item: &PlannedDeployment) -> bool {
-    matches!(item.root, DeploymentRoot::Exposures(_))
+/// Whether the add of a deployment registers it ready to start, so it has no
+/// build stage: the built-in MCP server, and a node of an oci origin, whose
+/// add pulls its image.
+fn is_ready_at_add(item: &PlannedDeployment) -> bool {
+    match &item.root {
+        DeploymentRoot::Exposures(_) => true,
+        DeploymentRoot::Node(pin) => matches!(pin.origin, EntryOrigin::Oci { .. }),
+    }
 }
 
 /// Which core nodes host at least one instance of `key`, in a stable order.
@@ -316,7 +320,7 @@ struct AddedNode {
 }
 
 /// Adds one node on this machine. Returns the node to build, or `None` for
-/// the built-in MCP server, which its add registers ready.
+/// a node its add registers ready (see [`is_ready_at_add`]).
 async fn add_locally(
     ctx: &StackChangeContext,
     phase: &PhaseGoal,
@@ -353,7 +357,7 @@ async fn add_locally(
     let added = result
         .map_err(|failure| node_failure("add", &key.label(), purpose.as_deref(), &failure))?;
 
-    if is_built_in(item) {
+    if is_ready_at_add(item) {
         return Ok(None);
     }
     Ok(Some(AddedNode {
@@ -534,7 +538,7 @@ async fn add_and_build_remotely(
             ))
         })?;
 
-    if is_built_in(item) {
+    if is_ready_at_add(item) {
         return Ok(());
     }
 

@@ -193,6 +193,19 @@ impl GoalHandler for NodeBuildGoalHandler {
     }
 }
 
+/// Why `node build` refuses a node whose image was pulled from the OCI
+/// repository `repository`.
+pub(crate) fn pulled_node_refusal(
+    node_name: &str,
+    node_tag: &str,
+    repository: &core_node_api::encoding::OciRepository,
+) -> String {
+    format!(
+        "`{node_name}:{node_tag}` comes from the oci repository `{repository}` and has no sources. \
+         To build it, add a git or fs repository that holds it, with a lower id."
+    )
+}
+
 impl NodeBuildGoalHandler {
     async fn handle_goal_request(&self, pending: PendingGoal) {
         let sender_instance_id = pending.instance_id().to_string();
@@ -278,6 +291,22 @@ impl NodeBuildGoalHandler {
                 return;
             }
         };
+
+        // A node whose image was pulled has no sources here: neither a build
+        // nor a rebuild can make its artifact.
+        let pulled_from = entity_handle.read().pulled_from().cloned();
+        if let Some(repository) = pulled_from {
+            self.gate.clear_running();
+            refuse_goal(
+                pending,
+                Failure::new(
+                    PeppyFailureKind::PreconditionFailed,
+                    pulled_node_refusal(&goal.node_name, &goal.node_tag, &repository),
+                ),
+            )
+            .await;
+            return;
+        }
 
         let (working_dir_guard, captured_generation) = match buildable_working_dir(&entity_handle) {
             Ok(buildable) => buildable,
