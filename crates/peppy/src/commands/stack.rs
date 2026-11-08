@@ -358,7 +358,7 @@ impl Command for StackCommand {
                 platforms,
             }) => {
                 info!("Building stack...");
-                let publish = publish.then(|| core_node_api::encoding::StackPublish {
+                let publish = publish.then_some(core_node_api::encoding::StackPublish {
                     extra_platforms: platforms,
                 });
                 launch::launch::<StackBuildGoal>(ctx, launcher, publish)

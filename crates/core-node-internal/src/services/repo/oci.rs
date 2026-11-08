@@ -106,29 +106,25 @@ async fn list_artifacts(
         .filter_map(|tag| ArtifactTag::parse(tag).ok())
         .filter(|tag| tag.version() == version)
         .collect();
-    let reads: Vec<(
-        ArtifactTag,
-        Result<Option<(OciDigest, Vec<u8>)>, RegistryError>,
-    )> = futures::stream::iter(tags)
+    let reads: Vec<Result<Option<ListedArtifact>, RegistryError>> = futures::stream::iter(tags)
         .map(|tag| async move {
-            let manifest = client.manifest(&tag.to_string()).await;
-            (tag, manifest)
+            let Some((manifest_digest, bytes)) = client.manifest(&tag.to_string()).await? else {
+                debug!("the tag {tag} has no manifest any more");
+                return Ok(None);
+            };
+            Ok(Some(ListedArtifact {
+                tag,
+                manifest_digest,
+                manifest: NodeArtifactManifest::parse(&bytes),
+            }))
         })
         .buffer_unordered(PARALLEL_MANIFEST_READS)
         .collect()
         .await;
-    let mut listed = Vec::new();
-    for (tag, read) in reads {
-        let Some((manifest_digest, bytes)) = read? else {
-            debug!("the tag {tag} has no manifest any more");
-            continue;
-        };
-        listed.push(ListedArtifact {
-            tag,
-            manifest_digest,
-            manifest: NodeArtifactManifest::parse(&bytes),
-        });
-    }
+    let mut listed: Vec<ListedArtifact> = reads
+        .into_iter()
+        .filter_map(Result::transpose)
+        .collect::<Result<_, _>>()?;
     // The registry lists tags in its own order; the read is deterministic.
     listed.sort_by(|a, b| a.tag.cmp(&b.tag));
     Ok(listed)
