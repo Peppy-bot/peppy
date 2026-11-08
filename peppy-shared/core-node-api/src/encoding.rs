@@ -45,12 +45,14 @@ pub use node::{
     sync::NodeSyncRequest, sync::NodeSyncResponse, sync::RepoResolvedEntry,
 };
 pub use repo::{
-    GitRepoRef, GitRepoRefError, PEPPY_RELEASE_REF, PEPPY_RELEASE_TAG_PREFIX, PeppyBuild, ReadRef,
-    RepoAddRequest, RepoAddResponse, RepoExcludeRequest, RepoExcludeResponse, RepoItemKind,
-    RepoListNodeEntry, RepoListRepoEntry, RepoListRepoFailedRead, RepoListRepoReadFailure,
-    RepoListRequest, RepoListResponse, RepoRefreshFeedback, RepoRefreshGoal,
-    RepoRefreshGoalResponse, RepoRefreshResult, RepoRemoveRequest, RepoRemoveResponse, RepoSource,
-    RepoSourceKind,
+    ArtifactPlatform, ArtifactPlatformError, ArtifactTag, ArtifactTagError, ArtifactVersion,
+    ArtifactVersionError, GitRepoRef, GitRepoRefError, MAX_ARTIFACT_TAG_LENGTH, OCI_SCHEME,
+    OciDigest, OciDigestError, OciRepository, OciRepositoryError, PEPPY_RELEASE_REF,
+    PEPPY_RELEASE_TAG_PREFIX, PeppyBuild, ReadRef, RepoAddRequest, RepoAddResponse,
+    RepoExcludeRequest, RepoExcludeResponse, RepoItemKind, RepoListNodeEntry, RepoListRepoEntry,
+    RepoListRepoFailedRead, RepoListRepoReadFailure, RepoListRequest, RepoListResponse,
+    RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
+    RepoRemoveRequest, RepoRemoveResponse, RepoSource, RepoSourceKind,
 };
 pub use stack::benchmark::{
     BenchmarkFeedbackStep, ClockConfidence, DEFAULT_SAMPLES, InterfaceKind, InterfaceLatency,
