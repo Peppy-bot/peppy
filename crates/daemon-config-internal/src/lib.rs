@@ -96,7 +96,7 @@ pub mod peppy_config {
         DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_API_URL, ExternalZenohConfig, LifecycleConfig,
         LocalNodesTopology, MachineCertificatePaths, ManagedZenohConfig, OtlpEndpoint,
         OtlpMinSeverity, PackagesBaseUrl, PeppyConfig, ResourceServers, Severity, ZenohConfig,
-        load_or_create,
+        config_source, load_or_create,
     };
 }
 

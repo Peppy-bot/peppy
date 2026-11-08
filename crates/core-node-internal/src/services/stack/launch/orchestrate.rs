@@ -123,6 +123,7 @@ pub(in crate::services::stack) async fn build_node_directly(
             node_tag.clone(),
             phase.environment.common().to_vec(),
             phase.rebuild,
+            None,
             action_context,
             Announcer::new(log, feedback_tx),
         )),

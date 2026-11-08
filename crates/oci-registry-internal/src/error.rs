@@ -67,7 +67,8 @@ pub enum RegistryError {
 }
 
 impl RegistryError {
-    pub(crate) fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+    /// A file of this machine that a pull or a push could not read or write.
+    pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
         Self::Io {
             path: path.into(),
             source,

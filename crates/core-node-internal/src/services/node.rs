@@ -17,6 +17,7 @@ mod init;
 pub(crate) mod observation;
 pub(crate) mod pairing;
 pub(crate) mod pins;
+mod publish;
 mod pull;
 mod relationship_notify;
 mod remove;

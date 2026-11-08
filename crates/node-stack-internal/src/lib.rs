@@ -70,10 +70,10 @@ pub use node_stack::{
     Artifact, Attempt, BuildContext, BuiltInLaunch, CACHED_BUILD_REUSE_PREFIX, EntityHandle,
     FirstStart, HealthKill, InstanceClock, KeptRelations, NodeEntity, NodeStack, NodeStage,
     OUTPUT_READER_JOIN_BUDGET, OutputSinks, PairEndpoint, Pairing, PairingNodeSnapshot,
-    PlannedPair, ProcessClaim, PulledArtifact, Registrations, RemoteSlotMeta, RespawnInputs,
-    RestartBackoff, RunningHealth, SlotAddr, SlotLeft, SlotRemoval, SpawnTarget, StartContext,
-    StartRun, StartedInstanceCtx, StartingClaim, TrackedNodeInstance, WorkingDirGuard,
-    pairing_slot_view, prune_siblings, pulled_artifact_path, source_digest,
+    PlannedPair, ProcessClaim, PublishSettings, PulledArtifact, Registrations, RemoteSlotMeta,
+    RespawnInputs, RestartBackoff, RunningHealth, SlotAddr, SlotLeft, SlotRemoval, SpawnTarget,
+    StartContext, StartRun, StartedInstanceCtx, StartingClaim, TrackedNodeInstance,
+    WorkingDirGuard, pairing_slot_view, prune_siblings, pulled_artifact_path, source_digest,
 };
 #[cfg(all(unix, any(test, feature = "test-support")))]
 pub use process_group::{FORKS_A_TERM_IGNORER, process_group_exists, process_group_size};

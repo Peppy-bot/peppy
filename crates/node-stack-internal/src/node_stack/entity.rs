@@ -16,7 +16,7 @@ use core_node_api::{
 };
 use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::PackagesBaseUrl;
-use daemon_config::repository::PinnedDocument;
+use daemon_config::repository::{EntryOrigin, PinnedDocument};
 use log_export::Iostream;
 use tokio::process::Child;
 use tokio::sync::watch;
@@ -504,6 +504,10 @@ pub struct NodeEntity {
     /// `take_pending_working_dir_if_generation` clears the entity-side slot.
     /// Never persisted.
     pending_working_dir: Option<Arc<WorkingDirGuard>>,
+    /// The repository entry the node was added from, when an add by name
+    /// read it from a repository: what a publish of the node annotates its
+    /// artifacts with. `None` for a node added from a path or a URL.
+    repository_origin: Option<EntryOrigin>,
     /// The contract and pairing documents this entity's manifest names, each
     /// beside its pin, at the bytes its code was generated from: the add or
     /// the registration that builds the entity gives them to its
@@ -534,6 +538,7 @@ impl NodeEntity {
             stage,
             generation: next_entity_generation(),
             pending_working_dir: None,
+            repository_origin: None,
             documents,
             stage_tx,
         }
@@ -646,6 +651,17 @@ impl NodeEntity {
     /// later `node build` can reuse it without re-cloning the source.
     pub fn set_pending_working_dir(&mut self, guard: Arc<WorkingDirGuard>) {
         self.pending_working_dir = Some(guard);
+    }
+
+    /// Records the repository entry the node was added from.
+    pub fn set_repository_origin(&mut self, origin: EntryOrigin) {
+        self.repository_origin = Some(origin);
+    }
+
+    /// The repository entry the node was added from, when an add by name
+    /// read it from a repository.
+    pub fn repository_origin(&self) -> Option<&EntryOrigin> {
+        self.repository_origin.as_ref()
     }
 
     /// The contract and pairing documents the manifest names, at the bytes

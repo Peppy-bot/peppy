@@ -937,6 +937,24 @@ pub fn load_or_create(peppy_dirs: &PeppyDirs) -> Result<PeppyConfig> {
     load_or_create_with_override(peppy_dirs, std::env::var_os(PEPPY_CONFIG_ENV))
 }
 
+/// Where the daemon reads its settings: the [`PEPPY_CONFIG_ENV`] override
+/// when it is set, else the `peppy_config.json5` of `peppy_dirs`. What a
+/// message about a missing setting names, so the user edits the right file.
+pub fn config_source(peppy_dirs: &PeppyDirs) -> String {
+    config_source_with_override(peppy_dirs, std::env::var_os(PEPPY_CONFIG_ENV))
+}
+
+fn config_source_with_override(peppy_dirs: &PeppyDirs, env_value: Option<OsString>) -> String {
+    match env_value.filter(|value| !value.is_empty()) {
+        Some(value) => format!("{PEPPY_CONFIG_ENV} ({})", value.to_string_lossy()),
+        None => peppy_dirs
+            .conf_dir()
+            .join(PEPPY_CONFIG_FILE)
+            .display()
+            .to_string(),
+    }
+}
+
 fn load_or_create_with_override(
     peppy_dirs: &PeppyDirs,
     env_value: Option<OsString>,
@@ -2069,6 +2087,23 @@ mod tests {
         assert!(completed.contains("// Lowest severity the daemon exports"));
         assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+    }
+
+    #[test]
+    fn the_config_source_is_the_file_or_the_override() {
+        let peppy_dirs = PeppyDirs::new("/data/peppy");
+        assert_eq!(
+            config_source_with_override(&peppy_dirs, None),
+            "/data/peppy/conf/peppy_config.json5"
+        );
+        assert_eq!(
+            config_source_with_override(&peppy_dirs, Some(OsString::new())),
+            "/data/peppy/conf/peppy_config.json5"
+        );
+        assert_eq!(
+            config_source_with_override(&peppy_dirs, Some("/etc/peppy.json5".into())),
+            format!("{PEPPY_CONFIG_ENV} (/etc/peppy.json5)")
+        );
     }
 
     #[test]

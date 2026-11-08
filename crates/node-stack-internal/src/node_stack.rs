@@ -35,6 +35,7 @@ use config::node::{
     collect_contract_implementation_edges, collect_dependency_specs, validate_dependency_specs,
 };
 use config::runtime::Name;
+use core_node_api::encoding::OciRepository;
 use core_node_api::encoding::{LaunchIdentity, ObservationTargets};
 use core_node_api::{
     InstanceState, SerializedEdge, SerializedNode, SerializedNodeGraph, SerializedPairingSlot,
@@ -1080,6 +1081,9 @@ pub struct NodeStack {
     /// PyPI itself. Daemon-only state resolved once at startup, like
     /// `shutdown_grace`; the build paths read it into their `BuildContext`.
     pypi_mirror: Option<PackagesBaseUrl>,
+    /// Where the publishes of this daemon push to. Daemon-only state
+    /// resolved once at startup, like `pypi_mirror`.
+    publish_settings: PublishSettings,
     /// Where the log files of the stack's actions send their lines. Daemon-only
     /// state made once at startup, like `shutdown_grace`; the handlers that
     /// create a log file read it. The default exports nothing.
@@ -1096,6 +1100,16 @@ pub struct NodeStack {
     /// The live background tasks of each instance: its exit watcher, the
     /// wait of its restart and its health monitor.
     instance_tasks: InstanceTasks,
+}
+
+/// Where the publishes of this daemon push the `.sif` of container nodes:
+/// `publish_repository` in `peppy_config.json5`, and where the daemon read
+/// that setting, which a publish without one names.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PublishSettings {
+    pub repository: Option<OciRepository>,
+    /// The file (or the `PEPPY_CONFIG` override) the setting comes from.
+    pub config_source: String,
 }
 
 impl NodeStack {
@@ -1131,6 +1145,7 @@ impl NodeStack {
             add_log_paths: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             shutdown_grace: Duration::from_secs(config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS),
             pypi_mirror: None,
+            publish_settings: PublishSettings::default(),
             log_exporter: LogExporter::disabled(),
             time: TimeSource::System,
             reply_bounds: ReplyBounds::DEFAULT,
@@ -1165,6 +1180,19 @@ impl NodeStack {
     /// `uv.lock` from, or `None` for PyPI itself.
     pub fn pypi_mirror(&self) -> Option<&PackagesBaseUrl> {
         self.pypi_mirror.as_ref()
+    }
+
+    /// Sets where the publishes of this daemon push to (from
+    /// `peppy_config.publish_repository`). Builder form, like
+    /// [`NodeStack::with_shutdown_grace`]; no repository is the default.
+    pub fn with_publish_settings(mut self, settings: PublishSettings) -> Self {
+        self.publish_settings = settings;
+        self
+    }
+
+    /// Where the publishes of this daemon push to.
+    pub fn publish_settings(&self) -> &PublishSettings {
+        &self.publish_settings
     }
 
     /// Sets the exporter of the stack's log files. Builder form, like

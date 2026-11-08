@@ -435,6 +435,10 @@ impl CoreNode {
                 peppy_config.lifecycle.shutdown_grace_secs,
             ))
             .with_pypi_mirror(peppy_config.pypi_mirror.clone())
+            .with_publish_settings(node_stack::PublishSettings {
+                repository: peppy_config.publish_repository.clone(),
+                config_source: daemon_config::peppy_config::config_source(&peppy_dirs),
+            })
             .with_log_exporter(log_exporter)
             .with_time_source(time_source)
             .with_reply_bounds(reply_bounds);

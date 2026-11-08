@@ -485,7 +485,18 @@ async fn run_single_batched_add(
         )
         .await
     } else {
-        run_node_add(sub_goal, action_context, announcer).await
+        let node_stack = Arc::clone(&action_context.node_stack);
+        let added = run_node_add(sub_goal, action_context, announcer).await;
+        // The repository entry the node came from, which a publish of the
+        // node annotates its artifacts with.
+        if added.is_ok()
+            && let Some(entity) = node_stack.find(node.pin.name.as_str(), node.pin.tag.as_str())
+        {
+            entity
+                .write()
+                .set_repository_origin(node.pin.origin.clone());
+        }
+        added
     };
     let _ = forwarder.await;
     result

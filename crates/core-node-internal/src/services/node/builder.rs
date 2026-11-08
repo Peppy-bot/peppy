@@ -101,6 +101,9 @@ struct NodeBuildRun {
     cancel_token: CancellationToken,
     /// See [`NodeBuildGoal::rebuild`].
     rebuild: bool,
+    /// The publish of the node with its build, once its checks that need no
+    /// network passed.
+    publish: Option<super::publish::PublishTarget>,
 }
 
 /// Writes the message of a failure of `kind` to the build log and returns
@@ -116,11 +119,81 @@ fn record_build_failure(log: &ActionLog, kind: PeppyFailureKind, message: String
 ///
 /// A node the stack does not hold is `rejected`; a node in another stage, or
 /// without the working directory an add stages, is `precondition_failed`.
+/// What the publish of a built node needs.
+struct PublishRun<'a> {
+    plan: &'a super::publish::PublishPlan,
+    copies: Vec<(
+        core_node_api::encoding::ArtifactPlatform,
+        std::result::Result<tempfile::TempDir, String>,
+    )>,
+    config: &'a config::node::NodeConfig,
+    host_artifact: &'a std::path::Path,
+    env_vars: &'a [(String, String)],
+    action_context: &'a NodeBuildActionContext,
+    announcer: &'a Announcer,
+    cancel_token: &'a CancellationToken,
+    rebuild: bool,
+}
+
+/// Pushes the artifact of this machine, then builds and pushes each other
+/// platform of the plan from its copy of the staged tree, and gives what the
+/// publish did for each platform of its request. A platform whose build
+/// fails is reported, and the others go on.
+async fn publish_built_node(run: PublishRun<'_>) -> Vec<core_node_api::encoding::PlatformPublish> {
+    let mut pushed = Vec::new();
+    if run.plan.pushes_host_platform() {
+        pushed.push(
+            super::publish::push_platform(
+                run.plan,
+                daemon_config::consts::HOST_ARTIFACT_PLATFORM,
+                run.host_artifact,
+                run.announcer,
+            )
+            .await,
+        );
+    }
+    let requested: Vec<_> = run.copies.iter().map(|(platform, _)| *platform).collect();
+    for (platform, copy) in run.copies {
+        if run.cancel_token.is_cancelled() {
+            break;
+        }
+        let copy = match copy {
+            Ok(copy) => copy,
+            Err(detail) => {
+                pushed.push(super::publish::build_failed(platform, detail));
+                continue;
+            }
+        };
+        let built = node_stack::NodeEntity::build_for_platform(
+            run.config,
+            platform,
+            BuildContext {
+                working_dir: copy.path(),
+                peppy_dirs: &run.action_context.peppy_dirs,
+                announcer: run.announcer.clone(),
+                env_vars: run.env_vars,
+                cancel_token: run.cancel_token.clone(),
+                rebuild: run.rebuild,
+                pypi_mirror: run.action_context.node_stack.pypi_mirror(),
+            },
+        )
+        .await;
+        pushed.push(match built {
+            Ok(artifact) => {
+                super::publish::push_platform(run.plan, platform, &artifact, run.announcer).await
+            }
+            Err(error) => super::publish::build_failed(platform, error.to_string()),
+        });
+    }
+    super::publish::report(run.plan, pushed, &requested)
+}
+
 pub(crate) async fn run_node_build_for_entity(
     node_name: String,
     node_tag: String,
     env_vars: Vec<(String, String)>,
     rebuild: bool,
+    publish: Option<super::publish::PublishTarget>,
     action_context: NodeBuildActionContext,
     announcer: Announcer,
 ) -> std::result::Result<NodeBuildResult, WorkStop> {
@@ -169,6 +242,7 @@ pub(crate) async fn run_node_build_for_entity(
         // This helper drives a fresh build that nothing supersedes.
         cancel_token: CancellationToken::new(),
         rebuild,
+        publish,
     })
     .await
 }
@@ -292,9 +366,30 @@ impl NodeBuildGoalHandler {
             }
         };
 
+        // A publish checks, before anything else, where it pushes and what
+        // it pushes, in the order `peppy node publish` documents.
+        let pulled_from = entity_handle.read().pulled_from().cloned();
+        let publish = match &goal.publish {
+            Some(request) => {
+                let config = entity_handle.read().config().clone();
+                match super::publish::check_target(
+                    request,
+                    self.context.node_stack.publish_settings(),
+                    &config,
+                    pulled_from.as_ref(),
+                ) {
+                    Ok(target) => Some(target),
+                    Err(refusal) => {
+                        self.gate.clear_running();
+                        refuse_goal(pending, refusal).await;
+                        return;
+                    }
+                }
+            }
+            None => None,
+        };
         // A node whose image was pulled has no sources here: neither a build
         // nor a rebuild can make its artifact.
-        let pulled_from = entity_handle.read().pulled_from().cloned();
         if let Some(repository) = pulled_from {
             self.gate.clear_running();
             refuse_goal(
@@ -404,6 +499,7 @@ impl NodeBuildGoalHandler {
                 announcer: Announcer::new(log, feedback_tx),
                 cancel_token: cancel_token_for_task.clone(),
                 rebuild: goal.rebuild,
+                publish,
             });
             let work = under_goal_cancel(&goal_ctx, &cancel_token_for_task, work);
             // A build stops no instance: its cleanup kills its own build
@@ -453,6 +549,7 @@ async fn run_node_build(run: NodeBuildRun) -> std::result::Result<NodeBuildResul
         announcer,
         cancel_token,
         rebuild,
+        publish,
     } = run;
 
     let log = announcer.log().clone();
@@ -480,6 +577,38 @@ async fn run_node_build(run: NodeBuildRun) -> std::result::Result<NodeBuildResul
             announcer.line("Using sccache for Rust compilation");
         }
         super::inject_node_runtime_env(&mut env_vars, &node_name, &node_tag);
+
+        // The checks of a publish that need the registry and the staged tree
+        // run before any build, and the copies of the tree the other
+        // platforms build from are made before the build of this machine
+        // rewrites it (the locks of a PyPI mirror).
+        let config = entity_handle.read().config().clone();
+        let publish = match publish {
+            Some(target) => {
+                let repository_origin = entity_handle.read().repository_origin().cloned();
+                let plan = super::publish::plan(super::publish::PlanInputs {
+                    target,
+                    config: &config,
+                    repository_origin: repository_origin.as_ref(),
+                    staged_dir: working_dir_guard.path(),
+                    core_node: &action_context.node_stack.core_node_name(),
+                    announcer: &announcer,
+                })
+                .await
+                .map_err(|failure| {
+                    log.error(failure.message());
+                    WorkStop::Failed(failure)
+                })?;
+                let copies = super::publish::copy_trees_for_other_platforms(
+                    &plan,
+                    &config,
+                    working_dir_guard.path(),
+                    &action_context.peppy_dirs,
+                );
+                Some((plan, copies))
+            }
+            None => None,
+        };
 
         // Atomically detach the entity-side working dir AND verify the
         // generation hasn't changed since Phase 1. If a concurrent
@@ -530,7 +659,29 @@ async fn run_node_build(run: NodeBuildRun) -> std::result::Result<NodeBuildResul
                     node_tag,
                     artifact_path.display()
                 );
-                Ok(NodeBuildResult::new(artifact_path))
+                let Some((plan, copies)) = publish else {
+                    return Ok(NodeBuildResult::new(artifact_path));
+                };
+                let published = publish_built_node(PublishRun {
+                    plan: &plan,
+                    copies,
+                    config: &config,
+                    host_artifact: &artifact_path,
+                    env_vars: &env_vars,
+                    action_context: &action_context,
+                    announcer: &announcer,
+                    cancel_token: &cancel_token,
+                    rebuild,
+                })
+                .await;
+                if cancel_token.is_cancelled() {
+                    return Err(WorkStop::Cancelled(record_build_failure(
+                        &log,
+                        PeppyFailureKind::AttemptFailed,
+                        "publish cancelled".to_owned(),
+                    )));
+                }
+                Ok(NodeBuildResult::new(artifact_path).with_published(published))
             }
             Err(_) if cancel_token.is_cancelled() => {
                 // Cancelled: superseded by a `--force` build or cancelled by
@@ -641,6 +792,7 @@ mod tests {
             tag.to_owned(),
             Vec::new(),
             false,
+            None,
             action_context,
             Announcer::new(log, feedback_tx),
         )
