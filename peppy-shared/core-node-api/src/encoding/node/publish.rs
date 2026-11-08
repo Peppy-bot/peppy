@@ -90,6 +90,36 @@ pub enum NotPublishedReason {
 }
 
 impl NotPublishedReason {
+    /// The snake case name of the reason, which the launch result carries.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BuildFailed => "build_failed",
+            Self::BaseImageLacksPlatform => "base_image_lacks_platform",
+            Self::EmulatorMissing => "emulator_missing",
+            Self::PublishedWithAnotherSourceDigest => "published_with_another_source_digest",
+            Self::RegistryRefused => "registry_refused",
+            Self::RegistryUnreachable => "registry_unreachable",
+            Self::NoCredential => "no_credential",
+            Self::PeppylibMissing => "peppylib_missing",
+        }
+    }
+
+    /// The reason [`Self::as_str`] names.
+    pub fn parse(name: &str) -> Option<Self> {
+        [
+            Self::BuildFailed,
+            Self::BaseImageLacksPlatform,
+            Self::EmulatorMissing,
+            Self::PublishedWithAnotherSourceDigest,
+            Self::RegistryRefused,
+            Self::RegistryUnreachable,
+            Self::NoCredential,
+            Self::PeppylibMissing,
+        ]
+        .into_iter()
+        .find(|reason| reason.as_str() == name)
+    }
+
     fn to_capnp(self) -> node_capnp::NotPublishedReason {
         use node_capnp::NotPublishedReason as Wire;
         match self {
@@ -208,6 +238,142 @@ impl fmt::Display for PlatformPublish {
             PublishOutcome::NotPublished { detail, .. } => {
                 write!(f, "{}: not published: {detail}", self.platform)
             }
+        }
+    }
+}
+
+/// The publish that `peppy stack build --publish` asks for.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StackPublish {
+    /// The platforms each machine builds and pushes beside its own.
+    pub extra_platforms: Vec<ArtifactPlatform>,
+}
+
+/// What `peppy stack build --publish` did for one node, or for one platform
+/// of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodePublishLine {
+    /// `name:tag`.
+    pub node_label: String,
+    /// The core node that built the node.
+    pub core_node: String,
+    pub outcome: NodePublishLineOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodePublishLineOutcome {
+    /// What the publish did for one platform of a container node.
+    Platform(PlatformPublish),
+    /// A process node, which no repository holds.
+    ProcessNode,
+    /// A node of an oci origin, which the build pulled from this repository.
+    OciOrigin(OciRepository),
+}
+
+impl NodePublishLine {
+    /// Whether the line fails the build: a platform of a container node that
+    /// was not published. A process node and a node of an oci origin only
+    /// show in the report.
+    pub fn fails_the_build(&self) -> bool {
+        matches!(&self.outcome, NodePublishLineOutcome::Platform(platform) if !platform.is_published())
+    }
+
+    pub(crate) fn write(&self, mut line: crate::launch_capnp::node_publish_line::Builder<'_>) {
+        line.set_node_label(&self.node_label);
+        line.set_core_node(&self.core_node);
+        let mut outcome = line.init_outcome();
+        match &self.outcome {
+            NodePublishLineOutcome::ProcessNode => outcome.set_process_node(()),
+            NodePublishLineOutcome::OciOrigin(repository) => {
+                outcome.set_oci_origin(repository.to_string())
+            }
+            NodePublishLineOutcome::Platform(PlatformPublish {
+                platform,
+                outcome: published,
+            }) => match published {
+                PublishOutcome::Pushed {
+                    tag,
+                    manifest_digest,
+                } => {
+                    let mut pushed = outcome.init_pushed();
+                    pushed.set_platform(platform.as_str());
+                    pushed.set_tag(tag);
+                    pushed.set_manifest_digest(manifest_digest.as_str());
+                }
+                PublishOutcome::AlreadyPublished { tag } => {
+                    let mut already = outcome.init_already_published();
+                    already.set_platform(platform.as_str());
+                    already.set_tag(tag);
+                }
+                PublishOutcome::NotPublished { reason, detail } => {
+                    let mut not_published = outcome.init_not_published();
+                    not_published.set_platform(platform.as_str());
+                    not_published.set_reason(reason.as_str());
+                    not_published.set_detail(detail);
+                }
+            },
+        }
+    }
+
+    pub(crate) fn read(line: crate::launch_capnp::node_publish_line::Reader<'_>) -> Result<Self> {
+        use crate::launch_capnp::node_publish_line::outcome::Which;
+        let platform_of =
+            |text: &str| ArtifactPlatform::parse(text).map_err(|e| Error::Decoding(e.to_string()));
+        let outcome = match line.get_outcome().which()? {
+            Which::ProcessNode(()) => NodePublishLineOutcome::ProcessNode,
+            Which::OciOrigin(url) => NodePublishLineOutcome::OciOrigin(
+                OciRepository::parse(url?.to_str()?).map_err(|e| Error::Decoding(e.to_string()))?,
+            ),
+            Which::Pushed(pushed) => NodePublishLineOutcome::Platform(PlatformPublish {
+                platform: platform_of(pushed.get_platform()?.to_str()?)?,
+                outcome: PublishOutcome::Pushed {
+                    tag: pushed.get_tag()?.to_str()?.to_owned(),
+                    manifest_digest: OciDigest::parse(pushed.get_manifest_digest()?.to_str()?)
+                        .map_err(|e| Error::Decoding(e.to_string()))?,
+                },
+            }),
+            Which::AlreadyPublished(already) => NodePublishLineOutcome::Platform(PlatformPublish {
+                platform: platform_of(already.get_platform()?.to_str()?)?,
+                outcome: PublishOutcome::AlreadyPublished {
+                    tag: already.get_tag()?.to_str()?.to_owned(),
+                },
+            }),
+            Which::NotPublished(not_published) => {
+                let reason_text = not_published.get_reason()?.to_str()?;
+                let reason = NotPublishedReason::parse(reason_text).ok_or_else(|| {
+                    Error::Decoding(format!(
+                        "unknown reason a platform was not published: {reason_text}"
+                    ))
+                })?;
+                NodePublishLineOutcome::Platform(PlatformPublish {
+                    platform: platform_of(not_published.get_platform()?.to_str()?)?,
+                    outcome: PublishOutcome::NotPublished {
+                        reason,
+                        detail: not_published.get_detail()?.to_str()?.to_owned(),
+                    },
+                })
+            }
+        };
+        Ok(Self {
+            node_label: line.get_node_label()?.to_str()?.to_owned(),
+            core_node: line.get_core_node()?.to_str()?.to_owned(),
+            outcome,
+        })
+    }
+}
+
+impl fmt::Display for NodePublishLine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let node = format!("{}@{}", self.node_label, self.core_node);
+        match &self.outcome {
+            NodePublishLineOutcome::Platform(platform) => write!(f, "{node} {platform}"),
+            NodePublishLineOutcome::ProcessNode => {
+                write!(f, "{node}: not published: process node")
+            }
+            NodePublishLineOutcome::OciOrigin(repository) => write!(
+                f,
+                "{node}: not published: comes from the oci repository {repository}"
+            ),
         }
     }
 }

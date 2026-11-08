@@ -87,6 +87,13 @@ struct LaunchGoal {
     # `--no-prebuild` sets it to false: the launch then resolves and builds
     # only the nodes it runs. Absent decodes as true.
     prebuild @13 :Bool = true;
+    # `peppy stack build --publish`: push the .sif of each container node
+    # the build builds to the publish_repository of the coordinator, each
+    # machine with its own credentials. Only a stack build reads it.
+    publish @14 :Bool;
+    # The platforms each machine builds and pushes beside its own, each
+    # "linux/amd64" or "linux/arm64". Only with `publish`.
+    publishPlatforms @15 :List(Text);
 }
 
 # The machine a copy, a part of a copy or a core node link runs on. `self`
@@ -309,4 +316,39 @@ struct InstanceEndpoints {
 struct LaunchResult {
     # The endpoints of every started instance that serves one, in start order.
     instanceEndpoints @0 :List(InstanceEndpoints);
+    # What `peppy stack build --publish` did for each node and platform, in
+    # the order of the builds. Empty for any other goal.
+    published @1 :List(NodePublishLine);
+}
+
+# What `peppy stack build --publish` did for one node, or one platform of it.
+# The same outcome as `node.capnp:PlatformPublish`, restated here because each
+# schema file is compiled on its own.
+struct NodePublishLine {
+    # "name:tag"
+    nodeLabel @0 :Text;
+    # The core node that built the node.
+    coreNode @1 :Text;
+    outcome :union {
+        pushed :group {
+            platform @2 :Text;
+            tag @3 :Text;
+            manifestDigest @4 :Text;
+        }
+        alreadyPublished :group {
+            platform @5 :Text;
+            tag @6 :Text;
+        }
+        notPublished :group {
+            platform @7 :Text;
+            # The name of a `node.capnp:NotPublishedReason`, in snake case.
+            reason @8 :Text;
+            detail @9 :Text;
+        }
+        # A process node, which no repository holds.
+        processNode @10 :Void;
+        # A node of an oci origin, which the build pulled: the URL of its
+        # repository.
+        ociOrigin @11 :Text;
+    }
 }

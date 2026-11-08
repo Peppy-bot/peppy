@@ -36,6 +36,10 @@ pub struct ParticipantReserveRequest {
     /// decoding is the validation, and this crate has no business
     /// re-deriving it.
     pub deployment_pins_json5: Vec<String>,
+    /// The OCI repository of a `peppy stack build --publish`, which the
+    /// participant checks that it can push to with its own credentials
+    /// before any build. `None` for any other launch.
+    pub publish_repository: Option<crate::encoding::OciRepository>,
 }
 
 impl ParticipantReserveRequest {
@@ -44,11 +48,20 @@ impl ParticipantReserveRequest {
             launch_id: launch_id.into(),
             coordinator_core_node: coordinator_core_node.into(),
             deployment_pins_json5: Vec::new(),
+            publish_repository: None,
         }
     }
 
     pub fn with_deployment_pins(mut self, pins: Vec<String>) -> Self {
         self.deployment_pins_json5 = pins;
+        self
+    }
+
+    pub fn with_publish_repository(
+        mut self,
+        repository: Option<crate::encoding::OciRepository>,
+    ) -> Self {
+        self.publish_repository = repository;
         self
     }
 
@@ -67,6 +80,9 @@ impl ParticipantReserveRequest {
                 request.reborrow().init_deployment_pins_json5(count),
                 &self.deployment_pins_json5,
             );
+            if let Some(repository) = &self.publish_repository {
+                request.set_publish_repository(repository.to_string());
+            }
         }
         encode_message(&builder)
     }
@@ -82,6 +98,13 @@ impl ParticipantReserveRequest {
                 "coordinator_core_node",
             )?,
             deployment_pins_json5: read_text_list(request.get_deployment_pins_json5()?)?,
+            publish_repository: match request.get_publish_repository()?.to_str()? {
+                "" => None,
+                url => Some(
+                    crate::encoding::OciRepository::parse(url)
+                        .map_err(|e| crate::Error::Decoding(e.to_string()))?,
+                ),
+            },
         })
     }
 }
@@ -1033,6 +1056,22 @@ mod tests {
             ParticipantReserveRequest::decode(payload.as_ref()).expect("decode"),
             request
         );
+    }
+
+    #[test]
+    fn reserve_request_round_trips_its_publish_repository() {
+        let repository =
+            crate::encoding::OciRepository::parse("oci://ghcr.io/acme/peppy-nodes").unwrap();
+        let request = ParticipantReserveRequest::new("launch-abc123", "cn-robot-7")
+            .with_publish_repository(Some(repository.clone()));
+        let decoded =
+            ParticipantReserveRequest::decode(&request.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.publish_repository, Some(repository));
+        assert_eq!(decoded, request);
+        let plain = ParticipantReserveRequest::new("launch-abc123", "cn-robot-7");
+        let decoded =
+            ParticipantReserveRequest::decode(&plain.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.publish_repository, None);
     }
 
     #[test]

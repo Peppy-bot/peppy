@@ -137,6 +137,10 @@ pub struct LaunchGoal {
     /// nothing. `--no-prebuild` clears it, and the launch then resolves and
     /// builds only the nodes it runs.
     pub prebuild: bool,
+    /// `peppy stack build --publish`: push the `.sif` of each container node
+    /// the build builds to the publish repository of the coordinator. Only a
+    /// stack build reads it.
+    pub publish: Option<crate::encoding::StackPublish>,
 }
 
 impl LaunchGoal {
@@ -155,6 +159,7 @@ impl LaunchGoal {
             rebuild: false,
             joins: Vec::new(),
             prebuild: true,
+            publish: None,
         }
     }
 
@@ -211,6 +216,11 @@ impl LaunchGoal {
 
     pub fn with_prebuild(mut self, prebuild: bool) -> Self {
         self.prebuild = prebuild;
+        self
+    }
+
+    pub fn with_publish(mut self, publish: Option<crate::encoding::StackPublish>) -> Self {
+        self.publish = publish;
         self
     }
 
@@ -283,6 +293,17 @@ impl LaunchGoal {
             }
 
             goal.reborrow().set_prebuild(self.prebuild);
+            if let Some(publish) = &self.publish {
+                goal.reborrow().set_publish(true);
+                let count = capnp_list_len(
+                    publish.extra_platforms.len(),
+                    "LaunchGoal.publish_platforms",
+                )?;
+                let mut platforms = goal.reborrow().init_publish_platforms(count);
+                for (index, platform) in publish.extra_platforms.iter().enumerate() {
+                    platforms.set(index as u32, platform.as_str());
+                }
+            }
         }
         encode_message(&builder)
     }
@@ -353,9 +374,23 @@ impl LaunchGoal {
             .map(|(index, join)| read_copy_reference(join, &format!("LaunchGoal.joins[{index}]")))
             .collect::<Result<Vec<_>>>()?;
 
+        let publish = if goal.get_publish() {
+            let extra_platforms = goal
+                .get_publish_platforms()?
+                .iter()
+                .map(|platform| {
+                    crate::encoding::ArtifactPlatform::parse(platform?.to_str()?)
+                        .map_err(|e| crate::Error::Decoding(e.to_string()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Some(crate::encoding::StackPublish { extra_platforms })
+        } else {
+            None
+        };
         LaunchGoal::new(launcher_origin, launch_id, budgets)
             .with_rebuild(goal.get_rebuild())
             .with_prebuild(goal.get_prebuild())
+            .with_publish(publish)
             .with_layout(placement, selections, joins)
             .map_err(|error| crate::Error::Decoding(error.to_string()))
     }
@@ -745,6 +780,9 @@ pub struct LaunchResult {
     /// The endpoints of every started instance that serves one, in start
     /// order, each stamped with the core node hosting it.
     pub instance_endpoints: Vec<InstanceEndpoints>,
+    /// What `peppy stack build --publish` did for each node and platform.
+    /// Empty for any other goal.
+    pub published: Vec<crate::encoding::NodePublishLine>,
 }
 
 /// The endpoints of one started instance, as the daemon hosting it expanded
@@ -763,7 +801,15 @@ pub struct InstanceEndpoints {
 impl LaunchResult {
     /// The result of a goal whose started instances serve `instance_endpoints`.
     pub fn new(instance_endpoints: Vec<InstanceEndpoints>) -> Self {
-        Self { instance_endpoints }
+        Self {
+            instance_endpoints,
+            published: Vec::new(),
+        }
+    }
+
+    pub fn with_published(mut self, published: Vec<crate::encoding::NodePublishLine>) -> Self {
+        self.published = published;
+        self
     }
 
     pub fn encode(&self) -> Result<Payload> {
@@ -783,6 +829,11 @@ impl LaunchResult {
                 let endpoint_count =
                     capnp_list_len(entry.endpoints.len(), "InstanceEndpoints.endpoints")?;
                 write_launch_endpoints(e.init_endpoints(endpoint_count), &entry.endpoints)?;
+            }
+            let published_count = capnp_list_len(self.published.len(), "LaunchResult.published")?;
+            let mut published = result.reborrow().init_published(published_count);
+            for (index, line) in self.published.iter().enumerate() {
+                line.write(published.reborrow().get(index as u32));
             }
         }
         encode_message(&builder)
@@ -804,7 +855,15 @@ impl LaunchResult {
                 endpoints: read_launch_endpoints(e.get_endpoints()?)?,
             });
         }
-        Ok(Self { instance_endpoints })
+        let published = result
+            .get_published()?
+            .iter()
+            .map(crate::encoding::NodePublishLine::read)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            instance_endpoints,
+            published,
+        })
     }
 }
 
@@ -1067,6 +1126,101 @@ mod tests {
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
         assert!(decoded.rebuild);
         assert_eq!(goal, decoded);
+    }
+
+    /// `--publish` and its platforms travel with a stack build; a goal
+    /// without them asks for no publish.
+    #[test]
+    fn launch_goal_roundtrips_its_publish() {
+        use crate::encoding::{ArtifactPlatform, StackPublish};
+        for publish in [
+            StackPublish::default(),
+            StackPublish {
+                extra_platforms: vec![ArtifactPlatform::LinuxArm64],
+            },
+        ] {
+            let goal = repository_goal("simulation_mcp").with_publish(Some(publish.clone()));
+            let decoded = LaunchGoal::decode(&goal.encode().expect("encode")).expect("decode");
+            assert_eq!(decoded.publish, Some(publish));
+        }
+        let goal = repository_goal("simulation_mcp");
+        let decoded = LaunchGoal::decode(&goal.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.publish, None);
+    }
+
+    #[test]
+    fn launch_result_roundtrips_every_publish_line() {
+        use crate::encoding::{
+            ArtifactPlatform, NodePublishLine, NodePublishLineOutcome, NotPublishedReason,
+            OciDigest, OciRepository, PlatformPublish, PublishOutcome,
+        };
+        let line = |outcome| NodePublishLine {
+            node_label: "waldo:v1".to_owned(),
+            core_node: "cn-robot".to_owned(),
+            outcome,
+        };
+        let platform = |platform, outcome| {
+            NodePublishLineOutcome::Platform(PlatformPublish { platform, outcome })
+        };
+        let lines = vec![
+            line(platform(
+                ArtifactPlatform::LinuxAmd64,
+                PublishOutcome::Pushed {
+                    tag: "waldo.v1.v0.36.0.linux-amd64".to_owned(),
+                    manifest_digest: OciDigest::from_sha256_hex(&"a".repeat(64)).unwrap(),
+                },
+            )),
+            line(platform(
+                ArtifactPlatform::LinuxArm64,
+                PublishOutcome::AlreadyPublished {
+                    tag: "waldo.v1.v0.36.0.linux-arm64".to_owned(),
+                },
+            )),
+            line(platform(
+                ArtifactPlatform::LinuxArm64,
+                PublishOutcome::NotPublished {
+                    reason: NotPublishedReason::NoCredential,
+                    detail: "no credential".to_owned(),
+                },
+            )),
+            line(NodePublishLineOutcome::ProcessNode),
+            line(NodePublishLineOutcome::OciOrigin(
+                OciRepository::parse("oci://ghcr.io/acme/nodes").unwrap(),
+            )),
+        ];
+        let result = LaunchResult::default().with_published(lines.clone());
+        let decoded = LaunchResult::decode(&result.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.published, lines);
+        assert_eq!(
+            decoded
+                .published
+                .iter()
+                .map(NodePublishLine::fails_the_build)
+                .collect::<Vec<_>>(),
+            [false, false, true, false, false]
+        );
+        assert_eq!(
+            decoded.published[3].to_string(),
+            "waldo:v1@cn-robot: not published: process node"
+        );
+    }
+
+    #[test]
+    fn every_not_published_reason_round_trips_its_name() {
+        use crate::encoding::NotPublishedReason;
+        for reason in [
+            NotPublishedReason::BuildFailed,
+            NotPublishedReason::BaseImageLacksPlatform,
+            NotPublishedReason::EmulatorMissing,
+            NotPublishedReason::PublishedWithAnotherSourceDigest,
+            NotPublishedReason::RegistryRefused,
+            NotPublishedReason::RegistryUnreachable,
+            NotPublishedReason::NoCredential,
+            NotPublishedReason::PeppylibMissing,
+        ] {
+            assert_eq!(NotPublishedReason::parse(reason.as_str()), Some(reason));
+        }
+        assert_eq!(NotPublishedReason::parse("bogus"), None);
     }
 
     /// `--no-prebuild` travels with the launch, so the coordinator neither

@@ -48,6 +48,10 @@ struct ParticipantReserveRequest {
     # tree on the coordinator's own disk, so the plan refuses it for any
     # deployment placed off-coordinator.
     deploymentPinsJson5 @2 :List(Text);
+    # The OCI repository of a `peppy stack build --publish`, oci://<host>/<path>,
+    # which the participant checks that it can push to with its own
+    # credentials before any build. Empty for any other launch.
+    publishRepository @3 :Text;
 }
 
 # The reply of a participant that took the reservation. A participant that
