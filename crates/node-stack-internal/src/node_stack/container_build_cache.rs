@@ -844,7 +844,7 @@ mod tests {
         assert_eq!(cache.env[1].1, "sccache");
         assert_eq!(cache.env[2].1, "/peppy-cache/sccache-cache/x86_64");
         assert_eq!(cache.env[4].1, "/peppy-cache/downloads");
-        assert_eq!(cache.env[5].1, "/peppy-cache/nodes/node_v1");
+        assert_eq!(cache.env[5].1, "/peppy-cache/nodes/x86_64/node_v1");
         assert!(root.path().join("nodes/x86_64/node_v1").is_dir());
         assert_eq!(
             cache.summary,
@@ -871,7 +871,7 @@ mod tests {
                 ("PEPPY_DOWNLOAD_CACHE", "/peppy-cache/downloads".to_string()),
                 (
                     "PEPPY_NODE_BUILD_CACHE",
-                    "/peppy-cache/nodes/node_v1".to_string()
+                    "/peppy-cache/nodes/x86_64/node_v1".to_string()
                 ),
             ]
         );
@@ -902,7 +902,7 @@ mod tests {
                 ("PEPPY_DOWNLOAD_CACHE", "/peppy-cache/downloads".to_string()),
                 (
                     "PEPPY_NODE_BUILD_CACHE",
-                    "/peppy-cache/nodes/node_v1".to_string()
+                    "/peppy-cache/nodes/x86_64/node_v1".to_string()
                 ),
             ]
         );
