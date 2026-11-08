@@ -11,6 +11,7 @@ mod mock;
 mod parameters;
 mod ruff;
 mod scaffold;
+pub use scaffold::{embeds_linux_peppylib, restage_peppylib_for_platform};
 mod serialization;
 mod services;
 mod topics;
@@ -69,11 +70,13 @@ impl PythonGenerator {
 
     /// Marks this generator as targeting a container deployment.
     ///
-    /// When `true`, the Linux cross-compiled `.so` is deployed; otherwise the
-    /// host platform's `.so` is used.
+    /// When `true`, the Linux cross-compiled `.so` of the architecture of this
+    /// machine is deployed; otherwise the host platform's `.so` is used.
     pub fn set_container(&mut self, is_container: bool) {
         self.peppylib_platform = if is_container {
-            scaffold::PeppylibPlatform::LinuxContainer
+            scaffold::PeppylibPlatform::LinuxContainer(
+                daemon_config::consts::HOST_ARTIFACT_PLATFORM,
+            )
         } else {
             scaffold::PeppylibPlatform::Host
         };

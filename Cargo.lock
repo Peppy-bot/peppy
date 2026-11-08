@@ -1771,6 +1771,7 @@ dependencies = [
  "build-helpers",
  "bytes",
  "config-test-support",
+ "core-node-api",
  "daemon-config",
  "encoding",
  "indexmap 2.14.2",

@@ -10,6 +10,7 @@ use crate::generator::scaffold_tree::{
 use crate::generator::types::{CapnpSchema, InterfaceArtifact, ModuleCategory};
 #[cfg(test)]
 use crate::generator::types::{ContractOrigin, InterfaceKind};
+use core_node_api::encoding::ArtifactPlatform;
 use rust_embed::Embed;
 use std::collections::HashMap;
 use std::fs;
@@ -91,9 +92,10 @@ pub(crate) enum PeppylibPlatform {
     /// The node runs on the host, so it gets the host platform's `.so`.
     #[default]
     Host,
-    /// The node runs in a container, inside a Linux VM, so it gets the Linux
-    /// `.so` matching the host architecture.
-    LinuxContainer,
+    /// The node runs in a container of this Linux platform, so it gets the
+    /// Linux `.so` of its architecture: the one of the host for the image of
+    /// this machine, the other one for a publish to another platform.
+    LinuxContainer(ArtifactPlatform),
 }
 
 impl PeppylibPlatform {
@@ -102,7 +104,7 @@ impl PeppylibPlatform {
     fn suffix(self) -> String {
         match self {
             Self::Host => host_platform_suffix(),
-            Self::LinuxContainer => format!("linux-{}", std::env::consts::ARCH),
+            Self::LinuxContainer(platform) => format!("linux-{}", platform.architecture()),
         }
     }
 
@@ -121,7 +123,62 @@ pub fn add_peppylib_dependencies(
 ) -> Result<()> {
     // Copy Python project templates (pyproject.toml, peppygen/__init__.py)
     crate::generator::common::copy_embedded_templates("peppygen/python", to_path, "")?;
+    let libs_dir = to_path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "peppygen path has no parent directory",
+        )
+    })?;
+    deploy_peppylib_package(libs_dir, peppy_dirs, platform, codec_api)
+}
 
+/// Whether this peppy embeds the peppylib native extension of the Linux
+/// platform `platform`, which a Python container node of that platform
+/// needs. A release embeds the one of every Linux architecture; a debug
+/// build embeds the Linux ones only when it is a cross build.
+pub fn embeds_linux_peppylib(platform: ArtifactPlatform) -> bool {
+    let expected = format!(
+        "{SO_PLATFORM_PREFIX}{}.so",
+        PeppylibPlatform::LinuxContainer(platform).suffix()
+    );
+    PEPPYLIB_PLATFORM_SO
+        .iter()
+        .any(|(name, _)| *name == expected)
+}
+
+/// Rewrites the vendored peppylib of the staged tree of a Python container
+/// node at `node_dir` for the Linux platform `platform`: its native extension
+/// and its Cap'n Proto compiler are the ones of the architecture of that
+/// platform. Nothing else of a staged tree changes with the platform.
+pub fn restage_peppylib_for_platform(
+    node_dir: &Path,
+    peppy_dirs: &daemon_config::consts::PeppyDirs,
+    platform: ArtifactPlatform,
+    codec_api: CodecApi,
+) -> Result<()> {
+    let libs_dir = node_dir.join(config::consts::PEPPYGEN_OUTPUT_PATH);
+    let libs_dir = libs_dir.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the peppygen path has no parent directory",
+        )
+    })?;
+    deploy_peppylib_package(
+        libs_dir,
+        peppy_dirs,
+        PeppylibPlatform::LinuxContainer(platform),
+        codec_api,
+    )
+}
+
+/// Writes the peppylib project of `platform` at `<libs_dir>/peppylib`,
+/// replacing any earlier one.
+fn deploy_peppylib_package(
+    libs_dir: &Path,
+    peppy_dirs: &daemon_config::consts::PeppyDirs,
+    platform: PeppylibPlatform,
+    codec_api: CodecApi,
+) -> Result<()> {
     // Determine which platform's .so to deploy, and include it in the cache key
     // so that native and container caches are separate.
     let target_suffix = platform.suffix();
@@ -144,12 +201,6 @@ pub fn add_peppylib_dependencies(
     // The manifest is plain-written on every generation: uv keys
     // path-dependency rebuilds on pyproject.toml mtime, so a preserved
     // timestamp would serve a stale cached wheel with an old `.so`.
-    let libs_dir = to_path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "peppygen path has no parent directory",
-        )
-    })?;
     let project_dir = libs_dir.join("peppylib");
     if project_dir.exists() {
         fs::remove_dir_all(&project_dir)?;
@@ -405,12 +456,56 @@ mod tests {
     }
 
     #[test]
-    fn the_compiler_of_a_container_node_is_the_linux_one_of_the_host_architecture() {
-        assert_eq!(
-            PeppylibPlatform::LinuxContainer.capnp_tool(),
-            format!("tools/capnp_linux_{}", std::env::consts::ARCH)
-        );
-        assert!(EmbeddedConfig::get(&PeppylibPlatform::LinuxContainer.capnp_tool()).is_some());
+    fn the_compiler_of_a_container_node_is_the_linux_one_of_its_platform() {
+        for platform in ArtifactPlatform::ALL {
+            let tool = PeppylibPlatform::LinuxContainer(platform).capnp_tool();
+            assert_eq!(
+                tool,
+                format!("tools/capnp_linux_{}", platform.architecture())
+            );
+            assert!(EmbeddedConfig::get(&tool).is_some(), "{tool}");
+        }
+    }
+
+    /// A restage for another platform rewrites the vendored peppylib alone:
+    /// the compiler of the target architecture, and the generated bindings
+    /// as they were.
+    #[test]
+    fn a_restage_for_another_platform_rewrites_only_the_vendored_peppylib() {
+        let root = TempDir::new().expect("temp dir should be created");
+        let peppy_dirs = daemon_config::consts::PeppyDirs::new(root.path().join("peppy"));
+        let node_dir = root.path().join("node");
+        let libs = node_dir.join(".peppy").join("libs");
+        let bindings = libs.join("peppygen").join("peppygen").join("__init__.py");
+        fs::create_dir_all(bindings.parent().expect("dir")).expect("mkdir");
+        fs::write(&bindings, "generated bindings").expect("write bindings");
+        let package = libs.join("peppylib").join("peppylib");
+        for platform in ArtifactPlatform::ALL {
+            if !embeds_linux_peppylib(platform) {
+                let error = restage_peppylib_for_platform(
+                    &node_dir,
+                    &peppy_dirs,
+                    platform,
+                    CodecApi::Asked,
+                )
+                .expect_err("no native extension of this platform");
+                assert!(error.to_string().contains("no embedded native extension"));
+                continue;
+            }
+            restage_peppylib_for_platform(&node_dir, &peppy_dirs, platform, CodecApi::Asked)
+                .expect("restage");
+            let compiler =
+                EmbeddedConfig::get(&PeppylibPlatform::LinuxContainer(platform).capnp_tool())
+                    .expect("embedded");
+            assert_eq!(
+                fs::read(package.join(CODEC_COMPILER_FILE)).expect("compiler"),
+                compiler.data.as_ref()
+            );
+            assert_eq!(
+                fs::read_to_string(&bindings).expect("bindings"),
+                "generated bindings"
+            );
+        }
     }
 
     #[test]
@@ -670,7 +765,7 @@ mod tests {
         generator.set_container(true);
         assert_eq!(
             generator.peppylib_platform,
-            PeppylibPlatform::LinuxContainer
+            PeppylibPlatform::LinuxContainer(daemon_config::consts::HOST_ARTIFACT_PLATFORM)
         );
         generator.set_container(false);
         assert_eq!(generator.peppylib_platform, PeppylibPlatform::Host);
@@ -684,7 +779,9 @@ mod tests {
 
     #[test]
     fn peppylib_platform_suffix_selects_linux_for_container() {
-        let suffix = PeppylibPlatform::LinuxContainer.suffix();
+        let suffix =
+            PeppylibPlatform::LinuxContainer(daemon_config::consts::HOST_ARTIFACT_PLATFORM)
+                .suffix();
         assert!(
             suffix.starts_with("linux-"),
             "container should select linux platform, got: {suffix}"
