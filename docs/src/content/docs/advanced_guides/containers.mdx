@@ -705,7 +705,7 @@ You can pass additional command-line arguments directly to Apptainer or Lima usi
 |------------------------------|------------------------------------------------------------------------|
 | `apptainer_build_extra_args` | Extra flags appended to `apptainer build` (e.g., `["--no-setgroups"]`) |
 | `apptainer_run_extra_args`   | Extra flags appended to `apptainer run` (e.g., `["--no-setgroups"]`)   |
-| `lima_shell_extra_args`      | Extra flags passed to `limactl shell` on macOS (ignored on Linux)      |
+| `lima_shell_extra_args`      | Extra flags passed to `limactl shell` whenever a build runs in a Lima VM: every container build on macOS, and on Linux a build for another architecture (`peppy node publish --platforms`, `peppy stack build --publish --platforms`), which runs in an emulated VM. Ignored for a native Linux build of this machine's own platform |
 
 All fields are optional and default to an empty list when omitted.
 
