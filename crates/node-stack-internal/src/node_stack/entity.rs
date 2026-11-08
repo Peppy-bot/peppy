@@ -7,7 +7,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use config::node::{Cardinality, ContainerConfig, NodeConfig, PeppygenLanguage};
 use config::runtime::Name;
-use core_node_api::encoding::{LaunchIdentity, NodeRunGoal, ObservationTargets, OciRepository};
+use core_node_api::encoding::{
+    ArtifactPlatform, LaunchIdentity, NodeRunGoal, ObservationTargets, OciRepository,
+};
 use core_node_api::{
     ExitCause, InstanceEndpoint, InstanceState, NodeStage as SerializedNodeStage, RestartStatus,
     SerializedInstance, SerializedNode,
@@ -271,12 +273,15 @@ struct BuildSnapshot {
     build_cmd: Option<Vec<String>>,
     language: PeppygenLanguage,
     generation: u64,
+    /// The platform of a container image: the one of this machine for the
+    /// build of an entity, another one for a build of a publish.
+    platform: ArtifactPlatform,
 }
 
 impl BuildSnapshot {
     fn artifact_kind(&self) -> ArtifactKind {
         if self.container.is_some() {
-            ArtifactKind::Container(daemon_config::consts::HOST_ARTIFACT_PLATFORM)
+            ArtifactKind::Container(self.platform)
         } else {
             ArtifactKind::Process
         }
@@ -781,6 +786,7 @@ impl NodeEntity {
                 build_cmd: guard.config.execution.build_cmd.clone(),
                 language: guard.config.execution.language,
                 generation: guard.generation,
+                platform: daemon_config::consts::HOST_ARTIFACT_PLATFORM,
             };
             // Atomic transition Added → Building under the same write lock as
             // the validation. Any second concurrent call now sees Building.
@@ -823,6 +829,35 @@ impl NodeEntity {
         };
         guard.broadcast_stage();
         Ok(artifact_path)
+    }
+
+    /// Builds the container image of the node `config` declares for
+    /// `platform`, from the staged tree of `ctx`, outside any entity: the
+    /// build of another platform than the one of this machine, for a
+    /// publish. It reuses the artifact of the same staged tree and platform
+    /// in storage unless `ctx.rebuild`, and keeps the artifacts of the other
+    /// platforms, as [`NodeEntity::build`] does.
+    pub async fn build_for_platform(
+        config: &NodeConfig,
+        platform: ArtifactPlatform,
+        ctx: BuildContext<'_>,
+    ) -> Result<PathBuf> {
+        let snapshot = BuildSnapshot {
+            node_name: config.manifest.name.as_str().to_owned(),
+            node_tag: config.manifest.tag.clone(),
+            config_path: ctx.working_dir.join(config::consts::NODE_CONFIG_FILE),
+            container: config.execution.container.clone(),
+            build_cmd: config.execution.build_cmd.clone(),
+            language: config.execution.language,
+            generation: 0,
+            platform,
+        };
+        if snapshot.container.is_none() {
+            return Err(snapshot.build_failed(
+                "a process node has no container image to build for a platform".to_owned(),
+            ));
+        }
+        Self::produce_artifact(&snapshot, &ctx).await
     }
 
     /// Phase 2 of [`NodeEntity::build`]: the artifact for the snapshot's
@@ -942,6 +977,7 @@ impl NodeEntity {
                     announcer: &ctx.announcer,
                     peppy_dirs: ctx.peppy_dirs,
                     cancel_token: &ctx.cancel_token,
+                    platform: kind.platform(),
                 })
                 .await
                 .map(Some)

@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use daemon_config::consts::PeppyDirs;
+use core_node_api::encoding::ArtifactPlatform;
+use daemon_config::consts::{HOST_ARTIFACT_PLATFORM, PeppyDirs};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -120,6 +121,9 @@ pub(super) struct ContainerBuildInputs<'a> {
     /// (and its `%post` children) live in a separate kernel and are killed via
     /// [`containers::Apptainer::kill_guest_process_group`].
     pub cancel_token: &'a CancellationToken,
+    /// The platform of the image. Another platform than the one of this
+    /// machine builds in a VM of its architecture, under emulation.
+    pub platform: ArtifactPlatform,
 }
 
 /// Total attempts (initial try plus retries) for an `apptainer build` whose
@@ -171,16 +175,28 @@ pub(super) async fn build_container_image(
     // the tag again.
     validate_node_tag(inputs.node_tag).map_err(|e| format!("invalid node tag: {}", e))?;
 
-    if !containers::Apptainer::is_lima_ready() {
+    let platform = inputs.platform;
+    if platform != HOST_ARTIFACT_PLATFORM {
+        inputs.announcer.line(format!(
+            "Building for {platform} under QEMU emulation, in a Lima VM of that architecture: \
+             many times slower than a native build (the first one also creates the VM)"
+        ));
+    } else if !containers::Apptainer::is_lima_ready() {
         inputs
             .announcer
             .line("Initializing Lima VM for container build (first run may take a few minutes)...");
     }
 
-    let mut apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)
-        .await
-        .map_err(|e| format!("Apptainer initialization task failed: {}", e))?
-        .map_err(|e| format!("Failed to initialize Apptainer runtime: {}", e))?;
+    let mut apptainer =
+        tokio::task::spawn_blocking(move || containers::Apptainer::for_platform(platform))
+            .await
+            .map_err(|e| format!("Apptainer initialization task failed: {}", e))?
+            .map_err(|e| {
+                format!(
+                    "Failed to initialize Apptainer runtime for {platform}: {}",
+                    e
+                )
+            })?;
 
     // The build's working dir (def file, `%files` sources, output .sif) lives
     // under the peppy data root. When that root is outside `$HOME` (a
@@ -224,6 +240,7 @@ pub(super) async fn build_container_image(
             let node = container_build_cache::NodeIdentity {
                 name: &node_name,
                 tag: &node_tag,
+                arch: platform.architecture(),
             };
             container_build_cache::prepare(&peppy_dirs, &node, language, &def_contents, &extra_args)
         })
@@ -783,6 +800,7 @@ mod tests {
             announcer: &Announcer::new(scratch_log(), feedback_tx),
             peppy_dirs: &peppy_dirs,
             cancel_token: &cancel_token,
+            platform: HOST_ARTIFACT_PLATFORM,
         })
         .await
         .expect_err("unsafe tag must be rejected");
