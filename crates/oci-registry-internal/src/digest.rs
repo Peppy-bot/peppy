@@ -16,6 +16,15 @@ pub fn of_bytes(bytes: &[u8]) -> OciDigest {
 /// The digest and the size of the file at `path`. Blocking: run it on the
 /// blocking pool.
 pub fn of_file(path: &Path) -> std::io::Result<(OciDigest, u64)> {
+    of_file_reporting(path, |_| {})
+}
+
+/// [`of_file`], and `on_progress` gets the number of bytes hashed so far
+/// after each read.
+pub fn of_file_reporting(
+    path: &Path,
+    mut on_progress: impl FnMut(u64),
+) -> std::io::Result<(OciDigest, u64)> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; READ_BUFFER_BYTES];
@@ -27,6 +36,7 @@ pub fn of_file(path: &Path) -> std::io::Result<(OciDigest, u64)> {
         }
         hasher.update(&buffer[..read]);
         size += read as u64;
+        on_progress(size);
     }
     Ok((finish(hasher.finalize().as_slice()), size))
 }
@@ -69,9 +79,18 @@ mod tests {
         let path = dir.path().join("blob");
         std::fs::write(&path, &bytes).expect("write");
 
-        let (digest, size) = of_file(&path).expect("hash");
+        let mut progress = Vec::new();
+        let (digest, size) =
+            of_file_reporting(&path, |hashed| progress.push(hashed)).expect("hash");
 
         assert_eq!(digest, of_bytes(&bytes));
+        assert_eq!(of_file(&path).expect("hash"), (digest.clone(), size));
+        let buffer = READ_BUFFER_BYTES as u64;
+        assert_eq!(
+            progress,
+            [buffer, 2 * buffer, 3 * buffer, 3 * buffer + 17],
+            "a line after each read"
+        );
         assert_eq!(size, bytes.len() as u64);
         let mut hasher = Hasher::default();
         for part in bytes.chunks(1000) {

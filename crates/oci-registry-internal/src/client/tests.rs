@@ -478,6 +478,66 @@ async fn a_file_is_pushed_in_chunks_with_their_ranges_then_closed_with_its_diges
     close.assert_calls_async(1).await;
 }
 
+/// A chunk goes to the connection in parts, each counted as sent, with the
+/// length of the chunk in its header.
+#[tokio::test]
+async fn the_progress_of_a_push_moves_by_the_parts_of_a_chunk() {
+    let registry = Registry::start().await;
+    let content: Vec<u8> = (0..2 * UPLOAD_PART_BYTES + 100).map(|i| i as u8).collect();
+    let digest = crate::digest::of_bytes(&content);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("node.sif");
+    std::fs::write(&path, &content).expect("write");
+    registry
+        .server
+        .mock_async(|when, then| {
+            when.method(httpmock::Method::HEAD)
+                .path(registry.path(&format!("blobs/{digest}")));
+            then.status(404);
+        })
+        .await;
+    registry
+        .server
+        .mock_async(|when, then| {
+            when.method(POST).path(registry.path("blobs/uploads/"));
+            then.status(202)
+                .header("Location", registry.path("blobs/uploads/u1"));
+        })
+        .await;
+    let expected = content.clone();
+    let chunk = registry
+        .server
+        .mock_async(|when, then| {
+            when.method(PATCH)
+                .path(registry.path("blobs/uploads/u1"))
+                .header("content-length", content.len().to_string())
+                .is_true(move |request| request.body_ref() == expected.as_slice());
+            then.status(202)
+                .header("Location", registry.path("blobs/uploads/u2"));
+        })
+        .await;
+    registry
+        .server
+        .mock_async(|when, then| {
+            when.method(PUT).path(registry.path("blobs/uploads/u2"));
+            then.status(201);
+        })
+        .await;
+    let mut progress = Vec::new();
+
+    registry
+        .client(Access::Push)
+        .push_blob_file(&path, &digest, content.len() as u64, &mut |sent| {
+            progress.push(sent)
+        })
+        .await
+        .expect("push");
+
+    let part = UPLOAD_PART_BYTES as u64;
+    assert_eq!(progress, [part, 2 * part, 2 * part + 100]);
+    chunk.assert_calls_async(1).await;
+}
+
 #[tokio::test]
 async fn a_blob_the_registry_has_is_not_pushed_again() {
     let registry = Registry::start().await;

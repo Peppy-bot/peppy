@@ -770,14 +770,9 @@ async fn prepare_stack_publish(
     ctx: &StackChangeContext,
     request: &core_node_api::encoding::StackPublish,
 ) -> std::result::Result<PhasePublish, peppylib::messaging::Failure> {
-    let settings = ctx.node_stack.publish_settings();
-    let repository = settings.repository.clone().ok_or_else(|| {
-        precondition_failed(format!(
-            "no publish_repository in `{}`: set it to the URL of the OCI repository to publish \
-             to, such as \"oci://ghcr.io/acme/peppy-nodes\"",
-            settings.config_source
-        ))
-    })?;
+    let repository =
+        crate::services::node::publish::configured_repository(ctx.node_stack.publish_settings())
+            .map_err(precondition_failed)?;
     daemon_config::consts::artifact_version().map_err(|e| precondition_failed(e.to_string()))?;
     publish_stdout(
         ctx,
@@ -788,19 +783,9 @@ async fn prepare_stack_publish(
         LaunchFeedbackStep::LauncherStep,
     )
     .await;
-    let client = oci_registry::RegistryClient::new(
-        &repository,
-        oci_registry::CredentialStore::from_environment(),
-        oci_registry::Access::Push,
-    )
-    .map_err(|e| precondition_failed(e.to_string()))?;
-    client.check_push_access().await.map_err(|error| {
-        precondition_failed(crate::services::node::publish::push_check_failure(
-            &repository,
-            ctx.bound_core_node.as_str(),
-            &error,
-        ))
-    })?;
+    crate::services::node::publish::check_push_from(&repository, ctx.bound_core_node.as_str())
+        .await
+        .map_err(precondition_failed)?;
     Ok(PhasePublish {
         repository,
         extra_platforms: request.extra_platforms.clone(),

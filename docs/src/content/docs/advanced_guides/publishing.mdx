@@ -72,7 +72,7 @@ Before any build, the publish runs these checks in this order. The first check t
 4. The node does not come from an `oci` repository: such a node has no sources on this machine.
 5. Each value of `--platforms` is `linux/amd64` or `linux/arm64`. The command refuses another value before it reaches the daemon.
 6. The registry accepts a push from this machine with its credentials.
-7. This machine can build each other platform of `--platforms`: the QEMU system emulator of the architecture is installed, the base image of the definition file has the platform, and for a Python node, this Peppy holds the peppylib native extension of the platform. A release of Peppy holds it for every Linux platform.
+7. This machine can build each other platform of `--platforms`: the QEMU system emulator and the UEFI firmware of the architecture are installed, this Peppy has Lima and the Apptainer of the architecture, the base image of the definition file has the platform, and for a Python node, this Peppy holds the peppylib native extension of the platform. A release of Peppy holds Lima, and the Apptainer and the peppylib native extension of every Linux platform.
 8. For each platform whose tag the repository has already, the artifact under the tag was built from the same revision of the node. A tag is immutable, so Peppy never pushes over a tag.
 
 The revision of a node is its source digest: the sha256 of the staged tree of the node, without the vendored peppylib of a Python node. The same sources give the same digest on each machine and for each platform. The publish shows it, for example `` Source digest of `camera:v1`: sha256:9c1e... ``.
@@ -81,7 +81,7 @@ A platform whose tag holds the same revision is published already: the publish d
 
 ### What the command prints
 
-The publish shows the output of each build, and a line for each percent of each image it pushes. It ends with one line for each platform:
+The publish shows the output of each build, and the progress of the hash and of the push of each image: a line for each percent of the image, and a line at least every 10 seconds while bytes move. It ends with one line for each platform:
 
 ```text
 linux/amd64: pushed camera.v1.v0.32.0.linux-amd64 (sha256:4b7f...)

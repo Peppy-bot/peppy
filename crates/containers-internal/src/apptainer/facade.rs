@@ -502,30 +502,18 @@ impl Apptainer {
         if platform == daemon_config::consts::HOST_ARTIFACT_PLATFORM {
             return Self::new();
         }
-        if let Some(problem) = emulation_problem(platform) {
-            return Err(Error::ConfigurationError(problem));
-        }
-        let arch = platform.architecture();
-        let apptainer_dir = Self::resolve_apptainer_dir_of(arch)?;
-        if !apptainer_dir.join("bin/apptainer").exists() {
-            return Err(Error::ApptainerNotFound(format!(
-                "bin/apptainer not found in the {arch} installation directory: {}",
-                apptainer_dir.display()
-            )));
-        }
-        let limactl_path = lima::resolve_lima_dir()?.join("bin/limactl");
-        if !limactl_path.exists() {
-            return Err(Error::LimaRequired);
-        }
-        let lima_home = lima::resolve_lima_home()?;
-        lima::check_lima_version(&limactl_path)?;
+        let EmulationToolchain {
+            apptainer_dir,
+            limactl_path,
+            lima_home,
+        } = EmulationToolchain::find(platform)?;
         let mut facade = Self {
             apptainer_dir,
             backend: Backend::Lima {
                 apptainer_bin: PathBuf::from(env!("GUEST_APPTAINER_DIR")).join("bin/apptainer"),
                 limactl_path,
                 lima_home,
-                vm: lima::LimaVm::emulated(arch),
+                vm: lima::LimaVm::emulated(platform.architecture()),
             },
             extra_mounts: Vec::new(),
         };
@@ -1198,20 +1186,98 @@ impl Apptainer {
     }
 }
 
-/// Why this machine cannot build for `platform` under emulation, with the
-/// packages to install, or `None` when it can. Lima starts a VM of another
-/// architecture with the QEMU system emulator of that architecture, and the
-/// UEFI firmware of an arm64 guest.
+/// Why this machine cannot build for `platform` under emulation, or `None`
+/// when it can (see [`EmulationToolchain::find`]).
 pub fn emulation_problem(platform: ArtifactPlatform) -> Option<String> {
+    EmulationToolchain::find(platform)
+        .err()
+        .map(|error| error.to_string())
+}
+
+/// What a build for a platform of another architecture than the one of this
+/// machine runs with. Lima starts a VM of that architecture with the QEMU
+/// system emulator of that architecture and the UEFI firmware of its guests,
+/// and the apptainer of that architecture builds in the VM.
+struct EmulationToolchain {
+    apptainer_dir: PathBuf,
+    limactl_path: PathBuf,
+    lima_home: PathBuf,
+}
+
+impl EmulationToolchain {
+    /// The toolchain of a build for `platform`, or the first part of it this
+    /// machine lacks: the emulator and the firmware with the packages to
+    /// install, then the apptainer of the architecture and Lima, which a
+    /// release of peppy ships.
+    fn find(platform: ArtifactPlatform) -> Result<Self> {
+        let arch = platform.architecture();
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let host = EmulationHost {
+            find_program: &find_on_path,
+            is_file: &Path::is_file,
+            home: home.as_deref(),
+        };
+        if let Some(problem) = emulator_problem(platform, &host) {
+            return Err(Error::EmulationUnavailable(problem));
+        }
+        let apptainer_dir = Apptainer::resolve_apptainer_dir_of(arch)?;
+        if !apptainer_dir.join("bin/apptainer").exists() {
+            return Err(Error::ApptainerNotFound(format!(
+                "bin/apptainer not found in the {arch} installation directory: {}",
+                apptainer_dir.display()
+            )));
+        }
+        let limactl_path = lima::resolve_lima_dir()?.join("bin/limactl");
+        if !limactl_path.exists() {
+            return Err(Error::LimaRequired);
+        }
+        let lima_home = lima::resolve_lima_home()?;
+        lima::check_lima_version(&limactl_path)?;
+        Ok(Self {
+            apptainer_dir,
+            limactl_path,
+            lima_home,
+        })
+    }
+}
+
+/// What [`emulator_problem`] reads of this machine.
+pub(crate) struct EmulationHost<'a> {
+    /// The path of a program on `PATH`.
+    pub(crate) find_program: &'a dyn Fn(&str) -> Option<PathBuf>,
+    /// Whether a file is at a path.
+    pub(crate) is_file: &'a dyn Fn(&Path) -> bool,
+    pub(crate) home: Option<&'a Path>,
+}
+
+/// Why `host` cannot emulate the architecture of `platform`, with the
+/// packages to install: the QEMU system emulator of the architecture is not
+/// on `PATH`, or no UEFI firmware of its guests is where Lima looks for one
+/// (see [`lima::uefi_firmware_candidates`]).
+pub(crate) fn emulator_problem(
+    platform: ArtifactPlatform,
+    host: &EmulationHost<'_>,
+) -> Option<String> {
     let arch = platform.architecture();
     let emulator = format!("qemu-system-{arch}");
-    if find_on_path(&emulator).is_some() {
+    let packages = || emulation_packages(platform, &host_os_family());
+    let Some(qemu_system) = (host.find_program)(&emulator) else {
+        return Some(format!(
+            "building for {platform} on this machine needs the QEMU system emulator `{emulator}`, \
+             which is not on PATH: install {}",
+            packages()
+        ));
+    };
+    if lima::uefi_firmware_candidates(arch, &qemu_system, host.home)
+        .iter()
+        .any(|candidate| (host.is_file)(candidate))
+    {
         return None;
     }
-    let packages = emulation_packages(platform, &host_os_family());
     Some(format!(
-        "building for {platform} on this machine needs the QEMU system emulator `{emulator}`, \
-         which is not on PATH: install {packages}"
+        "building for {platform} on this machine needs the UEFI firmware of {arch} guests, which \
+         Lima starts its VM with, and it is not installed: install {}",
+        packages()
     ))
 }
 

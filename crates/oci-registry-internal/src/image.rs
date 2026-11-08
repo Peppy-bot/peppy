@@ -87,8 +87,9 @@ pub struct ImageReference {
 impl ImageReference {
     /// Parses a Docker image reference: `[registry/]path[:tag][@digest]`. A
     /// first component with a `.` or a `:`, or `localhost`, is the registry;
-    /// without one the registry is Docker Hub, where a one-component path is
-    /// under `library/`.
+    /// without one the registry is Docker Hub. On Docker Hub, a
+    /// one-component path is under `library/`. A reference with a tag and a
+    /// digest names the image by its digest.
     pub fn parse(raw: &str) -> Result<Self> {
         let invalid = |detail: String| RegistryError::Protocol {
             registry: DOCKER_HUB.to_owned(),
@@ -96,37 +97,47 @@ impl ImageReference {
             detail,
         };
         let text = raw.trim();
-        let (name, reference) = match text.split_once('@') {
-            Some((name, digest)) => (name, digest.to_owned()),
-            None => {
-                let last_slash = text.rfind('/').map_or(0, |index| index + 1);
-                match text[last_slash..].rfind(':') {
-                    Some(colon) => (
-                        &text[..last_slash + colon],
-                        text[last_slash + colon + 1..].to_owned(),
-                    ),
-                    None => (text, DEFAULT_TAG.to_owned()),
-                }
-            }
+        let (name_and_tag, digest) = match text.split_once('@') {
+            Some((name_and_tag, digest)) => (name_and_tag, Some(digest)),
+            None => (text, None),
         };
+        let (name, tag) = split_tag(name_and_tag);
+        let reference = digest.or(tag).unwrap_or(DEFAULT_TAG).to_owned();
         let (registry, path) = match name.split_once('/') {
             Some((first, rest))
                 if first.contains('.') || first.contains(':') || first == "localhost" =>
             {
-                (first.to_owned(), rest.to_owned())
+                (first, rest)
             }
-            _ if !name.contains('/') => (DOCKER_HUB.to_owned(), format!("library/{name}")),
-            _ => (DOCKER_HUB.to_owned(), name.to_owned()),
+            _ => (DOCKER_HUB, name),
+        };
+        let path = if crate::auth::is_docker_hub(registry) && !path.contains('/') {
+            format!("library/{path}")
+        } else {
+            path.to_owned()
         };
         let repository = OciRepository::parse(&format!("oci://{registry}/{path}"))
             .map_err(|e| invalid(e.to_string()))?;
         if reference.is_empty() {
-            return Err(invalid("it names an empty tag".to_owned()));
+            return Err(invalid("it names an empty tag or digest".to_owned()));
         }
         Ok(Self {
             repository,
             reference,
         })
+    }
+}
+
+/// Splits `name[:tag]` at the `:` of its last path component. A `:` before
+/// the last `/` is the port of the registry.
+fn split_tag(name_and_tag: &str) -> (&str, Option<&str>) {
+    let last_component = name_and_tag.rfind('/').map_or(0, |slash| slash + 1);
+    match name_and_tag[last_component..].rfind(':') {
+        Some(colon) => {
+            let colon = last_component + colon;
+            (&name_and_tag[..colon], Some(&name_and_tag[colon + 1..]))
+        }
+        None => (name_and_tag, None),
     }
 }
 
@@ -251,6 +262,43 @@ mod tests {
                 "nvidia/isaac-sim",
                 "sha256:0000000000000000000000000000000000000000000000000000000000000000",
             ),
+            (
+                "nvcr.io/nvidia/isaac-sim:4.5.0@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "nvcr.io",
+                "nvidia/isaac-sim",
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            (
+                "ubuntu:24.04@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "docker.io",
+                "library/ubuntu",
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            (
+                "localhost:5000/base:1@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "localhost:5000",
+                "base",
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            (
+                "docker.io/ubuntu:24.04",
+                "docker.io",
+                "library/ubuntu",
+                "24.04",
+            ),
+            (
+                "index.docker.io/ubuntu",
+                "index.docker.io",
+                "library/ubuntu",
+                "latest",
+            ),
+            (
+                "docker.io/peppybot/base:1",
+                "docker.io",
+                "peppybot/base",
+                "1",
+            ),
+            ("localhost:5000/base", "localhost:5000", "base", "latest"),
         ] {
             let image = ImageReference::parse(raw).expect(raw);
             assert_eq!(image.repository.registry(), registry, "{raw}");
@@ -264,5 +312,7 @@ mod tests {
             .expect("valid");
         assert_eq!(oras.to_string(), "ghcr.io/acme/base:1");
         assert!(ImageReference::parse("Upper/Case").is_err());
+        assert!(ImageReference::parse("ubuntu:").is_err());
+        assert!(ImageReference::parse("ubuntu@").is_err());
     }
 }

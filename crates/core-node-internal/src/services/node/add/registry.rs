@@ -10,7 +10,7 @@ use super::{
     AddStepFailure, NodeAddActionContext, ProcessNodeAddContext, add_documents,
     check_dependencies_present, push_failure_kind, record_add_failure, shutdown_existing_instances,
 };
-use crate::services::node::pull::{ImageToPull, pull_node_image};
+use crate::services::node::pull::{ImageToPull, prune_earlier_images, pull_node_image};
 use config::failure_kind::PeppyFailureKind;
 use config::node::NodeConfig;
 use core_node_api::encoding::{NodeAddGoal, NodeAddResult};
@@ -118,7 +118,9 @@ async fn add_registry_node(
     .map_err(|message| AddStepFailure::new(PeppyFailureKind::AttemptFailed, message))?;
 
     // The same precondition as the add of a sourced node: `push_pulled`
-    // refuses to replace a node that still has live instances.
+    // refuses to replace a node that still has live instances. The earlier
+    // images of the node stay until the node is replaced, since the node
+    // runs from one of them while the shutdown can still refuse.
     shutdown_existing_instances(&node_name, &node_tag, ctx)
         .await
         .map_err(|refusal| {
@@ -133,7 +135,7 @@ async fn add_registry_node(
             config,
             &config_path,
             PulledArtifact {
-                sif_path,
+                sif_path: sif_path.clone(),
                 repository: url.clone(),
             },
             documents.into_documents(),
@@ -144,6 +146,7 @@ async fn add_registry_node(
                 format!("Failed to add node config: {error}"),
             )
         })?;
+    prune_earlier_images(&sif_path, platform).await;
     ctx.action
         .node_stack
         .set_add_log_path(&node_name, &node_tag, ctx.announcer.log().path());

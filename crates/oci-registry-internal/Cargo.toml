@@ -16,9 +16,11 @@ daemon-config = { workspace = true }
 # The OCI distribution API over HTTP(S). Like the PyPI mirror check, the
 # requests go through the proxy that ALL_PROXY, HTTPS_PROXY or HTTP_PROXY of
 # the daemon names; `socks` lets that proxy be a SOCKS one.
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "socks"] }
+# `stream` sends the chunks of an upload in parts, to report their progress.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "socks", "stream"] }
 bytes = "1"
-tokio = { version = "1", features = ["fs", "io-util", "process", "sync"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "sync"] }
 sha2 = "0.11"
 base64 = "0.23"
 serde = { version = "1", features = ["derive"] }

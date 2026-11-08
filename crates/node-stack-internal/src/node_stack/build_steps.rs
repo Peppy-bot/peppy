@@ -14,6 +14,7 @@ use zstd::stream::write::Encoder as ZstdEncoder;
 
 use crate::action_log::{ActionLog, Announcer, STDERR_TAIL_HEADER};
 use crate::build_io::{ChildWrapper, spawn_in_process_group, stream_child_output};
+use crate::build_progress::{BuildProgressMonitor, LastOutputLine};
 use crate::node_stack::container_build_cache::{
     self, SoleUvCacheUse, UvCachePruneOutcome, UvCacheUse,
 };
@@ -187,6 +188,17 @@ pub(super) async fn build_container_image(
             .line("Initializing Lima VM for container build (first run may take a few minutes)...");
     }
 
+    // Creating a VM, booting it under emulation and syncing apptainer into
+    // it print nothing for minutes: the work they do on the VM is the
+    // activity that keeps the idle timeout off, as for a build. The monitor
+    // stops when it is dropped, once the VM is ready.
+    let preparing_vm = BuildActivityProbe::vm_preparation(platform).map(|probe| {
+        BuildProgressMonitor::spawn(
+            move || probe.sample(),
+            LastOutputLine::default(),
+            inputs.announcer.feedback_tx().clone(),
+        )
+    });
     let mut apptainer =
         tokio::task::spawn_blocking(move || containers::Apptainer::for_platform(platform))
             .await
@@ -218,6 +230,7 @@ pub(super) async fn build_container_image(
     .await
     .map_err(|e| format!("Host mount registration task failed: {}", e))?
     .map_err(|e| format!("Failed to ensure peppy root is mounted in the VM: {}", e))?;
+    drop(preparing_vm);
 
     let sif_name = format!("{}_{}.sif", inputs.node_name, inputs.node_tag);
     let output_path = inputs.working_dir.join(&sif_name);

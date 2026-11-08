@@ -3446,6 +3446,7 @@ dependencies = [
  "containers",
  "core-node-api",
  "daemon-config",
+ "futures-util",
  "httpmock",
  "peppy-config-model",
  "reqwest",

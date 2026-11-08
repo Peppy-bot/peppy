@@ -1,6 +1,7 @@
 use super::super::error::{Error, Result};
 use super::facade::wait_for_child_bounded;
 use config::node::is_blocked_mount_source;
+use core_node_api::encoding::ArtifactPlatform;
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -10,6 +11,48 @@ use std::time::{Duration, Instant};
 pub(crate) const LIMA_INSTANCE: &str = env!("LIMA_INSTANCE");
 pub(crate) const LIMA_TEMPLATE: &str = env!("LIMA_TEMPLATE");
 pub(crate) const MIN_LIMA_VERSION: (u32, u32, u32) = (2, 1, 0);
+
+/// The file of the instance directory of a Lima VM that holds the pid of its
+/// host agent, which runs the VM.
+pub(crate) const HOST_AGENT_PID_FILE: &str = "ha.pid";
+
+/// The UEFI firmware files of an `arch` guest that Lima starts a QEMU VM
+/// with, in the order Lima looks for them: under `home`/.local, beside the
+/// installation of the emulator at `qemu_system`, then where the firmware
+/// packages of the Linux distributions put them.
+pub(crate) fn uefi_firmware_candidates(
+    arch: &str,
+    qemu_system: &Path,
+    home: Option<&Path>,
+) -> Vec<PathBuf> {
+    let code = format!("edk2-{arch}-code.fd");
+    let bin_dir = qemu_system.parent().unwrap_or(Path::new("/"));
+    let prefix = bin_dir.parent().unwrap_or(Path::new("/"));
+    let mut candidates: Vec<PathBuf> = home
+        .map(|home| home.join(".local/share/qemu").join(&code))
+        .into_iter()
+        .collect();
+    candidates.push(prefix.join("share/qemu").join(&code));
+    candidates.push(bin_dir.join("share").join(&code));
+    let packaged: &[&str] = match arch {
+        "x86_64" => &[
+            "/usr/share/edk2/x64/OVMF_CODE.4m.fd",
+            "/usr/share/OVMF/OVMF_CODE_4M.fd",
+            "/usr/share/OVMF/OVMF_CODE.fd",
+            "/usr/share/edk2/ovmf/OVMF_CODE.fd",
+            "/usr/share/qemu/ovmf-x86_64-4m.bin",
+            "/usr/share/qemu/ovmf-x86_64.bin",
+        ],
+        "aarch64" => &[
+            "/usr/share/AAVMF/AAVMF_CODE.fd",
+            "/usr/share/edk2/aarch64/QEMU_CODE.fd",
+            "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
+        ],
+        _ => &[],
+    };
+    candidates.extend(packaged.iter().map(PathBuf::from));
+    candidates
+}
 
 /// The memory, in GiB, of the VM that runs the containers of the host
 /// platform on macOS.
@@ -58,6 +101,17 @@ impl LimaVm {
                 format!("--cpus={cpus}"),
             ],
         }
+    }
+
+    /// The VM that builds containers for `platform`: [`Self::host`] for the
+    /// platform of this machine on macOS, [`Self::emulated`] for the other
+    /// Linux platform. `None` for the platform of a Linux machine, which
+    /// builds without a VM.
+    pub(crate) fn for_platform(platform: ArtifactPlatform) -> Option<Self> {
+        if platform != daemon_config::consts::HOST_ARTIFACT_PLATFORM {
+            return Some(Self::emulated(platform.architecture()));
+        }
+        cfg!(target_os = "macos").then(Self::host)
     }
 
     /// The `limactl start` arguments that create this VM from `template`.

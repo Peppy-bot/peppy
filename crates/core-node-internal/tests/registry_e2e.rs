@@ -311,6 +311,30 @@ mod registry_e2e_tests {
         )
     }
 
+    /// Adds `name:v1` from the repositories of `started`, and gives the
+    /// image the node runs from.
+    async fn add_pulled(started: &StartedCoreNode, name: &str) -> PathBuf {
+        let end = send_node_add_and_wait(
+            &started.caller_handle,
+            &started.core_node_name,
+            NodeAddSource::ResolveRef { name, tag: "v1" },
+            GOAL_TIMEOUT,
+            BUILD_TIMEOUT,
+            None,
+        )
+        .await
+        .expect("the add ends");
+        assert!(end.is_completed(), "{end:?}");
+        started
+            .node_stack
+            .find(name, "v1")
+            .expect("added")
+            .read()
+            .artifact_path()
+            .expect("an image")
+            .to_path_buf()
+    }
+
     /// The node `name:v1` of the cache of `started`, as JSON.
     fn cached_node(started: &StartedCoreNode, name: &str) -> Option<serde_json::Value> {
         common::read_json5_array(&core_node::nodes_repo_cache_path(&started.peppy_dirs))
@@ -430,26 +454,7 @@ mod registry_e2e_tests {
                 && platforms.contains_key(other_platform().as_str()),
             "both platforms of the revision: {platforms:?}"
         );
-        let end = send_node_add_and_wait(
-            &puller.caller_handle,
-            &puller.core_node_name,
-            NodeAddSource::ResolveRef {
-                name: "hello_oci",
-                tag: "v1",
-            },
-            GOAL_TIMEOUT,
-            BUILD_TIMEOUT,
-            None,
-        )
-        .await
-        .expect("the add ends");
-        assert!(end.is_completed(), "{end:?}");
-        let entity = puller.node_stack.find("hello_oci", "v1").expect("added");
-        let pulled = entity
-            .read()
-            .artifact_path()
-            .expect("an image")
-            .to_path_buf();
+        let pulled = add_pulled(&puller, "hello_oci").await;
         assert_eq!(
             oci_registry::digest::of_file(&pulled).expect("hash").0,
             oci_registry::digest::of_file(&host_artifact)
@@ -654,6 +659,39 @@ mod registry_e2e_tests {
             .map(|entries| entries.flatten().map(|entry| entry.file_name()).collect())
             .unwrap_or_default();
         assert!(left.is_empty(), "nothing is stored: {left:?}");
+    }
+
+    /// A pull stores a new image of a node beside the earlier one, and the
+    /// add removes the earlier one once the node runs from the new one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_new_image_replaces_the_earlier_one_once_the_node_is_replaced() {
+        let version = version();
+        let registry = LocalRegistry::start(RegistryAuth::Anonymous);
+        let started = start_core_node_with_mock_messenger().await;
+        configure_repositories(&started, &registry, None);
+        let mut images = Vec::new();
+        for (seed, sif) in [("r1", "the first image"), ("r2", "the next image")] {
+            push_fake_artifact(
+                &registry,
+                "renewed",
+                HOST_ARTIFACT_PLATFORM,
+                &version,
+                &revision(seed),
+                sif.as_bytes(),
+            )
+            .await;
+            refresh(&started).await;
+            images.push(add_pulled(&started, "renewed").await);
+        }
+        let [first, next] = images.as_slice() else {
+            panic!("two adds: {images:?}");
+        };
+        assert_ne!(first, next, "each image has the path of its digest");
+        assert_eq!(
+            std::fs::read(next).expect("the next image"),
+            b"the next image"
+        );
+        assert!(!first.exists(), "the earlier image is removed: {first:?}");
     }
 
     /// The report line of `node` among `lines`.

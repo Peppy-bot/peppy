@@ -7,6 +7,7 @@
 //! other platform, builds the platform of this machine as a build does, and
 //! the other platforms in a VM of their architecture.
 
+use super::transfer_progress::announce_progress;
 use config::failure_kind::PeppyFailureKind;
 use config::node::NodeConfig;
 use core_node_api::encoding::{
@@ -28,10 +29,6 @@ use std::path::Path;
 
 /// The guide that says how to make a node a container node.
 const CONTAINERS_GUIDE: &str = "https://docs.peppy.bot/advanced_guides/containers/";
-
-/// How many progress lines the push of one image reports at most: one for
-/// each percent of the image.
-const PUSH_PROGRESS_STEPS: u64 = 100;
 
 /// What a publish knows once the checks that need no network passed: where
 /// it pushes, for which version, and what it was asked.
@@ -73,17 +70,10 @@ fn check_target_of_version(
 ) -> Result<PublishTarget, Failure> {
     let refuse = |message: String| Failure::new(PeppyFailureKind::PreconditionFailed, message);
     let node = node_label(config);
-    let repository = request
-        .repository
-        .clone()
-        .or_else(|| settings.repository.clone())
-        .ok_or_else(|| {
-            refuse(format!(
-                "no publish_repository in `{}`: set it to the URL of the OCI repository to \
-                 publish to, such as \"oci://ghcr.io/acme/peppy-nodes\"",
-                settings.config_source
-            ))
-        })?;
+    let repository = match &request.repository {
+        Some(repository) => repository.clone(),
+        None => configured_repository(settings).map_err(refuse)?,
+    };
     let version = version.map_err(|e| refuse(e.to_string()))?;
     if config.execution.container.is_none() {
         return Err(refuse(format!(
@@ -93,17 +83,62 @@ fn check_target_of_version(
         )));
     }
     if let Some(origin) = pulled_from {
-        return Err(refuse(format!(
-            "{node} comes from the oci repository `{origin}` and has no sources, so it cannot \
-             be published. To publish it, add a git or fs repository that holds it, with a \
-             lower id."
-        )));
+        return Err(refuse(pulled_node_refusal(&node, origin, "publish")));
     }
     Ok(PublishTarget {
         repository,
         version,
         request: request.clone(),
     })
+}
+
+/// The publish repository of this daemon (check 1 of `peppy node
+/// publish`), or the refusal that names its fix.
+pub(crate) fn configured_repository(
+    settings: &node_stack::PublishSettings,
+) -> Result<OciRepository, String> {
+    settings.repository.clone().ok_or_else(|| {
+        format!(
+            "no publish_repository in `{}`: set it to the URL of the OCI repository to publish \
+             to, such as \"oci://ghcr.io/acme/peppy-nodes\"",
+            settings.config_source
+        )
+    })
+}
+
+/// Why a build or a publish (`action`) refuses `node`, whose image was
+/// pulled from the OCI repository `repository`: it has no sources here.
+pub(crate) fn pulled_node_refusal(node: &str, repository: &OciRepository, action: &str) -> String {
+    format!(
+        "{node} comes from the oci repository `{repository}` and has no sources. To {action} it, \
+         add a git or fs repository that holds it, with a lower id."
+    )
+}
+
+/// A client that pushes to `repository` with the credentials of this
+/// machine.
+fn push_client(repository: &OciRepository) -> Result<RegistryClient, String> {
+    RegistryClient::new(
+        repository,
+        CredentialStore::from_environment(),
+        Access::Push,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Check 6 of `peppy node publish`: the registry of `repository` accepts a
+/// push from this machine, `core_node`, with its own credentials. Gives the
+/// client that pushes, or the refusal that names its fix.
+pub(crate) async fn check_push_from(
+    repository: &OciRepository,
+    core_node: &str,
+) -> Result<RegistryClient, String> {
+    let client = push_client(repository)?;
+    client
+        .check_push_access()
+        .await
+        .map_err(|error| push_check_failure(repository, core_node, &error))?;
+    Ok(client)
 }
 
 /// A publish whose checks passed: the platforms to build and push, and what
@@ -118,9 +153,11 @@ pub(crate) struct PublishPlan {
     git_source: Option<GitSource>,
     /// The `peppy.json5` of the staged tree, the same on every platform.
     node_manifest: Vec<u8>,
-    /// The platforms to build and push: the one of this machine first.
-    pending: Vec<ArtifactPlatform>,
-    /// What the checks decided for the other platforms of the request.
+    /// Every platform of the request: the one of this machine first, then
+    /// the others in the order of the request.
+    platforms: Vec<ArtifactPlatform>,
+    /// What the checks decided for the platforms of the request that are
+    /// not to be built and pushed.
     decided: BTreeMap<ArtifactPlatform, PublishOutcome>,
     refusals: PublishRefusals,
 }
@@ -128,7 +165,7 @@ pub(crate) struct PublishPlan {
 impl PublishPlan {
     /// Whether the platform of this machine is to be pushed.
     pub(crate) fn pushes_host_platform(&self) -> bool {
-        self.pending.contains(&HOST_ARTIFACT_PLATFORM)
+        !self.decided.contains_key(&HOST_ARTIFACT_PLATFORM)
     }
 
     /// Whether the node builds for this machine: always in a stack build,
@@ -141,10 +178,12 @@ impl PublishPlan {
 
     /// The platforms beside the one of this machine to build and push.
     pub(crate) fn other_platforms(&self) -> Vec<ArtifactPlatform> {
-        self.pending
+        self.platforms
             .iter()
             .copied()
-            .filter(|platform| *platform != HOST_ARTIFACT_PLATFORM)
+            .filter(|platform| {
+                *platform != HOST_ARTIFACT_PLATFORM && !self.decided.contains_key(platform)
+            })
             .collect()
     }
 }
@@ -196,22 +235,18 @@ pub(crate) async fn plan(inputs: PlanInputs<'_>) -> Result<PublishPlan, Failure>
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
 
-    let client = RegistryClient::new(
-        &target.repository,
-        CredentialStore::from_environment(),
-        Access::Push,
-    )
-    .map_err(|e| refuse(e.to_string()))?;
-    if refusals == PublishRefusals::FailGoal {
-        announcer.line(format!(
-            "Checking that {} accepts a push",
-            target.repository
-        ));
-        client
-            .check_push_access()
-            .await
-            .map_err(|e| refuse(push_check_failure(&target.repository, core_node, &e)))?;
-    }
+    let client = match refusals {
+        PublishRefusals::FailGoal => {
+            announcer.line(format!(
+                "Checking that {} accepts a push",
+                target.repository
+            ));
+            check_push_from(&target.repository, core_node)
+                .await
+                .map_err(refuse)?
+        }
+        PublishRefusals::Report => push_client(&target.repository).map_err(refuse)?,
+    };
 
     let mut decided = BTreeMap::new();
     for platform in platforms.iter().skip(1) {
@@ -274,12 +309,9 @@ pub(crate) async fn plan(inputs: PlanInputs<'_>) -> Result<PublishPlan, Failure>
         }
     }
 
-    let node_manifest = std::fs::read(staged_dir.join(config::consts::NODE_CONFIG_FILE))
+    let node_manifest = tokio::fs::read(staged_dir.join(config::consts::NODE_CONFIG_FILE))
+        .await
         .map_err(|e| refuse(format!("the staged peppy.json5 cannot be read: {e}")))?;
-    let pending = platforms
-        .into_iter()
-        .filter(|platform| !decided.contains_key(platform))
-        .collect();
     Ok(PublishPlan {
         client,
         repository: target.repository,
@@ -289,7 +321,7 @@ pub(crate) async fn plan(inputs: PlanInputs<'_>) -> Result<PublishPlan, Failure>
         source_digest,
         git_source: repository_origin.and_then(git_source_of),
         node_manifest,
-        pending,
+        platforms,
         decided,
         refusals,
     })
@@ -349,7 +381,9 @@ async fn other_platform_problem(
         return Some((NotPublishedReason::EmulatorMissing, problem));
     }
     let container = config.execution.container.as_ref()?;
-    let definition = std::fs::read_to_string(staged_dir.join(&container.def_file)).ok();
+    let definition = tokio::fs::read_to_string(staged_dir.join(&container.def_file))
+        .await
+        .ok();
     if let Some(image) = definition
         .as_deref()
         .and_then(DefinitionHeader::parse)
@@ -408,33 +442,62 @@ async fn other_platform_problem(
 /// build from, made before the build of this machine, which may rewrite the
 /// staged tree (the locks of a PyPI mirror). The vendored peppylib of a
 /// Python node is staged again for each platform. A platform whose copy
-/// fails gets that failure as its outcome.
-pub(crate) fn copy_trees_for_other_platforms(
+/// fails gets that failure as its outcome. The copies run on the blocking
+/// pool: a staged tree may hold hundreds of MB of vendored sources.
+pub(crate) async fn copy_trees_for_other_platforms(
     plan: &PublishPlan,
     config: &NodeConfig,
     staged_dir: &Path,
     peppy_dirs: &PeppyDirs,
 ) -> Vec<(ArtifactPlatform, Result<tempfile::TempDir, String>)> {
-    plan.other_platforms()
-        .into_iter()
-        .map(|platform| {
-            let copied = node_stack::add_steps::copy_staged_tree(staged_dir, &peppy_dirs.tmp_dir())
-                .map_err(|e| format!("the staged tree cannot be copied for {platform}: {e}"))
-                .and_then(|copy| {
-                    if config.execution.language == config::node::PeppygenLanguage::Python {
-                        generator::restage_peppylib_for_platform(
-                            copy.path(),
-                            peppy_dirs,
-                            platform,
-                            generator::CodecApi::of_manifest(config.execution.codec_api),
-                        )
-                        .map_err(|e| format!("the peppylib of {platform} cannot be staged: {e}"))?;
-                    }
-                    Ok(copy)
-                });
-            (platform, copied)
-        })
-        .collect()
+    let platforms = plan.other_platforms();
+    let python_codec_api = (config.execution.language == config::node::PeppygenLanguage::Python)
+        .then(|| generator::CodecApi::of_manifest(config.execution.codec_api));
+    let copied_platforms = platforms.clone();
+    let staged_dir = staged_dir.to_path_buf();
+    let peppy_dirs = peppy_dirs.clone();
+    tokio::task::spawn_blocking(move || {
+        copied_platforms
+            .into_iter()
+            .map(|platform| {
+                let copy =
+                    copy_tree_for_platform(&staged_dir, &peppy_dirs, platform, python_codec_api);
+                (platform, copy)
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_else(|error| {
+        platforms
+            .into_iter()
+            .map(|platform| {
+                (
+                    platform,
+                    Err(format!(
+                        "the copy of the staged tree for {platform} failed: {error}"
+                    )),
+                )
+            })
+            .collect()
+    })
+}
+
+/// A copy of the staged tree at `staged_dir` that builds for `platform`,
+/// with the peppylib of that platform when the node is a Python node of the
+/// codec API `python_codec_api`.
+fn copy_tree_for_platform(
+    staged_dir: &Path,
+    peppy_dirs: &PeppyDirs,
+    platform: ArtifactPlatform,
+    python_codec_api: Option<generator::CodecApi>,
+) -> Result<tempfile::TempDir, String> {
+    let copy = node_stack::add_steps::copy_staged_tree(staged_dir, &peppy_dirs.tmp_dir())
+        .map_err(|e| format!("the staged tree cannot be copied for {platform}: {e}"))?;
+    if let Some(codec_api) = python_codec_api {
+        generator::restage_peppylib_for_platform(copy.path(), peppy_dirs, platform, codec_api)
+            .map_err(|e| format!("the peppylib of {platform} cannot be staged: {e}"))?;
+    }
+    Ok(copy)
 }
 
 /// Pushes the image at `sif_path`, built for `platform`, and gives what the
@@ -488,32 +551,28 @@ async fn push_image(
     }
     let (sif_digest, sif_size) = {
         let path = sif_path.to_path_buf();
-        tokio::task::spawn_blocking(move || oci_registry::digest::of_file(&path))
+        let size = tokio::fs::metadata(sif_path)
             .await
-            .map_err(|e| RegistryError::io(sif_path, std::io::Error::other(e.to_string())))?
             .map_err(|e| RegistryError::io(sif_path, e))?
+            .len();
+        announcer.line(format!(
+            "Hashing the image of {tag} ({})",
+            format_bytes(size)
+        ));
+        let on_progress = announce_progress("Hashed", size, announcer);
+        tokio::task::spawn_blocking(move || {
+            oci_registry::digest::of_file_reporting(&path, on_progress)
+        })
+        .await
+        .map_err(|e| RegistryError::io(sif_path, std::io::Error::other(e.to_string())))?
+        .map_err(|e| RegistryError::io(sif_path, e))?
     };
     announcer.line(format!(
         "Pushing {tag} ({sif_digest}, {}) to {}",
         format_bytes(sif_size),
         plan.repository
     ));
-    let progress_announcer = announcer.clone();
-    let mut reported_step = 0u64;
-    let mut on_progress = move |sent: u64| {
-        let step = sent
-            .saturating_mul(PUSH_PROGRESS_STEPS)
-            .checked_div(sif_size)
-            .unwrap_or(PUSH_PROGRESS_STEPS);
-        if step > reported_step {
-            reported_step = step;
-            progress_announcer.line(format!(
-                "Pushed {step}% ({} of {})",
-                format_bytes(sent),
-                format_bytes(sif_size)
-            ));
-        }
-    };
+    let mut on_progress = announce_progress("Pushed", sif_size, announcer);
     let pushed = plan
         .client
         .push_blob_file(sif_path, &sif_digest, sif_size, &mut on_progress)
@@ -556,38 +615,29 @@ async fn push_image(
 
 /// What the publish did for each platform of its request: the platform of
 /// this machine first, then the others in the order of the request.
-pub(crate) fn report(
-    plan: &PublishPlan,
-    pushed: Vec<PlatformPublish>,
-    requested: &[ArtifactPlatform],
-) -> Vec<PlatformPublish> {
-    order_report(plan.decided.clone(), pushed, requested)
+pub(crate) fn report(plan: &PublishPlan, pushed: Vec<PlatformPublish>) -> Vec<PlatformPublish> {
+    order_report(&plan.platforms, plan.decided.clone(), pushed)
 }
 
 /// The outcomes `decided` by the checks and `pushed` by the builds, in the
-/// order of the report: the platform of this machine first, then the others
-/// in the order of `requested`.
+/// order of `platforms`. A platform with neither, which a cancel stopped
+/// before its build, is left out.
 fn order_report(
+    platforms: &[ArtifactPlatform],
     decided: BTreeMap<ArtifactPlatform, PublishOutcome>,
     pushed: Vec<PlatformPublish>,
-    requested: &[ArtifactPlatform],
 ) -> Vec<PlatformPublish> {
     let mut by_platform = decided;
     for published in pushed {
         by_platform.insert(published.platform, published.outcome);
     }
-    let mut order = vec![HOST_ARTIFACT_PLATFORM];
-    for platform in requested {
-        if !order.contains(platform) {
-            order.push(*platform);
-        }
-    }
-    order
-        .into_iter()
+    platforms
+        .iter()
         .filter_map(|platform| {
-            by_platform
-                .remove(&platform)
-                .map(|outcome| PlatformPublish { platform, outcome })
+            by_platform.remove(platform).map(|outcome| PlatformPublish {
+                platform: *platform,
+                outcome,
+            })
         })
         .collect()
 }
@@ -639,7 +689,7 @@ fn not_published_reason(error: &RegistryError) -> NotPublishedReason {
 }
 
 /// The message of a push check that failed on the machine `core_node`.
-pub(crate) fn push_check_failure(
+fn push_check_failure(
     repository: &OciRepository,
     core_node: &str,
     error: &RegistryError,
@@ -804,31 +854,70 @@ mod tests {
         assert_eq!(own.version.as_str(), "v0.36.0");
     }
 
-    #[test]
-    fn the_report_lists_the_platform_of_this_machine_first_then_the_request() {
-        let decided = |platform, outcome| PlatformPublish { platform, outcome };
-        let other = ArtifactPlatform::ALL
+    fn other_platform() -> ArtifactPlatform {
+        ArtifactPlatform::ALL
             .into_iter()
             .find(|platform| *platform != HOST_ARTIFACT_PLATFORM)
-            .expect("two platforms");
+            .expect("two platforms")
+    }
+
+    fn already_published(tag: &str) -> PublishOutcome {
+        PublishOutcome::AlreadyPublished {
+            tag: tag.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_report_lists_the_platform_of_this_machine_first_then_the_request() {
+        let other = other_platform();
         let pushed = vec![
-            decided(
-                other,
-                PublishOutcome::AlreadyPublished {
-                    tag: "other".to_owned(),
-                },
-            ),
-            decided(
-                HOST_ARTIFACT_PLATFORM,
-                PublishOutcome::AlreadyPublished {
-                    tag: "host".to_owned(),
-                },
-            ),
+            PlatformPublish {
+                platform: other,
+                outcome: already_published("other"),
+            },
+            PlatformPublish {
+                platform: HOST_ARTIFACT_PLATFORM,
+                outcome: already_published("host"),
+            },
         ];
-        let order: Vec<ArtifactPlatform> = order_report(BTreeMap::new(), pushed, &[other])
-            .into_iter()
-            .map(|published| published.platform)
-            .collect();
+        let order: Vec<ArtifactPlatform> =
+            order_report(&[HOST_ARTIFACT_PLATFORM, other], BTreeMap::new(), pushed)
+                .into_iter()
+                .map(|published| published.platform)
+                .collect();
         assert_eq!(order, [HOST_ARTIFACT_PLATFORM, other]);
+    }
+
+    /// A platform that the checks refused or found published already is
+    /// built by nobody, and is in the report all the same.
+    #[test]
+    fn the_report_holds_the_platforms_that_the_checks_decided() {
+        let other = other_platform();
+        let refused = PublishOutcome::NotPublished {
+            reason: NotPublishedReason::EmulatorMissing,
+            detail: "no emulator".to_owned(),
+        };
+        let pushed = vec![PlatformPublish {
+            platform: HOST_ARTIFACT_PLATFORM,
+            outcome: already_published("host"),
+        }];
+        let report = order_report(
+            &[HOST_ARTIFACT_PLATFORM, other],
+            BTreeMap::from([(other, refused.clone())]),
+            pushed,
+        );
+        assert_eq!(
+            report,
+            [
+                PlatformPublish {
+                    platform: HOST_ARTIFACT_PLATFORM,
+                    outcome: already_published("host"),
+                },
+                PlatformPublish {
+                    platform: other,
+                    outcome: refused,
+                },
+            ]
+        );
     }
 }

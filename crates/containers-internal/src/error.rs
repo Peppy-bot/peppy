@@ -132,4 +132,9 @@ pub enum Error {
 
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
+
+    /// This machine lacks a part of the emulation a build for another
+    /// platform needs: the message names it and how to install it.
+    #[error("{0}")]
+    EmulationUnavailable(String),
 }

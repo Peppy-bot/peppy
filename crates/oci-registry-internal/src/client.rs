@@ -6,6 +6,7 @@ use crate::error::{RegistryError, Result};
 use crate::manifest::IMAGE_MANIFEST_MEDIA_TYPE;
 use bytes::Bytes;
 use core_node_api::encoding::{OciDigest, OciRepository};
+use futures_util::StreamExt as _;
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use reqwest::{Method, StatusCode};
 use std::path::Path;
@@ -16,9 +17,13 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 /// `peppy.json5` of a node).
 pub const MAX_SMALL_BLOB_BYTES: u64 = 4 << 20;
 
-/// The size of the chunks of a blob upload, unless the registry asks for
-/// larger ones.
+/// The size of the chunks of a blob upload.
 pub const DEFAULT_UPLOAD_CHUNK_BYTES: u64 = 32 << 20;
+
+/// The size of the parts in which a chunk of an upload goes to the
+/// connection: the progress of a push moves by one part at a time, so a slow
+/// link reports progress inside a chunk.
+const UPLOAD_PART_BYTES: usize = 256 << 10;
 
 /// How many tags one page of the tag list asks for.
 const DEFAULT_TAGS_PAGE_SIZE: u32 = 1000;
@@ -369,8 +374,9 @@ impl RegistryClient {
 
     /// Pushes the file at `path`, of digest `digest` and `size` bytes, in
     /// chunks, unless the repository already has it. Returns whether it
-    /// pushed. `on_progress` gets the number of bytes sent so far after each
-    /// chunk.
+    /// pushed. `on_progress` gets the number of bytes sent so far as the
+    /// connection takes each part of a chunk. A chunk sent again after a
+    /// challenge of the registry counts again from its start.
     pub async fn push_blob_file(
         &self,
         path: &Path,
@@ -401,16 +407,30 @@ impl RegistryClient {
                 header::CONTENT_RANGE,
                 header_value(&format!("{}-{}", sent, sent + length - 1)),
             );
+            // A body in parts has no length of its own: the header keeps the
+            // chunk out of a chunked transfer encoding.
+            headers.insert(header::CONTENT_LENGTH, header_value(&length.to_string()));
             let request = format!("PATCH blobs/uploads ({} bytes at {sent})", length);
-            let answer = self
-                .send(Method::PATCH, &location, headers, Some(Bytes::from(chunk)))
-                .await?;
+            let (taken_tx, mut taken_rx) = tokio::sync::mpsc::unbounded_channel();
+            let answer = report_taken_while(
+                self.send_body(
+                    Method::PATCH,
+                    &location,
+                    headers,
+                    Some(RequestBody::InParts {
+                        bytes: Bytes::from(chunk),
+                        taken: taken_tx,
+                    }),
+                ),
+                &mut taken_rx,
+                |taken| on_progress(sent + taken),
+            )
+            .await?;
             let answer = self
                 .expect(answer, &request, &[StatusCode::ACCEPTED])
                 .await?;
             location = self.upload_location(&answer, &location, &request)?;
             sent += length;
-            on_progress(sent);
         }
         self.finish_upload(&location, digest, None).await?;
         Ok(true)
@@ -530,6 +550,18 @@ impl RegistryClient {
         headers: HeaderMap,
         body: Option<Bytes>,
     ) -> Result<Answer> {
+        self.send_body(method, url, headers, body.map(RequestBody::Whole))
+            .await
+    }
+
+    /// [`Self::send`] with a body that may go to the connection in parts.
+    async fn send_body(
+        &self,
+        method: Method,
+        url: &str,
+        headers: HeaderMap,
+        body: Option<RequestBody>,
+    ) -> Result<Answer> {
         let attempt = |authorization: Option<HeaderValue>| {
             let mut builder = self
                 .http
@@ -539,7 +571,7 @@ impl RegistryClient {
                 builder = builder.header(header::AUTHORIZATION, value);
             }
             if let Some(body) = &body {
-                builder = builder.body(body.clone());
+                builder = builder.body(body.to_reqwest());
             }
             builder.send()
         };
@@ -700,6 +732,63 @@ impl RegistryClient {
             cause: error_with_causes(&error),
         }
     }
+}
+
+/// The body of a request.
+enum RequestBody {
+    /// Bytes that go to the connection at once.
+    Whole(Bytes),
+    /// Bytes that go to the connection in parts of [`UPLOAD_PART_BYTES`].
+    /// As the connection takes each part, `taken` gets the count of the
+    /// bytes of the body taken so far.
+    InParts {
+        bytes: Bytes,
+        taken: tokio::sync::mpsc::UnboundedSender<u64>,
+    },
+}
+
+impl RequestBody {
+    /// The body of one attempt of the request: a request sent again sends
+    /// and counts its body again from its start.
+    fn to_reqwest(&self) -> reqwest::Body {
+        match self {
+            Self::Whole(bytes) => reqwest::Body::from(bytes.clone()),
+            Self::InParts { bytes, taken } => {
+                let parts: Vec<Bytes> = (0..bytes.len())
+                    .step_by(UPLOAD_PART_BYTES)
+                    .map(|start| bytes.slice(start..(start + UPLOAD_PART_BYTES).min(bytes.len())))
+                    .collect();
+                let taken = taken.clone();
+                let mut count = 0u64;
+                reqwest::Body::wrap_stream(futures_util::stream::iter(parts).map(move |part| {
+                    count += part.len() as u64;
+                    // The receiver is gone once the request ended.
+                    let _ = taken.send(count);
+                    Ok::<_, std::convert::Infallible>(part)
+                }))
+            }
+        }
+    }
+}
+
+/// Awaits `request`, and gives `on_taken` each count of `taken` while the
+/// request runs, then the counts left once it ended.
+async fn report_taken_while<T>(
+    request: impl std::future::Future<Output = T>,
+    taken: &mut tokio::sync::mpsc::UnboundedReceiver<u64>,
+    mut on_taken: impl FnMut(u64),
+) -> T {
+    tokio::pin!(request);
+    let outcome = loop {
+        tokio::select! {
+            outcome = &mut request => break outcome,
+            Some(count) = taken.recv() => on_taken(count),
+        }
+    };
+    while let Ok(count) = taken.try_recv() {
+        on_taken(count);
+    }
+    outcome
 }
 
 fn header_value(text: &str) -> HeaderValue {

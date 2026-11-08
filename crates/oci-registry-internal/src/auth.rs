@@ -7,7 +7,8 @@
 //! this order: the credential helper `credHelpers` names for it, the helper
 //! `credsStore` names, then its entry under `auths`. Without any, peppy asks
 //! the registry without a credential, which a public repository accepts for
-//! a pull.
+//! a pull. As Docker does, peppy names Docker Hub `https://index.docker.io/v1/`
+//! to a credential helper.
 
 use crate::error::{RegistryError, Result};
 use base64::Engine as _;
@@ -97,18 +98,19 @@ impl CredentialStore {
             AuthFileLocation::Environment => containers::RegistryAuthFile::read_from_env()?,
             AuthFileLocation::Path(path) => containers::RegistryAuthFile::read(path)?,
         };
-        if let Some(helper) = registry_aliases(registry)
-            .iter()
-            .find_map(|alias| file.credential_helper(alias))
+        let aliases = registry_aliases(registry);
+        let server_address = helper_server_address(registry);
+        if let Some(helper) = std::iter::once(server_address)
+            .chain(aliases.iter().copied())
+            .find_map(|key| file.credential_helper(key))
         {
-            return self.run_helper(helper, registry).await;
+            return self.run_helper(helper, server_address).await;
         }
         if let Some(helper) = file.credentials_store()
-            && let Some(credential) = self.run_helper(helper, registry).await?
+            && let Some(credential) = self.run_helper(helper, server_address).await?
         {
             return Ok(Some(credential));
         }
-        let aliases = registry_aliases(registry);
         for (key, entry) in file.auths() {
             if aliases.contains(&auth_key_registry(key).as_str()) {
                 return credential_of_entry(registry, entry);
@@ -117,9 +119,10 @@ impl CredentialStore {
         Ok(None)
     }
 
-    /// Runs `docker-credential-<helper> get` for `registry`. A helper that
-    /// has no credential for the registry answers `None`.
-    async fn run_helper(&self, helper: &str, registry: &str) -> Result<Option<Credential>> {
+    /// Runs `docker-credential-<helper> get` for the registry at
+    /// `server_address`. A helper that has no credential for the registry
+    /// answers `None`.
+    async fn run_helper(&self, helper: &str, server_address: &str) -> Result<Option<Credential>> {
         let program = format!("docker-credential-{helper}");
         let mut command = tokio::process::Command::new(&program);
         command
@@ -144,7 +147,7 @@ impl CredentialStore {
         // A helper that fails before it reads the registry closes its stdin
         // first. Its exit status and its stderr then say why it failed, so
         // the broken pipe of the write is not the error to report.
-        match stdin.write_all(registry.as_bytes()).await {
+        match stdin.write_all(server_address.as_bytes()).await {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
             Err(error) => {
@@ -248,23 +251,43 @@ fn auth_key_registry(key: &str) -> String {
 }
 
 /// The hosts of Docker Hub. The auth file keeps the Docker Hub credential
-/// under `https://index.docker.io/v1/`, while its API is at
+/// under [`DOCKER_HUB_SERVER_ADDRESS`], while its API is at
 /// `registry-1.docker.io` and users name it `docker.io`.
 const DOCKER_HUB_HOSTS: [&str; 3] = ["docker.io", "index.docker.io", "registry-1.docker.io"];
 
+/// The name Docker gives Docker Hub: its key in the auth file, and the
+/// server address it hands a credential helper for it.
+const DOCKER_HUB_SERVER_ADDRESS: &str = "https://index.docker.io/v1/";
+
+/// Whether `registry` is a host of Docker Hub.
+pub(crate) fn is_docker_hub(registry: &str) -> bool {
+    DOCKER_HUB_HOSTS.contains(&registry)
+}
+
 /// The names the auth file may know `registry` by.
 fn registry_aliases(registry: &str) -> Vec<&str> {
-    if DOCKER_HUB_HOSTS.contains(&registry) {
+    if is_docker_hub(registry) {
         DOCKER_HUB_HOSTS.to_vec()
     } else {
         vec![registry]
     }
 }
 
+/// The server address Docker hands a credential helper for `registry`:
+/// [`DOCKER_HUB_SERVER_ADDRESS`] for Docker Hub, the registry itself for
+/// every other one.
+fn helper_server_address(registry: &str) -> &str {
+    if is_docker_hub(registry) {
+        DOCKER_HUB_SERVER_ADDRESS
+    } else {
+        registry
+    }
+}
+
 /// The host that serves the API of `registry`: Docker Hub serves it at
 /// `registry-1.docker.io`, every other registry at its own host.
 pub(crate) fn api_host(registry: &str) -> &str {
-    if DOCKER_HUB_HOSTS.contains(&registry) {
+    if is_docker_hub(registry) {
         "registry-1.docker.io"
     } else {
         registry
@@ -478,6 +501,28 @@ mod tests {
             store.credential_for("quay.io").await.expect("read"),
             Some(Credential::IdentityToken("tok".to_owned()))
         );
+    }
+
+    /// Docker keeps the Docker Hub credential of a helper under
+    /// `https://index.docker.io/v1/`, so a helper gets that server address
+    /// for every host of Docker Hub, whichever key of `credHelpers` names it.
+    #[tokio::test]
+    async fn a_credential_helper_gets_the_server_address_of_docker_hub() {
+        let helper = r#"read registry; if [ "$registry" = https://index.docker.io/v1/ ]; then echo '{"Username":"hub","Secret":"s3cret"}'; else echo "credentials not found in native keychain"; exit 1; fi"#;
+        for file in [
+            r#"{"credsStore": "stub"}"#,
+            r#"{"credHelpers": {"https://index.docker.io/v1/": "stub"}}"#,
+            r#"{"credHelpers": {"docker.io": "stub"}}"#,
+        ] {
+            let (_dir, store) = store_with(file, &[("stub", helper)]);
+            for registry in DOCKER_HUB_HOSTS {
+                assert_eq!(
+                    store.credential_for(registry).await.expect("read"),
+                    Some(basic("hub", "s3cret")),
+                    "{file} {registry}"
+                );
+            }
+        }
     }
 
     /// The broken helper exits without reading the registry, so the write

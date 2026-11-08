@@ -1,6 +1,7 @@
 //! The pull of the `.sif` of a node from an OCI repository, into the
 //! storage of built nodes, by the daemon that runs the node.
 
+use super::transfer_progress::announce_progress;
 use core_node_api::encoding::{ArtifactPlatform, OciRepository};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::repository::OciArtifact;
@@ -8,11 +9,7 @@ use node_stack::Announcer;
 use node_stack::build_io::format_bytes;
 use oci_registry::manifest::NodeArtifactManifest;
 use oci_registry::{Access, CredentialStore, RegistryClient};
-use std::path::PathBuf;
-
-/// How many progress lines a pull reports at most: one for each percent of
-/// the image.
-const PROGRESS_STEPS: u64 = 100;
+use std::path::{Path, PathBuf};
 
 /// The node an image is pulled for, and the artifact to pull.
 pub(crate) struct ImageToPull<'a> {
@@ -27,8 +24,11 @@ pub(crate) struct ImageToPull<'a> {
 /// `built_nodes/<name>_<tag>/<sif sha256>.linux-<arch>.sif` and returns its
 /// path. A `.sif` already there is not pulled again. The bytes go to a
 /// temporary file and are checked against the digest while they arrive, so
-/// a failed pull stores nothing. Each percent of the image is a progress
-/// line, which counts as activity for the idle timeout of the goal.
+/// a failed pull stores nothing. The pull reports its progress (see
+/// [`announce_progress`]).
+///
+/// The earlier images of the node stay: the instances that run from them
+/// stop only when the add replaces the node (see [`prune_earlier_images`]).
 ///
 /// The error names the repository, the tag, the digest and the cause. There
 /// is no fall back to a build from sources.
@@ -52,7 +52,10 @@ pub(crate) async fn pull_node_image(
         image.platform,
     )
     .map_err(|e| failed(e.to_string()))?;
-    if std::fs::metadata(&destination).is_ok_and(|meta| meta.is_file() && meta.len() > 0) {
+    if tokio::fs::metadata(&destination)
+        .await
+        .is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+    {
         announcer.line(format!(
             "Using the image of {}:{} pulled earlier: {}",
             image.node_name,
@@ -93,32 +96,11 @@ pub(crate) async fn pull_node_image(
         format_bytes(size),
         image.repository
     ));
-    let mut reported_step = 0u64;
-    let progress_announcer = announcer.clone();
-    let mut on_progress = move |received: u64| {
-        let step = received
-            .saturating_mul(PROGRESS_STEPS)
-            .checked_div(size)
-            .unwrap_or(PROGRESS_STEPS);
-        if step > reported_step {
-            reported_step = step;
-            progress_announcer.line(format!(
-                "Pulled {step}% ({} of {})",
-                format_bytes(received),
-                format_bytes(size)
-            ));
-        }
-    };
+    let mut on_progress = announce_progress("Pulled", size, announcer);
     client
         .download_blob(&artifact.sif_digest, size, &destination, &mut on_progress)
         .await
         .map_err(|e| failed(e.to_string()))?;
-
-    let pruned = destination.clone();
-    let platform = image.platform;
-    tokio::task::spawn_blocking(move || node_stack::prune_siblings(&pruned, platform))
-        .await
-        .map_err(|e| failed(format!("the prune of earlier images failed: {e}")))?;
     announcer.line(format!(
         "Pulled the image of {}:{} to {}",
         image.node_name,
@@ -126,4 +108,19 @@ pub(crate) async fn pull_node_image(
         destination.display()
     ));
     Ok(destination)
+}
+
+/// Removes the images of the node beside `sif_path` that earlier pulls and
+/// builds for `platform` left, once the node runs from `sif_path`. A failed
+/// prune only costs disk, so it fails nothing.
+pub(crate) async fn prune_earlier_images(sif_path: &Path, platform: ArtifactPlatform) {
+    let kept = sif_path.to_path_buf();
+    if let Err(error) =
+        tokio::task::spawn_blocking(move || node_stack::prune_siblings(&kept, platform)).await
+    {
+        tracing::warn!(
+            "the prune of the images beside {} failed: {error}",
+            sif_path.display()
+        );
+    }
 }

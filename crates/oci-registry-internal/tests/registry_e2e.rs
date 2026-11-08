@@ -120,6 +120,37 @@ async fn an_artifact_pushed_in_chunks_is_listed_read_and_pulled_back() {
     );
 }
 
+/// A chunk goes to the registry in parts, with its length in its header:
+/// the registry takes it whole, and the progress moves by the parts.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chunk_sent_in_parts_reaches_the_registry_whole() {
+    let registry = LocalRegistry::start(RegistryAuth::Anonymous);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pusher = client(&registry, store_with_file(dir.path(), None), Access::Push);
+    let sif: Vec<u8> = (0..(1u32 << 20) + 17).map(|i| (i % 251) as u8).collect();
+    let sif_path = dir.path().join("big.sif");
+    std::fs::write(&sif_path, &sif).expect("write sif");
+    let (sif_digest, sif_size) = digest::of_file(&sif_path).expect("hash sif");
+    let mut progress = Vec::new();
+
+    let pushed = pusher
+        .push_blob_file(&sif_path, &sif_digest, sif_size, &mut |sent| {
+            progress.push(sent)
+        })
+        .await
+        .expect("push sif");
+
+    assert!(pushed);
+    assert!(progress.len() > 1, "the parts of one chunk: {progress:?}");
+    assert_eq!(progress.last(), Some(&sif_size));
+    let destination = dir.path().join("pulled.sif");
+    client(&registry, store_with_file(dir.path(), None), Access::Pull)
+        .download_blob(&sif_digest, sif_size, &destination, &mut |_| {})
+        .await
+        .expect("pull sif");
+    assert_eq!(std::fs::read(&destination).expect("read pulled"), sif);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_tag_list_is_read_across_pages() {
     let registry = LocalRegistry::start(RegistryAuth::Anonymous);

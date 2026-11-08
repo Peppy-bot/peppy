@@ -113,12 +113,6 @@ fn record_build_failure(log: &ActionLog, kind: PeppyFailureKind, message: String
     Failure::new(kind, message)
 }
 
-/// Drives a build for the entity named `(node_name, node_tag)` that is
-/// currently in `Added`. The caller supplies the log file/path and the
-/// feedback channel; everything else is recovered from the entity itself.
-///
-/// A node the stack does not hold is `rejected`; a node in another stage, or
-/// without the working directory an add stages, is `precondition_failed`.
 /// What the publish of a built node needs.
 struct PublishRun<'a> {
     plan: &'a super::publish::PublishPlan,
@@ -155,7 +149,6 @@ async fn publish_built_node(run: PublishRun<'_>) -> Vec<core_node_api::encoding:
             .await,
         );
     }
-    let requested: Vec<_> = run.copies.iter().map(|(platform, _)| *platform).collect();
     for (platform, copy) in run.copies {
         if run.cancel_token.is_cancelled() {
             break;
@@ -188,9 +181,15 @@ async fn publish_built_node(run: PublishRun<'_>) -> Vec<core_node_api::encoding:
             Err(error) => super::publish::build_failed(platform, error.to_string()),
         });
     }
-    super::publish::report(run.plan, pushed, &requested)
+    super::publish::report(run.plan, pushed)
 }
 
+/// Drives a build for the entity named `(node_name, node_tag)` that is
+/// currently in `Added`. The caller supplies the log file/path and the
+/// feedback channel; everything else is recovered from the entity itself.
+///
+/// A node the stack does not hold is `rejected`; a node in another stage, or
+/// without the working directory an add stages, is `precondition_failed`.
 pub(crate) async fn run_node_build_for_entity(
     node_name: String,
     node_tag: String,
@@ -268,19 +267,6 @@ impl GoalHandler for NodeBuildGoalHandler {
     async fn handle_goal(&self, pending: PendingGoal) {
         self.handle_goal_request(pending).await
     }
-}
-
-/// Why `node build` refuses a node whose image was pulled from the OCI
-/// repository `repository`.
-pub(crate) fn pulled_node_refusal(
-    node_name: &str,
-    node_tag: &str,
-    repository: &core_node_api::encoding::OciRepository,
-) -> String {
-    format!(
-        "`{node_name}:{node_tag}` comes from the oci repository `{repository}` and has no sources. \
-         To build it, add a git or fs repository that holds it, with a lower id."
-    )
 }
 
 impl NodeBuildGoalHandler {
@@ -399,7 +385,11 @@ impl NodeBuildGoalHandler {
                 pending,
                 Failure::new(
                     PeppyFailureKind::PreconditionFailed,
-                    pulled_node_refusal(&goal.node_name, &goal.node_tag, &repository),
+                    super::publish::pulled_node_refusal(
+                        &format!("`{}:{}`", goal.node_name, goal.node_tag),
+                        &repository,
+                        "build",
+                    ),
                 ),
             )
             .await;
@@ -607,7 +597,8 @@ async fn run_node_build(run: NodeBuildRun) -> std::result::Result<NodeBuildResul
                     &config,
                     working_dir_guard.path(),
                     &action_context.peppy_dirs,
-                );
+                )
+                .await;
                 Some((plan, copies))
             }
             None => None,

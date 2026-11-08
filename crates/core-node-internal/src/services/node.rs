@@ -29,6 +29,7 @@ mod supervisor;
 mod sync;
 #[cfg(test)]
 pub(crate) mod test_git_daemon;
+mod transfer_progress;
 
 use config::node::NodeConfig;
 use core_node_api::encoding::InstanceEnd;
