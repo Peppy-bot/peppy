@@ -220,14 +220,12 @@ def _apptainer_cache_pattern(arch: str) -> str:
 def _apptainer_arches_for(target: str) -> tuple[str, ...]:
     """The apptainer builds a native build of *target* reads from the cache.
 
-    A Linux build ships apptainer for its own architecture. The macOS build
-    ships the aarch64 one for its Linux VM and, as a release build under
-    PEPPY_CROSS_ARCH, also requires the x86_64 one; either one missing would
-    be built in a Lima VM.
+    Every release ships the apptainer of both Linux architectures: the one its
+    containers run on, and the other one, which the builds for that platform
+    run in an emulated VM. A Linux build provisions neither, and the macOS
+    build builds a missing one in a Lima VM.
     """
-    if "apple-darwin" in target:
-        return ("aarch64", "x86_64")
-    return (_triple_arch(target),)
+    return ("aarch64", "x86_64")
 
 
 def _run_cargo_build(package: str, repo_root: Path, env: dict[str, str]) -> None:
@@ -586,7 +584,7 @@ def run_build(*, plan_path: Path, target: str, provisioned_dir: Path) -> None:
         os.environ["PEPPYLIB_PREBUILT_SO_DIR"] = str(so_dir)
         artifact = build_and_package(plan.tag, target, repo_root)
 
-    verify_all_releases(artifact.asset_path.parent, [target])
+    verify_all_releases(artifact.asset_path.parent, [target], ships_other_platform=True)
     console.print(
         f"[green]Built and verified:[/green] {artifact.asset_path}", soft_wrap=True
     )
@@ -787,7 +785,7 @@ def _publish_release_unless_published(
 
     dist_dir = release_dist_dir(repo_root)
     artifacts = _stage_archives(archives_dir, dist_dir)
-    verify_all_releases(dist_dir)
+    verify_all_releases(dist_dir, ships_other_platform=True)
     console.print("[green]All release archives verified successfully.[/green]")
     install_archive = _host_archive(artifacts)
     tag_release_hubs(client, slug.owner, hub_set, plan.tag)

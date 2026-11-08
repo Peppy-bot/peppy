@@ -38,6 +38,11 @@ REQUIRED_MACOS = [
     "bin/lima/bin/limactl",
 ]
 
+# The other Linux architecture of each container architecture: a release
+# ships its apptainer and the Lima guest agent of its VMs, which run the
+# builds for that platform under emulation (`peppy node publish --platforms`).
+OTHER_LINUX_ARCH = {"x86_64": "aarch64", "aarch64": "x86_64"}
+
 MACOS_TRIPLES = frozenset(t for t in RELEASE_TRIPLES if "apple-darwin" in t)
 
 _ELF_MAGIC = b"\x7fELF"
@@ -173,7 +178,36 @@ def _page_size_problem(name: str, elf: Elf) -> str | None:
     return None
 
 
-def verify_release_archive(archive_path: Path, triple: str) -> list[str]:
+def _required_files(
+    triple: str, ships_other_platform: bool
+) -> list[tuple[str, int | None]]:
+    """The files *triple*'s archive must hold, each with the ELF machine it
+    must be built for, or None for a file of a macOS archive, whose binaries
+    this verification does not read.
+
+    An archive that ships the other platform also holds Lima, with the guest
+    agent of the other Linux architecture, and the apptainer of that
+    architecture, built for it rather than for the archive.
+    """
+    is_macos = triple in MACOS_TRIPLES
+    container_arch = "aarch64" if is_macos else triple.split("-")[0]
+    own_machine = None if is_macos else ELF_MACHINE_BY_ARCH[container_arch]
+    required = [(item, own_machine) for item in REQUIRED_ALL]
+    if is_macos:
+        required.extend((item, None) for item in REQUIRED_MACOS)
+    if ships_other_platform:
+        other = OTHER_LINUX_ARCH[container_arch]
+        other_machine = None if is_macos else ELF_MACHINE_BY_ARCH[other]
+        required.append((f"bin/apptainer-{other}/bin/apptainer", other_machine))
+        if not is_macos:
+            required.append(("bin/lima/bin/limactl", own_machine))
+        required.append((f"bin/lima/share/lima/lima-guestagent.Linux-{other}.gz", None))
+    return required
+
+
+def verify_release_archive(
+    archive_path: Path, triple: str, *, ships_other_platform: bool
+) -> list[str]:
     """Verify a single .tgz archive contains all required binaries, that each
     Linux binary is built for the triple's architecture, that each aarch64
     ELF file maps on a kernel with 16 KiB pages, and that no member carries
@@ -188,9 +222,7 @@ def verify_release_archive(archive_path: Path, triple: str) -> list[str]:
     """
     problems: list[str] = []
 
-    required = list(REQUIRED_ALL)
-    if triple in MACOS_TRIPLES:
-        required.extend(REQUIRED_MACOS)
+    required = _required_files(triple, ships_other_platform)
 
     arch = triple.split("-")[0]
     expected_machine = None if triple in MACOS_TRIPLES else ELF_MACHINE_BY_ARCH[arch]
@@ -218,22 +250,22 @@ def verify_release_archive(archive_path: Path, triple: str) -> list[str]:
             if elf is not None:
                 elf_files[name] = elf
 
-    for item in required:
+    for item, item_machine in required:
         member = members.get(item)
         if member is None:
             problems.append(f"missing {item}")
             continue
-        if expected_machine is None:
+        if item_machine is None:
             continue
         if not member.isfile():
             problems.append(f"{item} is not a regular file")
             continue
         elf = elf_files.get(item)
         machine = elf.machine if elf is not None else None
-        if machine != expected_machine:
+        if machine != item_machine:
             problems.append(
                 f"{item} is built for ELF machine {machine}, "
-                f"the {triple} archive needs {expected_machine}"
+                f"the {triple} archive needs {item_machine}"
             )
 
     if expected_machine == ELF_MACHINE_BY_ARCH["aarch64"]:
@@ -256,13 +288,20 @@ def verify_release_archive(archive_path: Path, triple: str) -> list[str]:
 
 
 def verify_all_releases(
-    dist_dir: Path, triples: tuple[str, ...] | list[str] | None = None
+    dist_dir: Path,
+    triples: tuple[str, ...] | list[str] | None = None,
+    *,
+    ships_other_platform: bool,
 ) -> None:
     """Verify release archives exist and contain all required binaries.
 
     When *triples* is ``None`` (the default), all ``RELEASE_TRIPLES`` are
     checked.  Pass an explicit list to verify only a subset (e.g. when
     building on Linux where only the native target is produced).
+
+    *ships_other_platform* requires what builds for the other Linux platform
+    need (see `_required_files`): a release has it, a local build of one
+    architecture does not.
 
     Raises ReleaseError with a summary of every problem found.
     """
@@ -275,7 +314,9 @@ def verify_all_releases(
             errors.append(f"{triple}: archive not found at {archive}")
             continue
 
-        for problem in verify_release_archive(archive, triple):
+        for problem in verify_release_archive(
+            archive, triple, ships_other_platform=ships_other_platform
+        ):
             errors.append(f"{triple}: {problem}")
 
     if errors:

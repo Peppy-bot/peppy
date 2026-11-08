@@ -109,7 +109,10 @@ def _build_all_targets(
         # Verify the release archives that were actually built
         if artifacts:
             dist_dir = artifacts[0].asset_path.parent
-            verify_all_releases(dist_dir, targets)
+            # A local build provisions the apptainer of its own architecture
+            # alone, so its archives may lack what builds for the other
+            # platform need.
+            verify_all_releases(dist_dir, targets, ships_other_platform=False)
             console.print("[green]All release archives verified successfully.[/green]")
 
         return artifacts

@@ -121,7 +121,7 @@ def test_verify_archive_all_present(tmp_path: Path) -> None:
     archive = tmp_path / f"peppy-{triple}.tgz"
     _create_archive(archive, _all_required_members(triple), triple)
 
-    missing = verify_release_archive(archive, triple)
+    missing = verify_release_archive(archive, triple, ships_other_platform=False)
     assert missing == []
 
 
@@ -140,7 +140,7 @@ def test_verify_archive_reports_a_missing_binary(
     archive = tmp_path / f"peppy-{triple}.tgz"
     _create_archive(archive, members, triple)
 
-    problems = verify_release_archive(archive, triple)
+    problems = verify_release_archive(archive, triple, ships_other_platform=False)
     assert f"missing {left_out}" in problems
 
 
@@ -151,7 +151,7 @@ def test_verify_lima_only_required_for_macos(tmp_path: Path) -> None:
     archive = tmp_path / f"peppy-{triple}.tgz"
     _create_archive(archive, members, triple)
 
-    missing = verify_release_archive(archive, triple)
+    missing = verify_release_archive(archive, triple, ships_other_platform=False)
     assert missing == []
 
 
@@ -160,7 +160,7 @@ def test_verify_all_releases_passes(tmp_path: Path) -> None:
         archive = tmp_path / f"peppy-{triple}.tgz"
         _create_archive(archive, _all_required_members(triple), triple)
 
-    verify_all_releases(tmp_path)
+    verify_all_releases(tmp_path, ships_other_platform=False)
 
 
 def test_verify_all_releases_missing_archive(tmp_path: Path) -> None:
@@ -170,7 +170,7 @@ def test_verify_all_releases_missing_archive(tmp_path: Path) -> None:
         _create_archive(archive, _all_required_members(triple), triple)
 
     with pytest.raises(ReleaseError, match="archive not found"):
-        verify_all_releases(tmp_path)
+        verify_all_releases(tmp_path, ships_other_platform=False)
 
 
 def test_verify_all_releases_missing_binary(tmp_path: Path) -> None:
@@ -183,7 +183,7 @@ def test_verify_all_releases_missing_binary(tmp_path: Path) -> None:
         _create_archive(archive, members, triple)
 
     with pytest.raises(ReleaseError, match="missing bin/zenohd"):
-        verify_all_releases(tmp_path)
+        verify_all_releases(tmp_path, ships_other_platform=False)
 
 
 def test_verify_archive_rejects_a_wrong_arch_binary(tmp_path: Path) -> None:
@@ -200,7 +200,7 @@ def test_verify_archive_rejects_a_wrong_arch_binary(tmp_path: Path) -> None:
         },
     )
 
-    problems = verify_release_archive(archive, triple)
+    problems = verify_release_archive(archive, triple, ships_other_platform=False)
     assert any("apptainer" in p and "ELF machine" in p for p in problems), problems
 
 
@@ -219,7 +219,7 @@ def test_verify_archive_rejects_a_link_member(tmp_path: Path) -> None:
         link.linkname = "../../peppy"
         tar.addfile(link)
 
-    problems = verify_release_archive(archive, triple)
+    problems = verify_release_archive(archive, triple, ships_other_platform=False)
     assert "bin/apptainer/bin/apptainer is not a regular file" in problems
 
 
@@ -233,7 +233,7 @@ def test_verify_archive_rejects_a_binary_that_is_not_elf(tmp_path: Path) -> None
         content_overrides={"bin/peppy": b"#!/bin/sh\necho not a binary\n"},
     )
 
-    problems = verify_release_archive(archive, triple)
+    problems = verify_release_archive(archive, triple, ships_other_platform=False)
     assert any("bin/peppy" in p for p in problems), problems
 
 
@@ -249,7 +249,7 @@ def test_verify_archive_rejects_a_binary_that_is_not_elf64(tmp_path: Path) -> No
         },
     )
 
-    problems = verify_release_archive(archive, triple)
+    problems = verify_release_archive(archive, triple, ships_other_platform=False)
     assert (
         "bin/zenohd is not a readable ELF file: "
         "it is not a 64-bit little-endian ELF file"
@@ -266,7 +266,7 @@ def test_verify_archive_rejects_a_truncated_elf(tmp_path: Path) -> None:
         content_overrides={"bin/peppy": _binary_for(triple)[:70]},
     )
 
-    problems = verify_release_archive(archive, triple)
+    problems = verify_release_archive(archive, triple, ships_other_platform=False)
     assert (
         "bin/peppy is not a readable ELF file: the file ends inside its program headers"
     ) in problems
@@ -295,7 +295,7 @@ def test_verify_archive_accepts_aarch64_files_that_map_on_16k_pages(
         content_overrides={"bin/apptainer/lib/libseccomp.so.2": elf},
     )
 
-    assert verify_release_archive(archive, triple) == []
+    assert verify_release_archive(archive, triple, ships_other_platform=False) == []
 
 
 def test_verify_archive_reads_only_the_load_segments(tmp_path: Path) -> None:
@@ -314,7 +314,7 @@ def test_verify_archive_reads_only_the_load_segments(tmp_path: Path) -> None:
         content_overrides={"bin/peppy": elf},
     )
 
-    assert verify_release_archive(archive, triple) == []
+    assert verify_release_archive(archive, triple, ships_other_platform=False) == []
 
 
 @pytest.mark.parametrize(
@@ -339,7 +339,7 @@ def test_verify_archive_rejects_an_aarch64_file_aligned_to_4k_pages(
         content_overrides={name: elf},
     )
 
-    problems = verify_release_archive(archive, triple)
+    problems = verify_release_archive(archive, triple, ships_other_platform=False)
     assert problems == [
         f"{name} aligns a LOAD segment to 4096 bytes, and Raspberry Pi OS runs "
         "the Raspberry Pi 5 with 16384-byte pages"
@@ -362,7 +362,7 @@ def test_verify_archive_rejects_a_load_segment_off_the_16k_page_grid(
         content_overrides={"bin/zenohd": elf},
     )
 
-    problems = verify_release_archive(archive, triple)
+    problems = verify_release_archive(archive, triple, ships_other_platform=False)
     assert problems == [
         "bin/zenohd has a LOAD segment at file offset 0x1000 and address "
         "0x10000, which fall at different positions in a 16384-byte page, the "
@@ -382,7 +382,7 @@ def test_verify_archive_leaves_x86_64_page_alignment_alone(tmp_path: Path) -> No
         content_overrides={"bin/peppy": elf},
     )
 
-    assert verify_release_archive(archive, triple) == []
+    assert verify_release_archive(archive, triple, ships_other_platform=False) == []
 
 
 def test_verify_archive_rejects_build_host_ownership(tmp_path: Path) -> None:
@@ -404,7 +404,7 @@ def test_verify_archive_rejects_build_host_ownership(tmp_path: Path) -> None:
         gname="staff",
     )
 
-    problems = verify_release_archive(archive, triple)
+    problems = verify_release_archive(archive, triple, ships_other_platform=False)
     expected = (
         "bin/peppy carries build host ownership "
         "(uid=501, gid=20, uname='builder', gname='staff')"
@@ -420,7 +420,7 @@ def test_verify_archive_names_a_dot_file_in_full(tmp_path: Path) -> None:
             _add_member(tar, f"./{name}", _binary_for(triple))
         _add_member(tar, "./.marker", b"x", uid=1000)
 
-    problems = verify_release_archive(archive, triple)
+    problems = verify_release_archive(archive, triple, ships_other_platform=False)
     expected = (
         ".marker carries build host ownership (uid=1000, gid=0, uname='', gname='')"
     )
@@ -439,5 +439,65 @@ def test_verify_archive_ignores_a_binary_outside_the_archive_root(
         for name in ("bin/zenohd", "bin/apptainer/bin/apptainer"):
             _add_member(tar, f"./{name}", _binary_for(triple))
 
-    problems = verify_release_archive(archive, triple)
+    problems = verify_release_archive(archive, triple, ships_other_platform=False)
     assert problems == ["missing bin/peppy"]
+
+
+# --- the other Linux platform ---
+
+
+def _other_platform_members(triple: str) -> dict[str, bytes]:
+    """The files a release ships for the builds of the other Linux platform,
+    each with the content of the architecture it is built for: the apptainer
+    of the other architecture, and Lima with its guest agent."""
+    is_macos = "apple-darwin" in triple
+    own = "aarch64" if is_macos else triple.split("-")[0]
+    other = "x86_64" if own == "aarch64" else "aarch64"
+    other_binary = (
+        b"fake other apptainer" if is_macos else _elf_bytes(ELF_MACHINE_BY_ARCH[other])
+    )
+    return {
+        f"bin/apptainer-{other}/bin/apptainer": other_binary,
+        "bin/lima/bin/limactl": _binary_for(triple),
+        f"bin/lima/share/lima/lima-guestagent.Linux-{other}.gz": b"gzip agent",
+    }
+
+
+@pytest.mark.parametrize("triple", sorted(RELEASE_TRIPLES))
+def test_a_release_ships_what_builds_for_the_other_platform_need(
+    tmp_path: Path, triple: str
+) -> None:
+    archive = tmp_path / f"peppy-{triple}.tgz"
+    extra = _other_platform_members(triple)
+    members = sorted(set(_all_required_members(triple)) | set(extra))
+    _create_archive(archive, members, triple, extra)
+
+    assert verify_release_archive(archive, triple, ships_other_platform=True) == []
+
+    bare = tmp_path / f"bare-{triple}.tgz"
+    _create_archive(bare, _all_required_members(triple), triple)
+    problems = verify_release_archive(bare, triple, ships_other_platform=True)
+    for item in extra:
+        if item == "bin/lima/bin/limactl" and "apple-darwin" in triple:
+            continue
+        assert f"missing {item}" in problems, problems
+    assert verify_release_archive(bare, triple, ships_other_platform=False) == []
+
+
+@pytest.mark.parametrize(
+    "triple", ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+)
+def test_the_other_apptainer_of_a_linux_release_is_built_for_the_other_architecture(
+    tmp_path: Path, triple: str
+) -> None:
+    archive = tmp_path / f"peppy-{triple}.tgz"
+    extra = _other_platform_members(triple)
+    other_apptainer = next(item for item in extra if item.startswith("bin/apptainer-"))
+    extra[other_apptainer] = _binary_for(triple)
+    members = sorted(set(_all_required_members(triple)) | set(extra))
+    _create_archive(archive, members, triple, extra)
+
+    problems = verify_release_archive(archive, triple, ships_other_platform=True)
+
+    assert len(problems) == 1, problems
+    assert problems[0].startswith(f"{other_apptainer} is built for ELF machine"), problems

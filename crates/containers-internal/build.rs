@@ -140,6 +140,18 @@ mod apptainer_build {
     /// DEGRADED state. Bump alongside `LIMA_VERSION`.
     const LIMA_ADDITIONAL_GUESTAGENTS_DARWIN_ARM64_SHA256: &str =
         "3aff4453eb3c359eb4f3b458056db24f2c5c15019232531292f49e04050554ed";
+    /// SHA-256 of the Lima archives of the Linux hosts, which a Linux release
+    /// ships for the builds of the other architecture in an emulated VM, and
+    /// of their additional guest agents, which hold the agent of that other
+    /// architecture. Bump alongside `LIMA_VERSION`.
+    const LIMA_LINUX_X86_64_ARCHIVE_SHA256: &str =
+        "a0ea1ccf6b7335a900adb5f8d2b8384457965fecb1ba72f09b4e3e46d12f424a";
+    const LIMA_LINUX_AARCH64_ARCHIVE_SHA256: &str =
+        "7c6a09c6844f55f811e9b7b2b60a6070a512c696c8ec752dfdb3c8ed50ed0364";
+    const LIMA_ADDITIONAL_GUESTAGENTS_LINUX_X86_64_SHA256: &str =
+        "8d03b82a456e299813276c6ff532fce1848fee5e50527433fe3374cde9183175";
+    const LIMA_ADDITIONAL_GUESTAGENTS_LINUX_AARCH64_SHA256: &str =
+        "e6dc519fce67d016a70fef652f75ace3f8e46f2e92210116c01c5bffdc055b04";
     const LIMA_INSTANCE: &str = "peppy";
 
     /// Prebuilt amd64 Ubuntu base rootfs. On an Apple Silicon host the x86_64
@@ -287,12 +299,28 @@ mod apptainer_build {
         build_helpers::cache_dir(&apptainer_cache_dir_name(version, arch))
     }
 
-    /// Name of the Lima cache directory under the shared build cache. Lima is
-    /// only ever bundled for the arm64 macOS host that builds it, so the name
-    /// carries no runtime-arch variable. Exported to the crate like the
-    /// apptainer names above.
-    fn lima_cache_dir_name() -> String {
-        format!("lima-{}-Darwin-arm64", LIMA_VERSION)
+    /// Name of the Lima cache directory under the shared build cache, for
+    /// the Lima host `os` and `arch` (`Darwin`/`arm64`, `Linux`/`x86_64`,
+    /// `Linux`/`aarch64`). Exported to the crate like the apptainer names
+    /// above.
+    fn lima_cache_dir_name(os: &str, arch: &str) -> String {
+        format!("lima-{}-{os}-{arch}", LIMA_VERSION)
+    }
+
+    /// The Lima host of a target: the `os` and `arch` its Lima archive is
+    /// named with.
+    fn lima_host_of(target_os: &str, target_arch: &str) -> (&'static str, &'static str) {
+        match (target_os, target_arch) {
+            ("macos", _) => ("Darwin", "arm64"),
+            (_, "aarch64") => ("Linux", "aarch64"),
+            _ => ("Linux", "x86_64"),
+        }
+    }
+
+    /// The other Linux architecture than `arch`, whose platform a build of
+    /// this host makes in an emulated VM.
+    fn other_linux_arch(arch: &str) -> &'static str {
+        if arch == "x86_64" { "aarch64" } else { "x86_64" }
     }
 
     /// Stable digest of a cache path, for `.copy-source` sentinels. The
@@ -422,10 +450,25 @@ mod apptainer_build {
     /// URL for the `lima-additional-guestagents` archive (cross-arch guest
     /// agents). The host is always Darwin/arm64, so we only need that variant;
     /// it bundles the Linux-x86_64 (and other) agents pushed into cross-arch VMs.
-    fn lima_additional_guestagents_url(version: &str) -> String {
+    fn lima_additional_guestagents_url(version: &str, os: &str, arch: &str) -> String {
         format!(
-            "https://github.com/lima-vm/lima/releases/download/v{version}/lima-additional-guestagents-{version}-Darwin-arm64.tar.gz"
+            "https://github.com/lima-vm/lima/releases/download/v{version}/lima-additional-guestagents-{version}-{os}-{arch}.tar.gz"
         )
+    }
+
+    fn lima_additional_guestagents_sha256(
+        version: &str,
+        os: &str,
+        arch: &str,
+    ) -> Option<&'static str> {
+        match (version, os, arch) {
+            ("2.2.0", "Darwin", "arm64") => Some(LIMA_ADDITIONAL_GUESTAGENTS_DARWIN_ARM64_SHA256),
+            ("2.2.0", "Linux", "x86_64") => Some(LIMA_ADDITIONAL_GUESTAGENTS_LINUX_X86_64_SHA256),
+            ("2.2.0", "Linux", "aarch64") => {
+                Some(LIMA_ADDITIONAL_GUESTAGENTS_LINUX_AARCH64_SHA256)
+            }
+            _ => None,
+        }
     }
 
     /// URL for the prebuilt amd64 Ubuntu base rootfs (Rosetta build path).
@@ -440,6 +483,8 @@ mod apptainer_build {
     fn lima_archive_sha256(version: &str, os: &str, arch: &str) -> Option<&'static str> {
         match (version, os, arch) {
             ("2.2.0", "Darwin", "arm64") => Some(LIMA_DARWIN_ARM64_ARCHIVE_SHA256),
+            ("2.2.0", "Linux", "x86_64") => Some(LIMA_LINUX_X86_64_ARCHIVE_SHA256),
+            ("2.2.0", "Linux", "aarch64") => Some(LIMA_LINUX_AARCH64_ARCHIVE_SHA256),
             _ => None,
         }
     }
@@ -605,10 +650,14 @@ mod apptainer_build {
     ///
     /// The agent is copied unconditionally, so a cached agent of another Lima
     /// version (for example a Homebrew copy) is replaced.
-    fn ensure_cross_guest_agent(lima_share: &Path, lima_arch: &str) -> bool {
+    fn ensure_cross_guest_agent(
+        lima_share: &Path,
+        lima_arch: &str,
+        (host_os, host_arch): (&str, &str),
+    ) -> bool {
         let agent_name = format!("lima-guestagent.Linux-{}.gz", lima_arch);
         let extract_dir = build_helpers::cache_dir(&format!(
-            "lima-additional-guestagents-{}-Darwin-arm64",
+            "lima-additional-guestagents-{}-{host_os}-{host_arch}",
             LIMA_VERSION
         ));
         let src_agent = extract_dir.join("share/lima").join(&agent_name);
@@ -620,14 +669,24 @@ mod apptainer_build {
             );
             let downloads_dir = build_helpers::cache_dir("downloads");
             let archive_path = downloads_dir.join(format!(
-                "lima-additional-guestagents-{}-Darwin-arm64.tar.gz",
+                "lima-additional-guestagents-{}-{host_os}-{host_arch}.tar.gz",
                 LIMA_VERSION
             ));
-            let url = lima_additional_guestagents_url(LIMA_VERSION);
+            let url = lima_additional_guestagents_url(LIMA_VERSION, host_os, host_arch);
+            let Some(expected_sha256) =
+                lima_additional_guestagents_sha256(LIMA_VERSION, host_os, host_arch)
+            else {
+                println!(
+                    "cargo:warning=Missing pinned SHA-256 for the Lima {} additional guest agents \
+                     of {host_os}-{host_arch}; refusing download",
+                    LIMA_VERSION
+                );
+                return false;
+            };
             if !download_and_verify(
                 &url,
                 &archive_path,
-                LIMA_ADDITIONAL_GUESTAGENTS_DARWIN_ARM64_SHA256,
+                expected_sha256,
                 "Lima additional guest agents archive",
             ) {
                 return false;
@@ -1764,7 +1823,7 @@ mod apptainer_build {
                 .parent()
                 .unwrap()
                 .join("share/lima");
-            if !ensure_cross_guest_agent(&lima_share, lima_arch) {
+            if !ensure_cross_guest_agent(&lima_share, lima_arch, ("Darwin", "arm64")) {
                 println!(
                     "cargo:warning=Could not provision the pinned {} guest agent; \
                      falling back to SSH-only readiness (cross-arch VM start may be slower)",
@@ -2134,22 +2193,33 @@ echo "=== Apptainer build complete ==="
             "cargo:rustc-env=APPTAINER_CACHE_SENTINEL_NAME={}",
             apptainer_cache_sentinel_name(APPTAINER_VERSION)
         );
+        let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+        let (lima_os, lima_arch) = lima_host_of(&target_os, &target_arch);
         println!(
             "cargo:rustc-env=LIMA_CACHE_DIR_NAME={}",
-            lima_cache_dir_name()
+            lima_cache_dir_name(lima_os, lima_arch)
         );
     }
 
-    /// Download and cache Lima, copy to OUT_DIR, emit env vars.
-    /// Panics if Lima cannot be downloaded (it's required for macOS builds).
-    fn setup_lima(out_dir: &str) -> LimaConfig {
-        let lima_cache_dir =
-            ensure_lima_cached(LIMA_VERSION, "Darwin", "arm64").unwrap_or_else(|| {
-                panic!(
-                    "Could not download Lima {}. Lima is required for macOS builds.",
-                    LIMA_VERSION
-                );
-            });
+    /// Downloads and caches the Lima of the host `lima_host` (`os`, `arch`),
+    /// with the guest agent of the Linux architecture `other_arch`, which a
+    /// VM of that architecture runs, and copies it to OUT_DIR for release
+    /// packaging. `None` when Lima cannot be downloaded.
+    fn setup_lima(
+        out_dir: &str,
+        lima_host: (&str, &str),
+        other_arch: &str,
+    ) -> Option<LimaConfig> {
+        let (os, arch) = lima_host;
+        let lima_cache_dir = ensure_lima_cached(LIMA_VERSION, os, arch)?;
+        let lima_share = lima_cache_dir.join("share/lima");
+        let has_other_agent = ensure_cross_guest_agent(&lima_share, other_arch, lima_host);
+        if !has_other_agent {
+            println!(
+                "cargo:warning=The Lima {LIMA_VERSION} guest agent of {other_arch} is not \
+                 provisioned: a VM of that architecture cannot start from this build"
+            );
+        }
 
         let lima = LimaConfig {
             limactl: lima_cache_dir.join("bin/limactl"),
@@ -2157,15 +2227,20 @@ echo "=== Apptainer build complete ==="
             instance: LIMA_INSTANCE,
         };
 
-        // Copy Lima installation to OUT_DIR for the crate to reference at compile time.
+        // Copy Lima installation to OUT_DIR for the crate to reference at
+        // compile time. The stamp names the guest agent, so a tree copied
+        // before the agent was provisioned is copied again.
         copy_tree_to_out_dir(
             &lima_cache_dir,
             &PathBuf::from(out_dir).join("lima-install"),
-            &cache_path_digest(&lima_cache_dir),
+            &format!(
+                "{}\nother-agent={other_arch}:{has_other_agent}",
+                cache_path_digest(&lima_cache_dir)
+            ),
             "Lima installation",
         );
 
-        lima
+        Some(lima)
     }
 
     /// Copies the tree at `source` to `dest` under OUT_DIR, unless the
@@ -2433,10 +2508,23 @@ echo "=== Apptainer build complete ==="
 
         let out_dir = env::var("OUT_DIR").unwrap();
 
-        // Step 1 (macOS only): Download and cache Lima, pre-build apptainer via VMs
-        if use_lima {
-            let lima = setup_lima(&out_dir);
-            build_lima_targets(&lima);
+        // Step 1: Download and cache Lima. On macOS it runs every container,
+        // and pre-builds apptainer via VMs: it is required. On Linux it runs
+        // the builds for the other architecture only, in an emulated VM, so a
+        // build that cannot download it warns and goes on.
+        let other_arch = other_linux_arch(&arch);
+        let lima = setup_lima(&out_dir, lima_host_of(&target_os, &arch), other_arch);
+        match (use_lima, lima) {
+            (true, Some(lima)) => build_lima_targets(&lima),
+            (true, None) => panic!(
+                "Could not download Lima {}. Lima is required for macOS builds.",
+                LIMA_VERSION
+            ),
+            (false, Some(_)) => {}
+            (false, None) => println!(
+                "cargo:warning=Could not download Lima {LIMA_VERSION}: this build cannot build \
+                 for {other_arch} in an emulated VM"
+            ),
         }
 
         // Step 2: Ensure apptainer is cached (from Lima pre-build, macOS fallback, or local build)
@@ -2475,6 +2563,35 @@ echo "=== Apptainer build complete ==="
             &PathBuf::from(&out_dir).join("apptainer-install"),
             &sentinel_content,
             "apptainer installation",
+        );
+
+        // Step 4: the apptainer of the other Linux architecture, which the
+        // builds for that platform run in a VM of that architecture. A release
+        // (PEPPY_CROSS_ARCH=1) has it in its cache and must ship it; another
+        // build ships it when its cache has it.
+        let other_cache = apptainer_cache_dir(APPTAINER_VERSION, other_arch);
+        let other_cache_complete =
+            apptainer_cache_sentinel_path(&other_cache, APPTAINER_VERSION).exists();
+        if !other_cache_complete {
+            if env::var("PEPPY_CROSS_ARCH").as_deref() == Ok("1") {
+                panic!(
+                    "a release build ships the apptainer of {other_arch}, and its cache {} is \
+                     not complete",
+                    other_cache.display()
+                );
+            }
+            return;
+        }
+        copy_tree_to_out_dir(
+            &other_cache,
+            &PathBuf::from(&out_dir).join(format!("apptainer-install-{other_arch}")),
+            &format!(
+                "{}\ngocryptfs={}\nsquashfuse={}",
+                cache_path_digest(&other_cache),
+                GOCRYPTFS_VERSION,
+                SQUASHFUSE_VERSION
+            ),
+            "apptainer installation of the other architecture",
         );
     }
 }
