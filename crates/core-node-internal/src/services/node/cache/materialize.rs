@@ -42,8 +42,8 @@ pub(crate) async fn materialize_entry(
         tokio::task::spawn_blocking(move || {
             resolve_cached_artifact_path(&dirs, &origin, &sha256, &|_| {})
         })
-            .await
-            .map_err(|e| format!("materialization task for `{id}` failed: {e}"))?
+        .await
+        .map_err(|e| format!("materialization task for `{id}` failed: {e}"))?
     } else {
         resolve_cached_artifact_path(peppy_dirs, &entry.origin, &entry.sha256, &|_| {})
     }

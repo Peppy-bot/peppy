@@ -574,6 +574,66 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_oci_entry_parses_into_its_repository_and_writes_back_the_same() {
+        let entry = serde_json::json!({
+            "id": 900, "type": "oci", "url": "oci://ghcr.io/acme/peppy-nodes"
+        });
+        let source = parse_repo_entry(&entry).expect("an oci entry");
+        let RepoSource::Oci(repository) = &source else {
+            panic!("an oci source: {source:?}");
+        };
+        assert_eq!(repository.to_string(), "oci://ghcr.io/acme/peppy-nodes");
+        assert_eq!(source_identity(&source), "oci://ghcr.io/acme/peppy-nodes");
+        assert_eq!(super::repo_source_to_json(900, &source), entry);
+    }
+
+    #[test]
+    fn an_oci_entry_with_a_ref_or_a_bad_url_is_a_parse_error() {
+        let with_ref = serde_json::json!({
+            "id": 900, "type": "oci", "url": "oci://ghcr.io/acme/nodes", "ref": "main"
+        });
+        assert_eq!(parse_repo_entry(&with_ref), Err(RepoEntryError::OciRef));
+        assert!(
+            RepoEntryError::OciRef.to_string().contains("no `ref`"),
+            "{}",
+            RepoEntryError::OciRef
+        );
+        let bad_url = serde_json::json!({"id": 900, "type": "oci", "url": "https://ghcr.io/x"});
+        assert!(matches!(
+            parse_repo_entry(&bad_url),
+            Err(RepoEntryError::OciUrl(_))
+        ));
+        let no_url = serde_json::json!({"id": 900, "type": "oci"});
+        assert_eq!(parse_repo_entry(&no_url), Err(RepoEntryError::Unrecognized));
+    }
+
+    /// An oci entry owns the cache entries of its own repository only.
+    #[test]
+    fn an_oci_repository_owns_the_entries_read_from_it() {
+        use core_node_api::encoding::OciRepository;
+        let repos = vec![
+            serde_json::json!({"id": 900, "type": "oci", "url": "oci://ghcr.io/acme/nodes"}),
+            serde_json::json!({"id": 901, "type": "oci", "url": "oci://ghcr.io/other/nodes"}),
+        ];
+        let owners = RepoOwners::new(&repos);
+        let origin = |url: &str| EntryOrigin::Oci {
+            url: OciRepository::parse(url).unwrap(),
+            source_digest: core_node_api::encoding::OciDigest::from_sha256_hex(&"a".repeat(64))
+                .unwrap(),
+            platforms: Default::default(),
+        };
+        assert_eq!(
+            owners.owner_of(&origin("oci://ghcr.io/acme/nodes")),
+            Some(900)
+        );
+        assert_eq!(
+            owners.owner_of(&origin("oci://ghcr.io/other/nodes")),
+            Some(901)
+        );
+        assert_eq!(owners.owner_of(&origin("oci://ghcr.io/third/nodes")), None);
+    }
+
     /// An entry no listed repository owns is shown under none: its
     /// repository was removed or excluded after the cache was written.
     #[test]

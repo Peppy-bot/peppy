@@ -14,8 +14,7 @@ use crate::services::repo::index::{DeclaredContent, PublishedItem};
 use crate::services::repo::refresh::RepoReadFailure;
 use config::node::NodeConfigParser;
 use core_node_api::encoding::{
-    ArtifactPlatform, ArtifactTag, ArtifactVersion, OciDigest, OciRepository,
-    RepoRefreshFeedback,
+    ArtifactPlatform, ArtifactTag, ArtifactVersion, OciDigest, OciRepository, RepoRefreshFeedback,
 };
 use daemon_config::consts::{HOST_ARTIFACT_PLATFORM, PeppyDirs, artifact_version};
 use daemon_config::repository::{ItemName, ItemTag, ManifestFingerprint, OciArtifact};
@@ -56,8 +55,12 @@ pub(crate) fn read_oci_repo(
         .enable_all()
         .build()
         .map_err(|e| unreachable(format!("cannot start the runtime of the read: {e}")))?;
-    let client = RegistryClient::new(repository, CredentialStore::from_environment(), Access::Pull)
-        .map_err(|e| unreachable(e.to_string()))?;
+    let client = RegistryClient::new(
+        repository,
+        CredentialStore::from_environment(),
+        Access::Pull,
+    )
+    .map_err(|e| unreachable(e.to_string()))?;
     let listed = runtime
         .block_on(list_artifacts(&client, &version))
         .map_err(|e| unreachable(format!("{repository}: {e}")))?;
@@ -103,15 +106,17 @@ async fn list_artifacts(
         .filter_map(|tag| ArtifactTag::parse(tag).ok())
         .filter(|tag| tag.version() == version)
         .collect();
-    let reads: Vec<(ArtifactTag, Result<Option<(OciDigest, Vec<u8>)>, RegistryError>)> =
-        futures::stream::iter(tags)
-            .map(|tag| async move {
-                let manifest = client.manifest(&tag.to_string()).await;
-                (tag, manifest)
-            })
-            .buffer_unordered(PARALLEL_MANIFEST_READS)
-            .collect()
-            .await;
+    let reads: Vec<(
+        ArtifactTag,
+        Result<Option<(OciDigest, Vec<u8>)>, RegistryError>,
+    )> = futures::stream::iter(tags)
+        .map(|tag| async move {
+            let manifest = client.manifest(&tag.to_string()).await;
+            (tag, manifest)
+        })
+        .buffer_unordered(PARALLEL_MANIFEST_READS)
+        .collect()
+        .await;
     let mut listed = Vec::new();
     for (tag, read) in reads {
         let Some((manifest_digest, bytes)) = read? else {
@@ -182,7 +187,10 @@ pub(crate) fn group_node_artifacts(
                         artifact.tag.node_tag().to_owned(),
                     ))
                     .or_default()
-                    .push(format!("the tag {} holds no node artifact: {error}", artifact.tag));
+                    .push(format!(
+                        "the tag {} holds no node artifact: {error}",
+                        artifact.tag
+                    ));
                 continue;
             }
         };
@@ -208,10 +216,9 @@ pub(crate) fn group_node_artifacts(
 
     let mut grouped = GroupedArtifacts::default();
     for ((name, tag), problems) in &broken {
-        grouped.refused.push(format!(
-            "refused `{name}:{tag}`: {}",
-            problems.join("; ")
-        ));
+        grouped
+            .refused
+            .push(format!("refused `{name}:{tag}`: {}", problems.join("; ")));
     }
     for ((name, tag), candidates) in by_node {
         if broken.contains_key(&(name.clone(), tag.clone())) {
@@ -336,7 +343,10 @@ pub(crate) fn node_manifest_path(peppy_dirs: &PeppyDirs, digest: &OciDigest) -> 
 
 /// The path of the `peppy.json5` of fingerprint `sha256` when the store
 /// holds it, without reaching the registry.
-pub fn stored_node_manifest(peppy_dirs: &PeppyDirs, sha256: &ManifestFingerprint) -> Option<PathBuf> {
+pub fn stored_node_manifest(
+    peppy_dirs: &PeppyDirs,
+    sha256: &ManifestFingerprint,
+) -> Option<PathBuf> {
     let digest = OciDigest::from_sha256_hex(sha256.as_str()).ok()?;
     let path = node_manifest_path(peppy_dirs, &digest);
     path.is_file().then_some(path)
@@ -376,8 +386,12 @@ pub(crate) fn ensure_node_manifest(
         .enable_all()
         .build()
         .map_err(|e| format!("cannot start the runtime of the read: {e}"))?;
-    let client = RegistryClient::new(repository, CredentialStore::from_environment(), Access::Pull)
-        .map_err(|e| e.to_string())?;
+    let client = RegistryClient::new(
+        repository,
+        CredentialStore::from_environment(),
+        Access::Pull,
+    )
+    .map_err(|e| e.to_string())?;
     let bytes = runtime
         .block_on(client.blob_bytes(&digest))
         .map_err(|e| format!("the peppy.json5 {digest} of {repository} cannot be read: {e}"))?;
@@ -469,7 +483,10 @@ mod tests {
         let [line] = grouped.skipped.as_slice() else {
             panic!("one skipped node: {grouped:?}");
         };
-        assert!(line.contains("`waldo:v1` has no artifact for linux/amd64"), "{line}");
+        assert!(
+            line.contains("`waldo:v1` has no artifact for linux/amd64"),
+            "{line}"
+        );
     }
 
     #[test]
@@ -543,7 +560,10 @@ mod tests {
         let [refusal] = grouped.refused.as_slice() else {
             panic!("one refusal: {grouped:?}");
         };
-        assert!(refusal.contains("both hold its artifact for linux/amd64"), "{refusal}");
+        assert!(
+            refusal.contains("both hold its artifact for linux/amd64"),
+            "{refusal}"
+        );
     }
 
     #[test]
