@@ -38,11 +38,14 @@ pub(crate) async fn materialize_entry(
     let manifest_path = if entry.origin.resolution_may_block() {
         let dirs = peppy_dirs.clone();
         let origin = entry.origin.clone();
-        tokio::task::spawn_blocking(move || resolve_cached_artifact_path(&dirs, &origin, &|_| {}))
+        let sha256 = entry.sha256.clone();
+        tokio::task::spawn_blocking(move || {
+            resolve_cached_artifact_path(&dirs, &origin, &sha256, &|_| {})
+        })
             .await
             .map_err(|e| format!("materialization task for `{id}` failed: {e}"))?
     } else {
-        resolve_cached_artifact_path(peppy_dirs, &entry.origin, &|_| {})
+        resolve_cached_artifact_path(peppy_dirs, &entry.origin, &entry.sha256, &|_| {})
     }
     .map_err(|e| format!("node `{id}`: {e}"))?;
 

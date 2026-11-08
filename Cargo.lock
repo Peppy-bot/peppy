@@ -905,6 +905,7 @@ dependencies = [
  "names-generator2",
  "nix 0.31.3",
  "node-stack",
+ "oci-registry",
  "parking_lot 0.13.0",
  "peppy-codec",
  "peppy-config-model",

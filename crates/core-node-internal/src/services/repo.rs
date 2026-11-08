@@ -5,6 +5,7 @@ mod exclude;
 pub(crate) mod index;
 mod init;
 mod list;
+pub(crate) mod oci;
 mod parallel;
 mod refresh;
 mod remove;
@@ -29,7 +30,9 @@ pub use search::{
 use crate::services::repo::cache::{EntryOrigin, NodeCacheEntry, UNOWNED_REPO_ID};
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::refresh::read_or_create_repos;
-use core_node_api::encoding::{GitRepoRef, GitRepoRefError, RepoSource};
+use core_node_api::encoding::{
+    GitRepoRef, GitRepoRefError, OciRepository, OciRepositoryError, RepoSource,
+};
 use daemon_config::consts::{PeppyDirs, peppy_build};
 use serde_json::Value;
 use std::collections::hash_map::Entry;
@@ -89,6 +92,10 @@ pub(crate) fn repo_source_to_json(id: u64, source: &RepoSource) -> Value {
                 map.insert("ref".to_string(), Value::String(r.to_owned()));
             }
         }
+        RepoSource::Oci(repository) => {
+            map.insert("type".to_string(), Value::String("oci".to_string()));
+            map.insert("url".to_string(), Value::String(repository.to_string()));
+        }
     }
     Value::Object(map)
 }
@@ -103,6 +110,17 @@ pub(crate) enum RepoEntryError {
     /// A git entry whose `ref` peppy cannot read.
     #[error(transparent)]
     Ref(#[from] GitRepoRefError),
+    /// An oci entry whose `url` names no OCI repository.
+    #[error(transparent)]
+    OciUrl(#[from] OciRepositoryError),
+    /// An oci entry with a `ref`: the tags of an OCI repository name the
+    /// peppy version and the platform of each artifact, so there is no ref
+    /// to follow.
+    #[error(
+        "an oci repository entry has no `ref`: the tags of its artifacts name the peppy version \
+         and the platform of each one"
+    )]
+    OciRef,
 }
 
 /// Parses one entry of `repositories.json5` or
@@ -125,6 +143,13 @@ pub(crate) fn parse_repo_entry(entry: &Value) -> Result<RepoSource, RepoEntryErr
                 repo_ref,
             })
         }
+        "oci" => {
+            if entry.get("ref").is_some() {
+                return Err(RepoEntryError::OciRef);
+            }
+            let url = field("url").ok_or(RepoEntryError::Unrecognized)?;
+            Ok(RepoSource::Oci(OciRepository::parse(url)?))
+        }
         _ => Err(RepoEntryError::Unrecognized),
     }
 }
@@ -142,6 +167,7 @@ pub(crate) fn parse_repo_entry(entry: &Value) -> Result<RepoSource, RepoEntryErr
 ///   is not collapsed. An entry on `@{peppy-release}` is `<url>@@{peppy-release}`
 ///   whatever peppy version reads it, and it is a different repository from
 ///   an entry pinned to one release tag.
+/// - `Oci`: the `oci://` URL in its normal form.
 pub(crate) fn source_identity(source: &RepoSource) -> String {
     match source {
         RepoSource::Fs(path) => std::fs::canonicalize(path)
@@ -151,6 +177,7 @@ pub(crate) fn source_identity(source: &RepoSource) -> String {
             Some(r) => format!("{repo_url}@{r}"),
             None => repo_url.clone(),
         },
+        RepoSource::Oci(repository) => repository.to_string(),
     }
 }
 
@@ -212,6 +239,8 @@ enum RepoOwner {
         /// and therefore matches any ref on its url.
         repo_ref: GitRepoRef,
     },
+    /// An OCI repository.
+    Oci { repository: OciRepository },
 }
 
 impl RepoOwners {
@@ -232,6 +261,7 @@ impl RepoOwners {
                             url: repo_url,
                             repo_ref,
                         },
+                        RepoSource::Oci(repository) => RepoOwner::Oci { repository },
                     };
                     Some((repo_entry_id(repo), owner))
                 })
@@ -275,6 +305,7 @@ impl RepoOwner {
                         .configured()
                         .is_none_or(|pinned| read_with_ref.as_deref() == Some(pinned))
             }
+            (RepoOwner::Oci { repository }, EntryOrigin::Oci { url, .. }) => repository == url,
             _ => false,
         }
     }

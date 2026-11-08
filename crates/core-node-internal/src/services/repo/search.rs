@@ -541,7 +541,7 @@ fn referenced_copy<'a, E: RepoCacheEntry>(
     entries
         .iter()
         .filter(|e| e.name() == name && e.tag() == tag)
-        .min_by_key(|e| (e.repo_id(), e.origin().path_str().to_owned()))
+        .min_by_key(|e| (e.repo_id(), e.origin().path_str().into_owned()))
         .expect("the identity came from these entries")
 }
 
@@ -747,7 +747,7 @@ fn indexed(repo: &ListedRepo, node: &AttributedNode<'_>) -> IndexedNode {
         repo_id: repo.id,
         repo_label: repo.label.clone(),
         source_type: entry.origin.kind(),
-        path: entry.origin.path_str().to_owned(),
+        path: entry.origin.path_str().into_owned(),
         shadowed_by: node.shadowed_by.map(|winner| winner.label.clone()),
     }
 }
@@ -781,7 +781,7 @@ fn published_copy<E: RepoCacheEntry>(entry: &E, repos: &[ListedRepo]) -> Publish
     PublishedDoc {
         repo_id: entry.repo_id(),
         repo_label: label_of(repos, entry.repo_id()),
-        path: entry.origin().path_str().to_owned(),
+        path: entry.origin().path_str().into_owned(),
         sha256: entry.sha256().clone(),
     }
 }
@@ -814,7 +814,7 @@ fn pin_status<E: RepoCacheEntry>(
         Some(entry) => PinStatus::Resolvable {
             repo_id: entry.repo_id(),
             repo_label: label_of(repos, entry.repo_id()),
-            path: entry.origin().path_str().to_owned(),
+            path: entry.origin().path_str().into_owned(),
         },
         None => PinStatus::Unresolvable,
     }

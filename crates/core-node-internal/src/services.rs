@@ -19,6 +19,7 @@ use clock::{ClockSource, WallClockSource};
 
 pub use action_loop::DAEMON_SENDER_GRACE;
 pub use node::cache::git::{checkout_dir_for, materialized_checkout};
+pub use repo::oci::stored_node_manifest;
 pub use node::endpoints::{HostAddressSource, test_host_addresses};
 pub use node::{
     ExportDiscardLog, HealthMonitorPolicy, ManualTime, ReplyBounds, Report, RestartBackoff,

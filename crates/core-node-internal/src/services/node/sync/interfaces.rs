@@ -1363,7 +1363,7 @@ mod implements_tests {
         // the cache's `sha256`, i.e. the cache thinks the file is X but it
         // is now Y. resolve_implements must catch this.
         fs::write(
-            entry.origin.path_str(),
+            entry.origin.path_str().as_ref(),
             DEPTH_V1_BODY.replace("video_stream", "video_stream_v2"),
         )
         .unwrap();

@@ -1128,7 +1128,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
         let good_sha = entry.sha256.clone();
-        let path = entry.origin.path_str().to_owned();
+        let path = entry.origin.path_str().into_owned();
         let (_t, dirs) = peppy_dirs_with_cache(&[entry]);
 
         // Pin to a sha not in the cache.
