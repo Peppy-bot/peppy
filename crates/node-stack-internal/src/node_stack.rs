@@ -8,11 +8,11 @@ mod pypi_mirror;
 mod run_steps;
 mod supervision;
 
-pub use build_artifact_cache::CACHED_BUILD_REUSE_PREFIX;
+pub use build_artifact_cache::{CACHED_BUILD_REUSE_PREFIX, prune_siblings, pulled_artifact_path};
 use entity::serialize_node_entity;
 pub use entity::{
-    Artifact, BuildContext, BuiltInLaunch, NodeEntity, NodeStage, OutputSinks, StartContext,
-    StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard,
+    Artifact, BuildContext, BuiltInLaunch, NodeEntity, NodeStage, OutputSinks, PulledArtifact,
+    StartContext, StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard,
 };
 use pairing::PairingRegistry;
 pub use pairing::{PairEndpoint, Pairing, PlannedPair, RemoteSlotMeta, SlotAddr};
@@ -1543,6 +1543,28 @@ impl NodeStack {
         let mut guard = self.shared.write();
         guard.push_entity(
             NodeEntity::built_in(config, config_path, launch, documents),
+            false,
+        )
+    }
+
+    /// Registers a node whose `.sif` was pulled from an OCI repository,
+    /// ready to start.
+    ///
+    /// The same slot rules as [`Self::push_config`]: a node already in the
+    /// stack is replaced only while it has no instances, and its dependents
+    /// are rewired when its interfaces or dependencies changed. There is no
+    /// `Added` stage to pass through, since nothing is built for it.
+    /// `documents` are the documents its manifest names.
+    pub fn push_pulled<P: Into<PathBuf>>(
+        &self,
+        config: NodeConfig,
+        config_path: P,
+        artifact: PulledArtifact,
+        documents: Vec<PinnedDocument>,
+    ) -> Result<()> {
+        let mut guard = self.shared.write();
+        guard.push_entity(
+            NodeEntity::pulled(config, config_path, artifact, documents),
             false,
         )
     }
