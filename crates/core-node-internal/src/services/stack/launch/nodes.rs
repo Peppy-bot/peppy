@@ -1110,6 +1110,75 @@ mod tests {
         );
     }
 
+    /// A stack build with `--publish` publishes the container nodes of a
+    /// git or fs origin, and reports a process node and a node of an oci
+    /// origin without publishing them. A build without it reports nothing.
+    #[test]
+    fn a_stack_build_publishes_container_nodes_and_reports_the_others() {
+        use crate::services::stack::fixtures::planned_deployment;
+        use core_node_api::encoding::{ArtifactPlatform, OciRepository, PublishRefusals};
+        let repository = OciRepository::parse("oci://ghcr.io/acme/peppy-nodes").expect("url");
+        let phase = |publish| PhaseGoal {
+            launch_id: "launch-abc123".to_owned(),
+            rebuild: false,
+            environment: ForwardedEnv::default(),
+            publish,
+        };
+        let publishing = phase(Some(super::super::PhasePublish {
+            repository: repository.clone(),
+            extra_platforms: vec![ArtifactPlatform::LinuxArm64],
+        }));
+        let container = planned_deployment("waldo", &[("waldo_inst", None)]);
+        let mut process = planned_deployment("plain", &[("plain_inst", None)]);
+        process.config.execution.container = None;
+        let mut pulled = planned_deployment("brain", &[("brain_inst", None)]);
+        let pulled_from = OciRepository::parse("oci://ghcr.io/acme/prebuilt").expect("url");
+        if let DeploymentRoot::Node(pin) = &mut pulled.root {
+            pin.origin = EntryOrigin::Oci {
+                url: pulled_from.clone(),
+                source_digest: core_node_api::encoding::OciDigest::from_sha256_hex(&"c".repeat(64))
+                    .expect("digest"),
+                platforms: Default::default(),
+            };
+        }
+
+        assert_eq!(
+            publish_request(&publishing, &container),
+            Some(NodePublishRequest {
+                repository: Some(repository),
+                extra_platforms: vec![ArtifactPlatform::LinuxArm64],
+                refusals: PublishRefusals::Report,
+            })
+        );
+        assert_eq!(publish_request(&publishing, &process), None);
+        assert_eq!(
+            unpublished_node_line(&publishing, &container, "cn-robot"),
+            None
+        );
+        assert_eq!(
+            unpublished_node_line(&publishing, &process, "cn-robot"),
+            Some(NodePublishLine {
+                node_label: "plain:v1".to_owned(),
+                core_node: "cn-robot".to_owned(),
+                outcome: NodePublishLineOutcome::ProcessNode,
+            })
+        );
+        assert_eq!(
+            unpublished_node_line(&publishing, &pulled, "cn-gpu"),
+            Some(NodePublishLine {
+                node_label: "brain:v1".to_owned(),
+                core_node: "cn-gpu".to_owned(),
+                outcome: NodePublishLineOutcome::OciOrigin(pulled_from),
+            })
+        );
+
+        let plain = phase(None);
+        for item in [&container, &process, &pulled] {
+            assert_eq!(publish_request(&plain, item), None);
+            assert_eq!(unpublished_node_line(&plain, item, "cn-robot"), None);
+        }
+    }
+
     #[test]
     fn remote_build_goal_carries_the_launch_rebuild_switch() {
         let launch = LaunchGoal::new(

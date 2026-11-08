@@ -53,6 +53,24 @@ pub(crate) fn check_target(
     config: &NodeConfig,
     pulled_from: Option<&OciRepository>,
 ) -> Result<PublishTarget, Failure> {
+    check_target_of_version(
+        request,
+        settings,
+        config,
+        pulled_from,
+        daemon_config::consts::artifact_version(),
+    )
+}
+
+/// [`check_target`] with the artifact version of this peppy made explicit,
+/// so the order of the checks is testable in a build of any version.
+fn check_target_of_version(
+    request: &NodePublishRequest,
+    settings: &node_stack::PublishSettings,
+    config: &NodeConfig,
+    pulled_from: Option<&OciRepository>,
+    version: Result<ArtifactVersion, daemon_config::consts::NoArtifactVersion>,
+) -> Result<PublishTarget, Failure> {
     let refuse = |message: String| Failure::new(PeppyFailureKind::PreconditionFailed, message);
     let node = node_label(config);
     let repository = request
@@ -66,7 +84,7 @@ pub(crate) fn check_target(
                 settings.config_source
             ))
         })?;
-    let version = daemon_config::consts::artifact_version().map_err(|e| refuse(e.to_string()))?;
+    let version = version.map_err(|e| refuse(e.to_string()))?;
     if config.execution.container.is_none() {
         return Err(refuse(format!(
             "{node} is a process node (`build_cmd`/`run_cmd`). Only a container node can be \
@@ -543,7 +561,18 @@ pub(crate) fn report(
     pushed: Vec<PlatformPublish>,
     requested: &[ArtifactPlatform],
 ) -> Vec<PlatformPublish> {
-    let mut by_platform: BTreeMap<ArtifactPlatform, PublishOutcome> = plan.decided.clone();
+    order_report(plan.decided.clone(), pushed, requested)
+}
+
+/// The outcomes `decided` by the checks and `pushed` by the builds, in the
+/// order of the report: the platform of this machine first, then the others
+/// in the order of `requested`.
+fn order_report(
+    decided: BTreeMap<ArtifactPlatform, PublishOutcome>,
+    pushed: Vec<PlatformPublish>,
+    requested: &[ArtifactPlatform],
+) -> Vec<PlatformPublish> {
+    let mut by_platform = decided;
     for published in pushed {
         by_platform.insert(published.platform, published.outcome);
     }
@@ -633,4 +662,173 @@ fn node_label(config: &NodeConfig) -> String {
         config.manifest.name.as_str(),
         config.manifest.tag
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use daemon_config::consts::NoArtifactVersion;
+
+    fn config(container: bool) -> NodeConfig {
+        let execution = if container {
+            r#"execution: { language: "python", container: { def_file: "apptainer.def" } }"#
+        } else {
+            r#"execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }"#
+        };
+        config::node::NodeConfigParser::from_content(&format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{ name: "waldo", tag: "v1", description: ["A node."] }},
+                interfaces: {{}},
+                {execution},
+            }}"#
+        ))
+        .expect("valid manifest")
+    }
+
+    fn request() -> NodePublishRequest {
+        NodePublishRequest {
+            repository: None,
+            extra_platforms: Vec::new(),
+            refusals: PublishRefusals::FailGoal,
+        }
+    }
+
+    fn settings(repository: Option<&str>) -> node_stack::PublishSettings {
+        node_stack::PublishSettings {
+            repository: repository.map(|url| OciRepository::parse(url).expect("url")),
+            config_source: "/data/peppy/conf/peppy_config.json5".to_owned(),
+        }
+    }
+
+    fn version() -> Result<ArtifactVersion, NoArtifactVersion> {
+        Ok(ArtifactVersion::parse("v0.36.0").expect("version"))
+    }
+
+    fn pulled() -> OciRepository {
+        OciRepository::parse("oci://ghcr.io/acme/nodes").expect("url")
+    }
+
+    fn refusal(result: Result<PublishTarget, Failure>) -> String {
+        match result {
+            Ok(_) => panic!("the checks pass"),
+            Err(failure) => failure.message().to_owned(),
+        }
+    }
+
+    /// Every check fails here: the first one in the order of `peppy node
+    /// publish` is the one the publish gives, then the next once it is fixed.
+    #[test]
+    fn the_checks_stop_at_the_first_failure_in_their_order() {
+        let process = config(false);
+        let untagged = || Err(NoArtifactVersion::Untagged);
+
+        let first = refusal(check_target_of_version(
+            &request(),
+            &settings(None),
+            &process,
+            Some(&pulled()),
+            untagged(),
+        ));
+        assert!(
+            first.starts_with("no publish_repository in `/data/peppy/conf/peppy_config.json5`"),
+            "{first}"
+        );
+
+        let second = refusal(check_target_of_version(
+            &request(),
+            &settings(Some("oci://ghcr.io/acme/peppy-nodes")),
+            &process,
+            Some(&pulled()),
+            untagged(),
+        ));
+        assert!(second.contains("without a release tag"), "{second}");
+
+        let third = refusal(check_target_of_version(
+            &request(),
+            &settings(Some("oci://ghcr.io/acme/peppy-nodes")),
+            &process,
+            Some(&pulled()),
+            version(),
+        ));
+        assert_eq!(
+            third,
+            format!(
+                "`waldo:v1` is a process node (`build_cmd`/`run_cmd`). Only a container node can \
+                 be published: give it an `execution.container` block and an `apptainer.def` \
+                 first. See {CONTAINERS_GUIDE}"
+            )
+        );
+
+        let fourth = refusal(check_target_of_version(
+            &request(),
+            &settings(Some("oci://ghcr.io/acme/peppy-nodes")),
+            &config(true),
+            Some(&pulled()),
+            version(),
+        ));
+        assert!(
+            fourth.contains("comes from the oci repository `oci://ghcr.io/acme/nodes`"),
+            "{fourth}"
+        );
+    }
+
+    #[test]
+    fn the_repository_of_the_request_wins_over_the_one_of_the_daemon() {
+        let target = check_target_of_version(
+            &NodePublishRequest {
+                repository: Some(
+                    OciRepository::parse("oci://coordinator/acme/nodes").expect("url"),
+                ),
+                ..request()
+            },
+            &settings(Some("oci://ghcr.io/acme/peppy-nodes")),
+            &config(true),
+            None,
+            version(),
+        )
+        .unwrap_or_else(|failure| panic!("the checks pass: {failure}"));
+        assert_eq!(
+            target.repository.to_string(),
+            "oci://coordinator/acme/nodes"
+        );
+        let own = check_target_of_version(
+            &request(),
+            &settings(Some("oci://ghcr.io/acme/peppy-nodes")),
+            &config(true),
+            None,
+            version(),
+        )
+        .unwrap_or_else(|failure| panic!("the checks pass: {failure}"));
+        assert_eq!(own.repository.to_string(), "oci://ghcr.io/acme/peppy-nodes");
+        assert_eq!(own.version.as_str(), "v0.36.0");
+    }
+
+    #[test]
+    fn the_report_lists_the_platform_of_this_machine_first_then_the_request() {
+        let decided = |platform, outcome| PlatformPublish { platform, outcome };
+        let other = ArtifactPlatform::ALL
+            .into_iter()
+            .find(|platform| *platform != HOST_ARTIFACT_PLATFORM)
+            .expect("two platforms");
+        let pushed = vec![
+            decided(
+                other,
+                PublishOutcome::AlreadyPublished {
+                    tag: "other".to_owned(),
+                },
+            ),
+            decided(
+                HOST_ARTIFACT_PLATFORM,
+                PublishOutcome::AlreadyPublished {
+                    tag: "host".to_owned(),
+                },
+            ),
+        ];
+        let order: Vec<ArtifactPlatform> = order_report(BTreeMap::new(), pushed, &[other])
+            .into_iter()
+            .map(|published| published.platform)
+            .collect();
+        assert_eq!(order, [HOST_ARTIFACT_PLATFORM, other]);
+    }
 }
