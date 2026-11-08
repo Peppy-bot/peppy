@@ -12,6 +12,8 @@ mod client;
 pub mod digest;
 mod error;
 pub mod manifest;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use auth::{Credential, CredentialStore};
 pub use client::{Access, DEFAULT_UPLOAD_CHUNK_BYTES, MAX_SMALL_BLOB_BYTES, RegistryClient};

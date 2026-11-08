@@ -21,7 +21,7 @@ pub const MAX_SMALL_BLOB_BYTES: u64 = 4 << 20;
 pub const DEFAULT_UPLOAD_CHUNK_BYTES: u64 = 32 << 20;
 
 /// How many tags one page of the tag list asks for.
-const TAGS_PAGE_SIZE: u32 = 1000;
+const DEFAULT_TAGS_PAGE_SIZE: u32 = 1000;
 
 /// The longest a connection takes to open.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -65,6 +65,7 @@ pub struct RegistryClient {
     /// for one.
     authorization: tokio::sync::Mutex<Option<HeaderValue>>,
     upload_chunk_bytes: u64,
+    tags_page_size: u32,
 }
 
 /// An answer that the request expects, or the error of any other.
@@ -106,12 +107,19 @@ impl RegistryClient {
             credentials,
             authorization: tokio::sync::Mutex::new(None),
             upload_chunk_bytes: DEFAULT_UPLOAD_CHUNK_BYTES,
+            tags_page_size: DEFAULT_TAGS_PAGE_SIZE,
         })
     }
 
     /// The same client with uploads in chunks of `bytes`.
     pub fn with_upload_chunk_bytes(mut self, bytes: u64) -> Self {
         self.upload_chunk_bytes = bytes.max(1);
+        self
+    }
+
+    /// The same client with pages of `size` tags in the tag list.
+    pub fn with_tags_page_size(mut self, size: u32) -> Self {
+        self.tags_page_size = size.max(1);
         self
     }
 
@@ -124,7 +132,7 @@ impl RegistryClient {
     /// to it) has no tags.
     pub async fn list_tags(&self) -> Result<Vec<String>> {
         let mut tags = Vec::new();
-        let mut next = Some(format!("{}/tags/list?n={TAGS_PAGE_SIZE}", self.base));
+        let mut next = Some(format!("{}/tags/list?n={}", self.base, self.tags_page_size));
         let mut seen_pages = std::collections::HashSet::new();
         while let Some(url) = next.take() {
             if !seen_pages.insert(url.clone()) {

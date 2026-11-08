@@ -30,6 +30,18 @@ url = "2"
 # moved into place.
 tempfile = "3"
 
+[features]
+# A local CNCF distribution registry for tests (`test_support`).
+test-support = []
+# The tests against a real registry: the `registry` binary that
+# PEPPY_TEST_REGISTRY_BIN names.
+registry_e2e = ["test-support"]
+
 [dev-dependencies]
 httpmock = "0.9"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[[test]]
+name = "registry_e2e"
+path = "tests/registry_e2e.rs"
+required-features = ["registry_e2e"]
