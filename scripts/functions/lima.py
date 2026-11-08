@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .build import _get_target_dir, build_cache_root
 from .cli import ReleaseError, console
+from .download import CURL_DOWNLOAD_OPTIONS
 
 LIMA_HOME = Path.home() / ".peppy" / "lima-build"
 LIMA_INSTANCE = "peppy"
@@ -256,7 +257,7 @@ esac
 if [ -x {GUEST_GO_DIR}/bin/go ] && {GUEST_GO_DIR}/bin/go version | grep -q "go{GO_VERSION} "; then
     exit 0
 fi
-curl -fsSL "https://go.dev/dl/go{GO_VERSION}.linux-$go_arch.tar.gz" -o /tmp/go-{GO_VERSION}.tar.gz
+curl {CURL_DOWNLOAD_OPTIONS} "https://go.dev/dl/go{GO_VERSION}.linux-$go_arch.tar.gz" -o /tmp/go-{GO_VERSION}.tar.gz
 echo "$go_sha  /tmp/go-{GO_VERSION}.tar.gz" | sha256sum -c -
 sudo rm -rf {GUEST_GO_DIR}
 sudo tar -C /usr/local -xzf /tmp/go-{GO_VERSION}.tar.gz
@@ -302,7 +303,7 @@ sudo mkdir -p {GUEST_RUST_DIR}
 sudo chown "$(id -u):$(id -g)" {GUEST_RUST_DIR}
 export RUSTUP_HOME={GUEST_RUSTUP_HOME}
 export CARGO_HOME={GUEST_CARGO_HOME}
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+curl --proto '=https' --tlsv1.2 {CURL_DOWNLOAD_OPTIONS} https://sh.rustup.rs \
     | sh -s -- -y --no-modify-path
 export PATH="{GUEST_CARGO_HOME}/bin:$PATH"
 rustup target add x86_64-unknown-linux-gnu

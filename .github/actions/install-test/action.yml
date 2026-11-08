@@ -38,11 +38,13 @@ runs:
     # release build needs is installed: the tests start from the image as a
     # user's machine would, and a build toolchain would put packages on it
     # (fuse2fs, uidmap) that install.sh is there to install. Pinned to the
-    # version the CI image is provisioned with.
+    # version the CI image is provisioned with. The pixi installer downloads
+    # pixi with no retry of its own, so run_installer.sh runs it again when it
+    # fails.
     - name: Install pixi
       shell: bash
       run: |
-        curl -fsSL --retry 3 --retry-connrefused https://pixi.sh/install.sh | PIXI_VERSION=v0.80.0 bash
+        PIXI_VERSION=v0.80.0 ./scripts/run_installer.sh https://pixi.sh/install.sh
         echo "$HOME/.pixi/bin" >> "$GITHUB_PATH"
 
     - name: Run the install.sh tests

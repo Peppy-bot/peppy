@@ -110,19 +110,19 @@ mod ruff_build {
 
         let temp_dir = dest.parent().unwrap().join("ruff-download-tmp");
         std::fs::create_dir_all(&temp_dir).ok();
+        let archive = temp_dir.join("ruff.tar.gz");
 
-        let status = Command::new("sh")
-            .args([
-                "-c",
-                &format!(
-                    "curl -sSfL '{}' | tar xz --strip-components=1 -C '{}'",
-                    url,
-                    temp_dir.display()
-                ),
-            ])
-            .status();
+        let unpacked = build_helpers::download_file(&url, &archive, "the ruff archive")
+            && build_helpers::run_command(
+                Command::new("tar")
+                    .arg("-xzf")
+                    .arg(&archive)
+                    .args(["--strip-components=1", "-C"])
+                    .arg(&temp_dir),
+                "unpack the ruff archive",
+            );
 
-        if status.is_err() || !status.as_ref().unwrap().success() {
+        if !unpacked {
             println!(
                 "cargo:warning=Failed to download ruff for {} (no pre-built binary available)",
                 target
