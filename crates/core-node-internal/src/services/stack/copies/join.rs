@@ -173,8 +173,15 @@ async fn join_inner(
     // A cancel before the reservations stops the join while it has cost
     // nothing.
     ctx.stop_if_cancelled()?;
-    let change =
-        preflight_change(ctx, &active.launch_id, &touched, &placements, Some(&live)).await?;
+    let change = preflight_change(
+        ctx,
+        &active.launch_id,
+        &touched,
+        &placements,
+        Some(&live),
+        None,
+    )
+    .await?;
     let participants = change.reserved.core_nodes();
     let delta: HashMap<_, _> = selected_instances(&planned, |instance| {
         new_ids.contains(instance.instance_id.as_str())
@@ -194,6 +201,7 @@ async fn join_inner(
         launch_id: active.launch_id.clone(),
         rebuild: false,
         environment,
+        publish: None,
     };
     let previous = active.clone();
     // Set once the machines start changing: from then on a failure has
@@ -295,6 +303,7 @@ async fn join_inner(
             &mut logs.add,
             &mut logs.build,
             &mut logs.unresolved,
+            &mut Vec::new(),
         )
         .await?;
         let pairings: Vec<_> = pairings

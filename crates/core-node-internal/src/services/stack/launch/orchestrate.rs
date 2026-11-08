@@ -9,7 +9,7 @@ use crate::services::node::{
 use crate::services::stack::action::StackChangeContext;
 use crate::services::stack::{ChangeResult, attempt_failed, rejected};
 use core_node_api::encoding::{
-    LaunchFeedbackStep, NodeAddGoal, NodeAddResult, NodeRunGoal, NodeRunResult,
+    LaunchFeedbackStep, NodeAddGoal, NodeAddResult, NodeBuildResult, NodeRunGoal, NodeRunResult,
 };
 use futures::FutureExt;
 use node_stack::{ActionLog, Announcer};
@@ -88,7 +88,8 @@ pub(in crate::services::stack) async fn build_node_directly(
     phase: &PhaseGoal,
     node_name: String,
     node_tag: String,
-) -> (ChangeResult<()>, Option<PathBuf>) {
+    publish: Option<core_node_api::encoding::NodePublishRequest>,
+) -> (ChangeResult<NodeBuildResult>, Option<PathBuf>) {
     let log = match ActionLog::for_build(
         &ctx.peppy_dirs,
         ctx.node_stack.log_exporter().clone(),
@@ -115,6 +116,31 @@ pub(in crate::services::stack) async fn build_node_directly(
         peppy_dirs: ctx.peppy_dirs.clone(),
     };
 
+    // The checks of a publish that need no network: the coordinator checked
+    // the repository and the version for the whole change, so what they can
+    // refuse here is the node itself.
+    let publish = match publish {
+        Some(request) => {
+            let entity = ctx.node_stack.find(&node_name, &node_tag);
+            let checked = entity
+                .ok_or_else(|| format!("node `{node_name}:{node_tag}` is not in the node stack"));
+            match checked.and_then(|entity| {
+                let entity = entity.read();
+                crate::services::node::publish::check_target(
+                    &request,
+                    ctx.node_stack.publish_settings(),
+                    entity.config(),
+                    entity.pulled_from(),
+                )
+                .map_err(|failure| failure.message().to_owned())
+            }) {
+                Ok(target) => Some(target),
+                Err(reason) => return (Err(attempt_failed(reason).into()), Some(log.path())),
+            }
+        }
+        None => None,
+    };
+
     let log_for_timeout = log.clone();
 
     let result = run_phase(
@@ -123,7 +149,7 @@ pub(in crate::services::stack) async fn build_node_directly(
             node_tag.clone(),
             phase.environment.common().to_vec(),
             phase.rebuild,
-            None,
+            publish,
             action_context,
             Announcer::new(log, feedback_tx),
         )),
@@ -140,7 +166,7 @@ pub(in crate::services::stack) async fn build_node_directly(
 
     let _ = forwarder_handle.await;
 
-    (result.map(drop), Some(log_path))
+    (result, Some(log_path))
 }
 
 /// Starts one instance on this machine, in process, answering with the

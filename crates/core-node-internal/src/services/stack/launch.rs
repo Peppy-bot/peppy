@@ -97,6 +97,29 @@ pub(super) struct PhaseGoal {
     /// other entries, and the run of each instance on this machine also gets
     /// the value of each launch variable that it names.
     pub(super) environment: ForwardedEnv,
+    /// What `peppy stack build --publish` publishes: `None` for any other
+    /// change.
+    pub(super) publish: Option<PhasePublish>,
+}
+
+/// The publish of a `peppy stack build --publish`: the publish repository of
+/// the coordinator, which every machine pushes the nodes it builds to, and
+/// the platforms each one builds beside its own.
+#[derive(Debug, Clone)]
+pub(super) struct PhasePublish {
+    pub(super) repository: core_node_api::encoding::OciRepository,
+    pub(super) extra_platforms: Vec<core_node_api::encoding::ArtifactPlatform>,
+}
+
+impl PhasePublish {
+    /// The publish request of the build goal of a container node.
+    pub(super) fn request(&self) -> core_node_api::encoding::NodePublishRequest {
+        core_node_api::encoding::NodePublishRequest {
+            repository: Some(self.repository.clone()),
+            extra_platforms: self.extra_platforms.clone(),
+            refusals: core_node_api::encoding::PublishRefusals::Report,
+        }
+    }
 }
 
 /// One node on one machine.
@@ -288,6 +311,30 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         Err(reason) => return ChangeEnd::stopped(rejected(reason)),
     };
 
+    // Step 1b: `peppy stack build --publish` checks, before any build, that
+    // this daemon names a publish repository, that this peppy has a release
+    // tag, and that the registry accepts a push from this machine. Each
+    // other machine of the placement checks the push with its own
+    // credentials when it is reserved.
+    let publish = match goal.publish.as_ref() {
+        None => None,
+        Some(_) if !builds_only => {
+            return ChangeEnd::stopped(rejected("`--publish` applies to `peppy stack build` only"));
+        }
+        Some(request) => match prepare_stack_publish(&ctx, request).await {
+            Ok(publish) => Some(publish),
+            Err(failure) => {
+                publish_error(
+                    &ctx,
+                    failure.message().to_owned(),
+                    LaunchFeedbackStep::LauncherStep,
+                )
+                .await;
+                return ChangeEnd::stopped(failure);
+            }
+        },
+    };
+
     let copies = composed.copies().to_vec();
     let copy_membership = CopyMembership::of(&copies);
     let daemon_config::launcher::ComposedLaunch {
@@ -459,7 +506,17 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // bind sources each machine's containers need, all BEFORE anything is
     // torn down. A refusal at this point has cost no machine, including
     // this one, its stack.
-    let change = match preflight_change(&ctx, &goal.launch_id, &planned, &placements, None).await {
+    let publish_repository = publish.as_ref().map(|publish| &publish.repository);
+    let change = match preflight_change(
+        &ctx,
+        &goal.launch_id,
+        &planned,
+        &placements,
+        None,
+        publish_repository,
+    )
+    .await
+    {
         Ok(change) => change,
         Err(stop) => {
             publish_error(
@@ -583,6 +640,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         launch_id: goal.launch_id.clone(),
         rebuild: goal.rebuild,
         environment,
+        publish,
     };
     let planned_by_key: HashMap<NodeKey, PlannedDeployment> =
         planned.into_iter().map(|item| (item.key(), item)).collect();
@@ -595,6 +653,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     let mut build_log_paths: Vec<NodeBuildLogEntry> = Vec::new();
     let mut run_log_paths: Vec<NodeRunLogEntry> = Vec::new();
     let mut instance_endpoints: Vec<InstanceEndpoints> = Vec::new();
+    let mut published: Vec<core_node_api::encoding::NodePublishLine> = Vec::new();
 
     // Step 6: Add and build, one group per machine. The groups run
     // concurrently because nothing orders one machine's add against another's,
@@ -620,6 +679,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             // A failed launch clears every participant's slice, and with it
             // whatever a peer holds for an add that outlived its budget.
             &mut Vec::new(),
+            &mut published,
         )
         .await?;
 
@@ -699,8 +759,52 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     change.reserved.release().await;
     ChangeEnd {
         node_logs,
-        outcome: Ok(LaunchResult::new(instance_endpoints)),
+        outcome: Ok(LaunchResult::new(instance_endpoints).with_published(published)),
     }
+}
+
+/// Checks 1, 2 and 6 of `peppy node publish` for a `peppy stack build
+/// --publish`, on this daemon: its publish repository, the release tag of
+/// this peppy, and a push to the repository from this machine.
+async fn prepare_stack_publish(
+    ctx: &StackChangeContext,
+    request: &core_node_api::encoding::StackPublish,
+) -> std::result::Result<PhasePublish, peppylib::messaging::Failure> {
+    let settings = ctx.node_stack.publish_settings();
+    let repository = settings.repository.clone().ok_or_else(|| {
+        precondition_failed(format!(
+            "no publish_repository in `{}`: set it to the URL of the OCI repository to publish \
+             to, such as \"oci://ghcr.io/acme/peppy-nodes\"",
+            settings.config_source
+        ))
+    })?;
+    daemon_config::consts::artifact_version().map_err(|e| precondition_failed(e.to_string()))?;
+    publish_stdout(
+        ctx,
+        format!(
+            "Checking that {repository} accepts a push from `{}`",
+            ctx.bound_core_node
+        ),
+        LaunchFeedbackStep::LauncherStep,
+    )
+    .await;
+    let client = oci_registry::RegistryClient::new(
+        &repository,
+        oci_registry::CredentialStore::from_environment(),
+        oci_registry::Access::Push,
+    )
+    .map_err(|e| precondition_failed(e.to_string()))?;
+    client.check_push_access().await.map_err(|error| {
+        precondition_failed(crate::services::node::publish::push_check_failure(
+            &repository,
+            ctx.bound_core_node.as_str(),
+            &error,
+        ))
+    })?;
+    Ok(PhasePublish {
+        repository,
+        extra_platforms: request.extra_platforms.clone(),
+    })
 }
 
 /// Releases every participant and returns the stop.

@@ -175,6 +175,7 @@ async fn remove_inner(
         &touched,
         &active.placements,
         Some(&live),
+        None,
     )
     .await?;
     let outcome = async {

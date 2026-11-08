@@ -610,7 +610,7 @@ fn not_published_reason(error: &RegistryError) -> NotPublishedReason {
 }
 
 /// The message of a push check that failed on the machine `core_node`.
-fn push_check_failure(
+pub(crate) fn push_check_failure(
     repository: &OciRepository,
     core_node: &str,
     error: &RegistryError,

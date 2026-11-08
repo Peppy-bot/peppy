@@ -158,8 +158,8 @@ impl_remote_goal!(
     NodeBuildGoalResponse,
     NodeBuildFeedback,
     NodeBuildResult,
-    (),
-    drop
+    NodeBuildResult,
+    std::convert::identity
 );
 impl_remote_goal!(
     NodeRunGoal,
