@@ -185,6 +185,65 @@ impl RegistryClient {
         Ok(Some((digest, bytes)))
     }
 
+    /// The platforms the image `reference` (a tag or a digest) is held for,
+    /// as `(os, architecture)`: those of the entries of an image index or a
+    /// manifest list, or the one of the config of a single image manifest.
+    /// Entries without a platform, or of the `unknown` OS (attestations), are
+    /// left out.
+    pub async fn image_platforms(&self, reference: &str) -> Result<Vec<(String, String)>> {
+        use crate::image::{IndexJson, PLATFORM_MANIFEST_MEDIA_TYPES};
+        let request = format!("GET manifests/{reference}");
+        let url = format!("{}/manifests/{reference}", self.base);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ACCEPT,
+            header_value(&PLATFORM_MANIFEST_MEDIA_TYPES.join(", ")),
+        );
+        let answer = self.send(Method::GET, &url, headers, None).await?;
+        if answer.status() == StatusCode::NOT_FOUND {
+            return Err(RegistryError::NotFound {
+                registry: self.repository.registry().to_owned(),
+                what: format!("image {}:{reference}", self.repository.path()),
+            });
+        }
+        let answer = self.expect(answer, &request, &[StatusCode::OK]).await?;
+        let index: IndexJson = read_json(answer, &request, self).await?;
+        if let Some(manifests) = index.manifests {
+            return Ok(manifests
+                .into_iter()
+                .filter_map(|entry| entry.platform)
+                .filter(|platform| platform.os != "unknown" && !platform.os.is_empty())
+                .map(|platform| (platform.os, platform.architecture))
+                .collect());
+        }
+        let Some(config) = index.config else {
+            return Err(self.protocol(
+                &request,
+                format!(
+                    "a manifest of media type {} with neither entries nor a config",
+                    index.media_type.unwrap_or_default()
+                ),
+            ));
+        };
+        let digest =
+            OciDigest::parse(&config.digest).map_err(|e| self.protocol(&request, e.to_string()))?;
+        #[derive(serde::Deserialize)]
+        struct ImageConfig {
+            #[serde(default)]
+            os: String,
+            #[serde(default)]
+            architecture: String,
+        }
+        let config: ImageConfig = serde_json::from_slice(&self.blob_bytes(&digest).await?)
+            .map_err(|e| {
+                self.protocol(&request, format!("an image config that is not JSON: {e}"))
+            })?;
+        if config.os.is_empty() || config.architecture.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(vec![(config.os, config.architecture)])
+    }
+
     /// The bytes of a small blob, checked against `digest`.
     pub async fn blob_bytes(&self, digest: &OciDigest) -> Result<Vec<u8>> {
         let request = format!("GET blobs/{digest}");

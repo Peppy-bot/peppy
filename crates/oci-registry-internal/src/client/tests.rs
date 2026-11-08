@@ -637,3 +637,78 @@ fn the_next_page_comes_from_a_relative_or_absolute_link() {
     assert_eq!(next_page(&headers, current), None);
     assert_eq!(next_page(&HeaderMap::new(), current), None);
 }
+
+#[tokio::test]
+async fn the_platforms_of_an_index_leave_out_attestations() {
+    let registry = Registry::start().await;
+    registry
+        .server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path(registry.path("manifests/latest"))
+                .is_true(|request| {
+                    request
+                        .headers()
+                        .get("accept")
+                        .and_then(|value| value.to_str().ok())
+                        .is_some_and(|accept| accept.contains("image.index.v1+json"))
+                });
+            then.status(200).json_body(serde_json::json!({
+                "mediaType": "application/vnd.oci.image.index.v1+json",
+                "manifests": [
+                    {"platform": {"os": "linux", "architecture": "amd64"}},
+                    {"platform": {"os": "unknown", "architecture": "unknown"}},
+                    {"platform": {"os": "linux", "architecture": "arm64", "variant": "v8"}}
+                ]
+            }));
+        })
+        .await;
+
+    let platforms = registry
+        .client(Access::Pull)
+        .image_platforms("latest")
+        .await
+        .expect("platforms");
+
+    assert_eq!(
+        platforms,
+        [
+            ("linux".to_owned(), "amd64".to_owned()),
+            ("linux".to_owned(), "arm64".to_owned())
+        ]
+    );
+}
+
+#[tokio::test]
+async fn the_platform_of_a_single_manifest_is_the_one_of_its_config() {
+    let registry = Registry::start().await;
+    let config = br#"{"os": "linux", "architecture": "amd64"}"#;
+    let config_digest = crate::digest::of_bytes(config);
+    registry
+        .server
+        .mock_async(|when, then| {
+            when.method(GET).path(registry.path("manifests/amd64-only"));
+            then.status(200).json_body(serde_json::json!({
+                "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                "config": {"digest": config_digest.to_string(), "size": config.len()},
+                "layers": []
+            }));
+        })
+        .await;
+    registry
+        .server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path(registry.path(&format!("blobs/{config_digest}")));
+            then.status(200).body(config);
+        })
+        .await;
+
+    let platforms = registry
+        .client(Access::Pull)
+        .image_platforms("amd64-only")
+        .await
+        .expect("platforms");
+
+    assert_eq!(platforms, [("linux".to_owned(), "amd64".to_owned())]);
+}

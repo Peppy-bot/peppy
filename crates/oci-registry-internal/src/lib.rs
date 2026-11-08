@@ -11,6 +11,7 @@ mod auth;
 mod client;
 pub mod digest;
 mod error;
+pub mod image;
 pub mod manifest;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
