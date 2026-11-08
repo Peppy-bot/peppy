@@ -265,6 +265,15 @@ async fn reserve_inner(
     validate_deployment_pins(&decoded.deployment_pins_json5)
         .map_err(|reason| failure(PeppyFailureKind::Rejected, reason))?;
 
+    // A `peppy stack build --publish` pushes what this machine builds to the
+    // publish repository of the coordinator, with the credentials of this
+    // machine: the registry must accept a push from here before any build.
+    if let Some(repository) = &decoded.publish_repository {
+        check_push_from_here(repository, &context.core_node_name)
+            .await
+            .map_err(|reason| failure(PeppyFailureKind::PreconditionFailed, reason))?;
+    }
+
     match context
         .ownership
         .try_reserve(&decoded.launch_id, &decoded.coordinator_core_node)
@@ -312,6 +321,23 @@ async fn reserve_inner(
     encoded(
         ParticipantReserveResponse::new(&context.peppy_version, &context.root_instance_id).encode(),
     )
+}
+
+/// Checks that the registry of `repository` accepts a push from this
+/// machine, `core_node`, with its own credentials.
+async fn check_push_from_here(
+    repository: &core_node_api::encoding::OciRepository,
+    core_node: &str,
+) -> std::result::Result<(), String> {
+    let client = oci_registry::RegistryClient::new(
+        repository,
+        oci_registry::CredentialStore::from_environment(),
+        oci_registry::Access::Push,
+    )
+    .map_err(|e| e.to_string())?;
+    client.check_push_access().await.map_err(|error| {
+        crate::services::node::publish::push_check_failure(repository, core_node, &error)
+    })
 }
 
 /// Decodes every deployment's pins and refuses any that could not be

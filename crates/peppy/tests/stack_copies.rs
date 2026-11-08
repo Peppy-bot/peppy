@@ -212,8 +212,10 @@ fn stack_launch_and_build_take_no_prebuild() {
                     .chain(flags.iter().copied()),
             )
             .unwrap();
-            let (StackCommands::Launch(args) | StackCommands::Build(args)) = cli.command else {
-                panic!("{subcommand} takes the launcher arguments")
+            let args = match cli.command {
+                StackCommands::Launch(args) => args,
+                StackCommands::Build(build) => build.launcher,
+                _ => panic!("{subcommand} takes the launcher arguments"),
             };
             assert_eq!(args.no_prebuild, no_prebuild, "{subcommand} {flags:?}");
         }
@@ -633,7 +635,11 @@ fn a_launch_time_join_takes_several_copies_in_one_word() {
         "openarm_sim:bravo",
     ])
     .unwrap();
-    let StackCommands::Build(LauncherArgs { joins, .. }) = cli.command else {
+    let StackCommands::Build(peppy::commands::stack::StackBuildArgs {
+        launcher: LauncherArgs { joins, .. },
+        ..
+    }) = cli.command
+    else {
         unreachable!()
     };
     assert_eq!(

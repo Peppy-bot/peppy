@@ -37,7 +37,12 @@ pub enum StackCommands {
     /// on the machine whose disk you image; every machine booted from that
     /// image launches without building, once each has its own
     /// `core_node_name` in `~/.peppy/conf/peppy_config.json5`.
-    Build(LauncherArgs),
+    ///
+    /// With `--publish`, each machine pushes the .sif of each container node
+    /// it builds to the `publish_repository` of this daemon, with its own
+    /// registry credentials, and the command ends with one line for each node
+    /// and platform it did not publish.
+    Build(StackBuildArgs),
     /// Add a copy of one of the launcher's options to the running stack.
     ///
     /// The copy's instances are minted as NAME_<instance-id>, the way
@@ -133,6 +138,40 @@ pub enum StackCommands {
         #[arg(long, default_value_t = 2000)]
         per_sample_timeout_ms: u64,
     },
+}
+
+/// What `stack build` takes.
+#[derive(clap::Args)]
+pub struct StackBuildArgs {
+    #[command(flatten)]
+    pub launcher: LauncherArgs,
+    /// Push the .sif of each container node the build builds to the
+    /// `publish_repository` of this daemon. The command exits non-zero when
+    /// a container node is not published, after its report.
+    #[arg(long)]
+    pub publish: bool,
+    /// Platforms each machine builds and pushes beside its own,
+    /// comma-separated: linux/amd64, linux/arm64. Needs `--publish`.
+    #[arg(long, value_delimiter = ',', requires = "publish", value_parser = parse_platform)]
+    pub platforms: Vec<core_node_api::encoding::ArtifactPlatform>,
+}
+
+impl From<LauncherArgs> for StackBuildArgs {
+    /// A build of `launcher` that publishes nothing.
+    fn from(launcher: LauncherArgs) -> Self {
+        Self {
+            launcher,
+            publish: false,
+            platforms: Vec::new(),
+        }
+    }
+}
+
+/// Parses a `--platforms` value: `linux/amd64` or `linux/arm64`.
+fn parse_platform(
+    raw: &str,
+) -> std::result::Result<core_node_api::encoding::ArtifactPlatform, String> {
+    core_node_api::encoding::ArtifactPlatform::parse(raw).map_err(|e| e.to_string())
 }
 
 /// What `stack launch` and `stack build` take.
@@ -313,11 +352,18 @@ impl Command for StackCommand {
             } => resolve::resolve(launcher_config_path, with.words, joins.joins),
             StackCommands::Launch(args) => {
                 info!("Launching stack...");
-                launch::launch::<LaunchGoal>(ctx, args)
+                launch::launch::<LaunchGoal>(ctx, args, None)
             }
-            StackCommands::Build(args) => {
+            StackCommands::Build(StackBuildArgs {
+                launcher,
+                publish,
+                platforms,
+            }) => {
                 info!("Building stack...");
-                launch::launch::<StackBuildGoal>(ctx, args)
+                let publish = publish.then(|| core_node_api::encoding::StackPublish {
+                    extra_platforms: platforms,
+                });
+                launch::launch::<StackBuildGoal>(ctx, launcher, publish)
             }
             StackCommands::Benchmark {
                 samples,
@@ -357,10 +403,10 @@ mod tests {
         };
         assert_eq!(timeouts.budgets(), DEFAULT_BUDGETS);
         for subcommand in ["launch", "build"] {
-            let (StackCommands::Launch(args) | StackCommands::Build(args)) =
-                parsed(&[subcommand, "simulation_mcp"])
-            else {
-                unreachable!("`stack {subcommand}` parses into its launcher arguments")
+            let args = match parsed(&[subcommand, "simulation_mcp"]) {
+                StackCommands::Launch(args) => args,
+                StackCommands::Build(build) => build.launcher,
+                _ => unreachable!("`stack {subcommand}` parses into its launcher arguments"),
             };
             assert_eq!(args.timeouts.budgets(), DEFAULT_BUDGETS, "{subcommand}");
         }

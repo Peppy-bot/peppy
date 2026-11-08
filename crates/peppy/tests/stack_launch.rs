@@ -4367,7 +4367,7 @@ impl CountedLaunch {
 
     fn run_build(&self, args: LauncherArgs) {
         StackCommand {
-            command: StackCommands::Build(args),
+            command: StackCommands::Build(args.into()),
         }
         .execute(&self.ctx)
         .expect("build command should succeed");
@@ -4643,7 +4643,7 @@ async fn stack_build_failure_clears_the_stack() {
     let _guard = log_capture.install();
 
     let refusal = StackCommand {
-        command: StackCommands::Build(launcher_args(harness.launcher_path.clone(), None)),
+        command: StackCommands::Build(launcher_args(harness.launcher_path.clone(), None).into()),
     }
     .execute(&harness.ctx)
     .expect_err("a build whose build_cmd fails must fail")
@@ -4730,12 +4730,15 @@ async fn stack_build_builds_the_nodes_the_selection_runs() {
     let _guard = log_capture.install();
 
     StackCommand {
-        command: StackCommands::Build(LauncherArgs {
-            with: LaunchWords {
-                words: vec!["beta".parse().unwrap()],
-            },
-            ..launcher_args(launcher_path, Some(120))
-        }),
+        command: StackCommands::Build(
+            LauncherArgs {
+                with: LaunchWords {
+                    words: vec!["beta".parse().unwrap()],
+                },
+                ..launcher_args(launcher_path, Some(120))
+            }
+            .into(),
+        ),
     }
     .execute(&ctx)
     .expect("composed build should succeed");
