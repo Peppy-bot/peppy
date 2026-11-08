@@ -644,10 +644,11 @@ pub(crate) fn encode_pins(pins: &[PinnedItem]) -> std::result::Result<Vec<String
 
 /// A materialized origin check for pins that must be portable: a pin whose
 /// origin is a tree on this machine cannot back a deployment placed on
-/// another one.
+/// another one. A git or an oci origin is a repository every machine can
+/// read.
 pub(crate) fn portable_pin_refusal(pin: &PinnedItem) -> Option<String> {
     match &pin.origin {
-        EntryOrigin::Git { .. } => None,
+        EntryOrigin::Git { .. } | EntryOrigin::Oci { .. } => None,
         EntryOrigin::Fs { path } => Some(format!(
             "{} resolves to a filesystem repository entry at {}, which cannot be placed on \
              another core node: the path names a tree on the coordinator's filesystem. Keep the \

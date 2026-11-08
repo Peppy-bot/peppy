@@ -550,6 +550,17 @@ fn checked_manifest(
             };
             checkout.join(path.as_path())
         }
+        EntryOrigin::Oci { url, .. } => {
+            // `repo refresh` stores the manifest of every node it records
+            // from an oci repository; this command never reaches the
+            // network, so a manifest the store lacks is named instead.
+            core_node::stored_node_manifest(dirs, &entry.sha256).ok_or_else(|| {
+                format!(
+                    "{id} (the manifest of its artifact in {url} is not on this machine; run \
+                     `peppy repo refresh`)"
+                )
+            })?
+        }
     };
     let config = NodeConfigParser::from_path(&manifest_path).map_err(|e| format!("{id} ({e})"))?;
     // The cache's label and the file's own declaration must agree: a stale

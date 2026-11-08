@@ -345,3 +345,6 @@ mod concurrency_and_force;
 
 #[path = "listen_for_node_add/implements.rs"]
 mod implements;
+
+#[path = "listen_for_node_add/oci_sources.rs"]
+mod oci_sources;

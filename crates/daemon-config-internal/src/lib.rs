@@ -75,10 +75,11 @@ pub mod local_host {
 pub mod consts {
     pub use crate::internal::consts::{
         AppEnv, CREDENTIALS_FILE, DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_PYTHON_BASE_IMAGE,
-        DEFAULT_RUST_BASE_IMAGE, PEPPY_CODEC_OUTPUT_PATH, PEPPY_GIT_TAG,
-        PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR, PEPPY_VERSION, PEPPYLIB_OUTPUT_PATH,
-        PLATFORM_SELECTION_FILE, PeppyDirs, PeppyRoot, REPOSITORY_INDEX_FILE, RootLifetime,
-        non_empty_env_path, peppy_build, peppy_root, peppy_root_dir, set_app_env,
+        DEFAULT_RUST_BASE_IMAGE, HOST_ARTIFACT_PLATFORM, NoArtifactVersion,
+        PEPPY_CODEC_OUTPUT_PATH, PEPPY_GIT_TAG, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR,
+        PEPPY_VERSION, PEPPYLIB_OUTPUT_PATH, PLATFORM_SELECTION_FILE, PeppyDirs, PeppyRoot,
+        REPOSITORY_INDEX_FILE, RootLifetime, artifact_version, non_empty_env_path, peppy_build,
+        peppy_root, peppy_root_dir, set_app_env,
     };
 }
 
@@ -95,7 +96,7 @@ pub mod peppy_config {
         DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_API_URL, ExternalZenohConfig, LifecycleConfig,
         LocalNodesTopology, MachineCertificatePaths, ManagedZenohConfig, OtlpEndpoint,
         OtlpMinSeverity, PackagesBaseUrl, PeppyConfig, ResourceServers, Severity, ZenohConfig,
-        load_or_create,
+        config_source, load_or_create,
     };
 }
 
@@ -173,8 +174,9 @@ pub mod repository {
     pub use crate::internal::repository::{
         DeclaredItem, DeclaredPaths, DeploymentPins, DeploymentRoot, EntryOrigin, GitCommit,
         GitCommitError, IndexedItem, ItemName, ItemTag, ManifestFingerprint,
-        ManifestFingerprintError, PeppyRepositoryIndexParser, PinKind, PinnedDocument, PinnedItem,
-        RepoItemKind, RepoPathError, RepoRelativePath, RepositoryIndex, TaggedSection, UniqueMap,
+        ManifestFingerprintError, OciArtifact, PeppyRepositoryIndexParser, PinKind, PinnedDocument,
+        PinnedItem, RepoItemKind, RepoPathError, RepoRelativePath, RepositoryIndex, TaggedSection,
+        UniqueMap,
     };
 }
 

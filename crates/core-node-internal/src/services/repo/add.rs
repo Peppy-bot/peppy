@@ -9,7 +9,7 @@ use crate::services::repo::{
 use crate::services::response::{failure, into_service_answer};
 use config::failure_kind::PeppyFailureKind;
 use core_node_api::ServiceId;
-use core_node_api::encoding::{RepoAddRequest, RepoAddResponse};
+use core_node_api::encoding::{RepoAddRequest, RepoAddResponse, RepoSource};
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use peppylib::messaging::SenderTarget;
@@ -51,8 +51,9 @@ pub async fn listen_for_repo_add(
 /// Adds the repository of the request to `repositories.json5`, or gives the
 /// failure of the add: `rejected` for a request that does not decode, an
 /// empty source or an id it cannot take, `precondition_failed` for a
-/// repository or an id already in the list, and `attempt_failed` for a list
-/// the daemon cannot read or write.
+/// repository or an id already in the list, or an oci repository in a peppy
+/// that has no release tag, and `attempt_failed` for a list the daemon
+/// cannot read or write.
 async fn handle_repo_add_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,
@@ -70,6 +71,17 @@ async fn handle_repo_add_request(
 
     let placement = RepoIdPlacement::from_request(&request)
         .map_err(|reason| failure(PeppyFailureKind::Rejected, reason))?;
+
+    // An oci repository holds the artifacts of each peppy version under its
+    // own tags, which a build without a release tag cannot name.
+    if let RepoSource::Oci(repository) = &request.source
+        && let Err(reason) = daemon_config::consts::artifact_version()
+    {
+        return Err(failure(
+            PeppyFailureKind::PreconditionFailed,
+            format!("cannot add the oci repository {repository}: {reason}"),
+        ));
+    }
 
     let identity = source_identity(&request.source);
     if identity.trim().is_empty() {

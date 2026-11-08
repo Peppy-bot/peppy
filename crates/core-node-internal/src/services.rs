@@ -26,6 +26,7 @@ pub use node::{
     teardown_all_instances,
 };
 pub use presence::NAME_CLAIM_LINKED_SETTLE;
+pub use repo::oci::stored_node_manifest;
 pub use stack::{
     copy_removal_budget, idle_timeout_flag, slow_connection_hint, stack_reset_timeout,
 };
@@ -434,6 +435,10 @@ impl CoreNode {
                 peppy_config.lifecycle.shutdown_grace_secs,
             ))
             .with_pypi_mirror(peppy_config.pypi_mirror.clone())
+            .with_publish_settings(node_stack::PublishSettings {
+                repository: peppy_config.publish_repository.clone(),
+                config_source: daemon_config::peppy_config::config_source(&peppy_dirs),
+            })
             .with_log_exporter(log_exporter)
             .with_time_source(time_source)
             .with_reply_bounds(reply_bounds);

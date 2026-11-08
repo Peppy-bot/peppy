@@ -541,7 +541,7 @@ A `restart refused` line names its cause. When the cause is a clock domain whose
 Every node build a launch performs goes through the [build artifact cache](/advanced_guides/containers/#build-caching): when a deployment's staged sources match an earlier build byte for byte, and that build ran with the same peppy version, OS, architecture and artifact kind, the launch reuses its artifact. Launching the same launcher again, after a daemon restart or on another machine booted from the same disk, therefore spends seconds on the build phase instead of rebuilding every node. Each reuse is reported in the launch output and in that node's build log:
 
 ```
-Reusing cached build of waldo:v1 (fingerprint 3f9a1c2e5d7b8a4f) at ~/.peppy/built_nodes/waldo_v1/3f9a1c2e5d7b8a4f.sif
+Reusing cached build of waldo:v1 (fingerprint 3f9a1c2e5d7b8a4f) at ~/.peppy/built_nodes/waldo_v1/3f9a1c2e5d7b8a4f.linux-amd64.sif
 ```
 
 `peppy stack launch --rebuild` and `peppy stack build --rebuild` build every node of the launch from its staged sources even when a matching artifact exists, on the coordinator and on every peer; use it when something the fingerprint does not cover changed, such as the image behind a floating base image tag.
@@ -561,6 +561,8 @@ peppy stack launch openarm_simulation --with mujoco
 On Linux the daemon derives its default core node name from the machine id the disk stores, read from `/var/lib/dbus/machine-id`, else `/etc/machine-id`. Machines booted from one image therefore derive the same name, and a daemon whose name is already live on its router or federation refuses to start. Give each machine its own [`core_node_name`](/advanced_guides/daemon_config/#core_node_name-the-daemons-core-node-name); a name set on the imaged disk is shared the same way.
 
 After a build, `peppy stack list` shows each node at stage `Ready` with `0` instances, under a `Slice of launch <id>` line naming the build that replaced this machine's stack. A build records no launcher, so `peppy stack join` is refused until `peppy stack launch` starts the stack. A machine booted from the image starts with an empty stack: its builds wait under `~/.peppy/built_nodes/`, and its launch names each one it reuses with a `Reusing cached build of` line.
+
+`peppy stack build --publish` also pushes the image of each container node that each machine builds to an OCI registry, from which other machines pull the node instead of building it. See [Publish the nodes of a stack](/advanced_guides/publishing/#publish-the-nodes-of-a-stack).
 
 ### Building the nodes a join brings
 

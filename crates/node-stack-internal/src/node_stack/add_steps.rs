@@ -133,6 +133,45 @@ pub fn copy_node_to_temp_dir(
     Ok((kept_path, excluded))
 }
 
+/// Copies the staged tree of a node, whole, into a new temporary directory
+/// under `tmp_root`, which is removed when the returned guard drops: the tree
+/// a build for another platform restages and builds, while the staged tree
+/// itself goes to the build for this machine.
+///
+/// A staged tree holds no symlink (the add copies none, and a container
+/// node's vendored crates are copies), so every entry is a directory or a
+/// file, copied with its permissions.
+pub fn copy_staged_tree(staged_dir: &Path, tmp_root: &Path) -> std::io::Result<tempfile::TempDir> {
+    std::fs::create_dir_all(tmp_root)?;
+    let copy = tempfile::TempDir::new_in(tmp_root)?;
+    copy_whole_tree(staged_dir, copy.path())?;
+    Ok(copy)
+}
+
+fn copy_whole_tree(src: &Path, dest: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_whole_tree(&src_path, &dest_path)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&src_path, &dest_path)?;
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "{} is neither a file nor a directory, which a staged tree does not hold",
+                    src_path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Verifies that the node directory is in sync with the currently running daemon
 /// by comparing the stored git hash with the expected one.
 ///
@@ -206,6 +245,38 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn a_staged_tree_is_copied_whole_with_its_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let staged = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(staged.path().join(".peppy/libs/peppylib")).unwrap();
+        std::fs::write(staged.path().join(".peppy/libs/peppylib/x.so"), b"so").unwrap();
+        std::fs::write(staged.path().join("run.sh"), b"#!/bin/sh").unwrap();
+        std::fs::set_permissions(
+            staged.path().join("run.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::fs::create_dir_all(staged.path().join("empty")).unwrap();
+        let tmp_root = tempfile::tempdir().unwrap();
+
+        let copy = copy_staged_tree(staged.path(), tmp_root.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read(copy.path().join(".peppy/libs/peppylib/x.so")).unwrap(),
+            b"so"
+        );
+        let mode = std::fs::metadata(copy.path().join("run.sh"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o111, 0o111);
+        assert!(copy.path().join("empty").is_dir());
+        let copied = copy.path().to_path_buf();
+        drop(copy);
+        assert!(!copied.exists(), "the copy goes with its guard");
     }
 
     #[test]

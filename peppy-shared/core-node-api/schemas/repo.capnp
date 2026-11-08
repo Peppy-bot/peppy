@@ -16,6 +16,8 @@ struct RepoAddRequest {
         git @0 :RepoAddGitSource;
         # Local filesystem path
         fs @1 :Text;
+        # OCI repository URL: oci://<registry host>/<repository path>
+        oci @5 :Text;
     }
     # When true, assign the new repo an id below the current minimum so it
     # takes top priority. Defaults to false (append with max+1).
@@ -172,6 +174,8 @@ struct RepoExcludeRequest {
         git @0 :RepoAddGitSource;
         # Local filesystem path
         fs @1 :Text;
+        # OCI repository URL: oci://<registry host>/<repository path>
+        oci @2 :Text;
     }
 }
 

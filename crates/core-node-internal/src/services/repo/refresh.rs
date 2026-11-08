@@ -945,6 +945,10 @@ fn read_repo(
             );
             (read, read_ref)
         }
+        RepoSource::Oci(repository) => (
+            super::oci::read_oci_repo(repository, peppy_dirs, on_feedback),
+            None,
+        ),
     };
 
     // A repository that could not be read and one whose index does not
@@ -1026,7 +1030,7 @@ fn merge_published<E: RepoCacheEntry>(
                 item_name: entry.name().to_owned(),
                 item_tag: entry.tag().to_owned(),
                 source_type: entry.origin().kind(),
-                path: entry.origin().path_str().to_owned(),
+                path: entry.origin().path_str().into_owned(),
                 sha256: entry.sha256().to_string(),
             });
         }
@@ -1170,7 +1174,7 @@ fn shown_label(source: &RepoSource, build: &PeppyBuild) -> String {
     let label = source.display_label(build);
     match source {
         RepoSource::Git { repo_url, .. } => SourceUrl::new(repo_url).redact_in(&label),
-        RepoSource::Fs(_) => label,
+        RepoSource::Fs(_) | RepoSource::Oci(_) => label,
     }
 }
 

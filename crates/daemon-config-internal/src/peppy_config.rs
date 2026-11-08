@@ -33,6 +33,7 @@
 mod completion;
 mod otlp_endpoint;
 mod packages_base_url;
+mod publish_repository;
 mod setting;
 mod severity;
 
@@ -49,6 +50,7 @@ use config::peppy_config::{
     DEFAULT_STANDARD_BUFFER_SIZE, SubscriberBufferConfig,
 };
 use config::runtime::MAX_CORE_NODE_NAME_LEN;
+use core_node_api::encoding::OciRepository;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -216,6 +218,15 @@ const PYPI_MIRROR_SECTION_SNIPPET: &str = r#"  // Packages base URL of a PyPI mi
   pypi_mirror: null,
 "#;
 
+/// The `publish_repository` entry with its explanatory comment. Spelled out
+/// as an explicit `null` (parsed as `None`, nothing to publish to) for the
+/// same reason as [`CORE_NODE_NAME_SECTION_SNIPPET`].
+const PUBLISH_REPOSITORY_SECTION_SNIPPET: &str = r#"  // The OCI repository that `peppy node publish` and `peppy stack build
+  // --publish` push the .sif of container nodes to, for example
+  // "oci://ghcr.io/acme/peppy-nodes", or null to publish nothing.
+  publish_repository: null,
+"#;
+
 /// The `otlp_endpoint` entry with its explanatory comment. Spelled out as an
 /// explicit `null` (parsed as `None`, no export) for the same reason as
 /// [`CORE_NODE_NAME_SECTION_SNIPPET`].
@@ -305,6 +316,8 @@ const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
     LIFECYCLE_SECTION_SNIPPET,
     "\n",
     PYPI_MIRROR_SECTION_SNIPPET,
+    "\n",
+    PUBLISH_REPOSITORY_SECTION_SNIPPET,
     "\n",
     OTLP_ENDPOINT_SECTION_SNIPPET,
     "\n",
@@ -836,6 +849,16 @@ pub struct PeppyConfig {
         deserialize_with = "packages_base_url::deserialize_pypi_mirror"
     )]
     pub pypi_mirror: Option<PackagesBaseUrl>,
+    /// The OCI repository `peppy node publish` and `peppy stack build
+    /// --publish` push the `.sif` of container nodes to; `None` (the
+    /// template's explicit `null`) publishes nothing. Parsed when the file is
+    /// read, so a value that is not the URL of an OCI repository fails the
+    /// load.
+    #[serde(
+        default,
+        deserialize_with = "publish_repository::deserialize_publish_repository"
+    )]
+    pub publish_repository: Option<OciRepository>,
     /// The OTLP/HTTP endpoint the daemon exports its log files to; `None`
     /// (the template's explicit `null`) exports nothing. Parsed when the file
     /// is read, so a value that is not an OTLP/HTTP URL fails the load.
@@ -912,6 +935,24 @@ impl PeppyConfig {
 /// `ensure_default_repos`, which only warns on a bad repos file.
 pub fn load_or_create(peppy_dirs: &PeppyDirs) -> Result<PeppyConfig> {
     load_or_create_with_override(peppy_dirs, std::env::var_os(PEPPY_CONFIG_ENV))
+}
+
+/// Where the daemon reads its settings: the [`PEPPY_CONFIG_ENV`] override
+/// when it is set, else the `peppy_config.json5` of `peppy_dirs`. What a
+/// message about a missing setting names, so the user edits the right file.
+pub fn config_source(peppy_dirs: &PeppyDirs) -> String {
+    config_source_with_override(peppy_dirs, std::env::var_os(PEPPY_CONFIG_ENV))
+}
+
+fn config_source_with_override(peppy_dirs: &PeppyDirs, env_value: Option<OsString>) -> String {
+    match env_value.filter(|value| !value.is_empty()) {
+        Some(value) => format!("{PEPPY_CONFIG_ENV} ({})", value.to_string_lossy()),
+        None => peppy_dirs
+            .conf_dir()
+            .join(PEPPY_CONFIG_FILE)
+            .display()
+            .to_string(),
+    }
 }
 
 fn load_or_create_with_override(
@@ -2049,6 +2090,95 @@ mod tests {
     }
 
     #[test]
+    fn the_config_source_is_the_file_or_the_override() {
+        let peppy_dirs = PeppyDirs::new("/data/peppy");
+        assert_eq!(
+            config_source_with_override(&peppy_dirs, None),
+            "/data/peppy/conf/peppy_config.json5"
+        );
+        assert_eq!(
+            config_source_with_override(&peppy_dirs, Some(OsString::new())),
+            "/data/peppy/conf/peppy_config.json5"
+        );
+        assert_eq!(
+            config_source_with_override(&peppy_dirs, Some("/etc/peppy.json5".into())),
+            format!("{PEPPY_CONFIG_ENV} (/etc/peppy.json5)")
+        );
+    }
+
+    #[test]
+    fn template_sets_no_publish_repository() {
+        let cfg: PeppyConfig = serde_json5::from_str(DEFAULT_PEPPY_CONFIG_TEMPLATE).unwrap();
+        assert_eq!(cfg.publish_repository, None);
+        assert_eq!(PeppyConfig::default().publish_repository, None);
+    }
+
+    #[test]
+    fn publish_repository_is_read_as_an_oci_repository() {
+        let (_tmp, peppy_dirs, path) =
+            dirs_with_config(r#"{ publish_repository: "oci://ghcr.io/acme/peppy-nodes" }"#);
+
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+
+        let repository = cfg
+            .publish_repository
+            .as_ref()
+            .expect("a repository is set");
+        assert_eq!(repository.to_string(), "oci://ghcr.io/acme/peppy-nodes");
+        // Completion adds the other settings and keeps the user's value.
+        let completed = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(completed.matches("publish_repository:").count(), 1);
+        assert!(completed.contains(r#"publish_repository: "oci://ghcr.io/acme/peppy-nodes""#));
+        assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
+    }
+
+    #[test]
+    fn invalid_publish_repository_fails_loud_and_leaves_the_file() {
+        for (content, reason) in [
+            (
+                r#"{ publish_repository: "https://ghcr.io/acme/peppy-nodes" }"#,
+                "does not start with oci://",
+            ),
+            (
+                r#"{ publish_repository: "oci://ghcr.io" }"#,
+                "names no repository path",
+            ),
+        ] {
+            let (_tmp, peppy_dirs, path) = dirs_with_config(content);
+
+            let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
+
+            assert!(message.contains(PEPPY_CONFIG_FILE), "{content}: {message}");
+            assert!(
+                message.contains("invalid publish_repository"),
+                "{content}: {message}"
+            );
+            assert!(message.contains(reason), "{content}: {message}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        }
+    }
+
+    /// Completion adds the entry, with its comment, to a file that has
+    /// other settings and no `publish_repository`.
+    #[test]
+    fn publish_repository_completes_to_explicit_null_in_an_existing_file() {
+        let (_tmp, peppy_dirs, path) = dirs_with_config(
+            r#"{ core_node_name: "bench", pypi_mirror: "https://pypi.tuna.tsinghua.edu.cn/packages/" }"#,
+        );
+
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+
+        assert_eq!(cfg.publish_repository, None);
+        assert_eq!(cfg.core_node_name.as_deref(), Some("bench"));
+        let completed = std::fs::read_to_string(&path).unwrap();
+        assert!(completed.contains("  publish_repository: null,\n"));
+        assert!(completed.contains("// The OCI repository that `peppy node publish`"));
+        assert_eq!(completed.matches("publish_repository:").count(), 1);
+        assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+    }
+
+    #[test]
     fn pypi_mirror_completes_to_explicit_null_idempotently() {
         let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ core_node_name: null }"#);
 
@@ -2286,6 +2416,9 @@ mod tests {
             },
             pypi_mirror: Some(
                 PackagesBaseUrl::parse("https://pypi.tuna.tsinghua.edu.cn/packages/").unwrap(),
+            ),
+            publish_repository: Some(
+                OciRepository::parse("oci://ghcr.io/acme/peppy-nodes").unwrap(),
             ),
             otlp_endpoint: Some(OtlpEndpoint::parse("https://otlp.example.com/otlp").unwrap()),
             otlp_min_severity: Some(OtlpMinSeverity::Info),

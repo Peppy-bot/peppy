@@ -822,8 +822,11 @@ EOF
         exit 1
     fi
 
-    # Install apptainer/lima directory trees into PEPPY_BIN_DIR (siblings of the peppy binary)
-    for DIR_NAME in apptainer lima; do
+    # Install the apptainer and lima directory trees into PEPPY_BIN_DIR
+    # (siblings of the peppy binary): the apptainer of this machine, the one of
+    # the other Linux architecture, which builds for that platform run in an
+    # emulated VM, and Lima, which runs those VMs.
+    for DIR_NAME in apptainer apptainer-x86_64 apptainer-aarch64 lima; do
         if [ -d "$TEMP_DIR/bin/$DIR_NAME" ]; then
             if [ -d "$PEPPY_BIN_DIR/$DIR_NAME" ]; then
                 mv "$PEPPY_BIN_DIR/$DIR_NAME" "$TEMP_DIR/old_$DIR_NAME"

@@ -175,10 +175,12 @@ async fn reserve_participants(
     launch_id: &str,
     peers: BTreeMap<String, Vec<String>>,
     own_version: &str,
+    publish_repository: Option<&core_node_api::encoding::OciRepository>,
 ) -> ChangeResult<Vec<ParticipantSlice>> {
     let acks = join_all(peers.into_iter().map(|(core_node, pins)| {
-        let request =
-            ParticipantReserveRequest::new(launch_id, coordinator).with_deployment_pins(pins);
+        let request = ParticipantReserveRequest::new(launch_id, coordinator)
+            .with_deployment_pins(pins)
+            .with_publish_repository(publish_repository.cloned());
         async move {
             let outcome = poll(
                 &request,
@@ -420,6 +422,7 @@ pub(in crate::services::stack) async fn preflight(
     planned: &[super::PlannedDeployment],
     placements: &Placements,
     live: Option<&BTreeSet<String>>,
+    publish_repository: Option<&core_node_api::encoding::OciRepository>,
 ) -> ChangeResult<ReservedParticipants> {
     if !placements.is_federated() {
         return Ok(ReservedParticipants::new(ctx, launch_id, Vec::new()));
@@ -451,6 +454,7 @@ pub(in crate::services::stack) async fn preflight(
         launch_id,
         peers,
         &ctx.peppy_version,
+        publish_repository,
     )
     .await?;
 

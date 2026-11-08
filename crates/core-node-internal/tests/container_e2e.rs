@@ -662,7 +662,7 @@ mod container_e2e_tests {
         )
         .await
         .expect("base node_build request should complete");
-        let base_sif = base_build.completed().artifact_path;
+        let base_sif = base_build.completed().artifact_path.expect("an artifact");
 
         // A container node whose apptainer build blocks forever in `%post`,
         // leaving a uniquely-named process (`sh /PEPPY_ZOMBIE_E2E_MARKER`, so the

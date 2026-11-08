@@ -1435,7 +1435,8 @@ mod tests {
         )
         .expect("read the published items");
         let entries = build_cache_entries(fs).expect("build cache entries");
-        let path = Path::new(entries.nodes[0].origin.path_str());
+        let path_str = entries.nodes[0].origin.path_str();
+        let path = Path::new(path_str.as_ref());
         assert!(path.is_absolute());
         assert!(
             path.starts_with(std::fs::canonicalize(&repo).unwrap()),

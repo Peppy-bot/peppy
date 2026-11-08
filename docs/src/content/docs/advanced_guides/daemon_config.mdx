@@ -1,14 +1,14 @@
 ---
 title: Daemon configuration
-description: Configure a Peppy-managed or operator-run Zenoh router, messaging behavior, node lifecycle grace periods, the PyPI mirror of Python builds, and the OpenTelemetry log export through peppy_config.json5
+description: Configure a Peppy-managed or operator-run Zenoh router, messaging behavior, node lifecycle grace periods, the PyPI mirror of Python builds, the OCI repository nodes are published to, and the OpenTelemetry log export through peppy_config.json5
 sidebar:
   order: 10
 ---
 
-By default, the Peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, selects either a Peppy-managed or operator-run Zenoh router, controls the managed router's messaging behavior, defines the grace periods that govern node lifecycle, can name a PyPI mirror for Python builds, and can name an OpenTelemetry endpoint the daemon exports its log files to. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy platform` commands talk to; that block is read by the CLI, not the daemon. [`PEPPY_CONFIG`](#override-with-peppy_config) can supply a read-only alternative source.
+By default, the Peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, selects either a Peppy-managed or operator-run Zenoh router, controls the managed router's messaging behavior, defines the grace periods that govern node lifecycle, can name a PyPI mirror for Python builds, can name the OCI repository that container nodes are published to, and can name an OpenTelemetry endpoint the daemon exports its log files to. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy platform` commands talk to; that block is read by the CLI, not the daemon. [`PEPPY_CONFIG`](#override-with-peppy_config) can supply a read-only alternative source.
 
 :::note
-The daemon reads its settings (`core_node_name`, `zenoh`, `lifecycle`, `pypi_mirror`, `otlp_endpoint`, `otlp_min_severity`) from the active source **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy service serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block in the active source is read fresh by each `peppy platform` command, so an edit there takes effect on the next one without a daemon restart.
+The daemon reads its settings (`core_node_name`, `zenoh`, `lifecycle`, `pypi_mirror`, `publish_repository`, `otlp_endpoint`, `otlp_min_severity`) from the active source **once, at daemon startup**. Editing them has no effect on a running stack; restart the daemon (`peppy service serve`, or `systemctl restart` your service) to apply changes. The `resource_servers` block in the active source is read fresh by each `peppy platform` command, so an edit there takes effect on the next one without a daemon restart.
 :::
 
 ## How the file is managed
@@ -110,6 +110,11 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
   // every file against the sha256 in the lock. Example:
   // "https://pypi.tuna.tsinghua.edu.cn/packages/".
   pypi_mirror: null,
+
+  // The OCI repository that `peppy node publish` and `peppy stack build
+  // --publish` push the .sif of container nodes to, for example
+  // "oci://ghcr.io/acme/peppy-nodes", or null to publish nothing.
+  publish_repository: null,
 
   // OTLP/HTTP URL of an OpenTelemetry collector or an intake, or null. When set,
   // the daemon exports the launch, add, build, run and stack logs to
@@ -266,6 +271,18 @@ With a mirror set, each Python build that does not reuse a cached artifact asks 
 
 The value must be the **packages base URL** of the mirror: an `https` URL under which the mirror keeps the files of PyPI with the path layout of `https://files.pythonhosted.org/packages/`, so its path ends with `packages/`. The index URL of a mirror (ending with `/simple/`) is not a packages base URL. The URL must not hold credentials, a query, or a fragment. Any other value stops the daemon at startup with an error that names `pypi_mirror`.
 
+## `publish_repository`: where nodes are published
+
+`publish_repository` names the OCI repository that [`peppy node publish`](/advanced_guides/publishing/#publish-a-node) and [`peppy stack build --publish`](/advanced_guides/publishing/#publish-the-nodes-of-a-stack) push the `.sif` of container nodes to. Leave it `null` (the default) and both commands refuse to publish, with an error that names this setting; set the URL of a repository to publish to it:
+
+```json5
+publish_repository: "oci://ghcr.io/acme/peppy-nodes",
+```
+
+The value has the form `oci://<registry host>/<repository path>`, as the `url` of an [`oci` repository](/advanced_guides/repositories/#oci-repositories). The URL must not hold credentials, a query, or a fragment: the daemon reads the credentials of the registry from the auth file of Apptainer (see [Registry credentials](/advanced_guides/publishing/#registry-credentials)). Any other value stops the daemon at startup with an error that names `publish_repository`. In a `peppy stack build --publish`, each machine of the stack pushes to the `publish_repository` of the daemon that runs the command, and the setting of the other machines has no effect.
+
+The setting does not make this machine read the repository. To pull the nodes of the repository, add it with [`peppy repo add`](/advanced_guides/repositories/#add-a-repository).
+
 ## `otlp_endpoint`: export the log files
 
 `otlp_endpoint` names the OTLP/HTTP endpoint the daemon exports its launch, add, build, run and stack logs to, as OpenTelemetry log records. Leave it `null` (the default) and the daemon exports nothing; set the URL of an OpenTelemetry collector or of an intake to turn the export on:
@@ -301,6 +318,7 @@ The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
 | `lifecycle.daemon_grace_secs` | `180` | `>= 30` | Seconds without a daemon heartbeat before a spawned node self-terminates (unclean daemon death only). |
 | `lifecycle.shutdown_grace_secs` | `5` | `>= 1` | Seconds a clean shutdown and `peppy node stop` wait for cooperative exit (plus a fixed runtime-teardown allowance) before force-killing. |
 | `pypi_mirror` | `null` (PyPI) | `null`, or an `https` URL whose path ends with `packages/`, with no credentials, query, or fragment | Packages base URL of the PyPI mirror Python builds download the PyPI files of their `uv.lock` from; a file the mirror does not have comes from PyPI. |
+| `publish_repository` | `null` (no publish) | `null`, or an `oci://<registry host>/<repository path>` URL with no credentials, query, or fragment | OCI repository that `peppy node publish` and `peppy stack build --publish` push the `.sif` of container nodes to. |
 | `otlp_endpoint` | `null` (no export) | `null`, or an `http` or `https` URL with no credentials, query, or fragment | OTLP/HTTP endpoint the daemon exports its log files to, as OpenTelemetry log records. |
 | `otlp_min_severity` | `null` (every line) | `null`, or one of `"trace"`, `"debug"`, `"info"`, `"warn"` | Lowest severity the daemon exports; a line that prints no level is always exported. |
 | `resource_servers.api` | `https://api.peppy.bot` (release), `https://api.dev.peppy.bot` (debug) | `https`, or `http` for local hosts | Backend the CLI auth commands talk to. Read by the CLI, not the daemon. |

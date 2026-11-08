@@ -21,6 +21,7 @@
 
 use super::facade::{Apptainer, Backend};
 use super::lima;
+use core_node_api::encoding::ArtifactPlatform;
 use daemon_config::consts::non_empty_env_path;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -82,14 +83,34 @@ pub struct BuildActivity {
 pub struct BuildActivityProbe {
     /// Host-side roots, each summed recursively without following symlinks.
     pub(super) host_roots: Vec<PathBuf>,
-    /// The pid of the host process the build was spawned as, the leader of
-    /// its process group. The CPU time of the build's processes (see
-    /// [`build_cpu_time`]) is summed off `/proc` on Linux and off a `ps`
-    /// listing on other unix hosts. `None` samples no host CPU.
-    pub(super) host_build_leader: Option<u32>,
+    /// The host process that leads the build's processes. The CPU time of
+    /// the build's processes (see [`build_cpu_time`]) is summed off `/proc`
+    /// on Linux and off a `ps` listing on other unix hosts. `None` samples
+    /// no host CPU.
+    pub(super) host_build_leader: Option<HostLeader>,
     /// Guest-side sampling for the Lima backend (macOS), where the apptainer
     /// cache and the build's processes live inside the VM.
     pub(super) guest: Option<GuestActivityProbe>,
+}
+
+/// The host process that leads the processes a probe samples the CPU of.
+#[derive(Clone, Debug)]
+pub(super) enum HostLeader {
+    /// The pid of the process the build was spawned as, the leader of its
+    /// process group.
+    Pid(u32),
+    /// The file a process writes its pid to once it starts, read at each
+    /// sample. A missing or unreadable file samples no CPU.
+    PidFile(PathBuf),
+}
+
+impl HostLeader {
+    fn pid(&self) -> Option<u32> {
+        match self {
+            Self::Pid(pid) => Some(*pid),
+            Self::PidFile(path) => std::fs::read_to_string(path).ok()?.trim().parse().ok(),
+        }
+    }
 }
 
 /// The `limactl shell` plumbing needed to sample the guest side of a build.
@@ -97,6 +118,8 @@ pub struct BuildActivityProbe {
 pub(super) struct GuestActivityProbe {
     pub(super) limactl_path: PathBuf,
     pub(super) lima_home: PathBuf,
+    /// The Lima instance the build runs in.
+    pub(super) instance: String,
     /// Guest-native file holding the pid of the guest build's leader, which is
     /// also its PGID, written by the guest wrapper (see
     /// [`lima::lima_guest_pgid_argv`]). `None` samples no guest CPU.
@@ -134,6 +157,7 @@ impl Apptainer {
             Backend::Lima {
                 limactl_path,
                 lima_home,
+                vm,
                 ..
             } => BuildActivityProbe {
                 host_roots: extra_host_roots,
@@ -141,6 +165,7 @@ impl Apptainer {
                 guest: Some(GuestActivityProbe {
                     limactl_path: limactl_path.clone(),
                     lima_home: lima_home.clone(),
+                    instance: vm.name.clone(),
                     pgid_file: build_key.map(lima::guest_pgid_path),
                 }),
             },
@@ -154,7 +179,31 @@ impl BuildActivityProbe {
     pub fn host(host_roots: Vec<PathBuf>, build_leader: Option<u32>) -> Self {
         Self {
             host_roots,
-            host_build_leader: build_leader,
+            host_build_leader: build_leader.map(HostLeader::Pid),
+            guest: None,
+        }
+    }
+
+    /// A probe over the Lima VM that [`Apptainer::for_platform`] prepares
+    /// for `platform`, while it creates or starts the VM and syncs apptainer
+    /// into it: the instance directory of the VM, where its disks and its
+    /// console log grow, and the processes of its host agent, which runs
+    /// the VM. `None` for a platform that builds without a VM, or when the
+    /// Lima data directory cannot be resolved.
+    pub fn vm_preparation(platform: ArtifactPlatform) -> Option<Self> {
+        let vm = lima::LimaVm::for_platform(platform)?;
+        let instance_dir = lima::resolve_lima_home().ok()?.join(&vm.name);
+        Some(Self::vm_instance(instance_dir))
+    }
+
+    /// The probe of [`Self::vm_preparation`] over the Lima instance
+    /// directory `instance_dir`.
+    pub(super) fn vm_instance(instance_dir: PathBuf) -> Self {
+        Self {
+            host_build_leader: Some(HostLeader::PidFile(
+                instance_dir.join(lima::HOST_AGENT_PID_FILE),
+            )),
+            host_roots: vec![instance_dir],
             guest: None,
         }
     }
@@ -176,6 +225,8 @@ impl BuildActivityProbe {
             .fold(0u64, |sum, root| sum.saturating_add(dir_size_bytes(root)));
         let host_cpu = self
             .host_build_leader
+            .as_ref()
+            .and_then(HostLeader::pid)
             .map_or(Duration::ZERO, host_build_cpu_time);
         let guest = self
             .guest
@@ -195,7 +246,7 @@ impl GuestActivityProbe {
     /// [`lima::lima_guest_activity_argv`]). Any failure (VM unreachable, tools
     /// missing, unparseable output) reads as no bytes and no CPU time.
     fn sample(&self) -> BuildActivity {
-        let output = lima::lima_shell_cmd(&self.limactl_path, &self.lima_home, lima::LIMA_INSTANCE)
+        let output = lima::lima_shell_cmd(&self.limactl_path, &self.lima_home, &self.instance)
             .args(lima::lima_guest_activity_argv(self.pgid_file.as_deref()))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

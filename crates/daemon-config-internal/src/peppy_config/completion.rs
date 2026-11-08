@@ -26,8 +26,9 @@ use super::{
     HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET, LIFECYCLE_SECTION_SNIPPET,
     LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET, MACHINE_CERTIFICATE_SECTION_SNIPPET,
     MANAGED_SECTION_SNIPPET, OTLP_ENDPOINT_SECTION_SNIPPET, OTLP_MIN_SEVERITY_SECTION_SNIPPET,
-    PYPI_MIRROR_SECTION_SNIPPET, RESOURCE_SERVERS_SECTION_SNIPPET, SHUTDOWN_GRACE_FIELD_SNIPPET,
-    STANDARD_BUFFER_FIELD_SNIPPET, SUBSCRIBER_BUFFERS_SECTION_SNIPPET, ZENOH_SECTION_SNIPPET,
+    PUBLISH_REPOSITORY_SECTION_SNIPPET, PYPI_MIRROR_SECTION_SNIPPET,
+    RESOURCE_SERVERS_SECTION_SNIPPET, SHUTDOWN_GRACE_FIELD_SNIPPET, STANDARD_BUFFER_FIELD_SNIPPET,
+    SUBSCRIBER_BUFFERS_SECTION_SNIPPET, ZENOH_SECTION_SNIPPET,
 };
 
 /// One known config entry: the template snippet to splice into its parent
@@ -124,6 +125,12 @@ const SECTIONS: &[EntrySpec] = &[
         children: &[],
     },
     // Each spelled as an explicit `null` in the template, like `pypi_mirror`.
+    EntrySpec {
+        key: "publish_repository",
+        snippet: PUBLISH_REPOSITORY_SECTION_SNIPPET,
+        alternatives: &[],
+        children: &[],
+    },
     EntrySpec {
         key: "otlp_endpoint",
         snippet: OTLP_ENDPOINT_SECTION_SNIPPET,
@@ -842,6 +849,7 @@ mod tests {
             [
                 "core_node_name",
                 "pypi_mirror",
+                "publish_repository",
                 "otlp_endpoint",
                 "otlp_min_severity",
                 "machine_certificate",
@@ -1026,12 +1034,13 @@ mod tests {
         // byte of the user's file untouched.
         let close = content.rfind('}').unwrap();
         let expected = format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}{}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}{}",
             &content[..close],
             super::super::CORE_NODE_NAME_SECTION_SNIPPET,
             super::super::ZENOH_SECTION_SNIPPET,
             super::super::LIFECYCLE_SECTION_SNIPPET,
             PYPI_MIRROR_SECTION_SNIPPET,
+            PUBLISH_REPOSITORY_SECTION_SNIPPET,
             OTLP_ENDPOINT_SECTION_SNIPPET,
             OTLP_MIN_SEVERITY_SECTION_SNIPPET,
             super::super::MACHINE_CERTIFICATE_SECTION_SNIPPET,

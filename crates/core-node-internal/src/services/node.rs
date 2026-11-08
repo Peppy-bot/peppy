@@ -17,6 +17,8 @@ mod init;
 pub(crate) mod observation;
 pub(crate) mod pairing;
 pub(crate) mod pins;
+pub(crate) mod publish;
+mod pull;
 mod relationship_notify;
 mod remove;
 mod run;
@@ -27,6 +29,7 @@ mod supervisor;
 mod sync;
 #[cfg(test)]
 pub(crate) mod test_git_daemon;
+mod transfer_progress;
 
 use config::node::NodeConfig;
 use core_node_api::encoding::InstanceEnd;

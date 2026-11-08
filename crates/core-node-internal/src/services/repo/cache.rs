@@ -610,7 +610,7 @@ pub(crate) fn lookup_repo_entry<'a, E: RepoCacheEntry>(
 
     let mut paths: Vec<String> = std::iter::once(first)
         .chain(contested)
-        .map(|e| e.origin().path_str().to_owned())
+        .map(|e| e.origin().path_str().into_owned())
         .collect();
     paths.sort();
     Err(RepoAmbiguity {
@@ -771,23 +771,27 @@ pub fn resolve_repo_launcher_path(
             )
         })?;
 
-    resolve_cached_artifact_path(peppy_dirs, &entry.origin, on_feedback)
+    resolve_cached_artifact_path(peppy_dirs, &entry.origin, &entry.sha256, on_feedback)
         .map_err(|e| format!("launcher `{name}`: {e}"))
 }
 
-/// Materializes an [`EntryOrigin`] into a concrete on-disk path.
+/// Materializes the declaring file of an entry, of origin `origin` and
+/// fingerprint `sha256`, into a concrete on-disk path.
 ///
 /// For git origins this materializes the checkout of the pinned commit via
 /// [`crate::services::node::cache::git::ensure_checkout_at_commit`]
 /// (blocking; wrap callers in `spawn_blocking` when running inside Tokio)
 /// and joins the repository-relative path onto it. `on_feedback` receives
-/// clone and fetch progress lines.
+/// clone and fetch progress lines. For an oci origin it is the
+/// `peppy.json5` of fingerprint `sha256` in the local store, read from the
+/// registry when the store does not hold it (blocking as well).
 ///
 /// Errors are artifact-agnostic (no "launcher" / "contract" wording); the
 /// caller is expected to `map_err` with its own context prefix.
 pub(crate) fn resolve_cached_artifact_path(
     peppy_dirs: &PeppyDirs,
     origin: &EntryOrigin,
+    sha256: &ManifestFingerprint,
     on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<PathBuf, String> {
     match origin {
@@ -807,6 +811,9 @@ pub(crate) fn resolve_cached_artifact_path(
                 on_feedback,
             )?;
             Ok(checkout.join(path.as_path()))
+        }
+        EntryOrigin::Oci { url, .. } => {
+            crate::services::repo::oci::ensure_node_manifest(peppy_dirs, url, sha256)
         }
     }
 }
@@ -878,8 +885,9 @@ pub(crate) fn resolve_cached_doc_entry<'a, E: RepoCacheEntry>(
     let entry =
         found.ok_or_else(|| cache_miss_message(peppy_dirs, entries, name, tag, sha256_pin))?;
 
-    let resolved_path = resolve_cached_artifact_path(peppy_dirs, entry.origin(), on_feedback)
-        .map_err(|e| format!("{kind} `{id}`: {e}"))?;
+    let resolved_path =
+        resolve_cached_artifact_path(peppy_dirs, entry.origin(), entry.sha256(), on_feedback)
+            .map_err(|e| format!("{kind} `{id}`: {e}"))?;
 
     let bytes = std::fs::read(&resolved_path).map_err(|e| {
         format!(
@@ -945,7 +953,7 @@ fn describe_cached_copy<E: RepoCacheEntry>(entry: &E) -> String {
     let path = origin.path_str();
     let location = match origin.checkout() {
         Some((repo_url, commit)) => format!("{path} in {repo_url} at commit {commit}"),
-        None => path.to_owned(),
+        None => path.into_owned(),
     };
     format!("sha256 `{}` ({location})", entry.sha256())
 }
@@ -961,6 +969,10 @@ fn describe_cached_copy<E: RepoCacheEntry>(entry: &E) -> String {
 /// path resolved to something else, and neither may be papered over. There
 /// is no fallback to resolving the pin's name.
 ///
+/// For an oci origin it reads the `peppy.json5` of the pinned fingerprint
+/// from the local store, or from the registry when the store does not hold
+/// it.
+///
 /// The path re-check mirrors `resolve_declared_item` in `repo/index.rs`:
 /// [`daemon_config::repository::RepoRelativePath`] already refused traversal
 /// at decode, so what is left is a symlink inside the fetched tree pointing
@@ -973,6 +985,10 @@ pub(crate) fn resolve_pinned_bytes(
     let label = pin.label();
     let resolved_path = match &pin.origin {
         EntryOrigin::Fs { path } => path.clone(),
+        EntryOrigin::Oci { url, .. } => {
+            crate::services::repo::oci::ensure_node_manifest(peppy_dirs, url, &pin.sha256)
+                .map_err(|e| format!("{label}: {e}"))?
+        }
         EntryOrigin::Git {
             repo_url,
             read_ref,
@@ -1054,7 +1070,7 @@ pub(crate) fn resolve_pin_to_bytes<E: RepoCacheEntry>(
     on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<(PathBuf, Vec<u8>), String> {
     if let Some(entry) = lookup_by_content(entries, pin) {
-        match read_cached_artifact(peppy_dirs, entry.origin(), on_feedback) {
+        match read_cached_artifact(peppy_dirs, entry.origin(), entry.sha256(), on_feedback) {
             Ok((path, bytes)) if ManifestFingerprint::of_bytes(&bytes) == pin.sha256 => {
                 return Ok((path, bytes));
             }
@@ -1076,9 +1092,10 @@ pub(crate) fn resolve_pin_to_bytes<E: RepoCacheEntry>(
 fn read_cached_artifact(
     peppy_dirs: &PeppyDirs,
     origin: &EntryOrigin,
+    sha256: &ManifestFingerprint,
     on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<(PathBuf, Vec<u8>), String> {
-    let path = resolve_cached_artifact_path(peppy_dirs, origin, on_feedback)?;
+    let path = resolve_cached_artifact_path(peppy_dirs, origin, sha256, on_feedback)?;
     let bytes =
         std::fs::read(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     Ok((path, bytes))
@@ -1853,6 +1870,7 @@ mod tests {
         let resolved = resolve_cached_artifact_path(
             &peppy_dirs,
             &fs_origin(abs.to_string_lossy().as_ref()),
+            &ManifestFingerprint::of_bytes(b""),
             &|_| {},
         )
         .expect("fs resolve should succeed");

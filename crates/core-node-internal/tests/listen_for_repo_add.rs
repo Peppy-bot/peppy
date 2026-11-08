@@ -513,3 +513,37 @@ async fn listen_for_repo_add_derived_id_out_of_range_fails() {
         assert_repos_file_lacks_path(&started, "/tmp/far-hub");
     }
 }
+
+/// An oci repository holds the artifacts of each peppy version under tags
+/// that name it, so only a build with a release tag adds one. A tagged build
+/// writes the entry with its URL and no `ref`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_oci_needs_a_release_tag() {
+    let started = start_core_node_with_mock_messenger().await;
+    let repository =
+        core_node_api::encoding::OciRepository::parse("oci://ghcr.io/acme/peppy-nodes").unwrap();
+    let request = RepoAddRequest::new_oci(repository);
+
+    if daemon_config::consts::PEPPY_GIT_TAG.is_none() {
+        let failure = common::poll_core_node_failure(&started, &request).await;
+        common::assert_failure_kind(&failure, PeppyFailureKind::PreconditionFailed);
+        assert!(
+            failure.message().contains("without a release tag"),
+            "{}",
+            failure.message()
+        );
+        let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
+        assert!(
+            repos.iter().all(|e| e["type"] != "oci"),
+            "a refused entry must not be persisted: {repos:?}"
+        );
+        return;
+    }
+    poll_core_node(&started, &request).await;
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
+    let last = repos.last().unwrap();
+    assert_eq!(last["type"], "oci");
+    assert_eq!(last["url"], "oci://ghcr.io/acme/peppy-nodes");
+    assert!(last.get("ref").is_none(), "{last}");
+    assert_last_got_next_id(&repos);
+}

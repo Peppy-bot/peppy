@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use daemon_config::consts::PeppyDirs;
+use core_node_api::encoding::ArtifactPlatform;
+use daemon_config::consts::{HOST_ARTIFACT_PLATFORM, PeppyDirs};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -13,6 +14,7 @@ use zstd::stream::write::Encoder as ZstdEncoder;
 
 use crate::action_log::{ActionLog, Announcer, STDERR_TAIL_HEADER};
 use crate::build_io::{ChildWrapper, spawn_in_process_group, stream_child_output};
+use crate::build_progress::{BuildProgressMonitor, LastOutputLine};
 use crate::node_stack::container_build_cache::{
     self, SoleUvCacheUse, UvCachePruneOutcome, UvCacheUse,
 };
@@ -120,6 +122,9 @@ pub(super) struct ContainerBuildInputs<'a> {
     /// (and its `%post` children) live in a separate kernel and are killed via
     /// [`containers::Apptainer::kill_guest_process_group`].
     pub cancel_token: &'a CancellationToken,
+    /// The platform of the image. Another platform than the one of this
+    /// machine builds in a VM of its architecture, under emulation.
+    pub platform: ArtifactPlatform,
 }
 
 /// Total attempts (initial try plus retries) for an `apptainer build` whose
@@ -171,16 +176,39 @@ pub(super) async fn build_container_image(
     // the tag again.
     validate_node_tag(inputs.node_tag).map_err(|e| format!("invalid node tag: {}", e))?;
 
-    if !containers::Apptainer::is_lima_ready() {
+    let platform = inputs.platform;
+    if platform != HOST_ARTIFACT_PLATFORM {
+        inputs.announcer.line(format!(
+            "Building for {platform} under QEMU emulation, in a Lima VM of that architecture: \
+             many times slower than a native build (the first one also creates the VM)"
+        ));
+    } else if !containers::Apptainer::is_lima_ready() {
         inputs
             .announcer
             .line("Initializing Lima VM for container build (first run may take a few minutes)...");
     }
 
-    let mut apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)
-        .await
-        .map_err(|e| format!("Apptainer initialization task failed: {}", e))?
-        .map_err(|e| format!("Failed to initialize Apptainer runtime: {}", e))?;
+    // Creating a VM, booting it under emulation and syncing apptainer into
+    // it print nothing for minutes: the work they do on the VM is the
+    // activity that keeps the idle timeout off, as for a build. The monitor
+    // stops when it is dropped, once the VM is ready.
+    let preparing_vm = BuildActivityProbe::vm_preparation(platform).map(|probe| {
+        BuildProgressMonitor::spawn(
+            move || probe.sample(),
+            LastOutputLine::default(),
+            inputs.announcer.feedback_tx().clone(),
+        )
+    });
+    let mut apptainer =
+        tokio::task::spawn_blocking(move || containers::Apptainer::for_platform(platform))
+            .await
+            .map_err(|e| format!("Apptainer initialization task failed: {}", e))?
+            .map_err(|e| {
+                format!(
+                    "Failed to initialize Apptainer runtime for {platform}: {}",
+                    e
+                )
+            })?;
 
     // The build's working dir (def file, `%files` sources, output .sif) lives
     // under the peppy data root. When that root is outside `$HOME` (a
@@ -202,6 +230,7 @@ pub(super) async fn build_container_image(
     .await
     .map_err(|e| format!("Host mount registration task failed: {}", e))?
     .map_err(|e| format!("Failed to ensure peppy root is mounted in the VM: {}", e))?;
+    drop(preparing_vm);
 
     let sif_name = format!("{}_{}.sif", inputs.node_name, inputs.node_tag);
     let output_path = inputs.working_dir.join(&sif_name);
@@ -224,6 +253,7 @@ pub(super) async fn build_container_image(
             let node = container_build_cache::NodeIdentity {
                 name: &node_name,
                 tag: &node_tag,
+                arch: platform.architecture(),
             };
             container_build_cache::prepare(&peppy_dirs, &node, language, &def_contents, &extra_args)
         })
@@ -783,6 +813,7 @@ mod tests {
             announcer: &Announcer::new(scratch_log(), feedback_tx),
             peppy_dirs: &peppy_dirs,
             cancel_token: &cancel_token,
+            platform: HOST_ARTIFACT_PLATFORM,
         })
         .await
         .expect_err("unsafe tag must be rejected");

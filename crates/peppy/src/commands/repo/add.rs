@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use core_node_api::encoding::{GitRepoRef, RepoAddRequest, RepoSource};
+use core_node_api::encoding::{GitRepoRef, OCI_SCHEME, OciRepository, RepoAddRequest, RepoSource};
 use tracing::info;
 
 use crate::commands::CALLER_INSTANCE_ID;
@@ -73,12 +73,26 @@ async fn add_repo_async(
 /// - Git URLs (ends in `.git`, contains `.git/`, or starts with `git@`,
 ///   `ssh://` or `git://`)
 /// - Any other URL that parses as a git clone URL, when `--ref` is given
+/// - OCI repository URLs (`oci://<registry host>/<repository path>`), which
+///   take no `--ref`
 ///
 /// Refuses every other URL.
 pub(crate) fn parse_repo_source(
     source_str: &str,
     git_ref: Option<GitRepoRef>,
 ) -> Result<RepoSource> {
+    if source_str.trim().starts_with(&format!("{OCI_SCHEME}://")) {
+        if git_ref.is_some() {
+            return Err(Error::ExecutionFailed(
+                "`--ref` is only supported for git sources: the tags of an OCI repository name \
+                 the peppy version and the platform of each artifact"
+                    .to_string(),
+            ));
+        }
+        let repository =
+            OciRepository::parse(source_str).map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+        return Ok(RepoSource::Oci(repository));
+    }
     if !source::is_probably_remote_source(source_str) {
         // Local filesystem path
         if git_ref.is_some() {
@@ -127,6 +141,35 @@ pub(crate) fn parse_repo_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_repo_source_reads_an_oci_url() {
+        let parsed = parse_repo_source("oci://ghcr.io/acme/peppy-nodes", None).unwrap();
+        assert_eq!(
+            parsed,
+            RepoSource::Oci(OciRepository::parse("oci://ghcr.io/acme/peppy-nodes").unwrap())
+        );
+    }
+
+    #[test]
+    fn parse_repo_source_refuses_an_oci_url_with_a_ref_or_without_a_path() {
+        let error = parse_repo_source(
+            "oci://ghcr.io/acme/peppy-nodes",
+            Some(GitRepoRef::Named("main".to_string())),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("`--ref` is only supported for git"),
+            "{error}"
+        );
+        let error = parse_repo_source("oci://ghcr.io", None).unwrap_err();
+        assert!(
+            error.to_string().contains("names no repository path"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn parse_repo_source_fs_canonicalizes_existing_path() {

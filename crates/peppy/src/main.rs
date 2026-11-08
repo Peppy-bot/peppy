@@ -629,24 +629,136 @@ mod tests {
             panic!("`stack build` parses as a build");
         };
         assert_eq!(
-            build.launcher_config_path,
+            build.launcher.launcher_config_path,
             std::path::Path::new("openarm_simulation")
         );
         assert_eq!(
-            build.placement.places,
+            build.launcher.placement.places,
             [(
                 config::runtime::Name::new("robot_onboard").unwrap(),
                 config::runtime::CoreNodeTarget::Coordinator
             )]
         );
-        assert!(!build.placement.local);
-        assert!(build.rebuild);
-        let words: Vec<String> = build.with.words.iter().map(ToString::to_string).collect();
+        assert!(!build.launcher.placement.local);
+        assert!(build.launcher.rebuild);
+        let words: Vec<String> = build
+            .launcher
+            .with
+            .words
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         assert_eq!(words, ["mujoco", "extras=on", "alpha.xr_commander"]);
-        assert_eq!(build.timeouts.node_add_idle_timeout_secs, 5);
-        assert_eq!(build.timeouts.node_build_idle_timeout_secs, 6);
-        assert_eq!(build.timeouts.node_run_idle_timeout_secs, 7);
-        assert_eq!(build.timeouts.max_timeout_secs, Some(8));
+        assert_eq!(build.launcher.timeouts.node_add_idle_timeout_secs, 5);
+        assert_eq!(build.launcher.timeouts.node_build_idle_timeout_secs, 6);
+        assert_eq!(build.launcher.timeouts.node_run_idle_timeout_secs, 7);
+        assert_eq!(build.launcher.timeouts.max_timeout_secs, Some(8));
+    }
+
+    /// `--publish` and its platforms belong to `stack build`, and
+    /// `--platforms` needs `--publish`.
+    #[test]
+    fn stack_build_takes_publish_and_its_platforms() {
+        let cli = Cli::try_parse_from([
+            "peppy",
+            "stack",
+            "build",
+            "openarm_simulation",
+            "--publish",
+            "--platforms",
+            "linux/amd64,linux/arm64",
+        ])
+        .expect("`stack build --publish --platforms` parses");
+        let Commands::Stack {
+            command: stack::StackCommands::Build(build),
+        } = cli.command
+        else {
+            panic!("`stack build` parses as a build");
+        };
+        assert!(build.publish);
+        assert_eq!(
+            build.platforms,
+            [
+                core_node_api::encoding::ArtifactPlatform::LinuxAmd64,
+                core_node_api::encoding::ArtifactPlatform::LinuxArm64
+            ]
+        );
+        assert!(
+            Cli::try_parse_from([
+                "peppy",
+                "stack",
+                "build",
+                "openarm_simulation",
+                "--platforms",
+                "linux/arm64",
+            ])
+            .is_err(),
+            "--platforms needs --publish"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "peppy",
+                "stack",
+                "build",
+                "openarm_simulation",
+                "--publish",
+                "--platforms",
+                "linux/riscv64",
+            ])
+            .is_err(),
+            "a platform peppy does not build for is refused"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "peppy",
+                "stack",
+                "launch",
+                "openarm_simulation",
+                "--publish"
+            ])
+            .is_err(),
+            "only a build publishes"
+        );
+    }
+
+    /// `node publish --platforms` takes the OCI spelling of each platform,
+    /// comma-separated, and refuses any other spelling.
+    #[test]
+    fn node_publish_takes_platforms_in_their_oci_spelling() {
+        let cli = Cli::try_parse_from([
+            "peppy",
+            "node",
+            "publish",
+            "camera:v1",
+            "--platforms",
+            "linux/arm64,linux/amd64",
+        ])
+        .expect("`node publish --platforms` parses");
+        let Commands::Node {
+            command: node::NodeCommands::Publish { platforms, .. },
+        } = cli.command
+        else {
+            panic!("`node publish` parses as a publish");
+        };
+        assert_eq!(
+            platforms,
+            [
+                core_node_api::encoding::ArtifactPlatform::LinuxArm64,
+                core_node_api::encoding::ArtifactPlatform::LinuxAmd64
+            ]
+        );
+        assert!(
+            Cli::try_parse_from([
+                "peppy",
+                "node",
+                "publish",
+                "camera:v1",
+                "--platforms",
+                "arm64"
+            ])
+            .is_err(),
+            "a platform without its OS is refused"
+        );
     }
 
     /// `--local` is the other half of the placement grammar, and a build
@@ -661,8 +773,8 @@ mod tests {
         else {
             panic!("`stack build` parses as a build");
         };
-        assert!(build.placement.local);
-        assert!(build.placement.places.is_empty());
+        assert!(build.launcher.placement.local);
+        assert!(build.launcher.placement.places.is_empty());
     }
 
     /// `stack list --json` parses, and the flag is off by default.

@@ -38,6 +38,7 @@ pub use services::{
     Report, RestartBackoff, TEARDOWN_REAP_BUDGET, TimeSource, check_runtime_prerequisites,
     checkout_dir_for, copy_removal_budget, current_host_name, force_kill_deadline,
     idle_timeout_flag, materialized_checkout, node_remove_bound, node_stop_bound,
-    slow_connection_hint, stack_reset_timeout, teardown_all_instances, test_host_addresses,
+    slow_connection_hint, stack_reset_timeout, stored_node_manifest, teardown_all_instances,
+    test_host_addresses,
 };
 pub use ssh_config::{IdentityAgent, SshHostConfig, SshTarget, resolve_host_config};

@@ -20,6 +20,7 @@ from functions.build import (
     find_build_dir,
     find_peppy_binary,
     find_zenohd_binary,
+    other_linux_arch,
     package_release,
 )
 from functions.cli import RELEASE_TRIPLES, ReleaseError
@@ -220,6 +221,44 @@ def test_package_release_creates_tarball_without_lima(
         assert any("bin/peppy" in n for n in member_names)
         assert any("bin/apptainer" in n for n in member_names)
         assert not any("lima" in n for n in member_names)
+
+
+def test_package_release_ships_the_apptainer_of_the_other_architecture(
+    tmp_path: Path, package_inputs: PackageInputs
+) -> None:
+    triple = "x86_64-unknown-linux-gnu"
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    other_dir = tmp_path / "apptainer-install-aarch64"
+    (other_dir / "bin").mkdir(parents=True)
+    (other_dir / "bin" / "apptainer").write_bytes(b"aarch64 apptainer")
+
+    dist_dir = tmp_path / "dist"
+    with patch.dict(os.environ, {"PEPPY_DIST_DIR": str(dist_dir)}):
+        artifact = package_release(
+            triple,
+            repo_root,
+            package_inputs.peppy_bin,
+            package_inputs.zenohd_bin,
+            package_inputs.apptainer_dir,
+            package_inputs.lima_dir,
+            ("aarch64", other_dir),
+        )
+
+    extract_dir = tmp_path / "extracted"
+    extract_dir.mkdir()
+    with tarfile.open(artifact.asset_path, "r:gz") as tar:
+        tar.extractall(extract_dir, filter="data")
+    assert (extract_dir / "bin" / "apptainer-aarch64" / "bin" / "apptainer").read_bytes() == (
+        b"aarch64 apptainer"
+    )
+    assert (extract_dir / "bin" / "lima" / "bin" / "limactl").is_file()
+
+
+def test_the_other_linux_architecture_is_the_one_containers_do_not_run_on() -> None:
+    assert other_linux_arch("x86_64-unknown-linux-gnu") == "aarch64"
+    assert other_linux_arch("aarch64-unknown-linux-gnu") == "x86_64"
+    assert other_linux_arch("aarch64-apple-darwin") == "x86_64"
 
 
 def test_package_release_tarball_matches_install_sh(

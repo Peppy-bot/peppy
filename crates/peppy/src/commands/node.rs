@@ -8,6 +8,7 @@ mod info;
 mod init;
 mod interfaces;
 mod json_lines;
+mod publish;
 mod remove;
 pub mod request;
 mod run;
@@ -461,6 +462,33 @@ pub enum NodeCommands {
         #[arg(long)]
         rebuild: bool,
     },
+    /// Build a container node of the node stack and push its .sif to the
+    /// publish repository of the daemon
+    ///
+    /// The repository is `publish_repository` in the `peppy_config.json5` of
+    /// the daemon. The command builds the platform of the daemon, and each
+    /// platform of `--platforms` in a QEMU VM of its architecture, then pushes
+    /// each one under the tag `<name>.<tag>.<peppy version>.linux-<arch>`. A
+    /// platform whose tag holds this revision already is skipped. It exits
+    /// non-zero when a platform of the request was not published.
+    Publish {
+        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        #[arg(value_parser = parse_node_ref)]
+        node_ref: (String, String),
+        /// Platforms to build and push beside the one of the daemon,
+        /// comma-separated: linux/amd64, linux/arm64
+        #[arg(long, value_delimiter = ',', value_parser = core_node_api::encoding::ArtifactPlatform::parse)]
+        platforms: Vec<core_node_api::encoding::ArtifactPlatform>,
+        /// Idle timeout in seconds of each platform build; resets on build output, bytes written to disk, or CPU time the build burns
+        #[arg(long, default_value_t = DEFAULT_BUILD_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
+        idle_timeout: u64,
+        /// Absolute max timeout in seconds of each platform build (safety net)
+        #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
+        max_timeout: u64,
+        /// Cancel any in-progress build for this node and start the publish
+        #[arg(short = 'f', long)]
+        force: bool,
+    },
     /// Regenerate the node's interface code (peppygen) based on peppy.json5
     Sync {
         /// Optional path to the node directory. Defaults to the current directory.
@@ -776,6 +804,26 @@ impl Command for NodeCommand {
                     },
                 )
             }
+            NodeCommands::Publish {
+                node_ref: (node_name, node_tag),
+                platforms,
+                idle_timeout,
+                max_timeout,
+                force,
+            } => publish::publish_node(
+                ctx,
+                publish::PublishNodeParams {
+                    node_name,
+                    node_tag,
+                    platforms,
+                    timeouts: TimeoutConfig {
+                        idle_secs: idle_timeout,
+                        max_secs: max_timeout,
+                        flags: true,
+                    },
+                    force,
+                },
+            ),
             NodeCommands::Sync {
                 path,
                 include_repositories,

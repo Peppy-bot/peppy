@@ -15,9 +15,11 @@ use crate::services::stack::action::StackChangeContext;
 use crate::services::stack::{ChangeResult, attempt_failed};
 use config::runtime::CoreNodeName;
 use core_node_api::encoding::{
-    LaunchFeedbackStep, NodeAddGoal, NodeAddLogEntry, NodeBuildGoal, NodeBuildLogEntry, NodeSource,
+    LaunchFeedbackStep, NodeAddGoal, NodeAddLogEntry, NodeBuildGoal, NodeBuildLogEntry,
+    NodeBuildResult, NodePublishLine, NodePublishLineOutcome, NodePublishRequest, NodeSource,
+    PlatformPublish,
 };
-use daemon_config::repository::DeploymentRoot;
+use daemon_config::repository::{DeploymentRoot, EntryOrigin};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::{BTreeMap, HashMap};
@@ -42,10 +44,69 @@ fn remote_build_goal(
     node_name: String,
     node_tag: String,
     budget: Duration,
+    publish: Option<NodePublishRequest>,
 ) -> NodeBuildGoal {
-    NodeBuildGoal::new(node_name, node_tag, budget.as_secs())
+    let goal = NodeBuildGoal::new(node_name, node_tag, budget.as_secs())
         .with_launch_id(&phase.launch_id)
-        .with_rebuild(phase.rebuild)
+        .with_rebuild(phase.rebuild);
+    match publish {
+        Some(publish) => goal.with_publish(publish),
+        None => goal,
+    }
+}
+
+/// The publish request of the build of `item` in `phase`: the one of the
+/// phase for a container node, none for a process node, which no repository
+/// holds, or for a change that publishes nothing.
+fn publish_request(phase: &PhaseGoal, item: &PlannedDeployment) -> Option<NodePublishRequest> {
+    let publish = phase.publish.as_ref()?;
+    item.config.execution.container.as_ref()?;
+    Some(publish.request())
+}
+
+/// The report line of a node of `item` that `phase` publishes nothing of,
+/// built on `core_node`: a process node, or a node of an oci origin, which
+/// the build pulled. `None` for a container node of a git or fs origin, or
+/// for a change that publishes nothing.
+fn unpublished_node_line(
+    phase: &PhaseGoal,
+    item: &PlannedDeployment,
+    core_node: &str,
+) -> Option<NodePublishLine> {
+    phase.publish.as_ref()?;
+    let outcome = match &item.root {
+        DeploymentRoot::Exposures(_) => return None,
+        DeploymentRoot::Node(pin) => match &pin.origin {
+            EntryOrigin::Oci { url, .. } => NodePublishLineOutcome::OciOrigin(url.clone()),
+            EntryOrigin::Git { .. } | EntryOrigin::Fs { .. } => {
+                if item.config.execution.container.is_some() {
+                    return None;
+                }
+                NodePublishLineOutcome::ProcessNode
+            }
+        },
+    };
+    Some(NodePublishLine {
+        node_label: item.key().label(),
+        core_node: core_node.to_owned(),
+        outcome,
+    })
+}
+
+/// The report lines of what the publish of the build of `node_label` on
+/// `core_node` did for each platform.
+fn platform_lines(
+    node_label: &str,
+    core_node: &str,
+    published: Vec<PlatformPublish>,
+) -> impl Iterator<Item = NodePublishLine> {
+    let node_label = node_label.to_owned();
+    let core_node = core_node.to_owned();
+    published.into_iter().map(move |platform| NodePublishLine {
+        node_label: node_label.clone(),
+        core_node: core_node.clone(),
+        outcome: NodePublishLineOutcome::Platform(platform),
+    })
 }
 
 /// The add source a deployment dispatches with: its root, encoded at the
@@ -65,10 +126,14 @@ fn pinned_source(
     }
 }
 
-/// Whether a deployment is the built-in MCP server, which is registered by
-/// its add and has no build stage.
-fn is_built_in(item: &PlannedDeployment) -> bool {
-    matches!(item.root, DeploymentRoot::Exposures(_))
+/// Whether the add of a deployment registers it ready to start, so it has no
+/// build stage: the built-in MCP server, and a node of an oci origin, whose
+/// add pulls its image.
+fn is_ready_at_add(item: &PlannedDeployment) -> bool {
+    match &item.root {
+        DeploymentRoot::Exposures(_) => true,
+        DeploymentRoot::Node(pin) => matches!(pin.origin, EntryOrigin::Oci { .. }),
+    }
 }
 
 /// Which core nodes host at least one instance of `key`, in a stable order.
@@ -132,6 +197,7 @@ pub(in crate::services::stack) async fn add_nodes_to_stack(
     add_log_paths: &mut Vec<NodeAddLogEntry>,
     build_log_paths: &mut Vec<NodeBuildLogEntry>,
     unresolved: &mut Vec<UnresolvedAdd>,
+    published: &mut Vec<NodePublishLine>,
 ) -> ChangeResult<()> {
     publish_stdout(
         ctx,
@@ -153,6 +219,7 @@ pub(in crate::services::stack) async fn add_nodes_to_stack(
         add_log_paths.extend(group.add_logs);
         build_log_paths.extend(group.build_logs);
         unresolved.extend(group.unresolved);
+        published.extend(group.published);
         // Report one stop but keep collecting every group's logs: a launch
         // that failed on one machine still produced logs on the others, and
         // those are usually what explains it.
@@ -260,6 +327,9 @@ struct GroupOutcome {
     add_logs: Vec<NodeAddLogEntry>,
     build_logs: Vec<NodeBuildLogEntry>,
     unresolved: Vec<UnresolvedAdd>,
+    /// What the publish of a `peppy stack build --publish` did for each node
+    /// of the group.
+    published: Vec<NodePublishLine>,
     failure: Option<WorkStop>,
 }
 
@@ -285,6 +355,9 @@ async fn add_and_build_group(
         )
         .await;
 
+        outcome
+            .published
+            .extend(unpublished_node_line(phase, node.item, core_node.as_str()));
         let added = if core_node.as_str() == ctx.bound_core_node.as_str() {
             add_locally(ctx, phase, node, &mut outcome).await
         } else {
@@ -313,10 +386,12 @@ struct AddedNode {
     node_tag: String,
     /// What a joinable node is built for; `None` for a node the change runs.
     purpose: Option<String>,
+    /// The publish its build carries.
+    publish: Option<NodePublishRequest>,
 }
 
 /// Adds one node on this machine. Returns the node to build, or `None` for
-/// the built-in MCP server, which its add registers ready.
+/// a node its add registers ready (see [`is_ready_at_add`]).
 async fn add_locally(
     ctx: &StackChangeContext,
     phase: &PhaseGoal,
@@ -353,7 +428,7 @@ async fn add_locally(
     let added = result
         .map_err(|failure| node_failure("add", &key.label(), purpose.as_deref(), &failure))?;
 
-    if is_built_in(item) {
+    if is_ready_at_add(item) {
         return Ok(None);
     }
     Ok(Some(AddedNode {
@@ -361,6 +436,7 @@ async fn add_locally(
         node_name: added.node_name,
         node_tag: added.node_tag,
         purpose: purpose.clone(),
+        publish: publish_request(phase, item),
     }))
 }
 
@@ -381,7 +457,15 @@ async fn build_locally(
         nodes,
         ctx.bound_core_node.as_str(),
         MAX_CONCURRENT_LOCAL_BUILDS,
-        |node| build_node_directly(ctx, phase, node.node_name.clone(), node.node_tag.clone()),
+        |node| {
+            build_node_directly(
+                ctx,
+                phase,
+                node.node_name.clone(),
+                node.node_tag.clone(),
+                node.publish.clone(),
+            )
+        },
         outcome,
     )
     .await;
@@ -405,7 +489,7 @@ async fn build_added_nodes<F, Fut>(
     outcome: &mut GroupOutcome,
 ) where
     F: Fn(&AddedNode) -> Fut,
-    Fut: Future<Output = (ChangeResult<()>, Option<PathBuf>)>,
+    Fut: Future<Output = (ChangeResult<NodeBuildResult>, Option<PathBuf>)>,
 {
     let mut waiting = nodes.iter().enumerate();
     let mut running = FuturesUnordered::new();
@@ -429,6 +513,7 @@ async fn build_added_nodes<F, Fut>(
     let mut stops = Vec::new();
     for ended_build in ended {
         outcome.build_logs.extend(ended_build.log);
+        outcome.published.extend(ended_build.published);
         stops.extend(ended_build.failure);
     }
     outcome.failure = WorkStop::of_parts(stops);
@@ -439,6 +524,8 @@ struct EndedBuild {
     /// The node's position in the add order.
     position: usize,
     log: Option<NodeBuildLogEntry>,
+    /// What the publish of the build did for each platform.
+    published: Vec<NodePublishLine>,
     failure: Option<WorkStop>,
 }
 
@@ -450,20 +537,33 @@ async fn build_one<F, Fut>(
 ) -> EndedBuild
 where
     F: Fn(&AddedNode) -> Fut,
-    Fut: Future<Output = (ChangeResult<()>, Option<PathBuf>)>,
+    Fut: Future<Output = (ChangeResult<NodeBuildResult>, Option<PathBuf>)>,
 {
     let (result, log_path) = build(node).await;
-    EndedBuild {
-        position,
-        log: log_path.map(|path| NodeBuildLogEntry {
-            node_label: node.label.clone(),
-            log_path: path,
-            failed: result.is_err(),
-            core_node: core_node.to_owned(),
-        }),
-        failure: result
-            .err()
-            .map(|failure| node_failure("build", &node.label, node.purpose.as_deref(), &failure)),
+    let log = log_path.map(|path| NodeBuildLogEntry {
+        node_label: node.label.clone(),
+        log_path: path,
+        failed: result.is_err(),
+        core_node: core_node.to_owned(),
+    });
+    match result {
+        Ok(built) => EndedBuild {
+            position,
+            log,
+            published: platform_lines(&node.label, core_node, built.published).collect(),
+            failure: None,
+        },
+        Err(failure) => EndedBuild {
+            position,
+            log,
+            published: Vec::new(),
+            failure: Some(node_failure(
+                "build",
+                &node.label,
+                node.purpose.as_deref(),
+                &failure,
+            )),
+        },
     }
 }
 
@@ -534,7 +634,7 @@ async fn add_and_build_remotely(
             ))
         })?;
 
-    if is_built_in(item) {
+    if is_ready_at_add(item) {
         return Ok(());
     }
 
@@ -543,6 +643,7 @@ async fn add_and_build_remotely(
         added.node_name,
         added.node_tag,
         ctx.idle_timeouts.build,
+        publish_request(phase, item),
     );
     match federated::run_remote_goal(
         ctx,
@@ -559,7 +660,15 @@ async fn add_and_build_remotely(
                 failed: run.outcome.is_err(),
                 core_node: core_node.to_string(),
             });
-            run.outcome.map_err(RemoteGoalFailure::into_stop)
+            run.outcome
+                .map(|built| {
+                    outcome.published.extend(platform_lines(
+                        &key.label(),
+                        core_node.as_str(),
+                        built.published,
+                    ));
+                })
+                .map_err(RemoteGoalFailure::into_stop)
         }
         Err(failure) => Err(WorkStop::Failed(failure)),
     }
@@ -586,10 +695,16 @@ mod tests {
             node_name: name.to_owned(),
             node_tag: "v1".to_owned(),
             purpose: None,
+            publish: None,
         }
     }
 
-    type BuildResult = ChangeResult<()>;
+    type BuildResult = ChangeResult<NodeBuildResult>;
+
+    /// A build that succeeded.
+    fn built() -> BuildResult {
+        Ok(NodeBuildResult::new("/data/built_nodes/x.sif"))
+    }
 
     /// A build that failed with `reason`.
     fn failed(reason: &str) -> BuildResult {
@@ -687,10 +802,10 @@ mod tests {
                 "a third build must wait for a free slot"
             );
 
-            finish(&mut enders, "backbone", Ok(()));
+            finish(&mut enders, "backbone", built());
             assert_eq!(started.recv().await.unwrap(), "camera");
-            finish(&mut enders, "camera", Ok(()));
-            finish(&mut enders, "waldo", Ok(()));
+            finish(&mut enders, "camera", built());
+            finish(&mut enders, "waldo", built());
         };
         tokio::join!(run, drive);
 
@@ -729,7 +844,7 @@ mod tests {
             assert_eq!(started.recv().await.unwrap(), "backbone");
             finish(&mut enders, "backbone", failed("cargo failed"));
             tokio::task::yield_now().await;
-            finish(&mut enders, "waldo", Ok(()));
+            finish(&mut enders, "waldo", built());
         };
         tokio::join!(run, drive);
 
@@ -802,9 +917,9 @@ mod tests {
             assert_eq!(started.recv().await.unwrap(), "waldo");
             tokio::task::yield_now().await;
             assert!(started.try_recv().is_err());
-            finish(&mut enders, "waldo", Ok(()));
+            finish(&mut enders, "waldo", built());
             assert_eq!(started.recv().await.unwrap(), "backbone");
-            finish(&mut enders, "backbone", Ok(()));
+            finish(&mut enders, "backbone", built());
         };
         tokio::join!(run, drive);
 
@@ -995,6 +1110,75 @@ mod tests {
         );
     }
 
+    /// A stack build with `--publish` publishes the container nodes of a
+    /// git or fs origin, and reports a process node and a node of an oci
+    /// origin without publishing them. A build without it reports nothing.
+    #[test]
+    fn a_stack_build_publishes_container_nodes_and_reports_the_others() {
+        use crate::services::stack::fixtures::planned_deployment;
+        use core_node_api::encoding::{ArtifactPlatform, OciRepository, PublishRefusals};
+        let repository = OciRepository::parse("oci://ghcr.io/acme/peppy-nodes").expect("url");
+        let phase = |publish| PhaseGoal {
+            launch_id: "launch-abc123".to_owned(),
+            rebuild: false,
+            environment: ForwardedEnv::default(),
+            publish,
+        };
+        let publishing = phase(Some(super::super::PhasePublish {
+            repository: repository.clone(),
+            extra_platforms: vec![ArtifactPlatform::LinuxArm64],
+        }));
+        let container = planned_deployment("waldo", &[("waldo_inst", None)]);
+        let mut process = planned_deployment("plain", &[("plain_inst", None)]);
+        process.config.execution.container = None;
+        let mut pulled = planned_deployment("brain", &[("brain_inst", None)]);
+        let pulled_from = OciRepository::parse("oci://ghcr.io/acme/prebuilt").expect("url");
+        if let DeploymentRoot::Node(pin) = &mut pulled.root {
+            pin.origin = EntryOrigin::Oci {
+                url: pulled_from.clone(),
+                source_digest: core_node_api::encoding::OciDigest::from_sha256_hex(&"c".repeat(64))
+                    .expect("digest"),
+                platforms: Default::default(),
+            };
+        }
+
+        assert_eq!(
+            publish_request(&publishing, &container),
+            Some(NodePublishRequest {
+                repository: Some(repository),
+                extra_platforms: vec![ArtifactPlatform::LinuxArm64],
+                refusals: PublishRefusals::Report,
+            })
+        );
+        assert_eq!(publish_request(&publishing, &process), None);
+        assert_eq!(
+            unpublished_node_line(&publishing, &container, "cn-robot"),
+            None
+        );
+        assert_eq!(
+            unpublished_node_line(&publishing, &process, "cn-robot"),
+            Some(NodePublishLine {
+                node_label: "plain:v1".to_owned(),
+                core_node: "cn-robot".to_owned(),
+                outcome: NodePublishLineOutcome::ProcessNode,
+            })
+        );
+        assert_eq!(
+            unpublished_node_line(&publishing, &pulled, "cn-gpu"),
+            Some(NodePublishLine {
+                node_label: "brain:v1".to_owned(),
+                core_node: "cn-gpu".to_owned(),
+                outcome: NodePublishLineOutcome::OciOrigin(pulled_from),
+            })
+        );
+
+        let plain = phase(None);
+        for item in [&container, &process, &pulled] {
+            assert_eq!(publish_request(&plain, item), None);
+            assert_eq!(unpublished_node_line(&plain, item, "cn-robot"), None);
+        }
+    }
+
     #[test]
     fn remote_build_goal_carries_the_launch_rebuild_switch() {
         let launch = LaunchGoal::new(
@@ -1009,10 +1193,12 @@ mod tests {
                 launch_id: launch.launch_id.clone(),
                 rebuild: launch.rebuild,
                 environment: ForwardedEnv::default(),
+                publish: None,
             },
             "waldo".to_string(),
             "v1".to_string(),
             Duration::from_secs(90),
+            None,
         );
 
         assert_eq!(build.node_name, "waldo");
@@ -1030,11 +1216,14 @@ mod tests {
                 launch_id: launch.launch_id.clone(),
                 rebuild: false,
                 environment: ForwardedEnv::default(),
+                publish: None,
             },
             "waldo".to_string(),
             "v1".to_string(),
             Duration::from_secs(90),
+            None,
         );
         assert!(!plain.rebuild);
+        assert_eq!(plain.publish, None);
     }
 }

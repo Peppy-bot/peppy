@@ -141,6 +141,7 @@ fn lima_facade() -> Apptainer {
             apptainer_bin: PathBuf::from("/tmp/peppy/apptainer/bin/apptainer"),
             limactl_path: PathBuf::from("/opt/lima/bin/limactl"),
             lima_home: PathBuf::from("/home/u/.lima"),
+            vm: super::lima::LimaVm::host(),
         },
         extra_mounts: Vec::new(),
     }
@@ -3189,4 +3190,166 @@ fn guest_activity_script_reports_the_cache_size_and_the_builds_cpu_time() {
         reading.bytes_on_disk
     );
     assert_eq!(reading.cpu_time, Duration::ZERO);
+}
+
+#[test]
+fn the_os_family_comes_from_the_id_and_id_like_of_os_release() {
+    use super::facade::{HostOsFamily, os_family_of_release};
+    assert_eq!(
+        os_family_of_release("NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n"),
+        HostOsFamily::Debian
+    );
+    assert_eq!(
+        os_family_of_release("ID=pop\nID_LIKE=\"ubuntu debian\"\n"),
+        HostOsFamily::Debian
+    );
+    assert_eq!(
+        os_family_of_release("ID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\n"),
+        HostOsFamily::Fedora
+    );
+    assert_eq!(os_family_of_release("ID=arch\n"), HostOsFamily::Arch);
+    assert_eq!(
+        os_family_of_release("ID=alpine\n"),
+        HostOsFamily::OtherLinux
+    );
+}
+
+#[test]
+fn the_emulation_packages_name_the_emulator_and_the_firmware_of_each_family() {
+    use super::facade::{HostOsFamily, emulation_packages};
+    use core_node_api::encoding::ArtifactPlatform::{LinuxAmd64, LinuxArm64};
+    assert_eq!(
+        emulation_packages(LinuxArm64, &HostOsFamily::Debian),
+        "`sudo apt install qemu-system-arm qemu-efi-aarch64`"
+    );
+    assert_eq!(
+        emulation_packages(LinuxAmd64, &HostOsFamily::Debian),
+        "`sudo apt install qemu-system-x86 ovmf`"
+    );
+    assert!(emulation_packages(LinuxAmd64, &HostOsFamily::MacOs).contains("brew install qemu"));
+    assert!(emulation_packages(LinuxArm64, &HostOsFamily::Fedora).contains("edk2-aarch64"));
+    assert!(emulation_packages(LinuxAmd64, &HostOsFamily::Arch).contains("edk2-ovmf"));
+}
+
+#[test]
+fn an_emulated_vm_is_named_after_its_architecture_and_runs_under_qemu() {
+    let vm = super::lima::LimaVm::emulated("aarch64");
+    assert_eq!(vm.name, format!("{}-aarch64", super::lima::LIMA_INSTANCE));
+    assert_eq!(
+        vm.config_path(Path::new("/home/u/.lima")),
+        PathBuf::from(format!(
+            "/home/u/.lima/{}-aarch64/lima.yaml",
+            super::lima::LIMA_INSTANCE
+        ))
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_vm_preparation_probe_reads_its_instance_dir_and_the_pid_its_host_agent_writes() {
+    let instance = TempDir::new().expect("instance dir");
+    let probe = BuildActivityProbe::vm_instance(instance.path().to_path_buf());
+    assert_eq!(
+        probe.sample(),
+        BuildActivity::default(),
+        "an empty instance dir without a host agent"
+    );
+
+    fs::write(instance.path().join("serial.log"), [0u8; 4096]).expect("write a console log");
+    let mut busy = spawn_busy_process_group();
+    fs::write(
+        instance.path().join(super::lima::HOST_AGENT_PID_FILE),
+        format!("{}\n", busy.id()),
+    )
+    .expect("write the pid of the host agent");
+    let observed = wait_for_cpu_time(|| probe.sample().cpu_time);
+    let bytes = probe.sample().bytes_on_disk;
+    let _ = busy.kill();
+    let _ = busy.wait();
+    assert!(
+        observed > Duration::ZERO,
+        "the host agent never showed CPU time"
+    );
+    assert!(bytes >= 4096, "the console log counts: {bytes}");
+}
+
+#[test]
+fn only_a_platform_built_in_a_vm_has_a_vm_preparation_probe() {
+    use core_node_api::encoding::ArtifactPlatform;
+    use daemon_config::consts::HOST_ARTIFACT_PLATFORM;
+    let other = ArtifactPlatform::ALL
+        .into_iter()
+        .find(|platform| *platform != HOST_ARTIFACT_PLATFORM)
+        .expect("two platforms");
+    assert_eq!(
+        super::lima::LimaVm::for_platform(other).map(|vm| vm.name),
+        Some(format!(
+            "{}-{}",
+            super::lima::LIMA_INSTANCE,
+            other.architecture()
+        ))
+    );
+    assert_eq!(
+        super::lima::LimaVm::for_platform(HOST_ARTIFACT_PLATFORM).is_some(),
+        cfg!(target_os = "macos")
+    );
+}
+
+/// Lima looks for the firmware of a guest beside the installation of QEMU
+/// (Homebrew), under `~/.local`, then where the distributions put it.
+#[test]
+fn the_uefi_firmware_candidates_follow_the_search_of_lima() {
+    let candidates = super::lima::uefi_firmware_candidates(
+        "aarch64",
+        Path::new("/opt/homebrew/bin/qemu-system-aarch64"),
+        Some(Path::new("/home/u")),
+    );
+    assert_eq!(
+        candidates,
+        [
+            "/home/u/.local/share/qemu/edk2-aarch64-code.fd",
+            "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
+            "/opt/homebrew/bin/share/edk2-aarch64-code.fd",
+            "/usr/share/AAVMF/AAVMF_CODE.fd",
+            "/usr/share/edk2/aarch64/QEMU_CODE.fd",
+            "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
+        ]
+        .map(PathBuf::from)
+    );
+    let x86 = super::lima::uefi_firmware_candidates(
+        "x86_64",
+        Path::new("/usr/bin/qemu-system-x86_64"),
+        None,
+    );
+    assert_eq!(x86[0], PathBuf::from("/usr/share/qemu/edk2-x86_64-code.fd"));
+    assert!(x86.contains(&PathBuf::from("/usr/share/OVMF/OVMF_CODE_4M.fd")));
+}
+
+#[test]
+fn an_emulator_without_the_firmware_of_its_guests_cannot_build() {
+    use super::facade::{EmulationHost, emulator_problem};
+    use core_node_api::encoding::ArtifactPlatform::LinuxArm64;
+    let qemu = |program: &str| Some(PathBuf::from("/usr/bin").join(program));
+    let no_qemu = |_: &str| None;
+    let firmware = |path: &Path| path == Path::new("/usr/share/AAVMF/AAVMF_CODE.fd");
+    let no_file = |_: &Path| false;
+    let host = |find_program, is_file| EmulationHost {
+        find_program,
+        is_file,
+        home: None,
+    };
+
+    let missing_emulator =
+        emulator_problem(LinuxArm64, &host(&no_qemu, &firmware)).expect("no emulator");
+    assert!(
+        missing_emulator.contains("the QEMU system emulator `qemu-system-aarch64`"),
+        "{missing_emulator}"
+    );
+    let missing_firmware =
+        emulator_problem(LinuxArm64, &host(&qemu, &no_file)).expect("no firmware");
+    assert!(
+        missing_firmware.contains("needs the UEFI firmware of aarch64 guests"),
+        "{missing_firmware}"
+    );
+    assert_eq!(emulator_problem(LinuxArm64, &host(&qemu, &firmware)), None);
 }

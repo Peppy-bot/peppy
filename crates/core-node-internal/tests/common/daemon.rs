@@ -277,6 +277,25 @@ pub async fn start_core_node_with_real_messenger_and_timeouts(
     start_real_core_node(args, daemon_config::peppy_config::LocalNodesTopology::Peer).await
 }
 
+/// Variant of [`start_core_node_with_real_messenger_and_timeouts`] whose
+/// config names `publish_repository`, for the tests of the publish of
+/// container nodes to an OCI registry.
+pub async fn start_core_node_publishing_to(
+    repository: core_node_api::encoding::OciRepository,
+    node_startup_timeout: Duration,
+    default_setup_timeout: SetupTimeout,
+) -> StartedCoreNode {
+    let mut args = default_node_arguments();
+    args.node_startup_timeout = node_startup_timeout;
+    args.default_setup_timeout = default_setup_timeout;
+    start_real_core_node_with(
+        args,
+        daemon_config::peppy_config::LocalNodesTopology::Peer,
+        Some(repository),
+    )
+    .await
+}
+
 /// Boots the core node on a real zenoh router in the messaging `topology`
 /// (peer vs router). The core node's own session is built in that topology,
 /// and its `PeppyConfig` carries it so spawned nodes are injected with the
@@ -284,6 +303,14 @@ pub async fn start_core_node_with_real_messenger_and_timeouts(
 async fn start_real_core_node(
     node_arguments: CoreNodeArguments,
     topology: daemon_config::peppy_config::LocalNodesTopology,
+) -> StartedCoreNode {
+    start_real_core_node_with(node_arguments, topology, None).await
+}
+
+async fn start_real_core_node_with(
+    node_arguments: CoreNodeArguments,
+    topology: daemon_config::peppy_config::LocalNodesTopology,
+    publish_repository: Option<core_node_api::encoding::OciRepository>,
 ) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let mut instance = pmi::ZenohAdapter::start_router_ephemeral_in_mode(
@@ -313,6 +340,7 @@ async fn start_real_core_node(
                 ..Default::default()
             },
         ),
+        publish_repository,
         ..Default::default()
     };
     start_core_node_with_messenger(

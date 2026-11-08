@@ -91,6 +91,7 @@ jobs:
     outputs:
       workspace: ${{ steps.changes.outputs.workspace }}
       container_e2e: ${{ steps.changes.outputs.container_e2e }}
+      registry_e2e: ${{ steps.changes.outputs.registry_e2e }}
       multi_daemon_e2e: ${{ steps.changes.outputs.multi_daemon_e2e }}
       docs_integration: ${{ steps.changes.outputs.docs_integration }}
       cross_check: ${{ steps.changes.outputs.cross_check }}
@@ -227,6 +228,55 @@ jobs:
       - uses: ./.github/actions/cargo-suite
         with:
           command: cargo test --locked -p core-node --features container_e2e --test container_e2e
+
+  # The publish of container nodes to an OCI registry and their pull, against
+  # a CNCF distribution registry that each test starts. The core-node suite
+  # builds real containers as container-e2e does. Both suites need a peppy
+  # built with a release tag: a registry holds the artifacts of each peppy
+  # version under tags that name it.
+  registry-e2e:
+    needs: changes
+    if: needs.changes.outputs.registry_e2e == 'true'
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=registry-e2e:30gb:lazy-init${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    permissions:
+      contents: read
+    env:
+      PEPPY_GIT_TAG: v0.0.0-registry-e2e
+      DISTRIBUTION_VERSION: 3.1.2
+      # sha256 of registry_3.1.2_linux_amd64.tar.gz, as the release of
+      # github.com/distribution/distribution publishes it.
+      DISTRIBUTION_SHA256: 40df2224d410f72ae425c3371873b078bbdbda3b8b612be9571f0e6751f3acc8
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ./.github/actions/rust-build-env
+
+      - uses: ./.github/actions/cargo-cache
+        with:
+          suite: registry-e2e
+
+      - name: Install the CNCF distribution registry
+        run: |
+          dir="$RUNNER_TEMP/registry"
+          mkdir -p "$dir"
+          archive="$dir/registry.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/distribution/distribution/releases/download/v${DISTRIBUTION_VERSION}/registry_${DISTRIBUTION_VERSION}_linux_amd64.tar.gz"
+          echo "${DISTRIBUTION_SHA256}  $archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$dir" registry
+          echo "PEPPY_TEST_REGISTRY_BIN=$dir/registry" >> "$GITHUB_ENV"
+
+      - uses: ./.github/actions/cargo-suite
+        with:
+          command: cargo test --locked -p oci-registry --features registry_e2e --test registry_e2e
+
+      - uses: ./.github/actions/cargo-suite
+        with:
+          command: cargo test --locked -p core-node --features registry_e2e --test registry_e2e
 
   multi-daemon-e2e:
     needs: changes
@@ -625,6 +675,7 @@ jobs:
       - changes
       - workspace-tests
       - container-e2e
+      - registry-e2e
       - multi-daemon-e2e
       - docs-integration
       - release-scripts

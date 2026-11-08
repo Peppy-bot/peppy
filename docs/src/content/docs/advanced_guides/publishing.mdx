@@ -1,0 +1,141 @@
+---
+title: Publishing nodes
+description: Push the prebuilt image of a container node to an OCI registry, and pull it on other machines instead of building it
+sidebar:
+  order: 24
+---
+
+A container node builds into one Apptainer image, a `.sif` file. Peppy pushes that image to an OCI registry, such as the GitHub Container Registry, Docker Hub, or a registry of your own, and each machine that reads the registry as an [`oci` repository](/advanced_guides/repositories/#oci-repositories) pulls the image instead of building the node. A pull takes the time of a download. A build of the same node can take many minutes, and much longer on a small machine such as a Raspberry Pi.
+
+Only [container nodes](/advanced_guides/containers/) are published. A process node (`build_cmd` / `run_cmd`) builds on each machine.
+
+## Set up a repository
+
+1. Pick an OCI repository that holds all your nodes, for example `oci://ghcr.io/acme/peppy-nodes`. A repository holds the nodes of every Peppy version: each artifact has a tag of its own (see [Registry layout](#registry-layout)).
+2. On the machine that publishes, set [`publish_repository`](/advanced_guides/daemon_config/#publish_repository-where-nodes-are-published) in `~/.peppy/conf/peppy_config.json5`, and restart the daemon:
+
+   ```json5
+   publish_repository: "oci://ghcr.io/acme/peppy-nodes",
+   ```
+
+3. Log in to the registry on each machine that pushes, and on each machine that pulls from a private repository (see [Registry credentials](#registry-credentials)).
+4. On each machine that pulls, add the repository with a lower `id` than the repositories that hold the sources of the same nodes, and refresh:
+
+   ```sh
+   peppy repo add oci://ghcr.io/acme/peppy-nodes --top
+   peppy repo refresh
+   ```
+
+Artifacts are made for one Peppy version each, so only a release build of Peppy publishes and pulls. A build of Peppy without a release version refuses both, with an error that tells why.
+
+## Registry credentials
+
+Peppy reads the credentials of a registry from the same auth file as Apptainer: `$APPTAINER_AUTH_FILE` when it is set, else `~/.apptainer/docker-config.json` (written by `apptainer registry login`) when it exists, else `~/.docker/config.json` (written by `docker login`). Log in with either tool:
+
+```sh
+docker login ghcr.io
+apptainer registry login --username <user> docker://ghcr.io
+```
+
+For a registry, the credential comes from, in this order:
+
+1. The credential helper that `credHelpers` names for the registry.
+2. The credential helper that `credsStore` names.
+3. The entry of the registry under `auths`, with a user name and a password or token, or an `identitytoken`.
+
+A credential helper is the program `docker-credential-<name>`, on the `PATH` of the daemon. Without a credential, Peppy asks the registry without one, which a public repository accepts for a pull. Peppy reads the file again before each pull and each push, so a login while the daemon runs applies to the next one.
+
+A push needs a credential that can write to the repository. On the GitHub Container Registry, that is a personal access token with the `write:packages` scope.
+
+## Publish a node
+
+```sh
+peppy node publish <name>:<tag> [--platforms <platform>,...] [--idle-timeout <secs>] [--max-timeout <secs>] [--force]
+```
+
+The node must be in the node stack (`peppy node add <name>:<tag>`). The daemon builds the node for the platform of this machine as `peppy node build` does, and pushes its `.sif` to the publish repository under the tag `<name>.<tag>.<peppy version>.linux-<arch>`. For example, Peppy `v0.32.0` on an amd64 machine pushes `camera:v1` as `camera.v1.v0.32.0.linux-amd64`.
+
+| Flag | Effect |
+|------|--------|
+| `--platforms` | Platforms to build and push beside the one of this machine, comma-separated: `linux/amd64`, `linux/arm64`. See [Build for another architecture](#build-for-another-architecture). |
+| `--idle-timeout` | Idle timeout in seconds of each platform build, as for `peppy node build`. |
+| `--max-timeout` | Maximum duration in seconds of each platform build. The platforms build one after another, so the publish takes at most this value times the number of platforms. |
+| `--force` | Cancel a build of the node that runs, and start the publish. |
+
+### The checks
+
+Before any build, the publish runs these checks in this order. The first check that fails ends the command with a message that names its fix, and nothing is built or pushed:
+
+1. A publish repository is set: `publish_repository` in the configuration of the daemon.
+2. This Peppy has a release version.
+3. The node is a container node. A process node is refused with a link to the [container guide](/advanced_guides/containers/).
+4. The node does not come from an `oci` repository: such a node has no sources on this machine.
+5. Each value of `--platforms` is `linux/amd64` or `linux/arm64`. The command refuses another value before it reaches the daemon.
+6. The registry accepts a push from this machine with its credentials.
+7. This machine can build each other platform of `--platforms`: the QEMU system emulator and the UEFI firmware of the architecture are installed, this Peppy has Lima and the Apptainer of the architecture, the base image of the definition file has the platform, and for a Python node, this Peppy holds the peppylib native extension of the platform. A release of Peppy holds Lima, and the Apptainer and the peppylib native extension of every Linux platform.
+8. For each platform whose tag the repository has already, the artifact under the tag was built from the same revision of the node. A tag is immutable, so Peppy never pushes over a tag.
+
+The revision of a node is its source digest: the sha256 of the staged tree of the node, without the vendored peppylib of a Python node. The same sources give the same digest on each machine and for each platform. The publish shows it, for example `` Source digest of `camera:v1`: sha256:9c1e... ``.
+
+A platform whose tag holds the same revision is published already: the publish does not build or push it, and reports it as `already published`. A tag that holds another revision refuses the publish, with both digests: publish the change under another tag of the node (`v2`), or with another Peppy version. Each Peppy version has tags of its own, so the publish of a node with a new Peppy release pushes new artifacts.
+
+### What the command prints
+
+The publish shows the output of each build, and the progress of the hash and of the push of each image: a line for each percent of the image, and a line at least every 10 seconds while bytes move. It ends with one line for each platform:
+
+```text
+linux/amd64: pushed camera.v1.v0.32.0.linux-amd64 (sha256:4b7f...)
+linux/arm64: already published as camera.v1.v0.32.0.linux-arm64
+Published node camera:v1
+```
+
+The command exits with an error when a platform of the request was not published, for example when the build of a platform fails, and names how many.
+
+### Build for another architecture
+
+With `--platforms`, the daemon also builds the node for the other architecture: an amd64 machine builds `linux/arm64` with `--platforms linux/arm64`, and an arm64 machine builds `linux/amd64` with `--platforms linux/amd64`. A platform that is the one of this machine builds only once.
+
+The build of another architecture runs in a [Lima](https://lima-vm.io/) VM that emulates the architecture with QEMU, on Linux and on macOS: `peppy-aarch64` for `linux/arm64`, `peppy-x86_64` for `linux/amd64`. Peppy creates the VM at its first build and keeps it. Lima and the Apptainer of both architectures come with each Peppy release. The QEMU system emulator and the UEFI firmware of the architecture do not; install them:
+
+| Operating system | For `linux/arm64` on an amd64 machine | For `linux/amd64` on an arm64 machine |
+|------------------|---------------------------------------|---------------------------------------|
+| macOS | `brew install qemu` | `brew install qemu` |
+| Debian, Ubuntu | `sudo apt install qemu-system-arm qemu-efi-aarch64` | `sudo apt install qemu-system-x86 ovmf` |
+| Fedora | `sudo dnf install qemu-system-aarch64-core edk2-aarch64` | `sudo dnf install qemu-system-x86-core edk2-ovmf` |
+| Arch Linux | `sudo pacman -S qemu-system-aarch64 edk2-aarch64` | `sudo pacman -S qemu-system-x86 edk2-ovmf` |
+
+An emulated build is much slower than a native one: each instruction of the build runs through the emulator. Each platform builds from its own copy of the staged tree, with the build caches of its architecture (see [Build caches inside container builds](/advanced_guides/containers/#build-caches-inside-container-builds)). The base image of the definition file must have the platform: the peppy base images (`peppybot/rust-cargo-base`, `peppybot/python-uv-base`) have both.
+
+## Publish the nodes of a stack
+
+```sh
+peppy stack build <launcher> --publish [--platforms <platform>,...]
+```
+
+With `--publish`, each machine of the stack builds its nodes as `peppy stack build` does, and pushes the `.sif` of each container node it builds to the `publish_repository` of the daemon that runs the command, with its own credentials. With `--platforms`, each machine also builds and pushes those platforms, as `peppy node publish` does. `--platforms` needs `--publish`.
+
+Before any build, the daemon that runs the command does [checks](#the-checks) 1, 2 and 6 for itself, and each other machine of the stack checks that the registry accepts a push from it when the launch reserves it. A machine that fails its check stops the build with an error that names the machine. The other checks do not stop the build: a platform that a check refuses is not built, and the other nodes and platforms go on.
+
+The command ends with a report of one line for each node, machine and platform:
+
+```text
+Publish report:
+  camera:v1@cn-atlas linux/amd64: pushed camera.v1.v0.32.0.linux-amd64 (sha256:4b7f...)
+  camera:v1@cn-atlas linux/arm64: not published: the base image docker.io/acme/camera-base:1.2 of apptainer.def has no linux/arm64
+  planner:v2@cn-atlas: not published: process node
+  arm_driver:v1@cn-pi: not published: comes from the oci repository oci://ghcr.io/acme/peppy-nodes
+```
+
+A platform of a container node that was not published fails the command, after the whole report, with exit code 4, the exit status of a failed goal. A process node and a node that comes from an `oci` repository show in the report and do not fail the command.
+
+## Registry layout
+
+One OCI repository holds every published node. Each artifact is one node, Peppy version and platform:
+
+- The tag is `<node name>.<node tag>.<peppy version>.linux-<arch>`, with `<arch>` `amd64` or `arm64`. A registry accepts at most 128 characters in a tag, so a node whose tag would be longer cannot be published.
+- The manifest is an OCI image manifest with the artifact type `application/vnd.peppy.node.v1` and the empty configuration `application/vnd.oci.empty.v1+json`.
+- The first layer is the `.sif` image, with the media type `application/vnd.sylabs.sif.layer.v1.sif`.
+- The second layer is the `peppy.json5` of the node, with the media type `application/vnd.peppy.node.manifest.v1+json5`. A refresh reads the node from it without the image.
+- The annotations of the manifest name the node (`bot.peppy.node.name`, `bot.peppy.node.tag`), the Peppy version (`bot.peppy.version`), the platform (`bot.peppy.platform`), and the source digest (`bot.peppy.source-digest`). A node that comes from a `git` repository also has the URL of the repository, the commit, and the path of the node in it (`bot.peppy.source.url`, `bot.peppy.source.commit`, `bot.peppy.source.path`).
+
+Peppy never deletes or overwrites a tag. To remove the artifacts of a Peppy version that no machine uses, delete their tags with the tools of the registry.

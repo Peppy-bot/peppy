@@ -7,14 +7,16 @@ use std::time::{Duration, Instant, SystemTime};
 
 use config::node::{Cardinality, ContainerConfig, NodeConfig, PeppygenLanguage};
 use config::runtime::Name;
-use core_node_api::encoding::{LaunchIdentity, NodeRunGoal, ObservationTargets};
+use core_node_api::encoding::{
+    ArtifactPlatform, LaunchIdentity, NodeRunGoal, ObservationTargets, OciRepository,
+};
 use core_node_api::{
     ExitCause, InstanceEndpoint, InstanceState, NodeStage as SerializedNodeStage, RestartStatus,
     SerializedInstance, SerializedNode,
 };
 use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::PackagesBaseUrl;
-use daemon_config::repository::PinnedDocument;
+use daemon_config::repository::{EntryOrigin, PinnedDocument};
 use log_export::Iostream;
 use tokio::process::Child;
 use tokio::sync::watch;
@@ -89,12 +91,23 @@ pub struct BuiltInLaunch {
     pub env: Vec<(String, String)>,
 }
 
+/// A `.sif` pulled from an OCI repository into `~/.peppy/built_nodes`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PulledArtifact {
+    pub sif_path: PathBuf,
+    /// The repository the image came from. The node has no sources on this
+    /// machine, so it cannot be built here.
+    pub repository: OciRepository,
+}
+
 /// What a `Ready` entity spawns from.
 #[derive(Debug, Clone)]
 pub enum Artifact {
     /// A built `.sif` or archive in `~/.peppy/built_nodes`, run through the
     /// manifest's `run_cmd`, in a container when the manifest declares one.
     Built(PathBuf),
+    /// A `.sif` pulled from an OCI repository, run as a built one.
+    Pulled(PulledArtifact),
     /// The daemon's own executable with the recipe that runs it; nothing
     /// was fetched, generated or built for the node.
     BuiltIn(BuiltInLaunch),
@@ -102,19 +115,28 @@ pub enum Artifact {
 
 impl Artifact {
     /// The file on disk the entity runs from: the archive or SIF of a
-    /// sourced node, the executable of a built-in one.
+    /// sourced or pulled node, the executable of a built-in one.
     pub fn path(&self) -> &Path {
         match self {
             Self::Built(path) => path,
+            Self::Pulled(pulled) => &pulled.sif_path,
             Self::BuiltIn(launch) => &launch.executable,
         }
     }
 
-    /// The recipe of a built-in node, `None` for a built artifact.
+    /// The recipe of a built-in node, `None` for a built or pulled artifact.
     pub fn built_in(&self) -> Option<&BuiltInLaunch> {
         match self {
-            Self::Built(_) => None,
+            Self::Built(_) | Self::Pulled(_) => None,
             Self::BuiltIn(launch) => Some(launch),
+        }
+    }
+
+    /// The OCI repository of a pulled artifact, `None` for any other.
+    pub fn pulled_from(&self) -> Option<&OciRepository> {
+        match self {
+            Self::Pulled(pulled) => Some(&pulled.repository),
+            Self::Built(_) | Self::BuiltIn(_) => None,
         }
     }
 }
@@ -251,12 +273,15 @@ struct BuildSnapshot {
     build_cmd: Option<Vec<String>>,
     language: PeppygenLanguage,
     generation: u64,
+    /// The platform of a container image: the one of this machine for the
+    /// build of an entity, another one for a build of a publish.
+    platform: ArtifactPlatform,
 }
 
 impl BuildSnapshot {
     fn artifact_kind(&self) -> ArtifactKind {
         if self.container.is_some() {
-            ArtifactKind::Container
+            ArtifactKind::Container(self.platform)
         } else {
             ArtifactKind::Process
         }
@@ -479,6 +504,10 @@ pub struct NodeEntity {
     /// `take_pending_working_dir_if_generation` clears the entity-side slot.
     /// Never persisted.
     pending_working_dir: Option<Arc<WorkingDirGuard>>,
+    /// The repository entry the node was added from, when an add by name
+    /// read it from a repository: what a publish of the node annotates its
+    /// artifacts with. `None` for a node added from a path or a URL.
+    repository_origin: Option<EntryOrigin>,
     /// The contract and pairing documents this entity's manifest names, each
     /// beside its pin, at the bytes its code was generated from: the add or
     /// the registration that builds the entity gives them to its
@@ -509,6 +538,7 @@ impl NodeEntity {
             stage,
             generation: next_entity_generation(),
             pending_working_dir: None,
+            repository_origin: None,
             documents,
             stage_tx,
         }
@@ -533,6 +563,36 @@ impl NodeEntity {
             },
             documents,
         )
+    }
+
+    /// Creates a node whose `.sif` was pulled from an OCI repository, ready
+    /// to start: nothing is staged, generated or built for it.
+    /// `config_path` points at the `peppy.json5` of the artifact, and
+    /// `documents` are the documents that manifest names.
+    pub fn pulled<P: Into<PathBuf>>(
+        config: NodeConfig,
+        config_path: P,
+        artifact: PulledArtifact,
+        documents: Vec<PinnedDocument>,
+    ) -> Self {
+        Self::with_stage(
+            config,
+            NodeStage::Ready {
+                config_path: config_path.into(),
+                artifact: Artifact::Pulled(artifact),
+                instances: Vec::new(),
+            },
+            documents,
+        )
+    }
+
+    /// The OCI repository of a node whose `.sif` was pulled, `None` for any
+    /// other node.
+    pub fn pulled_from(&self) -> Option<&OciRepository> {
+        match &self.stage {
+            NodeStage::Ready { artifact, .. } => artifact.pulled_from(),
+            _ => None,
+        }
     }
 
     /// The spawn recipe of a built-in node, `None` for a sourced node.
@@ -591,6 +651,17 @@ impl NodeEntity {
     /// later `node build` can reuse it without re-cloning the source.
     pub fn set_pending_working_dir(&mut self, guard: Arc<WorkingDirGuard>) {
         self.pending_working_dir = Some(guard);
+    }
+
+    /// Records the repository entry the node was added from.
+    pub fn set_repository_origin(&mut self, origin: EntryOrigin) {
+        self.repository_origin = Some(origin);
+    }
+
+    /// The repository entry the node was added from, when an add by name
+    /// read it from a repository.
+    pub fn repository_origin(&self) -> Option<&EntryOrigin> {
+        self.repository_origin.as_ref()
     }
 
     /// The contract and pairing documents the manifest names, at the bytes
@@ -731,6 +802,7 @@ impl NodeEntity {
                 build_cmd: guard.config.execution.build_cmd.clone(),
                 language: guard.config.execution.language,
                 generation: guard.generation,
+                platform: daemon_config::consts::HOST_ARTIFACT_PLATFORM,
             };
             // Atomic transition Added → Building under the same write lock as
             // the validation. Any second concurrent call now sees Building.
@@ -773,6 +845,35 @@ impl NodeEntity {
         };
         guard.broadcast_stage();
         Ok(artifact_path)
+    }
+
+    /// Builds the container image of the node `config` declares for
+    /// `platform`, from the staged tree of `ctx`, outside any entity: the
+    /// build of another platform than the one of this machine, for a
+    /// publish. It reuses the artifact of the same staged tree and platform
+    /// in storage unless `ctx.rebuild`, and keeps the artifacts of the other
+    /// platforms, as [`NodeEntity::build`] does.
+    pub async fn build_for_platform(
+        config: &NodeConfig,
+        platform: ArtifactPlatform,
+        ctx: BuildContext<'_>,
+    ) -> Result<PathBuf> {
+        let snapshot = BuildSnapshot {
+            node_name: config.manifest.name.as_str().to_owned(),
+            node_tag: config.manifest.tag.clone(),
+            config_path: ctx.working_dir.join(config::consts::NODE_CONFIG_FILE),
+            container: config.execution.container.clone(),
+            build_cmd: config.execution.build_cmd.clone(),
+            language: config.execution.language,
+            generation: 0,
+            platform,
+        };
+        if snapshot.container.is_none() {
+            return Err(snapshot.build_failed(
+                "a process node has no container image to build for a platform".to_owned(),
+            ));
+        }
+        Self::produce_artifact(&snapshot, &ctx).await
     }
 
     /// Phase 2 of [`NodeEntity::build`]: the artifact for the snapshot's
@@ -892,6 +993,7 @@ impl NodeEntity {
                     announcer: &ctx.announcer,
                     peppy_dirs: ctx.peppy_dirs,
                     cancel_token: &ctx.cancel_token,
+                    platform: kind.platform(),
                 })
                 .await
                 .map(Some)
@@ -924,14 +1026,14 @@ impl NodeEntity {
                 Some(sif_source) => move_sif_to_storage(sif_source, &destination)?,
                 None => archive_dir_to_storage(&working_dir, &destination)?,
             };
-            prune_siblings(&published);
+            prune_siblings(&published, kind.platform());
             Ok(published)
         })
         .await
         .map_err(|e| snapshot.build_failed(format!("storage publish task failed: {e}")))?
         .map_err(|e| {
             snapshot.build_failed(match kind {
-                ArtifactKind::Container => {
+                ArtifactKind::Container(_) => {
                     format!("failed to move container image to storage: {e}")
                 }
                 ArtifactKind::Process => format!("failed to archive node directory: {e}"),
@@ -1148,7 +1250,7 @@ impl NodeEntity {
             Artifact::Built(archive) if !is_container => {
                 extract_node_archive(archive, instance_id_str, ctx.peppy_dirs)
             }
-            Artifact::Built(_) | Artifact::BuiltIn(_) => {
+            Artifact::Built(_) | Artifact::Pulled(_) | Artifact::BuiltIn(_) => {
                 create_instance_dir(instance_id_str, ctx.peppy_dirs)
             }
         }
@@ -1179,7 +1281,10 @@ impl NodeEntity {
                 ctx.output_sinks.announcer.log(),
                 ctx.peppy_dirs,
             ),
-            (Artifact::Built(sif_path), Some(container)) => {
+            (
+                Artifact::Built(sif_path) | Artifact::Pulled(PulledArtifact { sif_path, .. }),
+                Some(container),
+            ) => {
                 let apptainer_run_extra_args = container
                     .apptainer_run_extra_args
                     .as_deref()
@@ -1211,6 +1316,14 @@ impl NodeEntity {
                 ctx.output_sinks.announcer.log(),
                 ctx.peppy_dirs,
             ),
+            (Artifact::Pulled(pulled), None) => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "the image pulled from {} is a container image, and the manifest declares \
+                     no container",
+                    pulled.repository
+                ),
+            )),
         }
         .map_err(|e| {
             // Best-effort cleanup of the instance dir we just materialized.
@@ -2640,7 +2753,7 @@ mod tests {
             "sensor",
             "v1",
             working_dir.path(),
-            ArtifactKind::Container,
+            ArtifactKind::Container(daemon_config::consts::HOST_ARTIFACT_PLATFORM),
         )
         .expect("resolve slot");
         std::fs::create_dir_all(slot.path.parent().expect("parent")).expect("mkdir");

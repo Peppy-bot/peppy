@@ -10,6 +10,9 @@ config = { workspace = true, features = ["atomic_write"] }
 daemon-config = { workspace = true }
 log-export = { workspace = true }
 node-stack = { workspace = true }
+# The client of the OCI registries that `oci` repositories and the publish
+# repository live in.
+oci-registry = { workspace = true }
 peppylib = { workspace = true }
 core-node-api = { workspace = true }
 generator = { workspace = true }
@@ -79,6 +82,9 @@ build-helpers = { workspace = true }
 # integration tests: the restart backoffs the CLI tier shares, and the slice
 # ownership a test reserves and changes the stack through.
 core-node = { path = ".", features = ["test-support"] }
+# The local CNCF distribution registry and the client the registry tests
+# push fixtures with.
+oci-registry = { workspace = true, features = ["test-support"] }
 # node-stack's test support (the log file readers, the slot's `supervision`,
 # `FirstStart::fixture` and the process-group probes), and the records a test
 # exporter queued.
@@ -105,6 +111,10 @@ auth = { workspace = true, features = ["test-support"] }
 
 [features]
 container_e2e = []
+# The publish and the pull of container nodes against a real CNCF distribution
+# registry, whose `registry` binary PEPPY_TEST_REGISTRY_BIN names. Builds real
+# containers like `container_e2e`, and needs a peppy built with PEPPY_GIT_TAG.
+registry_e2e = []
 # Embed this crate's node-init templates, and the generator's, even in a debug
 # build. Needed by any test that runs a debug binary away from its build tree;
 # see the feature's own comment in generator-internal.

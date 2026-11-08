@@ -80,7 +80,7 @@ async fn handle_repo_list_request(
             node_name: node.entry.node_name.to_string(),
             node_tag: node.entry.node_tag.to_string(),
             source_type: node.entry.origin.kind(),
-            path: node.entry.origin.path_str().to_owned(),
+            path: node.entry.origin.path_str().into_owned(),
             duplicate: node.shadowed_by.is_some(),
             repo_id: repo.id,
             repo_label: repo.label.clone(),

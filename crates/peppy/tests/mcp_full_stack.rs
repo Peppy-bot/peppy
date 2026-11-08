@@ -4080,7 +4080,7 @@ impl JoinableStack {
 
     /// Builds the joinable launcher, which succeeds.
     fn build(&self, args: LauncherArgs) {
-        self.change_log_of(|| self.run(StackCommands::Build(args)));
+        self.change_log_of(|| self.run(StackCommands::Build(args.into())));
     }
 
     /// Joins `option:name` with `words`, which succeeds, and returns the

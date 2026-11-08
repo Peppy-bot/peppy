@@ -839,6 +839,7 @@ version = "0.0.1"
 dependencies = [
  "build-helpers",
  "config-test-support",
+ "core-node-api",
  "daemon-config",
  "dirs 7.0.0",
  "nix 0.31.3",
@@ -905,6 +906,7 @@ dependencies = [
  "names-generator2",
  "nix 0.31.3",
  "node-stack",
+ "oci-registry",
  "parking_lot 0.13.0",
  "peppy-codec",
  "peppy-config-model",
@@ -1769,6 +1771,7 @@ dependencies = [
  "build-helpers",
  "bytes",
  "config-test-support",
+ "core-node-api",
  "daemon-config",
  "encoding",
  "indexmap 2.14.2",
@@ -3432,6 +3435,29 @@ dependencies = [
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",
+]
+
+[[package]]
+name = "oci-registry"
+version = "0.0.1"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "containers",
+ "core-node-api",
+ "daemon-config",
+ "futures-util",
+ "httpmock",
+ "peppy-config-model",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

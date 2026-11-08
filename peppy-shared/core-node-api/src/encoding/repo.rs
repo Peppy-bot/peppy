@@ -2,6 +2,7 @@ mod add;
 mod exclude;
 mod git_ref;
 mod list;
+mod oci;
 mod refresh;
 mod remove;
 
@@ -13,6 +14,11 @@ pub use git_ref::{
 pub use list::{
     RepoListNodeEntry, RepoListRepoEntry, RepoListRepoFailedRead, RepoListRepoReadFailure,
     RepoListRequest, RepoListResponse,
+};
+pub use oci::{
+    ArtifactPlatform, ArtifactPlatformError, ArtifactTag, ArtifactTagError, ArtifactVersion,
+    ArtifactVersionError, MAX_ARTIFACT_TAG_LENGTH, OCI_SCHEME, OciDigest, OciDigestError,
+    OciRepository, OciRepositoryError,
 };
 pub use refresh::{
     RepoItemKind, RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,

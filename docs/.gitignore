@@ -5,6 +5,8 @@ dist/
 
 # dependencies
 node_modules/
+# the lockfiles that a local build of a Rust snippet writes
+src/content/docs/guides/snippets/**/Cargo.lock
 
 # logs
 npm-debug.log*

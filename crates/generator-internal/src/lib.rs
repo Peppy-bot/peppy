@@ -36,9 +36,12 @@ mod generator;
 
 pub use error::Error as GeneratorError;
 
+pub use generator::common::CodecApi;
 pub use generator::common::{CrateDeployMode, NodeTree};
 pub use generator::generate_peppygen_lib;
-pub use generator::python::PythonGenerator;
+pub use generator::python::{
+    PythonGenerator, embeds_linux_peppylib, restage_peppylib_for_platform,
+};
 pub use generator::rust::RustGenerator;
 pub use generator::types::{
     ConsumedActionMessage, ContractOrigin, DependencyContext, DeploymentInterface,

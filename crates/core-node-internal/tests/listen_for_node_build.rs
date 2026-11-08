@@ -127,7 +127,10 @@ async fn listen_for_node_build_runs_build_cmd() {
     let built = build_result.completed();
 
     let archive_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
-    assert_eq!(built.artifact_path.as_path(), archive_path.as_path());
+    assert_eq!(
+        built.artifact_path.as_deref().expect("an artifact"),
+        archive_path.as_path()
+    );
 
     assert!(
         archive_contains_entry(&archive_path, BUILD_CMD_MARKER_FILE),
@@ -706,7 +709,7 @@ async fn listen_for_node_build_copies_files_to_storage() {
 
     let archive_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
     assert_eq!(
-        built.artifact_path.as_path(),
+        built.artifact_path.as_deref().expect("an artifact"),
         archive_path.as_path(),
         "artifact_path should match archive path"
     );
@@ -869,7 +872,10 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
 
     let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
-    assert_eq!(built.artifact_path.as_path(), root_path.as_path());
+    assert_eq!(
+        built.artifact_path.as_deref().expect("an artifact"),
+        root_path.as_path()
+    );
     assert!(
         root_path != source_dir.path(),
         "node should be stored in a different location than the source, got: {}",
@@ -896,9 +902,15 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .file_name()
         .and_then(|n| n.to_str())
         .expect("should have file name");
-    let fingerprint = file_name
-        .strip_suffix(".sif")
-        .unwrap_or_else(|| panic!("stored image should end in .sif, got: {file_name}"));
+    let suffix = format!(
+        ".{}.sif",
+        daemon_config::consts::HOST_ARTIFACT_PLATFORM.tag_suffix()
+    );
+    let fingerprint = file_name.strip_suffix(&suffix).unwrap_or_else(|| {
+        panic!(
+            "stored image should end in {suffix}, the platform of this machine, got: {file_name}"
+        )
+    });
     assert_eq!(
         fingerprint.len(),
         16,

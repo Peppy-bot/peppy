@@ -7,7 +7,7 @@ pub use core_node_api::encoding::RepoItemKind;
 
 // Where an item's bytes live and which revision they were read at, shared by
 // the repo cache entries and the launch pins so the two cannot drift.
-pub use origin::EntryOrigin;
+pub use origin::{EntryOrigin, OciArtifact};
 // Defines the repository index (`peppy_schema: "repository/v1"`), the
 // `peppy_repository.json5` document at the root of the tree peppy scans.
 // A repository states there what it publishes and where each item is

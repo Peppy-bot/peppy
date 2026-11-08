@@ -26,8 +26,17 @@ pub(in crate::services::stack) async fn preflight_change(
     touched: &[PlannedDeployment],
     placements: &Placements,
     live: Option<&BTreeSet<String>>,
+    publish_repository: Option<&core_node_api::encoding::OciRepository>,
 ) -> ChangeResult<ChangePlan> {
-    let reserved = federated::preflight(ctx, launch_id, touched, placements, live).await?;
+    let reserved = federated::preflight(
+        ctx,
+        launch_id,
+        touched,
+        placements,
+        live,
+        publish_repository,
+    )
+    .await?;
     let mounts = container_mount_sources_by_machine(touched, placements).map_err(rejected)?;
     Ok(ChangePlan { reserved, mounts })
 }

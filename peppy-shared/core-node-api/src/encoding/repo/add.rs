@@ -9,6 +9,7 @@ use crate::{Payload, Result};
 use crate::encoding::{decode_message, encode_fs_path, encode_message};
 
 use super::git_ref::{GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, decode_git_repo_ref};
+use super::oci::OciRepository;
 
 /// Discriminant for the type of repository source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -16,6 +17,7 @@ use super::git_ref::{GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, decode_git_repo_
 pub enum RepoSourceKind {
     Fs,
     Git,
+    Oci,
 }
 
 impl RepoSourceKind {
@@ -23,6 +25,7 @@ impl RepoSourceKind {
         match self {
             RepoSourceKind::Fs => "fs",
             RepoSourceKind::Git => "git",
+            RepoSourceKind::Oci => "oci",
         }
     }
 
@@ -30,13 +33,14 @@ impl RepoSourceKind {
         match s {
             "fs" => Some(RepoSourceKind::Fs),
             "git" => Some(RepoSourceKind::Git),
+            "oci" => Some(RepoSourceKind::Oci),
             _ => None,
         }
     }
 }
 
 /// Decodes a `sourceType` text field as [`RepoSourceKind::as_str`] writes it;
-/// a kind outside the two fails the decode.
+/// a kind outside the three fails the decode.
 pub(super) fn decode_source_kind(text: &str) -> Result<RepoSourceKind> {
     RepoSourceKind::parse(text)
         .ok_or_else(|| crate::Error::Decoding(format!("unknown source type: {text}")))
@@ -55,6 +59,10 @@ pub enum RepoSource {
         repo_url: String,
         repo_ref: GitRepoRef,
     },
+    /// An OCI repository that holds the prebuilt `.sif` of container nodes.
+    /// It has no ref: the tags of its artifacts name the peppy version and
+    /// the platform each one is for.
+    Oci(OciRepository),
 }
 
 impl RepoSource {
@@ -68,18 +76,21 @@ impl RepoSource {
         match self {
             RepoSource::Fs(_) => RepoSourceKind::Fs,
             RepoSource::Git { .. } => RepoSourceKind::Git,
+            RepoSource::Oci(_) => RepoSourceKind::Oci,
         }
     }
 
     /// Human-readable label for CLI output, as `build` reads the source.
     ///
     /// - `Fs`: path as-written
+    /// - `Oci`: the `oci://` URL
     /// - `Git`: `"url (ref: r)"` when a ref is configured, else `"url"`. An
     ///   entry on `@{peppy-release}` also names the ref `build` reads for
     ///   it: `"url (ref: @{peppy-release}, reads peppy-release/v0.31.2)"`.
     pub fn display_label(&self, build: &PeppyBuild) -> String {
         match self {
             RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
+            RepoSource::Oci(repository) => repository.to_string(),
             RepoSource::Git { repo_url, repo_ref } => match (repo_ref, repo_ref.read_ref(build)) {
                 (GitRepoRef::PeppyRelease, Some(read)) => format!(
                     "{repo_url} (ref: {PEPPY_RELEASE_REF}, reads {})",
@@ -123,6 +134,14 @@ impl RepoAddRequest {
         }
     }
 
+    pub fn new_oci(repository: OciRepository) -> Self {
+        Self {
+            source: RepoSource::Oci(repository),
+            top: false,
+            id: None,
+        }
+    }
+
     pub fn with_top(mut self, top: bool) -> Self {
         self.top = top;
         self
@@ -149,6 +168,7 @@ impl RepoAddRequest {
                 RepoSource::Git { repo_url, repo_ref } => {
                     write_git_source(source.init_git(), repo_url, repo_ref);
                 }
+                RepoSource::Oci(repository) => source.set_oci(repository.to_string()),
             }
         }
         encode_message(&builder)
@@ -173,6 +193,7 @@ impl RepoAddRequest {
                 "RepoAddRequest.source.fs",
             )?),
             Which::Git(git) => read_git_source(git?)?,
+            Which::Oci(url) => read_oci_source(url?.to_str()?)?,
         };
         Ok(Self { source, top, id })
     }
@@ -197,6 +218,14 @@ pub(super) fn read_git_source(
         repo_url: git.get_repo_url()?.to_str()?.to_owned(),
         repo_ref: decode_git_repo_ref(git.get_repo_ref()?.to_str()?)?,
     })
+}
+
+/// Reads the `oci` arm of a source union: a URL that names no OCI
+/// repository is refused.
+pub(super) fn read_oci_source(url: &str) -> Result<RepoSource> {
+    OciRepository::parse(url)
+        .map(RepoSource::Oci)
+        .map_err(|e| crate::Error::Decoding(e.to_string()))
 }
 
 /// The response of a repository add that succeeded. Carries no fields: a
@@ -250,7 +279,7 @@ mod tests {
 
     #[test]
     fn source_kind_as_str_parse_roundtrips() {
-        for kind in [RepoSourceKind::Fs, RepoSourceKind::Git] {
+        for kind in [RepoSourceKind::Fs, RepoSourceKind::Git, RepoSourceKind::Oci] {
             assert_eq!(RepoSourceKind::parse(kind.as_str()), Some(kind));
         }
     }
@@ -259,6 +288,7 @@ mod tests {
     fn source_kind_as_str_values() {
         assert_eq!(RepoSourceKind::Fs.as_str(), "fs");
         assert_eq!(RepoSourceKind::Git.as_str(), "git");
+        assert_eq!(RepoSourceKind::Oci.as_str(), "oci");
     }
 
     #[test]
@@ -385,6 +415,44 @@ mod tests {
         let bytes = encode_message(&builder).expect("encode");
         let error = RepoAddRequest::decode(&bytes).expect_err("an unknown keyword");
         assert!(error.to_string().contains("@{peppy-release}"), "{error}");
+    }
+
+    fn oci_repository() -> OciRepository {
+        OciRepository::parse("oci://ghcr.io/acme/peppy-nodes").expect("valid url")
+    }
+
+    #[test]
+    fn source_display_label_oci_is_the_url() {
+        let src = RepoSource::Oci(oci_repository());
+        assert_eq!(src.kind(), RepoSourceKind::Oci);
+        assert_eq!(
+            src.display_label(&PeppyBuild::Unreleased),
+            "oci://ghcr.io/acme/peppy-nodes"
+        );
+    }
+
+    #[test]
+    fn add_request_new_oci_roundtrips() {
+        let request = RepoAddRequest::new_oci(oci_repository()).with_id(2000);
+        let bytes = request.encode().expect("encode");
+        assert_eq!(RepoAddRequest::decode(&bytes).expect("decode"), request);
+    }
+
+    /// A URL that names no OCI repository never reaches the daemon as a
+    /// source: decoding it fails and quotes the parse error.
+    #[test]
+    fn add_request_decode_refuses_an_oci_url_that_names_no_repository() {
+        let mut builder = Builder::new_default();
+        {
+            let request = builder.init_root::<repo_capnp::repo_add_request::Builder>();
+            request.init_source().set_oci("oci://ghcr.io");
+        }
+        let bytes = encode_message(&builder).expect("encode");
+        let error = RepoAddRequest::decode(&bytes).expect_err("no path");
+        assert!(
+            error.to_string().contains("names no repository path"),
+            "{error}"
+        );
     }
 
     #[test]

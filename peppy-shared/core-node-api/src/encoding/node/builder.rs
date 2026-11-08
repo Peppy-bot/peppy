@@ -1,5 +1,6 @@
 //! Encoding types for the NodeBuild action (streaming version with feedback).
 
+use super::publish::{NodePublishRequest, PlatformPublish};
 use crate::encoding::{
     capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
 };
@@ -57,6 +58,9 @@ pub struct NodeBuildGoal {
     /// artifact built from byte-identical sources. Independent of `force`,
     /// which only cancels an in-flight build of the same node.
     pub rebuild: bool,
+    /// Publish the `.sif` of the node to an OCI repository with its build.
+    /// `None`: the goal builds only.
+    pub publish: Option<NodePublishRequest>,
 }
 
 impl NodeBuildGoal {
@@ -73,6 +77,7 @@ impl NodeBuildGoal {
             force: false,
             launch_id: None,
             rebuild: false,
+            publish: None,
         }
     }
 
@@ -88,6 +93,12 @@ impl NodeBuildGoal {
 
     pub fn with_rebuild(mut self, rebuild: bool) -> Self {
         self.rebuild = rebuild;
+        self
+    }
+
+    /// Asks for the publish of the node with its build.
+    pub fn with_publish(mut self, publish: NodePublishRequest) -> Self {
+        self.publish = Some(publish);
         self
     }
 
@@ -114,6 +125,9 @@ impl NodeBuildGoal {
                 goal.reborrow().set_launch_id(launch_id);
             }
             goal.reborrow().set_rebuild(self.rebuild);
+            if let Some(publish) = &self.publish {
+                publish.write(goal.reborrow().init_publish())?;
+            }
         }
         encode_message(&builder)
     }
@@ -132,6 +146,11 @@ impl NodeBuildGoal {
             force: goal.get_force(),
             launch_id: optional_text(goal.get_launch_id()?.to_str()?),
             rebuild: goal.get_rebuild(),
+            publish: if goal.has_publish() {
+                Some(NodePublishRequest::read(goal.get_publish()?)?)
+            } else {
+                None
+            },
         })
     }
 }
@@ -228,25 +247,54 @@ impl NodeBuildFeedback {
     }
 }
 
-/// The result of a completed node build: the artifact it produced. A failed
-/// build gives a failure kind and a message, and no result.
+/// The result of a completed node build: the artifact it produced, and what
+/// the publish of the goal did for each platform. A failed build gives a
+/// failure kind and a message, and no result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeBuildResult {
-    pub artifact_path: PathBuf,
+    /// The artifact of the platform of the daemon. `None` for a publish whose
+    /// artifact of that platform is in the repository already, which builds
+    /// nothing for it.
+    pub artifact_path: Option<PathBuf>,
+    /// One entry per platform, the host platform first. Empty for a goal
+    /// that asks for no publish.
+    pub published: Vec<PlatformPublish>,
 }
 
 impl NodeBuildResult {
     pub fn new(artifact_path: impl Into<PathBuf>) -> Self {
         Self {
-            artifact_path: artifact_path.into(),
+            artifact_path: Some(artifact_path.into()),
+            published: Vec::new(),
         }
+    }
+
+    /// The result of a publish that built nothing for the platform of the
+    /// daemon.
+    pub fn without_host_artifact() -> Self {
+        Self {
+            artifact_path: None,
+            published: Vec::new(),
+        }
+    }
+
+    pub fn with_published(mut self, published: Vec<PlatformPublish>) -> Self {
+        self.published = published;
+        self
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<node_capnp::node_build_result::Builder>();
-            result.set_artifact_path(self.artifact_path.to_string_lossy().as_ref());
+            if let Some(path) = &self.artifact_path {
+                result.set_artifact_path(path.to_string_lossy().as_ref());
+            }
+            let count = capnp_list_len(self.published.len(), "NodeBuildResult.published")?;
+            let mut published = result.reborrow().init_published(count);
+            for (index, platform) in self.published.iter().enumerate() {
+                platform.write(published.reborrow().get(index as u32));
+            }
         }
         encode_message(&builder)
     }
@@ -255,7 +303,12 @@ impl NodeBuildResult {
         let reader = decode_message(data)?;
         let result = reader.get_root::<node_capnp::node_build_result::Reader>()?;
         Ok(Self {
-            artifact_path: PathBuf::from(result.get_artifact_path()?.to_str()?),
+            artifact_path: optional_text(result.get_artifact_path()?.to_str()?).map(PathBuf::from),
+            published: result
+                .get_published()?
+                .iter()
+                .map(PlatformPublish::read)
+                .collect::<Result<Vec<_>>>()?,
         })
     }
 }
@@ -389,6 +442,76 @@ mod tests {
     }
 
     #[test]
+    fn node_build_goal_round_trips_its_publish_request() {
+        use crate::encoding::{ArtifactPlatform, OciRepository, PublishRefusals};
+        for publish in [
+            NodePublishRequest {
+                repository: None,
+                extra_platforms: Vec::new(),
+                refusals: PublishRefusals::FailGoal,
+            },
+            NodePublishRequest {
+                repository: Some(OciRepository::parse("oci://ghcr.io/acme/nodes").unwrap()),
+                extra_platforms: vec![ArtifactPlatform::LinuxArm64, ArtifactPlatform::LinuxAmd64],
+                refusals: PublishRefusals::Report,
+            },
+        ] {
+            let goal = NodeBuildGoal::new("node", "tag", 30).with_publish(publish);
+            let decoded = NodeBuildGoal::decode(&goal.encode().expect("encode")).expect("decode");
+            assert_eq!(decoded, goal);
+        }
+        let plain = NodeBuildGoal::new("node", "tag", 30);
+        let decoded = NodeBuildGoal::decode(&plain.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.publish, None);
+    }
+
+    #[test]
+    fn a_result_without_an_artifact_of_the_host_round_trips() {
+        let result = NodeBuildResult::without_host_artifact();
+        let decoded = NodeBuildResult::decode(&result.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.artifact_path, None);
+    }
+
+    #[test]
+    fn node_build_result_round_trips_every_publish_outcome() {
+        use crate::encoding::{
+            ArtifactPlatform, NotPublishedReason, OciDigest, PlatformPublish, PublishOutcome,
+        };
+        let result = NodeBuildResult::new("/data/built_nodes/x_v1/a.linux-amd64.sif")
+            .with_published(vec![
+                PlatformPublish {
+                    platform: ArtifactPlatform::LinuxAmd64,
+                    outcome: PublishOutcome::Pushed {
+                        tag: "x.v1.v0.36.0.linux-amd64".to_owned(),
+                        manifest_digest: OciDigest::from_sha256_hex(&"a".repeat(64)).unwrap(),
+                    },
+                },
+                PlatformPublish {
+                    platform: ArtifactPlatform::LinuxArm64,
+                    outcome: PublishOutcome::AlreadyPublished {
+                        tag: "x.v1.v0.36.0.linux-arm64".to_owned(),
+                    },
+                },
+                PlatformPublish {
+                    platform: ArtifactPlatform::LinuxArm64,
+                    outcome: PublishOutcome::NotPublished {
+                        reason: NotPublishedReason::EmulatorMissing,
+                        detail: "install qemu-system-arm".to_owned(),
+                    },
+                },
+            ]);
+        let decoded = NodeBuildResult::decode(&result.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, result);
+        assert!(decoded.published[0].is_published());
+        assert!(decoded.published[1].is_published());
+        assert!(!decoded.published[2].is_published());
+        assert_eq!(
+            decoded.published[2].to_string(),
+            "linux/arm64: not published: install qemu-system-arm"
+        );
+    }
+
+    #[test]
     fn node_build_goal_decode_rejects_malformed_bytes() {
         assert!(NodeBuildGoal::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
     }
@@ -449,7 +572,10 @@ mod tests {
     #[test]
     fn node_build_result_roundtrip() {
         let result = NodeBuildResult::new("/artifacts/node.bin");
-        assert_eq!(result.artifact_path, PathBuf::from("/artifacts/node.bin"));
+        assert_eq!(
+            result.artifact_path,
+            Some(PathBuf::from("/artifacts/node.bin"))
+        );
         let encoded = result.encode().expect("encode");
         let decoded = NodeBuildResult::decode(&encoded).expect("decode");
         assert_eq!(decoded, result);

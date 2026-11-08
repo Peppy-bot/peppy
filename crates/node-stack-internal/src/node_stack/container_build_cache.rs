@@ -12,7 +12,9 @@
 //! * Rust: `cargo-home/` persists the crates.io registry between builds via
 //!   `CARGO_HOME`. Toolchain discovery is unaffected: rustup binaries are
 //!   found via `PATH` and `RUSTUP_HOME`, not `CARGO_HOME`. `sccache-cache/`
-//!   persists compiled artifacts via `RUSTC_WRAPPER` and `SCCACHE_DIR`. The
+//!   persists compiled artifacts via `RUSTC_WRAPPER` and `SCCACHE_DIR`, in a
+//!   directory per architecture (`sccache-cache/<arch>/`): the output of a
+//!   compiler of one architecture is no use to a build of the other. The
 //!   sccache executable ships inside the peppy Rust base image, so the
 //!   wrapper is only activated for defs that bootstrap from it.
 //! * Python: `uv-cache/` persists the packages uv downloads and builds via
@@ -26,9 +28,10 @@
 //!   by their sha256, via `PEPPY_DOWNLOAD_CACHE`. No tool reads that variable
 //!   on its own: a def opts in by looking a pinned file up there before it
 //!   downloads it, and by storing what it downloads under its checksum.
-//!   `nodes/<name>_<tag>/` is the node's own directory, via
-//!   `PEPPY_NODE_BUILD_CACHE`: whatever a def keeps there for its next build,
-//!   such as a part of the image it builds again only when its inputs change.
+//!   `nodes/<arch>/<name>_<tag>/` is the node's own directory for the
+//!   architecture of the build, via `PEPPY_NODE_BUILD_CACHE`: whatever a def
+//!   keeps there for its next build of that architecture, such as a part of
+//!   the image it builds again only when its inputs change.
 //!
 //! Caching is best effort and fails open: when the main directory of a
 //! profile cannot be set up, the build proceeds exactly as it would without
@@ -186,19 +189,30 @@ pub(super) fn prepare(
     prepare_in(&peppy_dirs.container_build_cache_dir(), node, profile)
 }
 
-/// The node a container build builds, which names its directory of the
-/// cache. The caller has validated the tag (see
-/// [`super::build_steps::validate_node_tag`]).
+/// The node a container build builds and the architecture it builds for,
+/// which name its directories of the cache. The caller has validated the tag
+/// (see [`super::build_steps::validate_node_tag`]).
 pub(super) struct NodeIdentity<'a> {
     pub name: &'a str,
     pub tag: &'a str,
+    /// `x86_64` or `aarch64`.
+    pub arch: &'a str,
 }
 
 impl NodeIdentity<'_> {
-    /// `nodes/<name>_<tag>`, the node's directory under the cache root, named
-    /// like its directory of built artifacts.
+    /// `nodes/<arch>/<name>_<tag>`, the node's directory under the cache root
+    /// for its architecture, named like its directory of built artifacts.
     fn cache_subdir(&self) -> String {
-        format!("{NODE_CACHES_SUBDIR}/{}_{}", self.name, self.tag)
+        format!(
+            "{NODE_CACHES_SUBDIR}/{}/{}_{}",
+            self.arch, self.name, self.tag
+        )
+    }
+
+    /// `sccache-cache/<arch>`, the compiled artifacts of the architecture of
+    /// the build.
+    fn sccache_subdir(&self) -> String {
+        format!("{SCCACHE_CACHE_SUBDIR}/{}", self.arch)
     }
 }
 
@@ -294,10 +308,10 @@ fn prepare_in(
     let mut parts = vec![main_part];
     match profile {
         CacheProfile::Rust { sccache_in_image } => {
-            if sccache_in_image && create_optional_part(cache_root, SCCACHE_CACHE_SUBDIR, "sccache")
-            {
+            let sccache_subdir = node.sccache_subdir();
+            if sccache_in_image && create_optional_part(cache_root, &sccache_subdir, "sccache") {
                 env.push(("RUSTC_WRAPPER", "sccache".to_string()));
-                env.push(("SCCACHE_DIR", in_build(SCCACHE_CACHE_SUBDIR)));
+                env.push(("SCCACHE_DIR", in_build(&sccache_subdir)));
                 // Concurrent builds share the host network namespace. A unique
                 // port per build keeps each sccache server paired with the
                 // build that started it; servers die with the build's PID
@@ -639,6 +653,7 @@ mod tests {
     const NODE: NodeIdentity<'static> = NodeIdentity {
         name: "node",
         tag: "v1",
+        arch: "x86_64",
     };
 
     fn env_keys(cache: &ContainerBuildCache) -> Vec<&'static str> {
@@ -811,7 +826,7 @@ mod tests {
         .expect("cache prepared");
 
         assert!(root.path().join(CARGO_HOME_SUBDIR).is_dir());
-        assert!(root.path().join(SCCACHE_CACHE_SUBDIR).is_dir());
+        assert!(root.path().join("sccache-cache/x86_64").is_dir());
         assert!(root.path().join(DOWNLOADS_SUBDIR).is_dir());
         assert!(!root.path().join(UV_CACHE_SUBDIR).exists());
         assert_eq!(
@@ -827,10 +842,10 @@ mod tests {
         );
         assert_eq!(cache.env[0].1, "/peppy-cache/cargo-home");
         assert_eq!(cache.env[1].1, "sccache");
-        assert_eq!(cache.env[2].1, "/peppy-cache/sccache-cache");
+        assert_eq!(cache.env[2].1, "/peppy-cache/sccache-cache/x86_64");
         assert_eq!(cache.env[4].1, "/peppy-cache/downloads");
-        assert_eq!(cache.env[5].1, "/peppy-cache/nodes/node_v1");
-        assert!(root.path().join("nodes/node_v1").is_dir());
+        assert_eq!(cache.env[5].1, "/peppy-cache/nodes/x86_64/node_v1");
+        assert!(root.path().join("nodes/x86_64/node_v1").is_dir());
         assert_eq!(
             cache.summary,
             "Container build cache: cargo registry + sccache + downloads + node cache"
@@ -856,7 +871,7 @@ mod tests {
                 ("PEPPY_DOWNLOAD_CACHE", "/peppy-cache/downloads".to_string()),
                 (
                     "PEPPY_NODE_BUILD_CACHE",
-                    "/peppy-cache/nodes/node_v1".to_string()
+                    "/peppy-cache/nodes/x86_64/node_v1".to_string()
                 ),
             ]
         );
@@ -887,7 +902,7 @@ mod tests {
                 ("PEPPY_DOWNLOAD_CACHE", "/peppy-cache/downloads".to_string()),
                 (
                     "PEPPY_NODE_BUILD_CACHE",
-                    "/peppy-cache/nodes/node_v1".to_string()
+                    "/peppy-cache/nodes/x86_64/node_v1".to_string()
                 ),
             ]
         );
@@ -991,7 +1006,11 @@ mod tests {
         let node_dir_of = |name, tag| {
             let cache = prepare_in(
                 root.path(),
-                &NodeIdentity { name, tag },
+                &NodeIdentity {
+                    name,
+                    tag,
+                    arch: "x86_64",
+                },
                 CacheProfile::Python,
             )
             .expect("cache prepared");
@@ -1003,12 +1022,59 @@ mod tests {
                 .expect("the node dir is set")
         };
 
-        assert_eq!(node_dir_of("waldo", "v1"), "/peppy-cache/nodes/waldo_v1");
-        assert_eq!(node_dir_of("waldo", "v2"), "/peppy-cache/nodes/waldo_v2");
-        assert_eq!(node_dir_of("camera", "v1"), "/peppy-cache/nodes/camera_v1");
-        assert!(root.path().join("nodes/waldo_v1").is_dir());
-        assert!(root.path().join("nodes/waldo_v2").is_dir());
-        assert!(root.path().join("nodes/camera_v1").is_dir());
+        assert_eq!(
+            node_dir_of("waldo", "v1"),
+            "/peppy-cache/nodes/x86_64/waldo_v1"
+        );
+        assert_eq!(
+            node_dir_of("waldo", "v2"),
+            "/peppy-cache/nodes/x86_64/waldo_v2"
+        );
+        assert_eq!(
+            node_dir_of("camera", "v1"),
+            "/peppy-cache/nodes/x86_64/camera_v1"
+        );
+        assert!(root.path().join("nodes/x86_64/waldo_v1").is_dir());
+        assert!(root.path().join("nodes/x86_64/waldo_v2").is_dir());
+        assert!(root.path().join("nodes/x86_64/camera_v1").is_dir());
+    }
+
+    /// The compiled output of one architecture is no use to a build of the
+    /// other, so each architecture has its own sccache and node directories.
+    #[test]
+    fn each_architecture_gets_its_own_compiled_output() {
+        let root = tempfile::tempdir().expect("create temp dir");
+        for arch in ["x86_64", "aarch64"] {
+            let cache = prepare_in(
+                root.path(),
+                &NodeIdentity {
+                    name: "node",
+                    tag: "v1",
+                    arch,
+                },
+                CacheProfile::Rust {
+                    sccache_in_image: true,
+                },
+            )
+            .expect("cache prepared");
+            let env_of = |key: &str| {
+                cache
+                    .env
+                    .iter()
+                    .find(|(name, _)| *name == key)
+                    .map(|(_, value)| value.clone())
+                    .expect("set")
+            };
+            assert_eq!(
+                env_of("SCCACHE_DIR"),
+                format!("/peppy-cache/sccache-cache/{arch}")
+            );
+            assert_eq!(
+                env_of(NODE_BUILD_CACHE_ENV_VAR),
+                format!("/peppy-cache/nodes/{arch}/node_v1")
+            );
+            assert_eq!(env_of("CARGO_HOME"), "/peppy-cache/cargo-home");
+        }
     }
 
     #[test]

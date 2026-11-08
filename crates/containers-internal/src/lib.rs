@@ -8,8 +8,8 @@ mod apptainer;
 mod error;
 mod mount_source;
 
-pub use apptainer::{Apptainer, ApptainerCommand};
-pub use apptainer::{BuildActivity, BuildActivityProbe};
+pub use apptainer::{Apptainer, ApptainerCommand, emulation_problem};
+pub use apptainer::{BuildActivity, BuildActivityProbe, RegistryAuthFile};
 #[cfg(target_os = "linux")]
 pub use apptainer::{SetupStatus, check_setup_status};
 pub use error::{Error, Result};

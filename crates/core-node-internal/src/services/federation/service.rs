@@ -265,6 +265,15 @@ async fn reserve_inner(
     validate_deployment_pins(&decoded.deployment_pins_json5)
         .map_err(|reason| failure(PeppyFailureKind::Rejected, reason))?;
 
+    // A `peppy stack build --publish` pushes what this machine builds to the
+    // publish repository of the coordinator, with the credentials of this
+    // machine: the registry must accept a push from here before any build.
+    if let Some(repository) = &decoded.publish_repository {
+        crate::services::node::publish::check_push_from(repository, &context.core_node_name)
+            .await
+            .map_err(|reason| failure(PeppyFailureKind::PreconditionFailed, reason))?;
+    }
+
     match context
         .ownership
         .try_reserve(&decoded.launch_id, &decoded.coordinator_core_node)

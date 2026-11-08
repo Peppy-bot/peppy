@@ -285,10 +285,13 @@ def test_build_accepts_release_targets_only() -> None:
         )
 
 
-def test_the_macos_build_needs_apptainer_of_both_linux_architectures() -> None:
-    assert _apptainer_arches_for("aarch64-apple-darwin") == ("aarch64", "x86_64")
-    assert _apptainer_arches_for("aarch64-unknown-linux-gnu") == ("aarch64",)
-    assert _apptainer_arches_for("x86_64-unknown-linux-gnu") == ("x86_64",)
+def test_every_release_build_needs_apptainer_of_both_linux_architectures() -> None:
+    for target in (
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+    ):
+        assert _apptainer_arches_for(target) == ("aarch64", "x86_64"), target
 
 
 # --- prepare ---
@@ -640,7 +643,7 @@ def build_mocks(tmp_path: Path) -> Iterator[BuildMocks]:
 def test_build_embeds_the_provisioned_bindings_and_apptainer(
     tmp_path: Path, build_mocks: BuildMocks
 ) -> None:
-    provisioned = _provisioned(tmp_path, ("aarch64",))
+    provisioned = _provisioned(tmp_path, ("aarch64", "x86_64"))
     embedded: dict[str, list[str]] = {}
 
     def fake_build(tag: str, target: str, repo_root: Path) -> BuildArtifact:
@@ -670,14 +673,14 @@ def test_build_embeds_the_provisioned_bindings_and_apptainer(
     assert seeded.is_file()
     assert seeded.stat().st_mode & 0o111
     build_mocks.verify.assert_called_once_with(
-        tmp_path / "dist", ["aarch64-unknown-linux-gnu"]
+        tmp_path / "dist", ["aarch64-unknown-linux-gnu"], ships_other_platform=True
     )
 
 
 def test_build_refuses_provisioned_bindings_that_lack_a_file(
     tmp_path: Path, build_mocks: BuildMocks
 ) -> None:
-    provisioned = _provisioned(tmp_path, ("aarch64",))
+    provisioned = _provisioned(tmp_path, ("aarch64", "x86_64"))
     bindings = _fake_bindings_dir(tmp_path / "incomplete" / "so")
     _write_tarball(
         provisioned / BINDINGS_ARCHIVE,
@@ -719,23 +722,33 @@ def test_build_refuses_a_checkout_off_the_planned_commit(
         run_build(
             plan_path=build_mocks.plan_path,
             target="aarch64-unknown-linux-gnu",
-            provisioned_dir=_provisioned(tmp_path, ("aarch64",)),
+            provisioned_dir=_provisioned(tmp_path, ("aarch64", "x86_64")),
         )
 
     build_mocks.build.assert_not_called()
 
 
-def test_macos_build_stops_before_building_without_the_x86_64_apptainer(
-    tmp_path: Path, build_mocks: BuildMocks
+@pytest.mark.parametrize(
+    ("target", "missing"),
+    [
+        ("aarch64-apple-darwin", "x86_64"),
+        ("aarch64-unknown-linux-gnu", "x86_64"),
+        ("x86_64-unknown-linux-gnu", "aarch64"),
+    ],
+)
+def test_a_build_stops_before_building_without_the_apptainer_of_the_other_architecture(
+    tmp_path: Path, build_mocks: BuildMocks, target: str, missing: str
 ) -> None:
-    # Without it the macOS build would start a Lima VM to build it.
-    build_mocks.native.return_value = "aarch64-apple-darwin"
+    # Every release ships it for the builds of the other platform; without it
+    # the macOS build would also start a Lima VM to build it.
+    build_mocks.native.return_value = target
+    present = "aarch64" if missing == "x86_64" else "x86_64"
 
-    with pytest.raises(ReleaseError, match="apptainer-x86_64.tgz"):
+    with pytest.raises(ReleaseError, match=f"apptainer-{missing}.tgz"):
         run_build(
             plan_path=build_mocks.plan_path,
-            target="aarch64-apple-darwin",
-            provisioned_dir=_provisioned(tmp_path, ("aarch64",)),
+            target=target,
+            provisioned_dir=_provisioned(tmp_path, (present,)),
         )
 
     build_mocks.build.assert_not_called()
@@ -1150,7 +1163,9 @@ def publish(
         with (
             patch(
                 "functions.parallel_release.verify_all_releases",
-                side_effect=lambda dist_dir: events.append("verify the archives"),
+                side_effect=lambda dist_dir, ships_other_platform: events.append(
+                    "verify the archives"
+                ),
             ),
             patch(
                 "functions.parallel_release.check_release_install",

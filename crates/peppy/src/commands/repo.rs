@@ -166,6 +166,7 @@ pub enum RepoCommands {
         /// - Git URL: `https://github.com/org/repo.git`
         /// - Git URL with ref: `https://github.com/org/repo.git --ref <branch, tag, commit, or @{peppy-release}>`
         /// - Git URL without `.git`, with ref: `https://github.com/org/repo --ref main`
+        /// - OCI repository of prebuilt container nodes: `oci://ghcr.io/acme/peppy-nodes`
         source: String,
         /// Git ref to track (git sources only): a branch, a tag, a commit,
         /// or `@{peppy-release}`, which reads the tag
@@ -200,6 +201,7 @@ pub enum RepoCommands {
         /// - Git URL: `https://github.com/org/repo.git`
         /// - Git URL with ref: `https://github.com/org/repo.git --ref <branch, tag, commit, or @{peppy-release}>`
         /// - Git URL without `.git`, with ref: `https://github.com/org/repo --ref main`
+        /// - OCI repository: `oci://ghcr.io/acme/peppy-nodes`
         source: String,
         /// Git ref of the repository to exclude (git sources only), as it is
         /// written in `repositories.json5`: a branch, a tag, a commit, or

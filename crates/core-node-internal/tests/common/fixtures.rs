@@ -196,6 +196,60 @@ pub struct TestPackagesCache {
     launchers: Vec<serde_json::Value>,
     contracts: Vec<serde_json::Value>,
     pairings: Vec<serde_json::Value>,
+    /// The `peppy.json5` of each oci entry, which `write` puts in the store
+    /// of node manifests as a refresh does.
+    oci_node_manifests: Vec<String>,
+}
+
+/// The version an oci fixture names its artifacts with.
+pub const TEST_ARTIFACT_VERSION: &str = "v0.0.0-test";
+
+/// The digest of the `.sif` of the artifact of `name:tag` for `platform` in
+/// an oci fixture, which names no real image.
+pub fn test_sif_digest(
+    name: &str,
+    tag: &str,
+    platform: core_node_api::encoding::ArtifactPlatform,
+) -> core_node_api::encoding::OciDigest {
+    core_node_api::encoding::OciDigest::from_sha256_hex(&seeded_sha(&format!(
+        "{name}:{tag}:{platform}:sif"
+    )))
+    .expect("a seeded sha is a digest")
+}
+
+/// The `origin` object of a cache entry read from the oci repository `url`,
+/// with an artifact for each of `platforms`, in the shape `repo refresh`
+/// writes it.
+pub fn oci_origin(
+    url: &str,
+    name: &str,
+    tag: &str,
+    platforms: &[core_node_api::encoding::ArtifactPlatform],
+) -> serde_json::Value {
+    let version = core_node_api::encoding::ArtifactVersion::parse(TEST_ARTIFACT_VERSION)
+        .expect("valid version");
+    let artifacts: serde_json::Map<String, serde_json::Value> = platforms
+        .iter()
+        .map(|platform| {
+            let artifact_tag =
+                core_node_api::encoding::ArtifactTag::new(name, tag, &version, *platform)
+                    .expect("valid tag");
+            (
+                platform.as_str().to_owned(),
+                serde_json::json!({
+                    "tag": artifact_tag.to_string(),
+                    "manifest_digest": format!("sha256:{}", seeded_sha(&format!("{artifact_tag}:manifest"))),
+                    "sif_digest": test_sif_digest(name, tag, *platform).to_string(),
+                }),
+            )
+        })
+        .collect();
+    serde_json::json!({
+        "source_type": "oci",
+        "url": url,
+        "source_digest": format!("sha256:{}", seeded_sha(&format!("{name}:{tag}:sources"))),
+        "platforms": artifacts,
+    })
 }
 
 /// A distinct, valid fingerprint per `seed`, for entries whose bytes the
@@ -339,6 +393,28 @@ impl TestPackagesCache {
         self
     }
 
+    /// Adds a node read from the oci repository `url`, whose `peppy.json5`
+    /// is `manifest` and which has an artifact for each of `platforms`.
+    pub fn oci_entry(
+        mut self,
+        name: &str,
+        tag: &str,
+        url: &str,
+        manifest: &str,
+        platforms: &[core_node_api::encoding::ArtifactPlatform],
+    ) -> Self {
+        self.entries.push(serde_json::json!({
+            "node_name": name,
+            "node_tag": tag,
+            "sha256": config::fingerprint::fingerprint_for_bytes(manifest.as_bytes()),
+            "origin": oci_origin(url, name, tag, platforms),
+            "links": empty_links(),
+            "descriptions": test_descriptions(&format!("node {name}:{tag}")),
+        }));
+        self.oci_node_manifests.push(manifest.to_owned());
+        self
+    }
+
     /// Adds a `launchers.json5` entry for a filesystem-sourced launcher.
     /// `absolute_path` points at the launcher `.json5` file itself. The
     /// fingerprint follows [`fingerprint_or_seeded`]; launcher resolution
@@ -424,6 +500,14 @@ impl TestPackagesCache {
     pub fn write(self, peppy_dirs: &daemon_config::consts::PeppyDirs) {
         let cache_dir = peppy_dirs.cache_dir();
         std::fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
+        for manifest in &self.oci_node_manifests {
+            let dir = peppy_dirs.oci_node_manifests_dir().join(
+                config::fingerprint::fingerprint_for_bytes(manifest.as_bytes()),
+            );
+            std::fs::create_dir_all(&dir).expect("failed to create the node manifest store");
+            std::fs::write(dir.join(NODE_CONFIG_FILE), manifest)
+                .expect("failed to write a stored node manifest");
+        }
         let content =
             serde_json::to_string_pretty(&self.entries).expect("failed to serialize cache entries");
         std::fs::write(nodes_repo_cache_path(peppy_dirs), content)

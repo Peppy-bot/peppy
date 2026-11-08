@@ -199,6 +199,23 @@ def find_build_dir(
     )
 
 
+def find_optional_build_dir(
+    target_triple: str,
+    repo_root: Path,
+    pattern: str,
+    *,
+    target_dir: Path | None = None,
+) -> Path | None:
+    """Locate a directory the build output may hold: the first match of
+    {target_dir}/{target_triple}/release/build/{pattern}, or None."""
+    target_dir = target_dir or _get_target_dir(repo_root)
+    build_dir = target_dir / target_triple / "release" / "build"
+    matches = sorted(build_dir.glob(pattern))
+    if matches and matches[0].is_dir():
+        return matches[0]
+    return None
+
+
 def release_dist_dir(repo_root: Path) -> Path:
     """The directory release archives are written to.
 
@@ -239,6 +256,16 @@ def _sanitize_tar_member(member: tarfile.TarInfo) -> tarfile.TarInfo:
     return member
 
 
+def other_linux_arch(target_triple: str) -> str:
+    """The Linux architecture other than the one the containers of
+    *target_triple* run on: a macOS target runs its containers in an aarch64
+    VM."""
+    container_arch = (
+        "aarch64" if "apple-darwin" in target_triple else target_triple.split("-", 1)[0]
+    )
+    return "aarch64" if container_arch == "x86_64" else "x86_64"
+
+
 def package_release(
     target_triple: str,
     repo_root: Path,
@@ -246,14 +273,22 @@ def package_release(
     zenohd_bin: Path,
     apptainer_dir: Path,
     lima_dir: Path | None = None,
+    other_apptainer: tuple[str, Path] | None = None,
 ) -> BuildArtifact:
     """Create a .tgz release archive.
 
     Creates a temporary directory with the package layout:
       ./bin/peppy
       ./bin/zenohd
-      ./bin/apptainer/
-      ./bin/lima/         (macOS only)
+      ./bin/apptainer/          (the Linux architecture of the target)
+      ./bin/apptainer-<arch>/   (the other Linux architecture, when built)
+      ./bin/lima/               (when built)
+
+    The apptainer and Lima of the other architecture run the builds for its
+    platform in an emulated VM (`peppy node publish --platforms`); on macOS,
+    Lima also runs every container. A release has both (see
+    verify_release); a local build of one architecture has the apptainer of
+    that architecture alone.
 
     Writes the archive to {dist_dir}/peppy-{target_triple}.tgz.
     """
@@ -275,6 +310,9 @@ def package_release(
         (bin_dir / "zenohd").chmod(0o755)
 
         shutil.copytree(apptainer_dir, bin_dir / "apptainer")
+        if other_apptainer is not None:
+            other_arch, other_apptainer_dir = other_apptainer
+            shutil.copytree(other_apptainer_dir, bin_dir / f"apptainer-{other_arch}")
         if lima_dir is not None:
             shutil.copytree(lima_dir, bin_dir / "lima")
 
@@ -358,6 +396,8 @@ def build_and_package(
             target_dir=target_dir,
         )
 
+        # macOS runs every container in Lima, so its build always has it. A
+        # Linux build has it when its build script could download it.
         lima_dir = (
             find_build_dir(
                 target_triple,
@@ -367,7 +407,19 @@ def build_and_package(
                 target_dir=target_dir,
             )
             if "apple-darwin" in target_triple
-            else None
+            else find_optional_build_dir(
+                target_triple,
+                repo_root,
+                "containers-*/out/lima-install",
+                target_dir=target_dir,
+            )
+        )
+        other_arch = other_linux_arch(target_triple)
+        other_apptainer_dir = find_optional_build_dir(
+            target_triple,
+            repo_root,
+            f"containers-*/out/apptainer-install-{other_arch}",
+            target_dir=target_dir,
         )
 
         # Inside the `with`, because the tarball is assembled from files under
@@ -379,4 +431,5 @@ def build_and_package(
             zenohd_bin,
             apptainer_dir,
             lima_dir,
+            (other_arch, other_apptainer_dir) if other_apptainer_dir else None,
         )

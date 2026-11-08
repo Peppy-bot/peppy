@@ -8,7 +8,7 @@ use crate::{Payload, Result};
 use crate::encoding::RepoSource;
 use crate::encoding::{decode_message, encode_fs_path, encode_message};
 
-use super::add::{read_git_source, write_git_source};
+use super::add::{read_git_source, read_oci_source, write_git_source};
 use super::git_ref::GitRepoRef;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +44,7 @@ impl RepoExcludeRequest {
                 RepoSource::Git { repo_url, repo_ref } => {
                     write_git_source(source.init_git(), repo_url, repo_ref);
                 }
+                RepoSource::Oci(repository) => source.set_oci(repository.to_string()),
             }
         }
         encode_message(&builder)
@@ -60,6 +61,7 @@ impl RepoExcludeRequest {
                 "RepoExcludeRequest.source.fs",
             )?),
             Which::Git(git) => read_git_source(git?)?,
+            Which::Oci(url) => read_oci_source(url?.to_str()?)?,
         };
         Ok(Self { source })
     }
@@ -155,6 +157,18 @@ mod tests {
                 repo_ref: GitRepoRef::Named("main".to_owned()),
             }
         );
+        let payload = request.encode().expect("encode");
+        let decoded = RepoExcludeRequest::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn exclude_request_oci_round_trips() {
+        let repository =
+            crate::encoding::OciRepository::parse("oci://localhost:5000/nodes").expect("valid url");
+        let request = RepoExcludeRequest {
+            source: RepoSource::Oci(repository),
+        };
         let payload = request.encode().expect("encode");
         let decoded = RepoExcludeRequest::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, request);

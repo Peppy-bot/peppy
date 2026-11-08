@@ -22,6 +22,9 @@ outputs:
   container_e2e:
     description: Whether the container e2e suite's inputs changed.
     value: ${{ steps.detect.outputs.container_e2e }}
+  registry_e2e:
+    description: Whether the registry e2e suite's inputs changed.
+    value: ${{ steps.detect.outputs.registry_e2e }}
   multi_daemon_e2e:
     description: Whether the multi-daemon e2e suite's inputs changed.
     value: ${{ steps.detect.outputs.multi_daemon_e2e }}

@@ -48,6 +48,50 @@ pub const PEPPY_VERSION: &str = match PEPPY_GIT_TAG {
     None => "unknown",
 };
 
+/// Why this peppy does not read or write OCI registry artifacts.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum NoArtifactVersion {
+    #[error(
+        "this peppy was built without a release tag (its version is `{PEPPY_VERSION}`), so it does \
+         not use OCI registries: every such build has the same version, and two different ones \
+         would take each other's artifacts. Use a release of peppy, or a build with \
+         PEPPY_GIT_TAG set"
+    )]
+    Untagged,
+    #[error(
+        "the release tag `{0}` of this peppy cannot name registry artifacts: {1}. Build peppy \
+         with a PEPPY_GIT_TAG of letters, digits, `.`, `_` and `-`"
+    )]
+    Unusable(String, String),
+}
+
+/// The peppy version of the OCI registry artifacts this peppy publishes and
+/// pulls: its release tag. A build without one uses no registry.
+pub fn artifact_version() -> Result<core_node_api::encoding::ArtifactVersion, NoArtifactVersion> {
+    artifact_version_of(PEPPY_GIT_TAG)
+}
+
+fn artifact_version_of(
+    git_tag: Option<&str>,
+) -> Result<core_node_api::encoding::ArtifactVersion, NoArtifactVersion> {
+    let tag = git_tag.ok_or(NoArtifactVersion::Untagged)?;
+    core_node_api::encoding::ArtifactVersion::parse(tag)
+        .map_err(|e| NoArtifactVersion::Unusable(tag.to_owned(), e.to_string()))
+}
+
+/// The platform of the container artifacts this machine builds and runs:
+/// Linux on the architecture of this machine. On macOS, apptainer runs in a
+/// Lima VM of the architecture of the host.
+#[cfg(target_arch = "x86_64")]
+pub const HOST_ARTIFACT_PLATFORM: core_node_api::encoding::ArtifactPlatform =
+    core_node_api::encoding::ArtifactPlatform::LinuxAmd64;
+/// The platform of the container artifacts this machine builds and runs:
+/// Linux on the architecture of this machine. On macOS, apptainer runs in a
+/// Lima VM of the architecture of the host.
+#[cfg(target_arch = "aarch64")]
+pub const HOST_ARTIFACT_PLATFORM: core_node_api::encoding::ArtifactPlatform =
+    core_node_api::encoding::ArtifactPlatform::LinuxArm64;
+
 /// The build this binary is, as far as a repository entry on
 /// `@{peppy-release}` goes: a release build reads the hub tags of its own
 /// version, any other build reads the hubs' `main`.
@@ -306,6 +350,12 @@ impl PeppyDirs {
         self.cache_dir().join("container_build")
     }
 
+    /// The `peppy.json5` of the nodes the `oci` repositories hold, each in a
+    /// directory named after its sha256, which holds that file only.
+    pub fn oci_node_manifests_dir(&self) -> PathBuf {
+        self.cache_dir().join("oci_node_manifests")
+    }
+
     /// Persistent Git checkouts shared across `node add` batches.
     /// Directories are keyed by `<slug>-<hash>` where the hash covers
     /// repo_url + commit, so one directory holds exactly one tree.
@@ -408,6 +458,30 @@ impl Default for PeppyDirs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_build_without_a_release_tag_has_no_artifact_version() {
+        let error = artifact_version_of(None).expect_err("untagged");
+        assert_eq!(error, NoArtifactVersion::Untagged);
+        assert!(
+            error.to_string().contains("without a release tag"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn any_release_tag_that_an_oci_tag_can_hold_is_the_artifact_version() {
+        for tag in ["v0.36.0", "dev-5b706c5a0f1e", "v0.0.0-e2e"] {
+            assert_eq!(
+                artifact_version_of(Some(tag)).expect(tag).as_str(),
+                tag,
+                "{tag}"
+            );
+        }
+        let error = artifact_version_of(Some("v1+build")).expect_err("a `+`");
+        assert!(matches!(error, NoArtifactVersion::Unusable(..)), "{error}");
+        assert!(error.to_string().contains("v1+build"), "{error}");
+    }
 
     fn user_home() -> Option<PathBuf> {
         Some(PathBuf::from("/home/u"))

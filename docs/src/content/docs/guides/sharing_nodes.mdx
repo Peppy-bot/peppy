@@ -23,6 +23,8 @@ peppy repo search --text camera
 
 See [Search the repositories](/advanced_guides/repositories/#search-the-repositories).
 
+A repository shares the sources of a node, and each machine that adds the node builds it. To share a container node already built, publish its image to an OCI registry with `peppy node publish`: each machine that reads the registry as a repository pulls the image instead of building the node. See [Publishing nodes](/advanced_guides/publishing/).
+
 ## Adding a node from an unindexed repository
 
 If the node lives in a repository that isn't registered in your `repositories.json5`, you can still add it directly by URL:

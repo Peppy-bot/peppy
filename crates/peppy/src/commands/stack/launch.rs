@@ -200,14 +200,22 @@ fn remote_machines<'a>(goal: &'a LaunchGoal, coordinator: &str) -> BTreeSet<&'a 
 /// its result: a [`LaunchGoal`] runs the stack, a
 /// [`core_node_api::encoding::StackBuildGoal`] stops once every node is
 /// built.
-pub(super) fn launch<G>(ctx: &Arc<AppContext>, args: LauncherArgs) -> Result<()>
+pub(super) fn launch<G>(
+    ctx: &Arc<AppContext>,
+    args: LauncherArgs,
+    publish: Option<core_node_api::encoding::StackPublish>,
+) -> Result<()>
 where
     G: StackGoal + From<LaunchGoal>,
 {
-    crate::commands::block_on(launch_async::<G>(ctx, args))
+    crate::commands::block_on(launch_async::<G>(ctx, args, publish))
 }
 
-async fn launch_async<G>(ctx: &Arc<AppContext>, args: LauncherArgs) -> Result<()>
+async fn launch_async<G>(
+    ctx: &Arc<AppContext>,
+    args: LauncherArgs,
+    publish: Option<core_node_api::encoding::StackPublish>,
+) -> Result<()>
 where
     G: StackGoal + From<LaunchGoal>,
 {
@@ -233,7 +241,8 @@ where
         joins,
     )?
     .with_rebuild(rebuild)
-    .with_prebuild(!no_prebuild);
+    .with_prebuild(!no_prebuild)
+    .with_publish(publish);
     // Pre-validate the launcher config locally for `Fs` so the user gets a fast, precise parse
     // error before the daemon round-trip. `Repository` resolution lives daemon-side, so we
     // skip the local check rather than duplicate the lookup here. Only the verdict is

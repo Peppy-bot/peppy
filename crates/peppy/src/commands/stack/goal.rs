@@ -226,7 +226,7 @@ fn report_end(
             } else {
                 info!("{operation} completed successfully");
             }
-            Ok(())
+            report_published(&result.published)
         }
         StackGoalOutcome::Failed(failure) => Err(Error::ended(
             CallEnd::Failed,
@@ -240,6 +240,35 @@ fn report_end(
             format!("{operation} was {reason}. {log_file}"),
         )),
     }
+}
+
+/// Prints what `peppy stack build --publish` did for each node and platform,
+/// and fails, after the whole report, when a platform of a container node was
+/// not published. A process node and a node of an oci origin show in the
+/// report and fail nothing.
+fn report_published(published: &[core_node_api::encoding::NodePublishLine]) -> Result<()> {
+    if published.is_empty() {
+        return Ok(());
+    }
+    info!("Publish report:");
+    for line in published {
+        if line.fails_the_build() {
+            warn!("  {line}");
+        } else {
+            info!("  {line}");
+        }
+    }
+    let missing = published
+        .iter()
+        .filter(|line| line.fails_the_build())
+        .count();
+    if missing == 0 {
+        return Ok(());
+    }
+    Err(Error::ended(
+        CallEnd::Failed,
+        format!("{missing} platform(s) of container nodes were not published"),
+    ))
 }
 
 /// A stack goal followed to its end, and whether the operator's Ctrl-C sent

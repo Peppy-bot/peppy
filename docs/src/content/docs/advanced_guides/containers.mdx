@@ -398,12 +398,14 @@ Every `peppy node build`, including the ones `peppy stack launch` and
 `peppy stack build` run for each deployment, fingerprints the staged node
 tree before building: the node sources, `peppy.json5`, the def file, the
 generated `.peppy/` code and the
-vendored peppylib, mixed with the peppy version, the host platform and the
-artifact kind. The artifact is stored under that fingerprint:
+vendored peppylib, mixed with the peppy version, the platform of the
+artifact and the artifact kind. The artifact is stored under that
+fingerprint, and the file of a container node also names its platform
+(`linux-amd64` or `linux-arm64`):
 
 ```
-~/.peppy/built_nodes/<name>_<tag>/<fingerprint>.sif       container node
-~/.peppy/built_nodes/<name>_<tag>/<fingerprint>.tar.zst   process node
+~/.peppy/built_nodes/<name>_<tag>/<fingerprint>.linux-<arch>.sif   container node
+~/.peppy/built_nodes/<name>_<tag>/<fingerprint>.tar.zst            process node
 ```
 
 When the fingerprint already has an artifact on disk, the build reuses it
@@ -411,7 +413,7 @@ instead of running `apptainer build` (or `build_cmd` for a process node),
 and the build log carries one line:
 
 ```
-Reusing cached build of my_node:v1 (fingerprint 3f9a1c2e5d7b8a4f) at ~/.peppy/built_nodes/my_node_v1/3f9a1c2e5d7b8a4f.sif
+Reusing cached build of my_node:v1 (fingerprint 3f9a1c2e5d7b8a4f) at ~/.peppy/built_nodes/my_node_v1/3f9a1c2e5d7b8a4f.linux-amd64.sif
 ```
 
 The cache is a plain directory tree keyed by content, so it survives daemon
@@ -420,8 +422,11 @@ nodes to every machine that boots from it with the same peppy version, OS
 and architecture. A process node's archive also embeds what the host
 toolchain produced, which the fingerprint does not cover, so those machines
 need a compatible build environment as well. Each node identity keeps
-exactly one artifact: a build whose fingerprint differs replaces the
-previous one.
+one artifact for each platform: a build whose fingerprint differs replaces
+the previous one of its platform. A node that an
+[`oci` repository](/advanced_guides/repositories/#oci-repositories) supplies
+is pulled, not built: its image is stored as
+`~/.peppy/built_nodes/<name>_<tag>/<sha256 of the image>.linux-<arch>.sif`.
 
 Pass `--rebuild` to `peppy node build`, `peppy stack launch` or
 `peppy stack build` to build from the staged sources even when a matching
@@ -449,8 +454,10 @@ A Rust container build gets:
 - The crates.io registry in `cargo-home/`, via `CARGO_HOME`, so dependencies
   are downloaded once instead of on every build.
 - [sccache](https://github.com/mozilla/sccache) caches rustc invocations in
-  `sccache-cache/`, via `RUSTC_WRAPPER` and `SCCACHE_DIR`, so unchanged
-  crates are not recompiled. The executable ships inside
+  `sccache-cache/<arch>/`, via `RUSTC_WRAPPER` and `SCCACHE_DIR`, so unchanged
+  crates are not recompiled. Each architecture has its directory, since the
+  output of a compiler of one architecture is no use to a build of the
+  other. The executable ships inside
   `peppybot/rust-cargo-base`, so nothing needs to be installed on the host,
   on Linux or macOS; the wrapper is activated only for defs that bootstrap
   from that image.
@@ -499,8 +506,9 @@ fetch_pinned() {
 ```
 
 Both also get `PEPPY_NODE_BUILD_CACHE`, which names
-`/peppy-cache/nodes/<name>_<tag>`: a directory of the node being built, which
-no build of another node uses. Peppy never reads it. A def keeps there what
+`/peppy-cache/nodes/<arch>/<name>_<tag>`: a directory of the node being built
+for the architecture of the build, which no build of another node or of
+another architecture uses. Peppy never reads it. A def keeps there what
 its next build can use, such as a part of the image that it builds again only
 when the inputs of that part change, stored under a hash of those inputs. A
 build of the node can start while an earlier one still ends (after a
@@ -567,8 +575,8 @@ entries.
 
 :::note
 The cache lives at `~/.peppy/cache/container_build` and is safe to delete
-at any time; the next build recreates it. `sccache-cache/` prunes itself to
-sccache's size limit (10 GiB by default). `cargo-home/` grows with every
+at any time; the next build recreates it. Each directory of `sccache-cache/`
+prunes itself to sccache's size limit (10 GiB by default). `cargo-home/` grows with every
 dependency version ever built, `uv-python/` with every Python version ever
 installed, `downloads/` with every pin ever fetched, and `nodes/` with what
 the defs keep there; they are only reclaimed by deleting them. `uv-cache/` grows with every package version
@@ -712,7 +720,7 @@ These arguments are passed verbatim; no validation is performed beyond basic str
 ## macOS support
 
 On macOS, Apptainer is not natively available. Peppy bundles a [Lima](https://lima-vm.io/) virtual machine that runs Apptainer inside a lightweight Linux guest.
-This is handled transparently and requires no additional installation or configuration; `peppy node` commands work the same way on macOS and Linux, with one exception: mount sources under the host runtime trees (`/dev`, `/proc`, `/run`, `/sys`) are refused, since a device plugged into the Mac cannot be forwarded into the Linux guest.
+This is handled transparently and requires no additional installation or configuration; `peppy node` commands work the same way on macOS and Linux, with one exception: mount sources under the host runtime trees (`/dev`, `/proc`, `/run`, `/sys`) are refused, since a device plugged into the Mac cannot be forwarded into the Linux guest. The guest has the architecture of the Mac, so a node runs as a `linux/arm64` container on a Mac with Apple silicon. A [publish for another architecture](/advanced_guides/publishing/#build-for-another-architecture) builds in a second VM, which emulates that architecture with QEMU, on macOS and on Linux.
 
 ## Customizing the definition file
 
