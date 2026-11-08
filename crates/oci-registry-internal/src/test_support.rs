@@ -41,7 +41,7 @@ pub enum RegistryAuth {
 pub struct LocalRegistry {
     child: Child,
     address: SocketAddr,
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
 }
 
 impl LocalRegistry {
@@ -128,8 +128,14 @@ impl LocalRegistry {
         Ok(Self {
             child,
             address,
-            _dir: dir,
+            dir,
         })
+    }
+
+    /// The directory the registry stores its blobs and manifests in, with
+    /// the layout of the filesystem driver of distribution.
+    pub fn storage_dir(&self) -> std::path::PathBuf {
+        self.dir.path().join("storage")
     }
 
     /// `127.0.0.1:<port>`.

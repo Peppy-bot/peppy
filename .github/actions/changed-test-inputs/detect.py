@@ -34,6 +34,9 @@ from typing import NamedTuple
 SUITES = {
     # cargo test -p core-node --features container_e2e --test container_e2e
     "container_e2e": ("core-node", []),
+    # cargo test -p core-node --features registry_e2e --test registry_e2e, and
+    # the suite of oci-registry, which core-node reaches.
+    "registry_e2e": ("core-node", []),
     # cargo test -p peppy --features multi_daemon_e2e --test multi_daemon_e2e.
     # The federated tests drive the launcher the Federation guide documents,
     # copied out of the docs tree at run time (SPLIT_COMPUTE_LAUNCHER).
@@ -118,6 +121,7 @@ PEPPYLIB_PY = "peppylib-py"
 JOBS = {
     "workspace-tests": [WORKSPACE_SUITE],
     "container-e2e": ["container_e2e"],
+    "registry-e2e": ["registry_e2e"],
     "multi-daemon-e2e": ["multi_daemon_e2e"],
     "docs-integration": ["docs_integration"],
     "cross-check": ["cross_check"],

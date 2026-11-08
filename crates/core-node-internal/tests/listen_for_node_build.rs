@@ -902,9 +902,13 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .file_name()
         .and_then(|n| n.to_str())
         .expect("should have file name");
-    let fingerprint = file_name
-        .strip_suffix(".sif")
-        .unwrap_or_else(|| panic!("stored image should end in .sif, got: {file_name}"));
+    let suffix = format!(
+        ".{}.sif",
+        daemon_config::consts::HOST_ARTIFACT_PLATFORM.tag_suffix()
+    );
+    let fingerprint = file_name.strip_suffix(&suffix).unwrap_or_else(|| {
+        panic!("stored image should end in {suffix}, the platform of this machine, got: {file_name}")
+    });
     assert_eq!(
         fingerprint.len(),
         16,
