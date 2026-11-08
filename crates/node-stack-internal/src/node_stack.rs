@@ -8,7 +8,9 @@ mod pypi_mirror;
 mod run_steps;
 mod supervision;
 
-pub use build_artifact_cache::{CACHED_BUILD_REUSE_PREFIX, prune_siblings, pulled_artifact_path};
+pub use build_artifact_cache::{
+    CACHED_BUILD_REUSE_PREFIX, prune_siblings, pulled_artifact_path, source_digest,
+};
 use entity::serialize_node_entity;
 pub use entity::{
     Artifact, BuildContext, BuiltInLaunch, NodeEntity, NodeStage, OutputSinks, PulledArtifact,

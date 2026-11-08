@@ -73,7 +73,7 @@ pub use node_stack::{
     PlannedPair, ProcessClaim, PulledArtifact, Registrations, RemoteSlotMeta, RespawnInputs,
     RestartBackoff, RunningHealth, SlotAddr, SlotLeft, SlotRemoval, SpawnTarget, StartContext,
     StartRun, StartedInstanceCtx, StartingClaim, TrackedNodeInstance, WorkingDirGuard,
-    pairing_slot_view, prune_siblings, pulled_artifact_path,
+    pairing_slot_view, prune_siblings, pulled_artifact_path, source_digest,
 };
 #[cfg(all(unix, any(test, feature = "test-support")))]
 pub use process_group::{FORKS_A_TERM_IGNORER, process_group_exists, process_group_size};

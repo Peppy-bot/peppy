@@ -205,7 +205,7 @@ fn fingerprint_tree_for(
         ArtifactKind::Process => (host_os, host_arch),
     };
     let mut tree = Sha256::new();
-    hash_dir(&mut tree, working_dir, working_dir)?;
+    hash_dir(&mut tree, working_dir, working_dir, &|_| false)?;
     let tree_digest = tree.finalize();
 
     let mut key = Sha256::new();
@@ -222,13 +222,59 @@ fn fingerprint_tree_for(
     Ok(BuildFingerprint(hex))
 }
 
+/// The directory of a staged tree that holds the generated bindings and the
+/// vendored peppylib, each in a directory of its own.
+const STAGED_LIBS_DIR: &[u8] = b".peppy/libs";
+
+/// The one directory of [`STAGED_LIBS_DIR`] that is not the vendored
+/// peppylib: the bindings generated from the contracts of the node.
+const GENERATED_BINDINGS_DIR: &[u8] = b"peppygen";
+
+/// The source digest of the staged tree at `working_dir`: the sha256 of the
+/// tree without the vendored peppylib, that is without every directory of
+/// `.peppy/libs` but `peppygen`.
+///
+/// The vendored peppylib is the only part of a staged tree that changes with
+/// the platform (the native extension and the Cap'n Proto compiler of a
+/// Python node), and the peppy version in an artifact tag names it. So the
+/// amd64 and the arm64 staging of one revision have the same source digest,
+/// and a change of any source file changes it. Blocking: reads every file.
+pub fn source_digest(working_dir: &Path) -> io::Result<OciDigest> {
+    let mut tree = Sha256::new();
+    hash_dir(&mut tree, working_dir, working_dir, &is_vendored_peppylib)?;
+    let hex: String = tree
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Ok(OciDigest::from_sha256_hex(&hex).expect("a sha256 is 64 hexadecimal characters"))
+}
+
+/// Whether `rel`, a path relative to the root of a staged tree, is a
+/// directory of the vendored peppylib.
+fn is_vendored_peppylib(rel: &[u8]) -> bool {
+    let Some(rest) = rel.strip_prefix(STAGED_LIBS_DIR) else {
+        return false;
+    };
+    let Some(name) = rest.strip_prefix(b"/") else {
+        return false;
+    };
+    !name.contains(&b'/') && name != GENERATED_BINDINGS_DIR
+}
+
 /// Feeds `dir` into `hasher`, entries in byte order of their names. Every
 /// entry contributes a kind tag and its length-prefixed path relative to
 /// `root`; a symlink adds its target (not followed), a regular file adds its
 /// executable bit, size and content, and a directory recurses (an empty one
 /// still contributes: tar and `%files` preserve it). Anything else fails,
-/// since a fifo or device cannot be part of a reproducible tree.
-fn hash_dir(hasher: &mut Sha256, root: &Path, dir: &Path) -> io::Result<()> {
+/// since a fifo or device cannot be part of a reproducible tree. An entry
+/// whose relative path `skip` holds is left out, with all it holds.
+fn hash_dir(
+    hasher: &mut Sha256,
+    root: &Path,
+    dir: &Path,
+    skip: &dyn Fn(&[u8]) -> bool,
+) -> io::Result<()> {
     let mut entries = fs::read_dir(dir)?.collect::<io::Result<Vec<_>>>()?;
     entries.sort_by(|a, b| a.file_name().as_bytes().cmp(b.file_name().as_bytes()));
 
@@ -238,6 +284,9 @@ fn hash_dir(hasher: &mut Sha256, root: &Path, dir: &Path) -> io::Result<()> {
             .strip_prefix(root)
             .expect("a read_dir entry lives under the root it was listed from");
         let rel = rel.as_os_str().as_bytes();
+        if skip(rel) {
+            continue;
+        }
         let file_type = entry.file_type()?;
 
         if file_type.is_symlink() {
@@ -248,7 +297,7 @@ fn hash_dir(hasher: &mut Sha256, root: &Path, dir: &Path) -> io::Result<()> {
         } else if file_type.is_dir() {
             hasher.update(b"d");
             update_len_prefixed(hasher, rel);
-            hash_dir(hasher, root, &path)?;
+            hash_dir(hasher, root, &path, skip)?;
         } else if file_type.is_file() {
             let metadata = entry.metadata()?;
             let executable = metadata.permissions().mode() & 0o111 != 0;
@@ -657,6 +706,67 @@ mod tests {
              at /data/built_nodes/sensor_v1/0123456789abcdef.sif"
         );
         assert!(line.starts_with(CACHED_BUILD_REUSE_PREFIX));
+    }
+
+    /// A staged tree as a node add leaves it: the sources, the generated
+    /// bindings and a vendored peppylib whose native extension is the one of
+    /// `arch`.
+    fn staged_tree(dir: &Path, arch: &str) {
+        populate(dir, &["main", "manifest"]);
+        write(dir, ".peppy/libs/peppygen/__init__.py", b"bindings");
+        write(
+            dir,
+            ".peppy/libs/peppylib/peppylib/_peppylib.abi3.so",
+            format!("native extension of {arch}").as_bytes(),
+        );
+        write(dir, ".peppy/libs/peppy-codec/Cargo.toml", b"vendored crate");
+    }
+
+    #[test]
+    fn the_staging_of_one_revision_for_two_platforms_has_one_source_digest() {
+        let amd64 = tempfile::tempdir().expect("tempdir");
+        let arm64 = tempfile::tempdir().expect("tempdir");
+        staged_tree(amd64.path(), "x86_64");
+        staged_tree(arm64.path(), "aarch64");
+
+        assert_eq!(
+            source_digest(amd64.path()).expect("digest"),
+            source_digest(arm64.path()).expect("digest")
+        );
+        assert_ne!(
+            fingerprint(amd64.path()),
+            fingerprint(arm64.path()),
+            "the build fingerprint keeps the vendored peppylib"
+        );
+    }
+
+    #[test]
+    fn a_change_of_a_source_file_or_of_the_bindings_changes_the_source_digest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        staged_tree(dir.path(), "x86_64");
+        let before = source_digest(dir.path()).expect("digest");
+
+        write(dir.path(), "src/main.rs", b"fn main() { println!(); }");
+        let after_source = source_digest(dir.path()).expect("digest");
+        assert_ne!(before, after_source);
+
+        write(
+            dir.path(),
+            ".peppy/libs/peppygen/__init__.py",
+            b"other bindings",
+        );
+        assert_ne!(after_source, source_digest(dir.path()).expect("digest"));
+    }
+
+    #[test]
+    fn only_the_directories_of_the_libs_but_the_bindings_are_vendored_peppylib() {
+        assert!(is_vendored_peppylib(b".peppy/libs/peppylib"));
+        assert!(is_vendored_peppylib(b".peppy/libs/peppy-codec"));
+        assert!(!is_vendored_peppylib(b".peppy/libs/peppygen"));
+        assert!(!is_vendored_peppylib(b".peppy/libs"));
+        assert!(!is_vendored_peppylib(b".peppy/libs/peppylib/x"));
+        assert!(!is_vendored_peppylib(b"src/.peppy/libs/peppylib"));
+        assert!(!is_vendored_peppylib(b".peppy/libsx/peppylib"));
     }
 
     #[test]
