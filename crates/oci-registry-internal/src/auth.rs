@@ -141,10 +141,16 @@ impl CredentialStore {
             .spawn()
             .map_err(|e| failure(format!("cannot start {program}: {e}")))?;
         let mut stdin = child.stdin.take().expect("stdin is piped");
-        stdin
-            .write_all(registry.as_bytes())
-            .await
-            .map_err(|e| failure(format!("cannot write the registry to it: {e}")))?;
+        // A helper that fails before it reads the registry closes its stdin
+        // first. Its exit status and its stderr then say why it failed, so
+        // the broken pipe of the write is not the error to report.
+        match stdin.write_all(registry.as_bytes()).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(error) => {
+                return Err(failure(format!("cannot write the registry to it: {error}")));
+            }
+        }
         drop(stdin);
         let output = child
             .wait_with_output()
@@ -474,6 +480,9 @@ mod tests {
         );
     }
 
+    /// The broken helper exits without reading the registry, so the write
+    /// of the registry may meet a closed pipe: the error still gives the
+    /// exit status and the stderr of the helper.
     #[tokio::test]
     async fn a_failing_or_missing_credential_helper_is_an_error_that_names_it() {
         let (_dir, store) = store_with(

@@ -2564,20 +2564,14 @@ echo "=== Apptainer build complete ==="
         );
 
         // Step 4: the apptainer of the other Linux architecture, which the
-        // builds for that platform run in a VM of that architecture. A release
-        // (PEPPY_CROSS_ARCH=1) has it in its cache and must ship it; another
-        // build ships it when its cache has it.
+        // builds for that platform run in a VM of that architecture. A build
+        // ships it when its cache has it. A release provisions it, and the
+        // verification of the release archives refuses an archive without it
+        // (scripts/functions/verify_release.py); a local build of one
+        // architecture, such as `build_release.sh --local` on Linux, has only
+        // the apptainer of its own architecture.
         let other_cache = apptainer_cache_dir(APPTAINER_VERSION, other_arch);
-        let other_cache_complete =
-            apptainer_cache_sentinel_path(&other_cache, APPTAINER_VERSION).exists();
-        if !other_cache_complete {
-            if env::var("PEPPY_CROSS_ARCH").as_deref() == Ok("1") {
-                panic!(
-                    "a release build ships the apptainer of {other_arch}, and its cache {} is \
-                     not complete",
-                    other_cache.display()
-                );
-            }
+        if !apptainer_cache_sentinel_path(&other_cache, APPTAINER_VERSION).exists() {
             return;
         }
         copy_tree_to_out_dir(

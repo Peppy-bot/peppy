@@ -242,10 +242,10 @@ jobs:
       contents: read
     env:
       PEPPY_GIT_TAG: v0.0.0-registry-e2e
-      REGISTRY_VERSION: 3.1.2
+      DISTRIBUTION_VERSION: 3.1.2
       # sha256 of registry_3.1.2_linux_amd64.tar.gz, as the release of
       # github.com/distribution/distribution publishes it.
-      REGISTRY_SHA256: 40df2224d410f72ae425c3371873b078bbdbda3b8b612be9571f0e6751f3acc8
+      DISTRIBUTION_SHA256: 40df2224d410f72ae425c3371873b078bbdbda3b8b612be9571f0e6751f3acc8
 
     steps:
       - uses: actions/checkout@v7
@@ -265,8 +265,8 @@ jobs:
           mkdir -p "$dir"
           archive="$dir/registry.tar.gz"
           curl -fsSL -o "$archive" \
-            "https://github.com/distribution/distribution/releases/download/v${REGISTRY_VERSION}/registry_${REGISTRY_VERSION}_linux_amd64.tar.gz"
-          echo "${REGISTRY_SHA256}  $archive" | sha256sum -c -
+            "https://github.com/distribution/distribution/releases/download/v${DISTRIBUTION_VERSION}/registry_${DISTRIBUTION_VERSION}_linux_amd64.tar.gz"
+          echo "${DISTRIBUTION_SHA256}  $archive" | sha256sum -c -
           tar -xzf "$archive" -C "$dir" registry
           echo "PEPPY_TEST_REGISTRY_BIN=$dir/registry" >> "$GITHUB_ENV"
 

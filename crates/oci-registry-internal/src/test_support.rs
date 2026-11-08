@@ -27,6 +27,9 @@ const TEST_PASSWORD_BCRYPT: &str = "$2b$04$mjqZbbtZGPOpthGEEzOKOOmMrnhNbF4T3/BqX
 /// picked was taken by another process in the meantime.
 const START_ATTEMPTS: usize = 5;
 
+/// The prefix of the variables the registry reads as its configuration.
+const REGISTRY_CONFIG_ENV_PREFIX: &str = "REGISTRY_";
+
 /// Whether the registry asks for a credential.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistryAuth {
@@ -93,7 +96,20 @@ impl LocalRegistry {
         }
         let config_path = dir.path().join("config.yml");
         std::fs::write(&config_path, config).map_err(|e| format!("config: {e}"))?;
-        let mut child = Command::new(binary)
+        let mut command = Command::new(binary);
+        // The registry reads each `REGISTRY_<KEY>` variable of its
+        // environment as the value of that key of its configuration, so a
+        // variable of the caller with this prefix would change the
+        // configuration above.
+        for (name, _) in std::env::vars_os() {
+            if name
+                .to_string_lossy()
+                .starts_with(REGISTRY_CONFIG_ENV_PREFIX)
+            {
+                command.env_remove(name);
+            }
+        }
+        let mut child = command
             .arg("serve")
             .arg(&config_path)
             .stdin(Stdio::null())
