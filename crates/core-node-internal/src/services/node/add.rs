@@ -1,5 +1,7 @@
+mod registry;
 mod staged;
 
+pub(crate) use self::registry::run_registry_node_add;
 use self::staged::{StagedJob, run_staged_job};
 use super::super::action_loop::{
     GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, expose_daemon_action,
@@ -1456,20 +1458,7 @@ async fn process_node_add_inner(
 
     // Presence pass, before build_cmd so a wrong stack fails fast: a
     // dependency may be absent only where its slot admits the empty set.
-    let dep_errors = validate_dependency_specs(
-        &node_config.manifest,
-        &node_config.interfaces,
-        &node_name,
-        &node_tag,
-        MissingDependencyPolicy::AllowAbsentWhenSlotAdmitsEmpty,
-        stack_resolver(&ctx.action.node_stack),
-    );
-    if let Some(err) = dep_errors.into_iter().next() {
-        return Err(AddStepFailure::new(
-            PeppyFailureKind::PreconditionFailed,
-            format!("Failed to add node config: {}", err),
-        ));
-    }
+    check_dependencies_present(&node_config, &ctx.action.node_stack)?;
 
     // Resolvability pass: an admitted-absent dependency still feeds the
     // consumed modules peppygen generates, so it must resolve through the
@@ -1621,6 +1610,29 @@ async fn process_node_add_inner(
     debug!("Added node {}:{} (pending build)", node_name, node_tag);
 
     Ok(NodeAddResult::new(node_name, node_tag))
+}
+
+/// The presence pass of an add: every dependency the manifest declares is
+/// in the stack, unless its slot admits the empty set.
+fn check_dependencies_present(
+    node_config: &NodeConfig,
+    node_stack: &NodeStack,
+) -> std::result::Result<(), AddStepFailure> {
+    let dep_errors = validate_dependency_specs(
+        &node_config.manifest,
+        &node_config.interfaces,
+        node_config.manifest.name.as_str(),
+        &node_config.manifest.tag,
+        MissingDependencyPolicy::AllowAbsentWhenSlotAdmitsEmpty,
+        stack_resolver(node_stack),
+    );
+    match dep_errors.into_iter().next() {
+        None => Ok(()),
+        Some(err) => Err(AddStepFailure::new(
+            PeppyFailureKind::PreconditionFailed,
+            format!("Failed to add node config: {}", err),
+        )),
+    }
 }
 
 /// The contract and pairing documents an add generates the node's code

@@ -22,13 +22,15 @@
 
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::FeedbackLine;
-use super::add::{NodeAddActionContext, record_add_failure, run_node_add};
+use super::add::{NodeAddActionContext, record_add_failure, run_node_add, run_registry_node_add};
 use super::pins::{self, MaterializedPin};
 use crate::services::repo::cache as repo_cache;
 use crate::services::response::rephrased;
+use config::consts::NODE_CONFIG_FILE;
 use config::failure_kind::PeppyFailureKind;
 use config::node::NodeConfig;
 use core_node_api::encoding::{NodeAddGoal, NodeAddResult, NodeSource};
+use daemon_config::repository::EntryOrigin;
 use daemon_config::repository::{PinKind, PinnedDocument};
 use node_stack::{ActionLog, Announcer, NodeEntity, VirtualDeptree, WorkingDirGuard};
 use peppylib::messaging::Failure;
@@ -469,7 +471,22 @@ async fn run_single_batched_add(
     });
 
     let action_context = action_context.clone();
-    let result = run_node_add(sub_goal, action_context, Announcer::new(log, sub_tx)).await;
+    let announcer = Announcer::new(log, sub_tx);
+    // A node of an oci origin has no sources here: its add pulls its image
+    // instead of staging and generating it.
+    let result = if matches!(node.pin.origin, EntryOrigin::Oci { .. }) {
+        run_registry_node_add(
+            sub_goal,
+            &node.pin,
+            node.config.clone(),
+            node.root_dir.join(NODE_CONFIG_FILE),
+            action_context,
+            announcer,
+        )
+        .await
+    } else {
+        run_node_add(sub_goal, action_context, announcer).await
+    };
     let _ = forwarder.await;
     result
 }
