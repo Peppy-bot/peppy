@@ -52,7 +52,8 @@ from functions.release_line import update_release_branch as real_update_release_
 from functions.release_line import (
     verify_publish_branch_state as real_verify_publish_branch_state,
 )
-from functions.release_summary import ReleaseContent
+from functions.release_summary import DraftedRelease, ReleaseContent
+from functions.release_version import ReleaseVersion
 from functions.repo import commit_paths as real_commit_paths
 from functions.repo import merge_into_current_branch as real_merge
 from functions.repo import push_branch as real_push_branch
@@ -67,6 +68,8 @@ CONTENT = ReleaseContent(
     notes="## What's Changed\n- Fixed topics public API\n",
 )
 PLAN = ReleasePlan(tag="v0.3.0", release_commit=RELEASE_COMMIT, content=CONTENT)
+# What Claude drafts for the release of PLAN, after v0.2.0.
+DRAFT = DraftedRelease(version=ReleaseVersion(minor=3, patch=0), content=CONTENT)
 SLUG = RepoSlug(owner="test-owner", repo="test-repo")
 APPTAINER_CACHE = "apptainer-1.5.2-{arch}-nosuid"
 
@@ -170,16 +173,14 @@ def test_release_plan_rejects_a_tag_no_release_publishes(tmp_path: Path) -> None
 # --- command line ---
 
 
-def test_prepare_refuses_a_tag_no_release_publishes(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    # The grammar of a release tag is resolve.py's, whose tests hold every form.
+def test_prepare_takes_no_tag(capsys: pytest.CaptureFixture[str]) -> None:
+    # The drafted notes give the release its version.
     with pytest.raises(SystemExit) as exc_info:
         _parse_args(
             [
                 "prepare",
                 "--tag",
-                "v0.31.2-rc1",
+                "v0.3.0",
                 "--release-commit",
                 RELEASE_COMMIT,
                 "--no-minor-docs-pr",
@@ -189,15 +190,13 @@ def test_prepare_refuses_a_tag_no_release_publishes(
         )
 
     assert exc_info.value.code == 2
-    assert "reads the hubs' main" in unwrapped(capsys.readouterr().err)
+    assert "unrecognized arguments: --tag" in unwrapped(capsys.readouterr().err)
 
 
 def test_prepare_takes_every_answer_up_front() -> None:
     args = _parse_args(
         [
             "prepare",
-            "--tag",
-            " v0.3.0 ",
             "--release-commit",
             RELEASE_COMMIT.upper(),
             "--no-minor-docs-pr",
@@ -206,7 +205,6 @@ def test_prepare_takes_every_answer_up_front() -> None:
         ]
     )
 
-    assert args.tag == "v0.3.0"
     assert args.release_commit == RELEASE_COMMIT
     assert args.minor_docs_pr is False
     assert args.skip_docs_check is False
@@ -216,17 +214,10 @@ def test_prepare_takes_every_answer_up_front() -> None:
     "argv",
     [
         # The minor-docs offer has no default: it must be answered.
-        ["--tag", "v1", "--release-commit", RELEASE_COMMIT, "--plan", "p"],
-        [
-            "--tag",
-            "  ",
-            "--release-commit",
-            RELEASE_COMMIT,
-            "--minor-docs-pr",
-            "--plan",
-            "p",
-        ],
-        ["--tag", "v1", "--release-commit", "abc123", "--minor-docs-pr", "--plan", "p"],
+        ["--release-commit", RELEASE_COMMIT, "--plan", "p"],
+        ["--release-commit", "abc123", "--minor-docs-pr", "--plan", "p"],
+        ["--minor-docs-pr", "--plan", "p"],
+        ["--release-commit", RELEASE_COMMIT, "--minor-docs-pr"],
     ],
 )
 def test_prepare_rejects_missing_or_malformed_answers(argv: list[str]) -> None:
@@ -324,7 +315,6 @@ def _prepare(
 ) -> Path:
     plan_path = tmp_path / "out" / "release-plan.json"
     run_prepare(
-        tag="v0.3.0",
         release_commit=RELEASE_COMMIT,
         open_minor_docs_pr=open_minor_docs_pr,
         skip_docs_check=skip_docs_check,
@@ -342,8 +332,10 @@ class PrepareMocks:
     unused_tag: MagicMock
     client: MagicMock
     docs_gate: MagicMock
+    latest_release: MagicMock
     fetch_tag: MagicMock
     collect: MagicMock
+    draft: MagicMock
 
 
 @pytest.fixture
@@ -365,12 +357,12 @@ def prepare_mocks(tmp_path: Path) -> Iterator[PrepareMocks]:
         patch(
             "functions.release_line.get_latest_release",
             return_value={"tag_name": "v0.2.0"},
-        ),
+        ) as latest_release,
         patch("functions.release_line.fetch_tag") as fetch_tag,
         patch("functions.parallel_release.collect_release_changes") as collect,
         patch(
-            "functions.parallel_release.generate_release_content", return_value=CONTENT
-        ),
+            "functions.parallel_release.generate_release_draft", return_value=DRAFT
+        ) as draft,
     ):
         yield PrepareMocks(
             validate=validate,
@@ -378,8 +370,10 @@ def prepare_mocks(tmp_path: Path) -> Iterator[PrepareMocks]:
             unused_tag=unused_tag,
             client=client,
             docs_gate=docs_gate,
+            latest_release=latest_release,
             fetch_tag=fetch_tag,
             collect=collect,
+            draft=draft,
         )
 
 
@@ -401,11 +395,71 @@ def test_prepare_writes_the_plan_without_asking_anything(
     # The notes cover the changes since the last published release, whose tag
     # is fetched first: it can be newer than the checkout.
     prepare_mocks.fetch_tag.assert_called_once_with("origin", "v0.2.0")
-    prepare_mocks.collect.assert_called_once_with("v0.2.0", RELEASE_COMMIT, tmp_path)
-    # Nobody reviews the draft, so the log shows it.
+    prepare_mocks.collect.assert_called_once_with(
+        ReleaseVersion(minor=2, patch=0), RELEASE_COMMIT, tmp_path
+    )
+    prepare_mocks.draft.assert_called_once_with(
+        prepare_mocks.collect.return_value, tmp_path
+    )
+    # Nobody reviews the draft, so the log shows it, with its version.
     output = unwrapped(capfd.readouterr().err)
+    assert "Version: v0.3.0" in output
     assert CONTENT.title in output
     assert CONTENT.description in output
+
+
+def test_prepare_releases_the_version_the_draft_gives(
+    tmp_path: Path, prepare_mocks: PrepareMocks
+) -> None:
+    prepare_mocks.draft.return_value = DraftedRelease(
+        version=ReleaseVersion(minor=2, patch=1), content=CONTENT
+    )
+
+    plan_path = _prepare(tmp_path)
+
+    assert ReleasePlan.load(plan_path).tag == "v0.2.1"
+    prepare_mocks.unused_tag.assert_called_once_with("v0.2.1")
+
+
+def test_prepare_stops_when_the_tag_of_the_version_exists(
+    tmp_path: Path, prepare_mocks: PrepareMocks
+) -> None:
+    prepare_mocks.unused_tag.side_effect = ReleaseError("tag 'v0.3.0' already exists")
+
+    with pytest.raises(ReleaseError, match="already exists"):
+        _prepare(tmp_path)
+
+    assert not (tmp_path / "out" / "release-plan.json").exists()
+
+
+@pytest.mark.parametrize("latest_tag", ["v1.0.0", "v0.02.0"])
+def test_prepare_stops_before_the_docs_gate_when_no_version_follows_the_latest_release(
+    tmp_path: Path, prepare_mocks: PrepareMocks, latest_tag: str
+) -> None:
+    prepare_mocks.latest_release.return_value = {"tag_name": latest_tag}
+
+    with pytest.raises(ReleaseError, match="is not v0.<MINOR>.<PATCH> with no leading"):
+        _prepare(tmp_path)
+
+    # Before the docs gate and the draft, which both run Claude.
+    prepare_mocks.docs_gate.assert_not_called()
+    prepare_mocks.draft.assert_not_called()
+    assert not (tmp_path / "out" / "release-plan.json").exists()
+
+
+def test_prepare_drafts_the_first_release_from_the_full_history(
+    tmp_path: Path, prepare_mocks: PrepareMocks
+) -> None:
+    prepare_mocks.latest_release.return_value = None
+    prepare_mocks.draft.return_value = DraftedRelease(
+        version=ReleaseVersion(minor=1, patch=0), content=CONTENT
+    )
+
+    plan_path = _prepare(tmp_path)
+
+    prepare_mocks.fetch_tag.assert_not_called()
+    prepare_mocks.collect.assert_called_once_with(None, RELEASE_COMMIT, tmp_path)
+    assert ReleasePlan.load(plan_path).tag == "v0.1.0"
 
 
 def test_prepare_stops_when_dev_is_not_at_the_commit_the_run_builds(

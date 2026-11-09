@@ -4,8 +4,9 @@
 separate runners, so each archive builds natively on a runner of its own
 platform, all three at once, and no stage starts a VM:
 
-- `prepare` (any host): the branch, tag and docs checks and the drafted release
-  notes, written to a release plan that every later stage reads.
+- `prepare` (any host): the branch and docs checks, the drafted release notes,
+  and the version they give the release (see release_version.py), whose tag
+  must be new, written to a release plan that every later stage reads.
 - `bindings` (macOS ARM64): the peppylib native bindings for every platform.
 - `apptainer` (Linux): apptainer for the host's architecture.
 - `build` (one per target): one release archive, built from the plan's commit.
@@ -35,7 +36,8 @@ missing one in a Lima VM. Provisioned by the machines that build them natively,
 the same bindings and apptainer reach every archive.
 
 No stage asks a question: every answer a release needs is an option of the
-stage that needs it, and the drafted notes are published as they are.
+stage that needs it, and the drafted notes, with the version they give the
+release, are published as they are.
 """
 
 from __future__ import annotations
@@ -123,10 +125,12 @@ from .release_notes import (
     release_notes_file,
 )
 from .release_summary import (
+    DraftedRelease,
     ReleaseContent,
     collect_release_changes,
-    generate_release_content,
+    generate_release_draft,
 )
+from .release_version import ReleaseVersion
 from .repo import (
     commit_paths,
     detached_worktree,
@@ -277,7 +281,8 @@ def _extract_tree(archive: Path, destination: Path) -> Path:
 
 
 def _require_unused_tag(tag: str) -> None:
-    """Stop when *tag* already exists on the remote.
+    """Stop when *tag*, the tag of the version the drafted release takes, already
+    exists on the remote.
 
     GitHub attaches a release to an existing tag instead of creating it at the
     commit the release names, so the archives built from `dev` would ship
@@ -295,14 +300,18 @@ def _require_unused_tag(tag: str) -> None:
         )
     if result.stdout.strip():
         raise ReleaseError(
-            f"tag '{tag}' already exists on {GIT_REMOTE}; a release needs a new tag"
+            f"tag '{tag}' already exists on {GIT_REMOTE}, but it is the version "
+            f"this release takes after the latest published release, and a "
+            f"release needs a new tag. Find out what created the tag."
         )
 
 
-def _print_release_content(content: ReleaseContent) -> None:
-    """Print the drafted release content, which nobody reviews before it ships."""
+def _print_drafted_release(draft: DraftedRelease) -> None:
+    """Print the drafted release, which nobody reviews before it ships."""
+    content = draft.content
     console.print()
-    console.print("[bold]Drafted release content[/bold]")
+    console.print("[bold]Drafted release[/bold]")
+    console.print(f"  [bold]Version:[/bold] {draft.version.tag}")
     console.print(f"  [bold]Title:[/bold] {content.title}")
     console.print(f"  [bold]Description:[/bold] {content.description}")
     console.print("  [bold]Notes:[/bold]")
@@ -311,48 +320,67 @@ def _print_release_content(content: ReleaseContent) -> None:
     console.print()
 
 
-def _draft_release_content(
-    client: httpx.Client,
-    slug: RepoSlug,
-    tag: str,
-    release_commit: str,
-    repo_root: Path,
-) -> ReleaseContent:
-    """Draft the release content from the changes since the last release.
+def _latest_release_version(
+    client: httpx.Client, slug: RepoSlug
+) -> ReleaseVersion | None:
+    """The version of the latest published release, which the version of this
+    release follows, or None when no release is published yet.
+
+    Read before the docs gate, so a latest release that no version follows
+    from stops the release before Claude runs.
+    """
+    previous_tag = latest_release_tag(client, slug)
+    if previous_tag is None:
+        console.print(
+            "[yellow]No previous published release found: this release is "
+            "the first one.[/yellow]"
+        )
+        return None
+    console.print(f"The latest published release is [bold]{previous_tag}[/bold].")
+    return ReleaseVersion.from_tag(previous_tag)
+
+
+def _draft_release(
+    previous: ReleaseVersion | None, release_commit: str, repo_root: Path
+) -> DraftedRelease:
+    """Draft the release from the changes since *previous*, the latest
+    published release, or from the full history without one.
 
     Collects everything merged between the previous published release and the
     release commit (the commit subjects, the code diff, and the user
     documentation diff) and asks Claude to draft the title, description and
-    notes as a self-contained list of user-facing changes. A release with no
-    user-facing change in peppy itself gets content that says it only pins
-    newer hub commits. Nobody reviews the draft, so it is printed for the log.
+    notes as a self-contained list of user-facing changes, and to report
+    whether they list a breaking change, which picks the version. A release
+    with no user-facing change in peppy itself gets content that says it only
+    pins newer hub commits. Nobody reviews the draft, so it is printed for the
+    log.
     """
-    previous_tag = latest_release_tag(client, slug)
-    if previous_tag:
-        console.print(
-            f"Listing changes since last release [bold]{previous_tag}[/bold]..."
-        )
+    if previous is None:
+        console.print("Listing the full history...")
     else:
         console.print(
-            "[yellow]No previous published release found; "
-            "listing the full history.[/yellow]"
+            f"Listing changes since last release [bold]{previous.tag}[/bold]..."
         )
 
-    changes = collect_release_changes(previous_tag, release_commit, repo_root)
-    content = generate_release_content(changes, tag, repo_root)
-    _print_release_content(content)
-    return content
+    changes = collect_release_changes(previous, release_commit, repo_root)
+    draft = generate_release_draft(changes, repo_root)
+    _print_drafted_release(draft)
+    return draft
 
 
 def run_prepare(
     *,
-    tag: str,
     release_commit: str,
     open_minor_docs_pr: bool,
     skip_docs_check: bool,
     plan_path: Path,
 ) -> None:
-    """Check the release can start from *release_commit* and write its plan."""
+    """Check the release can start from *release_commit*, draft it, and write
+    its plan.
+
+    The version of the release is the one its drafted notes give it after the
+    latest published release, and its tag must be new.
+    """
     token = validate_release_environment(required_commands=("git", "claude"))
     repo_root = get_repo_root()
     os.chdir(repo_root)
@@ -364,10 +392,10 @@ def run_prepare(
             f"{release_commit[:12]}. Every stage builds the commit the run "
             f"started from; start a new run from the current '{RELEASE_BRANCH}'."
         )
-    _require_unused_tag(tag)
 
     slug = github_repo_slug()
     client = build_github_client(token)
+    previous = _latest_release_version(client, slug)
 
     if skip_docs_check:
         console.print(
@@ -384,8 +412,10 @@ def run_prepare(
             open_minor_docs_pr=open_minor_docs_pr,
         )
 
-    content = _draft_release_content(client, slug, tag, release_commit, repo_root)
-    ReleasePlan(tag=tag, release_commit=release_commit, content=content).write(
+    draft = _draft_release(previous, release_commit, repo_root)
+    tag = draft.version.tag
+    _require_unused_tag(tag)
+    ReleasePlan(tag=tag, release_commit=release_commit, content=draft.content).write(
         plan_path
     )
     console.print(f"Wrote the release plan for [bold]{tag}[/bold]: {plan_path}")
@@ -1152,13 +1182,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     prepare = stages.add_parser(
         "prepare",
-        help="Check the release can start, run the docs gate, draft the notes.",
-    )
-    prepare.add_argument(
-        "--tag",
-        required=True,
-        type=_release_tag,
-        help="Tag of the release, v<MAJOR>.<MINOR>.<PATCH> (example: v0.31.2).",
+        help=(
+            "Check the release can start, run the docs gate, draft the notes "
+            "and the version they give the release."
+        ),
     )
     prepare.add_argument(
         "--release-commit",
@@ -1280,7 +1307,6 @@ def _run_stage(args: argparse.Namespace) -> None:
     match args.stage:
         case "prepare":
             run_prepare(
-                tag=args.tag,
                 release_commit=args.release_commit,
                 open_minor_docs_pr=args.minor_docs_pr,
                 skip_docs_check=args.skip_docs_check,

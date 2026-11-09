@@ -10,28 +10,46 @@ import pytest
 from functions.cli import ReleaseError
 from functions.release_summary import (
     _CONTENT_SCHEMA,
+    DraftedRelease,
     PathDiff,
     ReleaseChanges,
     ReleaseContent,
     ReleaseDiffs,
-    _parse_release_content,
+    _parse_drafted_release,
     collect_release_changes,
-    generate_release_content,
+    generate_release_draft,
     hub_pins_only_content,
 )
+from functions.release_version import ReleaseVersion
 
-TAG = "v0.12.0"
+# The latest published release, and the versions of the release after it.
+PREVIOUS = ReleaseVersion(minor=11, patch=1)
+NEXT_PATCH = ReleaseVersion(minor=11, patch=2)
+NEXT_MINOR = ReleaseVersion(minor=12, patch=0)
 
-# What Claude answers for a release with user-facing changes.
+# What Claude answers for a release with user-facing changes and no breaking
+# change.
 DRAFTED = {
+    "has_breaking_changes": False,
     "has_user_facing_changes": True,
     "title": "T",
     "description": "D",
     "notes": "N",
 }
 
+BREAKING_NOTES = (
+    "### Breaking changes\n"
+    "- `peppy node run` is now `peppy node start`: update your scripts.\n"
+    "### Nodes\n"
+    "- Nodes restart on failure."
+)
+
+# What Claude answers for a release with a breaking change.
+DRAFTED_BREAKING = {**DRAFTED, "has_breaking_changes": True, "notes": BREAKING_NOTES}
+
 # What Claude answers for a release with no user-facing change.
 NO_USER_FACING_CHANGE = {
+    "has_breaking_changes": False,
     "has_user_facing_changes": False,
     "title": "",
     "description": "",
@@ -50,26 +68,31 @@ def _changes(
 ) -> ReleaseChanges:
     return ReleaseChanges(
         commit_subjects=subjects,
-        diffs=ReleaseDiffs(previous_tag="v0.11.1", code=code, docs=docs),
+        diffs=ReleaseDiffs(previous=PREVIOUS, code=code, docs=docs),
     )
+
+
+def _hub_pins_only_release(version: ReleaseVersion) -> DraftedRelease:
+    return DraftedRelease(version=version, content=hub_pins_only_content(version.tag))
 
 
 # --- _CONTENT_SCHEMA ---
 
 
-def test_content_schema_requires_the_verdict_and_every_text_field() -> None:
+def test_content_schema_requires_both_verdicts_and_every_text_field() -> None:
     # The Python parser and the CLI-side schema must not drift.
-    # The verdict comes last, after the fields it decides about.
+    # The verdicts come last, after the fields they decide about, in the order
+    # the prompt asks for them.
     assert list(_CONTENT_SCHEMA["properties"]) == [
         "title",
         "description",
         "notes",
+        "has_breaking_changes",
         "has_user_facing_changes",
     ]
     assert _CONTENT_SCHEMA["required"] == list(_CONTENT_SCHEMA["properties"])
-    assert _CONTENT_SCHEMA["properties"]["has_user_facing_changes"] == {
-        "type": "boolean"
-    }
+    for verdict in ("has_breaking_changes", "has_user_facing_changes"):
+        assert _CONTENT_SCHEMA["properties"][verdict] == {"type": "boolean"}
     # A text field is empty when Claude reports no user-facing change, so the
     # schema must accept an empty string.
     for field in ("title", "description", "notes"):
@@ -80,7 +103,7 @@ def test_content_schema_requires_the_verdict_and_every_text_field() -> None:
 
 
 def test_hub_pins_only_content_names_the_hub_tag_of_the_release() -> None:
-    content = hub_pins_only_content(TAG)
+    content = hub_pins_only_content("v0.12.0")
 
     assert "only pins newer commits of the default hubs" in content.description
     assert "only pins newer commits of the default hubs" in content.notes
@@ -93,71 +116,127 @@ def test_hub_pins_only_content_names_the_hub_tag_of_the_release() -> None:
         assert "\u2014" not in text
 
 
-# --- _parse_release_content ---
+# --- _parse_drafted_release ---
 
 
-def test_parse_release_content_valid() -> None:
+def test_parse_drafted_release_valid() -> None:
     payload = {
-        "has_user_facing_changes": True,
+        **DRAFTED,
         "title": "Topics hardening",
         "description": "Fixed deadlocks.",
         "notes": "## What's Changed\n- x",
     }
-    assert _parse_release_content(payload, TAG) == ReleaseContent(
-        title="Topics hardening",
-        description="Fixed deadlocks.",
-        notes="## What's Changed\n- x",
+    assert _parse_drafted_release(payload, PREVIOUS) == DraftedRelease(
+        version=NEXT_PATCH,
+        content=ReleaseContent(
+            title="Topics hardening",
+            description="Fixed deadlocks.",
+            notes="## What's Changed\n- x",
+        ),
     )
 
 
-def test_parse_release_content_strips_whitespace() -> None:
-    payload = {
-        "has_user_facing_changes": True,
-        "title": "  T  ",
-        "description": " D ",
-        "notes": " N ",
-    }
-    assert _parse_release_content(payload, TAG) == ReleaseContent("T", "D", "N")
+def test_parse_drafted_release_strips_whitespace() -> None:
+    payload = {**DRAFTED, "title": "  T  ", "description": " D ", "notes": " N "}
+    assert _parse_drafted_release(payload, PREVIOUS).content == ReleaseContent(
+        "T", "D", "N"
+    )
+
+
+def test_a_breaking_change_takes_the_next_minor_version() -> None:
+    assert _parse_drafted_release(DRAFTED_BREAKING, PREVIOUS) == DraftedRelease(
+        version=NEXT_MINOR, content=ReleaseContent("T", "D", BREAKING_NOTES)
+    )
+
+
+def test_the_breaking_changes_subheading_is_read_whatever_the_case() -> None:
+    notes = "### Breaking Changes\n- `peppy node run` is now `peppy node start`."
+    payload = {**DRAFTED_BREAKING, "notes": notes}
+
+    assert _parse_drafted_release(payload, PREVIOUS).version == NEXT_MINOR
+
+
+def test_the_first_release_is_v0_1_0_whatever_it_breaks() -> None:
+    for payload in (DRAFTED, DRAFTED_BREAKING, NO_USER_FACING_CHANGE):
+        assert _parse_drafted_release(payload, None).version.tag == "v0.1.0"
+
+
+def test_parse_drafted_release_refuses_a_breaking_verdict_without_its_subheading() -> (
+    None
+):
+    # The version follows from the verdict, and users read the notes: the two
+    # must not disagree.
+    payload = {**DRAFTED_BREAKING, "notes": "- Breaking changes: none of note."}
+    with pytest.raises(
+        ReleaseError,
+        match="reported a breaking change, but the notes have no "
+        "'### Breaking changes' subheading",
+    ):
+        _parse_drafted_release(payload, PREVIOUS)
+
+
+def test_parse_drafted_release_refuses_the_subheading_without_a_breaking_verdict() -> (
+    None
+):
+    payload = {**DRAFTED, "notes": BREAKING_NOTES}
+    with pytest.raises(
+        ReleaseError,
+        match="reported no breaking change, but the notes have a "
+        "'### Breaking changes' subheading",
+    ):
+        _parse_drafted_release(payload, PREVIOUS)
+
+
+def test_parse_drafted_release_takes_a_mention_of_breaking_changes_as_no_subheading() -> (
+    None
+):
+    # Only the subheading itself, alone on its line, lists breaking changes.
+    payload = {**DRAFTED, "notes": "- Fixes the breaking changes subheading of logs."}
+    assert _parse_drafted_release(payload, PREVIOUS).version == NEXT_PATCH
 
 
 @pytest.mark.parametrize("missing", ["title", "description", "notes"])
-def test_parse_release_content_missing_field(missing: str) -> None:
+def test_parse_drafted_release_missing_field(missing: str) -> None:
     payload = dict(DRAFTED)
     del payload[missing]
     with pytest.raises(ReleaseError, match=f"missing non-empty '{missing}'"):
-        _parse_release_content(payload, TAG)
+        _parse_drafted_release(payload, PREVIOUS)
 
 
 @pytest.mark.parametrize("field", ["title", "description", "notes"])
-def test_parse_release_content_blank_field(field: str) -> None:
+def test_parse_drafted_release_blank_field(field: str) -> None:
     # The schema accepts an empty string, since a release with no user-facing
     # change leaves every text field empty; the Python-side check refuses a
     # blank field of a release with user-facing changes.
     payload = dict(DRAFTED)
     payload[field] = "   "
     with pytest.raises(ReleaseError, match=f"missing non-empty '{field}'"):
-        _parse_release_content(payload, TAG)
+        _parse_drafted_release(payload, PREVIOUS)
 
 
-def test_parse_release_content_non_string_field() -> None:
+def test_parse_drafted_release_non_string_field() -> None:
     payload: dict[str, object] = {**DRAFTED, "notes": 123}
     with pytest.raises(ReleaseError, match="missing non-empty 'notes'"):
-        _parse_release_content(payload, TAG)
+        _parse_drafted_release(payload, PREVIOUS)
 
 
-def test_parse_release_content_without_user_facing_changes_pins_hubs_only() -> None:
-    assert _parse_release_content(NO_USER_FACING_CHANGE, TAG) == (
-        hub_pins_only_content(TAG)
+def test_parse_drafted_release_without_user_facing_changes_pins_hubs_only() -> None:
+    # It lists no breaking change, so it takes the next patch version, which
+    # its notes name.
+    assert _parse_drafted_release(NO_USER_FACING_CHANGE, PREVIOUS) == (
+        _hub_pins_only_release(NEXT_PATCH)
     )
 
 
-def test_parse_release_content_takes_whitespace_as_an_empty_field() -> None:
+def test_parse_drafted_release_takes_whitespace_as_an_empty_field() -> None:
     payload = {**NO_USER_FACING_CHANGE, "notes": " \n "}
-    assert _parse_release_content(payload, TAG) == hub_pins_only_content(TAG)
+    assert _parse_drafted_release(payload, PREVIOUS) == _hub_pins_only_release(
+        NEXT_PATCH
+    )
 
 
 @pytest.mark.parametrize("field", ["title", "description", "notes"])
-def test_parse_release_content_refuses_text_without_user_facing_changes(
+def test_parse_drafted_release_refuses_text_without_user_facing_changes(
     field: str,
 ) -> None:
     # A contradictory answer must not decide what the unreviewed notes say.
@@ -166,11 +245,11 @@ def test_parse_release_content_refuses_text_without_user_facing_changes(
         ReleaseError,
         match=f"no user-facing change but did not leave '{field}' empty",
     ):
-        _parse_release_content(payload, TAG)
+        _parse_drafted_release(payload, PREVIOUS)
 
 
 @pytest.mark.parametrize("field", ["title", "description", "notes"])
-def test_parse_release_content_refuses_a_missing_field_without_user_facing_changes(
+def test_parse_drafted_release_refuses_a_missing_field_without_user_facing_changes(
     field: str,
 ) -> None:
     payload = dict(NO_USER_FACING_CHANGE)
@@ -179,23 +258,39 @@ def test_parse_release_content_refuses_a_missing_field_without_user_facing_chang
         ReleaseError,
         match=f"no user-facing change but did not leave '{field}' empty",
     ):
-        _parse_release_content(payload, TAG)
+        _parse_drafted_release(payload, PREVIOUS)
 
 
+def test_parse_drafted_release_refuses_a_breaking_change_without_user_facing_changes() -> (
+    None
+):
+    # A breaking change is user-facing, and must not decide the version alone.
+    payload = {**NO_USER_FACING_CHANGE, "has_breaking_changes": True}
+    with pytest.raises(
+        ReleaseError, match="no user-facing change but a breaking change"
+    ):
+        _parse_drafted_release(payload, PREVIOUS)
+
+
+@pytest.mark.parametrize(
+    "verdict_field", ["has_user_facing_changes", "has_breaking_changes"]
+)
 @pytest.mark.parametrize("verdict", [None, "false", 0])
-def test_parse_release_content_requires_a_boolean_verdict(verdict: object) -> None:
-    payload: dict[str, object] = {**DRAFTED, "has_user_facing_changes": verdict}
+def test_parse_drafted_release_requires_boolean_verdicts(
+    verdict_field: str, verdict: object
+) -> None:
+    payload: dict[str, object] = {**DRAFTED, verdict_field: verdict}
     if verdict is None:
-        del payload["has_user_facing_changes"]
-    with pytest.raises(ReleaseError, match="missing boolean 'has_user_facing_changes'"):
-        _parse_release_content(payload, TAG)
+        del payload[verdict_field]
+    with pytest.raises(ReleaseError, match=f"missing boolean '{verdict_field}'"):
+        _parse_drafted_release(payload, PREVIOUS)
 
 
-# --- generate_release_content (mocked run_claude) ---
+# --- generate_release_draft (mocked run_claude) ---
 
 
-def _drafting_prompt(changes: ReleaseChanges, tag: str, cwd: Path) -> str:
-    """The prompt generate_release_content hands Claude to draft *changes*."""
+def _drafting_prompt(changes: ReleaseChanges, cwd: Path) -> str:
+    """The prompt generate_release_draft hands Claude to draft *changes*."""
     prompts: list[str] = []
 
     def fake_run_claude(prompt: str, **kwargs: object) -> dict:
@@ -203,11 +298,11 @@ def _drafting_prompt(changes: ReleaseChanges, tag: str, cwd: Path) -> str:
         return DRAFTED
 
     with patch("functions.release_summary.run_claude", side_effect=fake_run_claude):
-        generate_release_content(changes, tag, cwd)
+        generate_release_draft(changes, cwd)
     return prompts[-1]
 
 
-def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> None:
+def test_generate_release_draft_runs_claude_without_tools(tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
     def _fake_run_claude(
@@ -235,9 +330,11 @@ def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> N
         subjects=("fix(apptainer): pre-flight bind mounts", "refactor: extract helper")
     )
     with patch("functions.release_summary.run_claude", side_effect=_fake_run_claude):
-        result = generate_release_content(changes, "v0.12.0", tmp_path)
+        result = generate_release_draft(changes, tmp_path)
 
-    assert result == ReleaseContent("T", "D", "N")
+    assert result == DraftedRelease(
+        version=NEXT_PATCH, content=ReleaseContent("T", "D", "N")
+    )
     # Pure transformation: tools disabled so Claude cannot explore and ramble.
     assert captured["tools"] == ""
     assert captured["allowed_tools"] == ""
@@ -247,18 +344,38 @@ def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> N
     assert captured["activity"] == "drafting the release notes"
     # The response shape is enforced CLI-side.
     assert captured["json_schema"] == _CONTENT_SCHEMA
-    # The tag, the previous tag, and the commit subjects are interpolated.
+    # The previous tag and the commit subjects are interpolated. The version of
+    # the release follows from the answer, so the prompt cannot name it.
     prompt = captured["prompt"]
     assert isinstance(prompt, str)
-    assert "release\nv0.12.0; the previous release is v0.11.1." in prompt
+    assert "site. The previous release\nis v0.11.1.\n" in prompt
+    assert "v0.11.2" not in prompt
+    assert "v0.12.0" not in prompt
     assert (
         "- fix(apptainer): pre-flight bind mounts\n- refactor: extract helper" in prompt
     )
     # Claude can report that no change is user-facing instead of drafting.
     assert '"has_user_facing_changes": true when the notes list' in prompt
+    # Claude reports whether the notes list a breaking change, which picks
+    # the version.
+    assert (
+        '"has_breaking_changes": true when the notes hold the\n"### Breaking changes" subheading'
+        in prompt
+    )
+    assert "the next minor version when it is true" in prompt
 
 
-def test_generate_release_content_feeds_both_diffs_and_their_paths(
+def test_generate_release_draft_gives_a_breaking_release_the_next_minor_version(
+    tmp_path: Path,
+) -> None:
+    with patch("functions.release_summary.run_claude", return_value=DRAFTED_BREAKING):
+        result = generate_release_draft(_changes(), tmp_path)
+
+    assert result.version == NEXT_MINOR
+    assert result.content.notes == BREAKING_NOTES
+
+
+def test_generate_release_draft_feeds_both_diffs_and_their_paths(
     tmp_path: Path,
 ) -> None:
     changes = _changes(
@@ -269,7 +386,7 @@ def test_generate_release_content_feeds_both_diffs_and_their_paths(
         docs=PathDiff("+## The clock", ("docs/src/content/docs/x.mdx",)),
     )
 
-    prompt = _drafting_prompt(changes, "v0.12.0", tmp_path)
+    prompt = _drafting_prompt(changes, tmp_path)
     assert (
         "Changed code paths:\ncrates/peppy/src/main.rs\ncrates/peppy/src/cli.rs\n"
         in prompt
@@ -279,7 +396,7 @@ def test_generate_release_content_feeds_both_diffs_and_their_paths(
     assert "User documentation diff:\n+## The clock\n" in prompt
 
 
-def test_generate_release_content_truncates_each_diff_separately(
+def test_generate_release_draft_truncates_each_diff_separately(
     tmp_path: Path,
 ) -> None:
     changes = _changes(
@@ -287,31 +404,31 @@ def test_generate_release_content_truncates_each_diff_separately(
         docs=PathDiff("d" * 1000, ("docs/src/content/docs/x.mdx",)),
     )
 
-    prompt = _drafting_prompt(changes, "v0.12.0", tmp_path)
+    prompt = _drafting_prompt(changes, tmp_path)
     # The oversized code diff is cut, and the docs diff survives untouched.
     assert prompt.count("diff truncated") == 1
     assert "d" * 1000 in prompt
     assert "c" * 500_000 not in prompt
 
 
-def test_generate_release_content_names_an_empty_code_diff(tmp_path: Path) -> None:
+def test_generate_release_draft_names_an_empty_code_diff(tmp_path: Path) -> None:
     changes = _changes(subjects=(), code=NO_DIFF)
 
-    prompt = _drafting_prompt(changes, "v0.12.0", tmp_path)
+    prompt = _drafting_prompt(changes, tmp_path)
     assert "(no commits since the last release)" in prompt
     assert prompt.count("(no code changes)") == 2
     assert "(no user documentation changes)" not in prompt
 
 
-def test_generate_release_content_names_an_empty_docs_diff(tmp_path: Path) -> None:
+def test_generate_release_draft_names_an_empty_docs_diff(tmp_path: Path) -> None:
     changes = _changes(docs=NO_DIFF)
 
-    prompt = _drafting_prompt(changes, "v0.12.0", tmp_path)
+    prompt = _drafting_prompt(changes, tmp_path)
     assert prompt.count("(no user documentation changes)") == 2
     assert "(no code changes)" not in prompt
 
 
-def test_generate_release_content_pins_hubs_only_without_code_or_docs_changes(
+def test_generate_release_draft_pins_hubs_only_without_code_or_docs_changes(
     tmp_path: Path,
 ) -> None:
     # Only paths the diffs leave out changed (CI, lock files, peppy's own
@@ -322,30 +439,31 @@ def test_generate_release_content_pins_hubs_only_without_code_or_docs_changes(
         docs=NO_DIFF,
     )
     with patch("functions.release_summary.run_claude") as run_claude:
-        result = generate_release_content(changes, "v0.12.0", tmp_path)
+        result = generate_release_draft(changes, tmp_path)
 
-    assert result == hub_pins_only_content("v0.12.0")
+    # Nothing changed for users, so nothing breaks: the next patch version.
+    assert result == _hub_pins_only_release(NEXT_PATCH)
     run_claude.assert_not_called()
 
 
-def test_generate_release_content_pins_hubs_only_when_claude_finds_no_user_facing_change(
+def test_generate_release_draft_pins_hubs_only_when_claude_finds_no_user_facing_change(
     tmp_path: Path,
 ) -> None:
     with patch(
         "functions.release_summary.run_claude", return_value=NO_USER_FACING_CHANGE
     ) as run_claude:
-        result = generate_release_content(_changes(), "v0.12.0", tmp_path)
+        result = generate_release_draft(_changes(), tmp_path)
 
-    assert result == hub_pins_only_content("v0.12.0")
+    assert result == _hub_pins_only_release(NEXT_PATCH)
     run_claude.assert_called_once()
 
 
-def test_generate_release_content_without_a_previous_release(tmp_path: Path) -> None:
+def test_generate_release_draft_without_a_previous_release(tmp_path: Path) -> None:
     changes = ReleaseChanges(commit_subjects=("initial commit",), diffs=None)
 
     # The full history counts as changed: Claude judges it.
-    prompt = _drafting_prompt(changes, "v0.1.0", tmp_path)
-    assert "the previous release is none: no release has been published yet" in prompt
+    prompt = _drafting_prompt(changes, tmp_path)
+    assert "The previous release\nis none: no release has been published yet" in prompt
     assert "- initial commit" in prompt
     # Every diff section says why it is empty rather than claiming no changes.
     assert prompt.count("(no previous release to diff against)") == 4
@@ -375,6 +493,14 @@ def test_has_code_or_docs_changes_without_a_previous_release() -> None:
     assert changes.has_code_or_docs_changes is True
 
 
+# --- ReleaseChanges.previous ---
+
+
+def test_the_changes_name_the_release_they_follow() -> None:
+    assert _changes().previous == PREVIOUS
+    assert ReleaseChanges(commit_subjects=(), diffs=None).previous is None
+
+
 # --- collect_release_changes ---
 
 
@@ -395,12 +521,12 @@ def test_collect_release_changes_gathers_subjects_and_both_diffs(
             return_value=("DOCS", ["docs/src/content/docs/x.mdx"]),
         ) as docs,
     ):
-        changes = collect_release_changes("v0.11.1", "abc123", tmp_path)
+        changes = collect_release_changes(PREVIOUS, "abc123", tmp_path)
 
     assert changes == ReleaseChanges(
         commit_subjects=("feat: b", "fix: a"),
         diffs=ReleaseDiffs(
-            previous_tag="v0.11.1",
+            previous=PREVIOUS,
             code=PathDiff("CODE", ("crates/peppy/src/main.rs",)),
             docs=PathDiff("DOCS", ("docs/src/content/docs/x.mdx",)),
         ),
