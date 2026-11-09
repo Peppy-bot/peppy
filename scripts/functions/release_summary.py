@@ -1,4 +1,5 @@
-"""Have Claude write the human-facing release content from the changes.
+"""Have Claude draft the human-facing release content, and the version it
+gives the release, from the changes.
 
 Given everything merged since the previous release (the commit subjects, the
 code diff, and the user documentation diff), ask Claude to produce a short
@@ -6,6 +7,12 @@ headline, a one-line summary, and a self-contained Markdown body: a readable
 list of the user-facing changes only, with no external links, pull-request
 numbers, or author mentions. Internal work (refactors, crate reorganization,
 dependency bumps, build changes, peppy's own tests) is left out.
+
+Claude also reports whether the notes list a breaking change, which picks the
+version of the release (see release_version.py): the next minor version when
+they do, the next patch version when they do not. The notes and the report
+must agree, since the notes are published unreviewed and the version tells
+users whether they must change anything.
 
 The diffs are what makes the judgement reliable: a commit subject says where
 the author worked, not what users get, and the code peppy generates into users'
@@ -18,7 +25,7 @@ A release can be cut only to pin newer commits of the default hubs, with no
 user-facing change in peppy itself. Such a release gets fixed content that
 says so (`hub_pins_only_content`): without asking Claude when neither the code
 diff nor the user documentation diff has a path, and when Claude reports that
-no change is user-facing.
+no change is user-facing. Such a release lists no breaking change.
 """
 
 from __future__ import annotations
@@ -30,26 +37,33 @@ from .claude import run_claude
 from .cli import ReleaseError, console
 from .docs import get_code_diff, get_docs_diff, truncate_diff
 from .hub_ci import resolve
+from .release_version import ReleaseVersion, next_release_version
 from .repo import get_commit_subjects
 
 _FIELDS: tuple[str, ...] = ("title", "description", "notes")
 
-_VERDICT_FIELD = "has_user_facing_changes"
+_BREAKING_VERDICT = "has_breaking_changes"
+_USER_FACING_VERDICT = "has_user_facing_changes"
+
+# The subheading the prompt asks for over the breaking changes of the notes,
+# and only then.
+_BREAKING_CHANGES_HEADING = "### Breaking changes"
 
 # Enforced CLI-side via --json-schema. The text fields have no minLength: they
-# are empty when Claude reports no user-facing change. _parse_release_content
+# are empty when Claude reports no user-facing change. _parse_drafted_release
 # requires them non-empty, whitespace aside, in the other case, and empty in
-# that one. The verdict comes last, as the prompt asks for it last: with the
-# verdict first, Claude can write its reasoning about it into the notes.
+# that one. The verdicts come last, in the order the prompt asks for them:
+# with a verdict first, Claude can write its reasoning about it into the notes.
 _CONTENT_SCHEMA: dict = {
     "type": "object",
     "properties": {
         "title": {"type": "string"},
         "description": {"type": "string"},
         "notes": {"type": "string"},
-        _VERDICT_FIELD: {"type": "boolean"},
+        _BREAKING_VERDICT: {"type": "boolean"},
+        _USER_FACING_VERDICT: {"type": "boolean"},
     },
-    "required": [*_FIELDS, _VERDICT_FIELD],
+    "required": [*_FIELDS, _BREAKING_VERDICT, _USER_FACING_VERDICT],
     "additionalProperties": False,
 }
 
@@ -64,8 +78,8 @@ _FIRST_RELEASE = (
 
 _PROMPT = """\
 You are writing the public release notes for "peppy", a developer tool shipped
-as Rust crates with an Astro Starlight documentation site. This is release
-{tag}; the previous release is {previous}.
+as Rust crates with an Astro Starlight documentation site. The previous release
+is {previous}.
 
 Below are the changes merged since the previous release, in three parts: the
 commit subjects (one per line), the unified diff of the code with its changed
@@ -140,6 +154,11 @@ each bullet state what changed and what the user must do. List a breaking change
 only there, never also under a topical subheading. Omit the "### Breaking
 changes" subheading entirely when there are none.
 
+Also respond with the field "has_breaking_changes": true when the notes hold the
+"### Breaking changes" subheading, and false when they do not. It picks the
+version of this release: the next minor version when it is true, and the next
+patch version when it is false.
+
 Leave out every internal change, even when it spans many commits: code refactors
 and restructuring, renames and reorganization confined to internal code (crates,
 modules, and private fields or APIs that users never reference), removal of
@@ -154,8 +173,8 @@ repositories that publish the nodes, contracts, and launchers users run, so a
 release can be cut for those pins alone. Also respond with the field
 "has_user_facing_changes": true when the notes list at least one change, and
 false when no change above is user-facing. When it is false, leave "title",
-"description", and "notes" as empty strings: the release then gets fixed notes
-that say it only pins newer hub commits.
+"description", and "notes" as empty strings and "has_breaking_changes" false:
+the release then gets fixed notes that say it only pins newer hub commits.
 
 Commit subjects since the previous release:
 {changes}
@@ -184,6 +203,14 @@ class ReleaseContent:
 
 
 @dataclass(frozen=True)
+class DraftedRelease:
+    """A release as drafted from its changes: its version and its content."""
+
+    version: ReleaseVersion
+    content: ReleaseContent
+
+
+@dataclass(frozen=True)
 class PathDiff:
     """A unified diff restricted to a set of paths, with those paths listed."""
 
@@ -195,7 +222,7 @@ class PathDiff:
 class ReleaseDiffs:
     """The code and user documentation diffs from the previous release."""
 
-    previous_tag: str
+    previous: ReleaseVersion
     code: PathDiff
     docs: PathDiff
 
@@ -211,6 +238,14 @@ class ReleaseChanges:
 
     commit_subjects: tuple[str, ...]
     diffs: ReleaseDiffs | None
+
+    @property
+    def previous(self) -> ReleaseVersion | None:
+        """The latest published release, or None when no release has been
+        published yet."""
+        if self.diffs is None:
+            return None
+        return self.diffs.previous
 
     @property
     def has_code_or_docs_changes(self) -> bool:
@@ -242,24 +277,33 @@ def hub_pins_only_content(tag: str) -> ReleaseContent:
     )
 
 
-def collect_release_changes(
-    previous_tag: str | None, head: str, repo_root: Path
-) -> ReleaseChanges:
-    """Gather the commit subjects and diffs between ``previous_tag`` and ``head``.
+def _hub_pins_only_release(previous: ReleaseVersion | None) -> DraftedRelease:
+    """The release that follows *previous* when it has no user-facing change
+    in peppy itself: it lists no breaking change, so it takes the next patch
+    version."""
+    version = next_release_version(previous, breaking=False)
+    return DraftedRelease(version=version, content=hub_pins_only_content(version.tag))
 
-    ``previous_tag`` is the tag of the last published release, or None when
-    there is none, in which case the commit subjects span the full history and
-    no diff is collected.
+
+def collect_release_changes(
+    previous: ReleaseVersion | None, head: str, repo_root: Path
+) -> ReleaseChanges:
+    """Gather the commit subjects and diffs between ``previous`` and ``head``.
+
+    ``previous`` is the last published release, or None when there is none,
+    in which case the commit subjects span the full history and no diff is
+    collected.
     """
-    subjects = tuple(get_commit_subjects(previous_tag, head))
-    if previous_tag is None:
+    if previous is None:
+        subjects = tuple(get_commit_subjects(None, head))
         return ReleaseChanges(commit_subjects=subjects, diffs=None)
-    code_diff, code_paths = get_code_diff(previous_tag, head, repo_root)
-    docs_diff, docs_paths = get_docs_diff(previous_tag, head, repo_root)
+    subjects = tuple(get_commit_subjects(previous.tag, head))
+    code_diff, code_paths = get_code_diff(previous.tag, head, repo_root)
+    docs_diff, docs_paths = get_docs_diff(previous.tag, head, repo_root)
     return ReleaseChanges(
         commit_subjects=subjects,
         diffs=ReleaseDiffs(
-            previous_tag=previous_tag,
+            previous=previous,
             code=PathDiff(text=code_diff, paths=tuple(code_paths)),
             docs=PathDiff(text=docs_diff, paths=tuple(docs_paths)),
         ),
@@ -276,12 +320,11 @@ def _render_diff(diff: PathDiff, empty: str) -> str:
     return truncate_diff(diff.text) if diff.text else empty
 
 
-def _render_prompt(changes: ReleaseChanges, tag: str) -> str:
+def _render_prompt(changes: ReleaseChanges) -> str:
     subjects = "\n".join(f"- {s}" for s in changes.commit_subjects) or _NO_COMMITS
     diffs = changes.diffs
     if diffs is None:
         return _PROMPT.format(
-            tag=tag,
             previous=_FIRST_RELEASE,
             changes=subjects,
             code_paths=_NO_PREVIOUS_RELEASE,
@@ -290,8 +333,7 @@ def _render_prompt(changes: ReleaseChanges, tag: str) -> str:
             docs_diff=_NO_PREVIOUS_RELEASE,
         )
     return _PROMPT.format(
-        tag=tag,
-        previous=diffs.previous_tag,
+        previous=diffs.previous.tag,
         changes=subjects,
         code_paths=_render_paths(diffs.code, _NO_CODE_CHANGES),
         code_diff=_render_diff(diffs.code, _NO_CODE_CHANGES),
@@ -300,29 +342,27 @@ def _render_prompt(changes: ReleaseChanges, tag: str) -> str:
     )
 
 
-def generate_release_content(
-    changes: ReleaseChanges,
-    tag: str,
-    repo_root: Path,
-) -> ReleaseContent:
-    """Draft the release title, description, and notes.
+def generate_release_draft(changes: ReleaseChanges, repo_root: Path) -> DraftedRelease:
+    """Draft the release title, description, and notes, and the version they
+    give the release.
 
     When neither the code nor the user documentation changed, the release only
     pins newer hub commits, and its content says so without asking Claude.
     Otherwise Claude runs with no tools (a pure transformation of ``changes``)
     and is instructed to emit a self-contained list of user-facing changes
-    only, with no links, pull-request numbers, or author mentions, or to report
-    that no change is user-facing.
+    only, with no links, pull-request numbers, or author mentions, and to
+    report whether it lists a breaking change, or to report that no change is
+    user-facing.
     """
     if not changes.has_code_or_docs_changes:
         console.print(
             "Neither the code nor the user documentation changed since the "
             "previous release: the release only pins newer hub commits."
         )
-        return hub_pins_only_content(tag)
+        return _hub_pins_only_release(changes.previous)
 
     console.print("Asking Claude to write the release notes...")
-    prompt = _render_prompt(changes, tag)
+    prompt = _render_prompt(changes)
     # No tools: the prompt already carries the commit subjects and both diffs.
     # Giving Claude repository access leads it to explore git history and answer
     # with an analysis narrative instead of the release content.
@@ -336,24 +376,32 @@ def generate_release_content(
         tools="",
         effort="xhigh",
     )
-    return _parse_release_content(payload, tag)
+    return _parse_drafted_release(payload, changes.previous)
 
 
-def _parse_release_content(payload: dict, tag: str) -> ReleaseContent:
-    """Parse Claude's structured output into the content of release *tag*.
+def _parse_drafted_release(
+    payload: dict, previous: ReleaseVersion | None
+) -> DraftedRelease:
+    """Parse Claude's structured output into the release that follows
+    *previous*, the latest published release, or None without one.
 
-    A report of no user-facing change gives the hub-pins-only content, and
-    is refused when Claude also wrote a text field: the notes are published
-    unreviewed, so a contradictory answer must not decide what they say.
+    A report of no user-facing change gives the hub-pins-only release, and is
+    refused when Claude also wrote a text field or reported a breaking
+    change. A report of a breaking change is refused unless the notes hold
+    the breaking changes subheading, and the subheading unless the report
+    says so. The notes are published unreviewed, and the version follows from
+    the report, so a contradictory answer must decide neither.
     """
-    has_user_facing_changes = payload.get(_VERDICT_FIELD)
-    if not isinstance(has_user_facing_changes, bool):
-        raise ReleaseError(
-            f"claude release notes missing boolean '{_VERDICT_FIELD}': {payload!r}"
-        )
+    has_user_facing_changes = _require_verdict(payload, _USER_FACING_VERDICT)
+    has_breaking_changes = _require_verdict(payload, _BREAKING_VERDICT)
     if not has_user_facing_changes:
         _require_no_text_fields(payload)
-        return hub_pins_only_content(tag)
+        if has_breaking_changes:
+            raise ReleaseError(
+                f"claude reported no user-facing change but a breaking change, "
+                f"which is user-facing: {payload!r}"
+            )
+        return _hub_pins_only_release(previous)
 
     values: dict[str, str] = {}
     for field in _FIELDS:
@@ -363,7 +411,46 @@ def _parse_release_content(payload: dict, tag: str) -> ReleaseContent:
                 f"claude release notes missing non-empty '{field}': {payload!r}"
             )
         values[field] = value.strip()
-    return ReleaseContent(**values)
+    content = ReleaseContent(**values)
+    _require_breaking_verdict_of_the_notes(has_breaking_changes, content.notes)
+    return DraftedRelease(
+        version=next_release_version(previous, breaking=has_breaking_changes),
+        content=content,
+    )
+
+
+def _lists_breaking_changes(notes: str) -> bool:
+    """Whether *notes* hold the breaking changes subheading, whatever the case
+    of its letters."""
+    heading = _BREAKING_CHANGES_HEADING.casefold()
+    return any(line.strip().casefold() == heading for line in notes.splitlines())
+
+
+def _require_breaking_verdict_of_the_notes(
+    has_breaking_changes: bool, notes: str
+) -> None:
+    """Refuse a breaking change verdict that the notes contradict."""
+    lists_breaking_changes = _lists_breaking_changes(notes)
+    if has_breaking_changes and not lists_breaking_changes:
+        raise ReleaseError(
+            f"claude reported a breaking change, but the notes have no "
+            f"'{_BREAKING_CHANGES_HEADING}' subheading: {notes!r}"
+        )
+    if lists_breaking_changes and not has_breaking_changes:
+        raise ReleaseError(
+            f"claude reported no breaking change, but the notes have a "
+            f"'{_BREAKING_CHANGES_HEADING}' subheading: {notes!r}"
+        )
+
+
+def _require_verdict(payload: dict, field: str) -> bool:
+    """The boolean verdict *field* of Claude's structured output."""
+    verdict = payload.get(field)
+    if not isinstance(verdict, bool):
+        raise ReleaseError(
+            f"claude release notes missing boolean '{field}': {payload!r}"
+        )
+    return verdict
 
 
 def _require_no_text_fields(payload: dict) -> None:

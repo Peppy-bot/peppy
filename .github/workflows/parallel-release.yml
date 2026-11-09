@@ -15,8 +15,13 @@ name: Parallel release
 # `dev` moved on) never pays for their runners. The form collects every answer
 # the release would otherwise ask for, and the release notes Claude drafts are
 # published as they are, since nobody is there to review them; the prepare job
-# prints them. The install-test jobs install each archive before publish makes
-# it the one users download.
+# prints them. The notes also give the release its version, which follows the
+# latest published release v0.<MINOR>.<PATCH>: v0.<MINOR+1>.0 when they list a
+# breaking change, else v0.<MINOR>.<PATCH+1> (see
+# scripts/functions/release_version.py). The prepare job names the version in
+# its job summary, and its `tag` output gives it to the later jobs that do not
+# read the release plan. The install-test jobs install each archive before
+# publish makes it the one users download.
 #
 # The release also publishes the hub content its peppy reads. hub-set records
 # the commit of each hub the release tests (the hubs of
@@ -60,13 +65,6 @@ name: Parallel release
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: >-
-          Tag of the release, v<MAJOR>.<MINOR>.<PATCH> with digits only (example
-          v0.31.2): a peppy binary reads the hubs at their tag
-          peppy-release/<its version>
-        required: true
-        type: string
       minor_docs_pr:
         description: >-
           When the docs check reports only minor suggestions, open a pull
@@ -125,14 +123,16 @@ defaults:
 
 jobs:
   # Checks that `dev` can be released at the commit this run builds, runs the
-  # docs gate and drafts the notes, all recorded in the release plan. Its
-  # release token pushes the branches of the docs pull requests and opens
-  # them, so it writes contents and pull requests; the checkout keeps it for
-  # those pushes.
+  # docs gate and drafts the notes and the version they give the release, all
+  # recorded in the release plan. Its release token pushes the branches of the
+  # docs pull requests and opens them, so it writes contents and pull
+  # requests; the checkout keeps it for those pushes.
   prepare:
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
     environment: release
     timeout-minutes: 40
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Require a run from dev
         run: |
@@ -172,7 +172,6 @@ jobs:
         env:
           PEPPY_RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          TAG: ${{ inputs.tag }}
           MINOR_DOCS_PR: ${{ inputs.minor_docs_pr }}
           EXTRA_ARGS: ${{ inputs.extra_args }}
         run: |
@@ -183,12 +182,22 @@ jobs:
           fi
           read -r -a extra_args <<< "$EXTRA_ARGS"
           ./scripts/parallel_release.sh prepare \
-            --tag "$TAG" \
             --release-commit "$GITHUB_SHA" \
             "$minor_docs_pr" \
             --plan "$RUNNER_TEMP/release-plan/release-plan.json" \
             "${extra_args[@]}" \
             < /dev/null
+
+      # The tag of the plan, which hub-set and live-check read through the
+      # job's `tag` output; each of them parses it again.
+      - name: Name the version of the release
+        id: version
+        env:
+          PLAN: ${{ runner.temp }}/release-plan/release-plan.json
+        run: |
+          tag="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["tag"])' "$PLAN")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Claude gave this release the version \`$tag\` from the notes it drafted (see the log of the prepare job)." >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -342,7 +351,7 @@ jobs:
   # refresh --strict`, and each hub's repository index is checked at its
   # commit, as the hub's own CI checks it.
   hub-set:
-    needs: build
+    needs: [prepare, build]
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
     environment: release
     timeout-minutes: 30
@@ -368,7 +377,7 @@ jobs:
       - name: Record the hub commits this release tests and tags
         id: record
         env:
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           python3 .github/actions/hub-ci-peppy/resolve.py release-set \
             --tag "$TAG" \
@@ -559,7 +568,7 @@ jobs:
   # the release commit, whose install.sh is the one `main` holds once publish
   # fast-forwarded it.
   live-check:
-    needs: publish
+    needs: [prepare, publish]
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
     timeout-minutes: 30
     steps:
@@ -572,5 +581,5 @@ jobs:
 
       - name: Wait until users get the release
         env:
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: ./scripts/parallel_release.sh live-check --tag "$TAG" < /dev/null
