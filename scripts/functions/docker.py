@@ -2,16 +2,17 @@
 
 The base images are what the definition file of a container node starts from.
 apt in a base image, and so in every node build on top of it, reads one dated
-snapshot of the Ubuntu archive (see base_images/apt_snapshot.sh). A build of
-the base images picks the snapshot once, a time SNAPSHOT_AGE before it starts,
-and gives it to every image and to every platform.
+snapshot of the Ubuntu archive, and the regular Ubuntu mirror for a file that
+the snapshot does not serve (see base_images/apt_snapshot.sh). A build of the
+base images picks the snapshot once, a time SNAPSHOT_AGE before it starts, and
+gives it to every image and to every platform.
 
 The images are published in two steps, so that a node can be built from new
 images before every node build reads them:
 
 1. `build_all_base_images` pushes each image under a tag of its own, then
-   probes each one on each platform with the regular Ubuntu mirrors out of
-   reach.
+   probes each one on each platform: once with the regular Ubuntu mirror out
+   of reach, once with the snapshot service out of reach.
 2. `move_latest_to` moves the `latest` tag of each image to that tag. The
    definition files of the hubs name `latest`.
 """
@@ -33,7 +34,7 @@ BUILDX_BUILDER_NAME = "peppy-multiplatform"
 LATEST_TAG = "latest"
 
 # The script of the build context that points apt at the snapshot in the build
-# of a base image (`setup`) and checks a published one (`probe`).
+# of a base image (`setup`) and checks a published one (see APT_PROBES).
 APT_SNAPSHOT_SCRIPT = "apt_snapshot.sh"
 # The build argument through which a Dockerfile receives the snapshot id.
 APT_SNAPSHOT_BUILD_ARG = "APT_SNAPSHOT"
@@ -49,15 +50,46 @@ _APT_SNAPSHOT_ID_FORMAT = "%Y%m%dT%H%M%SZ"
 # change, and an image built on it would be behind its own snapshot.
 SNAPSHOT_AGE = timedelta(hours=1)
 
-# The names of the regular Ubuntu mirrors. The probe of a published image
-# resolves them to an address where nothing answers, so it passes only when
-# apt reads the snapshot alone.
+# The names of the regular Ubuntu mirrors, and of the snapshot service.
 UBUNTU_MIRROR_HOSTS: tuple[str, ...] = (
     "archive.ubuntu.com",
     "security.ubuntu.com",
     "ports.ubuntu.com",
 )
+UBUNTU_SNAPSHOT_HOST = "snapshot.ubuntu.com"
 _ADDRESS_WITHOUT_ANSWER = "127.0.0.1"
+
+
+@dataclass(frozen=True)
+class AptProbe:
+    """A check of the apt sources of a published base image.
+
+    `mode` is the mode of the snapshot script that the probe runs, with the
+    names of `unreachable_hosts` resolved to an address where nothing answers.
+    `purpose` completes "the image does not ..." when the probe fails, with
+    `{snapshot}` for the snapshot id.
+    """
+
+    mode: str
+    unreachable_hosts: tuple[str, ...]
+    purpose: str
+
+
+APT_PROBES: tuple[AptProbe, ...] = (
+    AptProbe(
+        mode="probe-snapshot",
+        unreachable_hosts=UBUNTU_MIRROR_HOSTS,
+        purpose="install from the Ubuntu snapshot {snapshot} alone",
+    ),
+    AptProbe(
+        mode="probe-fallback",
+        unreachable_hosts=(UBUNTU_SNAPSHOT_HOST,),
+        purpose=(
+            "install from the regular Ubuntu mirror when the snapshot service "
+            "does not answer"
+        ),
+    ),
+)
 _PROBE_SCRIPT_MOUNT = "/run/apt_snapshot.sh"
 
 
@@ -346,47 +378,51 @@ def probe_base_image(
     snapshot: AptSnapshot,
     base_images_dir: Path,
 ) -> None:
-    """Check that the published *image*:*tag* reads *snapshot* alone.
+    """Check the apt sources of the published *image*:*tag* on *snapshot*.
 
-    On each platform, a container of the image pulled from Docker Hub runs the
-    probe of the snapshot script: apt names no source but the snapshot, an
-    update of the index upgrades no package of the image, and a package
-    installs. The names of the regular Ubuntu mirrors resolve to an address
-    where nothing answers. Raises ReleaseError when a probe fails.
+    On each platform, a container of the image pulled from Docker Hub runs
+    each probe of APT_PROBES. Each one checks that apt reads the mirror list
+    of the snapshot, updates the index and installs a package. The probe with
+    the regular Ubuntu mirror out of reach also checks that the index upgrades
+    no package of the image. Raises ReleaseError when a probe fails.
     """
     reference = f"{image.repo}:{tag}"
     for platform in DOCKER_PLATFORMS:
-        cmd: list[str] = [
-            "docker",
-            "run",
-            "--rm",
-            "--pull",
-            "always",
-            "--platform",
-            platform,
-        ]
-        for host in UBUNTU_MIRROR_HOSTS:
-            cmd.extend(["--add-host", f"{host}:{_ADDRESS_WITHOUT_ANSWER}"])
-        cmd.extend(
-            [
-                "--volume",
-                f"{base_images_dir / APT_SNAPSHOT_SCRIPT}:{_PROBE_SCRIPT_MOUNT}:ro",
-                reference,
-                "sh",
-                _PROBE_SCRIPT_MOUNT,
-                "probe",
-                snapshot.id,
+        for probe in APT_PROBES:
+            cmd: list[str] = [
+                "docker",
+                "run",
+                "--rm",
+                "--pull",
+                "always",
+                "--platform",
+                platform,
             ]
-        )
-
-        console.print(f"Probing [bold]{reference}[/bold] on {platform}...")
-
-        result = subprocess.run(cmd, check=False)
-        if result.returncode != 0:
-            raise ReleaseError(
-                f"{reference} on {platform} does not install from the Ubuntu "
-                f"snapshot {snapshot.id} alone (exit {result.returncode})"
+            for host in probe.unreachable_hosts:
+                cmd.extend(["--add-host", f"{host}:{_ADDRESS_WITHOUT_ANSWER}"])
+            cmd.extend(
+                [
+                    "--volume",
+                    f"{base_images_dir / APT_SNAPSHOT_SCRIPT}:{_PROBE_SCRIPT_MOUNT}:ro",
+                    reference,
+                    "sh",
+                    _PROBE_SCRIPT_MOUNT,
+                    probe.mode,
+                    snapshot.id,
+                ]
             )
+
+            console.print(
+                f"Probing [bold]{reference}[/bold] on {platform} ({probe.mode})..."
+            )
+
+            result = subprocess.run(cmd, check=False)
+            if result.returncode != 0:
+                purpose = probe.purpose.format(snapshot=snapshot.id)
+                raise ReleaseError(
+                    f"{reference} on {platform} does not {purpose} "
+                    f"(exit {result.returncode})"
+                )
 
 
 def build_all_base_images(scripts_dir: Path, tag: str, snapshot: AptSnapshot) -> None:

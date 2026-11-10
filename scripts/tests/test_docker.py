@@ -15,6 +15,7 @@ import pytest
 
 from functions.cli import ReleaseError
 from functions.docker import (
+    APT_PROBES,
     APT_SNAPSHOT_BUILD_ARG,
     APT_SNAPSHOT_SCRIPT,
     BASE_IMAGES,
@@ -426,12 +427,31 @@ def test_build_arg_and_label_names() -> None:
     assert (BASE_IMAGES_DIR / APT_SNAPSHOT_SCRIPT).is_file()
 
 
-_SNAPSHOT_REPOSITORY = f"https://snapshot.ubuntu.com/ubuntu/{SNAPSHOT.id}/"
 _NOTHING_TO_UPGRADE = (
     "Reading package lists...\n"
     "Calculating upgrade...\n"
     "0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n"
 )
+_UPGRADES = (
+    "Inst perl-base [5.38.2-3.2ubuntu0.6] (5.38.2-3.2ubuntu0.7 "
+    "Ubuntu:24.04/noble-security [amd64])\n"
+    "Inst apt [2.8.3] (2.8.4ubuntu0.1 Ubuntu:24.04/noble-updates [amd64])\n"
+)
+_SIMULATED_UPGRADES = (
+    "Reading package lists...\n"
+    "The following packages will be upgraded:\n"
+    "  apt perl-base\n"
+    "2 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n"
+    f"{_UPGRADES}"
+    "Conf perl-base (5.38.2-3.2ubuntu0.7 Ubuntu:24.04/noble-security [amd64])\n"
+)
+
+_SNAPSHOT_REPOSITORY = f"https://snapshot.ubuntu.com/ubuntu/{SNAPSHOT.id}/"
+_REGULAR_MIRROR_OF_ARCHITECTURE = {
+    "amd64": "http://archive.ubuntu.com/ubuntu/",
+    "arm64": "http://ports.ubuntu.com/ubuntu-ports/",
+}
+_PROBE_MODES = ("probe-snapshot", "probe-fallback")
 
 # Stands in for apt-get: records its arguments, and answers the two calls
 # whose output the script reads from the files the test names.
@@ -444,6 +464,33 @@ case "$*" in
 esac
 """
 
+# Stands in for dpkg: answers the architecture the test names.
+_FAKE_DPKG = """\
+#!/bin/sh
+[ "$*" = "--print-architecture" ] || exit 2
+echo "$FAKE_DPKG_ARCHITECTURE"
+"""
+
+
+def _mirror_list(snapshot_id: str, regular_mirror: str) -> str:
+    """A mirror list with the snapshot *snapshot_id* first."""
+    return (
+        f"https://snapshot.ubuntu.com/ubuntu/{snapshot_id}/\tpriority:1\n"
+        f"{regular_mirror}\tpriority:2\n"
+    )
+
+
+_MIRROR_LIST_OF_AMD64 = _mirror_list(SNAPSHOT.id, "http://archive.ubuntu.com/ubuntu/")
+
+
+def _apt_etc_dir(tmp_path: Path) -> Path:
+    return tmp_path / "etc-apt"
+
+
+def _mirror_list_repository(tmp_path: Path) -> str:
+    """The repository URI under which apt names the files of the mirror list."""
+    return f"mirror+file:{_apt_etc_dir(tmp_path) / 'peppy-ubuntu-mirrors.txt'}/"
+
 
 def _index_lines(repository: str, suites: Sequence[str] = ("noble",)) -> str:
     """The lines `apt-get update --print-uris` prints for *repository*."""
@@ -454,21 +501,38 @@ def _index_lines(repository: str, suites: Sequence[str] = ("noble",)) -> str:
     return "".join(f"{line}\n" for line in lines)
 
 
+def _install_stand_in(bin_dir: Path, name: str, script: str) -> None:
+    command = bin_dir / name
+    command.write_text(script, encoding="utf-8")
+    command.chmod(0o755)
+
+
 def _run_snapshot_script(
     tmp_path: Path,
     arguments: Sequence[str],
     index_uris: str = "",
     simulation: str = _NOTHING_TO_UPGRADE,
+    architecture: str = "amd64",
+    mirror_list: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
-    """Run the snapshot script with a stand-in for apt-get first on PATH.
+    """Run the snapshot script with stand-ins for apt-get and dpkg first on
+    PATH, and its apt configuration directory in *tmp_path*.
 
-    Returns the finished process and the arguments of each apt-get call.
+    *mirror_list* is the content of the mirror list file, which does not
+    exist when it is None. Returns the finished process and the arguments of
+    each apt-get call.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake_apt_get = bin_dir / "apt-get"
-    fake_apt_get.write_text(_FAKE_APT_GET, encoding="utf-8")
-    fake_apt_get.chmod(0o755)
+    _install_stand_in(bin_dir, "apt-get", _FAKE_APT_GET)
+    _install_stand_in(bin_dir, "dpkg", _FAKE_DPKG)
+
+    apt_etc_dir = _apt_etc_dir(tmp_path)
+    apt_etc_dir.mkdir()
+    if mirror_list is not None:
+        (apt_etc_dir / "peppy-ubuntu-mirrors.txt").write_text(
+            mirror_list, encoding="utf-8"
+        )
 
     calls = tmp_path / "apt_calls"
     calls.touch()
@@ -484,12 +548,18 @@ def _run_snapshot_script(
         check=False,
         env={
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "APT_ETC_DIR": str(apt_etc_dir),
             "FAKE_APT_CALLS": str(calls),
             "FAKE_APT_INDEX_URIS": str(index_uris_file),
             "FAKE_APT_SIMULATION": str(simulation_file),
+            "FAKE_DPKG_ARCHITECTURE": architecture,
         },
     )
     return result, calls.read_text(encoding="utf-8").splitlines()
+
+
+def test_probe_modes_are_the_modes_the_release_scripts_run() -> None:
+    assert tuple(probe.mode for probe in APT_PROBES) == _PROBE_MODES
 
 
 @pytest.mark.parametrize(
@@ -497,11 +567,23 @@ def _run_snapshot_script(
     [
         [],
         ["setup"],
-        ["probe"],
+        ["probe-snapshot"],
+        ["probe-fallback"],
+        ["probe", SNAPSHOT.id],
         ["upgrade", SNAPSHOT.id],
-        ["probe", SNAPSHOT.id, "curl"],
+        ["probe-snapshot", SNAPSHOT.id, "curl"],
+        ["probe-fallback", SNAPSHOT.id, "curl"],
     ],
-    ids=["nothing", "setup-alone", "probe-alone", "unknown-mode", "probe-package"],
+    ids=[
+        "nothing",
+        "setup-alone",
+        "probe-snapshot-alone",
+        "probe-fallback-alone",
+        "probe",
+        "unknown-mode",
+        "probe-snapshot-package",
+        "probe-fallback-package",
+    ],
 )
 def test_snapshot_script_refuses_a_call_in_another_form(
     tmp_path: Path, arguments: list[str]
@@ -509,11 +591,15 @@ def test_snapshot_script_refuses_a_call_in_another_form(
     result, apt_calls = _run_snapshot_script(tmp_path, arguments)
 
     assert result.returncode == 1
-    assert "usage: apt_snapshot.sh setup <snapshot id>" in result.stderr
+    assert result.stderr == (
+        "apt_snapshot.sh: error: usage: apt_snapshot.sh setup <snapshot id> "
+        "[<package>...] | apt_snapshot.sh probe-snapshot <snapshot id> | "
+        "apt_snapshot.sh probe-fallback <snapshot id>\n"
+    )
     assert apt_calls == []
 
 
-@pytest.mark.parametrize("mode", ["setup", "probe"])
+@pytest.mark.parametrize("mode", ["setup", *_PROBE_MODES])
 @pytest.mark.parametrize(
     "snapshot_id",
     ["", "latest", "2026-11-10", "20261110T073833", "x20261110T073833Z"],
@@ -528,49 +614,108 @@ def test_snapshot_script_refuses_an_id_in_another_form(
     assert apt_calls == []
 
 
-def test_snapshot_script_probe_passes_on_the_snapshot_alone(tmp_path: Path) -> None:
+@pytest.mark.parametrize("architecture", ["amd64", "arm64"])
+def test_snapshot_script_probe_snapshot_passes_on_the_mirror_list(
+    tmp_path: Path, architecture: str
+) -> None:
+    mirror_list = _mirror_list(
+        SNAPSHOT.id, _REGULAR_MIRROR_OF_ARCHITECTURE[architecture]
+    )
     index_uris = _index_lines(
-        _SNAPSHOT_REPOSITORY, suites=("noble", "noble-updates", "noble-security")
+        _mirror_list_repository(tmp_path),
+        suites=("noble", "noble-updates", "noble-security"),
     )
 
     result, apt_calls = _run_snapshot_script(
-        tmp_path, ["probe", SNAPSHOT.id], index_uris=index_uris
+        tmp_path,
+        ["probe-snapshot", SNAPSHOT.id],
+        index_uris=index_uris,
+        architecture=architecture,
+        mirror_list=mirror_list,
     )
 
     assert result.returncode == 0, result.stderr
     assert apt_calls == [
         "update --print-uris",
-        "update",
+        "update --error-on=any",
         "--simulate dist-upgrade",
         "install -y --no-install-recommends hello",
     ]
 
 
-@pytest.mark.parametrize(
-    "other_repository",
-    [
-        "http://archive.ubuntu.com/ubuntu/",
-        "http://ports.ubuntu.com/ubuntu-ports/",
-        # The snapshot of another date.
-        f"https://snapshot.ubuntu.com/ubuntu/{OTHER_SNAPSHOT.id}/",
-        # Over HTTP, and a path that only starts as the snapshot does.
-        f"http://snapshot.ubuntu.com/ubuntu/{SNAPSHOT.id}/",
-        f"https://snapshot.ubuntu.com/ubuntu/{SNAPSHOT.id}/extra/",
-    ],
-)
-def test_snapshot_script_probe_stops_at_a_source_other_than_the_snapshot(
-    tmp_path: Path, other_repository: str
+def test_snapshot_script_probe_fallback_passes_on_an_index_that_upgrades_the_image(
+    tmp_path: Path,
 ) -> None:
-    index_uris = _index_lines(_SNAPSHOT_REPOSITORY) + _index_lines(other_repository)
-
+    # The regular mirror is newer than the snapshot, so its index can upgrade
+    # packages of the image: the probe does not ask.
     result, apt_calls = _run_snapshot_script(
-        tmp_path, ["probe", SNAPSHOT.id], index_uris=index_uris
+        tmp_path,
+        ["probe-fallback", SNAPSHOT.id],
+        index_uris=_index_lines(_mirror_list_repository(tmp_path)),
+        simulation=_SIMULATED_UPGRADES,
+        mirror_list=_MIRROR_LIST_OF_AMD64,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert apt_calls == [
+        "update --print-uris",
+        "update --error-on=any",
+        "install -y --no-install-recommends hello",
+    ]
+
+
+def test_snapshot_script_probe_snapshot_stops_at_a_package_the_snapshot_upgrades(
+    tmp_path: Path,
+) -> None:
+    result, apt_calls = _run_snapshot_script(
+        tmp_path,
+        ["probe-snapshot", SNAPSHOT.id],
+        index_uris=_index_lines(_mirror_list_repository(tmp_path)),
+        simulation=_SIMULATED_UPGRADES,
+        mirror_list=_MIRROR_LIST_OF_AMD64,
     )
 
     assert result.returncode == 1
     assert result.stderr == (
-        "apt_snapshot.sh: error: apt reads a source other than the snapshot "
-        f"{SNAPSHOT.id}:\n"
+        f"apt_snapshot.sh: error: the snapshot {SNAPSHOT.id} upgrades packages "
+        f"of the image:\n{_UPGRADES}"
+    )
+    assert apt_calls == [
+        "update --print-uris",
+        "update --error-on=any",
+        "--simulate dist-upgrade",
+    ]
+
+
+@pytest.mark.parametrize("mode", _PROBE_MODES)
+@pytest.mark.parametrize(
+    "other_repository",
+    [
+        # The snapshot itself: sources without the regular mirror.
+        _SNAPSHOT_REPOSITORY,
+        "http://archive.ubuntu.com/ubuntu/",
+        "http://ports.ubuntu.com/ubuntu-ports/",
+        "mirror+file:/etc/apt/other-mirrors.txt/",
+    ],
+)
+def test_snapshot_script_probe_stops_at_a_source_other_than_the_mirror_list(
+    tmp_path: Path, mode: str, other_repository: str
+) -> None:
+    index_uris = _index_lines(_mirror_list_repository(tmp_path)) + _index_lines(
+        other_repository
+    )
+
+    result, apt_calls = _run_snapshot_script(
+        tmp_path,
+        [mode, SNAPSHOT.id],
+        index_uris=index_uris,
+        mirror_list=_MIRROR_LIST_OF_AMD64,
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "apt_snapshot.sh: error: apt reads a source other than "
+        f"{_mirror_list_repository(tmp_path)}:\n"
         f"  {other_repository}\n"
     )
     # It stops before a download from that source.
@@ -580,62 +725,119 @@ def test_snapshot_script_probe_stops_at_a_source_other_than_the_snapshot(
 def test_snapshot_script_probe_names_each_other_source_once(tmp_path: Path) -> None:
     index_uris = (
         _index_lines("http://archive.ubuntu.com/ubuntu/", suites=("noble", "extra"))
-        + _index_lines(_SNAPSHOT_REPOSITORY)
+        + _index_lines(_mirror_list_repository(tmp_path))
         # A repository without suites has its indexes at its root.
         + "'https://example.com/flat/./InRelease' flat_InRelease 0 \n"
     )
 
     result, _ = _run_snapshot_script(
-        tmp_path, ["probe", SNAPSHOT.id], index_uris=index_uris
+        tmp_path,
+        ["probe-snapshot", SNAPSHOT.id],
+        index_uris=index_uris,
+        mirror_list=_MIRROR_LIST_OF_AMD64,
     )
 
     assert result.returncode == 1
     assert result.stderr == (
-        "apt_snapshot.sh: error: apt reads a source other than the snapshot "
-        f"{SNAPSHOT.id}:\n"
+        "apt_snapshot.sh: error: apt reads a source other than "
+        f"{_mirror_list_repository(tmp_path)}:\n"
         "  http://archive.ubuntu.com/ubuntu/\n"
         "  https://example.com/flat/./InRelease\n"
     )
 
 
-def test_snapshot_script_probe_stops_when_apt_has_no_source(tmp_path: Path) -> None:
-    result, apt_calls = _run_snapshot_script(tmp_path, ["probe", SNAPSHOT.id])
+@pytest.mark.parametrize("mode", _PROBE_MODES)
+def test_snapshot_script_probe_stops_when_apt_has_no_source(
+    tmp_path: Path, mode: str
+) -> None:
+    result, apt_calls = _run_snapshot_script(
+        tmp_path, [mode, SNAPSHOT.id], mirror_list=_MIRROR_LIST_OF_AMD64
+    )
 
     assert result.returncode == 1
     assert result.stderr == "apt_snapshot.sh: error: apt has no source\n"
     assert apt_calls == ["update --print-uris"]
 
 
-def test_snapshot_script_probe_stops_at_a_package_the_snapshot_upgrades(
-    tmp_path: Path,
+@pytest.mark.parametrize("mode", _PROBE_MODES)
+@pytest.mark.parametrize(
+    "mirror_list",
+    [
+        # The regular mirror first.
+        (
+            "http://archive.ubuntu.com/ubuntu/\tpriority:1\n"
+            f"{_SNAPSHOT_REPOSITORY}\tpriority:2\n"
+        ),
+        _mirror_list(OTHER_SNAPSHOT.id, "http://archive.ubuntu.com/ubuntu/"),
+        # The regular mirror of arm64 on amd64.
+        _mirror_list(SNAPSHOT.id, "http://ports.ubuntu.com/ubuntu-ports/"),
+        f"{_SNAPSHOT_REPOSITORY}\tpriority:1\n",
+        "",
+    ],
+    ids=[
+        "regular-mirror-first",
+        "other-snapshot",
+        "mirror-of-other-architecture",
+        "no-regular-mirror",
+        "empty",
+    ],
+)
+def test_snapshot_script_probe_stops_at_a_mirror_list_in_another_form(
+    tmp_path: Path, mode: str, mirror_list: str
 ) -> None:
-    upgrades = (
-        "Inst perl-base [5.38.2-3.2ubuntu0.6] (5.38.2-3.2ubuntu0.7 "
-        "Ubuntu:24.04/noble-security [amd64])\n"
-        "Inst apt [2.8.3] (2.8.4ubuntu0.1 Ubuntu:24.04/noble-updates [amd64])\n"
-    )
-    simulation = (
-        "Reading package lists...\n"
-        "The following packages will be upgraded:\n"
-        "  apt perl-base\n"
-        "2 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n"
-        f"{upgrades}"
-        "Conf perl-base (5.38.2-3.2ubuntu0.7 Ubuntu:24.04/noble-security [amd64])\n"
-    )
-
     result, apt_calls = _run_snapshot_script(
         tmp_path,
-        ["probe", SNAPSHOT.id],
-        index_uris=_index_lines(_SNAPSHOT_REPOSITORY),
-        simulation=simulation,
+        [mode, SNAPSHOT.id],
+        index_uris=_index_lines(_mirror_list_repository(tmp_path)),
+        mirror_list=mirror_list,
+    )
+
+    list_file = _apt_etc_dir(tmp_path) / "peppy-ubuntu-mirrors.txt"
+    assert result.returncode == 1
+    assert result.stderr == (
+        f"apt_snapshot.sh: error: {list_file} does not name the snapshot "
+        f"{SNAPSHOT.id} first and the regular mirror second:\n"
+        f"{mirror_list.rstrip()}\n"
+    )
+    assert apt_calls == ["update --print-uris"]
+
+
+@pytest.mark.parametrize("mode", _PROBE_MODES)
+def test_snapshot_script_probe_stops_without_a_mirror_list(
+    tmp_path: Path, mode: str
+) -> None:
+    result, apt_calls = _run_snapshot_script(
+        tmp_path,
+        [mode, SNAPSHOT.id],
+        index_uris=_index_lines(_mirror_list_repository(tmp_path)),
+    )
+
+    list_file = _apt_etc_dir(tmp_path) / "peppy-ubuntu-mirrors.txt"
+    assert result.returncode == 1
+    assert result.stderr.endswith(
+        f"apt_snapshot.sh: error: {list_file} cannot be read\n"
+    )
+    assert apt_calls == ["update --print-uris"]
+
+
+@pytest.mark.parametrize("mode", _PROBE_MODES)
+def test_snapshot_script_probe_stops_on_an_architecture_without_a_regular_mirror(
+    tmp_path: Path, mode: str
+) -> None:
+    result, apt_calls = _run_snapshot_script(
+        tmp_path,
+        [mode, SNAPSHOT.id],
+        index_uris=_index_lines(_mirror_list_repository(tmp_path)),
+        architecture="riscv64",
+        mirror_list=_MIRROR_LIST_OF_AMD64,
     )
 
     assert result.returncode == 1
     assert result.stderr == (
-        f"apt_snapshot.sh: error: the snapshot {SNAPSHOT.id} upgrades packages "
-        f"of the image:\n{upgrades}"
+        "apt_snapshot.sh: error: no regular Ubuntu mirror is known for the "
+        "architecture riscv64\n"
     )
-    assert apt_calls == ["update --print-uris", "update", "--simulate dist-upgrade"]
+    assert apt_calls == ["update --print-uris"]
 
 
 # --- build_and_push_base_image ---
@@ -677,9 +879,7 @@ def test_build_and_push_base_image_failure(tmp_path: Path) -> None:
 # --- probe_base_image ---
 
 
-def test_probe_base_image_probes_each_platform_with_the_mirrors_out_of_reach(
-    tmp_path: Path,
-) -> None:
+def test_probe_base_image_runs_both_probes_on_each_platform(tmp_path: Path) -> None:
     image = BASE_IMAGES[0]
 
     with patch("functions.docker.subprocess.run") as mock_run:
@@ -687,31 +887,33 @@ def test_probe_base_image_probes_each_platform_with_the_mirrors_out_of_reach(
         probe_base_image(image, "v0.1.0", SNAPSHOT, tmp_path)
 
     commands = [run.args[0] for run in mock_run.call_args_list]
-    assert [flag_value(cmd, "--platform") for cmd in commands] == DOCKER_PLATFORMS
+    assert [(flag_value(cmd, "--platform"), cmd[-2]) for cmd in commands] == [
+        (platform, mode) for platform in DOCKER_PLATFORMS for mode in _PROBE_MODES
+    ]
     for cmd in commands:
         assert cmd[:3] == ["docker", "run", "--rm"]
         # The image Docker Hub serves, not a copy this host holds.
         assert flag_value(cmd, "--pull") == "always"
-        assert _flag_values(cmd, "--add-host") == [
-            "archive.ubuntu.com:127.0.0.1",
-            "security.ubuntu.com:127.0.0.1",
-            "ports.ubuntu.com:127.0.0.1",
-        ]
         assert _flag_values(cmd, "--volume") == [
             f"{tmp_path / 'apt_snapshot.sh'}:/run/apt_snapshot.sh:ro"
         ]
-        assert cmd[-5:] == [
-            f"{image.repo}:v0.1.0",
-            "sh",
-            "/run/apt_snapshot.sh",
-            "probe",
-            SNAPSHOT.id,
-        ]
+        assert cmd[-5:-2] == [f"{image.repo}:v0.1.0", "sh", "/run/apt_snapshot.sh"]
+        assert cmd[-1] == SNAPSHOT.id
+
+    unreachable_of_mode = {cmd[-2]: _flag_values(cmd, "--add-host") for cmd in commands}
+    assert unreachable_of_mode == {
+        # The regular mirror out of reach: the snapshot serves every file.
+        "probe-snapshot": [
+            "archive.ubuntu.com:127.0.0.1",
+            "security.ubuntu.com:127.0.0.1",
+            "ports.ubuntu.com:127.0.0.1",
+        ],
+        # The snapshot out of reach: the regular mirror serves every file.
+        "probe-fallback": ["snapshot.ubuntu.com:127.0.0.1"],
+    }
 
 
-def test_probe_base_image_stops_at_the_first_platform_that_fails(
-    tmp_path: Path,
-) -> None:
+def test_probe_base_image_stops_at_the_first_probe_that_fails(tmp_path: Path) -> None:
     image = BASE_IMAGES[0]
 
     with patch("functions.docker.subprocess.run") as mock_run:
@@ -724,6 +926,26 @@ def test_probe_base_image_stops_at_the_first_platform_that_fails(
         f"the Ubuntu snapshot {SNAPSHOT.id} alone (exit 1)"
     )
     mock_run.assert_called_once()
+
+
+def test_probe_base_image_reports_a_failed_fallback(tmp_path: Path) -> None:
+    image = BASE_IMAGES[0]
+
+    def run(cmd: Sequence[str], **_: object) -> MagicMock:
+        return MagicMock(returncode=0 if cmd[-2] == "probe-snapshot" else 100)
+
+    with (
+        patch("functions.docker.subprocess.run", side_effect=run) as mock_run,
+        pytest.raises(ReleaseError) as raised,
+    ):
+        probe_base_image(image, "v0.1.0", SNAPSHOT, tmp_path)
+
+    assert str(raised.value) == (
+        f"{image.repo}:v0.1.0 on {DOCKER_PLATFORMS[0]} does not install from "
+        "the regular Ubuntu mirror when the snapshot service does not answer "
+        "(exit 100)"
+    )
+    assert mock_run.call_count == 2
 
 
 # --- build_all_base_images ---
@@ -757,12 +979,14 @@ def test_build_all_base_images_builds_every_image_on_one_snapshot_then_probes(
     }
     assert {cmd[-1] for cmd in builds} == {str(tmp_path / "base_images")}
 
-    # Every image is probed on every platform, once all of them are pushed.
+    # Every image is probed on every platform with every probe, once all of
+    # them are pushed.
     assert all(_is_probe(cmd) for cmd in probes)
-    assert [(cmd[-5], flag_value(cmd, "--platform")) for cmd in probes] == [
-        (f"{image.repo}:v0.2.0", platform)
+    assert [(cmd[-5], flag_value(cmd, "--platform"), cmd[-2]) for cmd in probes] == [
+        (f"{image.repo}:v0.2.0", platform, mode)
         for image in BASE_IMAGES
         for platform in DOCKER_PLATFORMS
+        for mode in _PROBE_MODES
     ]
     assert {cmd[-1] for cmd in probes} == {SNAPSHOT.id}
 
@@ -1088,7 +1312,7 @@ def test_run_build_gives_one_snapshot_to_every_image_and_platform() -> None:
     builds = [cmd for cmd in commands if _is_build(cmd)]
     probes = [cmd for cmd in commands if _is_probe(cmd)]
     assert len(builds) == len(BASE_IMAGES)
-    assert len(probes) == len(BASE_IMAGES) * len(DOCKER_PLATFORMS)
+    assert len(probes) == len(BASE_IMAGES) * len(DOCKER_PLATFORMS) * len(APT_PROBES)
     # One build of an image covers every platform.
     assert {flag_value(cmd, "--platform") for cmd in builds} == {
         ",".join(DOCKER_PLATFORMS)

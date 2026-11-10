@@ -740,12 +740,13 @@ Add packages to the `%post` section:
 
 #### The Ubuntu snapshot of the peppy base images
 
-In the peppy base images (`peppybot/python-uv-base`, `peppybot/rust-cargo-base`), `apt` reads every Ubuntu package from one dated snapshot of the Ubuntu archive, which the [Ubuntu snapshot service](https://snapshot.ubuntu.com) serves. It does not read `archive.ubuntu.com`, `security.ubuntu.com` or `ports.ubuntu.com`. The snapshot is the archive as it was one hour before the build of the base image started, and its package index and package files do not change. A node build on a peppy base image gets this from it:
+In the peppy base images (`peppybot/python-uv-base`, `peppybot/rust-cargo-base`), `apt` reads the Ubuntu packages from one dated snapshot of the Ubuntu archive, which the [Ubuntu snapshot service](https://snapshot.ubuntu.com) serves. The snapshot is the archive as it was one hour before the build of the base image started, and its package index and package files do not change. While the snapshot service answers, a node build on a peppy base image gets this from it:
 
 - Two builds of the node on the same base image install the same versions of the Ubuntu packages.
 - The build upgrades no package of the base image: each package of the image is at its version in the snapshot.
 - The node has the Ubuntu security updates up to the date of the snapshot, not up to the day of its build. A newer base image reads a newer snapshot. Pass `--rebuild` to build a node on it (see [Build artifact cache](#build-artifact-cache)).
-- `apt` tries a download again, three times, after a timeout or a refused connection.
+
+For a file that the snapshot service does not serve (it does not answer, or it answers with an error), `apt` asks the regular Ubuntu mirror: `archive.ubuntu.com` on `linux/amd64`, `ports.ubuntu.com` on `linux/arm64`. A build that the snapshot service does not answer at all reads the current state of the archive, as a build on another Ubuntu image does: it is slower, by about 30 seconds for each `apt-get` command when the service does not answer, and it can install newer versions than the snapshot and upgrade packages of the base image.
 
 The date of the snapshot is a UTC time in the form `YYYYMMDDTHHMMSSZ`. The image holds it in its `bot.peppy.apt-snapshot` label:
 
@@ -754,7 +755,7 @@ docker pull peppybot/python-uv-base:latest
 docker inspect --format '{{ index .Config.Labels "bot.peppy.apt-snapshot" }}' peppybot/python-uv-base:latest
 ```
 
-Inside a build, the date is in the URL that `/etc/apt/sources.list.d/ubuntu.sources` names, and in each line that `apt` prints for a package it downloads:
+Inside a build, `/etc/apt/peppy-ubuntu-mirrors.txt` lists the snapshot first and the regular mirror second, and each line that `apt` prints for a package names the source it downloads the package from:
 
 ```text
 Get:1 https://snapshot.ubuntu.com/ubuntu/20261110T073833Z noble/main amd64 libudev-dev amd64 255.4-1ubuntu8 [22.0 kB]

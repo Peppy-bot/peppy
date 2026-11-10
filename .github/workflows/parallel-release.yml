@@ -46,10 +46,11 @@ name: Parallel release
 # file of a container node starts from (peppybot/python-uv-base and
 # peppybot/rust-cargo-base): no job has a login to Docker Hub. apt in a base
 # image reads the Ubuntu archive as it was one hour before the build of the
-# image started (see scripts/base_images/apt_snapshot.sh), so a node build
-# gets the Ubuntu security updates up to that day only. Publish the base
-# images by hand with each release, once live-check passes, from a machine
-# logged in to Docker Hub as peppybot:
+# image started, while the snapshot service answers (see
+# scripts/base_images/apt_snapshot.sh), so a node build gets the Ubuntu
+# security updates up to that day only. Publish the base images by hand with
+# each release, once live-check passes, from a machine logged in to Docker
+# Hub as peppybot:
 #
 #   ./scripts/build_release.sh --base-images --tag <tag>
 #   ./scripts/build_release.sh --base-images-latest --tag <tag>
