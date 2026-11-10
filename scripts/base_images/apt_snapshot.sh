@@ -87,13 +87,16 @@ EOF
 # certificates. This one install reads the snapshot without a check of the
 # certificate of the server. apt still checks the signature of the index
 # against the Ubuntu archive key of the image, and each package against the
-# index, as it does for the regular mirrors over HTTP.
+# index, as it does for the regular mirrors over HTTP. The update that ends
+# this reads the index again with the check of the certificate, so every
+# later install works from an index of the real server.
 install_ca_certificates() {
     no_peer_check="-o Acquire::https::Verify-Peer=false -o Acquire::https::Verify-Host=false"
     # shellcheck disable=SC2086
     apt-get $no_peer_check update
     # shellcheck disable=SC2086
     apt-get $no_peer_check install -y --no-install-recommends ca-certificates
+    apt-get update
 }
 
 # Stops unless every index that apt reads is under the snapshot. apt names
