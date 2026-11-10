@@ -3611,7 +3611,7 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
                   } } },
             ],
             adjustments: [
-                { target: "sim_inst", set_arguments: { hardware_version: "v2" } },
+                { target: "sim_inst", set_arguments: { model: "openarm_v2" } },
             ],
             deployments: [
                 { source: { name: "panel", tag: "v1" },

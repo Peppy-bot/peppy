@@ -519,19 +519,19 @@ peppy node run --instance-id arm_1 robot_arm:v1 --link controller@ctrl_1
 For the copy `bravo`, whose backbone reached its `max_restarts`, `peppy stack list` on the coordinator shows its `Copy` line beside the line of `alpha`, which the launch started. No `Launch copy` line repeats the line of `bravo`, so a join added it:
 
 ```
-Copy alpha of openarm on jetson-1: hardware_version=v2
+Copy alpha of openarm on jetson-1: model=openarm_v2
   Instances: alpha_backbone_inst, alpha_camera_inst
-Copy bravo of openarm on jetson-2: hardware_version=v1,robot_commander=ker_commander
+Copy bravo of openarm on jetson-2: model=openarm_v1,robot_commander=ker_commander
   Instances: bravo_backbone_inst, bravo_camera_inst
 Launch copies
-  Launch copy alpha of openarm on jetson-1: hardware_version=v2
+  Launch copy alpha of openarm on jetson-1: model=openarm_v2
 ```
 
 and these commands start it again as it was joined:
 
 ```sh
 peppy stack remove bravo
-peppy stack join openarm:bravo@jetson-2 --with hardware_version=v1,robot_commander=ker_commander
+peppy stack join openarm:bravo@jetson-2 --with model=openarm_v1,robot_commander=ker_commander
 ```
 
 A `restart refused` line names its cause. When the cause is a clock domain whose publisher ended, the line also says what publishes the name now. For a reader a launch or `peppy stack join` started, a launch of the stack starts the reader and its publisher again; join again, after the launch, each copy `peppy stack join` added. For one `peppy node run` started, stop it and run it again with its `--clock`, after starting a publisher with `--publish-clock` when nothing publishes the name.
@@ -710,7 +710,7 @@ A launch of a launcher with components echoes the full resolution before anythin
 
 ```
 components: simulation=waldo (from file)  robot_control=(off)  scene_commander=(off)
-copy alpha: robot=openarm_sim  hardware_version=v2 (from file)  robot_commander=web_commander (from file)  recorder=(off)  camera_rig=none (from file)  brain=(off)
+copy alpha: robot=openarm_sim  model=openarm_v2 (from file)  robot_commander=web_commander (from file)  recorder=(off)  camera_rig=none (from file)  brain=(off)
 ```
 
 Passing `--with` to a launcher that declares no `components` is refused.
@@ -881,21 +881,21 @@ An option's fragment can declare `components` of its own: the axes that belong t
   peppy_schema: "launcher_fragment/v1",
   deployments: [
     { source: { name: "openarm_backbone", tag: "v1" }, instances: [{ instance_id: "backbone_inst" }] },
-    { hardware_version: "v2" },
+    { model: "openarm_v2" },
     { robot_commander: "web_commander" },
     { camera_rig: "none" },
   ],
   components: [
-    // The hardware version the simulation stands: each option deploys the
+    // The model the simulation stands: each option deploys the
     // initializer that names its model, inline.
-    { name: "hardware_version", provides: ["init_inst"],
+    { name: "model", provides: ["init_inst"],
       options: {
-        v1: { deployments: [{ source: { name: "robot_initializer", tag: "v1" },
-                              instances: [{ instance_id: "init_inst", framework: { clock: "simulation" },
-                                            arguments: { model: "openarm_v1" }, links: { simulation: "simulation_inst" } }] }] },
-        v2: { deployments: [{ source: { name: "robot_initializer", tag: "v1" },
-                              instances: [{ instance_id: "init_inst", framework: { clock: "simulation" },
-                                            arguments: { model: "openarm_v2" }, links: { simulation: "simulation_inst" } }] }] },
+        openarm_v1: { deployments: [{ source: { name: "robot_initializer", tag: "v1" },
+                                      instances: [{ instance_id: "init_inst", framework: { clock: "simulation" },
+                                                    arguments: { model: "openarm_v1" }, links: { simulation: "simulation_inst" } }] }] },
+        openarm_v2: { deployments: [{ source: { name: "robot_initializer", tag: "v1" },
+                                      instances: [{ instance_id: "init_inst", framework: { clock: "simulation" },
+                                                    arguments: { model: "openarm_v2" }, links: { simulation: "simulation_inst" } }] }] },
       } },
     // The robot commander of the robot: a node that drives it outside the
     // leases and the halt.
@@ -954,7 +954,7 @@ A copy entry has four fields: `instance_id`, the copy's name; `with`, the select
 ```json5
 { robot: "openarm_sim", with: { robot_commander: "web_commander" }, instances: [
     { instance_id: "alpha" },
-    { instance_id: "bravo", with: { hardware_version: "v1" }, arguments: { commander_inst: { http_port: 8766 } } },
+    { instance_id: "bravo", with: { model: "openarm_v1" }, arguments: { commander_inst: { http_port: 8766 } } },
 ] },
 ```
 
@@ -998,11 +998,11 @@ peppy stack remove bravo
 
 # A stack with no robot yet, then robots as they arrive.
 peppy stack launch physical --with xr_commander
-peppy stack join openarm:alpha@jetson-1 --with v2
-peppy stack join openarm:bravo@jetson-2 --with v1,robot_commander=none
+peppy stack join openarm:alpha@jetson-1 --with openarm_v2
+peppy stack join openarm:bravo@jetson-2 --with openarm_v1,robot_commander=none
 
 # The same two robots, a v2 and a v1, named at launch.
-peppy stack launch physical --join openarm:alpha@jetson-1 --join openarm:bravo@jetson-2 --with xr_commander,bravo.hardware_version=v1,bravo.robot_commander=none
+peppy stack launch physical --join openarm:alpha@jetson-1 --join openarm:bravo@jetson-2 --with xr_commander,bravo.model=openarm_v1,bravo.robot_commander=none
 ```
 
 `stack join OPTION:NAME` names the option to copy and the copy's name, the one spelling `--join` takes too. Its `--with` words select the copied option's own axes. Every instance the copy's fragments define receives the name as a prefix: `alpha_left_arm_inst`, `alpha_backbone_inst`, `alpha_commander_inst`. Every link naming one of them follows it under the prefix, including array links and pairing targets such as `alpha_backbone_inst/leader_left_arm`; links to stack instances such as `simulation_inst` keep their IDs. The name is also the copy's core node link.
@@ -1094,11 +1094,11 @@ One simulation per stack, and each simulated robot joins it as a copy that bring
 
 A source on a machine that is not live, whose watchers the removal changes, does not hold the removal: it keeps its watchers until that machine is reset. A stop that fails skips the later stops on its machine while the other machines still stop, and the removal then fails with every error and keeps the copy in `stack list`, so `stack remove` can run again. A set on a machine that is not live keeps the members it holds, and the removal says so; when the machine returns with the instance still running, the next join or removal changing that slot delivers it whole, and when it returns without it, launch again. Two floors refuse a removal: one that would leave a `one_or_more` slot with no member is refused, naming the slot, and one that would take the last copy of a `one_or_more` axis is refused, naming the copy and the axis. A copy another copy links to is refused until that copy goes first, and a copy a stack instance links to any other way stays until the next launch. Removal leaves the stack's own instances running: removing a simulated robot takes it out of the simulation, which stays up for the next join, and `stack reset` stops everything. A copy that released a stack instance's vacancy to pair into that slot restores the vacancy when it goes, so the slot stands vacant again as the launch declared it, the mirror of pairing into a vacancy above. A failed join stops what it started on the live machines, with the same line for each instance it stops, removes the nodes it added, and reports the failure; when that cleanup itself fails the copy stays in `stack list` and the message says to retry `stack remove`.
 
-`stack list` names each copy on one line with the option it copies, its machine and its selection: `Copy delta of openarm_sim on jetson-1: hardware_version=v2,robot_commander=none,camera_rig=cameras_sim,brain=ai_brain_vla@cn-gpu-box`. The selection is each filled own axis, in the order the option declares them, as the word `axis=option` that selects it, with `@machine` after a part that runs on another machine than the copy's, joined by `,`. A listed copy is its own recipe: `peppy stack join openarm_sim:delta@jetson-1 --with` followed by the text after the colon adds the same copy on the same machines. A join ends with the same line, ``Copy `delta` of `openarm_sim` joined on `jetson-1`: hardware_version=v2,…``. Under its line, `stack list` names the copy's instances and the set members it added, one row per slot under `Set members:` (`monitor_inst.links.robots → alpha_backbone_inst`, the target by the id the stack runs it under; the bindings table adds its machine), and its bindings table names the copy beside each member a copy brought (`robots → alpha_backbone_inst@cn-robot [copy alpha]`). A join writes its copy into the stack only when it ends, so while a join or a removal runs, the coordinator's panel names it on a line of its own: `Copy bravo of so101_sim joins the stack now`, or `leaves the stack now` for a removal. After the copies, under `Launch copies`, the coordinator's panel names each copy the launch started, the file's copies and the `--join` ones, in name order, as the launch started it: `Launch copy alpha of openarm_sim on jetson-1: hardware_version=v2,robot_commander=none`. The daemon keeps the launch copies from the launch until `stack reset`, the next launch or the end of its process, and a join or a removal leaves them as they are, so a copy a removal took off the stack stays under `Launch copies`. A `Launch copy` line prints the copy as its `Copy` line did when the launch started it, so a `Copy` line that no `Launch copy` line repeats, with the same text after its keyword, is one `stack join` added. Compare the whole line: a join can add a copy under the name of a launch copy that a removal took off, with another option, machine or selection. `stack list --json` carries the same under `copies`, each selection as `{ "axis", "option" }` with a `core_node` key on a part that runs on another machine than the copy's, and `copy_change` (`{ "action": "join", "name": "bravo", "option": "so101_sim" }`, or `null`), the launch copies under `launch_copies` in the form of `copies`, the members under `set_members`, and each member of a slot's `slot_bindings` under `producer`, with a `copy` key on a member a copy brought, naming the copy and the id its fragment wrote for the instance. The node holding the set reads the same fact through its [`bound_members()`](/advanced_guides/topics/#receiving-messages) accessor. Preview a launch and the copies it starts without starting anything, which composes it and runs the link rules a launch runs, leaving what only a running stack can answer (whether the instance whose set grows is running, and whether its machine is live) to the join itself:
+`stack list` names each copy on one line with the option it copies, its machine and its selection: `Copy delta of openarm_sim on jetson-1: model=openarm_v2,robot_commander=none,camera_rig=cameras_sim,brain=ai_brain_vla@cn-gpu-box`. The selection is each filled own axis, in the order the option declares them, as the word `axis=option` that selects it, with `@machine` after a part that runs on another machine than the copy's, joined by `,`. A listed copy is its own recipe: `peppy stack join openarm_sim:delta@jetson-1 --with` followed by the text after the colon adds the same copy on the same machines. A join ends with the same line, ``Copy `delta` of `openarm_sim` joined on `jetson-1`: model=openarm_v2,…``. Under its line, `stack list` names the copy's instances and the set members it added, one row per slot under `Set members:` (`monitor_inst.links.robots → alpha_backbone_inst`, the target by the id the stack runs it under; the bindings table adds its machine), and its bindings table names the copy beside each member a copy brought (`robots → alpha_backbone_inst@cn-robot [copy alpha]`). A join writes its copy into the stack only when it ends, so while a join or a removal runs, the coordinator's panel names it on a line of its own: `Copy bravo of so101_sim joins the stack now`, or `leaves the stack now` for a removal. After the copies, under `Launch copies`, the coordinator's panel names each copy the launch started, the file's copies and the `--join` ones, in name order, as the launch started it: `Launch copy alpha of openarm_sim on jetson-1: model=openarm_v2,robot_commander=none`. The daemon keeps the launch copies from the launch until `stack reset`, the next launch or the end of its process, and a join or a removal leaves them as they are, so a copy a removal took off the stack stays under `Launch copies`. A `Launch copy` line prints the copy as its `Copy` line did when the launch started it, so a `Copy` line that no `Launch copy` line repeats, with the same text after its keyword, is one `stack join` added. Compare the whole line: a join can add a copy under the name of a launch copy that a removal took off, with another option, machine or selection. `stack list --json` carries the same under `copies`, each selection as `{ "axis", "option" }` with a `core_node` key on a part that runs on another machine than the copy's, and `copy_change` (`{ "action": "join", "name": "bravo", "option": "so101_sim" }`, or `null`), the launch copies under `launch_copies` in the form of `copies`, the members under `set_members`, and each member of a slot's `slot_bindings` under `producer`, with a `copy` key on a member a copy brought, naming the copy and the id its fragment wrote for the instance. The node holding the set reads the same fact through its [`bound_members()`](/advanced_guides/topics/#receiving-messages) accessor. Preview a launch and the copies it starts without starting anything, which composes it and runs the link rules a launch runs, leaving what only a running stack can answer (whether the instance whose set grows is running, and whether its machine is live) to the join itself:
 
 ```sh
 peppy stack resolve openarm_simulation --with mujoco
-peppy stack resolve physical --join openarm:alpha --join openarm:bravo --with xr_commander,bravo.hardware_version=v1,bravo.robot_commander=none
+peppy stack resolve physical --join openarm:alpha --join openarm:bravo --with xr_commander,bravo.model=openarm_v1,bravo.robot_commander=none
 ```
 
 Join and remove run on the coordinator (`--core-node NAME` reaches it from another machine), serialize with launches and with each other, and reserve only the machines they touch: an unrelated host that is offline blocks neither. A reset cancels the operation in flight, waits for its cleanup, and empties the stack. A restarted coordinator has no launcher to compose against; launch again before joining.

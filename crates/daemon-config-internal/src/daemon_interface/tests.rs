@@ -390,7 +390,7 @@ fn a_feature_gives_its_word_and_is_found_in_a_robots_selections() {
     );
 
     let selections: Vec<core_node_api::encoding::AxisSelection> = [
-        "hardware_version=v2",
+        "model=openarm_v2",
         "brain=ai_brain_vla@cn-gpu-box",
         "recorder=lerobot_recorder",
     ]
