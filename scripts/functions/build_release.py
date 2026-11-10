@@ -1,8 +1,10 @@
-"""Build peppy release archives on this host without publishing them.
+"""Build peppy release archives on this host without publishing them, or
+publish the Docker base images.
 
 Releases publish only from the "Parallel release" workflow
-(.github/workflows/parallel-release.yml, see `parallel_release`). This script
-builds the archives a release ships so they can be tested before one is cut:
+(.github/workflows/parallel-release.yml, see `parallel_release`). With
+`--local`, this script builds the archives a release ships so they can be
+tested before one is cut:
 
 On macOS ARM64: builds all 3 targets (native + Linux via Lima VM).
 On Linux: builds the native target only.
@@ -13,6 +15,10 @@ Requires:
 
 Outputs:
   - Tar.gz archives in ./dist/
+
+The workflow does not publish the Docker base images, which need a login to
+Docker Hub. `--base-images` and then `--base-images-latest` publish them from
+this host (see `docker`).
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ from .cli import (
     run_with_error_handling,
 )
 from .docker import main as build_base_images_main
+from .docker import move_latest_main as move_base_images_latest_main
 from .lima import ensure_lima_vm, ensure_rust_in_vm, find_limactl, stop_lima_vm
 from .repo import get_repo_root, has_uncommitted_changes
 from .verify_release import verify_all_releases
@@ -41,8 +48,10 @@ from .verify_release import verify_all_releases
 _NO_MODE_MESSAGE = (
     'releases publish only from the "Parallel release" workflow '
     "(.github/workflows/parallel-release.yml). Pass --local to build the "
-    "release archives on this host without publishing them, or --base-images "
-    "to build and push the Docker base images."
+    "release archives on this host without publishing them, --base-images to "
+    "build the Docker base images and push them under a tag of their own, or "
+    "--base-images-latest to move `latest` of the Docker base images to such "
+    "a tag."
 )
 
 
@@ -63,20 +72,32 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     mode.add_argument(
         "--base-images",
         action="store_true",
-        help="Build and push Docker base images to Docker Hub.",
+        help=(
+            "Build the Docker base images on the Ubuntu snapshot of one hour "
+            "ago, push them to Docker Hub under a tag of their own, and probe "
+            "them. "
+            "`latest` does not move."
+        ),
+    )
+    mode.add_argument(
+        "--base-images-latest",
+        action="store_true",
+        help=(
+            "Move `latest` of the Docker base images to a tag that "
+            "--base-images pushed."
+        ),
     )
     parser.add_argument(
         "--tag",
         help=(
-            "With --local, the tag to build the artifacts for, instead of "
-            "prompting for one."
+            "The tag to build the artifacts for (--local), to push the base "
+            "images under (--base-images) or to move `latest` to "
+            "(--base-images-latest), instead of prompting for one."
         ),
     )
     args = parser.parse_args(argv)
-    if not args.local and not args.base_images:
+    if not (args.local or args.base_images or args.base_images_latest):
         parser.error(_NO_MODE_MESSAGE)
-    if args.tag is not None and not args.local:
-        parser.error("--tag applies to --local only")
     return args
 
 
@@ -155,6 +176,9 @@ def _run_local(tag: str | None = None) -> None:
 def main() -> None:
     args = _parse_args()
     if args.base_images:
-        build_base_images_main()
+        build_base_images_main(args.tag)
+        return
+    if args.base_images_latest:
+        move_base_images_latest_main(args.tag)
         return
     run_with_error_handling(lambda: _run_local(args.tag))
