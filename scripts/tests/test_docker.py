@@ -897,7 +897,14 @@ def test_probe_base_image_runs_both_probes_on_each_platform(tmp_path: Path) -> N
         assert _flag_values(cmd, "--volume") == [
             f"{tmp_path / 'apt_snapshot.sh'}:/run/apt_snapshot.sh:ro"
         ]
-        assert cmd[-5:-2] == [f"{image.repo}:v0.1.0", "sh", "/run/apt_snapshot.sh"]
+        # The probe stops in the container after 30 minutes.
+        assert cmd[-7:-2] == [
+            f"{image.repo}:v0.1.0",
+            "timeout",
+            "30m",
+            "sh",
+            "/run/apt_snapshot.sh",
+        ]
         assert cmd[-1] == SNAPSHOT.id
 
     unreachable_of_mode = {cmd[-2]: _flag_values(cmd, "--add-host") for cmd in commands}
@@ -948,6 +955,23 @@ def test_probe_base_image_reports_a_failed_fallback(tmp_path: Path) -> None:
     assert mock_run.call_count == 2
 
 
+def test_probe_base_image_reports_a_probe_that_does_not_end(tmp_path: Path) -> None:
+    image = BASE_IMAGES[0]
+
+    with patch("functions.docker.subprocess.run") as mock_run:
+        # The exit status of `timeout` when it stops the probe.
+        mock_run.return_value = MagicMock(returncode=124)
+        with pytest.raises(ReleaseError) as raised:
+            probe_base_image(image, "v0.1.0", SNAPSHOT, tmp_path)
+
+    assert str(raised.value) == (
+        f"{image.repo}:v0.1.0 on {DOCKER_PLATFORMS[0]} does not install from "
+        f"the Ubuntu snapshot {SNAPSHOT.id} alone: the probe did not end within "
+        "30 minutes"
+    )
+    mock_run.assert_called_once()
+
+
 # --- build_all_base_images ---
 
 
@@ -982,7 +1006,7 @@ def test_build_all_base_images_builds_every_image_on_one_snapshot_then_probes(
     # Every image is probed on every platform with every probe, once all of
     # them are pushed.
     assert all(_is_probe(cmd) for cmd in probes)
-    assert [(cmd[-5], flag_value(cmd, "--platform"), cmd[-2]) for cmd in probes] == [
+    assert [(cmd[-7], flag_value(cmd, "--platform"), cmd[-2]) for cmd in probes] == [
         (f"{image.repo}:v0.2.0", platform, mode)
         for image in BASE_IMAGES
         for platform in DOCKER_PLATFORMS

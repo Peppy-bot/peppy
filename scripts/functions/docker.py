@@ -58,6 +58,11 @@ UBUNTU_MIRROR_HOSTS: tuple[str, ...] = (
 )
 UBUNTU_SNAPSHOT_HOST = "snapshot.ubuntu.com"
 _ADDRESS_WITHOUT_ANSWER = "127.0.0.1"
+# A probe that runs longer than this fails: `timeout` of coreutils, in the
+# container, stops it and exits with _TIMEOUT_EXIT_STATUS. An emulated probe
+# takes a few minutes.
+_PROBE_TIME_LIMIT_MINUTES = 30
+_TIMEOUT_EXIT_STATUS = 124
 
 
 @dataclass(frozen=True)
@@ -384,7 +389,8 @@ def probe_base_image(
     each probe of APT_PROBES. Each one checks that apt reads the mirror list
     of the snapshot, updates the index and installs a package. The probe with
     the regular Ubuntu mirror out of reach also checks that the index upgrades
-    no package of the image. Raises ReleaseError when a probe fails.
+    no package of the image. A probe fails when it does not end within
+    _PROBE_TIME_LIMIT_MINUTES. Raises ReleaseError when a probe fails.
     """
     reference = f"{image.repo}:{tag}"
     for platform in DOCKER_PLATFORMS:
@@ -405,6 +411,8 @@ def probe_base_image(
                     "--volume",
                     f"{base_images_dir / APT_SNAPSHOT_SCRIPT}:{_PROBE_SCRIPT_MOUNT}:ro",
                     reference,
+                    "timeout",
+                    f"{_PROBE_TIME_LIMIT_MINUTES}m",
                     "sh",
                     _PROBE_SCRIPT_MOUNT,
                     probe.mode,
@@ -417,12 +425,18 @@ def probe_base_image(
             )
 
             result = subprocess.run(cmd, check=False)
-            if result.returncode != 0:
-                purpose = probe.purpose.format(snapshot=snapshot.id)
+            if result.returncode == 0:
+                continue
+            purpose = probe.purpose.format(snapshot=snapshot.id)
+            if result.returncode == _TIMEOUT_EXIT_STATUS:
                 raise ReleaseError(
-                    f"{reference} on {platform} does not {purpose} "
-                    f"(exit {result.returncode})"
+                    f"{reference} on {platform} does not {purpose}: the probe "
+                    f"did not end within {_PROBE_TIME_LIMIT_MINUTES} minutes"
                 )
+            raise ReleaseError(
+                f"{reference} on {platform} does not {purpose} "
+                f"(exit {result.returncode})"
+            )
 
 
 def build_all_base_images(scripts_dir: Path, tag: str, snapshot: AptSnapshot) -> None:

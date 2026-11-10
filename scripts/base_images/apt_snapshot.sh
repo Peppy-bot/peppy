@@ -112,9 +112,11 @@ write_apt_conf() {
 // with or without a machine id.
 APT::Get::Always-Include-Phased-Updates "true";
 
-// Acquire::Retries stays 0. apt asks the regular mirror for a file that the
-// snapshot does not serve, and with Acquire::Retries above 0 the mirror list
-// of apt 2.8 makes no progress once the snapshot refuses a connection.
+// apt asks the regular mirror for a file that the snapshot does not serve, in
+// place of a new try of the snapshot. Without this line apt 2.8 tries a
+// download four times, and with more than one try the mirror list makes no
+// progress once the snapshot refuses a connection.
+Acquire::Retries "0";
 EOF
 }
 
