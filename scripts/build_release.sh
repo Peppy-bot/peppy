@@ -2,9 +2,10 @@
 set -eu
 
 # Build peppy release archives on this host without publishing them (--local),
-# or build and push the Docker base images (--base-images). Releases publish
-# only from the "Parallel release" workflow
-# (.github/workflows/parallel-release.yml).
+# or publish the Docker base images: build them and push them under a tag of
+# their own (--base-images), then move `latest` to that tag
+# (--base-images-latest). Releases publish only from the "Parallel release"
+# workflow (.github/workflows/parallel-release.yml).
 # Thin wrapper that delegates to the Python implementation via pixi.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

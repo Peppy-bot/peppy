@@ -42,6 +42,24 @@ name: Parallel release
 # fast-forwards `main` to the notes commit, so `main` holds what shipped and
 # `dev` keeps every merge.
 #
+# The release does not publish the Docker base images that the definition
+# file of a container node starts from (peppybot/python-uv-base and
+# peppybot/rust-cargo-base): no job has a login to Docker Hub. apt in a base
+# image reads the Ubuntu archive as it was one hour before the build of the
+# image started, while the snapshot service answers (see
+# scripts/base_images/apt_snapshot.sh), so a node build gets the Ubuntu
+# security updates up to that day only. Publish the base images by hand with
+# each release, once live-check passes, from a machine logged in to Docker
+# Hub as peppybot:
+#
+#   ./scripts/build_release.sh --base-images --tag <tag>
+#   ./scripts/build_release.sh --base-images-latest --tag <tag>
+#
+# The first command builds the images, pushes them under the tag of the
+# release and probes them. Build one Python node and one Rust node from that
+# tag on each platform, then run the second command: it moves `latest`, the
+# tag the definition files of the hubs name.
+#
 # The Linux stages run on RunsOn runners: the x86_64 ones in the shape of the
 # cargo suites of tests.yml with the peppy-ubuntu24 image, the aarch64 ones on
 # `release-arm64` with its arm64 build, peppy-ubuntu24-aarch64 (see

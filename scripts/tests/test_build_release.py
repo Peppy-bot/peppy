@@ -189,16 +189,6 @@ def test_main_prompts_for_the_local_tag_without_the_option(
     mock_run_local.assert_called_once_with(None)
 
 
-def test_tag_without_local_is_rejected(capsys: pytest.CaptureFixture[str]) -> None:
-    with (
-        patch("sys.argv", ["build-release", "--base-images", "--tag", "test"]),
-        pytest.raises(SystemExit) as exited,
-    ):
-        main()
-    assert exited.value.code == 2
-    assert "--tag applies to --local only" in capsys.readouterr().err
-
-
 @pytest.mark.parametrize(
     "argv",
     [
@@ -210,12 +200,15 @@ def test_tag_without_local_is_rejected(capsys: pytest.CaptureFixture[str]) -> No
 def test_main_refuses_to_run_without_a_mode(
     argv: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Releases publish from the workflow alone; without --local or
-    # --base-images there is nothing this script may do.
+    # Releases publish from the workflow alone; without --local or a mode of
+    # the base images there is nothing this script may do.
     with (
         patch("sys.argv", argv),
         patch("functions.build_release._run_local") as mock_run_local,
         patch("functions.build_release.build_base_images_main") as mock_base_images,
+        patch(
+            "functions.build_release.move_base_images_latest_main"
+        ) as mock_move_latest,
         pytest.raises(SystemExit) as exited,
     ):
         main()
@@ -229,12 +222,28 @@ def test_main_refuses_to_run_without_a_mode(
     ) in err
     mock_run_local.assert_not_called()
     mock_base_images.assert_not_called()
+    mock_move_latest.assert_not_called()
 
 
-def test_main_refuses_both_modes_at_once(capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize(
+    "modes",
+    [
+        ["--local", "--base-images"],
+        ["--local", "--base-images-latest"],
+        # A build of the base images never moves `latest` in the same run.
+        ["--base-images", "--base-images-latest"],
+    ],
+)
+def test_main_refuses_two_modes_at_once(
+    modes: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
     with (
-        patch("sys.argv", ["build-release", "--local", "--base-images"]),
+        patch("sys.argv", ["build-release", *modes]),
         patch("functions.build_release._run_local") as mock_run_local,
+        patch("functions.build_release.build_base_images_main") as mock_base_images,
+        patch(
+            "functions.build_release.move_base_images_latest_main"
+        ) as mock_move_latest,
         pytest.raises(SystemExit) as exited,
     ):
         main()
@@ -242,17 +251,53 @@ def test_main_refuses_both_modes_at_once(capsys: pytest.CaptureFixture[str]) -> 
     assert exited.value.code == 2
     assert "not allowed with argument" in capsys.readouterr().err
     mock_run_local.assert_not_called()
+    mock_base_images.assert_not_called()
+    mock_move_latest.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("tag_arguments", "tag"),
+    [([], None), (["--tag", "v0.3.0"], "v0.3.0")],
+    ids=["prompts-for-the-tag", "tag-given"],
+)
+@patch("functions.build_release.move_base_images_latest_main")
 @patch("functions.build_release.build_base_images_main")
 @patch("functions.build_release._run_local")
 def test_main_builds_the_base_images(
-    mock_run_local: MagicMock, mock_base_images: MagicMock
+    mock_run_local: MagicMock,
+    mock_base_images: MagicMock,
+    mock_move_latest: MagicMock,
+    tag_arguments: list[str],
+    tag: str | None,
 ) -> None:
-    with patch("sys.argv", ["build-release", "--base-images"]):
+    with patch("sys.argv", ["build-release", "--base-images", *tag_arguments]):
         main()
 
-    mock_base_images.assert_called_once_with()
+    mock_base_images.assert_called_once_with(tag)
+    mock_move_latest.assert_not_called()
+    mock_run_local.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("tag_arguments", "tag"),
+    [([], None), (["--tag", "v0.3.0"], "v0.3.0")],
+    ids=["prompts-for-the-tag", "tag-given"],
+)
+@patch("functions.build_release.move_base_images_latest_main")
+@patch("functions.build_release.build_base_images_main")
+@patch("functions.build_release._run_local")
+def test_main_moves_latest_of_the_base_images(
+    mock_run_local: MagicMock,
+    mock_base_images: MagicMock,
+    mock_move_latest: MagicMock,
+    tag_arguments: list[str],
+    tag: str | None,
+) -> None:
+    with patch("sys.argv", ["build-release", "--base-images-latest", *tag_arguments]):
+        main()
+
+    mock_move_latest.assert_called_once_with(tag)
+    mock_base_images.assert_not_called()
     mock_run_local.assert_not_called()
 
 
