@@ -128,7 +128,7 @@ fn composed_fixture(dir: &Path) -> (PathBuf, PeppyLauncher) {
                   } } },
             ],
             adjustments: [
-                { target: "sim_inst", set_arguments: { hardware_version: "v2" } },
+                { target: "sim_inst", set_arguments: { model: "openarm_v2" } },
             ],
             deployments: [
                 { source: { name: "backbone", tag: "v1" },
@@ -412,8 +412,8 @@ fn a_selection_swaps_the_deployed_option_and_pulls_in_fragments_in_order() {
         .find(|d| node_name(d) == "sim_mujoco")
         .unwrap();
     assert_eq!(
-        sim.instances[0].arguments.get("hardware_version"),
-        Some(&AnyType::String("v2".to_owned()))
+        sim.instances[0].arguments.get("model"),
+        Some(&AnyType::String("openarm_v2".to_owned()))
     );
     // And the mujoco option's adjustment reached the launcher's backbone.
     let backbone = flat
