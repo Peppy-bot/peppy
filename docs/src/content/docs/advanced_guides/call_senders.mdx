@@ -2,7 +2,7 @@
 title: The senders of the calls to a daemon
 description: How a daemon knows the true sender of each call that it receives, what the signature of a call proves and what it does not, and how the machines of a federation prove their calls to each other
 sidebar:
-  order: 23
+  order: 24
 ---
 
 A daemon reads the sender of each call to its raw services, its raw actions and its daemon interfaces (`robot_leases:v1` and `robot_membership:v1`). It checks the [scopes](/advanced_guides/fleet/#scopes-and-raw-calls) of the daemon targets, the raw-call rules and the rights of the command line against the sender that the call proves, not against the instance id and the machine that the call gives. A node cannot call a daemon under the id of another client, such as `peppy-cli` or a lease holder.

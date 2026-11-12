@@ -1,0 +1,116 @@
+---
+title: Choosing between a node and a shared library
+description: Decide whether a piece of robot code runs as a node of its own or as a shared library inside the nodes that call it
+sidebar:
+  order: 0
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Code that more than one part of a robot uses has two possible homes. A [**node**](/reference/concepts/#node) is a process of its own: the daemon starts it, and the other nodes reach it through [topics](/advanced_guides/topics/), [services](/advanced_guides/services/) and [actions](/advanced_guides/actions/). A **shared library** is a Rust crate or a Python package: each node that uses it takes it into its own build and calls its functions in its own process. This page is the map for that choice. When the answer is a node, [Choosing a communication pattern](/advanced_guides/communication_patterns/) is the map for the step after it.
+
+The choice comes down to two questions:
+
+1. **Does the code need a life of its own?** A node starts, stops, fails and restarts apart from its callers, and Peppy shows each of these. A library has no life of its own: it runs when a node calls it, in the process of that node.
+2. **What can one exchange cost?** A call to a node is a message: one side encodes it, the messaging layer carries it, and the other side decodes it. A call to a library is a function call.
+
+## Side by side
+
+| | Node | Shared library |
+|---|---|---|
+| Where it runs | In a process of its own, one for each instance | In the process of each node that calls it |
+| How its callers reach it | Through the topics, services and actions that its `peppy.json5` declares | Through a function call |
+| Who can call it | Nodes in Rust and in Python, on each machine of the stack, and a person or a program through [`peppy node call`](/advanced_guides/calling_instances/) and [MCP](/advanced_guides/mcp/) | Nodes in the language of the library |
+| What crosses | Messages of a declared [message format](/reference/message_format/) | Each type of the language, by value or by reference |
+| What one exchange costs | An encoding, a trip through the messaging layer and a decoding | A function call |
+| What a failure does | It ends the process of the node alone, and the [restart policy](/guides/launch_files/#restart-policy) of the instance says whether the daemon starts it again | It ends the node that called the library |
+| What Peppy shows | An instance with a state, a health, a count of restarts and a run log | Nothing: the library is a part of the node that calls it |
+| Its state | One state, which all its consumers read | One separate state in each node that links it |
+| Its version | The one that the launch resolves, the same for all its consumers | The one that each node was built with |
+| How it is shared | Through a [repository](/advanced_guides/repositories/) of Peppy | Through the package manager of the language |
+
+## Make it a node
+
+Make the code a node when one of these is true:
+
+- **It is a part of the robot that stands alone.** A camera driver, an arm controller and a planner each have a clear set of inputs and outputs, and each can run with nothing else of the robot around it. The `peppy.json5` of the node declares these inputs and outputs as data, so [`peppy node describe`](/advanced_guides/calling_instances/#peppy-node-describe) shows them and [`peppy node call`](/advanced_guides/calling_instances/) reaches them with no code.
+- **Other stacks reuse it as it is.** A launcher names the node, gives each instance its [parameters](/guides/parameters/) and binds its slots. A [repository](/advanced_guides/repositories/) shares it, and each machine that reads the repository adds it by `name:tag` (see [Sharing nodes](/guides/sharing_nodes/)).
+- **Other nodes must record or watch its outputs.** A third node can read only the data that travels between nodes. A recorder consumes the frames of a camera through a [contract slot](/advanced_guides/contract_implementation/) and the streams of an arm through an [observer slot](/advanced_guides/pairing/#observers-watching-a-pairing-without-joining-it), and [`peppy stack benchmark`](/advanced_guides/stack_benchmark/) measures the latency of each interface. A value that a library returns to its caller stays in that process, and no other node sees it.
+- **Its callers are in another language.** A node in Rust and a node in Python exchange the same messages, each through the bindings that `peppy node sync` generates from its own `peppy.json5`. So a critical control loop in Rust serves a stack whose other nodes are in Python, and nobody writes bindings between the two languages.
+- **It serves more than one robot.** Parameters give each instance the data of its robot, and a [contract](/advanced_guides/contract_implementation/) lets the node work with each node that implements it. One node that solves the kinematics of each arm with a spherical shoulder, a revolute elbow and a spherical wrist runs as one instance for each such arm, whatever its maker, and the launcher binds each instance to its arm.
+- **It must fail and restart alone.** Each instance has a [restart policy](/guides/launch_files/#restart-policy): `never`, `on_failure` or `always`, with an optional cap on the restarts in a row. The daemon waits one second before the first restart and doubles the wait at each further failure, up to one minute. The daemon also checks the health of each running instance: three missed checks in a row mark the instance `unhealthy`, and under `on_failure` or `always` an instance that answers no check for a minute is killed and started again (see [Instance health and lifecycle](/guides/node_stack/#instance-health-and-lifecycle)). The consumers of a restarted instance receive from it again with no further action.
+- **You must see it run.** [`peppy stack list`](/guides/node_stack/#checking-node-status) shows each instance of each machine with its state, its health and its count of restarts. Each instance writes a run log of its own. With the [OpenTelemetry log export](/advanced_guides/opentelemetry/) on, each record carries the name of the node as `service.name` and the name of the core node as `service.namespace`, so the logs of all the machines [filter by node and by machine](/advanced_guides/opentelemetry/#filtering-by-node-and-by-machine).
+- **It needs an environment of its own.** A node can run in a [container](/advanced_guides/containers/) with its own system dependencies, so two nodes can use two versions of one system library. A launcher can also place a node on another machine than its consumers, such as the machine that has the GPU (see [Federation](/advanced_guides/federation/)).
+- **It owns one thing that several nodes use.** A device that only one process can open, a map that several nodes read and a model that fills the memory of a GPU each have one owner. One node owns the thing and serves each consumer.
+
+## Make it a shared library
+
+Make the code a shared library when one of these is true:
+
+- **A fast loop calls it.** A function call returns in the thread of its caller, with no encoding and no trip through the messaging layer. A control loop that needs a result in each tick, such as the inverse kinematics of an arm in a 1 kHz loop, calls a library. [`peppy stack benchmark`](/advanced_guides/stack_benchmark/) measures what a call to a node costs on your machines: compare its numbers with the period of the loop.
+- **A critical path must not go through the messaging layer.** A call to a node can end with no answer: the node is gone, the link between two machines is down, or the time limit of the call passes. A call to a library has none of these ends. Code that must run on each command, such as the limit check of a motor driver, runs in the process that sends the command.
+- **Several nodes reuse it, but it has no job of its own.** Math, parsers, device protocols and robot descriptions have no stream of inputs, no state to share and nothing to start or stop. As a node, such code is one function behind a service, and each caller pays a message for each call.
+- **Its data does not fit a message.** A message holds the types of the [message format](/reference/message_format/), and each exchange copies it. A library takes and returns each type of its language: a reference into a large map, a function, a generic type.
+
+A library gives up what a node has:
+
+- **It fails with its caller.** A crash in a library is a crash of the node that called it, and the restart policy of that node applies.
+- **Peppy does not see it.** It has no instance, no state and no health, and the lines it prints are lines of the run log of the node that called it.
+- **It has one language.** A node in the other language needs bindings to it, which are a library to build and to maintain.
+- **Each node has its own copy.** Two nodes that link one library share no state through it, and each node runs the version it was built with. A change of the library reaches a node only when that node is built again.
+
+## A node built on a library
+
+The two choices combine. Put the logic in a library that has no dependency on the messaging layer, and write a node around it: the node declares the interfaces, reads its parameters, and turns each message into a call to the library. Then:
+
+- A node with a fast loop links the library, and each other consumer calls the node. Code that is generic across robots, such as the kinematics above, can thus serve a 1 kHz loop and a planner that runs once a second.
+- A hardware driver and its simulated twin link the same library and implement the same [contract](/advanced_guides/contract_implementation/), so the launcher fills one slot with one or the other.
+- The tests of the logic need only the test tool of the language, and the [generated harness](/advanced_guides/testing/) tests the node around it.
+
+The bindings that `peppy node sync` generates belong to one node, because they come from the `peppy.json5` of that node. A library has no `peppy.json5`, so the node converts between its messages and the types of the library.
+
+The Peppy hubs are built this way. The libraries of [`public-peppy-libs`](https://github.com/Peppy-bot/public-peppy-libs) hold the kinematics, the collision geometry and the motion planning with no dependency on the messaging layer. In [`nodes-hub`](https://github.com/Peppy-bot/nodes-hub), the arm nodes link the kinematics, and the `motion_planner` node links the planning library and serves its plans through the `motion_planning` contract.
+
+## How a node takes a shared library
+
+Peppy builds a node with the build tool of its language, so a node takes a library as each Rust or Python project does. Where the library is decides how:
+
+- **In the directory of the node**: a path dependency. This is for code that one node alone uses.
+- **Outside the directory of the node**: a dependency that the package manager fetches from a git repository or from a package registry. [`peppy node add`](/guides/node_stack/#adding-hello_world-to-the-stack) copies the directory of the node and nothing around it, and it copies no symlink. So a relative path that leaves the directory does not resolve when the node builds, and neither does a symlink to a shared directory.
+
+A node names a library of a git repository and the commit it builds with:
+
+<Tabs>
+  <TabItem label="Python">
+    ```toml title="pyproject.toml"
+    [project]
+    dependencies = ["arm_kinematics"]
+
+    [tool.uv.sources.arm_kinematics]
+    git = "https://github.com/acme/robot-libs"
+    subdirectory = "arm_kinematics"
+    rev = "<commit>"
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```toml title="Cargo.toml"
+    [dependencies]
+    arm_kinematics = { git = "https://github.com/acme/robot-libs", rev = "<commit>" }
+    ```
+  </TabItem>
+</Tabs>
+
+Pin a commit, not a branch: each build of the node then gives the same code on each machine. To take a change of the library, change the pin and build the node again. Each node holds its own pin, so two nodes of one stack can run two versions of one library. When the two ends of an exchange must agree on what the library computes, such as the conversion of a unit, give the two nodes the same pin.
+
+## Worked example: one arm
+
+A complete robot arm setup uses both homes:
+
+- The **protocol of the motors** is a library. The arm driver calls it in each tick of its control loop, and it has no state that another node reads.
+- The **arm driver** is a node. It owns the bus of the motors, it restarts alone when it fails, and its joint states go to its controller, to a dashboard and to a recorder.
+- The **kinematics of the arm** is a library. The controller calls it in each tick, and the planner calls it for each state that it checks.
+- The **planner** is a node. One request takes it a second or more, so the cost of a message is small beside it. It serves each robot that implements the contracts it consumes, and the launcher can place it on a machine with more compute.
+- The **description of the robot**, its joints, its limits and its meshes, is a library. The driver, its simulated twin and the planner link it at one pin, so the three agree on the robot.
+- The **recorder** is a node. It consumes what the driver and the cameras publish, and no change to these nodes is necessary to record them.
+
+One rule gives each answer: code with a life of its own is a node, and code that only computes for its caller is a library.

@@ -2,7 +2,7 @@
 title: Robot leases and the halt
 description: The fleet of a stack, the leases that give one client the right to move one robot, the move check, the halt and the changes, which the daemon serves in robot_leases:v1
 sidebar:
-  order: 22
+  order: 23
 ---
 
 The **fleet** of a stack is the robots of the launch that the daemon coordinates. Each [copy](/guides/launch_files/#copies) of the launch is a robot of the fleet, a device that a client changes included, such as a hob. An instance that the launcher deploys outside every copy, or that `peppy node run` starts, is in no robot. The fleet holds the launch from its commit point on, the step at which it replaces the stack before it: while the launch starts its instances, each robot is in the listing with its software `stopped`, and each instance that started calls the daemon within the scopes of the launch. A launch that fails then drops its robots again.

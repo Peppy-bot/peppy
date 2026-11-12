@@ -2,7 +2,7 @@
 title: Daemon configuration
 description: Configure a Peppy-managed or operator-run Zenoh router, messaging behavior, node lifecycle grace periods, the PyPI mirror of Python builds, the OCI repository nodes are published to, and the OpenTelemetry log export through peppy_config.json5
 sidebar:
-  order: 10
+  order: 11
 ---
 
 By default, the Peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, selects either a Peppy-managed or operator-run Zenoh router, controls the managed router's messaging behavior, defines the grace periods that govern node lifecycle, can name a PyPI mirror for Python builds, can name the OCI repository that container nodes are published to, and can name an OpenTelemetry endpoint the daemon exports its log files to. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy platform` commands talk to; that block is read by the CLI, not the daemon. [`PEPPY_CONFIG`](#override-with-peppy_config) can supply a read-only alternative source.
