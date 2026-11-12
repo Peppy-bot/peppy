@@ -2,7 +2,7 @@
 title: Publishing nodes
 description: Push the prebuilt image of a container node to an OCI registry, and pull it on other machines instead of building it
 sidebar:
-  order: 24
+  order: 25
 ---
 
 A container node builds into one Apptainer image, a `.sif` file. Peppy pushes that image to an OCI registry, such as the GitHub Container Registry, Docker Hub, or a registry of your own, and each machine that reads the registry as an [`oci` repository](/advanced_guides/repositories/#oci-repositories) pulls the image instead of building the node. A pull takes the time of a download. A build of the same node can take many minutes, and much longer on a small machine such as a Raspberry Pi.

@@ -5,7 +5,7 @@ description: The different concepts of Peppy
 
 ## Node
 
-A **Node** is the fundamental unit of computation in Peppy. It represents a runnable application or service that can expose interfaces (topics, services, actions) and consume interfaces from other nodes.
+A **Node** is the fundamental unit of computation in Peppy. It represents a runnable application or service that can expose interfaces (topics, services, actions) and consume interfaces from other nodes. Code that several nodes call as functions is a shared library, not a node; see [Choosing between a node and a shared library](/advanced_guides/node_or_library/).
 
 A node is defined by its **configuration** file (`peppy.json5`) which includes:
 
