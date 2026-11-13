@@ -209,11 +209,11 @@
         duration: DURATION,
         problem: [0.3, at.built_in.start - 0.2],
         terms: [
-          ["mcp", at.built_in.start + 0.3, Motion.within(at.exposure, 0.55)],
-          ["exposure", Motion.within(at.exposure, 0.55) + 0.2, at.only_named.start + 0.5],
+          ["mcp", at.built_in.start + 0.2, at.exposure.end + 0.3],
+          ["exposure", at.exposure.end + 0.5, at.only_named.start + 0.5],
         ],
         benefit: at.open_some.start,
-        ros2: at.open_some.end,
+        ros2: at.open_some.start + 1.5,
       });
 
       // Peppy has an MCP server built in.

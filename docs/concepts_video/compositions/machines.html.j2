@@ -248,13 +248,14 @@
       Motion.chapter(tl, ID, {
         duration: DURATION,
         problem: [0.3, at.wish.start - 0.2],
+        // The card of the link comes in when the voice names the links.
         terms: [
-          ["core_node", at.core_node.start + 0.3, at.links.start + 0.2],
-          ["link", at.links.start + 0.4, at.sign_in.start + 0.3],
-          ["systems", at.brains.start + 0.2, at.local.start - 0.1],
+          ["core_node", at.core_node.start, Motion.within(at.links, 0.45)],
+          ["link", Motion.within(at.links, 0.45) + 0.2, at.sign_in.start + 0.3],
+          ["systems", at.brains.start + 0.2, at.local.start + 0.6],
         ],
-        benefit: at.local.start,
-        ros2: at.local.end,
+        benefit: at.local.start + 0.8,
+        ros2: at.local.start + 1.4,
       });
       RobotView.mount({
         canvas: document.querySelector(ID + "-robot"),

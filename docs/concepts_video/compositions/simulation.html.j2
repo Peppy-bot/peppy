@@ -215,9 +215,10 @@
         duration: DURATION,
         map: [0.2, at.problem.start - 0.3],
         problem: [at.problem.start - 0.2, at.axes.start - 0.2],
+        // The card of the simulation comes in when the command selects the simulation.
         terms: [
-          ["axis", at.axes.start + 0.5, at.select.start + 0.2],
-          ["simulation", at.no_robot.start + 0.2, at.later.start - 0.1],
+          ["axis", at.axes.start + 0.5, at.examples.end + 0.2],
+          ["simulation", Motion.within(at.select, 0.3) + 0.6, at.later.start - 0.1],
         ],
         benefit: at.later.start,
       });

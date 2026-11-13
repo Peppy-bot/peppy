@@ -515,7 +515,7 @@ pause_after_seconds = 2.0
 
 [segment.screen]
 problem = "To work on one node, you do not want to start the full robot each time."
-benefit = "You develop and test one node at your desk, with the tools that you know."
+benefit = "You develop and test one node at your desk."
 ros2 = "You write each mock."
 other_tools = "Other tools also work: `pip`, `poetry`, `pixi`."
 sync_note = "`peppy node sync -r` reads the interfaces of the dependencies from the repositories."
@@ -766,12 +766,12 @@ pause_after_seconds = 2.5
 [[segment.voice]]
 id = "replace"
 text = "Thus you replace one brain with another, and the other nodes do not change."
-pause_after_seconds = 2.0
+pause_after_seconds = 2.4
 
 [segment.screen]
 problem = "Robot brains change quickly. A new brain must not change the other nodes."
 benefit = "You replace one brain with another, and the other nodes do not change."
-ros2 = "Two nodes agree on a topic name in their code and on a message type. The interface files define the types, and not the names of the topics."
+ros2 = "Two nodes agree on a topic name in their code, and on a message type."
 contract = "contract"
 implements = "implements"
 depends_on = "depends on"
@@ -1118,7 +1118,7 @@ text = "The links between nodes work across machines."
 [[segment.voice]]
 id = "local"
 text = "And one flag runs the same launcher on one workstation."
-pause_after_seconds = 2.0
+pause_after_seconds = 3.2
 
 [segment.screen]
 problem = "A large robot brain needs a GPU machine, and a robot cannot carry one."
