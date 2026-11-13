@@ -536,12 +536,12 @@ pub(crate) fn router_spec(
 /// [`crate::ZenohAdapter::with_router`]. With `protocol = Tls` and a server
 /// [`TlsConfig`] this emits the `transport.link.tls` listener block; a non-empty
 /// `connect_endpoints` emits a `connect` block so the router federates to those
-/// upstreams (see [`router_spec`]). Available under the base `zenoh` feature (no
+/// upstreams (see `router_spec`). Available under the base `zenoh` feature (no
 /// `router`/zenohd binary needed) because rendering a config is independent of
 /// spawning a process.
 ///
 /// `id` is the router's pinned transport identity and is required; see
-/// [`router_spec`] for why it is not an `Option`.
+/// `router_spec` for why it is not an `Option`.
 pub fn render_router_config(
     protocol: ZenohNetProtocol,
     host: &str,

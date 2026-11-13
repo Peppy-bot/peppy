@@ -1,5 +1,5 @@
 //! The MCP server: a catalog-driven
-//! [`ServerHandler`](rmcp::ServerHandler) per exposure bundle, and the
+//! [`ServerHandler`] per exposure bundle, and the
 //! [`ExposureSet`] serving several of them side by side over Streamable
 //! HTTP under MCP `2026-07-28`.
 

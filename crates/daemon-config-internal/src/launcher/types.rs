@@ -272,7 +272,7 @@ impl Serialize for PeppyLauncher {
 /// shape parse, cross-checks every `links` target against the
 /// set of `instance_id`s declared across all deployments. A link that
 /// points at an unknown instance is rejected with a structured
-/// [`StructuredError::UnknownInstanceId`] so callers see a path-aware
+/// `StructuredError::UnknownInstanceId` so callers see a path-aware
 /// message instead of a generic serde error.
 ///
 /// A COMPOSED launcher (one declaring `components`) gets the same shape
@@ -655,7 +655,7 @@ impl Selection {
     /// target and its validator calls this to reject a multi-target value up
     /// front; a multi slot takes every target as one pair. Observer slots are
     /// sized by their `cardinality` instead and go through
-    /// [`check_cardinality_shape`]. A launch-file scalar and a
+    /// `check_cardinality_shape`. A launch-file scalar and a
     /// single CLI `--link KEY@target` occurrence (a one-element
     /// [`Selection::Flags`]) both count as one target; an array or a repeated
     /// flag does not.
@@ -771,7 +771,7 @@ pub(super) enum CardinalityShapeViolation {
 ///
 /// Takes a [`Selection`] rather than a [`LinkValue`] because a vacant slot
 /// selects nothing and has no shape to size: whether it may be vacant at all is
-/// the legality question [`super::links::validate_link_slots`] answers,
+/// the legality question `super::links::validate_link_slots` answers,
 /// before any of this.
 ///
 /// The one shape rule, shared by producer-binding slots and observer slots so a

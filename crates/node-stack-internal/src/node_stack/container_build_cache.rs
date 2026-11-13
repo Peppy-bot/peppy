@@ -43,7 +43,7 @@
 //! `.peppy/libs/peppylib` with its native extension), so uv builds them
 //! again and keeps every earlier build of them. Each Python build that uses
 //! the cache and succeeds therefore prunes the cache (see
-//! [`super::build_steps::prune_uv_cache`]), unless another Python build of
+//! `super::build_steps::prune_uv_cache`), unless another Python build of
 //! this process uses it (see [`UvCacheUse`]).
 
 use std::collections::HashMap;

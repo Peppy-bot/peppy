@@ -490,7 +490,7 @@ impl Processor {
 
     /// Checks that `target` is a member of the set currently bound to the slot
     /// declared at `link_id`, returning
-    /// [`Error::TargetNotBound`](crate::error::Error::TargetNotBound)
+    /// [`Error::TargetNotBound`]
     /// otherwise. Generated service `poll` / action `fire_goal` wrappers call
     /// this before anything reaches the wire: `ProducerRef` is plainly
     /// constructible, and this check keeps every directed call on a member the

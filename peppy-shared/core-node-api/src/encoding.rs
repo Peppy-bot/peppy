@@ -307,7 +307,7 @@ pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload
     Ok(Payload::from(serialize::write_message_to_words(message)))
 }
 
-/// Encode a Cap'n Proto message builder into a [`NonEmptyPayload`].
+/// Encode a Cap'n Proto message builder into a `NonEmptyPayload`.
 ///
 /// Cap'n Proto's framed wire format always emits at least the segment-table
 /// header, so the produced payload is non-empty by construction. The

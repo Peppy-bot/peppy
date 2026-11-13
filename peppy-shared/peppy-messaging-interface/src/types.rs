@@ -287,7 +287,7 @@ pub(crate) fn service_query_lifetime(timeout: Option<std::time::Duration>) -> st
 
 /// Defines the messaging interface.
 ///
-/// All methods take addressing structs from [`crate::wire`] rather than raw
+/// All methods take addressing structs from `crate::wire` rather than raw
 /// keyexpressions. Each adapter is responsible for formatting them into its
 /// own wire form internally. Only `wire::zenoh_format` is authorized to
 /// produce raw keyexpressions.
@@ -346,9 +346,9 @@ pub trait MessengerBackend {
     /// payload bytes. Query/reply correlation is internal to Zenoh, so no
     /// `request_id` is threaded through the wire format. `timeout` is how long
     /// the caller waits for a reply; the query itself stays open on the wire
-    /// for [`service_query_lifetime`] of it, which outlives the caller's
-    /// deadline by [`LATE_REPLY_GRACE`] and stands in for "indefinitely"
-    /// with [`NO_TIMEOUT_SENTINEL`] when `timeout` is `None`.
+    /// for `service_query_lifetime` of it, which outlives the caller's
+    /// deadline by `LATE_REPLY_GRACE` and stands in for "indefinitely"
+    /// with `NO_TIMEOUT_SENTINEL` when `timeout` is `None`.
     fn call_service(
         &self,
         sender: &ServiceWireSender,
@@ -483,7 +483,7 @@ pub trait MessengerBackend {
 /// which undeclare on drop; or [`AbortOnDrop`] for the mock adapter, which
 /// drives the messaging surface with a spawned forwarder task).
 ///
-/// Crate-private because only adapter modules construct guards; the [`Any`]
+/// Crate-private because only adapter modules construct guards; the `Any`
 /// bound is an implementation detail used to erase heterogeneous adapter
 /// types, not a downcast surface for callers.
 pub(crate) type Guard = Box<dyn std::any::Any + Send + Sync>;

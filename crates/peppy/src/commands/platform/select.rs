@@ -9,7 +9,7 @@
 //! and there is nobody to ask, the command stops and lists the choices, so a
 //! script never lands on a guessed project.
 //!
-//! A command on an existing router (`peers`, `router`) resolves a [`Target`]:
+//! A command on an existing router (`peers`, `router`) resolves a `Target`:
 //! the flags, else the selected project, else the project this machine is
 //! enrolled in, else nothing. One project has one router, so the project names
 //! it.

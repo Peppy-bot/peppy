@@ -665,7 +665,7 @@ fn lookup_repo_id(owners: &RepoOwners, origin: &EntryOrigin) -> u32 {
 }
 
 /// Returns the highest-priority (lowest `repo_id`) node entry for
-/// `(name, tag)`, `None` when no entry matches, or [`RepoAmbiguity`]
+/// `(name, tag)`, `None` when no entry matches, or `RepoAmbiguity`
 /// when the winning repository claims it more than once.
 pub fn lookup<'a>(
     entries: &'a [NodeCacheEntry],

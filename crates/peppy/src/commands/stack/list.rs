@@ -77,7 +77,7 @@ pub(super) fn list_nodes(ctx: &Arc<AppContext>, json: bool) -> Result<()> {
     }
 }
 
-/// Like [`list_nodes`] but returns the [`StackListReport`] instead of printing
+/// Like `list_nodes` but returns the `StackListReport` instead of printing
 /// and deciding the exit status. `colorize` is passed in rather than read from
 /// the ambient terminal so the result is deterministic: the CLI passes
 /// [`crate::terminal::colors_enabled`], while integration tests pass `false`
@@ -97,7 +97,7 @@ pub async fn list_nodes_collecting(
 }
 
 /// Like [`list_nodes_collecting`] but renders the sections as one JSON
-/// document ([`render_stack_json`]); colour and width do not apply to it.
+/// document (`render_stack_json`); colour and width do not apply to it.
 pub async fn list_nodes_json_collecting(ctx: &Arc<AppContext>) -> Result<StackListReport> {
     let sections = collect_sections(ctx).await?;
     Ok(StackListReport {

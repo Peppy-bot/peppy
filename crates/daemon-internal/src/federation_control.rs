@@ -3,7 +3,7 @@
 //!
 //! A [`ServeAsyncCommand`] that binds the per-user Unix-domain socket
 //! ([`crate::control::federation_control_socket_path`]) and, for each
-//! connection, forwards a [`REFEDERATE_VERB`](crate::control::REFEDERATE_VERB)
+//! connection, forwards a [`REFEDERATE_VERB`]
 //! request to the [`RouterFederation`](super::router_federation) task as a
 //! [`RefederateRequest`]. It waits for the reconcile and writes the resulting
 //! [`ControlResponse`] back. When the enrollment changed this generation's

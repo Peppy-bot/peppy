@@ -40,7 +40,7 @@ impl Subscription {
     }
 
     /// The underlying wire receiver, which a pinned slot's reader polls beside
-    /// its other members' (see [`crate::runtime::slot_stream`]).
+    /// its other members' (see `crate::runtime::slot_stream`).
     pub(crate) fn wire_receiver(&self) -> &flume::Receiver<pmi::TopicMessage> {
         &self.inner.rx
     }

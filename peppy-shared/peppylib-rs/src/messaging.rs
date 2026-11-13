@@ -246,7 +246,7 @@ enum SessionKind {
 }
 
 /// How a [`MessengerConnect`] session resolves its workspace namespace, and
-/// which [`SessionKind`] it opens. Passed to [`MessengerConnect::scope`]. The
+/// which `SessionKind` it opens. Passed to [`MessengerConnect::scope`]. The
 /// two cases are mutually exclusive *by construction*: a session is either
 /// pinned to an explicit namespace or driven by a node's discovery config,
 /// never both.
@@ -271,7 +271,7 @@ pub enum SessionScope<'a> {
 
 /// Fluent builder for opening a [`MessengerHandle`] session, returned by
 /// [`MessengerHandle::connect`]. Await it directly (it implements
-/// [`IntoFuture`](std::future::IntoFuture)) to perform the connect. Every
+/// [`IntoFuture`]) to perform the connect. Every
 /// builder method is infallible; the only failure point is the awaited connect,
 /// which yields `Result<MessengerHandle>`.
 #[derive(Debug)]
@@ -306,7 +306,7 @@ impl MessengerConnect {
     }
 
     /// Set how the session resolves its workspace namespace, and which
-    /// [`SessionKind`] it opens. The two cases, an explicit
+    /// `SessionKind` it opens. The two cases, an explicit
     /// [`Namespace`](SessionScope::Namespace) or a node's
     /// [`DiscoveryConfig`](SessionScope::Discovery), are mutually exclusive by
     /// construction, so a session can never request both at once. Left unset, the

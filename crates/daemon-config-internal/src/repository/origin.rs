@@ -126,7 +126,7 @@ impl EntryOrigin {
     /// network: a git origin may clone or fetch, and an oci origin may read
     /// a blob from its registry, while a filesystem origin already names a
     /// file on this machine. Callers inside tokio use it to decide whether
-    /// resolution needs [`tokio::task::spawn_blocking`].
+    /// resolution needs `tokio::task::spawn_blocking`.
     pub fn resolution_may_block(&self) -> bool {
         match self {
             Self::Fs { .. } => false,

@@ -25,7 +25,7 @@ use super::{
 // ---------------------------------------------------------------------------
 
 /// Python wrapper for a per-goal feedback publisher used by action servers.
-/// Vended by [`PyActionFeedbackPublisherFactory::declare`] once a goal is
+/// Vended by `PyActionFeedbackPublisherFactory::declare` once a goal is
 /// accepted.
 #[derive(Debug)]
 #[pyclass(name = "ActionFeedbackPublisher")]
@@ -73,7 +73,7 @@ impl PyActionFeedbackPublisher {
 
 /// Python wrapper for the per-action feedback publisher factory. Returned as
 /// a field of [`PyActionCreation`]; the codegen calls
-/// [`Self::declare`] from inside `handle_goal_next_request` once a goal is
+/// `Self::declare` from inside `handle_goal_next_request` once a goal is
 /// accepted, scoping the feedback topic to that single goal cycle.
 #[derive(Debug)]
 #[pyclass(name = "ActionFeedbackPublisherFactory")]

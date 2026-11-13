@@ -45,7 +45,7 @@ pub enum StackCommands {
     Build(StackBuildArgs),
     /// Add a copy of one of the launcher's options to the running stack.
     ///
-    /// The copy's instances are minted as NAME_<instance-id>, the way
+    /// The copy's instances are minted as `NAME_<instance-id>`, the way
     /// `node run` adds an instance of a node. Where the option's fragments use
     /// `add_links`, the copy also joins its instances to a running instance's
     /// `one_or_more` or `zero_or_more` slot, which `stack list` then shows

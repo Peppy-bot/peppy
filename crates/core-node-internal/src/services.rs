@@ -1016,12 +1016,12 @@ impl CoreNode {
     /// - **Claims its core-node name** with a liveliness token and refuses to
     ///   boot if a foreign daemon already advertises that name.
     /// - **Deletes the instances directory** (`peppy_dirs.instances_dir()`) to
-    ///   clear stale state from a previous run; see [`clear_instances_dir`].
+    ///   clear stale state from a previous run; see `clear_instances_dir`.
     /// - **Writes/updates `repositories.json5`** via [`repo::ensure_default_repos`]
     ///   so newly-bundled default repos land in pre-existing user configs.
     /// - **Reads again the repositories on `@{peppy-release}` that were read
     ///   for another peppy version** (see
-    ///   [`repo::refresh_release_repositories_for_this_version`]), before any
+    ///   `repo::refresh_release_repositories_for_this_version`), before any
     ///   listener answers.
     pub async fn start_with_ready(&self, ready: Option<oneshot::Sender<()>>) -> Result<()> {
         // Boot exactly once per instance: a second `start` would re-run the

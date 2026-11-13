@@ -200,7 +200,7 @@ impl PeerSubscription {
     /// enumerate) and the message it published. Returns `None` when the
     /// runtime is torn down (slot channel closed). Messages buffered under a
     /// peer the slot has since dropped never surface (see
-    /// [`SlotStream::next`]).
+    /// `SlotStream::next`).
     pub async fn on_next_message(&mut self) -> Option<(PeerInfo, Message)> {
         self.stream
             .next()

@@ -240,7 +240,7 @@ pub enum StartRun {
     New(Arc<NodeRunGoal>),
     /// The next process of the `restarting` instance first started from
     /// `goal`, begun when the instance had made `restart_count` restarts
-    /// ([`Supervision::restart_count`]). A restart's commit counts one, and
+    /// (`Supervision::restart_count`). A restart's commit counts one, and
     /// the attempt after a failed start begins only once the failed run
     /// returned, so at any time one run at most is open under the slot at
     /// that count.

@@ -8,7 +8,7 @@
 //! strictly-smaller sequence is stale, an equal one asserts the state the slot
 //! already holds, a larger one supersedes).
 //!
-//! Each service supplies only its request type via [`SlotUpdate`]: the wire
+//! Each service supplies only its request type via `SlotUpdate`: the wire
 //! decode, the slot key, and the whole slot state one absolute request
 //! asserts. The daemon-only guard, the sequence gate, unknown-slot rejection,
 //! the cardinality gate, and the shared [`SlotUpdateResponse`] ack live here

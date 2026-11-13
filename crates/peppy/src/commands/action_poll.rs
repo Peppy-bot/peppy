@@ -733,7 +733,7 @@ fn check_max_timeout(
     Ok(())
 }
 
-/// " Use {flag} <seconds> to increase.", for a command whose budgets have
+/// " Use {flag} `<seconds>` to increase.", for a command whose budgets have
 /// flags.
 fn raise_hint(timeouts: &TimeoutConfig, flag: &str) -> String {
     if timeouts.flags {

@@ -40,7 +40,7 @@ fn default_entries() -> Result<Vec<Value>> {
 ///
 /// - If the file does not exist, the default template is written verbatim
 ///   so its comments and formatting are preserved (see
-///   [`write_default_repos`]).
+///   `write_default_repos`).
 /// - If the file exists, default entries whose `id` is not already present
 ///   are appended verbatim, and the file is rewritten with `json5_pretty`,
 ///   which drops its comments. An existing entry with the same `id` claims

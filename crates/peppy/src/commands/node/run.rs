@@ -1016,7 +1016,7 @@ pub(super) async fn validate_and_run_instance(
 }
 
 /// Spawn a node instance with already-resolved `slot_bindings`. Callers must
-/// have validated `slot_bindings` via [`validate_and_run_instance`] first;
+/// have validated `slot_bindings` via `validate_and_run_instance` first;
 /// invoking this directly bypasses every binding rule and exists only as the
 /// lower half of the validate-then-spawn split.
 ///

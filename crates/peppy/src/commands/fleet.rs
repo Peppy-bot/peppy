@@ -5,7 +5,7 @@
 //! person or the program that runs it.
 //!
 //! The command reaches the daemon of the coordinator of the launch that the
-//! targeted daemon runs a slice of ([`fleet_daemon`]), so a command on any
+//! targeted daemon runs a slice of (`fleet_daemon`), so a command on any
 //! machine of a federated stack reaches the same leases and the same halt.
 
 use super::{CALLER_INSTANCE_ID, Command, GOAL_TIMEOUT};

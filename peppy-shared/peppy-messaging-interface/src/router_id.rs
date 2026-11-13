@@ -33,7 +33,7 @@ const MAX_CHARS: usize = 32;
 ///
 /// The accepted form is an allow-list, and it is zenoh 1.10's own (`uhlc::ID`'s
 /// `FromStr`, reached through `zenoh_protocol::core::ZenohIdProto`): 1 to
-/// [`MAX_CHARS`] lowercase hexadecimal digits with no leading `0`. Each rule
+/// `MAX_CHARS` lowercase hexadecimal digits with no leading `0`. Each rule
 /// exists because zenoh either rejects the value or renders it differently:
 ///
 /// * **Lowercase only.** Zenoh rejects uppercase hexadecimal outright, with a
@@ -43,7 +43,7 @@ const MAX_CHARS: usize = 32;
 ///   `0abc` here would mean the value read back off the wire (`abc`) did not
 ///   match the value configured, breaking the string comparison this type
 ///   exists to make sound. It also excludes `0` itself, which zenoh reserves.
-/// * **At most 32 digits.** See [`MAX_CHARS`].
+/// * **At most 32 digits.** See `MAX_CHARS`.
 ///
 /// So `RouterId::parse(s).map(|id| id.to_string()) == Ok(s)` for every accepted
 /// `s`: the type is a fixed point, not merely a validated string. It serializes

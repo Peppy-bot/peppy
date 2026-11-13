@@ -245,7 +245,7 @@ pub struct McpDeploymentPlan {
     /// scopes read.
     pub targets: DeploymentTargets,
     /// The link id of the daemon slot of `robot_leases:v1`: the target of the
-    /// exposures that names it, or [`FLEET_SLOT`].
+    /// exposures that names it, or `FLEET_SLOT`.
     pub fleet_slot: String,
 }
 
@@ -333,7 +333,7 @@ struct Slot<'a> {
 /// one must name an interface this peppy serves at the tag it names. The
 /// manifest always has a daemon slot of `robot_leases:v1`, through which the
 /// server asks `check_move` and follows `changes`: the target of the
-/// exposures that names it, or a slot [`FLEET_SLOT`] that the planner adds.
+/// exposures that names it, or a slot `FLEET_SLOT` that the planner adds.
 /// An exposure's own `sha256` pin, when present, must agree with the
 /// deployment's contract pin; absent, the deployment's pin fixes the bytes.
 pub fn plan_deployment(

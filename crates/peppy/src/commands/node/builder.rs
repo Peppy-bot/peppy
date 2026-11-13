@@ -55,7 +55,7 @@ async fn build_node_async_with_connect(
 /// Sends a `node_build` goal and polls it to completion, addressed to the
 /// caller's own core node. Kept on the single-name signature for callers that
 /// build where they are bound (integration tests included); anything honoring
-/// a `--core-node` override goes through [`build_node_on`].
+/// a `--core-node` override goes through `build_node_on`.
 pub async fn build_node_async(
     messenger: &MessengerHandle,
     core_node_name: &str,

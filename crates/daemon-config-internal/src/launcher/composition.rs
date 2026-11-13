@@ -196,7 +196,7 @@ impl<'de> Deserialize<'de> for ComponentAxis {
 /// One option as its axis declares it: a path string names one
 /// `launcher_fragment/v1` file, and an object names files under `fragments`
 /// and carries a body of its own beside them, either or both. The files are
-/// resolved and read when the composition is loaded ([`super::compose`]),
+/// resolved and read when the composition is loaded (`super::compose`),
 /// never here; the body is part of the declaring document.
 ///
 /// In a launcher the object also carries `adjustments`: the launcher's

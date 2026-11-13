@@ -820,7 +820,7 @@ where
 /// a user-edited file, forward-compat beats strictness here).
 ///
 /// Every DEFAULTED field must also serialize under `Default` (no
-/// `skip_serializing_if`): the schema-coverage pin in [`completion`] enumerates
+/// `skip_serializing_if`): the schema-coverage pin in `completion` enumerates
 /// those settings by serializing this struct's default value, and a field it
 /// cannot see would escape the guarantee that older files gain every new
 /// default on upgrade. Required fields that exist only in a non-default tagged
@@ -829,11 +829,9 @@ where
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PeppyConfig {
     /// Fixed core-node name for this daemon; `None` (the template's explicit
-    /// `null`) derives the machine-specific default. Checked by [`validate`]
+    /// `null`) derives the machine-specific default. Checked by `validate`
     /// (`Name` charset + [`MAX_CORE_NODE_NAME_LEN`]) so an invalid name fails
     /// at load time instead of panicking when the core node boots.
-    ///
-    /// [`validate`]: PeppyConfig::validate
     #[serde(default)]
     pub core_node_name: Option<String>,
     #[serde(default)]

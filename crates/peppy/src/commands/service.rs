@@ -16,7 +16,7 @@ pub enum ServiceCommands {
         #[arg(long, default_value = "zenoh")]
         messaging_engine: String,
         /// Optional name for the core node. Overrides `core_node_name` in
-        /// ~/.`peppy/conf/peppy_config.json5`; when both are absent a
+        /// `~/.peppy/conf/peppy_config.json5`; when both are absent a
         /// machine-specific default is derived.
         #[arg(long)]
         core_node_name: Option<String>,

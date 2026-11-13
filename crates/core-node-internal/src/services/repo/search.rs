@@ -330,7 +330,7 @@ pub struct SearchOutcome {
     /// Every identity the query matches, ranked: hits by name first, among
     /// them names the pattern spells out first, then by name, tag and kind.
     pub matches: Vec<MatchedItem>,
-    /// [`excluded_repositories_hint`], so an empty result can say that an
+    /// `excluded_repositories_hint`, so an empty result can say that an
     /// excluded repository may have provided the item without the caller
     /// knowing the cache layout. Empty when nothing is excluded.
     pub excluded_hint: String,
@@ -346,7 +346,7 @@ pub struct ShowOutcome {
     /// published as both a contract and a pairing has two entries in
     /// `matches` and one report covering both.
     pub reports: Vec<SearchReport>,
-    /// [`excluded_repositories_hint`], as on [`SearchOutcome`].
+    /// `excluded_repositories_hint`, as on [`SearchOutcome`].
     pub excluded_hint: String,
 }
 

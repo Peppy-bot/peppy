@@ -932,7 +932,7 @@ impl MockAdapter {
 /// Per-queryable forwarder for the mock adapter. Mirrors the zenoh
 /// adapter's `process_inbound_query`: drains inbound `MockQuery`s, parses
 /// the caller identity and `link_id` slot, claims the producer's default `_`
-/// segment via [`ParsedInboundQuery::claim`], builds an [`IncomingRequest`]
+/// segment via `ParsedInboundQuery::claim`, builds an [`IncomingRequest`]
 /// with a [`ResponseToken::Mock`] carrying the per-query reply channel, and
 /// pushes it to peppylib. Queries whose `link_id` slot is neither `*` nor `_`
 /// are dropped (the `mock_query`'s `reply_tx` clone falls out of scope at end

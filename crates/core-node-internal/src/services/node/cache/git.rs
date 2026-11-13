@@ -163,7 +163,7 @@ fn is_checked_out_at(dir: &Path, commit: &GitCommit) -> bool {
 /// Reads the cache and writes nothing: no clone, no fetch, no marker. It is
 /// what a caller that must not reach the network uses to read a file out of
 /// a tree the caches have already brought down, `repo refresh` handing every
-/// clone it makes to [`adopt_checkout`]. A miss is an answer, not a failure:
+/// clone it makes to `adopt_checkout`. A miss is an answer, not a failure:
 /// the caller says what it could not read rather than fetching behind the
 /// operator's back.
 pub fn materialized_checkout(

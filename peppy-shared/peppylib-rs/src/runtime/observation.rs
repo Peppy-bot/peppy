@@ -281,7 +281,7 @@ impl ObservedTopicSubscription {
     /// Returns `None` when the runtime is torn down (slot channel closed). A
     /// message buffered under a superseded source generation, or under a
     /// member the slot has since dropped, never surfaces (see
-    /// [`SlotStream::next`]).
+    /// `SlotStream::next`).
     pub async fn on_next_message(&mut self) -> Option<(ObservedSource, Message)> {
         self.stream
             .next()

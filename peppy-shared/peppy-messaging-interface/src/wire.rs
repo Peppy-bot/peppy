@@ -693,7 +693,7 @@ fn producer_slots(
 /// The `link_id` wire slot is always emitted as `*`: producers advertise under
 /// the reserved `_` segment, and Zenoh's matcher unifies the two.
 /// `signing` says how the sender signs the call, when it signs it (see
-/// [`crate::call_proof`]).
+/// `crate::call_proof`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceWireSender {
     pub(crate) bound_core_node: Segment,

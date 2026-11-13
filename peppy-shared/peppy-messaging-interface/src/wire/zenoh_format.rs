@@ -643,7 +643,7 @@ impl ServiceQueryAttachment {
     }
 }
 
-/// Service reply kind, encoded in the [`ServiceReplyAttachment`] that
+/// Service reply kind, encoded in the `ServiceReplyAttachment` that
 /// rides on every `query.reply()`. The consumer's poll loop matches on
 /// this to skip ACKs, return regular responses, and surface failure
 /// replies without inspecting payload bytes.

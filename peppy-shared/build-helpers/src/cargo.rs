@@ -137,7 +137,7 @@ fn bundled_tools_dir() -> PathBuf {
 ///
 /// Emits a `cargo::rerun-if-changed` directive for the binary so a compiler
 /// update triggers fresh code generation. Panics when the host platform has no
-/// bundled compiler or [`bundled_tools_dir`] does not hold it, because a build
+/// bundled compiler or `bundled_tools_dir` does not hold it, because a build
 /// script cannot recover from either.
 pub fn host_capnp_for_execution() -> PathBuf {
     let platform = CapnpPlatform::current_host().unwrap_or_else(|| {
@@ -161,7 +161,7 @@ pub fn host_capnp_for_execution() -> PathBuf {
 /// Build scripts that run the compiler use [`host_capnp_for_execution`].
 /// Returns [`UnsupportedCapnpTarget`] when `target` has no bundled compiler,
 /// and panics when the target is supported but the binary file is absent from
-/// [`bundled_tools_dir`], because that means the checkout itself is broken.
+/// `bundled_tools_dir`, because that means the checkout itself is broken.
 pub fn bundled_capnp_for_embedding(target: &str) -> Result<PathBuf, UnsupportedCapnpTarget> {
     let platform = CapnpPlatform::try_from(target)?;
     Ok(existing_bundled_capnp(platform))
@@ -194,7 +194,7 @@ const PEPPY_SHARED_IN_WORKSPACE: &str = "peppy-shared";
 ///
 /// The directory is found when the calling build script or test runs, by
 /// walking up from the `CARGO_MANIFEST_DIR` cargo sets for that run (see
-/// [`find_peppy_shared_dir`]). It is never baked in at compile time: cargo
+/// `find_peppy_shared_dir`). It is never baked in at compile time: cargo
 /// reuses a compiled `build-helpers` across every checkout that shares a
 /// target directory, so a compile-time path would name whichever checkout
 /// compiled the crate instead of the one being built.

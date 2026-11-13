@@ -6,7 +6,7 @@
 //! to a handler in this module's directory; the OAuth device flow, token
 //! storage, the platform API and the enrollment store they share live in the
 //! separate `auth` engine crate, and the config, URL and credential preamble
-//! they all repeat lives here as [`PlatformSession`].
+//! they all repeat lives here as `PlatformSession`.
 //!
 //! A session is what the CLI needs to call the API; an enrollment is what the
 //! daemon needs to federate its router, and it outlives the session. `login`

@@ -1101,8 +1101,8 @@ impl NodeEntity {
     }
 
     /// Undoes a start that did not reach `running`, from
-    /// [`prepare_and_spawn`] (on I/O failure during the spawn/wire phases),
-    /// [`abort_started`] (on caller-side ready/health failure) and
+    /// `prepare_and_spawn` (on I/O failure during the spawn/wire phases),
+    /// `abort_started` (on caller-side ready/health failure) and
     /// [`Self::undo_abandoned_start`] (a run that panicked): a new
     /// instance is removed; a respawn's slot returns to `restarting` with no
     /// pid, or is removed when a stop path claimed it meanwhile, so no slot
@@ -1144,7 +1144,7 @@ impl NodeEntity {
     }
 
     /// Undoes the start `run` left in flight under `instance_id` when it
-    /// panicked, as [`Self::undo_start`] does; a slot not starting for `run`
+    /// panicked, as `Self::undo_start` does; a slot not starting for `run`
     /// is left alone. Returns whether the slot was still `run`'s: its start
     /// in flight, now undone, or the restart it had not begun.
     pub fn undo_abandoned_start(

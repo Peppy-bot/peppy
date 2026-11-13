@@ -140,7 +140,7 @@ pub(crate) enum Backend {
         registry_auth: RegistryAuth,
         /// Directory of the host's NVIDIA L4T container manifest, whose shared
         /// libraries a `--nv` command gets; see
-        /// [`l4t_manifest`](super::l4t_manifest). The Lima backend has no
+        /// [`l4t_manifest`]. The Lima backend has no
         /// counterpart: its guest is a VM on a Mac, never a Jetson.
         l4t_manifest_dir: PathBuf,
     },
@@ -479,7 +479,7 @@ impl Apptainer {
     ///
     /// # Blocking
     ///
-    /// Construction runs [`ensure_ready`](Self::ensure_ready), so it is not free.
+    /// Construction runs `ensure_ready`, so it is not free.
     /// On Linux it only checks user namespace prerequisites. On macOS it boots the
     /// Lima VM and syncs the apptainer install into the guest, which can take
     /// minutes on first run, so call it from a blocking context (e.g.
@@ -742,7 +742,7 @@ impl Apptainer {
     /// SIGKILL the guest-side process group recorded for `key` by the Lima
     /// wrapper (see [`ApptainerCommand::cancel_pgid`]). `key` must match the one
     /// passed to `cancel_pgid` for this command; both resolve to the same
-    /// guest-native pgid path via [`lima::guest_pgid_path`]. Used to cancel an
+    /// guest-native pgid path via `lima::guest_pgid_path`. Used to cancel an
     /// in-flight build (`--force` supersede), to stop an `exec` that runs
     /// after a build (when the build is cancelled or the `exec` runs past its
     /// time limit), and to force-stop a run node's in-VM workload on daemon
@@ -883,7 +883,7 @@ impl Apptainer {
     /// Start building an `apptainer build` command.
     ///
     /// Both paths are translated to guest-visible paths when running under Lima.
-    /// The command packs the image's squashfs with [`SQUASHFS_COMPRESSION`]. A
+    /// The command packs the image's squashfs with `SQUASHFS_COMPRESSION`. A
     /// `--mksquashfs-args` flag added later with [`ApptainerCommand::raw_flag`]
     /// replaces it, as apptainer reads the last one.
     pub fn build(&self, output: &Path, def_file: &Path) -> ApptainerCommand<'_> {
@@ -918,7 +918,7 @@ impl Apptainer {
     /// Puts the shared libraries of the host's NVIDIA L4T container manifest
     /// into the `--nv` library list of the apptainer install, as a command
     /// that passes `--nv` needs them on a Jetson; see
-    /// [`l4t_manifest`](super::l4t_manifest). Does nothing on a host without
+    /// [`l4t_manifest`]. Does nothing on a host without
     /// the manifest, and under Lima.
     fn prepare_nv_library_list(&self) -> Result<()> {
         let Backend::Native {
@@ -965,7 +965,7 @@ impl Apptainer {
     /// [`ensure_host_mounts()`](Self::ensure_host_mounts); otherwise an error is
     /// returned.
     ///
-    /// Host runtime trees ([`is_host_provided_mount_source`]) are deliberately
+    /// Host runtime trees (`is_host_provided_mount_source`) are deliberately
     /// still rejected rather than passed through to the guest. Passing them
     /// through would only defer the failure to Apptainer's own "bind source
     /// does not exist", and would be a lie for the case that matters: a device
@@ -1191,7 +1191,7 @@ impl Apptainer {
 }
 
 /// Why this machine cannot build for `platform` under emulation, or `None`
-/// when it can (see [`EmulationToolchain::find`]).
+/// when it can (see `EmulationToolchain::find`).
 pub fn emulation_problem(platform: ArtifactPlatform) -> Option<String> {
     EmulationToolchain::find(platform)
         .err()
@@ -1476,7 +1476,7 @@ fn signal_guest_process_groups_best_effort(keys: &[String], signal: GuestSignal)
 }
 
 /// Resolve a relative path to absolute by joining it onto the current working
-/// directory; absolute paths are returned unchanged. Shared by [`translate_path`]
+/// directory; absolute paths are returned unchanged. Shared by `translate_path`
 /// (which propagates a `current_dir()` failure) and [`resolve_absolute`] (which
 /// falls back to the original path), so both normalize identically. That shared
 /// normalization is load-bearing: `ensure_host_mounts` registers extra mounts via
@@ -1523,7 +1523,7 @@ fn resolve_absolute(path: &str) -> PathBuf {
 /// The subset of [`std::process::Child`] that [`await_guest_kill`] needs, behind a
 /// trait so the bounded-wait decision logic can be unit-tested with a fake child
 /// instead of a real `limactl` subprocess (mirroring the injected-closure pattern
-/// of [`lima::stop_instance_inner`]).
+/// of `lima::stop_instance_inner`).
 pub(crate) trait GuestKillChild {
     /// Non-blocking check for the child's exit status.
     fn poll_exit(&mut self) -> Result<Option<ExitStatus>>;
@@ -1898,7 +1898,7 @@ impl<'a> ApptainerCommand<'a> {
     ///
     /// A command that passes `--nv` first gets the shared libraries of the
     /// host's NVIDIA L4T container manifest into the `--nv` library list (see
-    /// [`l4t_manifest`](super::l4t_manifest)), so it also fails here when the
+    /// [`l4t_manifest`]), so it also fails here when the
     /// manifest cannot be read or the list cannot be written.
     fn assemble_command(&self) -> Result<Command> {
         if passes_nv(&self.flags) {

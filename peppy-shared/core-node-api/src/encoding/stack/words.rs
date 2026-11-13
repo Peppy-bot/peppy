@@ -4,7 +4,7 @@
 //!
 //! The CLI parses each type from its text with [`FromStr`]. The wire, the
 //! daemon and the MCP bridge carry the types, and a refusal prints them with
-//! [`Display`], whose text parses back to the same value. Each parser trims
+//! `Display`, whose text parses back to the same value. Each parser trims
 //! the whole value once, then splits it in one order: at `@` first (the
 //! machine), then at `.` (the copy of a launch word), then at `=` (the
 //! axis), then at `:` (the name of a copy reference). Axis, option, copy and

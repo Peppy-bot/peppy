@@ -20,7 +20,7 @@ use std::{
 
 /// Validated identifier for node names, tags, instance ids, and core node
 /// names in runtime configs: non-empty and restricted to
-/// [`ALLOWED_CONFIG_CHARS`](crate::consts::ALLOWED_CONFIG_CHARS).
+/// [`ALLOWED_CONFIG_CHARS`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(into = "String")]
 pub struct Name(String);

@@ -251,7 +251,7 @@ impl GoalOutcome {
 /// - expired: `[3]`
 /// - failed: `[4][failure]` (the wire form of [`Failure`])
 ///
-/// Symmetric counterpart of [`unwrap_result_outcome`].
+/// Symmetric counterpart of `unwrap_result_outcome`.
 pub fn wrap_result_outcome(outcome: &GoalOutcome) -> Payload {
     let mut buf = BytesMut::new();
     buf.put_u8(outcome.status() as u8);
@@ -886,7 +886,7 @@ impl ActionGoalHandle {
     /// Returns `Err(Error::ActionFeedbackOverflow)` once this caller fell
     /// behind by more unread messages than its bound: the buffer dropped
     /// the unread messages, and the handle cancelled the goal (see
-    /// [`Self::follow_feedback`]).
+    /// `Self::follow_feedback`).
     ///
     /// Returns `Err(Error::ActionFeedbackProducerGone)` when the producer
     /// instance this goal is pinned to disappears without publishing the
@@ -1114,7 +1114,7 @@ impl ActionMessenger {
     /// The goal carries the presence generation of this messenger as the
     /// sender `(as_core_node, as_instance_id)`: the provider cancels the
     /// goal once that sender is gone (see
-    /// [`MessengerHandle::client_presence`]). When the goal request gets no
+    /// `MessengerHandle::client_presence`). When the goal request gets no
     /// answer this caller can read (the goal service times out, or its
     /// answer does not decode), the caller sends a cancel of the goal before
     /// it returns the error, so a goal the provider accepted does not run on
@@ -2383,7 +2383,7 @@ impl ConcurrentAction {
     }
 
     /// Override how long a completed-but-unfetched result stays routable after
-    /// its [`GoalContext`] drops (default [`RESULT_RETENTION_GRACE`]). Exposed
+    /// its [`GoalContext`] drops (default `RESULT_RETENTION_GRACE`). Exposed
     /// mainly so tests can exercise eviction without waiting the full window.
     #[must_use]
     pub fn with_result_retention_grace(mut self, grace: Duration) -> Self {

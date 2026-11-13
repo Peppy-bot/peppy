@@ -1,6 +1,6 @@
 //! Topic snapshot policies: image representation and result-size handling.
 //!
-//! [`apply_content_policies`] runs after the update-rate gate admitted a
+//! `apply_content_policies` runs after the update-rate gate admitted a
 //! message and the bridge decoded it to canonical JSON, and on the answer
 //! of a service exposed under a representation. It transcodes
 //! image-carrying snapshots to the declared codec: under `jpeg`, colour

@@ -512,7 +512,7 @@ impl ServiceMessenger {
     /// within the [`ServiceTarget`] scope (a full producer pin, one core
     /// node, or any matching producer). The probe is answered by the
     /// transport adapter; the user handler is never invoked. Returns `true`
-    /// if the service replies within [`PROBE_TIMEOUT`](super::PROBE_TIMEOUT)
+    /// if the service replies within `PROBE_TIMEOUT`
     /// or is reached but too slow to answer in time (a probe timeout still
     /// proves the producer is there); `false` only if the service is
     /// unreachable.

@@ -1057,7 +1057,7 @@ impl DoomedInstance {
 /// it is the daemon itself. This does NOT wait the uncatchable-death grace
 /// period; that timer only governs a daemon that died without running cleanup.
 ///
-/// Delegates to [`force_stop_and_forget`]: the same phases as `peppy node
+/// Delegates to `force_stop_and_forget`: the same phases as `peppy node
 /// stop`, batched (one grace budget shared across all instances and every
 /// cooperative shutdown sent concurrently), then each instance is dropped
 /// from the stack, which keeps no pid whose process is gone.

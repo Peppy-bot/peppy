@@ -346,7 +346,7 @@ impl DependencyContext {
     /// [`Self::target_selection_doc`]) so the bound-set guarantees are
     /// stated once. The `one_or_more` prose stops mid-sentence ("so"): the
     /// clause that finishes it names one language's API, so it comes from
-    /// `language`, as in [`observed_sources_doc`].
+    /// `language`, as in `observed_sources_doc`.
     pub fn bound_producers_doc(&self, language: DocLanguage) -> AccessorDoc {
         match self.cardinality {
             Cardinality::One => AccessorDoc {

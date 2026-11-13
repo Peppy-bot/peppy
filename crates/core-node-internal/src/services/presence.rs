@@ -11,7 +11,7 @@ use tracing::{debug, error};
 /// flooding the daemon log.
 const NAME_COLLISION_ALARM_COOLDOWN: Duration = Duration::from_mins(1);
 
-/// Settle window a *federated* daemon's [`claim_name`] holds its candidacy
+/// Settle window a *federated* daemon's `claim_name` holds its candidacy
 /// open before committing, re-querying throughout.
 ///
 /// A liveliness query is answered from the local router's token registry,

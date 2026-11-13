@@ -164,7 +164,7 @@ pub(crate) fn check_env_name(name: &str) -> Result<(), InvalidEnvVar> {
 }
 
 /// Checks the name of a variable that an instance takes from the launch
-/// environment: a name [`check_env_name`] accepts, which the forwarded
+/// environment: a name `check_env_name` accepts, which the forwarded
 /// environment of a launch can hold, so not one of the
 /// [`NEVER_FORWARDED_ENV_KEYS`]. The value is checked where it arrives: the
 /// CLI forwards only a value [`is_safe_env_value`] accepts, and the daemon

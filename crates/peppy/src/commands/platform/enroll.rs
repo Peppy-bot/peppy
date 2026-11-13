@@ -6,7 +6,7 @@
 //!
 //! The daemon must run: the peer takes the name of its core node, and the
 //! daemon is what joins the router. `peppy platform login` enrolls through the
-//! same [`enroll_machine`].
+//! same `enroll_machine`.
 
 use std::sync::Arc;
 

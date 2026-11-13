@@ -569,7 +569,7 @@ impl ZenohAdapter {
         )
     }
 
-    /// Builds a lock-free [`RouterHealthChecker`] bound to this adapter's router
+    /// Builds a lock-free [`zenohd::RouterHealthChecker`] bound to this adapter's router
     /// endpoint, for the router watchdog to probe liveness without holding the
     /// central messenger lock.
     #[cfg(feature = "router")]
@@ -1380,7 +1380,7 @@ impl ZenohAdapter {
         self.topic_subscriber_wait(sender)?.resolve(timeout).await
     }
 
-    /// [`subscriber_match_wait`](Self::subscriber_match_wait) for a topic,
+    /// `subscriber_match_wait` for a topic,
     /// building the publish key expression from `sender`.
     pub fn topic_subscriber_wait(&self, sender: &TopicWireSender) -> Result<SubscriberMatchWait> {
         self.subscriber_match_wait(ZenohWireFormat::topic_publish(sender))
@@ -1550,7 +1550,7 @@ fn declare_retaining_publisher(
 
 /// Per-query inbound handler. Parses the selector, verifies the caller's
 /// `link_id` slot resolves to the producer's default `_` segment via
-/// [`ParsedInboundQuery::claim`], builds an [`IncomingRequest`] with a
+/// `ParsedInboundQuery::claim`, builds an [`IncomingRequest`] with a
 /// [`ResponseToken::Zenoh`] (carrying the concrete reply keyexpr) and pushes
 /// it onto `tx`.
 ///
@@ -1673,7 +1673,7 @@ enum PublishRoute {
 /// [`resolve`](Self::resolve) runs detached from the adapter and callers can
 /// release any shared adapter lock before waiting out the timeout, the same
 /// issue-then-resolve split as
-/// [`LivelinessProbe`](crate::types::LivelinessProbe).
+/// [`LivelinessProbe`].
 #[derive(Debug)]
 pub struct SubscriberMatchWait {
     session: Arc<zenoh::Session>,

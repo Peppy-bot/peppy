@@ -451,7 +451,7 @@ where
     ///
     /// Parses and validates parameters eagerly: any type mismatch or missing
     /// field is reported immediately rather than being deferred to
-    /// [`NodeContext::parameters`].
+    /// [`NodeContext::take_parameters`].
     ///
     /// Use this when you need:
     /// - Full debugger/breakpoint support

@@ -1009,7 +1009,7 @@ fn require_native_description<E: de::Error>(
 }
 
 /// Validates the (required, non-empty) `name` of a produced-interface entry,
-/// surfacing a [`StructuredError::EmptyInterfaceName`] through the serde
+/// surfacing a `StructuredError::EmptyInterfaceName` through the serde
 /// bridge on failure.
 fn require_interface_name<E: de::Error>(
     name: Option<&str>,
@@ -1455,7 +1455,7 @@ pub struct ContractDependency {
 /// the slot via `link_id`, which shares one flat namespace with
 /// `depends_on.{nodes,contracts,pairings}` `link_ids`. `sha256` optionally pins
 /// the contract document, with the same semantics as
-/// [`ContractDependency::sha256`]. Shape-identical to [`ContractDependency`]
+/// `ContractDependency::sha256`. Shape-identical to `ContractDependency`
 /// but deliberately a distinct type, because the two point in opposite
 /// directions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
