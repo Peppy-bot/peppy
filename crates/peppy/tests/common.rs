@@ -57,7 +57,7 @@ pub(crate) enum MessagingEngine {
     /// `daemon_lifecycle_e2e` boots one.
     #[cfg_attr(
         not(target_os = "linux"),
-        expect(dead_code, reason = "only the Linux end-to-end test starts a zenohd")
+        allow(dead_code, reason = "only the Linux end-to-end tests start a zenohd")
     )]
     Zenoh {
         port: u16,
@@ -153,15 +153,24 @@ pub(crate) const SERVE_INITIALIZED: &str = "Serve command initialized!";
 /// The daemon's refusal of a taken zenoh port, and zenohd's own bind failure
 /// quoted from its log. The zenoh boot helpers below serve the Linux e2e in
 /// `daemon_lifecycle_e2e` and every `log_export_e2e` test.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(dead_code, reason = "only the Linux end-to-end tests start a zenohd")
+)]
 const PORT_IN_USE: [&str; 2] = ["Zenoh router port already in use", "Address already in use"];
 /// How many times a test boots a zenoh daemon again on a new port. The port
 /// comes from the ephemeral range other tests' zenoh sessions draw from.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(dead_code, reason = "only the Linux end-to-end tests start a zenohd")
+)]
 pub(crate) const PORT_ATTEMPTS: usize = 3;
 
 /// A port that was free a moment ago.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(dead_code, reason = "only the Linux end-to-end tests start a zenohd")
+)]
 pub(crate) fn free_port() -> u16 {
     std::net::TcpListener::bind("0.0.0.0:0")
         .expect("bind an ephemeral port")
@@ -171,7 +180,10 @@ pub(crate) fn free_port() -> u16 {
 }
 
 /// How the boot of a zenoh daemon went.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(dead_code, reason = "only the Linux end-to-end tests start a zenohd")
+)]
 pub(crate) enum Boot {
     Ready,
     /// Another process took the zenoh port first.
@@ -179,7 +191,10 @@ pub(crate) enum Boot {
 }
 
 /// Waits for `ready` in the daemon's logs, or a port collision.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(dead_code, reason = "only the Linux end-to-end tests start a zenohd")
+)]
 pub(crate) fn wait_for_boot(
     daemon: &mut DaemonGuard,
     logs: &Arc<Mutex<String>>,

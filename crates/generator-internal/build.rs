@@ -275,15 +275,16 @@ mod peppylib_build {
     fn extract_so_from_wheel(wheels_dir: &Path) -> Vec<u8> {
         let whl_path = std::fs::read_dir(wheels_dir)
             .expect("failed to read wheels directory")
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "whl"))
             .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
             .map(|e| e.path())
             .expect("no .whl file found in wheels directory");
 
         let wheel = std::fs::File::open(&whl_path).expect("failed to open wheel file");
-        peppylib_build_policy::native_extension_of_wheel(wheel)
-            .unwrap_or_else(|e| panic!("failed to extract the .so from {whl_path:?}: {e}"))
+        peppylib_build_policy::native_extension_of_wheel(wheel).unwrap_or_else(|e| {
+            panic!("failed to extract the .so from {}: {e}", whl_path.display())
+        })
     }
 
     /// A Linux cross-compilation target for peppylib.
@@ -318,9 +319,7 @@ mod peppylib_build {
             .args(["target", "add", target_triple])
             .status()
             .expect("failed to run rustup target add");
-        if !status.success() {
-            panic!("rustup target add {target_triple} failed");
-        }
+        assert!(status.success(), "rustup target add {target_triple} failed");
     }
 
     /// All `.py` files in the peppylib package directory, excluding `__pycache__`.
@@ -471,11 +470,15 @@ mod peppylib_build {
         let linux_so_bytes = extract_so_from_wheel(&wheels_dir);
 
         let linux_so_path = so_dir.join(format!("_peppylib.abi3.{}.so", target.platform_suffix));
-        std::fs::write(&linux_so_path, &linux_so_bytes)
-            .unwrap_or_else(|e| panic!("failed to write linux .so to {:?}: {e}", linux_so_path));
+        std::fs::write(&linux_so_path, &linux_so_bytes).unwrap_or_else(|e| {
+            panic!(
+                "failed to write linux .so to {}: {e}",
+                linux_so_path.display()
+            )
+        });
 
         // Clean up wheel files to avoid stale artifacts between targets
-        std::fs::remove_dir_all(&wheels_dir).ok();
+        let _ = std::fs::remove_dir_all(&wheels_dir);
     }
 
     /// Marker file recording, per platform, the source hash and profile each
