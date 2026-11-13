@@ -386,12 +386,12 @@ jobs:
         working-directory: docs/concepts_video
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
       # Provides the pixi the project runs under.
-      - uses: ./.github/actions/rust-build-env
+      - uses: $/.github/actions/rust-build-env
 
       - name: Install the pinned tools
         run: |
