@@ -555,9 +555,7 @@ async fn recv_first_ready<T>(
         return (0, members[0].1.recv_async().await);
     }
     let start = start % len;
-    let recvs: Vec<_> = (0..len)
-        .map(|offset| members[(start + offset) % len].1.recv_async())
-        .collect();
+    let recvs: Vec<_> = Vec::from_fn(len, |offset| members[(start + offset) % len].1.recv_async());
     let (received, position, _) = futures::future::select_all(recvs).await;
     ((start + position) % len, received)
 }

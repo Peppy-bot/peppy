@@ -132,7 +132,7 @@ fn strip_line_ending(line: &[u8]) -> &[u8] {
     let Some(line) = line.strip_suffix(b"\n") else {
         return line;
     };
-    line.strip_suffix(b"\r").unwrap_or(line)
+    line.trim_suffix(b"\r")
 }
 
 /// Cargo warning lines reporting a failed command: the failure itself, then

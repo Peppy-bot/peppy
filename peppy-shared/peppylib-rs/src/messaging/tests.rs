@@ -2798,9 +2798,9 @@ async fn single_action_communication_multiple_polls() {
     let caller_prefix = "the_brain";
 
     const CLIENT_COUNT: usize = 8;
-    let cases: Vec<_> = (0..CLIENT_COUNT)
-        .map(|idx| ActionClientCase::new(caller_prefix, idx))
-        .collect();
+    let cases: Vec<_> = Vec::from_fn(CLIENT_COUNT, |idx| {
+        ActionClientCase::new(caller_prefix, idx)
+    });
     let cases = Arc::new(cases);
 
     let (action_ready_tx, action_ready_rx) = oneshot::channel();

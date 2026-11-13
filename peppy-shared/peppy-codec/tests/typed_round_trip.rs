@@ -288,9 +288,7 @@ fn a_camera_frame_matches_the_typed_builder() {
     use frame_capnp::message;
 
     let (width, height) = (640u16, 480u16);
-    let pixels: Vec<u8> = (0..width as usize * height as usize * 3)
-        .map(|i| (i % 251) as u8)
-        .collect();
+    let pixels: Vec<u8> = Vec::from_fn(width as usize * height as usize * 3, |i| (i % 251) as u8);
     let value = serde_json::json!({
         "frame": bytes_to_base64(&pixels),
         "encoding": "rgb8",

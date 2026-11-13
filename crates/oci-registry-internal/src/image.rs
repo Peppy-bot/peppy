@@ -70,8 +70,8 @@ impl DefinitionHeader {
             return None;
         }
         let from = self.from.as_deref()?;
-        let from = from.strip_prefix("oras://").unwrap_or(from);
-        let from = from.strip_prefix("docker://").unwrap_or(from);
+        let from = from.trim_prefix("oras://");
+        let from = from.trim_prefix("docker://");
         Some(ImageReference::parse(from))
     }
 }

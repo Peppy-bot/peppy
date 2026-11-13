@@ -280,7 +280,7 @@ fn main() -> Result<()> {
             let publisher = video_stream::declare_publisher(&runner)
                 .await
                 .expect("declare video_stream publisher");
-            let frame: Vec<u8> = (0..8u32 * 8 * 3).map(|i| (i % 251) as u8).collect();
+            let frame: Vec<u8> = Vec::from_fn(8 * 8 * 3, |i| (i % 251) as u8);
             loop {
                 let payload = video_stream::build_message(frame.clone(), "rgb8".to_owned(), 8, 8)
                     .expect("build video_stream message");
@@ -330,7 +330,7 @@ fn main() -> Result<()> {
                         "the shutter is closed",
                     ));
                 }
-                let frame: Vec<u8> = (0..8u32 * 8 * 3).map(|i| (i % 251) as u8).collect();
+                let frame: Vec<u8> = Vec::from_fn(8 * 8 * 3, |i| (i % 251) as u8);
                 Ok(snapshot::Response::new(frame, "rgb8".to_owned(), 8, 8))
             })
             .await

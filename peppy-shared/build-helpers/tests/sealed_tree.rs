@@ -283,11 +283,7 @@ fn tree_manifests(root: &Path) -> Vec<(PathBuf, String)> {
 /// root down.
 fn display_manifest(root: &Path, manifest_dir: &Path) -> String {
     let manifest = manifest_dir.join("Cargo.toml");
-    manifest
-        .strip_prefix(root)
-        .unwrap_or(&manifest)
-        .display()
-        .to_string()
+    manifest.trim_prefix(root).display().to_string()
 }
 
 #[test]
@@ -353,7 +349,7 @@ fn no_symlink_reaches_outside_the_tree() {
             (!stays_inside(&root, link_dir, &target.to_string_lossy())).then(|| {
                 format!(
                     "  {} -> {}",
-                    link.strip_prefix(&root).unwrap_or(link).display(),
+                    link.trim_prefix(&root).display(),
                     target.display()
                 )
             })

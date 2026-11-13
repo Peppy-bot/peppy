@@ -746,7 +746,7 @@ fn archived_text(archive: &std::path::Path, path: &str) -> Option<String> {
     for entry in tar.entries().expect("tar entries") {
         let mut entry = entry.expect("tar entry");
         let entry_path = entry.path().expect("entry path").into_owned();
-        if entry_path.strip_prefix(".").unwrap_or(&entry_path) == std::path::Path::new(path) {
+        if entry_path.trim_prefix(".") == std::path::Path::new(path) {
             let mut text = String::new();
             entry.read_to_string(&mut text).expect("read archived file");
             return Some(text);

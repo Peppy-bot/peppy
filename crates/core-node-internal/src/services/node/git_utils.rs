@@ -147,7 +147,7 @@ fn advertised_name_of(advertised: &[git2::RemoteHead<'_>], commit: &GitCommit) -
         .find(|head| head.oid().to_string() == commit.as_str())
         .map(|head| {
             let name = head.name();
-            name.strip_suffix("^{}").unwrap_or(name).to_owned()
+            name.trim_suffix("^{}").to_owned()
         })
 }
 

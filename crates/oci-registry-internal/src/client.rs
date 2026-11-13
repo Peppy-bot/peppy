@@ -764,7 +764,7 @@ impl RequestBody {
                     count += part.len() as u64;
                     // The receiver is gone once the request ended.
                     let _ = taken.send(count);
-                    Ok::<_, std::convert::Infallible>(part)
+                    Ok::<_, !>(part)
                 }))
             }
         }

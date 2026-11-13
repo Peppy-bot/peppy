@@ -385,7 +385,7 @@ fn create_free(dir: &Path, filename: &LogFileName) -> std::io::Result<(File, Pat
 /// `filename` in `dir`, then `{stem}-2.log`, `{stem}-3.log` and so on.
 fn free_names(dir: &Path, filename: &LogFileName) -> impl Iterator<Item = PathBuf> {
     let filename = filename.as_str();
-    let stem = filename.strip_suffix(".log").unwrap_or(filename).to_owned();
+    let stem = filename.trim_suffix(".log").to_owned();
     let dir = dir.to_path_buf();
     std::iter::once(dir.join(filename))
         .chain((2u32..).map(move |n| dir.join(format!("{stem}-{n}.log"))))

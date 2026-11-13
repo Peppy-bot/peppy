@@ -626,9 +626,9 @@ mod tests {
 
     /// A deterministic high-detail frame that JPEG cannot compress well.
     fn noisy_frame(width: u32, height: u32) -> Value {
-        let bytes: Vec<u8> = (0..width as usize * height as usize * 3)
-            .map(|index| ((index * 97 + index / 3 * 31) % 256) as u8)
-            .collect();
+        let bytes: Vec<u8> = Vec::from_fn(width as usize * height as usize * 3, |index| {
+            ((index * 97 + index / 3 * 31) % 256) as u8
+        });
         json!({
             "frame": BASE64.encode(&bytes),
             "encoding": "rgb8",

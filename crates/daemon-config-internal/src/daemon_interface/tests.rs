@@ -534,13 +534,13 @@ fn the_features_of_an_option_hold_their_rules() {
          axis, so an axis has at most one feature"
     );
 
-    let six: Vec<serde_json::Value> = (0..MAX_FEATURES)
-        .map(|index| feature(&format!("f{index}"), &format!("x{index}")))
-        .collect();
+    let six: Vec<serde_json::Value> = Vec::from_fn(MAX_FEATURES, |index| {
+        feature(&format!("f{index}"), &format!("x{index}"))
+    });
     scope(with_features(json!(six))).expect("six features fit");
-    let seven: Vec<serde_json::Value> = (0..=MAX_FEATURES)
-        .map(|index| feature(&format!("f{index}"), &format!("x{index}")))
-        .collect();
+    let seven: Vec<serde_json::Value> = Vec::from_fn(MAX_FEATURES + 1, |index| {
+        feature(&format!("f{index}"), &format!("x{index}"))
+    });
     let error = refused(with_features(json!(seven)));
     assert_eq!(
         error,

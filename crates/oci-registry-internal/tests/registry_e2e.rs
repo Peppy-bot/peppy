@@ -80,7 +80,7 @@ async fn an_artifact_pushed_in_chunks_is_listed_read_and_pulled_back() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pusher = client(&registry, store_with_file(dir.path(), None), Access::Push)
         .with_upload_chunk_bytes(1000);
-    let sif: Vec<u8> = (0..4500u32).map(|i| (i % 251) as u8).collect();
+    let sif: Vec<u8> = Vec::from_fn(4500, |i| (i % 251) as u8);
 
     let pushed = push_artifact(
         &pusher,

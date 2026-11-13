@@ -19,6 +19,7 @@ use containers::BuildActivity;
 use log_export::Iostream;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
+use std::mem::DropGuard;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
@@ -272,40 +273,28 @@ pub(crate) async fn stream_child_output(
     }
 
     // Cancellation safety: if this future is dropped before `child.wait()`
-    // returns, `KillGuard::drop` calls `start_kill`, which targets the whole
-    // process group (see `spawn_in_process_group`) so `sh -c "..."` wrappers
-    // and their descendants all die together.
-    struct KillGuard<'a> {
-        child: &'a mut dyn ChildWrapper,
-        completed: bool,
-    }
-    impl Drop for KillGuard<'_> {
-        fn drop(&mut self) {
-            if !self.completed {
-                let _ = self.child.start_kill();
-            }
-        }
-    }
-    let mut guard = KillGuard {
-        child: child.as_mut(),
-        completed: false,
-    };
+    // returns, the guard calls `start_kill`, which targets the whole process
+    // group (see `spawn_in_process_group`) so `sh -c "..."` wrappers and
+    // their descendants all die together.
+    let mut child_guard = DropGuard::new(child.as_mut(), |child| {
+        let _ = child.start_kill();
+    });
     let status = tokio::select! {
         biased;
-        wait_result = guard.child.wait() => {
+        wait_result = child_guard.wait() => {
             wait_result.map_err(|e| format!("failed to wait for process: {e}"))?
         }
         _ = cancel_token.cancelled() => {
             // SIGKILL the whole process group, then *await* the child so it is
             // reaped before we return; the superseding build must not race a
             // dying subprocess over the same working dir.
-            let _ = guard.child.start_kill();
-            let _ = guard.child.wait().await;
-            guard.completed = true;
+            let _ = child_guard.start_kill();
+            let _ = child_guard.wait().await;
+            DropGuard::dismiss(child_guard);
             return Err("build cancelled".to_string());
         }
     };
-    guard.completed = true;
+    DropGuard::dismiss(child_guard);
 
     // Join reader tasks and surface the first error so build diagnostics
     // receive failures instead of masked truncated output. The tasks were

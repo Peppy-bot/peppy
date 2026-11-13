@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn every_minted_lifetime_is_distinct_and_rising() {
-        let minted: Vec<u64> = (0..1_000).map(|_| mint_incarnation().get()).collect();
+        let minted: Vec<u64> = Vec::from_fn(1_000, |_| mint_incarnation().get());
         let distinct: BTreeSet<u64> = minted.iter().copied().collect();
         assert_eq!(distinct.len(), minted.len(), "a lifetime is never reused");
         assert!(

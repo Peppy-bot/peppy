@@ -4123,7 +4123,7 @@ mod tests {
     /// An 8x8 `rgb8` frame, as the bridge hands a camera message over.
     fn rgb8_frame() -> Value {
         use base64::Engine as _;
-        let pixels: Vec<u8> = (0..8u32 * 8 * 3).map(|index| (index % 251) as u8).collect();
+        let pixels: Vec<u8> = Vec::from_fn(8 * 8 * 3, |index| (index % 251) as u8);
         json!({
             "header": { "frame_id": 7 },
             "frame": base64::engine::general_purpose::STANDARD.encode(&pixels),
@@ -4678,9 +4678,9 @@ mod tests {
     #[tokio::test]
     async fn an_oversize_service_picture_is_downscaled_and_a_bad_frame_is_a_tool_error() {
         use base64::Engine as _;
-        let bytes: Vec<u8> = (0..64usize * 64 * 3)
-            .map(|index| ((index * 97 + index / 3 * 31) % 256) as u8)
-            .collect();
+        let bytes: Vec<u8> = Vec::from_fn(64usize * 64 * 3, |index| {
+            ((index * 97 + index / 3 * 31) % 256) as u8
+        });
         let noisy = json!({
             "frame": base64::engine::general_purpose::STANDARD.encode(&bytes),
             "encoding": "rgb8",

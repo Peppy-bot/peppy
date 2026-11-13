@@ -1920,9 +1920,7 @@ fn prepare_scratch_dir_tolerates_concurrent_preparation() {
     let scratch = tmp.path().join("apptainer");
 
     let failures: Vec<Error> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..16)
-            .map(|_| scope.spawn(|| prepare_scratch_dir(&scratch)))
-            .collect();
+        let handles: Vec<_> = Vec::from_fn(16, |_| scope.spawn(|| prepare_scratch_dir(&scratch)));
         handles
             .into_iter()
             .filter_map(|handle| handle.join().expect("probe thread should not panic").err())

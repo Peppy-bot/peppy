@@ -274,7 +274,7 @@ fn main() -> Result<()> {
             let publisher = frame::declare_publisher(&runner)
                 .await
                 .expect("declare frame publisher");
-            let pixels: Vec<u8> = (0..640usize * 480 * 3).map(|i| (i % 251) as u8).collect();
+            let pixels: Vec<u8> = Vec::from_fn(640usize * 480 * 3, |i| (i % 251) as u8);
             let stamp = UNIX_EPOCH + Duration::new(1_700_000_000, 500_000_000);
             loop {
                 let payload = frame::build_message(pixels.clone(), "rgb8".to_owned(), 640, 480, stamp)
@@ -304,9 +304,9 @@ fn binding(member: &str) -> MemberBinding {
 }
 
 fn expected_frame() -> Value {
-    let pixels: Vec<u8> = (0..FRAME_WIDTH as usize * FRAME_HEIGHT as usize * 3)
-        .map(|i| (i % 251) as u8)
-        .collect();
+    let pixels: Vec<u8> = Vec::from_fn(FRAME_WIDTH as usize * FRAME_HEIGHT as usize * 3, |i| {
+        (i % 251) as u8
+    });
     json!({
         "frame": bytes_to_base64(&pixels),
         "encoding": "rgb8",

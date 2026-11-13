@@ -78,7 +78,7 @@ fn collect_crate_source_files(
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let rel = path.strip_prefix(crate_dir).unwrap_or(&path);
+            let rel = path.trim_prefix(crate_dir);
             let rel_str = rel.to_string_lossy();
             if path.is_dir() {
                 // Only top-level target/tests/examples are excluded.
@@ -595,7 +595,7 @@ mod peppylib_build {
         let mut hasher = Sha256::new();
         hasher.update(BUILD_SCRIPT_SOURCE.as_bytes());
         for file in files {
-            let rel = file.strip_prefix(&crates_root).unwrap_or(file);
+            let rel = file.trim_prefix(&crates_root);
             if let Ok(bytes) = std::fs::read(file) {
                 hasher.update(rel.to_string_lossy().as_bytes());
                 hasher.update(&bytes);

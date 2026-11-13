@@ -527,7 +527,7 @@ fn check_plain_dial_host(host: &str) -> std::result::Result<&str, String> {
     if host == "*" {
         return Err("host must be dialable; * is only valid for listening".to_string());
     }
-    let hostname = host.strip_suffix('.').unwrap_or(host);
+    let hostname = host.trim_suffix('.');
     if host.len() > 253
         || hostname.ends_with('.')
         || hostname.split('.').any(|label| {

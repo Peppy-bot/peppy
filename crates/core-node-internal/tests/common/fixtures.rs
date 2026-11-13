@@ -304,7 +304,7 @@ pub fn fs_origin(path: &Path) -> serde_json::Value {
 /// machine, which is the case for fixtures that only ever exercise lookup
 /// and never materialize.
 fn head_commit_of(repo_url: &str, repo_ref: &str, seed: &str) -> String {
-    let path = repo_url.strip_prefix("file://").unwrap_or(repo_url);
+    let path = repo_url.trim_prefix("file://");
     let Ok(repo) = git2::Repository::open(path) else {
         return seeded_commit(seed);
     };
@@ -371,7 +371,7 @@ impl TestPackagesCache {
         path_in_repo: &str,
     ) -> Self {
         let manifest_path = Path::new(path_in_repo).join(NODE_CONFIG_FILE);
-        let local_repo = repo_url.strip_prefix("file://").unwrap_or(repo_url);
+        let local_repo = repo_url.trim_prefix("file://");
         let sha256 = fingerprint_or_seeded(
             &Path::new(local_repo).join(&manifest_path),
             &format!("{name}:{tag}"),

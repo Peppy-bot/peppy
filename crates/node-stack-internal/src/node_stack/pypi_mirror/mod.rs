@@ -253,11 +253,7 @@ fn read_staged_locks(working_dir: &Path) -> StagedLocks {
         }
     };
     for path in paths {
-        let shown_as = path
-            .strip_prefix(working_dir)
-            .unwrap_or(&path)
-            .display()
-            .to_string();
+        let shown_as = path.trim_prefix(working_dir).display().to_string();
         let parsed = std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
             .and_then(|text| match UvLock::parse(&text) {
