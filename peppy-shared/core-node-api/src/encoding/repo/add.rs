@@ -23,17 +23,17 @@ pub enum RepoSourceKind {
 impl RepoSourceKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            RepoSourceKind::Fs => "fs",
-            RepoSourceKind::Git => "git",
-            RepoSourceKind::Oci => "oci",
+            Self::Fs => "fs",
+            Self::Git => "git",
+            Self::Oci => "oci",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "fs" => Some(RepoSourceKind::Fs),
-            "git" => Some(RepoSourceKind::Git),
-            "oci" => Some(RepoSourceKind::Oci),
+            "fs" => Some(Self::Fs),
+            "git" => Some(Self::Git),
+            "oci" => Some(Self::Oci),
             _ => None,
         }
     }
@@ -74,9 +74,9 @@ impl RepoSource {
     /// (see `core-node`'s `services::repo::source_identity`).
     pub fn kind(&self) -> RepoSourceKind {
         match self {
-            RepoSource::Fs(_) => RepoSourceKind::Fs,
-            RepoSource::Git { .. } => RepoSourceKind::Git,
-            RepoSource::Oci(_) => RepoSourceKind::Oci,
+            Self::Fs(_) => RepoSourceKind::Fs,
+            Self::Git { .. } => RepoSourceKind::Git,
+            Self::Oci(_) => RepoSourceKind::Oci,
         }
     }
 
@@ -89,9 +89,9 @@ impl RepoSource {
     ///   it: `"url (ref: @{peppy-release}, reads peppy-release/v0.31.2)"`.
     pub fn display_label(&self, build: &PeppyBuild) -> String {
         match self {
-            RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
-            RepoSource::Oci(repository) => repository.to_string(),
-            RepoSource::Git { repo_url, repo_ref } => match (repo_ref, repo_ref.read_ref(build)) {
+            Self::Fs(path) => path.to_string_lossy().into_owned(),
+            Self::Oci(repository) => repository.to_string(),
+            Self::Git { repo_url, repo_ref } => match (repo_ref, repo_ref.read_ref(build)) {
                 (GitRepoRef::PeppyRelease, Some(read)) => format!(
                     "{repo_url} (ref: {PEPPY_RELEASE_REF}, reads {})",
                     read.short_name()

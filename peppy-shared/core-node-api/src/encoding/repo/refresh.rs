@@ -63,21 +63,21 @@ pub enum RepoItemKind {
 impl RepoItemKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            RepoItemKind::Node => "node",
-            RepoItemKind::Launcher => "launcher",
-            RepoItemKind::Contract => "contract",
-            RepoItemKind::Pairing => "pairing",
-            RepoItemKind::McpExposure => "mcp_exposure",
+            Self::Node => "node",
+            Self::Launcher => "launcher",
+            Self::Contract => "contract",
+            Self::Pairing => "pairing",
+            Self::McpExposure => "mcp_exposure",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "node" => Some(RepoItemKind::Node),
-            "launcher" => Some(RepoItemKind::Launcher),
-            "contract" => Some(RepoItemKind::Contract),
-            "pairing" => Some(RepoItemKind::Pairing),
-            "mcp_exposure" => Some(RepoItemKind::McpExposure),
+            "node" => Some(Self::Node),
+            "launcher" => Some(Self::Launcher),
+            "contract" => Some(Self::Contract),
+            "pairing" => Some(Self::Pairing),
+            "mcp_exposure" => Some(Self::McpExposure),
             _ => None,
         }
     }

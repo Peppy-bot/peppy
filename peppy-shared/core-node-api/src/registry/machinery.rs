@@ -129,8 +129,8 @@ impl Payloads {
     /// (request, response / goal, goal_response, feedback, result / message).
     pub fn descriptors(&self) -> impl Iterator<Item = &PayloadDescriptor> {
         let descriptors = match self {
-            Payloads::Service { request, response } => [Some(request), Some(response), None, None],
-            Payloads::Action {
+            Self::Service { request, response } => [Some(request), Some(response), None, None],
+            Self::Action {
                 goal,
                 goal_response,
                 feedback,
@@ -141,7 +141,7 @@ impl Payloads {
                 Some(feedback),
                 Some(result),
             ],
-            Payloads::Topic { message } => [Some(message), None, None, None],
+            Self::Topic { message } => [Some(message), None, None, None],
         };
         descriptors.into_iter().flatten()
     }

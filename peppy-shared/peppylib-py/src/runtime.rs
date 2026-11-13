@@ -1019,7 +1019,7 @@ impl PyNodeRunner {
             let runner = NodeRunner::new(processor)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            Ok(PyNodeRunner::new(Arc::new(runner)))
+            Ok(Self::new(Arc::new(runner)))
         })
     }
 

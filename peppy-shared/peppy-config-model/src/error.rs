@@ -621,50 +621,44 @@ impl StructuredError {
 impl From<StructuredError> for ParsingError {
     fn from(s: StructuredError) -> Self {
         match s {
-            StructuredError::MissingExecutionLanguage => ParsingError::MissingExecutionLanguage,
+            StructuredError::MissingExecutionLanguage => Self::MissingExecutionLanguage,
             StructuredError::LinkedEntryWithInlineShape {
                 section,
                 link_id,
                 name,
                 field,
-            } => ParsingError::LinkedEntryWithInlineShape {
+            } => Self::LinkedEntryWithInlineShape {
                 section,
                 link_id,
                 name,
                 field,
             },
             StructuredError::RefineWithoutLinkId { section, name } => {
-                ParsingError::RefineWithoutLinkId { section, name }
+                Self::RefineWithoutLinkId { section, name }
             }
             StructuredError::NativeEntryWithoutDescription { section, name } => {
-                ParsingError::NativeEntryWithoutDescription { section, name }
+                Self::NativeEntryWithoutDescription { section, name }
             }
-            StructuredError::EmptyInterfaceName { section } => {
-                ParsingError::EmptyInterfaceName { section }
-            }
+            StructuredError::EmptyInterfaceName { section } => Self::EmptyInterfaceName { section },
             StructuredError::OptionalOnPairingSlot { link_id, section } => {
-                ParsingError::OptionalOnPairingSlot { link_id, section }
+                Self::OptionalOnPairingSlot { link_id, section }
             }
             StructuredError::PairingSlotMissingRole { link_id } => {
-                ParsingError::PairingSlotMissingRole { link_id }
+                Self::PairingSlotMissingRole { link_id }
             }
-            StructuredError::InvalidEndpointLabel { label } => {
-                ParsingError::InvalidEndpointLabel { label }
-            }
+            StructuredError::InvalidEndpointLabel { label } => Self::InvalidEndpointLabel { label },
             StructuredError::InvalidEndpointKind { label, kind } => {
-                ParsingError::InvalidEndpointKind { label, kind }
+                Self::InvalidEndpointKind { label, kind }
             }
             StructuredError::EmptyEndpointDescription { label } => {
-                ParsingError::EmptyEndpointDescription { label }
+                Self::EmptyEndpointDescription { label }
             }
             StructuredError::SetupTimeoutOutOfRange { written } => {
-                ParsingError::SetupTimeoutOutOfRange { written }
+                Self::SetupTimeoutOutOfRange { written }
             }
-            StructuredError::PinnedDaemonTarget { link_id } => {
-                ParsingError::PinnedDaemonTarget { link_id }
-            }
+            StructuredError::PinnedDaemonTarget { link_id } => Self::PinnedDaemonTarget { link_id },
             StructuredError::DaemonTargetCardinality { link_id } => {
-                ParsingError::DaemonTargetCardinality { link_id }
+                Self::DaemonTargetCardinality { link_id }
             }
         }
     }
@@ -675,9 +669,9 @@ impl From<serde_json5::Error> for ParsingError {
         match err {
             serde_json5::Error::Message { msg, .. } => {
                 if let Ok(structured) = serde_json5::from_str::<StructuredError>(&msg) {
-                    ParsingError::from(structured)
+                    Self::from(structured)
                 } else {
-                    ParsingError::CannotParseConfig(msg)
+                    Self::CannotParseConfig(msg)
                 }
             }
         }

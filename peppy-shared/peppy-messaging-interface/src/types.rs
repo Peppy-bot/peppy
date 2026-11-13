@@ -52,10 +52,10 @@ pub enum PublisherQoS {
 impl From<QoSProfile> for PublisherQoS {
     fn from(qos: QoSProfile) -> Self {
         match qos {
-            QoSProfile::Standard => PublisherQoS::Standard,
-            QoSProfile::Reliable => PublisherQoS::Important,
-            QoSProfile::SensorData => PublisherQoS::BestEffort,
-            QoSProfile::Critical => PublisherQoS::Critical,
+            QoSProfile::Standard => Self::Standard,
+            QoSProfile::Reliable => Self::Important,
+            QoSProfile::SensorData => Self::BestEffort,
+            QoSProfile::Critical => Self::Critical,
         }
     }
 }
@@ -239,8 +239,8 @@ impl From<&config::runtime::DiscoveryConfig> for SubscriberBufferSizes {
 impl From<QoSProfile> for SubscriberQoS {
     fn from(qos: QoSProfile) -> Self {
         match qos {
-            QoSProfile::SensorData => SubscriberQoS::HighThroughput,
-            _ => SubscriberQoS::Standard,
+            QoSProfile::SensorData => Self::HighThroughput,
+            _ => Self::Standard,
         }
     }
 }
@@ -867,8 +867,8 @@ impl ResponseToken {
     async fn respond_with_kind(&self, payload: Payload, kind: ServiceReplyKind) -> Result<()> {
         match self {
             #[cfg(feature = "zenoh")]
-            ResponseToken::Zenoh(token) => token.respond_with_kind(payload, kind).await,
-            ResponseToken::Mock(token) => token.respond_with_kind(payload, kind).await,
+            Self::Zenoh(token) => token.respond_with_kind(payload, kind).await,
+            Self::Mock(token) => token.respond_with_kind(payload, kind).await,
         }
     }
 }
@@ -1021,7 +1021,7 @@ fn contiguous_zenoh_bytes(zbytes: &ZBytes) -> bytes::Bytes {
 
 impl From<bytes::Bytes> for Payload {
     fn from(value: bytes::Bytes) -> Self {
-        Payload::from_bytes(value)
+        Self::from_bytes(value)
     }
 }
 
@@ -1282,8 +1282,8 @@ impl MessengerPublisher {
     pub async fn publish(&self, payload: bytes::Bytes) -> Result<()> {
         match self {
             #[cfg(feature = "zenoh")]
-            MessengerPublisher::Zenoh(p) => p.publish(payload).await,
-            MessengerPublisher::Mock(p) => p.publish(payload).await,
+            Self::Zenoh(p) => p.publish(payload).await,
+            Self::Mock(p) => p.publish(payload).await,
         }
     }
 }

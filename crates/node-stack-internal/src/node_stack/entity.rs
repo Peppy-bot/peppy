@@ -193,10 +193,10 @@ impl NodeStage {
     /// the wire (in `SerializedNode::stage` and `NodeInfo::stage`).
     pub fn to_serialized(&self) -> SerializedNodeStage {
         match self {
-            NodeStage::Added { .. } => SerializedNodeStage::Added,
-            NodeStage::Building { .. } => SerializedNodeStage::Building,
-            NodeStage::Ready { .. } => SerializedNodeStage::Ready,
-            NodeStage::Root { .. } => SerializedNodeStage::Root,
+            Self::Added { .. } => SerializedNodeStage::Added,
+            Self::Building { .. } => SerializedNodeStage::Building,
+            Self::Ready { .. } => SerializedNodeStage::Ready,
+            Self::Root { .. } => SerializedNodeStage::Root,
         }
     }
 
@@ -208,7 +208,7 @@ impl NodeStage {
     /// without needing to inject stages into a real entity.
     pub fn ensure_buildable(&self) -> std::result::Result<(), &'static str> {
         match self {
-            NodeStage::Added { .. } => Ok(()),
+            Self::Added { .. } => Ok(()),
             other => Err(other.name()),
         }
     }
@@ -219,7 +219,7 @@ impl NodeStage {
     /// of [`NodeStage::ensure_buildable`]; see its doc for the rationale.
     pub fn ensure_spawnable(&self) -> std::result::Result<(), &'static str> {
         match self {
-            NodeStage::Ready { .. } => Ok(()),
+            Self::Ready { .. } => Ok(()),
             other => Err(other.name()),
         }
     }
@@ -778,7 +778,7 @@ impl NodeEntity {
     /// **Failure contract:** on any failure the entity is left in `Building`
     /// (not rolled back to `Added`). The caller owns cleanup, typically by
     /// calling `NodeStack::remove_config`.
-    pub async fn build(handle: &Arc<RwLock<NodeEntity>>, ctx: BuildContext<'_>) -> Result<PathBuf> {
+    pub async fn build(handle: &Arc<RwLock<Self>>, ctx: BuildContext<'_>) -> Result<PathBuf> {
         // ---- Phase 1: Added → Building, snapshot inputs (brief write lock) ----
         let snapshot = {
             let mut guard = handle.write();
@@ -1051,7 +1051,7 @@ impl NodeEntity {
     ///
     /// Silent when the entity is no longer in `Ready` (a concurrent
     /// `push_config` replaced it) or the instance is not `Starting`.
-    fn undo_start(handle: &Arc<RwLock<NodeEntity>>, instance_id: &Name) {
+    fn undo_start(handle: &Arc<RwLock<Self>>, instance_id: &Name) {
         let mut guard = handle.write();
         let NodeStage::Ready { instances, .. } = &mut guard.stage else {
             return;
@@ -1072,7 +1072,7 @@ impl NodeEntity {
     /// the caller to kill before [`Self::undo_abandoned_start`]; `None` when
     /// the slot is not starting for `run` or its start had not forked.
     pub fn abandoned_start_group(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         instance_id: &Name,
         run: &StartRun,
     ) -> Option<ProcessGroup> {
@@ -1089,7 +1089,7 @@ impl NodeEntity {
     /// is left alone. Returns whether the slot was still `run`'s: its start
     /// in flight, now undone, or the restart it had not begun.
     pub fn undo_abandoned_start(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         instance_id: &Name,
         run: &StartRun,
     ) -> bool {
@@ -1158,7 +1158,7 @@ impl NodeEntity {
     /// `Starting` instance is removed, or the respawn's slot reverted,
     /// before returning.
     pub async fn prepare_and_spawn(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         ctx: StartContext<'_>,
     ) -> Result<(Child, StartedInstanceCtx)> {
         // The key file goes away on every return before the spawn hands it
@@ -1444,7 +1444,7 @@ impl NodeEntity {
     /// place the set is written. A respawn's commit counts the restart. The
     /// run of the process starts at `now`.
     pub async fn commit_started(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         mut child: Child,
         started_ctx: StartedInstanceCtx,
         instance_id: Name,
@@ -1561,7 +1561,7 @@ impl NodeEntity {
     /// already, and the kill here only reaps what is left. The output readers
     /// are joined on `time`.
     pub async fn abort_started(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         child: Child,
         started_ctx: StartedInstanceCtx,
         error: String,
@@ -1680,7 +1680,7 @@ impl NodeEntity {
     /// lands after the flip finds the record on the slot. The process exited
     /// at `now`.
     pub fn mark_instance_exited(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         instance_id: &Name,
         pid: u32,
         cause: ExitCause,
@@ -1699,7 +1699,7 @@ impl NodeEntity {
     /// did not reach `running`, and takes the backoff's next attempt. `None`
     /// when the instance is not `restarting`, or a stop path claimed it.
     pub fn mark_start_failed(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         instance_id: &Name,
         exit: ExitCause,
         backoff: &RestartBackoff,
@@ -1714,7 +1714,7 @@ impl NodeEntity {
     /// Ends the restarts of a `Restarting` instance the daemon refused to
     /// start again: it is `Failed` from here. `false` when the instance is
     /// not `restarting`, or a stop path claimed it.
-    pub fn mark_restart_refused(handle: &Arc<RwLock<NodeEntity>>, instance_id: &Name) -> bool {
+    pub fn mark_restart_refused(handle: &Arc<RwLock<Self>>, instance_id: &Name) -> bool {
         Self::edit_awaiting_restart(handle, instance_id, |inst| {
             inst.state = InstanceState::Failed;
             inst.supervision.next_start = None;
@@ -1727,7 +1727,7 @@ impl NodeEntity {
     /// start that fails before its spawn and the next attempt's opening line
     /// names it as the previous log. A slot a stop path claimed records
     /// nothing: its start finds no slot to flip.
-    pub fn record_respawn_log(handle: &Arc<RwLock<NodeEntity>>, instance_id: &Name, path: PathBuf) {
+    pub fn record_respawn_log(handle: &Arc<RwLock<Self>>, instance_id: &Name, path: PathBuf) {
         Self::edit_awaiting_restart(handle, instance_id, |inst| inst.run_log_path = Some(path));
     }
 
@@ -1735,7 +1735,7 @@ impl NodeEntity {
     /// (`Restarting`, and no stop path claimed it), under the write lock.
     /// `None` when no such slot has the id.
     fn edit_awaiting_restart<T>(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         instance_id: &Name,
         edit: impl FnOnce(&mut TrackedNodeInstance) -> T,
     ) -> Option<T> {
@@ -1753,7 +1753,7 @@ impl NodeEntity {
     /// `Failed`) whatever `stopped_pid` is. A `Starting` instance, or one
     /// running another process (one a start committed meanwhile), stays.
     pub fn claim_and_remove(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         instance_id: &Name,
         stopped_pid: Option<u32>,
     ) -> SlotRemoval {
@@ -1851,7 +1851,7 @@ impl NodeEntity {
     /// start with what the slot holds now, and the pairs it held. `None` when
     /// the instance does not await its restart.
     pub fn respawn_inputs_of(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         instance_id: &Name,
     ) -> Option<RespawnInputs> {
         let guard = handle.read();

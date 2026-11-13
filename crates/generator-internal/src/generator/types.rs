@@ -590,8 +590,8 @@ impl DocLanguage {
     /// kind of set and so should word it identically.
     pub fn never_empty_tail(self) -> &'static str {
         match self {
-            DocLanguage::Rust => "`first()` is infallible.",
-            DocLanguage::Python => "`[0]` is always valid.",
+            Self::Rust => "`first()` is infallible.",
+            Self::Python => "`[0]` is always valid.",
         }
     }
 }

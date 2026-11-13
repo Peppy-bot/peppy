@@ -366,19 +366,19 @@ impl Refusal {
     /// The failure that refuses the stop of `instance_id`.
     fn failure(self, instance_id: &Name) -> Failure {
         match self {
-            Refusal::NotFound => failure(
+            Self::NotFound => failure(
                 PeppyFailureKind::Rejected,
                 format!("Node instance '{instance_id}' not found in node stack"),
             ),
-            Refusal::CoreNode => failure(PeppyFailureKind::Rejected, "Cannot stop the core node"),
-            Refusal::FirstStart => failure(
+            Self::CoreNode => failure(PeppyFailureKind::Rejected, "Cannot stop the core node"),
+            Self::FirstStart => failure(
                 PeppyFailureKind::PreconditionFailed,
                 format!(
                     "Node instance '{instance_id}' is in Starting state; retry after the start \
                      completes"
                 ),
             ),
-            Refusal::AlreadyBeingStopped => failure(
+            Self::AlreadyBeingStopped => failure(
                 PeppyFailureKind::PreconditionFailed,
                 format!("Node instance '{instance_id}' is already being stopped"),
             ),

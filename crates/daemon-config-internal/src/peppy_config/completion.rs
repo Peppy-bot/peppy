@@ -43,7 +43,7 @@ struct EntrySpec {
     key: &'static str,
     snippet: &'static str,
     alternatives: &'static [&'static str],
-    children: &'static [EntrySpec],
+    children: &'static [Self],
 }
 
 /// Every known config entry, in template order. New knobs must be added here

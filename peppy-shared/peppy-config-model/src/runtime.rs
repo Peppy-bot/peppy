@@ -46,8 +46,8 @@ impl TryFrom<String> for Name {
         if value.is_empty() {
             return Err(ParsingError::EmptyName);
         }
-        if value.chars().all(Name::is_valid_char) {
-            return Ok(Name(value));
+        if value.chars().all(Self::is_valid_char) {
+            return Ok(Self(value));
         }
         Err(ParsingError::InvalidName(
             value,
@@ -62,7 +62,7 @@ impl<'de> Deserialize<'de> for Name {
         D: serde::de::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Name::try_from(s).map_err(|err| serde::de::Error::custom(err.to_string()))
+        Self::try_from(s).map_err(|err| serde::de::Error::custom(err.to_string()))
     }
 }
 
@@ -335,7 +335,7 @@ impl<'de> Deserialize<'de> for BoundProducers {
         D: serde::de::Deserializer<'de>,
     {
         let members = Vec::<BoundMember>::deserialize(deserializer)?;
-        BoundProducers::try_from(members).map_err(serde::de::Error::custom)
+        Self::try_from(members).map_err(serde::de::Error::custom)
     }
 }
 

@@ -21,25 +21,25 @@ pub enum FeedbackStream {
 impl FeedbackStream {
     pub fn as_str(&self) -> &'static str {
         match self {
-            FeedbackStream::Stdout => "stdout",
-            FeedbackStream::Stderr => "stderr",
-            FeedbackStream::Warning => "warning",
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+            Self::Warning => "warning",
         }
     }
 
     pub(crate) fn to_capnp(self) -> node_capnp::FeedbackStream {
         match self {
-            FeedbackStream::Stdout => node_capnp::FeedbackStream::Stdout,
-            FeedbackStream::Stderr => node_capnp::FeedbackStream::Stderr,
-            FeedbackStream::Warning => node_capnp::FeedbackStream::Warning,
+            Self::Stdout => node_capnp::FeedbackStream::Stdout,
+            Self::Stderr => node_capnp::FeedbackStream::Stderr,
+            Self::Warning => node_capnp::FeedbackStream::Warning,
         }
     }
 
     pub(crate) fn from_capnp(value: node_capnp::FeedbackStream) -> Self {
         match value {
-            node_capnp::FeedbackStream::Stdout => FeedbackStream::Stdout,
-            node_capnp::FeedbackStream::Stderr => FeedbackStream::Stderr,
-            node_capnp::FeedbackStream::Warning => FeedbackStream::Warning,
+            node_capnp::FeedbackStream::Stdout => Self::Stdout,
+            node_capnp::FeedbackStream::Stderr => Self::Stderr,
+            node_capnp::FeedbackStream::Warning => Self::Warning,
         }
     }
 }

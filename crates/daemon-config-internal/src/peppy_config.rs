@@ -353,7 +353,7 @@ pub enum LocalNodesTopology {
 impl LocalNodesTopology {
     /// LocalNodesTopology to gossip mapping: peer enables gossip, router disables it.
     pub fn gossip(self) -> bool {
-        matches!(self, LocalNodesTopology::Peer)
+        matches!(self, Self::Peer)
     }
 }
 

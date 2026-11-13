@@ -225,7 +225,7 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                     "deployment source names either a node (`name`, `tag`) or `exposures`, not both",
                 ));
             }
-            return Ok(DeploymentSource::Exposures {
+            return Ok(Self::Exposures {
                 exposures: exposure_list::<D::Error>(exposures)?,
             });
         }
@@ -237,7 +237,7 @@ impl<'de> Deserialize<'de> for DeploymentSource {
             )
         })?;
         let (name, tag) = split_name_and_tag::<D::Error>(&name_raw, raw.tag.as_deref())?;
-        Ok(DeploymentSource::Node { name, tag })
+        Ok(Self::Node { name, tag })
     }
 }
 

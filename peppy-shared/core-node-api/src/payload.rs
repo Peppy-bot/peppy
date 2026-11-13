@@ -65,8 +65,8 @@ impl std::ops::Deref for Payload {
 
 // `assert_eq!(payload, &expected_payload)`: compares a `Payload` returned by
 // value against a borrowed `Payload` held by the test.
-impl PartialEq<&Payload> for Payload {
-    fn eq(&self, other: &&Payload) -> bool {
+impl PartialEq<&Self> for Payload {
+    fn eq(&self, other: &&Self) -> bool {
         self.0 == other.0
     }
 }

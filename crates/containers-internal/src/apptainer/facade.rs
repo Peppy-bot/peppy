@@ -1382,16 +1382,16 @@ impl GuestSignal {
     /// `pgid_file`.
     pub(crate) fn argv(self, pgid_file: &Path) -> Vec<String> {
         match self {
-            GuestSignal::Terminate => lima::lima_terminate_pgid_argv(pgid_file),
-            GuestSignal::Kill => lima::lima_kill_pgid_argv(pgid_file),
+            Self::Terminate => lima::lima_terminate_pgid_argv(pgid_file),
+            Self::Kill => lima::lima_kill_pgid_argv(pgid_file),
         }
     }
 
     /// How the debug line of a failed best-effort signal names it.
     fn name(self) -> &'static str {
         match self {
-            GuestSignal::Terminate => "SIGTERM",
-            GuestSignal::Kill => "kill",
+            Self::Terminate => "SIGTERM",
+            Self::Kill => "kill",
         }
     }
 }
@@ -1622,9 +1622,9 @@ impl CommandKind {
     /// run or exec only when its image is a URI rather than a local file.
     fn may_contact_registry(&self) -> bool {
         match self {
-            CommandKind::Build { .. } => true,
-            CommandKind::Run { image, .. } => is_uri(image),
-            CommandKind::Exec { container, .. } => is_uri(container),
+            Self::Build { .. } => true,
+            Self::Run { image, .. } => is_uri(image),
+            Self::Exec { container, .. } => is_uri(container),
         }
     }
 }

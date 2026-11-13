@@ -309,11 +309,11 @@ pub enum StackBusy {
 impl std::fmt::Display for StackBusy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            StackBusy::Change => {
+            Self::Change => {
                 "a stack launch, build, join, removal or reset, or a coordinator's change to this \
                  daemon's slice, is in progress on this daemon; run this again once it ends"
             }
-            StackBusy::NodeGoals => {
+            Self::NodeGoals => {
                 "a node add, build, run, stop or removal, or a restart, is in progress on this \
                  daemon; run this again once it ends"
             }
@@ -332,7 +332,7 @@ impl StackBusy {
     /// naming each restart `admitted_restarts` holds the stack for and the
     /// stop that ends it.
     pub(crate) fn refusal(self, admitted_restarts: &[Name], core_node: &str) -> Failure {
-        let StackBusy::NodeGoals = self else {
+        let Self::NodeGoals = self else {
             return self.failure();
         };
         let text = admitted_restarts

@@ -817,8 +817,8 @@ impl PairFailure {
     /// The same failure, with `text` as its text.
     fn with_text(self, text: String) -> Self {
         match self {
-            PairFailure::Refused(_) => PairFailure::Refused(text),
-            PairFailure::Undelivered(_) => PairFailure::Undelivered(text),
+            Self::Refused(_) => Self::Refused(text),
+            Self::Undelivered(_) => Self::Undelivered(text),
         }
     }
 }
@@ -826,7 +826,7 @@ impl PairFailure {
 impl std::fmt::Display for PairFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PairFailure::Refused(text) | PairFailure::Undelivered(text) => f.write_str(text),
+            Self::Refused(text) | Self::Undelivered(text) => f.write_str(text),
         }
     }
 }
@@ -837,11 +837,9 @@ impl std::fmt::Display for PairFailure {
 impl From<PairFailure> for Failure {
     fn from(failure: PairFailure) -> Self {
         match failure {
-            PairFailure::Refused(reason) => {
-                Failure::new(PeppyFailureKind::PreconditionFailed, reason)
-            }
+            PairFailure::Refused(reason) => Self::new(PeppyFailureKind::PreconditionFailed, reason),
             PairFailure::Undelivered(reason) => {
-                Failure::new(PeppyFailureKind::ResourceUnavailable, reason)
+                Self::new(PeppyFailureKind::ResourceUnavailable, reason)
             }
         }
     }
@@ -882,9 +880,9 @@ impl OtherSide {
     /// the second delivery follows the first one's pin.
     fn at_delivery(index: usize) -> Self {
         if index == 0 {
-            OtherSide::Unpinned
+            Self::Unpinned
         } else {
-            OtherSide::Pinned
+            Self::Pinned
         }
     }
 }

@@ -30,7 +30,7 @@ impl SlotUpdate for PeerUpdateRequest {
     const SLOT_NOUN: &'static str = "pairing slot";
 
     fn decode_request(payload: &[u8]) -> PeppyResult<Self> {
-        PeerUpdateRequest::decode(payload)
+        Self::decode(payload)
     }
 
     fn link_id(&self) -> &str {

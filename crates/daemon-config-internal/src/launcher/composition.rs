@@ -402,7 +402,7 @@ impl<'de> Deserialize<'de> for LauncherFragment {
 
         let raw = RawLauncherFragment::deserialize(deserializer)?;
         let adjustments = named_entries(raw.adjustments).map_err(de::Error::custom)?;
-        Ok(LauncherFragment {
+        Ok(Self {
             peppy_schema: raw.peppy_schema,
             body: Fragment::from_raw(
                 RawFragment {
@@ -1065,7 +1065,7 @@ impl WrittenAdjustment {
     /// list, each with the same changes; each one that the resolved
     /// selection does not define is skipped on its own.
     fn per_instance(self) -> Vec<Adjustment> {
-        let Adjustment {
+        let Self {
             target,
             when,
             set_arguments,

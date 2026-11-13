@@ -305,9 +305,9 @@ impl SessionMode {
     /// an entry under another key is silently ignored.
     fn zenoh_name(self) -> &'static str {
         match self {
-            SessionMode::Peer => "peer",
-            SessionMode::Client => "client",
-            SessionMode::Router => "router",
+            Self::Peer => "peer",
+            Self::Client => "client",
+            Self::Router => "router",
         }
     }
 }

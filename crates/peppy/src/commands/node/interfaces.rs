@@ -174,17 +174,17 @@ impl Member {
     /// Whether the member has the mark `moves_robot` in its contract.
     pub(super) fn moves_robot(&self) -> bool {
         match self {
-            Member::Topic(_) => false,
-            Member::Service(service) => service.marks.moves_robot(),
-            Member::Action(action) => action.marks.moves_robot(),
+            Self::Topic(_) => false,
+            Self::Service(service) => service.marks.moves_robot(),
+            Self::Action(action) => action.marks.moves_robot(),
         }
     }
 
     pub(super) fn name(&self) -> &str {
         match self {
-            Member::Topic(topic) => &topic.name,
-            Member::Service(service) => &service.service.name,
-            Member::Action(action) => &action.action.name,
+            Self::Topic(topic) => &topic.name,
+            Self::Service(service) => &service.service.name,
+            Self::Action(action) => &action.action.name,
         }
     }
 
@@ -192,17 +192,17 @@ impl Member {
     /// says.
     pub(super) fn description(&self) -> &config::description::Description {
         match self {
-            Member::Topic(topic) => &topic.description,
-            Member::Service(service) => &service.service.description,
-            Member::Action(action) => &action.action.description,
+            Self::Topic(topic) => &topic.description,
+            Self::Service(service) => &service.service.description,
+            Self::Action(action) => &action.action.description,
         }
     }
 
     pub(super) fn kind(&self) -> InterfaceKind {
         match self {
-            Member::Topic(_) => InterfaceKind::Topic,
-            Member::Service(_) => InterfaceKind::Service,
-            Member::Action(_) => InterfaceKind::Action,
+            Self::Topic(_) => InterfaceKind::Topic,
+            Self::Service(_) => InterfaceKind::Service,
+            Self::Action(_) => InterfaceKind::Action,
         }
     }
 }

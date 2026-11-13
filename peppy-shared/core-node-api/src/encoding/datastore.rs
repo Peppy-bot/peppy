@@ -458,8 +458,8 @@ impl DatastoreStoreExclusiveResponse {
             let mut response = builder
                 .init_root::<datastore_capnp::datastore_store_exclusive_response::Builder<'_>>();
             match self {
-                DatastoreStoreExclusiveResponse::Stored => response.set_stored(()),
-                DatastoreStoreExclusiveResponse::Refused {
+                Self::Stored => response.set_stored(()),
+                Self::Refused {
                     value,
                     encoding,
                     last_modified_by,
@@ -484,11 +484,9 @@ impl DatastoreStoreExclusiveResponse {
                     "DatastoreStoreExclusiveResponse names no outcome".to_owned(),
                 ));
             }
-            datastore_capnp::datastore_store_exclusive_response::Which::Stored(()) => {
-                DatastoreStoreExclusiveResponse::Stored
-            }
+            datastore_capnp::datastore_store_exclusive_response::Which::Stored(()) => Self::Stored,
             datastore_capnp::datastore_store_exclusive_response::Which::Refused(refused) => {
-                DatastoreStoreExclusiveResponse::Refused {
+                Self::Refused {
                     value: refused.get_value()?.to_vec(),
                     encoding: refused.get_encoding()?.to_str()?.to_owned(),
                     last_modified_by: refused.get_last_modified_by()?.to_str()?.to_owned(),

@@ -195,7 +195,7 @@ impl<'de> Deserialize<'de> for PeppyPairing {
         validate_named_items(raw.topics.iter().map(|t| t.name.as_str()), "pairing topic")
             .map_err(de::Error::custom)?;
 
-        Ok(PeppyPairing {
+        Ok(Self {
             peppy_schema: raw.peppy_schema,
             manifest: raw.manifest,
             roles: raw.roles,

@@ -53,11 +53,11 @@ pub enum InstanceState {
 impl InstanceState {
     pub fn as_str(self) -> &'static str {
         match self {
-            InstanceState::Starting => "starting",
-            InstanceState::Running => "running",
-            InstanceState::Restarting => "restarting",
-            InstanceState::Finished => "finished",
-            InstanceState::Failed => "failed",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Restarting => "restarting",
+            Self::Finished => "finished",
+            Self::Failed => "failed",
         }
     }
 
@@ -66,7 +66,7 @@ impl InstanceState {
     /// delivery and shutdown requests, and to render an instance without a
     /// process with no health verdict.
     pub fn has_process(self) -> bool {
-        matches!(self, InstanceState::Starting | InstanceState::Running)
+        matches!(self, Self::Starting | Self::Running)
     }
 }
 
@@ -81,11 +81,11 @@ impl FromStr for InstanceState {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "starting" => Ok(InstanceState::Starting),
-            "running" => Ok(InstanceState::Running),
-            "restarting" => Ok(InstanceState::Restarting),
-            "finished" => Ok(InstanceState::Finished),
-            "failed" => Ok(InstanceState::Failed),
+            "starting" => Ok(Self::Starting),
+            "running" => Ok(Self::Running),
+            "restarting" => Ok(Self::Restarting),
+            "finished" => Ok(Self::Finished),
+            "failed" => Ok(Self::Failed),
             other => Err(UnknownInstanceState(other.to_owned())),
         }
     }
@@ -166,17 +166,17 @@ impl ExitCause {
     pub fn of(status: &std::io::Result<std::process::ExitStatus>) -> Self {
         match status {
             Ok(status) => match (status.code(), signal_of(status)) {
-                (Some(code), _) => ExitCause::Code(code),
-                (None, Some(signal)) => ExitCause::signal(signal, core_dumped(status)),
-                (None, None) => ExitCause::Message(status.to_string()),
+                (Some(code), _) => Self::Code(code),
+                (None, Some(signal)) => Self::signal(signal, core_dumped(status)),
+                (None, None) => Self::Message(status.to_string()),
             },
-            Err(e) => ExitCause::Message(format!("could not read exit status: {e}")),
+            Err(e) => Self::Message(format!("could not read exit status: {e}")),
         }
     }
 
     /// The cause of an end by `signal`, named as this machine numbers it.
     pub fn signal(signal: i32, core_dumped: bool) -> Self {
-        ExitCause::Signal {
+        Self::Signal {
             number: signal,
             name: signal_name(signal).map(str::to_owned),
             core_dumped,
@@ -185,7 +185,7 @@ impl ExitCause {
 
     /// Whether the process exited with code 0.
     pub fn is_clean(&self) -> bool {
-        matches!(self, ExitCause::Code(0))
+        matches!(self, Self::Code(0))
     }
 }
 
@@ -254,8 +254,8 @@ fn signal_name(_signal: i32) -> Option<&'static str> {
 impl fmt::Display for ExitCause {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ExitCause::Code(code) => write!(f, "exit code {code}"),
-            ExitCause::Signal {
+            Self::Code(code) => write!(f, "exit code {code}"),
+            Self::Signal {
                 number,
                 name,
                 core_dumped,
@@ -269,13 +269,13 @@ impl fmt::Display for ExitCause {
                 }
                 Ok(())
             }
-            ExitCause::HealthKill { unanswered_secs } => {
+            Self::HealthKill { unanswered_secs } => {
                 write!(
                     f,
                     "killed after {unanswered_secs} s without an answered health check"
                 )
             }
-            ExitCause::Message(text) => f.write_str(text),
+            Self::Message(text) => f.write_str(text),
         }
     }
 }
@@ -294,10 +294,10 @@ pub enum NodeStage {
 impl NodeStage {
     pub fn as_str(self) -> &'static str {
         match self {
-            NodeStage::Added => "Added",
-            NodeStage::Building => "Building",
-            NodeStage::Ready => "Ready",
-            NodeStage::Root => "Root",
+            Self::Added => "Added",
+            Self::Building => "Building",
+            Self::Ready => "Ready",
+            Self::Root => "Root",
         }
     }
 }
@@ -313,10 +313,10 @@ impl FromStr for NodeStage {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "Added" => Ok(NodeStage::Added),
-            "Building" => Ok(NodeStage::Building),
-            "Ready" => Ok(NodeStage::Ready),
-            "Root" => Ok(NodeStage::Root),
+            "Added" => Ok(Self::Added),
+            "Building" => Ok(Self::Building),
+            "Ready" => Ok(Self::Ready),
+            "Root" => Ok(Self::Root),
             other => Err(UnknownNodeStage(other.to_owned())),
         }
     }

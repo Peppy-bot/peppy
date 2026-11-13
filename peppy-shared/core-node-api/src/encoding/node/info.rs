@@ -134,8 +134,8 @@ impl NodeInfoResponse {
             let mut response = builder.init_root::<node_capnp::node_info_response::Builder<'_>>();
             match self {
                 // Select the `notInStack :Void` arm of the union.
-                NodeInfoResponse::NotInStack => response.set_not_in_stack(()),
-                NodeInfoResponse::Found(info) => write_node_info(response.init_found(), info)?,
+                Self::NotInStack => response.set_not_in_stack(()),
+                Self::Found(info) => write_node_info(response.init_found(), info)?,
             }
         }
         encode_message(&builder)
@@ -145,11 +145,9 @@ impl NodeInfoResponse {
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::node_info_response::Reader<'_>>()?;
         match response.which()? {
-            node_capnp::node_info_response::Which::NotInStack(()) => {
-                Ok(NodeInfoResponse::NotInStack)
-            }
+            node_capnp::node_info_response::Which::NotInStack(()) => Ok(Self::NotInStack),
             node_capnp::node_info_response::Which::Found(found) => {
-                Ok(NodeInfoResponse::Found(Box::new(read_node_info(found)?)))
+                Ok(Self::Found(Box::new(read_node_info(found)?)))
             }
         }
     }

@@ -69,8 +69,8 @@ pub(crate) enum Lang {
 impl Lang {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Lang::Rust => "rust",
-            Lang::Python => "python",
+            Self::Rust => "rust",
+            Self::Python => "python",
         }
     }
 }
@@ -84,15 +84,15 @@ pub(crate) enum Transport {
 impl Transport {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Transport::Topic => "topic",
-            Transport::Service => "service",
+            Self::Topic => "topic",
+            Self::Service => "service",
         }
     }
 
     fn wire_tag(self) -> u8 {
         match self {
-            Transport::Topic => 0,
-            Transport::Service => 1,
+            Self::Topic => 0,
+            Self::Service => 1,
         }
     }
 }

@@ -387,7 +387,7 @@ impl LaunchGoal {
         } else {
             None
         };
-        LaunchGoal::new(launcher_origin, launch_id, budgets)
+        Self::new(launcher_origin, launch_id, budgets)
             .with_rebuild(goal.get_rebuild())
             .with_prebuild(goal.get_prebuild())
             .with_publish(publish)

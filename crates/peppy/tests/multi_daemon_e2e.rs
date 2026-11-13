@@ -4628,22 +4628,22 @@ enum Placement {
 impl Placement {
     fn daemon<'a>(&self, federation: &'a Federation) -> &'a Daemon {
         match self {
-            Placement::Coordinator => &federation.robot,
-            Placement::Peer => &federation.cloud,
+            Self::Coordinator => &federation.robot,
+            Self::Peer => &federation.cloud,
         }
     }
 
     fn core_node<'a>(&self, federation: &'a Federation) -> Option<&'a str> {
         match self {
-            Placement::Coordinator => None,
-            Placement::Peer => Some(&federation.cloud_core_node),
+            Self::Coordinator => None,
+            Self::Peer => Some(&federation.cloud_core_node),
         }
     }
 
     fn gate(&self) -> &'static str {
         match self {
-            Placement::Coordinator => COORDINATOR_GATE,
-            Placement::Peer => PEER_GATE,
+            Self::Coordinator => COORDINATOR_GATE,
+            Self::Peer => PEER_GATE,
         }
     }
 }
@@ -4663,7 +4663,7 @@ struct Station {
 
 impl Station {
     fn new(name: &'static str, placement: Placement) -> Self {
-        Station {
+        Self {
             name,
             generation: 1,
             placement,

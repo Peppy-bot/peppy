@@ -190,7 +190,7 @@ pub(super) trait Member {
 
 impl Member for RobotLeasesMember {
     fn name(&self) -> &'static str {
-        RobotLeasesMember::name(*self)
+        Self::name(*self)
     }
 }
 

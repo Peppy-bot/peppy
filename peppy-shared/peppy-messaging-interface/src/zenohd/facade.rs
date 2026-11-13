@@ -209,7 +209,7 @@ impl ZenohdFacade {
     /// Creates a facade for a peppy-managed zenohd process. The router endpoint
     /// is extracted from the exact config that will be passed to zenohd.
     pub fn managed(zenohd_config_path: impl AsRef<Path>) -> Result<Self> {
-        let zenoh_endpoint = ZenohdFacade::get_endpoint_from_config(&zenohd_config_path)?;
+        let zenoh_endpoint = Self::get_endpoint_from_config(&zenohd_config_path)?;
         let zenohd_config_path = zenohd_config_path.as_ref().to_path_buf();
         // The router is operator-pinned when it runs the `ZENOH_CONFIG` file
         // verbatim (`router_config_path` returns that path unchanged). Captured

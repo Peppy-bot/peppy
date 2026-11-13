@@ -258,10 +258,10 @@ impl ReadSource {
     /// `root` that has already been canonicalized.
     fn origin_of(&self, root: &Path, path: &RepoRelativePath) -> EntryOrigin {
         match self {
-            ReadSource::Fs { .. } => EntryOrigin::Fs {
+            Self::Fs { .. } => EntryOrigin::Fs {
                 path: root.join(path.as_path()),
             },
-            ReadSource::Git {
+            Self::Git {
                 repo_url,
                 repo_ref,
                 read_ref,
@@ -283,7 +283,7 @@ impl ReadSource {
     /// machine has no subtree opinion about.
     fn serves(&self, origin: &EntryOrigin) -> bool {
         match (self, origin) {
-            (ReadSource::Fs { excluded }, EntryOrigin::Fs { path }) => {
+            (Self::Fs { excluded }, EntryOrigin::Fs { path }) => {
                 !excluded.iter().any(|subtree| path.starts_with(subtree))
             }
             _ => true,
@@ -492,18 +492,18 @@ pub enum IndexDrift {
 impl std::fmt::Display for IndexDrift {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IndexDrift::Unlisted { kind, id, path } => write!(
+            Self::Unlisted { kind, id, path } => write!(
                 f,
                 "{path} declares {kind} `{id}`, which is not listed in {}",
                 daemon_config::consts::REPOSITORY_INDEX_FILE
             ),
-            IndexDrift::Unmatched {
+            Self::Unmatched {
                 kind,
                 id,
                 path,
                 detail,
             } => write!(f, "{kind} `{id}` points at {path}, which {detail}"),
-            IndexDrift::Moved {
+            Self::Moved {
                 kind,
                 id,
                 listed,

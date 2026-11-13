@@ -783,17 +783,17 @@ enum ProbeTarget {
 impl ProbeTarget {
     fn of(kind: InterfaceKind) -> Self {
         match kind {
-            InterfaceKind::Service => ProbeTarget::Service,
-            InterfaceKind::Action => ProbeTarget::Action,
-            InterfaceKind::Topic => ProbeTarget::Node,
+            InterfaceKind::Service => Self::Service,
+            InterfaceKind::Action => Self::Action,
+            InterfaceKind::Topic => Self::Node,
         }
     }
 
     fn measurement(self) -> MeasurementKind {
         match self {
-            ProbeTarget::Service => MeasurementKind::ServiceProbe,
-            ProbeTarget::Action => MeasurementKind::ActionProbe,
-            ProbeTarget::Node => MeasurementKind::NodeProbe,
+            Self::Service => MeasurementKind::ServiceProbe,
+            Self::Action => MeasurementKind::ActionProbe,
+            Self::Node => MeasurementKind::NodeProbe,
         }
     }
 }

@@ -231,8 +231,8 @@ enum PeppyClockInner {
 impl Drop for PeppyClockInner {
     fn drop(&mut self) {
         match self {
-            PeppyClockInner::Wall | PeppyClockInner::Publisher { .. } => {}
-            PeppyClockInner::Consumer { feeder, .. } => feeder.abort(),
+            Self::Wall | Self::Publisher { .. } => {}
+            Self::Consumer { feeder, .. } => feeder.abort(),
         }
     }
 }

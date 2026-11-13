@@ -118,13 +118,13 @@ impl<R: Debug> GoalEnd<R> {
     #[track_caller]
     pub(crate) fn completed(self) -> R {
         match self {
-            GoalEnd::Completed(result) => result,
+            Self::Completed(result) => result,
             other => panic!("the goal did not complete: {other:?}"),
         }
     }
 
     pub(crate) fn is_completed(&self) -> bool {
-        matches!(self, GoalEnd::Completed(_))
+        matches!(self, Self::Completed(_))
     }
 
     /// The failure of a refused or failed goal. Panics with the ending of
@@ -132,7 +132,7 @@ impl<R: Debug> GoalEnd<R> {
     #[track_caller]
     pub(crate) fn failure(&self) -> &Failure {
         match self {
-            GoalEnd::Refused(failure) | GoalEnd::Failed(failure) => failure,
+            Self::Refused(failure) | Self::Failed(failure) => failure,
             other => panic!("the goal did not fail: {other:?}"),
         }
     }
@@ -149,7 +149,7 @@ impl<R: Debug> GoalEnd<R> {
     #[track_caller]
     pub(crate) fn refusal(&self) -> &Failure {
         match self {
-            GoalEnd::Refused(failure) => failure,
+            Self::Refused(failure) => failure,
             other => panic!("the daemon did not refuse the goal: {other:?}"),
         }
     }
@@ -159,7 +159,7 @@ impl<R: Debug> GoalEnd<R> {
     #[track_caller]
     pub(crate) fn failed(&self) -> &Failure {
         match self {
-            GoalEnd::Failed(failure) => failure,
+            Self::Failed(failure) => failure,
             other => panic!("the goal did not fail after its acceptance: {other:?}"),
         }
     }
@@ -169,7 +169,7 @@ impl<R: Debug> GoalEnd<R> {
     #[track_caller]
     pub(crate) fn cancel_reason(&self) -> &str {
         match self {
-            GoalEnd::Cancelled(reason) => reason,
+            Self::Cancelled(reason) => reason,
             other => panic!("the goal was not cancelled: {other:?}"),
         }
     }

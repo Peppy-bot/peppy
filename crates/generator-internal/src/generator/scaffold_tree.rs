@@ -31,7 +31,7 @@ pub(crate) fn group_artifacts_by_category(
 #[derive(Default)]
 pub(crate) struct ModuleTree {
     /// Sub-directories keyed by their (raw) segment. Sanitized on write.
-    pub children: BTreeMap<String, ModuleTree>,
+    pub children: BTreeMap<String, Self>,
     /// Leaf artifacts produced at this level. Multiple artifacts at the same
     /// leaf segment are allowed (e.g. an action that registers helper symbols);
     /// they are concatenated into one rendered file.

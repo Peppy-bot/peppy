@@ -56,8 +56,8 @@ impl Entry {
     }
 
     /// The owner of `key` in `entries`, if it has one.
-    fn owner_in(entries: &BTreeMap<String, Entry>, key: &str) -> Option<Owner> {
-        entries.get(key).and_then(Entry::owner)
+    fn owner_in(entries: &BTreeMap<String, Self>, key: &str) -> Option<Owner> {
+        entries.get(key).and_then(Self::owner)
     }
 
     /// The instance that owns this key and the incarnation of its process.
@@ -83,7 +83,7 @@ pub(crate) trait InstanceLiveness: Send + Sync {
 
 impl InstanceLiveness for NodeStack {
     fn live_incarnation(&self, instance_id: &str) -> Option<u64> {
-        NodeStack::live_incarnation(self, instance_id)
+        Self::live_incarnation(self, instance_id)
     }
 }
 

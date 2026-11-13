@@ -257,11 +257,11 @@ impl DependsOnList {
     /// The key of the list under `depends_on`, as error messages name it.
     fn key(self) -> &'static str {
         match self {
-            DependsOnList::Nodes => "nodes",
-            DependsOnList::Contracts => "contracts",
-            DependsOnList::Daemon => "daemon",
-            DependsOnList::Pairings => "pairings",
-            DependsOnList::PairingObservers => "pairing_observers",
+            Self::Nodes => "nodes",
+            Self::Contracts => "contracts",
+            Self::Daemon => "daemon",
+            Self::Pairings => "pairings",
+            Self::PairingObservers => "pairing_observers",
         }
     }
 }

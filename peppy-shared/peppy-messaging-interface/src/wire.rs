@@ -390,10 +390,8 @@ impl ServiceKind {
     /// First segment of the service root (`"service"` or `"action"`).
     pub fn root_segment(self) -> &'static str {
         match self {
-            ServiceKind::Service => "service",
-            ServiceKind::ActionGoal | ServiceKind::ActionCancel | ServiceKind::ActionResult => {
-                "action"
-            }
+            Self::Service => "service",
+            Self::ActionGoal | Self::ActionCancel | Self::ActionResult => "action",
         }
     }
 
@@ -401,10 +399,10 @@ impl ServiceKind {
     /// or `None` for a plain service.
     pub fn suffix(self) -> Option<&'static str> {
         match self {
-            ServiceKind::Service => None,
-            ServiceKind::ActionGoal => Some("goal"),
-            ServiceKind::ActionCancel => Some("cancel"),
-            ServiceKind::ActionResult => Some("result"),
+            Self::Service => None,
+            Self::ActionGoal => Some("goal"),
+            Self::ActionCancel => Some("cancel"),
+            Self::ActionResult => Some("result"),
         }
     }
 }

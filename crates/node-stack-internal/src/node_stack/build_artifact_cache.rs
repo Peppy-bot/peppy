@@ -73,8 +73,8 @@ impl ArtifactKind {
     /// container artifact, `tar.zst` for a process artifact.
     pub(super) fn file_suffix(self) -> String {
         match self {
-            ArtifactKind::Container(platform) => container_file_suffix(platform),
-            ArtifactKind::Process => "tar.zst".to_owned(),
+            Self::Container(platform) => container_file_suffix(platform),
+            Self::Process => "tar.zst".to_owned(),
         }
     }
 
@@ -83,15 +83,15 @@ impl ArtifactKind {
     /// artifact.
     pub(super) fn platform(self) -> ArtifactPlatform {
         match self {
-            ArtifactKind::Container(platform) => platform,
-            ArtifactKind::Process => HOST_ARTIFACT_PLATFORM,
+            Self::Container(platform) => platform,
+            Self::Process => HOST_ARTIFACT_PLATFORM,
         }
     }
 
     fn label(self) -> &'static str {
         match self {
-            ArtifactKind::Container(_) => "container",
-            ArtifactKind::Process => "process",
+            Self::Container(_) => "container",
+            Self::Process => "process",
         }
     }
 }

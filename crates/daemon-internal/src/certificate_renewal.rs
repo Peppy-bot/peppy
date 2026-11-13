@@ -88,7 +88,7 @@ impl CertificateRenewal {
 
 impl ServeAsyncCommand for CertificateRenewal {
     fn run(self: Box<Self>) -> ServeAsyncHandle {
-        let CertificateRenewal {
+        let Self {
             deps,
             teardown_token,
         } = *self;

@@ -103,7 +103,7 @@ impl DaemonState {
         dir.as_ref().join(DAEMON_STATE_FILENAME)
     }
 
-    pub fn write_to(path: &Path, state: &DaemonState) -> Result<(), io::Error> {
+    pub fn write_to(path: &Path, state: &Self) -> Result<(), io::Error> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }

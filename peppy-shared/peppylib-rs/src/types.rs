@@ -84,8 +84,8 @@ pub(crate) enum TryRecvError {
 impl From<flume::TryRecvError> for TryRecvError {
     fn from(err: flume::TryRecvError) -> Self {
         match err {
-            flume::TryRecvError::Empty => TryRecvError::Empty,
-            flume::TryRecvError::Disconnected => TryRecvError::Disconnected,
+            flume::TryRecvError::Empty => Self::Empty,
+            flume::TryRecvError::Disconnected => Self::Disconnected,
         }
     }
 }

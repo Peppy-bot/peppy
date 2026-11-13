@@ -685,7 +685,7 @@ impl NodeCommands {
     pub fn prints_data(&self) -> bool {
         matches!(
             self,
-            NodeCommands::Call { .. } | NodeCommands::Echo { .. } | NodeCommands::Describe { .. }
+            Self::Call { .. } | Self::Echo { .. } | Self::Describe { .. }
         )
     }
 }

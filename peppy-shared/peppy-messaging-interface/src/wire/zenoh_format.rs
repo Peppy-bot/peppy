@@ -861,7 +861,7 @@ impl std::error::Error for ZenohWireParseError {}
 
 impl From<ZenohWireParseError> for crate::error::Error {
     fn from(err: ZenohWireParseError) -> Self {
-        crate::error::Error::BackendError(err.to_string())
+        Self::BackendError(err.to_string())
     }
 }
 

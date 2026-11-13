@@ -178,7 +178,7 @@ impl RouterFederation {
 
 impl ServeAsyncCommand for RouterFederation {
     fn run(self: Box<Self>) -> ServeAsyncHandle {
-        let RouterFederation {
+        let Self {
             deps,
             trigger_rx,
             generation,

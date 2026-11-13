@@ -788,7 +788,7 @@ impl PyTopicConsumer {
             )
             .await
             .map_err(to_py_err)?;
-            Ok(PyTopicConsumer {
+            Ok(Self {
                 inner: Arc::new(Mutex::new(consumer)),
             })
         })

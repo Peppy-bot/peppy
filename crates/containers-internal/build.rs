@@ -1411,16 +1411,16 @@ mod apptainer_build {
         /// one absent compiler.
         fn satisfied(&self) -> Option<bool> {
             match self {
-                DepProbe::Unprobed => Some(true),
-                DepProbe::Binary(program) => Some(binary_runs(program)),
-                DepProbe::PkgConfig(module) => binary_runs("pkg-config").then(|| {
+                Self::Unprobed => Some(true),
+                Self::Binary(program) => Some(binary_runs(program)),
+                Self::PkgConfig(module) => binary_runs("pkg-config").then(|| {
                     probe_succeeds(Command::new("pkg-config").arg("--exists").arg(module))
                 }),
                 // Preprocess an empty translation unit with the header forced
                 // in, which is how `configure` itself decides: the answer comes
                 // from the compiler's own search path rather than from a guess
                 // at where this distro puts its headers.
-                DepProbe::Header(header) => binary_runs(HOST_CC).then(|| {
+                Self::Header(header) => binary_runs(HOST_CC).then(|| {
                     probe_succeeds(
                         Command::new(HOST_CC)
                             .args(["-x", "c", "-E", "-include"])
@@ -1434,12 +1434,12 @@ mod apptainer_build {
         /// How this probe failed, phrased so the reader can re-run it by hand.
         fn not_found_hint(&self) -> String {
             match self {
-                DepProbe::Binary(program) => format!("`{program}` not on $PATH"),
-                DepProbe::PkgConfig(module) => {
+                Self::Binary(program) => format!("`{program}` not on $PATH"),
+                Self::PkgConfig(module) => {
                     format!("pkg-config module `{module}` not found")
                 }
-                DepProbe::Header(header) => format!("<{header}> not found by {HOST_CC}"),
-                DepProbe::Unprobed => "no probe".to_string(),
+                Self::Header(header) => format!("<{header}> not found by {HOST_CC}"),
+                Self::Unprobed => "no probe".to_string(),
             }
         }
     }

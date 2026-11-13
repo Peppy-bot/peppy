@@ -79,9 +79,9 @@ pub struct OciArtifact {
 impl EntryOrigin {
     pub fn kind(&self) -> RepoSourceKind {
         match self {
-            EntryOrigin::Fs { .. } => RepoSourceKind::Fs,
-            EntryOrigin::Git { .. } => RepoSourceKind::Git,
-            EntryOrigin::Oci { .. } => RepoSourceKind::Oci,
+            Self::Fs { .. } => RepoSourceKind::Fs,
+            Self::Git { .. } => RepoSourceKind::Git,
+            Self::Oci { .. } => RepoSourceKind::Oci,
         }
     }
 
@@ -95,9 +95,9 @@ impl EntryOrigin {
             // `<non-UTF-8 path>` rather than failing the whole cache: the
             // value is only shown to the user, and repository attribution
             // matches the `PathBuf` itself.
-            EntryOrigin::Fs { path } => Cow::Borrowed(path.to_str().unwrap_or("<non-UTF-8 path>")),
-            EntryOrigin::Git { path, .. } => Cow::Borrowed(path.as_str()),
-            EntryOrigin::Oci { platforms, .. } => Cow::Owned(
+            Self::Fs { path } => Cow::Borrowed(path.to_str().unwrap_or("<non-UTF-8 path>")),
+            Self::Git { path, .. } => Cow::Borrowed(path.as_str()),
+            Self::Oci { platforms, .. } => Cow::Owned(
                 platforms
                     .values()
                     .map(|artifact| artifact.tag.to_string())
@@ -115,8 +115,8 @@ impl EntryOrigin {
     /// does.
     pub fn checkout(&self) -> Option<(&str, &GitCommit)> {
         match self {
-            EntryOrigin::Fs { .. } | EntryOrigin::Oci { .. } => None,
-            EntryOrigin::Git {
+            Self::Fs { .. } | Self::Oci { .. } => None,
+            Self::Git {
                 repo_url, commit, ..
             } => Some((repo_url, commit)),
         }
@@ -129,8 +129,8 @@ impl EntryOrigin {
     /// resolution needs [`tokio::task::spawn_blocking`].
     pub fn resolution_may_block(&self) -> bool {
         match self {
-            EntryOrigin::Fs { .. } => false,
-            EntryOrigin::Git { .. } | EntryOrigin::Oci { .. } => true,
+            Self::Fs { .. } => false,
+            Self::Git { .. } | Self::Oci { .. } => true,
         }
     }
 
@@ -138,8 +138,8 @@ impl EntryOrigin {
     /// oci origin, which [`EntryOrigin::oci_repository`] names.
     pub fn repo_url(&self) -> Option<&str> {
         match self {
-            EntryOrigin::Fs { .. } | EntryOrigin::Oci { .. } => None,
-            EntryOrigin::Git { repo_url, .. } => Some(repo_url),
+            Self::Fs { .. } | Self::Oci { .. } => None,
+            Self::Git { repo_url, .. } => Some(repo_url),
         }
     }
 
@@ -148,8 +148,8 @@ impl EntryOrigin {
     /// remote's default branch.
     pub fn repo_ref(&self) -> Option<&str> {
         match self {
-            EntryOrigin::Fs { .. } | EntryOrigin::Oci { .. } => None,
-            EntryOrigin::Git { repo_ref, .. } => repo_ref.as_deref(),
+            Self::Fs { .. } | Self::Oci { .. } => None,
+            Self::Git { repo_ref, .. } => repo_ref.as_deref(),
         }
     }
 
@@ -158,8 +158,8 @@ impl EntryOrigin {
     /// revision is its source digest.
     pub fn commit(&self) -> Option<&GitCommit> {
         match self {
-            EntryOrigin::Fs { .. } | EntryOrigin::Oci { .. } => None,
-            EntryOrigin::Git { commit, .. } => Some(commit),
+            Self::Fs { .. } | Self::Oci { .. } => None,
+            Self::Git { commit, .. } => Some(commit),
         }
     }
 
@@ -167,8 +167,8 @@ impl EntryOrigin {
     /// a filesystem or a git origin.
     pub fn oci_repository(&self) -> Option<&OciRepository> {
         match self {
-            EntryOrigin::Oci { url, .. } => Some(url),
-            EntryOrigin::Fs { .. } | EntryOrigin::Git { .. } => None,
+            Self::Oci { url, .. } => Some(url),
+            Self::Fs { .. } | Self::Git { .. } => None,
         }
     }
 }

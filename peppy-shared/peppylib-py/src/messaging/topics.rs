@@ -138,8 +138,8 @@ pub enum PyTopicBuffer {
 impl From<PyTopicBuffer> for TopicBuffer {
     fn from(buffer: PyTopicBuffer) -> Self {
         match buffer {
-            PyTopicBuffer::Backpressure => TopicBuffer::Backpressure,
-            PyTopicBuffer::KeepLatest => TopicBuffer::KeepLatest,
+            PyTopicBuffer::Backpressure => Self::Backpressure,
+            PyTopicBuffer::KeepLatest => Self::KeepLatest,
         }
     }
 }

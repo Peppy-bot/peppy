@@ -75,7 +75,7 @@ impl std::fmt::Display for PlannedPair {
 impl PlannedPair {
     /// The pair as each endpoint on this daemon holds it: this one, and its
     /// mirror when the peer is local too.
-    pub fn local_ends(&self) -> Vec<PlannedPair> {
+    pub fn local_ends(&self) -> Vec<Self> {
         match self.peer_remote_meta {
             Some(_) => vec![self.clone()],
             None => vec![self.clone(), self.mirrored()],

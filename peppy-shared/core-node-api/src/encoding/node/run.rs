@@ -221,7 +221,7 @@ impl ObservationTargets {
     /// planner bug rather than a user error) is asserted once, here.
     pub fn slots_from_plan(
         members: BTreeMap<String, Vec<ObservationTarget>>,
-    ) -> BTreeMap<String, ObservationTargets> {
+    ) -> BTreeMap<String, Self> {
         members
             .into_iter()
             .map(|(link_id, targets)| {

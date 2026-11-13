@@ -27,7 +27,7 @@ impl SlotUpdate for ObservationUpdateRequest {
     const SLOT_NOUN: &'static str = "observer slot";
 
     fn decode_request(payload: &[u8]) -> PeppyResult<Self> {
-        ObservationUpdateRequest::decode(payload)
+        Self::decode(payload)
     }
 
     fn link_id(&self) -> &str {

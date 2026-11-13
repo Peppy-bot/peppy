@@ -434,16 +434,16 @@ impl RepoReadFailure {
     /// prose can be reworded without changing what tools match on.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            RepoReadFailure::Unreachable => "unreachable",
-            RepoReadFailure::Conflict => "conflict",
+            Self::Unreachable => "unreachable",
+            Self::Conflict => "conflict",
         }
     }
 
     /// Predicate that reads as a sentence about the repository.
     fn describe(self) -> &'static str {
         match self {
-            RepoReadFailure::Unreachable => "could not be read",
-            RepoReadFailure::Conflict => "contradicts itself",
+            Self::Unreachable => "could not be read",
+            Self::Conflict => "contradicts itself",
         }
     }
 }
@@ -630,8 +630,8 @@ pub(crate) enum RefreshScope {
 impl RefreshScope {
     fn includes(&self, id: u64) -> bool {
         match self {
-            RefreshScope::Every => true,
-            RefreshScope::Only(ids) => ids.contains(&id),
+            Self::Every => true,
+            Self::Only(ids) => ids.contains(&id),
         }
     }
 }
@@ -866,8 +866,8 @@ enum PlannedRepo {
 impl PlannedRepo {
     fn source_to_read(&self) -> Option<&RepoSource> {
         match self {
-            PlannedRepo::Read { source, .. } => Some(source),
-            PlannedRepo::Unparseable { .. } | PlannedRepo::Kept { .. } => None,
+            Self::Read { source, .. } => Some(source),
+            Self::Unparseable { .. } | Self::Kept { .. } => None,
         }
     }
 }

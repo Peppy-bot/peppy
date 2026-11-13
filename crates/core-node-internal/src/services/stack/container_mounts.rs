@@ -157,8 +157,8 @@ pub(crate) enum LocalMounts {
 impl LocalMounts {
     fn may_restart_vm(self) -> bool {
         match self {
-            LocalMounts::WholeStack => true,
-            LocalMounts::AddedToRunningStack => false,
+            Self::WholeStack => true,
+            Self::AddedToRunningStack => false,
         }
     }
 }

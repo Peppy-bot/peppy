@@ -231,11 +231,11 @@ pub enum GoalOutcome {
 impl GoalOutcome {
     pub fn status(&self) -> ResultStatus {
         match self {
-            GoalOutcome::Completed(_) => ResultStatus::Completed,
-            GoalOutcome::Cancelled { .. } => ResultStatus::Cancelled,
-            GoalOutcome::Failed(_) => ResultStatus::Failed,
-            GoalOutcome::Abandoned => ResultStatus::Abandoned,
-            GoalOutcome::Expired => ResultStatus::Expired,
+            Self::Completed(_) => ResultStatus::Completed,
+            Self::Cancelled { .. } => ResultStatus::Cancelled,
+            Self::Failed(_) => ResultStatus::Failed,
+            Self::Abandoned => ResultStatus::Abandoned,
+            Self::Expired => ResultStatus::Expired,
         }
     }
 }
@@ -1530,8 +1530,8 @@ impl CancelCause {
     /// A reason for the cancelled result, in the words of the cause.
     pub fn reason(self) -> &'static str {
         match self {
-            CancelCause::Caller => "cancelled by its caller",
-            CancelCause::SenderGone => "its sender is gone",
+            Self::Caller => "cancelled by its caller",
+            Self::SenderGone => "its sender is gone",
         }
     }
 }

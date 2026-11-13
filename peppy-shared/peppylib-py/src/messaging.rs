@@ -236,7 +236,7 @@ impl PyZenohdInstance {
             let host = instance.host.clone();
             let port = instance.port;
 
-            Ok(PyZenohdInstance {
+            Ok(Self {
                 inner: Arc::new(Mutex::new(Some(instance))),
                 host,
                 port,
@@ -311,7 +311,7 @@ impl PyMessengerHandle {
             let handle = MessengerHandle::connect(&host, port)
                 .await
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-            Ok(PyMessengerHandle { inner: handle })
+            Ok(Self { inner: handle })
         })
     }
 
@@ -340,7 +340,7 @@ impl PyMessengerHandle {
                 .scope(SessionScope::Namespace(namespace))
                 .await
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-            Ok(PyMessengerHandle { inner: handle })
+            Ok(Self { inner: handle })
         })
     }
 

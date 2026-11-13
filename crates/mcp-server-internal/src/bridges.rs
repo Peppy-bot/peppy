@@ -595,11 +595,11 @@ pub(crate) trait TaskSurface: Sync {
 
 impl TaskSurface for ActionContext {
     fn report_feedback(&self, message: String) -> impl Future<Output = ()> + Send {
-        ActionContext::report_feedback(self, message)
+        Self::report_feedback(self, message)
     }
 
     fn cancel_requested(&self) -> impl Future<Output = ()> + Send {
-        ActionContext::cancel_requested(self)
+        Self::cancel_requested(self)
     }
 }
 

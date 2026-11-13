@@ -108,8 +108,8 @@ pub enum SlotKind {
 impl core::fmt::Display for SlotKind {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
-            SlotKind::Node => "node",
-            SlotKind::Contract => "contract",
+            Self::Node => "node",
+            Self::Contract => "contract",
         })
     }
 }
@@ -956,14 +956,14 @@ pub enum VacancyRefusal {
 impl std::fmt::Display for VacancyRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            VacancyRefusal::ManifestRequires { declare_emptiable } => write!(
+            Self::ManifestRequires { declare_emptiable } => write!(
                 f,
                 "The node manifest declares it required: link it, or declare {declare_emptiable}"
             ),
-            VacancyRefusal::NoEmptyState { requirement } => {
+            Self::NoEmptyState { requirement } => {
                 write!(f, "It has no empty state: it takes {requirement}")
             }
-            VacancyRefusal::SpelledDifferently { empty_spelling } => {
+            Self::SpelledDifferently { empty_spelling } => {
                 write!(f, "Its empty state is {empty_spelling}")
             }
         }
@@ -1070,14 +1070,14 @@ impl From<StructuredError> for ParsingError {
     fn from(s: StructuredError) -> Self {
         match s {
             StructuredError::InvalidDeploymentSource(detail) => {
-                ParsingError::InvalidDeploymentSource(detail)
+                Self::InvalidDeploymentSource(detail)
             }
-            StructuredError::DuplicateName(id) => ParsingError::DuplicateName(id),
+            StructuredError::DuplicateName(id) => Self::DuplicateName(id),
             StructuredError::UnknownInstanceId {
                 owner_instance_id,
                 link,
                 instance_id,
-            } => ParsingError::UnknownInstanceId {
+            } => Self::UnknownInstanceId {
                 owner_instance_id,
                 link,
                 instance_id,
@@ -1085,7 +1085,7 @@ impl From<StructuredError> for ParsingError {
             StructuredError::LinkSentinelKey {
                 owner_instance_id,
                 link,
-            } => ParsingError::LinkSentinelKey {
+            } => Self::LinkSentinelKey {
                 owner_instance_id,
                 link,
             },
@@ -1098,7 +1098,7 @@ impl From<serde_json5::Error> for ParsingError {
         let serde_json5::Error::Message { msg, .. } = err;
         match structured_refusal(&msg) {
             Some(refusal) => refusal,
-            None => ParsingError::CannotParseConfig(msg),
+            None => Self::CannotParseConfig(msg),
         }
     }
 }

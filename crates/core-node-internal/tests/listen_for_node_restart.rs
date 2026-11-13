@@ -3941,24 +3941,24 @@ enum JointLinkSide {
 impl JointLinkSide {
     fn role(self) -> &'static str {
         match self {
-            JointLinkSide::Leader => "leader",
-            JointLinkSide::Follower => "follower",
+            Self::Leader => "leader",
+            Self::Follower => "follower",
         }
     }
 
     /// The slot the side's node pairs on.
     fn link_id(self) -> &'static str {
         match self {
-            JointLinkSide::Leader => LEADER_SLOT,
-            JointLinkSide::Follower => FOLLOWER_SLOT,
+            Self::Leader => LEADER_SLOT,
+            Self::Follower => FOLLOWER_SLOT,
         }
     }
 
     /// The topics the side emits and consumes.
     fn topics(self) -> (&'static str, &'static str) {
         match self {
-            JointLinkSide::Leader => ("joint_setpoints", "joint_states"),
-            JointLinkSide::Follower => ("joint_states", "joint_setpoints"),
+            Self::Leader => ("joint_setpoints", "joint_states"),
+            Self::Follower => ("joint_states", "joint_setpoints"),
         }
     }
 }

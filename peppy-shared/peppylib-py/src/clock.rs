@@ -405,7 +405,7 @@ impl PyClockPublisher {
         let runner = node_runner.inner.clone();
         crate::py_future::future_into_py(py, async move {
             let publisher = ClockPublisher::for_node(&runner).await.map_err(to_py_err)?;
-            Ok(publisher.map(|publisher| PyClockPublisher {
+            Ok(publisher.map(|publisher| Self {
                 inner: Arc::new(publisher),
             }))
         })

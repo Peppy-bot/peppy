@@ -348,7 +348,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
                 .map_err(de::Error::custom)?;
         }
 
-        Ok(PeppyLauncher {
+        Ok(Self {
             peppy_schema: raw.peppy_schema,
             description: raw.description,
             core_nodes: raw.core_nodes,
@@ -625,8 +625,8 @@ impl LinkValue {
     /// The slot's selected targets, or `None` when the slot is vacant.
     pub fn selection(&self) -> Option<&Selection> {
         match self {
-            LinkValue::Bound(selection) => Some(selection),
-            LinkValue::Vacant(_) => None,
+            Self::Bound(selection) => Some(selection),
+            Self::Vacant(_) => None,
         }
     }
 
@@ -634,8 +634,8 @@ impl LinkValue {
     /// targets.
     pub fn vacancy(&self) -> Option<&VacantReason> {
         match self {
-            LinkValue::Vacant(reason) => Some(reason),
-            LinkValue::Bound(_) => None,
+            Self::Vacant(reason) => Some(reason),
+            Self::Bound(_) => None,
         }
     }
 }
@@ -644,8 +644,8 @@ impl Selection {
     /// The target ids in declaration order, shape-erased.
     pub fn targets(&self) -> &[String] {
         match self {
-            Selection::Scalar(target) => std::slice::from_ref(target),
-            Selection::Array(targets) | Selection::Flags(targets) => targets.as_slice(),
+            Self::Scalar(target) => std::slice::from_ref(target),
+            Self::Array(targets) | Self::Flags(targets) => targets.as_slice(),
         }
     }
 
@@ -661,9 +661,9 @@ impl Selection {
     /// flag does not.
     pub fn as_scalar(&self) -> Option<&str> {
         match self {
-            Selection::Scalar(target) => Some(target),
-            Selection::Flags(targets) if targets.len() == 1 => Some(&targets.as_slice()[0]),
-            Selection::Array(_) | Selection::Flags(_) => None,
+            Self::Scalar(target) => Some(target),
+            Self::Flags(targets) if targets.len() == 1 => Some(&targets.as_slice()[0]),
+            Self::Array(_) | Self::Flags(_) => None,
         }
     }
 }
@@ -890,11 +890,11 @@ impl Serialize for LinkValue {
         S: serde::Serializer,
     {
         match self {
-            LinkValue::Bound(Selection::Scalar(target)) => serializer.serialize_str(target),
-            LinkValue::Bound(Selection::Array(targets) | Selection::Flags(targets)) => {
+            Self::Bound(Selection::Scalar(target)) => serializer.serialize_str(target),
+            Self::Bound(Selection::Array(targets) | Selection::Flags(targets)) => {
                 targets.serialize(serializer)
             }
-            LinkValue::Vacant(reason) => {
+            Self::Vacant(reason) => {
                 use serde::ser::SerializeMap;
                 let mut map = serializer.serialize_map(Some(1))?;
                 map.serialize_entry(VACANT_KEY, reason)?;

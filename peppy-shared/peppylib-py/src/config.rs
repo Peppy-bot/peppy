@@ -20,10 +20,10 @@ pub enum PyQoSProfile {
 impl From<PyQoSProfile> for QoSProfile {
     fn from(py_qos: PyQoSProfile) -> Self {
         match py_qos {
-            PyQoSProfile::SensorData => QoSProfile::SensorData,
-            PyQoSProfile::Standard => QoSProfile::Standard,
-            PyQoSProfile::Reliable => QoSProfile::Reliable,
-            PyQoSProfile::Critical => QoSProfile::Critical,
+            PyQoSProfile::SensorData => Self::SensorData,
+            PyQoSProfile::Standard => Self::Standard,
+            PyQoSProfile::Reliable => Self::Reliable,
+            PyQoSProfile::Critical => Self::Critical,
         }
     }
 }

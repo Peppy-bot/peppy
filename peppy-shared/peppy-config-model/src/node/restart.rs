@@ -31,21 +31,21 @@ impl RestartPolicy {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            RestartPolicy::Never => "never",
-            RestartPolicy::OnFailure => "on_failure",
-            RestartPolicy::Always => "always",
+            Self::Never => "never",
+            Self::OnFailure => "on_failure",
+            Self::Always => "always",
         }
     }
 
     /// Whether a failed exit (a non-zero code, a signal, a health kill)
     /// starts the instance again.
     pub fn restarts_after_failure(self) -> bool {
-        matches!(self, RestartPolicy::OnFailure | RestartPolicy::Always)
+        matches!(self, Self::OnFailure | Self::Always)
     }
 
     /// Whether a clean exit (code 0) starts the instance again.
     pub fn restarts_after_clean_exit(self) -> bool {
-        matches!(self, RestartPolicy::Always)
+        matches!(self, Self::Always)
     }
 }
 
@@ -54,9 +54,9 @@ impl FromStr for RestartPolicy {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "never" => Ok(RestartPolicy::Never),
-            "on_failure" => Ok(RestartPolicy::OnFailure),
-            "always" => Ok(RestartPolicy::Always),
+            "never" => Ok(Self::Never),
+            "on_failure" => Ok(Self::OnFailure),
+            "always" => Ok(Self::Always),
             other => Err(ParsingError::InvalidRestartPolicy {
                 value: other.to_owned(),
             }),
@@ -319,22 +319,22 @@ impl RestartOrigin {
     /// The wire spelling.
     pub fn as_str(self) -> &'static str {
         match self {
-            RestartOrigin::Instance => "instance",
-            RestartOrigin::Flag => "flag",
-            RestartOrigin::Node => "node",
-            RestartOrigin::LauncherRoot => "launcher_root",
-            RestartOrigin::Default => "default",
+            Self::Instance => "instance",
+            Self::Flag => "flag",
+            Self::Node => "node",
+            Self::LauncherRoot => "launcher_root",
+            Self::Default => "default",
         }
     }
 
     /// The phrase a listing prints beside the policy.
     fn describe(self) -> &'static str {
         match self {
-            RestartOrigin::Instance => "instance entry",
-            RestartOrigin::Flag => "--restart",
-            RestartOrigin::Node => "peppy.json5",
-            RestartOrigin::LauncherRoot => "launcher root",
-            RestartOrigin::Default => "default",
+            Self::Instance => "instance entry",
+            Self::Flag => "--restart",
+            Self::Node => "peppy.json5",
+            Self::LauncherRoot => "launcher root",
+            Self::Default => "default",
         }
     }
 }
@@ -344,11 +344,11 @@ impl FromStr for RestartOrigin {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "instance" => Ok(RestartOrigin::Instance),
-            "flag" => Ok(RestartOrigin::Flag),
-            "node" => Ok(RestartOrigin::Node),
-            "launcher_root" => Ok(RestartOrigin::LauncherRoot),
-            "default" => Ok(RestartOrigin::Default),
+            "instance" => Ok(Self::Instance),
+            "flag" => Ok(Self::Flag),
+            "node" => Ok(Self::Node),
+            "launcher_root" => Ok(Self::LauncherRoot),
+            "default" => Ok(Self::Default),
             other => Err(ParsingError::UnknownRestartOrigin {
                 value: other.to_owned(),
             }),

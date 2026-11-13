@@ -82,17 +82,15 @@ pub(crate) enum StackLogEvent {
 impl StackLogEvent {
     fn severity(&self) -> Severity {
         match self {
-            StackLogEvent::Finished
-            | StackLogEvent::Recovered { .. }
-            | StackLogEvent::Restarted { .. } => Severity::Info,
-            StackLogEvent::Unhealthy { .. }
-            | StackLogEvent::Restarting { .. }
-            | StackLogEvent::HealthKill { .. }
-            | StackLogEvent::HealthKillSkipped { .. } => Severity::Warn,
-            StackLogEvent::Failed { .. }
-            | StackLogEvent::StartFailed { .. }
-            | StackLogEvent::RestartRefused { .. }
-            | StackLogEvent::MaxRestartsReached { .. } => Severity::Error,
+            Self::Finished | Self::Recovered { .. } | Self::Restarted { .. } => Severity::Info,
+            Self::Unhealthy { .. }
+            | Self::Restarting { .. }
+            | Self::HealthKill { .. }
+            | Self::HealthKillSkipped { .. } => Severity::Warn,
+            Self::Failed { .. }
+            | Self::StartFailed { .. }
+            | Self::RestartRefused { .. }
+            | Self::MaxRestartsReached { .. } => Severity::Error,
         }
     }
 
@@ -100,26 +98,26 @@ impl StackLogEvent {
     /// `clears` ends the lines that leave it failed.
     fn outcome(&self, clears: &str) -> String {
         match self {
-            StackLogEvent::Finished => "finished: process exited cleanly".to_owned(),
-            StackLogEvent::Failed { detail } => format!("failed: {detail}"),
-            StackLogEvent::Unhealthy { misses, reason } => format!(
+            Self::Finished => "finished: process exited cleanly".to_owned(),
+            Self::Failed { detail } => format!("failed: {detail}"),
+            Self::Unhealthy { misses, reason } => format!(
                 "became unhealthy: {misses} consecutive health checks failed, last: {reason}"
             ),
-            StackLogEvent::Recovered { misses } => {
+            Self::Recovered { misses } => {
                 format!("recovered after {misses} missed health checks")
             }
-            StackLogEvent::Restarting { attempt, delay } => {
+            Self::Restarting { attempt, delay } => {
                 format!(
                     "restarting in {} (attempt {attempt})",
                     render_duration(*delay)
                 )
             }
-            StackLogEvent::Restarted { attempt } => format!("restarted (attempt {attempt})"),
-            StackLogEvent::StartFailed { reason } => format!("start failed: {reason}"),
-            StackLogEvent::RestartRefused { reason } => {
+            Self::Restarted { attempt } => format!("restarted (attempt {attempt})"),
+            Self::StartFailed { reason } => format!("start failed: {reason}"),
+            Self::RestartRefused { reason } => {
                 format!("restart refused: {reason}; the instance is failed, and {clears}")
             }
-            StackLogEvent::MaxRestartsReached { max_restarts } => format!(
+            Self::MaxRestartsReached { max_restarts } => format!(
                 "`max_restarts` reached: {max_restarts} {} in a row; the instance is failed, and \
                  {clears}",
                 if *max_restarts == 1 {
@@ -128,11 +126,11 @@ impl StackLogEvent {
                     "attempts"
                 },
             ),
-            StackLogEvent::HealthKill { unanswered_for } => format!(
+            Self::HealthKill { unanswered_for } => format!(
                 "answered no health check for {}; killed",
                 render_duration(*unanswered_for)
             ),
-            StackLogEvent::HealthKillSkipped {
+            Self::HealthKillSkipped {
                 unanswered_for,
                 running,
             } => format!(

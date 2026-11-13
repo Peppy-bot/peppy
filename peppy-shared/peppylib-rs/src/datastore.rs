@@ -33,11 +33,11 @@ pub struct Encoding(Cow<'static, str>);
 
 impl Encoding {
     /// UTF-8 text with no further structure (`text/plain`).
-    pub const TEXT_PLAIN: Self = Encoding(Cow::Borrowed("text/plain"));
+    pub const TEXT_PLAIN: Self = Self(Cow::Borrowed("text/plain"));
     /// A JSON document (`application/json`).
-    pub const APPLICATION_JSON: Self = Encoding(Cow::Borrowed("application/json"));
+    pub const APPLICATION_JSON: Self = Self(Cow::Borrowed("application/json"));
     /// Opaque binary data (`application/octet-stream`).
-    pub const APPLICATION_OCTET_STREAM: Self = Encoding(Cow::Borrowed("application/octet-stream"));
+    pub const APPLICATION_OCTET_STREAM: Self = Self(Cow::Borrowed("application/octet-stream"));
 
     /// Borrow the tag as a string slice.
     pub fn as_str(&self) -> &str {
@@ -47,13 +47,13 @@ impl Encoding {
 
 impl From<String> for Encoding {
     fn from(tag: String) -> Self {
-        Encoding(Cow::Owned(tag))
+        Self(Cow::Owned(tag))
     }
 }
 
 impl From<&str> for Encoding {
     fn from(tag: &str) -> Self {
-        Encoding(Cow::Owned(tag.to_owned()))
+        Self(Cow::Owned(tag.to_owned()))
     }
 }
 

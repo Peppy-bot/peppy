@@ -147,7 +147,7 @@ impl Write for LogCapture {
 }
 
 impl<'a> MakeWriter<'a> for LogCapture {
-    type Writer = LogCapture;
+    type Writer = Self;
 
     fn make_writer(&'a self) -> Self::Writer {
         self.clone()

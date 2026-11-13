@@ -22,7 +22,7 @@ pub struct FieldPath(Vec<String>);
 impl FieldPath {
     /// Whether `self` names `other` or a field inside it, or the reverse:
     /// two flags that name such a pair would give one field twice.
-    fn overlaps(&self, other: &FieldPath) -> bool {
+    fn overlaps(&self, other: &Self) -> bool {
         let shorter = self.0.len().min(other.0.len());
         self.0[..shorter] == other.0[..shorter]
     }

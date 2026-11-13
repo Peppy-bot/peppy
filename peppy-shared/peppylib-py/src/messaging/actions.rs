@@ -635,7 +635,7 @@ impl PyConcurrentAction {
             )
             .await
             .map_err(to_py_err)?;
-            Ok(PyConcurrentAction {
+            Ok(Self {
                 sender_grace: action.sender_grace(),
                 inner: Arc::new(Mutex::new(action)),
             })

@@ -86,15 +86,15 @@ pub enum RepoListRepoReadFailure {
 impl RepoListRepoReadFailure {
     pub fn as_str(self) -> &'static str {
         match self {
-            RepoListRepoReadFailure::Unreachable => "unreachable",
-            RepoListRepoReadFailure::Conflict => "conflict",
+            Self::Unreachable => "unreachable",
+            Self::Conflict => "conflict",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "unreachable" => Some(RepoListRepoReadFailure::Unreachable),
-            "conflict" => Some(RepoListRepoReadFailure::Conflict),
+            "unreachable" => Some(Self::Unreachable),
+            "conflict" => Some(Self::Conflict),
             _ => None,
         }
     }

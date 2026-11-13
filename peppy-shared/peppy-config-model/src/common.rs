@@ -11,8 +11,8 @@ pub enum AnyType {
     Bool(bool),
     /// A plain string value
     String(String),
-    Array(Vec<AnyType>),
-    Object(BTreeMap<String, AnyType>),
+    Array(Vec<Self>),
+    Object(BTreeMap<String, Self>),
 
     // Numeric values: prefer signed, then unsigned, then float
     Int(i64),
@@ -24,14 +24,14 @@ impl AnyType {
     /// Returns a human-readable name for this value's type
     pub fn type_name(&self) -> &'static str {
         match self {
-            AnyType::Null => "null",
-            AnyType::Bool(_) => "bool",
-            AnyType::String(_) => "string",
-            AnyType::Array(_) => "array",
-            AnyType::Object(_) => "object",
-            AnyType::Int(_) => "int",
-            AnyType::UInt(_) => "uint",
-            AnyType::Float(_) => "float",
+            Self::Null => "null",
+            Self::Bool(_) => "bool",
+            Self::String(_) => "string",
+            Self::Array(_) => "array",
+            Self::Object(_) => "object",
+            Self::Int(_) => "int",
+            Self::UInt(_) => "uint",
+            Self::Float(_) => "float",
         }
     }
 
@@ -48,19 +48,19 @@ impl AnyType {
 
         match token {
             TypeToken::Bool => match self {
-                AnyType::Bool(_) => Ok(()),
+                Self::Bool(_) => Ok(()),
                 other => Err(mismatch(other.type_name())),
             },
             TypeToken::String => match self {
-                AnyType::String(_) => Ok(()),
+                Self::String(_) => Ok(()),
                 other => Err(mismatch(other.type_name())),
             },
             TypeToken::Bytes => match self {
-                AnyType::String(_) | AnyType::Array(_) => Ok(()),
+                Self::String(_) | Self::Array(_) => Ok(()),
                 other => Err(mismatch(other.type_name())),
             },
             TypeToken::Time => match self {
-                AnyType::Int(_) | AnyType::UInt(_) => Ok(()),
+                Self::Int(_) | Self::UInt(_) => Ok(()),
                 other => Err(mismatch(other.type_name())),
             },
             TypeToken::U8 => check_unsigned_range(self, u8::MAX as u64, path, token),
@@ -85,7 +85,7 @@ impl AnyType {
                 )),
             },
             TypeToken::F64 => match self {
-                AnyType::Float(_) | AnyType::Int(_) | AnyType::UInt(_) => Ok(()),
+                Self::Float(_) | Self::Int(_) | Self::UInt(_) => Ok(()),
                 other => Err(mismatch(other.type_name())),
             },
         }
@@ -206,11 +206,11 @@ impl DefaultValue {
     /// used by `NodeArguments`.
     pub fn to_any(&self) -> AnyType {
         match self {
-            DefaultValue::Bool(b) => AnyType::Bool(*b),
-            DefaultValue::String(s) => AnyType::String(s.clone()),
-            DefaultValue::Int(i) => AnyType::Int(*i),
-            DefaultValue::UInt(u) => AnyType::UInt(*u),
-            DefaultValue::Float(f) => AnyType::Float(*f),
+            Self::Bool(b) => AnyType::Bool(*b),
+            Self::String(s) => AnyType::String(s.clone()),
+            Self::Int(i) => AnyType::Int(*i),
+            Self::UInt(u) => AnyType::UInt(*u),
+            Self::Float(f) => AnyType::Float(*f),
         }
     }
 }
@@ -218,11 +218,11 @@ impl DefaultValue {
 impl Serialize for DefaultValue {
     fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         match self {
-            DefaultValue::Bool(b) => ser.serialize_bool(*b),
-            DefaultValue::String(s) => ser.serialize_str(s),
-            DefaultValue::Int(i) => ser.serialize_i64(*i),
-            DefaultValue::UInt(u) => ser.serialize_u64(*u),
-            DefaultValue::Float(f) => ser.serialize_f64(*f),
+            Self::Bool(b) => ser.serialize_bool(*b),
+            Self::String(s) => ser.serialize_str(s),
+            Self::Int(i) => ser.serialize_i64(*i),
+            Self::UInt(u) => ser.serialize_u64(*u),
+            Self::Float(f) => ser.serialize_f64(*f),
         }
     }
 }
@@ -245,10 +245,10 @@ pub enum ParameterSpec {
         default: Option<DefaultValue>,
     },
     Array {
-        items: Box<ParameterSpec>,
+        items: Box<Self>,
         length: Option<usize>,
     },
-    Group(BTreeMap<String, ParameterSpec>),
+    Group(BTreeMap<String, Self>),
 }
 
 impl ParameterSpec {
@@ -261,18 +261,18 @@ impl ParameterSpec {
     /// missing path.
     fn synthesize_default(&self, path: &str, missing: &mut Vec<String>) -> Option<AnyType> {
         match self {
-            ParameterSpec::Primitive { default, .. } => match default {
+            Self::Primitive { default, .. } => match default {
                 Some(d) => Some(d.to_any()),
                 None => {
                     missing.push(path.to_string());
                     None
                 }
             },
-            ParameterSpec::Array { .. } => {
+            Self::Array { .. } => {
                 missing.push(path.to_string());
                 None
             }
-            ParameterSpec::Group(map) => {
+            Self::Group(map) => {
                 let mut out = BTreeMap::new();
                 let mut all_present = true;
                 for (k, sub) in map {
@@ -300,11 +300,11 @@ impl Serialize for ParameterSpec {
     fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         match self {
-            ParameterSpec::Primitive {
+            Self::Primitive {
                 kind,
                 default: None,
             } => ser.serialize_str(type_token_name(kind)),
-            ParameterSpec::Primitive {
+            Self::Primitive {
                 kind,
                 default: Some(d),
             } => {
@@ -313,7 +313,7 @@ impl Serialize for ParameterSpec {
                 map.serialize_entry("$default", d)?;
                 map.end()
             }
-            ParameterSpec::Array { items, length } => {
+            Self::Array { items, length } => {
                 let len = if length.is_some() { 3 } else { 2 };
                 let mut map = ser.serialize_map(Some(len))?;
                 map.serialize_entry("$type", "array")?;
@@ -323,7 +323,7 @@ impl Serialize for ParameterSpec {
                 }
                 map.end()
             }
-            ParameterSpec::Group(fields) => {
+            Self::Group(fields) => {
                 // Serialize as a naked object (no `$type: "object"` metadata).
                 // Both forms parse back to the same `Group` shape.
                 let mut map = ser.serialize_map(Some(fields.len()))?;

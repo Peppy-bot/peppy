@@ -199,7 +199,7 @@ impl WorkStop {
     /// cancel stopped every part that stopped, the first of them. A work
     /// whose part failed for a cause of its own failed, whatever stopped
     /// its other parts.
-    pub(crate) fn of_parts(stops: impl IntoIterator<Item = WorkStop>) -> Option<WorkStop> {
+    pub(crate) fn of_parts(stops: impl IntoIterator<Item = Self>) -> Option<Self> {
         let mut first_cancelled = None;
         for stop in stops {
             match stop {

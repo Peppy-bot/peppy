@@ -28,7 +28,7 @@ impl SlotUpdate for BindingUpdateRequest {
     const SLOT_NOUN: &'static str = "`one_or_more` or `zero_or_more` producer slot";
 
     fn decode_request(payload: &[u8]) -> PeppyResult<Self> {
-        BindingUpdateRequest::decode(payload)
+        Self::decode(payload)
     }
 
     fn link_id(&self) -> &str {

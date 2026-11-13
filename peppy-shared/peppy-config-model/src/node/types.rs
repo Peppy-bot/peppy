@@ -42,8 +42,8 @@ pub enum Toolchain {
 impl fmt::Display for Toolchain {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Toolchain::Uv => write!(f, "uv"),
-            Toolchain::Cargo => write!(f, "cargo"),
+            Self::Uv => write!(f, "uv"),
+            Self::Cargo => write!(f, "cargo"),
         }
     }
 }
@@ -53,9 +53,9 @@ impl FromStr for Toolchain {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.eq_ignore_ascii_case("cargo") {
-            Ok(Toolchain::Cargo)
+            Ok(Self::Cargo)
         } else if s.eq_ignore_ascii_case("uv") {
-            Ok(Toolchain::Uv)
+            Ok(Self::Uv)
         } else {
             Err(ParsingError::InvalidToolchain(s.to_owned()))
         }
@@ -65,8 +65,8 @@ impl FromStr for Toolchain {
 impl Toolchain {
     pub fn map_to_language(&self) -> PeppygenLanguage {
         match self {
-            Toolchain::Cargo => PeppygenLanguage::Rust,
-            Toolchain::Uv => PeppygenLanguage::Python,
+            Self::Cargo => PeppygenLanguage::Rust,
+            Self::Uv => PeppygenLanguage::Python,
         }
     }
 }
@@ -132,17 +132,17 @@ impl TypeToken {
     pub const fn is_scalar(&self) -> bool {
         matches!(
             self,
-            TypeToken::Bool
-                | TypeToken::U8
-                | TypeToken::U16
-                | TypeToken::U32
-                | TypeToken::U64
-                | TypeToken::I8
-                | TypeToken::I16
-                | TypeToken::I32
-                | TypeToken::I64
-                | TypeToken::F32
-                | TypeToken::F64
+            Self::Bool
+                | Self::U8
+                | Self::U16
+                | Self::U32
+                | Self::U64
+                | Self::I8
+                | Self::I16
+                | Self::I32
+                | Self::I64
+                | Self::F32
+                | Self::F64
         )
     }
 }
@@ -257,9 +257,9 @@ impl InterfaceKind {
     /// [`FromStr`]: std::str::FromStr
     pub const fn label(&self) -> &'static str {
         match self {
-            InterfaceKind::Topic => "Topic",
-            InterfaceKind::Service => "Service",
-            InterfaceKind::Action => "Action",
+            Self::Topic => "Topic",
+            Self::Service => "Service",
+            Self::Action => "Action",
         }
     }
 
@@ -267,9 +267,9 @@ impl InterfaceKind {
     /// payloads. Mirrors the `SECTION` const the produced-entry enums carry.
     pub const fn consumed_section(&self) -> &'static str {
         match self {
-            InterfaceKind::Topic => "topics.consumes",
-            InterfaceKind::Service => "services.consumes",
-            InterfaceKind::Action => "actions.consumes",
+            Self::Topic => "topics.consumes",
+            Self::Service => "services.consumes",
+            Self::Action => "actions.consumes",
         }
     }
 }
@@ -277,9 +277,9 @@ impl InterfaceKind {
 impl fmt::Display for InterfaceKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            InterfaceKind::Topic => write!(f, "topic"),
-            InterfaceKind::Service => write!(f, "service"),
-            InterfaceKind::Action => write!(f, "action"),
+            Self::Topic => write!(f, "topic"),
+            Self::Service => write!(f, "service"),
+            Self::Action => write!(f, "action"),
         }
     }
 }
@@ -289,9 +289,9 @@ impl FromStr for InterfaceKind {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "topic" => Ok(InterfaceKind::Topic),
-            "service" => Ok(InterfaceKind::Service),
-            "action" => Ok(InterfaceKind::Action),
+            "topic" => Ok(Self::Topic),
+            "service" => Ok(Self::Service),
+            "action" => Ok(Self::Action),
             other => Err(format!("unknown interface kind: {other}")),
         }
     }
@@ -577,18 +577,18 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
 impl SchemaType {
     pub fn is_optional(&self) -> bool {
         match self {
-            SchemaType::Type(_) => false,
-            SchemaType::Primitive(schema) => schema.optional,
-            SchemaType::Array(schema) => schema.optional,
-            SchemaType::Object(schema) => schema.optional,
+            Self::Type(_) => false,
+            Self::Primitive(schema) => schema.optional,
+            Self::Array(schema) => schema.optional,
+            Self::Object(schema) => schema.optional,
         }
     }
 
     pub fn as_type_token(&self) -> Option<&TypeToken> {
         match self {
-            SchemaType::Type(token) => Some(token),
-            SchemaType::Primitive(schema) => Some(&schema.kind),
-            SchemaType::Array(_) | SchemaType::Object(_) => None,
+            Self::Type(token) => Some(token),
+            Self::Primitive(schema) => Some(&schema.kind),
+            Self::Array(_) | Self::Object(_) => None,
         }
     }
 
@@ -596,8 +596,8 @@ impl SchemaType {
     /// `string` field that declares one.
     pub fn enum_values(&self) -> Option<&EnumValues> {
         match self {
-            SchemaType::Primitive(schema) => schema.enum_values.as_ref(),
-            SchemaType::Type(_) | SchemaType::Array(_) | SchemaType::Object(_) => None,
+            Self::Primitive(schema) => schema.enum_values.as_ref(),
+            Self::Type(_) | Self::Array(_) | Self::Object(_) => None,
         }
     }
 
@@ -605,20 +605,20 @@ impl SchemaType {
     pub fn marks(&self) -> &Marks {
         static NO_MARKS: Marks = Marks::none();
         match self {
-            SchemaType::Type(_) => &NO_MARKS,
-            SchemaType::Primitive(schema) => &schema.marks,
-            SchemaType::Array(schema) => &schema.marks,
-            SchemaType::Object(schema) => &schema.marks,
+            Self::Type(_) => &NO_MARKS,
+            Self::Primitive(schema) => &schema.marks,
+            Self::Array(schema) => &schema.marks,
+            Self::Object(schema) => &schema.marks,
         }
     }
 
     /// What the field holds (`$description`), for a field that says it.
     pub fn description(&self) -> Option<&Description> {
         match self {
-            SchemaType::Type(_) => None,
-            SchemaType::Primitive(schema) => schema.description.as_ref(),
-            SchemaType::Array(schema) => schema.description.as_ref(),
-            SchemaType::Object(schema) => schema.description.as_ref(),
+            Self::Type(_) => None,
+            Self::Primitive(schema) => schema.description.as_ref(),
+            Self::Array(schema) => schema.description.as_ref(),
+            Self::Object(schema) => schema.description.as_ref(),
         }
     }
 }
@@ -1326,7 +1326,7 @@ pub enum Cardinality {
 
 impl Cardinality {
     pub fn is_one(&self) -> bool {
-        matches!(self, Cardinality::One)
+        matches!(self, Self::One)
     }
 
     /// Whether the slot holds at most one source, so its generated accessor is
@@ -1338,7 +1338,7 @@ impl Cardinality {
     /// what each singular accessor returns is the cardinality's own business,
     /// since `one` always resolves a source and `zero_or_one` may not.
     pub fn is_scalar(&self) -> bool {
-        matches!(self, Cardinality::One | Cardinality::ZeroOrOne)
+        matches!(self, Self::One | Self::ZeroOrOne)
     }
 
     /// Whether an empty bound set satisfies the slot without the deployment
@@ -1346,7 +1346,7 @@ impl Cardinality {
     /// empty set, but only where the deployment wrote the slot vacant, so an
     /// omitted `zero_or_one` slot stays uncovered.
     pub fn allows_empty(&self) -> bool {
-        matches!(self, Cardinality::ZeroOrMore)
+        matches!(self, Self::ZeroOrMore)
     }
 
     /// Whether a pairing slot of this cardinality may hold `len` pairs, at
@@ -1358,8 +1358,8 @@ impl Cardinality {
     /// binding's).
     pub fn admits_pairs(&self, len: usize) -> bool {
         match self {
-            Cardinality::One | Cardinality::ZeroOrOne => len <= 1,
-            Cardinality::OneOrMore | Cardinality::ZeroOrMore => true,
+            Self::One | Self::ZeroOrOne => len <= 1,
+            Self::OneOrMore | Self::ZeroOrMore => true,
         }
     }
 
@@ -1371,10 +1371,10 @@ impl Cardinality {
     /// a set its manifest does not admit.
     pub fn admits(&self, len: usize) -> bool {
         match self {
-            Cardinality::One => len == 1,
-            Cardinality::ZeroOrOne => len <= 1,
-            Cardinality::OneOrMore => len >= 1,
-            Cardinality::ZeroOrMore => true,
+            Self::One => len == 1,
+            Self::ZeroOrOne => len <= 1,
+            Self::OneOrMore => len >= 1,
+            Self::ZeroOrMore => true,
         }
     }
 
@@ -1382,10 +1382,10 @@ impl Cardinality {
     /// `zero_or_more`), for error messages.
     pub fn as_str(&self) -> &'static str {
         match self {
-            Cardinality::One => "one",
-            Cardinality::ZeroOrOne => "zero_or_one",
-            Cardinality::OneOrMore => "one_or_more",
-            Cardinality::ZeroOrMore => "zero_or_more",
+            Self::One => "one",
+            Self::ZeroOrOne => "zero_or_one",
+            Self::OneOrMore => "one_or_more",
+            Self::ZeroOrMore => "zero_or_more",
         }
     }
 }
@@ -1397,10 +1397,10 @@ impl FromStr for Cardinality {
 
     fn from_str(spelling: &str) -> Result<Self, Self::Err> {
         [
-            Cardinality::One,
-            Cardinality::ZeroOrOne,
-            Cardinality::OneOrMore,
-            Cardinality::ZeroOrMore,
+            Self::One,
+            Self::ZeroOrOne,
+            Self::OneOrMore,
+            Self::ZeroOrMore,
         ]
         .into_iter()
         .find(|cardinality| cardinality.as_str() == spelling)
@@ -1765,8 +1765,8 @@ impl EndpointKind {
     /// The manifest spelling of the kind.
     pub fn as_str(self) -> &'static str {
         match self {
-            EndpointKind::Page => "page",
-            EndpointKind::Mcp => "mcp",
+            Self::Page => "page",
+            Self::Mcp => "mcp",
         }
     }
 
@@ -1777,8 +1777,8 @@ impl EndpointKind {
 
     fn parse(kind: &str) -> Option<Self> {
         match kind {
-            "page" => Some(EndpointKind::Page),
-            "mcp" => Some(EndpointKind::Mcp),
+            "page" => Some(Self::Page),
+            "mcp" => Some(Self::Mcp),
             _ => None,
         }
     }
@@ -1994,7 +1994,7 @@ impl<'de> Deserialize<'de> for Execution {
                 crate::error::StructuredError::MissingExecutionLanguage.json5_message(),
             )
         })?;
-        Ok(Execution {
+        Ok(Self {
             language,
             parameters: raw.parameters,
             build_cmd: raw.build_cmd,
@@ -2433,9 +2433,9 @@ fn normalize_opt_vec<T: Normalize>(
 impl Normalize for SchemaType {
     fn normalize(&mut self) {
         match self {
-            SchemaType::Type(_) | SchemaType::Primitive(_) => {}
-            SchemaType::Array(arr) => arr.items.normalize(),
-            SchemaType::Object(obj) => normalize_schema_map(&mut obj.fields),
+            Self::Type(_) | Self::Primitive(_) => {}
+            Self::Array(arr) => arr.items.normalize(),
+            Self::Object(obj) => normalize_schema_map(&mut obj.fields),
         }
     }
 }
@@ -2449,8 +2449,8 @@ impl Normalize for MessageFormat {
 impl Normalize for FieldRefinement {
     fn normalize(&mut self) {
         match self {
-            FieldRefinement::Length(_) => {}
-            FieldRefinement::Items(nested) | FieldRefinement::Object(nested) => nested.normalize(),
+            Self::Length(_) => {}
+            Self::Items(nested) | Self::Object(nested) => nested.normalize(),
         }
     }
 }
@@ -2624,7 +2624,7 @@ impl Normalize for Interfaces {
 impl Interfaces {
     /// Compares two `Interfaces` for equivalence, ignoring the order of items
     /// within each list and the order of fields within message formats.
-    pub fn matches_unordered(&self, other: &Interfaces) -> bool {
+    pub fn matches_unordered(&self, other: &Self) -> bool {
         self.clone().normalized() == other.clone().normalized()
     }
 }

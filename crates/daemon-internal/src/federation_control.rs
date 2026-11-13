@@ -44,11 +44,11 @@ const ACK_BUDGET: Duration = Duration::from_secs(8);
 impl From<FederationOutcome> for ControlResponse {
     fn from(outcome: FederationOutcome) -> Self {
         match outcome {
-            FederationOutcome::Applied(applied) => ControlResponse::Ok { applied },
-            FederationOutcome::Pinned => ControlResponse::Pinned,
-            FederationOutcome::Failed(message) => ControlResponse::Error { message },
-            FederationOutcome::Unreachable(message) => ControlResponse::Unreachable { message },
-            FederationOutcome::Restart => ControlResponse::Restarting,
+            FederationOutcome::Applied(applied) => Self::Ok { applied },
+            FederationOutcome::Pinned => Self::Pinned,
+            FederationOutcome::Failed(message) => Self::Error { message },
+            FederationOutcome::Unreachable(message) => Self::Unreachable { message },
+            FederationOutcome::Restart => Self::Restarting,
         }
     }
 }
@@ -84,7 +84,7 @@ impl FederationControl {
 
 impl ServeAsyncCommand for FederationControl {
     fn run(self: Box<Self>) -> ServeAsyncHandle {
-        let FederationControl {
+        let Self {
             socket_path,
             trigger_tx,
             restart_tx,

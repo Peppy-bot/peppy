@@ -288,9 +288,9 @@ impl RepoOwners {
 impl RepoOwner {
     fn owns(&self, origin: &EntryOrigin) -> bool {
         match (self, origin) {
-            (RepoOwner::Fs { root }, EntryOrigin::Fs { path }) => path.starts_with(root),
+            (Self::Fs { root }, EntryOrigin::Fs { path }) => path.starts_with(root),
             (
-                RepoOwner::Git { url, repo_ref },
+                Self::Git { url, repo_ref },
                 EntryOrigin::Git {
                     repo_url,
                     repo_ref: read_with_ref,
@@ -305,7 +305,7 @@ impl RepoOwner {
                         .configured()
                         .is_none_or(|pinned| read_with_ref.as_deref() == Some(pinned))
             }
-            (RepoOwner::Oci { repository }, EntryOrigin::Oci { url, .. }) => repository == url,
+            (Self::Oci { repository }, EntryOrigin::Oci { url, .. }) => repository == url,
             _ => false,
         }
     }
