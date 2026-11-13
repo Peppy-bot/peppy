@@ -1,159 +1,149 @@
-{# Segment 4. A node is a regular project of its language. It runs alone, in
-   standalone mode, and it tests alone, with generated mocks. #}
-{% from "_parts.html.j2" import chapter, comparison_card, code_window %}
+{# Segment 4. A node is a regular project of its language. It runs alone in
+   standalone mode, and it tests alone with generated mocks. #}
+{% from "_parts.html.j2" import backdrop, header, problem_scene, rail, term_card, code_window, node, wire %}
 {% set id = segment.id %}
-{# The two code windows have the same place. `line_top` is the top of the first
-   line of a window, below its padding, and a line is `line_height` high. #}
-{% set code_top = 384 %}
-{% set line_top = code_top + 26 %}
-{% set line_height = 42 %}
-{% set code_right = 96 + 1108 %}
-{# The nodes at the right of the code. The wire of the standalone node goes
-   out of the window at its line 5, the line that runs the node. The wire of
-   the mock comes in at the lines 3 to 5, which publish a message. #}
-{% set nodes_left = 1400 %}
-{% set run_wire = line_top + 4 * line_height + line_height // 2 %}
-{% set mock_wire = line_top + 3 * line_height + line_height // 2 %}
-
-{# The comparison of the tools of one node: one row for each task, with what
-   ROS 2 uses and what Peppy uses. Each row is a grid with the same columns.
-   The head of a side has the id `<id>-<side>-head`, a row name
-   `<id>-row-<n>`, and a cell `<id>-<side>-<n>`. #}
-{% macro tools_table(id, comparison, other_tools) %}
-<div id="{{ id }}" class="steps">
-  <div class="card-kind" style="color: var(--ros2)">{{ labels.comparison }}</div>
-  <div class="steps-title">{{ comparison.title | rich }}</div>
-  <div class="{{ id }}-row">
-    {% for side, name in [("ros2", labels.ros2), ("peppy", labels.peppy)] %}
-    <div id="{{ id }}-{{ side }}-head" class="steps-side is-{{ side }}"><span class="steps-side-name">{{ name }}</span><div class="steps-summary">{{ comparison[side + "_summary"] | rich }}</div></div>
-    {% endfor %}
-  </div>
-  {% for row in comparison.rows %}
-  <div class="{{ id }}-row">
-    <div id="{{ id }}-row-{{ loop.index }}" class="steps-row-name">{{ row }}</div>
-    <div id="{{ id }}-ros2-{{ loop.index }}" class="{{ id }}-cell is-ros2">{{ comparison.ros2[loop.index0] | rich }}</div>
-    <div id="{{ id }}-peppy-{{ loop.index }}" class="{{ id }}-cell is-peppy">{{ comparison.peppy[loop.index0] | rich }}</div>
-  </div>
-  {% endfor %}
-  <div class="{{ id }}-row"><div id="{{ id }}-other" class="{{ id }}-cell is-other">{{ other_tools | rich }}</div></div>
-  <div id="{{ id }}-note" class="steps-note">{{ comparison.note | rich }}</div>
-</div>
-{% endmacro %}
+{% set tools = screen.comparisons.tools %}
 <template>
   <style>
     #root {
       position: absolute;
       inset: 0;
     }
-    .{{ id }}-tools-row {
+    {# The tools of one node: one line for each task, with ROS 2 and Peppy
+       side by side. #}
+    .{{ id }}-table {
       display: grid;
-      grid-template-columns: 170px 1fr 1fr;
+      grid-template-columns: 170px 1.15fr 1fr;
       column-gap: 40px;
-      padding: 16px 0;
-      font-size: 30px;
-      line-height: 40px;
+      margin-top: 22px;
     }
-    .{{ id }}-tools-row + .{{ id }}-tools-row {
+    .{{ id }}-head {
+      padding-bottom: 6px;
+    }
+    .{{ id }}-cell {
+      padding: 20px 0;
       border-top: 2px solid var(--line);
+      font-size: 32px;
+      line-height: 42px;
     }
-    .{{ id }}-tools-row .steps-side.is-ros2 {
-      grid-column: 2;
-    }
-    .{{ id }}-tools-row .steps-side.is-peppy,
-    .{{ id }}-tools-cell.is-other {
-      grid-column: 3;
-    }
-    .{{ id }}-tools-row .steps-summary {
-      margin-bottom: 0;
-    }
-    .{{ id }}-tools-cell.is-ros2 code {
-      color: var(--ros2);
-    }
-    .{{ id }}-tools-cell.is-peppy code {
-      color: var(--peppy);
-    }
-    .{{ id }}-tools-cell.is-other {
+    .{{ id }}-cell.steps-row-name {
       font-size: 28px;
-      color: var(--ink-dim);
     }
-    .{{ id }}-group {
-      position: absolute;
-      left: 0;
-      top: 0;
-      width: 1920px;
-      height: 1080px;
+    .{{ id }}-other {
+      padding-top: 4px;
     }
-    .{{ id }}-label {
-      position: absolute;
-      left: 96px;
-      top: {{ code_top - 132 }}px;
-      width: 800px;
-      font-size: 34px;
-      font-weight: 500;
-      line-height: 46px;
-      color: var(--ink);
+    {# A scene of code: the code above its diagram. #}
+    .{{ id }}-code-scene {
+      gap: 56px;
     }
-    #{{ id }}-standalone-code,
-    #{{ id }}-test-code {
-      left: 96px;
-      top: {{ code_top }}px;
-      width: {{ code_right - 96 }}px;
+    .{{ id }}-code-scene .code-window {
+      align-self: stretch;
     }
-    .{{ id }}-sync-note {
-      left: 96px;
-      top: {{ line_top + 7 * line_height + 54 }}px;
-      width: 1010px;
-      text-wrap: balance;
+    .{{ id }}-diagram {
+      align-self: stretch;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .{{ id }}-diagram.is-near {
+      justify-content: center;
+      gap: 220px;
+    }
+    .{{ id }}-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+      padding: 48px 40px 40px;
+    }
+    .{{ id }}-diagram .node {
+      width: 330px;
     }
     .{{ id }}-mock {
       border-style: dashed;
     }
     .{{ id }}-mock-tag {
       position: absolute;
-      right: 18px;
-      top: -24px;
-      padding: 0 14px;
-      border: 2px solid var(--data);
-      border-radius: 10px;
-      background: var(--ground);
-      font-size: 28px;
-      line-height: 38px;
-      color: var(--data);
+      right: 22px;
+      top: -25px;
+    }
+    .{{ id }}-sync-note {
+      align-self: stretch;
+      margin-top: -16px;
     }
   </style>
   <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
     <div id="{{ id }}-stage" class="stage">
-      {{ chapter(number, segment.chapter) -}}
+      {{ backdrop(id) }}
+      {{ header(segment, act) }}
       <div id="{{ id }}-content">
-      {{ tools_table(id + "-tools", screen.comparisons.tools, screen.other_tools) -}}
-      {# Standalone mode: the node is a regular program, and it communicates
-         with the nodes of the stack. #}
-      <div id="{{ id }}-standalone" class="{{ id }}-group">
-        <div class="{{ id }}-label">{{ screen.standalone.label }}</div>
-        {{ code_window(id + "-standalone-code", screen.standalone.code) -}}
+      {{ problem_scene(id, segment, screen.problem) }}
+
+      {# The tools that build, run and test one node. #}
+      <div id="{{ id }}-tools" class="steps-scene">
+        <div class="steps">
+          <div class="card-kind">{{ labels.comparison }}</div>
+          <div class="steps-title">{{ tools.title | rich }}</div>
+          <div class="{{ id }}-table">
+            <span></span>
+            <div id="{{ id }}-head-ros2" class="{{ id }}-head">
+              <span class="steps-side-name is-ros2">{{ labels.ros2 }}</span>
+              <div class="steps-summary">{{ tools.ros2_summary | rich }}</div>
+            </div>
+            <div id="{{ id }}-head-peppy" class="{{ id }}-head">
+              <span class="steps-side-name is-peppy">{{ labels.peppy }}</span>
+              <div class="steps-summary">{{ tools.peppy_summary | rich }}</div>
+            </div>
+            {% for row in tools.rows %}
+            <span class="steps-row-name {{ id }}-cell">{{ row }}</span>
+            <div class="{{ id }}-cell"><span id="{{ id }}-ros2-{{ loop.index }}">{{ tools.ros2[loop.index0] | rich }}</span></div>
+            <div class="{{ id }}-cell"><span id="{{ id }}-peppy-{{ loop.index }}">{{ tools.peppy[loop.index0] | rich }}</span></div>
+            {% endfor %}
+            <span></span>
+            <span></span>
+            <div id="{{ id }}-other" class="note {{ id }}-other">{{ screen.other_tools | rich }}</div>
+          </div>
+          <div class="steps-note">{{ tools.note | rich }}</div>
+        </div>
       </div>
-      <div id="{{ id }}-stack" class="{{ id }}-group">
-        <div class="machine" style="left: 1250px; top: {{ run_wire - 106 }}px; width: 574px; height: 372px"><span class="machine-name">{{ screen.standalone.stack }}</span></div>
+
+      <div id="{{ id }}-concept" class="scene">
+        {# Standalone mode: the node is a regular program, and it communicates
+           with the nodes of the stack. #}
+        <div id="{{ id }}-run" class="zone is-centered {{ id }}-code-scene">
+          {{ code_window(id + "-run-code", screen.standalone.code) }}
+          <div class="{{ id }}-diagram">
+            {{ node(id + "-run-node", screen.standalone.node, "laptop") }}
+            <div id="{{ id }}-stack" class="frame {{ id }}-stack">
+              <span class="frame-name" data-layout="over">{{ screen.standalone.stack }}</span>
+              {% for name, icon_name in [(screen.standalone.nodes[0], "camera"), (screen.standalone.nodes[1], "arm")] %}
+              {{ node(id + "-stack-node-" ~ loop.index, name, icon_name) }}
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+        {# A test of the node alone: a generated mock is the camera. #}
+        <div id="{{ id }}-test" class="zone is-centered {{ id }}-code-scene">
+          {{ code_window(id + "-test-code", screen.test.code) }}
+          <div class="{{ id }}-diagram is-near">
+            {% call node(id + "-mock", screen.test.camera, "camera", id + "-mock") %}
+            <span class="pill {{ id }}-mock-tag" data-layout="over">{{ screen.test.mock }}</span>
+            {% endcall %}
+            {{ node(id + "-test-node", screen.test.node, "laptop") }}
+          </div>
+          <div id="{{ id }}-sync-note" class="note {{ id }}-sync-note">{{ screen.sync_note | rich }}</div>
+        </div>
         <svg class="wires" viewBox="0 0 1920 1080">
-          <path id="{{ id }}-talks" class="wire" pathLength="1" d="M {{ code_right + 2 }} {{ run_wire }} H {{ nodes_left - 4 }}" />
-          <path id="{{ id }}-talks-more" class="wire" pathLength="1" d="M 1320 {{ run_wire }} V {{ run_wire + 136 }} Q 1320 {{ run_wire + 160 }} 1344 {{ run_wire + 160 }} H {{ nodes_left - 4 }}" />
+          {{ wire(id + "-talks-1") }}
+          {{ wire(id + "-talks-2") }}
+          {{ wire(id + "-publishes") }}
         </svg>
-        {% for node in screen.standalone.nodes %}
-        <div class="node" style="left: {{ nodes_left }}px; top: {{ run_wire - 46 + loop.index0 * 160 }}px; width: 300px">{{ node }}</div>
-        {% endfor %}
+        <div id="{{ id }}-message" class="dot" data-layout="free"></div>
+        {{ rail(id, screen, [
+          ["standalone", screen.cards.standalone.term, term_card(id + "-card-standalone", screen.cards.standalone)],
+          ["mock", screen.cards.mock.term, term_card(id + "-card-mock", screen.cards.mock)],
+        ]) }}
       </div>
-      {# One test: a generated mock publishes the message of the camera. #}
-      <div id="{{ id }}-test" class="{{ id }}-group">
-        <div class="{{ id }}-label">{{ screen.test.label }}</div>
-        {{ code_window(id + "-test-code", screen.test.code) -}}
-        <div id="{{ id }}-sync-note" class="note {{ id }}-sync-note">{{ screen.sync_note | rich }}</div>
-        <svg class="wires" viewBox="0 0 1920 1080">
-          <path id="{{ id }}-publishes" class="wire" pathLength="1" d="M {{ nodes_left }} {{ mock_wire }} H {{ code_right + 18 }}" /><polygon id="{{ id }}-publishes-head" class="wire-head" points="{{ code_right + 20 }},{{ mock_wire - 10 }} {{ code_right + 4 }},{{ mock_wire }} {{ code_right + 20 }},{{ mock_wire + 10 }}" />
-        </svg>
-        <div id="{{ id }}-mock" class="node {{ id }}-mock" style="left: {{ nodes_left }}px; top: {{ mock_wire - 46 }}px; width: 300px">{{ screen.standalone.nodes[0] }}<span class="{{ id }}-mock-tag">{{ screen.test.mock }}</span></div>
-      </div>
-      <div id="{{ id }}-dot-1" class="dot"></div><div id="{{ id }}-dot-2" class="dot"></div>
-      {{ comparison_card(id + "-compare-mocks", screen.comparisons.mocks) -}}
+
       </div>
     </div>
   </div>
@@ -163,57 +153,65 @@
       const at = {{ at | tojson }};
       const DURATION = {{ duration }};
       const tl = gsap.timeline({ paused: true });
-      const fades = { from: { opacity: 0, y: 0 } };
-      // The two ends of the wire between the code and the nodes at its right.
-      const atCode = (y) => ({ x: {{ code_right + 12 }}, y });
-      const atNodes = (y) => ({ x: {{ nodes_left - 12 }}, y });
-      Motion.endSegment(tl, ID + "-content", DURATION);
-      // The tools of one node: the names of the rows, then the side of
-      // Peppy, with one cell for each part of the voice.
-      const TOOLS = ID + "-tools";
-      const ROWS = [1, 2, 3, 4];
-      Motion.showBetween(tl, TOOLS, 0.2, at.standalone.start + 0.4);
-      ROWS.forEach((row) => Motion.show(tl, TOOLS + "-row-" + row, 0.4 + row * 0.1, Motion.fromSide));
-      Motion.show(tl, TOOLS + "-peppy-head", at.no_build_system.start + 0.3, fades);
-      Motion.show(tl, TOOLS + "-peppy-1", at.regular_project.start + 0.4, Motion.fromSide);
-      Motion.show(tl, TOOLS + "-note", Motion.within(at.regular_project, 0.43), fades);
-      Motion.pulse(tl, TOOLS + "-peppy-1", Motion.within(at.regular_project, 0.74));
-      [0.02, 0.23, 0.47].forEach((share, index) => Motion.show(tl, TOOLS + "-peppy-" + (index + 2), Motion.within(at.your_tools, share), Motion.fromSide));
-      Motion.show(tl, TOOLS + "-other", Motion.within(at.your_tools, 0.72), Motion.fromSide);
-      // The side of ROS 2: its head, then its cells.
-      Motion.show(tl, TOOLS + "-ros2-head", at.ros2_tools.start + 0.1, fades);
-      ROWS.forEach((row) => Motion.show(tl, TOOLS + "-ros2-" + row, Motion.within(at.ros2_tools, 0.1) + row * 0.4, Motion.fromSide));
-      Motion.pulse(tl, TOOLS + "-ros2-head", Motion.within(at.ros2_tools, 0.42));
-      Motion.pulse(tl, TOOLS + "-ros2-2", Motion.within(at.ros2_tools, 0.74));
-      // Standalone mode: the lines that read the parameters, the line of the
-      // configuration, then the line that runs the node.
-      const STANDALONE = ID + "-standalone-code";
-      Motion.showBetween(tl, ID + "-standalone", at.standalone.start + 0.5, at.tests_alone.start + 0.1);
-      [[[1, 2], 0.02], [[4], 0.3], [[5], 0.46]].forEach(([lines, share]) => Motion.focusLines(tl, STANDALONE, lines, Motion.within(at.standalone_how, share)));
-      // The node communicates with the nodes of the stack.
-      const talkTime = Motion.within(at.standalone_how, 0.64);
-      Motion.showBetween(tl, ID + "-stack", talkTime, at.tests_alone.start + 0.1, fades);
-      Motion.draw(tl, ID + "-talks", talkTime + 0.3, 0.5);
-      Motion.draw(tl, ID + "-talks-more", talkTime + 0.6, 0.5);
-      Motion.travel(tl, ID + "-dot-1", atCode({{ run_wire }}), atNodes({{ run_wire }}), talkTime + 0.9, 0.5, 2);
-      Motion.travel(tl, ID + "-dot-2", atNodes({{ run_wire }}), atCode({{ run_wire }}), talkTime + 1.15, 0.5, 2);
-      // One test: the sync generates the mock and the harness.
-      const TEST = ID + "-test-code";
-      const mockTime = Motion.within(at.mocks, 0.31);
-      Motion.show(tl, ID + "-test", at.tests_alone.start + 0.2);
-      Motion.show(tl, ID + "-sync-note", at.mocks.start + 0.3, fades);
-      Motion.show(tl, ID + "-mock", mockTime, Motion.fromSide);
-      Motion.draw(tl, ID + "-publishes", mockTime + 0.4, 0.5);
-      Motion.show(tl, ID + "-publishes-head", mockTime + 0.8, { from: { opacity: 0, y: 0 }, duration: 0.2 });
-      // The harness, the message of the mock, the answer of the node, then
-      // the assert.
-      const steps = [[[2], Motion.within(at.mocks, 0.8)], [[3, 4, 5], at.one_test.start + 0.2], [[6], Motion.within(at.one_test, 0.56)], [[7], Motion.within(at.one_test, 0.8)], [[], at.ros2_mocks.start - 0.5]];
-      steps.forEach(([lines, time]) => Motion.focusLines(tl, TEST, lines, time));
-      Motion.travel(tl, ID + "-dot-1", atNodes({{ mock_wire }}), atCode({{ mock_wire }}), at.one_test.start + 0.5, 0.6, 3);
-      // In ROS 2, the developer writes each mock. The test goes down, and
-      // the comparison card comes in above its code.
-      tl.to(ID + "-test", { y: 110, duration: 0.5, ease: "power2.inOut" }, at.ros2_mocks.start - 0.5);
-      Motion.show(tl, ID + "-compare-mocks", at.ros2_mocks.start - 0.2, { from: { opacity: 0, x: 70, y: 0 } });
+      const ROWS = {{ tools.rows | length }};
+
+      Motion.connect(ID + "-talks-1", [ID + "-run-node", "right", -16], [ID + "-stack-node-1", "left"], { gap: 6 });
+      Motion.connect(ID + "-talks-2", [ID + "-run-node", "right", 16], [ID + "-stack-node-2", "left"], { gap: 6 });
+      Motion.connect(ID + "-publishes", [ID + "-mock", "right"], [ID + "-test-node", "left"], { gap: 6 });
+
+      const testStart = at.mocks.start - 0.3;
+      Motion.chapter(tl, ID, {
+        duration: DURATION,
+        problem: [0.3, at.regular_project.start - 0.2],
+        concept: at.standalone.start - 0.3,
+        terms: [
+          ["standalone", at.standalone.start + 0.2, testStart],
+          ["mock", at.mocks.start + 0.2, at.benefit.start - 0.1],
+        ],
+        benefit: at.benefit.start,
+        ros2: at.benefit.start + 1.2,
+      });
+
+      // A node is a regular project: the side of Peppy comes in with the
+      // voice, one line for each task.
+      Motion.showBetween(tl, ID + "-tools", at.regular_project.start - 0.3, at.standalone.start - 0.2);
+      Motion.show(tl, ID + "-head-peppy", at.regular_project.start + 0.2, Motion.appears);
+      Motion.show(tl, ID + "-peppy-1", Motion.within(at.regular_project, 0.6), Motion.fromSide);
+      [0.52, 0.62, 0.72].forEach((share, index) => Motion.show(tl, ID + "-peppy-" + (index + 2), Motion.within(at.your_tools, share), Motion.fromSide));
+      Motion.show(tl, ID + "-other", at.your_tools.end, Motion.appears);
+      // ROS 2 has a build system of its own.
+      Motion.show(tl, ID + "-head-ros2", at.ros2_tools.start + 0.2, Motion.appears);
+      for (let row = 1; row <= ROWS; row += 1) {
+        Motion.show(tl, ID + "-ros2-" + row, Motion.within(at.ros2_tools, 0.45) + row * 0.3, Motion.fromSide);
+      }
+
+      // Standalone mode: the node runs as a regular program, and it
+      // communicates with the nodes of the stack.
+      Motion.show(tl, ID + "-run-code", at.standalone.start - 0.1);
+      Motion.show(tl, ID + "-run-node", at.standalone.start + 0.4, Motion.grows);
+      Motion.focusLines(tl, ID + "-run-code", [4], Motion.within(at.standalone, 0.1));
+      Motion.focusLines(tl, ID + "-run-code", [5], Motion.within(at.standalone, 0.36));
+      Motion.pulse(tl, ID + "-run-node", Motion.within(at.standalone, 0.36));
+      const talks = Motion.within(at.standalone, 0.7);
+      Motion.show(tl, ID + "-stack", talks - 0.5);
+      [1, 2].forEach((number, index) => Motion.drawArrow(tl, ID + "-talks-" + number, talks + index * 0.25, 0.5));
+      Motion.focusLines(tl, ID + "-run-code", [], at.standalone.end);
+
+      // A test of the node alone: the generated mock is the camera, and it
+      // gives the node a message.
+      Motion.hide(tl, [ID + "-run", ID + "-talks-1", ID + "-talks-1-head", ID + "-talks-2", ID + "-talks-2-head"], testStart + 0.2);
+      Motion.show(tl, ID + "-test-code", testStart + 0.2);
+      Motion.show(tl, ID + "-test-node", testStart + 0.5, Motion.grows);
+      Motion.show(tl, ID + "-mock", Motion.within(at.mocks, 0.55), Motion.grows);
+      Motion.show(tl, ID + "-sync-note", Motion.within(at.mocks, 0.8), Motion.appears);
+      Motion.focusLines(tl, ID + "-test-code", [1, 2], Motion.within(at.mocks, 0.8));
+      Motion.focusLines(tl, ID + "-test-code", [3, 4, 5], at.one_test.start + 0.2);
+      Motion.drawArrow(tl, ID + "-publishes", at.one_test.start + 0.3, 0.5);
+      Motion.follow(tl, ID + "-message", ID + "-publishes", at.one_test.start + 0.9, 0.7, 2);
+      Motion.pulse(tl, ID + "-test-node", at.one_test.start + 2.3);
+      Motion.focusLines(tl, ID + "-test-code", [6, 7], Motion.within(at.one_test, 0.62));
+      Motion.focusLines(tl, ID + "-test-code", [], at.benefit.start - 0.2);
+
       window.__timelines["{{ id }}"] = tl;
     })();
   </script>

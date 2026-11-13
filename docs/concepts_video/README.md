@@ -52,11 +52,14 @@ YouTube gives each upload a new link. After an upload, put the id of the new lin
 `transcript.toml` has one `[[segment]]` for each segment of the video. A segment holds:
 
 - `chapter`: the title of its chapter.
+- `act`: the id of its act, for a segment that is in an act.
 - `[[segment.source]]`: each section of `docs/src/content/docs` that the segment rests on, with the SHA-256 of the text of the section. A section is the text below one heading, up to the next heading of any level, with the text of the snippet files that it shows. The title of a page names the text before its first heading.
 - `[[segment.voice]]`: the sentences of the voice, in order. Each one has an `id`, which its composition uses to time its animation.
 - `[segment.screen]`: each text that its composition shows.
 
 A text between two backticks is a technical name: a command, a flag, a file name or a name of an API. In a technical name, a word in angle brackets is a placeholder.
+
+`[[act]]` is one act: a group of segments that follow each other and answer one question. An act holds its `id`, its `title` and its `question`. The screen shows an act as a part of the video, with its number. The first segment and the last segment are in no act: the first one shows the map of the acts, and the last one shows it again.
 
 `[splash]` is the splash screen, which shows before the first segment with the music and with no voice. `seconds` is its duration, and `[splash.screen]` holds each text that its composition shows. The splash screen names no section of the docs, so its texts hold no technical name. A transcript with no `[splash]` gives a video with no splash screen.
 
@@ -68,7 +71,7 @@ A text between two backticks is a technical name: a command, a flag, a file name
 - A sentence of the voice has more than 25 words, which is the limit that ASD-STE100 gives for a descriptive sentence.
 - `voice_durations.json` does not agree with the sentences of the transcript.
 - A composition shows a text that is not in the transcript, does not show a text of its segment or of the splash screen, or names a footage file that is not in `footage.json`.
-- The video is longer than 9 minutes.
+- The video is longer than 10 minutes.
 
 The test compares text, counts and hashes only. It calls no model.
 
@@ -84,17 +87,34 @@ When a sentence of the voice changes, run `pixi run build`: it makes the new voi
 - Each time comes from the voice: `at.<sentence id>.start` and `at.<sentence id>.end`, in seconds from the start of the segment. `duration` is the duration of the segment, and `start` is its start in the video.
 - The splash screen has no voice. The time of each of its parts comes from the music: `bells` holds the time of each bell note of the start of the music, in seconds.
 - `footage("<name>")` gives the path of a footage file of `footage.json`.
+- `acts` holds the acts of the video with their chapters, and `act` is the act of the segment.
 
-The parts of `_parts.html.j2` give the chapter, the term card, the comparison card, the comparison of steps and the code window. `Motion` (`motion.js`) gives the animation functions. `RobotView` (`robot_view.js`) draws the 3D model of the OpenArm v2 in a canvas. All the views of the video share one WebGL context, and a view draws during its segment only.
+The parts of `_parts.html.j2` give the header, the map of the acts, the problem scene, the rail, the term card, the comparison of steps, the code window, the node, the command, the icons and the wires. `Motion` (`motion.js`) gives the animation functions. `RobotView` (`robot_view.js`) draws the 3D model of the OpenArm v2 in a canvas. All the views of the video share one WebGL context, and a view draws during its segment only.
 
-The rules of a composition:
+### The structure of the video
 
-- One visual language in all segments: a node is a box with its interfaces, the stack is a graph that grows, a contract is a socket that several nodes fit, and a machine is a frame around a part of the graph. A term card and a comparison card with ROS 2 have two different looks.
+The video tells the viewer what it explains before it explains it, and it gives the reason for each concept:
+
+- The first segment says why a robot needs a framework, then shows the map of the video: its three acts, the chapters of each act, and why the viewer needs them.
+- The first chapter of an act starts with the map again, with the card of the act in the colour of Peppy.
+- Each chapter of an act has the same order. First the problem that the concept solves, in large text. Then the concept, with its diagram. Last, what the viewer gets, with the comparison with ROS 2 when the chapter has one. `Motion.chapter` puts these parts on the timeline of a chapter.
+- The last segment shows the map again, with what the viewer gets from each chapter, then the next step.
+
+A chapter keeps its words in the rail, on the right of its diagram, in the same order: the problem, one chip for each term, then one slot that holds the card of the term of the moment and, at the end, what the viewer gets. Thus the viewer sees at each time which problem the diagram answers, and which terms the chapter gave. A segment keeps `problem`, `benefit` and, for the comparison with ROS 2, `ros2` in its `[segment.screen]`.
+
+### The rules of a composition
+
+- One visual language in all segments: a node is a box with its interfaces, the stack is a graph that grows, a contract is a socket that several nodes fit, and a machine is a frame around a part of the graph. A term card and a comparison with ROS 2 have two different looks.
+- One layout in all segments: the header at the top, the diagram in the zone on the left (`.zone`), and the rail on the right. A scene with no rail has the full width (`.zone.is-full`).
 - One term card shows at a time, and it stays long enough to read.
 - The id of each element starts with the id of the segment, because HyperFrames puts all the compositions on one page.
 - A frame is a function of the time of the timeline only: no clock, and no random value without a seed. Place each tween at a time from `at`.
 - An element comes in with `Motion.show` or `gsap.fromTo`, so it is not visible before its time.
-- The smallest text is 28 px, and each text stays 96 px or more from the left and right sides of the frame and 54 px or more from its top and bottom.
+- The smallest text is 28 px, and each part stays 96 px or more from the left and right sides of the frame and 54 px or more from its top and bottom.
+- A part that is in a box gets its place from the layout of CSS: a grid or a flex box with a padding. Thus the space on each side of the part comes from one value.
+- A wire gets its shape from `Motion.connect`, which reads the place of the two parts that it joins. Thus a wire always ends at its parts.
+
+### The pictures of a composition
 
 To look at a composition while you write it:
 
@@ -102,7 +122,9 @@ To look at a composition while you write it:
 pixi run snapshot <part id> <times>
 ```
 
-The command compiles the video of one part and writes one PNG file for each time, for example `pixi run snapshot opening 0,12,28` or `pixi run snapshot splash 0.5,2,3.9`. `pixi run lint` compiles all the compositions and runs the lint of HyperFrames on them.
+The command compiles the video of one part and writes one PNG file for each time, for example `pixi run snapshot opening 0,12,28` or `pixi run snapshot splash 0.5,2,3.9`.
+
+`pixi run lint` compiles all the compositions and runs the lint of HyperFrames on them. Each error and each warning of the lint is a fault, but for the warning about the number of lines of a compiled composition: a compiled composition is the output of a template, with the texts of the transcript in it.
 
 ## The splash screen and the chapters
 

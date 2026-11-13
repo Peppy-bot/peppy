@@ -1,186 +1,101 @@
-{# Segment 5. Many nodes can do the same job. A contract declares the job
-   outside of the nodes: a node implements it, another node depends on it, and
-   the launcher connects the two. So one brain replaces another. #}
-{% from "_parts.html.j2" import chapter, term_card, comparison_card %}
+{# Segment 6. A contract declares one job outside of a node. A node that
+   needs the job depends on the contract, and each node that does the job
+   implements it, so one brain replaces another. #}
+{% from "_parts.html.j2" import backdrop, header, problem_scene, rail, term_card, terms_card, node, icon, mark, wire %}
 {% set id = segment.id %}
-
-{# The brains are in one row at the top. The node that needs the job is at the
-   bottom, below the socket of the contract. A brain goes down from the row
-   into the socket. `center` is the middle of the socket, and `pitch` is the
-   distance between two brains of the row. #}
-{% set center = 600 %}
-{% set pitch = 338 %}
-{% set row_top = 160 %}
-{% set socket_top = 780 %}
-{% set socket_height = 70 %}
-{% set consumer_top = 918 %}
-{# The group of a brain, from its top: the node, its two lanes, then its plug.
-   The tab of the plug is below its body, and `lane` is the distance from the
-   middle of the group to each lane. #}
-{% set group_width = 340 %}
-{% set middle = group_width // 2 %}
-{% set node_height = 92 %}
-{% set plug_top = 192 %}
-{% set plug_body = 44 %}
-{% set tab = 22 %}
-{% set lane = 22 %}
-{% set group_height = plug_top + plug_body + tab %}
-{# How far a brain goes down from the row to sit in the socket, and how far it
-   goes down to pass below the row. #}
-{% set seated = socket_top - 2 - plug_top - plug_body - row_top %}
-{% set below_row = group_height + 22 %}
-{# The brain that the launcher connects first, and the brain that replaces it. #}
-{% set first_brain = 2 %}
-{% set next_brain = 3 %}
-
+{# The diagram, in the zone: the brains that do the job at the top, the
+   contract in the middle, and the node that needs the job at the bottom. #}
+{% set zone_width = 1120 %}
+{% set node_width = 260 %}
+{% set brain_pitch = 350 %}
+{% set brains_top = 50 %}
+{% set contract = {"left": 110, "top": 330, "width": 900, "height": 170} %}
+{% set consumer_top = 684 %}
+{% set brains = [("vla", screen.cards.vla), ("wam", screen.cards.wam), ("vlm", screen.cards.vlm)] %}
 <template>
   <style>
     #root {
       position: absolute;
       inset: 0;
     }
-    .{{ id }}-brain {
-      position: absolute;
-      top: {{ row_top }}px;
-      width: {{ group_width }}px;
-      height: {{ group_height }}px;
-    }
-    .{{ id }}-lanes {
-      position: absolute;
-      left: 0;
-      top: 0;
-      width: {{ group_width }}px;
-      height: {{ group_height }}px;
-      overflow: visible;
-    }
-    .{{ id }}-plug {
-      position: absolute;
-      left: {{ middle - 95 }}px;
-      top: {{ plug_top }}px;
-      width: 190px;
-      height: {{ plug_body + tab }}px;
-    }
-    .{{ id }}-plug svg,
-    .{{ id }}-socket svg {
-      position: absolute;
-      left: 0;
-      top: 0;
-      width: 100%;
-      height: 100%;
-      overflow: visible;
-    }
-    .{{ id }}-plug path {
-      fill: var(--contract);
-    }
-    .{{ id }}-plug-name {
-      position: absolute;
-      left: 0;
-      top: 0;
-      width: 190px;
-      height: {{ plug_body }}px;
+    .{{ id }}-contract {
+      left: {{ contract.left }}px;
+      top: {{ contract.top }}px;
+      width: {{ contract.width }}px;
+      height: {{ contract.height }}px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 28px;
+      gap: 36px;
+      border: 3px solid var(--contract);
+      border-radius: 22px;
+      background: linear-gradient(180deg, rgba(180, 140, 255, 0.16) 0%, rgba(180, 140, 255, 0.06) 100%);
+      box-shadow: var(--panel-shadow);
+    }
+    .{{ id }}-contract-name {
+      margin-right: 20px;
+      font-family: var(--mono);
+      font-size: 44px;
       font-weight: 700;
-      color: #1a1033;
+      line-height: 56px;
+      color: var(--contract);
     }
-    .{{ id }}-socket {
-      position: absolute;
-      left: {{ center - 115 }}px;
-      top: {{ socket_top }}px;
-      width: 230px;
-      height: {{ socket_height }}px;
-    }
-    .{{ id }}-socket path {
-      fill: #1b1533;
-      stroke: var(--contract);
-      stroke-width: 4;
-      stroke-linejoin: round;
-    }
-    .{{ id }}-socket-name {
-      position: absolute;
-      left: 0;
-      top: {{ tab }}px;
-      width: 230px;
-      height: {{ socket_height - tab - 2 }}px;
+    .{{ id }}-flow {
       display: flex;
       align-items: center;
-      justify-content: center;
-      font-size: 30px;
-      font-weight: 700;
-      color: var(--contract);
+      gap: 14px;
+      height: 76px;
+      padding: 0 26px;
+      border: 2px solid var(--line-strong);
+      border-radius: 14px;
+      background: var(--ground);
+      font-size: 36px;
+      font-weight: 500;
     }
-    .{{ id }}-relation {
-      color: var(--contract);
+    .{{ id }}-flow .icon {
+      width: 38px;
+      height: 38px;
+      color: var(--data);
     }
-    .{{ id }}-fits {
-      fill: none;
-      stroke: rgba(180, 140, 255, 0.6);
-      stroke-width: 3;
-      stroke-linecap: round;
+    .{{ id }}-node {
+      width: {{ node_width }}px;
     }
   </style>
   <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
     <div id="{{ id }}-stage" class="stage">
-      {{ chapter(number, segment.chapter) }}
+      {{ backdrop(id) }}
+      {{ header(segment, act) }}
       <div id="{{ id }}-content">
+      {{ problem_scene(id, segment, screen.problem) }}
 
-      {# Each plug has the shape of the socket. #}
-      <svg class="wires" viewBox="0 0 1920 1080">
-        {% for brain in screen.brains %}
-        {% set brain_middle = center + (loop.index - 2) * pitch %}
-        <path id="{{ id }}-fits-{{ loop.index }}" class="{{ id }}-fits" pathLength="1" d="M {{ brain_middle }} {{ row_top + group_height + 6 }} L {{ center + (loop.index - 2) * 16 }} {{ socket_top - 8 }}" />
-        {% endfor %}
-      </svg>
-
-      {# The node that needs the job. Its two lanes go to the socket. #}
-      <svg class="wires" viewBox="0 0 1920 1080">
-        <path id="{{ id }}-consumer-gives" class="wire" pathLength="1" d="M {{ center - lane }} {{ consumer_top }} V {{ socket_top + socket_height + 16 }}" />
-        <polygon id="{{ id }}-consumer-gives-head" class="wire-head" points="{{ center - lane - 9 }},{{ socket_top + socket_height + 18 }} {{ center - lane + 9 }},{{ socket_top + socket_height + 18 }} {{ center - lane }},{{ socket_top + socket_height + 2 }}" />
-        <path id="{{ id }}-consumer-takes" class="wire" pathLength="1" d="M {{ center + lane }} {{ socket_top + socket_height }} V {{ consumer_top - 14 }}" />
-        <polygon id="{{ id }}-consumer-takes-head" class="wire-head" points="{{ center + lane - 9 }},{{ consumer_top - 16 }} {{ center + lane + 9 }},{{ consumer_top - 16 }} {{ center + lane }},{{ consumer_top }}" />
-      </svg>
-      <div id="{{ id }}-consumer" class="node" style="left: {{ center - 110 }}px; top: {{ consumer_top }}px; width: 220px">{{ screen.consumer }}</div>
-      <div id="{{ id }}-depends-on" class="label {{ id }}-relation" style="left: {{ center + lane + 28 }}px; top: {{ socket_top + socket_height + 14 }}px">{{ screen.depends_on }}</div>
-
-      <div id="{{ id }}-dot-in" class="dot"></div>
-      <div id="{{ id }}-dot-out" class="dot"></div>
-
-      {# The contract: a socket. Its notch has the shape of the tab of a plug. #}
-      <div id="{{ id }}-socket" class="{{ id }}-socket">
-        <svg viewBox="0 0 230 {{ socket_height }}">
-          <path d="M 14 0 H 75 L 90 {{ tab }} H 140 L 155 0 H 216 Q 230 0 230 14 V {{ socket_height - 14 }} Q 230 {{ socket_height }} 216 {{ socket_height }} H 14 Q 0 {{ socket_height }} 0 {{ socket_height - 14 }} V 14 Q 0 0 14 0 Z" />
-        </svg>
-        <span class="{{ id }}-socket-name">{{ screen.contract }}</span>
-      </div>
-
-      {# The brains. Each one takes the same input and gives the same output. #}
-      {% for brain in screen.brains %}
-      <div id="{{ id }}-brain-{{ loop.index }}" class="{{ id }}-brain" style="left: {{ center + (loop.index - 2) * pitch - middle }}px">
-        <svg class="{{ id }}-lanes" viewBox="0 0 {{ group_width }} {{ group_height }}">
-          <path id="{{ id }}-brain-{{ loop.index }}-takes" class="wire" pathLength="1" d="M {{ middle - lane }} {{ plug_top }} V {{ node_height + 16 }}" />
-          <polygon id="{{ id }}-brain-{{ loop.index }}-takes-head" class="wire-head" points="{{ middle - lane - 9 }},{{ node_height + 18 }} {{ middle - lane + 9 }},{{ node_height + 18 }} {{ middle - lane }},{{ node_height + 2 }}" />
-          <path id="{{ id }}-brain-{{ loop.index }}-gives" class="wire" pathLength="1" d="M {{ middle + lane }} {{ node_height }} V {{ plug_top - 14 }}" />
-          <polygon id="{{ id }}-brain-{{ loop.index }}-gives-head" class="wire-head" points="{{ middle + lane - 9 }},{{ plug_top - 16 }} {{ middle + lane + 9 }},{{ plug_top - 16 }} {{ middle + lane }},{{ plug_top }}" />
-        </svg>
-        <div id="{{ id }}-brain-{{ loop.index }}-input" class="label is-data {{ id }}-input" style="right: {{ middle + lane + 16 }}px; top: {{ node_height + 12 }}px">{{ screen.input }}</div>
-        <div id="{{ id }}-brain-{{ loop.index }}-output" class="label is-data {{ id }}-output" style="left: {{ middle + lane + 16 }}px; top: {{ node_height + 50 }}px">{{ screen.output }}</div>
-        <div id="{{ id }}-brain-{{ loop.index }}-plug" class="{{ id }}-plug">
-          <svg viewBox="0 0 190 {{ plug_body + tab }}">
-            <path d="M 12 0 H 178 Q 190 0 190 12 V {{ plug_body - 12 }} Q 190 {{ plug_body }} 178 {{ plug_body }} H 135 L 120 {{ plug_body + tab }} H 70 L 55 {{ plug_body }} H 12 Q 0 {{ plug_body }} 0 {{ plug_body - 12 }} V 12 Q 0 0 12 0 Z" />
-          </svg>
-          <span class="{{ id }}-plug-name">{{ screen.implements }}</span>
+      <div id="{{ id }}-concept" class="scene">
+        <div class="zone">
+          {{ node(id + "-consumer", screen.consumer, "arm", "placed " + id + "-node", "left: " ~ ((zone_width - node_width) // 2) ~ "px; top: " ~ consumer_top ~ "px") }}
+          <div id="{{ id }}-contract" class="placed {{ id }}-contract">
+            <div class="{{ id }}-contract-name">{{ screen.contract }}</div>
+            <div id="{{ id }}-input" class="{{ id }}-flow">{{ icon("camera") }}<span>{{ screen.input }}</span></div>
+            <div id="{{ id }}-output" class="{{ id }}-flow">{{ icon("arm") }}<span>{{ screen.output }}</span></div>
+          </div>
+          {% for key, card in brains %}
+          {{ node(id + "-brain-" + key, card.term, "brain", "placed " + id + "-node", "left: " ~ ((zone_width - node_width) // 2 + (loop.index0 - 1) * brain_pitch) ~ "px; top: " ~ brains_top ~ "px") }}
+          {% endfor %}
         </div>
-        <div id="{{ id }}-brain-{{ loop.index }}-node" class="node" style="left: {{ middle - 100 }}px; top: 0; width: 200px; min-width: 0">{{ brain }}</div>
+        <svg class="wires" viewBox="0 0 1920 1080">
+          {{ wire(id + "-depends", "is-contract") }}
+          {% for key, card in brains %}
+          {{ wire(id + "-fits-" + key, "is-contract") }}
+          {% endfor %}
+        </svg>
+        {# The name of each link, on its wire. #}
+        <span id="{{ id }}-implements" class="label is-tag placed" data-layout="over">{{ screen.implements }}</span>
+        <span id="{{ id }}-depends-on" class="label is-tag placed" data-layout="over">{{ screen.depends_on }}</span>
+        {{ mark(id + "-same", "ok", "position: absolute") }}
+        {{ rail(id, screen, [
+          ["contract", screen.cards.contract.term, term_card(id + "-card-contract", screen.cards.contract)],
+          ["types", screen.brain_types, terms_card(id + "-card-types", screen.brain_types, [screen.cards.vla, screen.cards.wam, screen.cards.vlm])],
+        ]) }}
       </div>
-      {% endfor %}
 
-      {{ term_card(id + "-card-contract", screen.cards.contract) }}
-      {% for brain in screen.brains %}
-      {{ term_card(id + "-card-brain-" ~ loop.index, screen.cards[brain | lower]) }}
-      {% endfor %}
-      {{ comparison_card(id + "-comparison", screen.comparisons.capability) }}
       </div>
     </div>
   </div>
@@ -190,122 +105,75 @@
       const at = {{ at | tojson }};
       const DURATION = {{ duration }};
       const tl = gsap.timeline({ paused: true });
+      const BRAINS = {{ brains | map(attribute=0) | list | tojson }};
+      const [PEPPY, CONTRACT] = ["peppy", "contract"].map(Motion.colour);
+      const brain = (key) => ID + "-brain-" + key;
+      const fits = (key) => ID + "-fits-" + key;
 
-      const BRAINS = {{ screen.brains | length }};
-      const FIRST_BRAIN = ID + "-brain-{{ first_brain }}";
-      const NEXT_BRAIN = ID + "-brain-{{ next_brain }}";
-      const SEATED = {{ seated }};
-      const brain = (number, part) => ID + "-brain-" + number + (part ? "-" + part : "");
-      const eachBrain = function (action) {
-        for (let number = 1; number <= BRAINS; number += 1) action(number, number - 1);
-      };
-      const move = (target, to, time, duration) =>
-        tl.to(target, Object.assign({ duration, ease: "power2.inOut" }, to), time);
-      /* Show a word again, larger for a moment. */
-      const flash = (target, time) =>
-        tl.fromTo(
-          target,
-          { scale: 1 },
-          { scale: 1.22, duration: 0.25, ease: "power2.out", yoyo: true, repeat: 1, stagger: 0.12, immediateRender: false },
-          time,
-        );
-      /* Data goes between the node that needs the job and the brain in the
-         socket, from `start` to `end`: the input goes up, the output comes down. */
-      const LANE_BOTTOM = {{ consumer_top - 6 }};
-      const LANE_TOP = {{ row_top + seated + node_height + 20 }};
-      const flow = function (start, end) {
-        const seconds = 0.9;
-        const times = Math.floor((end - start) / seconds);
-        const outTimes = Math.floor((end - start - seconds / 2) / seconds);
-        Motion.travel(tl, ID + "-dot-in", { x: {{ center - lane }}, y: LANE_BOTTOM }, { x: {{ center - lane }}, y: LANE_TOP }, start, seconds, times);
-        Motion.travel(tl, ID + "-dot-out", { x: {{ center + lane }}, y: LANE_TOP }, { x: {{ center + lane }}, y: LANE_BOTTOM }, start + seconds / 2, seconds, outTimes);
+      // The wires: each brain implements the contract, and the node that
+      // needs the job depends on it. Each wire is a straight line.
+      const contract = Motion.boxOf(ID + "-contract");
+      Motion.connect(ID + "-depends", [ID + "-consumer", "top"], [ID + "-contract", "bottom"], { gap: 6 });
+      BRAINS.forEach((key) => Motion.connect(fits(key), [brain(key), "bottom"], [ID + "-contract", "top", Motion.boxOf(brain(key)).x - contract.x], { gap: 6 }));
+      // The name of a link is on the middle of its wire.
+      [["implements", fits(BRAINS[0])], ["depends-on", ID + "-depends"]].forEach(function ([name, wire]) {
+        const point = Motion.pointOn(wire, 0.42);
+        gsap.set(ID + "-" + name, { left: point.x, top: point.y, xPercent: -50, yPercent: -50 });
+      });
+      // The mark that says that the node at the bottom is the same.
+      const consumer = Motion.boxOf(ID + "-consumer");
+      gsap.set(ID + "-same", { left: consumer.right - 22, top: consumer.top - 22 });
+      // Give the link of a brain to the contract a colour.
+      const bind = function (key, value, time) {
+        tl.to(fits(key), { stroke: value, duration: 0.3 }, time);
+        tl.to(fits(key) + "-head", { fill: value, duration: 0.3 }, time);
       };
 
-      Motion.endSegment(tl, ID + "-content", DURATION);
-
-      // Many nodes can do the same job: three brains.
-      eachBrain(function (number, index) {
-        Motion.show(tl, brain(number, "node"), at.same_job.start + 0.1 + index * 0.4);
+      Motion.chapter(tl, ID, {
+        duration: DURATION,
+        problem: [0.3, at.contract.start - 0.2],
+        terms: [
+          ["contract", at.contract.start + 0.4, at.same_contract.start - 0.1],
+          ["types", at.same_contract.start + 0.2, at.replace.start - 0.1],
+        ],
+        benefit: at.replace.start,
+        ros2: at.replace.end,
       });
 
-      // Each brain takes the pictures and gives motions.
-      const takes = Motion.within(at.brains_job, 0.34);
-      const gives = Motion.within(at.brains_job, 0.77);
-      eachBrain(function (number, index) {
-        Motion.pulse(tl, brain(number, "node"), Motion.within(at.brains_job, 0.2) + index * 0.2);
-        Motion.draw(tl, brain(number, "takes"), takes + index * 0.15, 0.4);
-        Motion.showHead(tl, brain(number, "takes-head"), takes + 0.35 + index * 0.15);
-        Motion.show(tl, brain(number, "input"), takes + 0.15 + index * 0.15, Motion.fromSide);
-        Motion.draw(tl, brain(number, "gives"), gives + index * 0.15, 0.4);
-        Motion.showHead(tl, brain(number, "gives-head"), gives + 0.35 + index * 0.15);
-        Motion.show(tl, brain(number, "output"), gives + 0.15 + index * 0.15, Motion.fromSide);
-      });
+      // A contract declares one job: it takes the pictures, and gives motions.
+      Motion.show(tl, ID + "-contract", at.contract.start + 0.1, Motion.grows);
+      Motion.show(tl, ID + "-input", Motion.within(at.brains_job, 0.5), Motion.fromSide);
+      Motion.show(tl, ID + "-output", Motion.within(at.brains_job, 0.82), Motion.fromSide);
 
-      // The contract declares this job. It is a socket.
-      Motion.show(tl, ID + "-socket", at.contract.start + 0.2, Motion.grows);
-      Motion.card(tl, ID + "-card-contract", at.contract.start + 0.5, at.depends.start + 0.3);
-      const declares = Motion.within(at.contract, 0.42);
-      flash("." + "{{ id }}-input", declares);
-      flash("." + "{{ id }}-output", declares + 0.5);
-      Motion.pulse(tl, ID + "-socket", declares + 1.0);
-
-      // A node that does the job implements the contract: it has the plug.
-      const fits = Motion.within(at.implements, 0.7);
-      eachBrain(function (number, index) {
-        Motion.pulse(tl, brain(number, "node"), at.implements.start + 0.3 + index * 0.2);
-        Motion.show(tl, brain(number, "plug"), Motion.within(at.implements, 0.42) + index * 0.3, { from: { opacity: 0, y: -18 } });
-        Motion.draw(tl, ID + "-fits-" + number, fits + index * 0.12, 0.5);
-      });
-      Motion.pulse(tl, ID + "-socket", fits + 0.7);
-
-      // A node that needs the job depends on the contract, and not on a brain.
+      // A node that does the job implements the contract, and a node that
+      // needs the job depends on the contract.
+      Motion.show(tl, brain("vla"), at.implements.start + 0.2);
+      Motion.drawArrow(tl, fits("vla"), Motion.within(at.implements, 0.5), 0.5);
+      Motion.show(tl, ID + "-implements", Motion.within(at.implements, 0.6), Motion.grows);
       Motion.show(tl, ID + "-consumer", at.depends.start + 0.2);
-      Motion.draw(tl, ID + "-consumer-gives", at.depends.start + 0.7, 0.35);
-      Motion.showHead(tl, ID + "-consumer-gives-head", at.depends.start + 1.0);
-      Motion.draw(tl, ID + "-consumer-takes", at.depends.start + 0.9, 0.35);
-      Motion.showHead(tl, ID + "-consumer-takes-head", at.depends.start + 1.2);
-      Motion.show(tl, ID + "-depends-on", Motion.within(at.depends, 0.3), Motion.fromSide);
-      Motion.card(tl, ID + "-comparison", at.depends.start + 0.5, at.models_change.start - 0.1);
-      const notSpecific = Motion.within(at.depends, 0.66);
-      const brainsAndFits = "." + "{{ id }}-brain, ." + "{{ id }}-fits";
-      Motion.fade(tl, brainsAndFits, 0.35, notSpecific);
-      Motion.pulse(tl, ID + "-socket", notSpecific + 0.3);
-      Motion.fade(tl, "." + "{{ id }}-brain", 1, at.binds.start - 0.2);
+      Motion.drawArrow(tl, ID + "-depends", Motion.within(at.depends, 0.42), 0.5);
+      Motion.show(tl, ID + "-depends-on", Motion.within(at.depends, 0.5), Motion.grows);
 
-      // At launch time, the launcher puts one brain in the socket.
-      const bindTime = Motion.within(at.binds, 0.28);
-      Motion.hide(tl, "." + "{{ id }}-fits", bindTime + 0.2);
-      move(FIRST_BRAIN, { y: SEATED }, bindTime, 1.0);
-      Motion.pulse(tl, ID + "-socket", bindTime + 1.0);
-      flow(bindTime + 1.2, at.replace.start);
+      // At launch time, the launcher connects the two nodes.
+      const bound = Motion.within(at.binds, 0.45);
+      bind("vla", PEPPY, bound);
+      Motion.pulse(tl, ID + "-consumer", bound);
+      Motion.pulse(tl, brain("vla"), bound + 0.2);
 
-      // The models of the brains: one term at a time.
-      const termsStart = at.models_change.start + 0.3;
-      const termSeconds = (at.replace.start + 2.6 - termsStart) / BRAINS;
-      eachBrain(function (number, index) {
-        const start = termsStart + index * termSeconds;
-        Motion.card(tl, ID + "-card-brain-" + number, start, start + termSeconds - 0.2);
-        Motion.pulse(tl, brain(number, "node"), start + 0.3);
+      // The other types of brain implement the same contract.
+      [["wam", 0.12], ["vlm", 0.3]].forEach(function ([key, share]) {
+        Motion.show(tl, brain(key), Motion.within(at.same_contract, share));
+        Motion.drawArrow(tl, fits(key), Motion.within(at.same_contract, 0.72), 0.5);
       });
 
-      // Each one implements the same contract, with the same input and output.
-      [0.06, 0.25, 0.55].forEach(function (share, index) {
-        Motion.pulse(tl, brain(index + 1, "plug"), Motion.within(at.same_contract, share));
+      // One brain replaces another, and the node at the bottom does not change.
+      [["vla", "wam", 0.2], ["wam", "vlm", 0.55]].forEach(function ([before, after, share]) {
+        const time = Motion.within(at.replace, share);
+        bind(before, CONTRACT, time);
+        bind(after, PEPPY, time);
+        Motion.pulse(tl, brain(after), time);
       });
-      Motion.pulse(tl, ID + "-socket", Motion.within(at.same_contract, 0.8));
-      flash("." + "{{ id }}-input", Motion.within(at.same_io, 0.28));
-      flash("." + "{{ id }}-output", Motion.within(at.same_io, 0.72));
-
-      // One brain replaces another: the first goes back to the row, and the
-      // next goes below the row, to the middle, then into the socket.
-      const replaceTime = at.replace.start + 0.2;
-      move(FIRST_BRAIN, { y: 0 }, replaceTime, 0.8);
-      move(NEXT_BRAIN, { y: {{ below_row }} }, replaceTime + 0.3, 0.5);
-      move(NEXT_BRAIN, { x: {{ (first_brain - next_brain) * pitch }} }, replaceTime + 0.8, 0.6);
-      move(NEXT_BRAIN, { y: SEATED }, replaceTime + 1.4, 0.45);
-      Motion.pulse(tl, ID + "-socket", replaceTime + 1.85);
-      flow(replaceTime + 2.0, DURATION - 0.4);
-      Motion.pulse(tl, ID + "-consumer", Motion.within(at.replace, 0.66));
+      Motion.show(tl, ID + "-same", Motion.within(at.replace, 0.75), Motion.grows);
 
       window.__timelines["{{ id }}"] = tl;
     })();

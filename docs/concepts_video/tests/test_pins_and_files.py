@@ -75,6 +75,12 @@ def test_an_absent_media_file_is_a_fault_only_when_the_media_are_present() -> No
     assert hyperframes.lint_faults(findings, media_are_present=False) == []
 
 
+def test_the_number_of_lines_of_a_compiled_composition_is_not_a_fault() -> None:
+    findings = [finding("composition_file_too_large", "warning"), finding("clip_ends_past_root_duration", "warning")]
+
+    assert hyperframes.lint_faults(findings, media_are_present=True) == findings[1:]
+
+
 def test_hyperframes_gets_the_path_of_the_ffmpeg_of_the_pixi_environment() -> None:
     environment = hyperframes.environment()
 

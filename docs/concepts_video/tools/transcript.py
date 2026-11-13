@@ -4,10 +4,12 @@
 segment names the sections of the docs that it rests on, with the hash of the
 text of each one. It holds the sentences of the voice in order, and the texts
 that its composition shows. `[splash]` holds the splash screen, which shows
-before the first segment with no voice.
+before the first segment with no voice. `[[act]]` holds each act: a group of
+segments that follow each other, which the screen shows as a part of the video.
 """
 
 from dataclasses import dataclass, replace
+from itertools import groupby
 from pathlib import Path
 import re
 import tomllib
@@ -47,6 +49,33 @@ class Splash:
 
 
 @dataclass(frozen=True)
+class Chapter:
+    """One segment as the map of the video shows it."""
+
+    segment_id: str
+    # The place of the segment in the video, from 1.
+    number: int
+    title: str
+
+
+@dataclass(frozen=True)
+class Act:
+    id: str
+    # The place of the act in the video, from 1.
+    number: int
+    title: str
+    # The question that the segments of the act answer.
+    question: str
+    # The segments of the act, in order. The video of one part keeps them all,
+    # so its map is the map of the full video.
+    chapters: tuple[Chapter, ...]
+
+    def chapter_index(self, segment_id: str) -> int:
+        """The place of a segment in the act, from 0."""
+        return [chapter.segment_id for chapter in self.chapters].index(segment_id)
+
+
+@dataclass(frozen=True)
 class Source:
     page: str
     section: str
@@ -83,6 +112,8 @@ class Segment:
     # The place of the segment in the video, from 1.
     number: int
     chapter: str
+    # The id of the act of the segment. A segment can be in no act.
+    act: str | None
     sources: tuple[Source, ...]
     voice: tuple[Sentence, ...]
     screen: Mapping[str, ScreenText]
@@ -101,7 +132,14 @@ class Transcript:
     labels: Mapping[str, str]
     # The splash screen of the start of the video, when the video has one.
     splash: Splash | None
+    acts: tuple[Act, ...]
     segments: tuple[Segment, ...]
+
+    def act(self, act_id: str) -> Act:
+        for act in self.acts:
+            if act.id == act_id:
+                return act
+        raise KeyError(act_id)
 
     def segment(self, segment_id: str) -> Segment:
         for segment in self.segments:
@@ -144,13 +182,56 @@ def parse_transcript(document: Mapping[str, object]) -> Transcript:
     _refuse_duplicates([segment.id for segment in segments], "transcript")
     if any(segment.id == SPLASH_ID for segment in segments):
         raise TranscriptError(f"transcript: a segment has the id `{SPLASH_ID}`, which is the id of the splash screen")
+    acts = tuple(
+        _parse_act(table, number, segments)
+        for number, table in enumerate(_list_of_tables(document, "act", "transcript"), start=1)
+    )
+    _refuse_duplicates([act.id for act in acts], "transcript, act")
+    _refuse_acts_that_the_segments_do_not_fill(acts, segments)
     return Transcript(
         voice=_parse_voice(_table(document, "voice", "transcript")),
         pronunciation=_parse_texts(document.get("pronunciation", {}), "pronunciation"),
         labels=_parse_texts(_table(document, "labels", "transcript"), "labels"),
         splash=_parse_splash(_table(document, "splash", "transcript")) if "splash" in document else None,
+        acts=acts,
         segments=segments,
     )
+
+
+def _parse_act(table: Mapping[str, object], number: int, segments: tuple[Segment, ...]) -> Act:
+    act_id = _identifier(table, "id", f"act {number}")
+    where = f"act `{act_id}`"
+    return Act(
+        id=act_id,
+        number=number,
+        title=_string(table, "title", where),
+        question=_string(table, "question", where),
+        chapters=tuple(
+            Chapter(segment_id=segment.id, number=segment.number, title=segment.chapter)
+            for segment in segments
+            if segment.act == act_id
+        ),
+    )
+
+
+def _refuse_acts_that_the_segments_do_not_fill(acts: tuple[Act, ...], segments: tuple[Segment, ...]) -> None:
+    """Refuse a segment that names no act of the transcript, and acts whose segments are not in order.
+
+    Each act has segments, the segments of an act follow each other, and the
+    acts come in the order of their segments.
+    """
+    known = [act.id for act in acts]
+    for segment in segments:
+        if segment.act is not None and segment.act not in known:
+            raise TranscriptError(
+                f"segment `{segment.id}`: `act` is `{segment.act}`, and the transcript has no such act"
+            )
+    runs = [act_id for act_id, _ in groupby(segment.act for segment in segments) if act_id is not None]
+    if runs != known:
+        raise TranscriptError(
+            f"transcript: the segments give the acts {runs}, and the acts are {known}: "
+            "each act has segments, which follow each other, in the order of the acts"
+        )
 
 
 def _parse_voice(table: Mapping[str, object]) -> Voice:
@@ -204,6 +285,7 @@ def _parse_segment(table: Mapping[str, object], number: int) -> Segment:
         id=segment_id,
         number=number,
         chapter=_string(table, "chapter", where),
+        act=_identifier(table, "act", where) if "act" in table else None,
         sources=sources,
         voice=voice,
         screen=_parse_screen_table(_table(table, "screen", where), f"{where}, screen"),

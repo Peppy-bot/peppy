@@ -5,8 +5,9 @@ splash screen and the root composition, as Jinja templates. A composition
 holds the layout and the animation, and no text of its own: each text comes
 from the transcript as `screen.<key>`, and each time comes from the timeline as
 `at.<sentence id>.start` and `at.<sentence id>.end`, in seconds from the
-start of the segment. The compiled project has these values as plain HTML,
-which HyperFrames checks and renders.
+start of the segment. `acts` holds the acts of the video with their chapters,
+and `act` is the act of the segment. The compiled project has these values as
+plain HTML, which HyperFrames checks and renders.
 """
 
 from pathlib import Path
@@ -183,6 +184,8 @@ def _environment(transcript: Transcript, footage: tuple[FootageFile, ...]) -> ji
     environment.filters["plain"] = markup.without_marks
     environment.filters["code"] = highlighted_code_line
     environment.globals["labels"] = transcript.labels
+    environment.globals["acts"] = transcript.acts
+    environment.globals["acts_by_id"] = {act.id: act for act in transcript.acts}
     environment.globals["footage"] = _footage_path_function(footage)
     return environment
 
@@ -199,6 +202,7 @@ def _render_composition(environment: jinja2.Environment, segment: Segment, slot:
         f"the segment `{segment.id}`",
         segment=segment,
         number=segment.number,
+        act=None if segment.act is None else environment.globals["acts_by_id"][segment.act],
         start=slot.start,
         duration=slot.duration,
         at={sentence.id: {"start": sentence.start, "end": sentence.end} for sentence in slot.sentences},

@@ -25,8 +25,10 @@ from tools.voice_durations import RecordedDuration, read_voice_durations, write_
 # The count of the workers is a part of the settings: each worker captures
 # one part of the frames, and the bytes of the video change with the count.
 # With no count, HyperFrames takes one from the processors of the machine and
-# from the speed that it measures.
-RENDER_OPTIONS = ["--quality", "delivery", "--no-browser-gpu", "--workers", "4", "--strict-all"]
+# from the speed that it measures. The render stops on a lint error. The lint
+# of the project, which runs on the compiled project before the render, also
+# stops on each warning that is a fault of a composition.
+RENDER_OPTIONS = ["--quality", "delivery", "--no-browser-gpu", "--workers", "4", "--strict"]
 
 
 def main() -> None:

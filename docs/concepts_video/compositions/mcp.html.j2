@@ -1,325 +1,181 @@
-{# Segment 9. Peppy has an MCP server built in. An exposure lists what an MCP
-   client can reach: topics as resources, services and actions as tools. A
-   client reaches nothing that the exposure does not name. #}
-{% from "_parts.html.j2" import chapter, term_card, comparison_card %}
+{# Segment 10. Peppy has an MCP server built in. An exposure lists what an
+   MCP client can reach, so an LLM reaches only the functions that the
+   developer opens. #}
+{% from "_parts.html.j2" import backdrop, header, problem_scene, rail, term_card, icon, mark, wire %}
 {% set id = segment.id %}
-{# The places of the parts on the page, in pixels. #}
-{% set client_left = 96 %}
-{% set client_width = 210 %}
-{% set client_height = 160 %}
-{% set client_right = client_left + client_width %}
-{% set peppy_left = 400 %}
-{% set peppy_top = 226 %}
-{% set peppy_width = 700 %}
-{% set server_left = peppy_left + 18 %}
-{% set server_top = peppy_top + 68 %}
-{% set server_width = peppy_width - 36 %}
-{% set exposure_left = server_left + 18 %}
-{% set exposure_top = server_top + 66 %}
-{% set exposure_width = server_width - 36 %}
-{% set row_left = exposure_left + 16 %}
-{% set row_width = exposure_width - 32 %}
-{% set row_height = 84 %}
-{% set row_pitch = row_height + 12 %}
-{% set first_row_top = exposure_top + 40 %}
-{% set rows = screen.published.items() | list %}
-{% set exposure_height = 40 + (rows | length) * row_pitch + 6 %}
-{% set server_height = exposure_top + exposure_height + 16 - server_top %}
-{% set middle = first_row_top + row_pitch + row_height // 2 %}
-{% set client_top = middle - client_height // 2 %}
-{# The middle of the contract mark of each row, and the contract below them. #}
-{% set mark_x = row_left + row_width - 16 - 23 %}
-{% set contract_top = server_top + server_height + 30 %}
-{# The part of the stack that the exposure does not name. #}
-{% set private_top = contract_top %}
-{% set private_middle = private_top + row_height // 2 %}
-{# Peppy is as tall as the server, then as tall as all its parts. #}
-{% set peppy_height_at_start = server_top + server_height + 18 - peppy_top %}
-{% set peppy_height = private_top + row_height + 76 - peppy_top %}
-{% set barrier_x = peppy_left - 12 %}
-{# The contract: a socket, as in the segment of the contracts. #}
-{% macro socket_path(width, height, notch) %}{{ "M 8 0 H %d L %d %d H %d L %d 0 H %d Q %d 0 %d 8 V %d Q %d %d %d %d H 8 Q 0 %d 0 %d V 8 Q 0 0 8 0 Z" | format(width // 2 - notch - 6, width // 2 - notch, height // 4, width // 2 + notch, width // 2 + notch + 6, width - 8, width, width, height - 8, width, height, width - 8, height, height, height - 8) }}{% endmacro %}
+{% set kinds = ["topic", "service", "action"] %}
 <template>
   <style>
     #root {
       position: absolute;
       inset: 0;
     }
+    .{{ id }}-layout {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    {# The LLM application, which is the MCP client. #}
     .{{ id }}-client {
-      position: absolute;
+      flex-direction: column;
+      gap: 10px;
+      width: 250px;
+      height: 170px;
+      min-width: 0;
+      padding: 0 16px;
+      border-color: var(--data);
+      font-family: var(--sans);
+      font-size: 32px;
+      line-height: 40px;
+      text-align: center;
+      white-space: normal;
+    }
+    .{{ id }}-client .icon {
+      width: 46px;
+      height: 46px;
+      color: var(--data);
+      fill: currentColor;
+    }
+    {# The MCP server of Peppy, with the exposure in it. #}
+    .{{ id }}-server {
       display: flex;
       flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      border: 3px solid var(--line-strong);
-      border-radius: 18px;
-      background: var(--panel);
-      font-size: 30px;
-      font-weight: 500;
-      line-height: 1.15;
-      text-align: center;
+      gap: 26px;
+      width: 760px;
+      padding: 52px 30px 30px;
+      border-style: solid;
+      border-color: var(--peppy);
     }
-    .{{ id }}-client svg {
-      width: 40px;
-      height: 40px;
-      fill: var(--data);
-    }
-    .{{ id }}-box {
-      position: absolute;
-      border: 3px solid var(--peppy);
-      border-radius: 24px;
-      background: rgba(14, 22, 38, 0.6);
-    }
-    .{{ id }}-box.is-exposure {
-      border-color: var(--line-strong);
-      border-radius: 18px;
-      background: var(--panel);
-    }
-    .{{ id }}-tab {
-      position: absolute;
-      left: 24px;
-      top: -24px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      height: 44px;
-      padding: 0 16px;
-      border: 2px solid var(--peppy);
-      border-radius: 10px;
-      background: var(--ground);
-      font-size: 28px;
-      font-weight: 500;
+    .{{ id }}-server .frame-name {
+      border-color: var(--peppy);
       color: var(--peppy);
-      white-space: nowrap;
     }
-    .{{ id }}-box.is-exposure .{{ id }}-tab {
-      border-color: var(--line-strong);
-      color: var(--ink);
+    .{{ id }}-exposure {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      font-family: var(--sans);
     }
-    .{{ id }}-tab.is-peppy {
-      top: -28px;
-      height: 52px;
-      padding-left: 8px;
-      font-weight: 700;
+    .{{ id }}-exposure .code-title {
+      margin-bottom: 0;
     }
-    .{{ id }}-tab img {
-      width: 36px;
-      height: 36px;
-      padding: 2px;
-      border-radius: 9px;
-      background: var(--logo-ground);
-    }
+    {# One line of the exposure: an interface, and what the server publishes
+       it as. #}
     .{{ id }}-row {
-      position: absolute;
-      left: {{ row_left }}px;
-      width: {{ row_width }}px;
-      height: {{ row_height }}px;
       display: flex;
       align-items: center;
-      gap: 12px;
-      padding: 0 16px;
-      border: 2px dashed var(--line-strong);
+      gap: 18px;
+      height: 80px;
+      padding: 0 22px;
+      border: 2px solid var(--line-strong);
       border-radius: 14px;
-      background: var(--panel-raised);
-      font-size: 30px;
-      white-space: nowrap;
-    }
-    .{{ id }}-from {
-      width: 106px;
+      background: var(--panel);
+      font-size: 32px;
       font-weight: 500;
-      color: var(--peppy);
+    }
+    .{{ id }}-row .pill {
+      background: transparent;
     }
     .{{ id }}-as {
       display: flex;
       align-items: center;
-      gap: 12px;
-      font-weight: 700;
-      color: var(--ink);
+      gap: 18px;
     }
-    .{{ id }}-as svg {
-      width: 36px;
-      height: 20px;
-      fill: none;
-      stroke: var(--ink-dim);
-      stroke-width: 3;
-      stroke-linecap: round;
-      stroke-linejoin: round;
+    .{{ id }}-as .icon {
+      width: 34px;
+      height: 34px;
+      color: var(--ink-dim);
+      transform: rotate(-90deg);
     }
     .{{ id }}-task {
-      position: relative;
-      overflow: hidden;
-      padding: 2px 12px;
-      border: 2px solid var(--data);
+      padding: 0 14px;
       border-radius: 10px;
+      background: rgba(95, 212, 240, 0.16);
       font-size: 28px;
-      font-weight: 500;
-      color: var(--ink);
+      line-height: 44px;
+      color: var(--data);
+      white-space: nowrap;
     }
-    .{{ id }}-task-progress {
-      position: absolute;
-      inset: 0;
-      background: rgba(95, 212, 240, 0.32);
-      transform-origin: left center;
-    }
-    .{{ id }}-task-name {
-      position: relative;
-    }
-    .{{ id }}-mark {
-      width: 46px;
-      height: 30px;
-      margin-left: auto;
-      overflow: visible;
-    }
-    .{{ id }}-mark path,
-    .{{ id }}-contract path {
-      fill: #1b1533;
-      stroke: var(--contract);
-      stroke-width: 4;
-      stroke-linejoin: round;
-    }
+    {# The contract that gives each line its schema: its name at the top
+       right of the exposure, and a bar at the side of the lines. #}
     .{{ id }}-contract {
       position: absolute;
-      left: {{ mark_x - 76 }}px;
-      top: {{ contract_top }}px;
-      width: 152px;
-      height: 62px;
+      right: 26px;
+      top: 18px;
     }
-    .{{ id }}-contract svg {
+    .{{ id }}-schemas {
       position: absolute;
-      left: 0;
-      top: 0;
-      width: 100%;
-      height: 100%;
-      overflow: visible;
+      right: 44px;
+      width: 6px;
+      border-radius: 3px;
+      background: var(--contract);
+      transform-origin: center top;
     }
-    .{{ id }}-contract-name {
-      position: absolute;
-      left: 0;
-      top: 14px;
-      width: 100%;
-      height: 46px;
+    {# A function that the exposure does not name. #}
+    .{{ id }}-closed {
       display: flex;
       align-items: center;
-      justify-content: center;
-      font-size: 28px;
-      font-weight: 700;
-      color: var(--contract);
-    }
-    .{{ id }}-private {
-      justify-content: space-between;
-      width: 250px;
+      gap: 18px;
+      height: 80px;
       padding: 0 22px;
+      border: 2px dashed var(--fault);
+      border-radius: 14px;
+      background: rgba(255, 107, 129, 0.07);
+      font-size: 30px;
+      font-weight: 500;
+      color: var(--fault);
     }
-    .{{ id }}-private-blank {
-      width: 120px;
-      height: 12px;
-      border-radius: 6px;
-      background: var(--line-strong);
-    }
-    .{{ id }}-private svg {
-      width: 30px;
-      height: 36px;
-    }
-    .{{ id }}-lock-body {
-      fill: var(--fault);
-    }
-    .{{ id }}-lock-shackle {
-      fill: none;
-      stroke: var(--fault);
-      stroke-width: 4;
-      stroke-linecap: round;
-    }
-    .{{ id }}-port {
-      fill: var(--data);
-    }
-    .{{ id }}-barrier {
-      fill: none;
-      stroke: var(--fault);
-      stroke-width: 10;
-      stroke-linecap: round;
+    .{{ id }}-closed .icon {
+      width: 38px;
+      height: 38px;
     }
   </style>
   <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
     <div id="{{ id }}-stage" class="stage">
-      {{ chapter(number, segment.chapter) }}
+      {{ backdrop(id) }}
+      {{ header(segment, act) }}
       <div id="{{ id }}-content">
+      {{ problem_scene(id, segment, screen.problem) }}
 
-      <div id="{{ id }}-peppy" class="{{ id }}-box" style="left: {{ peppy_left }}px; top: {{ peppy_top }}px; width: {{ peppy_width }}px; height: {{ peppy_height }}px">
-        <div class="{{ id }}-tab is-peppy"><img src="assets/pictures/peppy-logo.webp" alt="" /><span>{{ labels.peppy }}</span></div>
-      </div>
-      <div id="{{ id }}-server" class="{{ id }}-box" style="left: {{ server_left }}px; top: {{ server_top }}px; width: {{ server_width }}px; height: {{ server_height }}px">
-        <div class="{{ id }}-tab">{{ screen.server }}</div>
-      </div>
-      <div id="{{ id }}-exposure" class="{{ id }}-box is-exposure" style="left: {{ exposure_left }}px; top: {{ exposure_top }}px; width: {{ exposure_width }}px; height: {{ exposure_height }}px">
-        <div class="{{ id }}-tab">{{ screen.exposure }}</div>
-      </div>
-
-      <svg class="wires" viewBox="0 0 1920 1080">
-        <path id="{{ id }}-trunk" class="wire" pathLength="1" d="M {{ client_right }} {{ middle }} H {{ server_left - 16 }}" />
-        <polygon id="{{ id }}-trunk-head" class="wire-head" points="{{ server_left - 18 }},{{ middle - 10 }} {{ server_left - 2 }},{{ middle }} {{ server_left - 18 }},{{ middle + 10 }}" />
-        {% for kind, row in rows %}
-        {% set row_middle = first_row_top + loop.index0 * row_pitch + row_height // 2 %}
-        {% set start_y = middle + (loop.index0 - 1) * 30 %}
-        <path id="{{ id }}-wire-{{ kind }}" class="wire" pathLength="1" d="M {{ client_right }} {{ start_y }} C {{ client_right + 80 }} {{ start_y }}, {{ row_left - 80 }} {{ row_middle }}, {{ row_left }} {{ row_middle }}" />
-        {% endfor %}
-        <path id="{{ id }}-wire-private" class="wire" pathLength="1" d="M {{ client_right }} {{ middle + 60 }} C {{ client_right + 56 }} {{ middle + 60 }}, {{ barrier_x - 62 }} {{ private_middle }}, {{ barrier_x - 12 }} {{ private_middle }}" />
-        <path id="{{ id }}-barrier" class="{{ id }}-barrier" pathLength="1" d="M {{ barrier_x }} {{ private_middle - 32 }} V {{ private_middle + 32 }}" />
-      </svg>
-
-      <div id="{{ id }}-client" class="{{ id }}-client" style="left: {{ client_left }}px; top: {{ client_top }}px; width: {{ client_width }}px; height: {{ client_height }}px">
-        <svg viewBox="0 0 40 40"><path d="M 20 1 C 22 12 28 18 39 20 C 28 22 22 28 20 39 C 18 28 12 22 1 20 C 12 18 18 12 20 1 Z" /></svg>
-        <span>{{ screen.client }}</span>
-      </div>
-
-      {% for kind, row in rows %}
-      <div id="{{ id }}-row-{{ kind }}" class="{{ id }}-row" style="top: {{ first_row_top + loop.index0 * row_pitch }}px">
-        <span id="{{ id }}-from-{{ kind }}" class="{{ id }}-from">{{ row.from }}</span>
-        <span id="{{ id }}-as-{{ kind }}" class="{{ id }}-as">
-          <svg viewBox="0 0 36 20"><path d="M 2 10 H 32 M 24 3 L 33 10 L 24 17" /></svg>
-          <span>{{ row.as }}</span>
-        </span>
-        {% if "task" in row %}
-        <span id="{{ id }}-task" class="{{ id }}-task">
-          <span id="{{ id }}-task-progress" class="{{ id }}-task-progress"></span>
-          <span class="{{ id }}-task-name">{{ row.task }}</span>
-        </span>
-        {% endif %}
-        <svg id="{{ id }}-mark-{{ kind }}" class="{{ id }}-mark" viewBox="0 0 46 30"><path d="{{ socket_path(46, 30, 7) }}" /></svg>
-      </div>
-      {% endfor %}
-
-      <div id="{{ id }}-contract" class="{{ id }}-contract">
-        <svg viewBox="0 0 152 62"><path d="{{ socket_path(152, 62, 20) }}" /></svg>
-        <span class="{{ id }}-contract-name">{{ screen.contract }}</span>
-      </div>
-      <svg class="wires" viewBox="0 0 1920 1080">
-        {% for kind, row in rows | reverse %}
-        {% set row_middle = first_row_top + (loop.revindex0) * row_pitch + row_height // 2 %}
-        <path id="{{ id }}-schema-{{ kind }}" class="wire is-contract" pathLength="1" d="M {{ mark_x }} {{ contract_top - 2 if loop.first else row_middle + row_pitch - 21 }} V {{ row_middle + 21 }}" />
-        {% endfor %}
-        {% for kind, row in rows %}
-        <circle id="{{ id }}-port-{{ kind }}" class="{{ id }}-port" cx="{{ row_left }}" cy="{{ first_row_top + loop.index0 * row_pitch + row_height // 2 }}" r="8" />
-        {% endfor %}
-      </svg>
-
-      <div id="{{ id }}-private" class="{{ id }}-row {{ id }}-private" style="left: {{ exposure_left }}px; top: {{ private_top }}px">
-        <span class="{{ id }}-private-blank"></span>
-        <svg id="{{ id }}-lock" viewBox="0 0 30 36">
-          <path class="{{ id }}-lock-shackle" d="M 8 16 V 11 A 7 7 0 0 1 22 11 V 16" />
-          <rect class="{{ id }}-lock-body" x="3" y="16" width="24" height="18" rx="4" />
+      <div id="{{ id }}-concept" class="scene">
+        <div class="zone {{ id }}-layout">
+          <div id="{{ id }}-client" class="node {{ id }}-client">{{ icon("spark") }}<span>{{ screen.client }}</span></div>
+          <div id="{{ id }}-server" class="frame {{ id }}-server">
+            <span class="frame-name" data-layout="over">{{ screen.server }}</span>
+            <div id="{{ id }}-exposure" class="code-window {{ id }}-exposure">
+              <div class="code-title">{{ screen.exposure }}</div>
+              {% for kind in kinds %}
+              {% set published = screen.published[kind] %}
+              <div id="{{ id }}-row-{{ kind }}" class="{{ id }}-row">
+                <span class="pill">{{ published["from"] }}</span>
+                <span id="{{ id }}-as-{{ kind }}" class="{{ id }}-as">{{ icon("down") }}<span>{{ published["as"] }}</span></span>
+                {% if "task" in published %}<span id="{{ id }}-task" class="{{ id }}-task">{{ published.task }}</span>{% endif %}
+              </div>
+              {% endfor %}
+              <span id="{{ id }}-contract" class="pill is-contract {{ id }}-contract">{{ screen.contract }}</span>
+              <span id="{{ id }}-schemas" class="{{ id }}-schemas" data-layout="over"></span>
+            </div>
+            <div id="{{ id }}-closed" class="{{ id }}-closed">{{ icon("lock") }}<span>{{ screen.closed }}</span></div>
+          </div>
+        </div>
+        <svg class="wires" viewBox="0 0 1920 1080">
+          {{ wire(id + "-trunk") }}
+          {% for kind in kinds %}
+          {{ wire(id + "-reach-" + kind) }}
+          {% endfor %}
+          <path id="{{ id }}-refused" class="wire is-fault" pathLength="1" />
         </svg>
+        {% for kind in kinds %}
+        <div id="{{ id }}-call-{{ kind }}" class="dot" data-layout="free"></div>
+        {% endfor %}
+        {{ mark(id + "-barrier", "fault", "position: absolute") }}
+        {{ rail(id, screen, [
+          ["mcp", screen.cards.mcp.term, term_card(id + "-card-mcp", screen.cards.mcp)],
+          ["exposure", screen.cards.exposure.term, term_card(id + "-card-exposure", screen.cards.exposure)],
+        ]) }}
       </div>
-      <div id="{{ id }}-closed" class="label is-fault" style="left: {{ exposure_left }}px; top: {{ private_top + row_height + 12 }}px">{{ screen.closed }}</div>
 
-      {% for kind, row in rows %}
-      <div id="{{ id }}-dot-{{ kind }}" class="dot"></div>
-      {% endfor %}
-      <div id="{{ id }}-dot-private" class="dot"></div>
-
-      {{ term_card(id + "-card-mcp", screen.cards.mcp) }}
-      {{ term_card(id + "-card-exposure", screen.cards.exposure) }}
-      {{ comparison_card(id + "-comparison", screen.comparisons.mcp) }}
       </div>
     </div>
   </div>
@@ -329,91 +185,69 @@
       const at = {{ at | tojson }};
       const DURATION = {{ duration }};
       const tl = gsap.timeline({ paused: true });
-      const KINDS = [{% for kind, row in rows %}"{{ kind }}"{{ ", " if not loop.last else "" }}{% endfor %}];
-      const POP = { from: { opacity: 0, scale: 0.6, y: 0 } };
-      const DATA = "#5fd4f0";
-      const FAULT = "#ff6b81";
-      // When the voice names the source of each row and what it becomes, as
-      // shares of the sentence.
-      const NAMED = { topic: [0.16, 0.45], service: [0.62, 0.92], action: [0.8, 0.95] };
+      const KINDS = {{ kinds | tojson }};
+      const row = (kind) => ID + "-row-" + kind;
 
-      Motion.endSegment(tl, ID + "-content", DURATION);
+      // The wires from the LLM application: one to the server, then one to
+      // each line of the exposure. The last one stops at the side of the
+      // server, before the function that the exposure does not name.
+      const server = Motion.boxOf(ID + "-server");
+      Motion.connect(ID + "-trunk", [ID + "-client", "right"], [ID + "-server", "left", Motion.boxOf(ID + "-client").y - server.y], { gap: 6 });
+      KINDS.forEach((kind, index) => Motion.connect(ID + "-reach-" + kind, [ID + "-client", "right", (index - 1) * 26], [row(kind), "left"], { gap: 6, curve: true }));
+      const closed = Motion.boxOf(ID + "-closed");
+      const barrier = { x: server.left - 34, y: closed.y };
+      Motion.connect(ID + "-refused", [ID + "-client", "bottom"], [barrier, "left"], { gap: 6, endGap: 0 });
+      gsap.set(ID + "-barrier", { left: barrier.x - 6, top: barrier.y - 22 });
+      // The bar of the contract is at the side of the lines of the exposure.
+      const exposure = Motion.boxOf(ID + "-exposure");
+      const firstRow = Motion.boxOf(row(KINDS[0]));
+      const lastRow = Motion.boxOf(row(KINDS[KINDS.length - 1]));
+      // The border of the exposure is 2 px wide, and the bar is in the box inside it.
+      gsap.set(ID + "-schemas", { top: firstRow.top - exposure.top - 2 + 10, height: lastRow.bottom - firstRow.top - 20 });
 
-      // The server is a part of Peppy, and an LLM application is its client.
-      Motion.show(tl, ID + "-peppy", at.built_in.start + 0.1, { from: { opacity: 0, scale: 0.97 } });
-      Motion.show(tl, ID + "-server", at.built_in.start + Motion.lasts(at.built_in) * 0.35, { from: { opacity: 0, scale: 0.94 } });
-      Motion.show(tl, ID + "-client", at.built_in.start + Motion.lasts(at.built_in) * 0.8, { from: { opacity: 0, x: -40, y: 0 } });
-      Motion.draw(tl, ID + "-trunk", at.built_in.end + 0.1, 0.4);
-      Motion.show(tl, ID + "-trunk-head", at.built_in.end + 0.4, { from: { opacity: 0 }, duration: 0.2 });
-      Motion.card(tl, ID + "-card-mcp", at.built_in.start + 0.3, at.exposure.end + 0.1);
+      Motion.chapter(tl, ID, {
+        duration: DURATION,
+        problem: [0.3, at.built_in.start - 0.2],
+        terms: [
+          ["mcp", at.built_in.start + 0.3, Motion.within(at.exposure, 0.55)],
+          ["exposure", Motion.within(at.exposure, 0.55) + 0.2, at.only_named.start + 0.5],
+        ],
+        benefit: at.open_some.start,
+        ros2: at.open_some.end,
+      });
 
-      // The exposure: a list, with one row for each thing that it names.
-      Motion.show(tl, ID + "-exposure", at.exposure.start + 0.2);
+      // Peppy has an MCP server built in.
+      Motion.show(tl, ID + "-client", at.built_in.start);
+      Motion.show(tl, ID + "-server", Motion.within(at.built_in, 0.35));
+      Motion.drawArrow(tl, ID + "-trunk", Motion.within(at.built_in, 0.6), 0.5);
+
+      // An exposure lists what an MCP client can reach.
+      Motion.show(tl, ID + "-exposure", at.exposure.start + 0.1);
+      KINDS.forEach((kind, index) => Motion.show(tl, row(kind), Motion.within(at.exposure, 0.45) + index * 0.3, Motion.fromSide));
+
+      // It publishes the topics as resources, and the services and the
+      // actions as tools.
+      [0.42, 0.72, 0.84].forEach((share, index) => Motion.show(tl, ID + "-as-" + KINDS[index], Motion.within(at.publishes, share), Motion.fromSide));
+      Motion.show(tl, ID + "-task", at.publishes.end + 0.1, Motion.grows);
+
+      // Peppy derives each schema from the contracts.
+      Motion.show(tl, ID + "-contract", at.schemas.start + 0.3, Motion.grows);
+      tl.fromTo(ID + "-schemas", { opacity: 0, scaleY: 0 }, { opacity: 1, scaleY: 1, duration: 0.6, ease: "power2.out" }, Motion.within(at.schemas, 0.35));
+
+      // An MCP client reaches only what the exposure names.
+      Motion.hide(tl, [ID + "-trunk", ID + "-trunk-head"], at.only_named.start + 0.3);
       KINDS.forEach(function (kind, index) {
-        Motion.show(tl, ID + "-row-" + kind, at.exposure.start + Motion.lasts(at.exposure) * 0.5 + index * 0.3);
-      });
-      Motion.card(tl, ID + "-card-exposure", at.exposure.end + 0.3, at.only_named.end + 0.3);
-
-      // What each row publishes.
-      KINDS.forEach(function (kind) {
-        const [fromShare, asShare] = NAMED[kind];
-        const fromTime = at.publishes.start + Motion.lasts(at.publishes) * fromShare;
-        Motion.show(tl, ID + "-from-" + kind, fromTime, { from: { opacity: 0, x: -20, y: 0 } });
-        tl.set(ID + "-row-" + kind, { borderStyle: "solid" }, fromTime);
-        Motion.show(tl, ID + "-as-" + kind, at.publishes.start + Motion.lasts(at.publishes) * asShare, { from: { opacity: 0, x: -20, y: 0 } });
+        const time = at.only_named.start + 0.2 + index * 0.25;
+        Motion.drawArrow(tl, ID + "-reach-" + kind, time, 0.6);
+        Motion.follow(tl, ID + "-call-" + kind, ID + "-reach-" + kind, time + 0.8, 0.7, 2);
+        Motion.pulse(tl, row(kind), time + 1.5);
       });
 
-      // An action can run as a task, and the task has a progress.
-      Motion.show(tl, ID + "-task", at.task.start + Motion.lasts(at.task) * 0.3, { from: { opacity: 0, x: -20, y: 0 } });
-      tl.fromTo(
-        ID + "-task-progress",
-        { scaleX: 0 },
-        { scaleX: 1, duration: Motion.lasts(at.task) * 0.5, ease: "none" },
-        at.task.start + Motion.lasts(at.task) * 0.6,
-      );
-
-      // The schema of each row comes from the contract, which is a part of
-      // the stack below the server.
-      tl.fromTo(
-        ID + "-peppy",
-        { height: {{ peppy_height_at_start }} },
-        { height: {{ peppy_height }}, duration: 0.6, ease: "power2.inOut" },
-        at.schemas.start - 0.2,
-      );
-      Motion.show(tl, ID + "-contract", at.schemas.start + 0.3, POP);
-      KINDS.slice().reverse().forEach(function (kind, index) {
-        const time = at.schemas.start + 0.8 + index * 0.4;
-        Motion.draw(tl, ID + "-schema-" + kind, time, 0.3);
-        Motion.show(tl, ID + "-mark-" + kind, time + 0.25, POP);
-      });
-
-      // The client reaches each row of the exposure, and nothing else.
-      Motion.hide(tl, [ID + "-trunk", ID + "-trunk-head"], at.only_named.start + 0.7);
-      KINDS.forEach(function (kind, index) {
-        const time = at.only_named.start + 0.2 + index * 0.2;
-        Motion.draw(tl, ID + "-wire-" + kind, time, 0.6);
-        Motion.show(tl, ID + "-port-" + kind, time + 0.5, { from: { opacity: 0 }, duration: 0.2 });
-        tl.to(ID + "-row-" + kind, { borderColor: DATA, duration: 0.3 }, time + 0.6);
-        Motion.follow(tl, ID + "-dot-" + kind, ID + "-wire-" + kind, time + 0.8, 0.7, 2);
-      });
-      const privateTime = at.only_named.start + Motion.lasts(at.only_named) * 0.45;
-      Motion.show(tl, ID + "-private", privateTime, POP);
-      Motion.draw(tl, ID + "-wire-private", privateTime + 0.5, 0.6);
-      Motion.draw(tl, ID + "-barrier", privateTime + 1.05, 0.2);
-      Motion.show(tl, ID + "-lock", privateTime + 1.2, POP);
-      tl.to(ID + "-wire-private", { stroke: FAULT, duration: 0.3 }, privateTime + 1.2);
-      tl.to(ID + "-private", { borderColor: FAULT, duration: 0.3 }, privateTime + 1.2);
-
-      // The rows are open to the LLM, and the other part stays closed.
-      Motion.show(tl, ID + "-comparison", at.open_some.start + 0.4, { from: { opacity: 0, x: 70, y: 0 } });
-      KINDS.forEach(function (kind, index) {
-        Motion.follow(tl, ID + "-dot-" + kind, ID + "-wire-" + kind, at.open_some.start + 0.5 + index * 0.25, 0.7, 3);
-      });
-      const closedTime = at.open_some.start + Motion.lasts(at.open_some) * 0.58;
-      Motion.show(tl, ID + "-closed", closedTime);
-      Motion.follow(tl, ID + "-dot-private", ID + "-wire-private", closedTime + 0.4, 0.6, 1);
-      Motion.pulse(tl, ID + "-private", closedTime + 1.0);
-      Motion.follow(tl, ID + "-dot-private", ID + "-wire-private", closedTime + 1.8, 0.6, 1);
+      // The other functions stay closed.
+      const closedTime = Motion.within(at.open_some, 0.55);
+      Motion.show(tl, ID + "-closed", closedTime - 0.4);
+      Motion.draw(tl, ID + "-refused", closedTime, 0.6);
+      Motion.show(tl, ID + "-barrier", closedTime + 0.5, Motion.grows);
 
       window.__timelines["{{ id }}"] = tl;
     })();

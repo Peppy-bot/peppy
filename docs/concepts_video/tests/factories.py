@@ -24,6 +24,11 @@ def segment_table(segment_id: str = "opening", sentences: list[dict] | None = No
     return {**table, **changes}
 
 
+def act_table(act_id: str = "one_node", **changes: object) -> dict:
+    """The table of one act, as the transcript file holds it."""
+    return {"id": act_id, "title": "A title", "question": "A question?", **changes}
+
+
 def splash_table(seconds: float = 4.0, **screen: str) -> dict:
     """The table of the splash screen, as the transcript file holds it."""
     return {"seconds": seconds, "screen": screen or {"title": "A title"}}

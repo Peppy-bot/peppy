@@ -1,141 +1,167 @@
-{# Segment 3. A node in operation is an instance. The daemon of the machine
-   runs the instances, and keeps the nodes and their dependencies in one
-   graph with no cycle: the node stack. #}
-{% from "_parts.html.j2" import chapter, term_card, comparison_card, mark %}
+{# Segment 5. The daemon of a machine builds each node, starts its instances
+   and monitors them. It keeps the nodes and their dependencies in one graph
+   with no cycle: the node stack. #}
+{% from "_parts.html.j2" import backdrop, header, act_intro, problem_scene, rail, term_card, node, command, icon, mark, wire %}
 {% set id = segment.id %}
-{# The graph: the daemon at the root, the camera and the arm below it, and the
-   brain, which depends on the two, at the bottom. Each number is the left
-   side or the top of a node, and a node is `node_width` wide. #}
-{% set node_width = 240 %}
-{% set middle_left = 700 %}
-{% set camera_left = 548 %}
-{% set arm_left = 852 %}
-{% set daemon_top = 200 %}
-{% set nodes_top = 470 %}
-{% set brain_top = 750 %}
-{% set graph_middle = (daemon_top + brain_top + 92) // 2 %}
-{# The two instances of the camera, in the box of the camera. #}
-{% set instance_lefts = [555, 859] %}
-{% set instance_width = 226 %}
-{% set instance_top = nodes_top + 30 %}
-{# The arrow of each dependency of the brain: it goes out of a side of the
-   brain at `side`, then up at `x` to the bottom of the dependency. #}
-{% set needs = {"camera": {"side": middle_left, "x": 608}, "arm": {"side": middle_left + node_width, "x": 1032}} %}
-{% set mark_top = (nodes_top + 92 + brain_top) // 2 - 22 %}
-
+{# The graph, in its frame on the right of the robot: the daemon at the root,
+   the camera and the arm below it, and the brain, which depends on the two,
+   at the bottom. Each number is a left side or a top in the frame. #}
+{% set frame = {"left": 400, "width": 720, "height": 700} %}
+{% set node_width = 280 %}
+{% set daemon_top = 40 %}
+{% set nodes_top = 302 %}
+{% set brain_top = 562 %}
+{% set camera_left = 40 %}
+{% set arm_left = frame.width - 40 - node_width %}
+{% set middle_left = (frame.width - node_width) // 2 %}
 <template>
   <style>
     #root {
       position: absolute;
       inset: 0;
     }
+    .{{ id }}-robot {
+      left: 0;
+      top: 50px;
+      width: 320px;
+      height: 600px;
+    }
+    .{{ id }}-frame {
+      left: {{ frame.left }}px;
+      top: 0;
+      width: {{ frame.width }}px;
+      height: {{ frame.height }}px;
+      border-color: transparent;
+      background: transparent;
+    }
+    .{{ id }}-frame .node {
+      width: {{ node_width }}px;
+    }
+    {# The camera with its instances in it. #}
     .{{ id }}-holder {
-      position: absolute;
-      padding-top: 12px;
+      left: {{ camera_left - 30 }}px;
+      top: {{ nodes_top - 44 }}px;
+      width: 450px;
+      padding: 18px 26px 26px;
       border: 3px solid var(--peppy);
-      border-radius: 16px;
-      background: var(--panel);
+      border-radius: 18px;
+      background: var(--panel-fill);
+      box-shadow: var(--panel-shadow);
+    }
+    .{{ id }}-holder-name {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      margin-bottom: 16px;
       font-family: var(--mono);
-      font-size: 32px;
+      font-size: 34px;
       font-weight: 500;
-      text-align: center;
+      line-height: 44px;
+    }
+    .{{ id }}-holder-name .icon {
+      width: 38px;
+      height: 38px;
+      color: var(--peppy);
     }
     .{{ id }}-instance {
-      position: absolute;
-      top: {{ instance_top }}px;
-      width: {{ instance_width }}px;
-      height: 60px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 64px;
+      padding: 0 22px;
       border: 2px solid var(--peppy);
       border-radius: 12px;
       background: var(--ground);
       font-family: var(--mono);
       font-size: 28px;
-      line-height: 56px;
-      text-align: center;
       white-space: nowrap;
     }
+    .{{ id }}-instance + .{{ id }}-instance {
+      margin-top: 14px;
+    }
     .{{ id }}-state {
-      position: absolute;
-      top: {{ instance_top + 70 }}px;
-      width: {{ instance_width }}px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--sans);
       font-size: 28px;
       font-weight: 500;
-      text-align: center;
       color: var(--ok);
-    }
-    .{{ id }}-state.is-failed {
-      color: var(--fault);
     }
     .{{ id }}-state::before {
       content: "";
-      display: inline-block;
-      width: 16px;
-      height: 16px;
-      margin-right: 12px;
+      width: 14px;
+      height: 14px;
       border-radius: 50%;
       background: currentColor;
     }
-    .{{ id }}-needs {
-      fill: none;
-      stroke: var(--ink-dim);
-      stroke-width: 4;
-      stroke-linecap: round;
-      stroke-linejoin: round;
+    .{{ id }}-state.is-failed {
+      position: absolute;
+      right: 22px;
+      color: var(--fault);
     }
-    .{{ id }}-needs-head {
-      fill: var(--ink-dim);
-    }
-    .{{ id }}-fault-head {
-      fill: var(--fault);
-    }
-    .{{ id }}-checked {
-      left: {{ needs.camera.x + 36 }}px;
-      top: {{ mark_top + 4 }}px;
-      color: var(--ok);
+    .{{ id }}-list {
+      left: {{ frame.left }}px;
+      top: {{ frame.height + 34 }}px;
+      width: {{ frame.width }}px;
+      display: flex;
+      justify-content: center;
     }
   </style>
   <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
     <div id="{{ id }}-stage" class="stage">
-      {{ chapter(number, segment.chapter) -}}
+      {{ backdrop(id) }}
+      {{ header(segment, act) }}
       <div id="{{ id }}-content">
-      {# The robot whose stack this is. #}
-      <div id="{{ id }}-robot-panel" class="robot-panel" style="left: 96px; top: 180px; width: 420px; height: 690px"><canvas id="{{ id }}-robot" class="robot-canvas"></canvas></div>
-      {# The camera with its instances in it. The wires of the daemon go over
-         its box to the instances. #}
-      <div id="{{ id }}-holder" class="{{ id }}-holder" style="left: 540px; top: {{ nodes_top - 40 }}px; width: 560px; height: 196px">{{ screen.nodes.camera }}</div>
-      <svg class="wires" viewBox="0 0 1920 1080">
-        <path id="{{ id }}-on-machine" class="wire is-quiet" pathLength="1" d="M 524 {{ daemon_top + 46 }} H {{ middle_left - 8 }}" />
-        <path id="{{ id }}-root-camera" class="wire" pathLength="1" d="M 790 {{ daemon_top + 92 }} L {{ camera_left + 120 }} {{ instance_top - 2 }}" />
-        <path id="{{ id }}-root-arm" class="wire" pathLength="1" d="M 850 {{ daemon_top + 92 }} L {{ arm_left + 120 }} {{ instance_top - 2 }}" />
-        {% for name, need in needs.items() %}
-        {% set turn = 24 if need.x > need.side else -24 %}
-        <path id="{{ id }}-needs-{{ name }}" class="{{ id }}-needs" pathLength="1" d="M {{ need.side }} {{ brain_top + 46 }} H {{ need.x - turn }} Q {{ need.x }} {{ brain_top + 46 }} {{ need.x }} {{ brain_top + 22 }} V {{ nodes_top + 108 }}" /><polygon id="{{ id }}-needs-{{ name }}-head" class="{{ id }}-needs-head" points="{{ need.x - 10 }},{{ nodes_top + 110 }} {{ need.x + 10 }},{{ nodes_top + 110 }} {{ need.x }},{{ nodes_top + 94 }}" />
-        {% endfor %}
-        <path id="{{ id }}-cycle" class="wire is-fault" pathLength="1" d="M 744 {{ nodes_top + 96 }} V {{ brain_top - 16 }}" /><polygon id="{{ id }}-cycle-head" class="{{ id }}-fault-head" points="734,{{ brain_top - 18 }} 754,{{ brain_top - 18 }} 744,{{ brain_top - 2 }}" />
-        <path id="{{ id }}-full-graph" class="wire" pathLength="1" d="M 1112 {{ daemon_top }} Q 1136 {{ daemon_top }} 1136 {{ daemon_top + 24 }} V {{ graph_middle - 24 }} Q 1136 {{ graph_middle }} 1160 {{ graph_middle }} Q 1136 {{ graph_middle }} 1136 {{ graph_middle + 24 }} V {{ brain_top + 68 }} Q 1136 {{ brain_top + 92 }} 1112 {{ brain_top + 92 }}" />
-      </svg>
-      {% for instance in screen.instances %}
-      <div id="{{ id }}-instance-{{ loop.index }}" class="{{ id }}-instance" style="left: {{ instance_lefts[loop.index0] }}px">{{ instance }}</div>
-      <div id="{{ id }}-running-{{ loop.index }}" class="{{ id }}-state" style="left: {{ instance_lefts[loop.index0] }}px">{{ screen.states.running }}</div>
-      {% endfor %}
-      <div id="{{ id }}-failed" class="{{ id }}-state is-failed" style="left: {{ instance_lefts[1] }}px">{{ screen.states.failed }}</div>
-      {# The nodes of the graph. #}
-      <div id="{{ id }}-daemon" class="node is-daemon" style="left: {{ middle_left }}px; top: {{ daemon_top }}px; width: {{ node_width }}px">{{ screen.daemon }}</div>
-      <div id="{{ id }}-camera" class="node" style="left: {{ camera_left }}px; top: {{ nodes_top }}px; width: {{ node_width }}px">{{ screen.nodes.camera }}</div>
-      <div id="{{ id }}-arm" class="node" style="left: {{ arm_left }}px; top: {{ nodes_top }}px; width: {{ node_width }}px">{{ screen.nodes.arm }}</div>
-      <div id="{{ id }}-brain" class="node" style="left: {{ middle_left }}px; top: {{ brain_top }}px; width: {{ node_width }}px">{{ screen.nodes.brain }}</div>
-      <div id="{{ id }}-dot-1" class="dot"></div><div id="{{ id }}-dot-2" class="dot"></div>
-      {{ mark(id + "-cycle-refused", "fault", 722, mark_top) }}
-      {{ mark(id + "-camera-ok", "ok", needs.camera.x - 22, mark_top) }}
-      {{ mark(id + "-arm-wrong", "fault", needs.arm.x - 22, mark_top) }}
-      <div id="{{ id }}-checked" class="label {{ id }}-checked">{{ screen.checked }}</div>
-      <div id="{{ id }}-list" class="command" style="left: 1176px; top: {{ graph_middle - 42 }}px">{{ screen.list_command | rich }}</div>
-      {{ term_card(id + "-card-instance", screen.cards.instance) -}}
-      {{ term_card(id + "-card-daemon", screen.cards.daemon) -}}
-      {{ term_card(id + "-card-node-stack", screen.cards.node_stack) -}}
-      {{ term_card(id + "-card-no-cycle", screen.cards.no_cycle) -}}
-      {{ comparison_card(id + "-compare-graph", screen.comparisons.graph) -}}
-      {{ comparison_card(id + "-compare-wrong-name", screen.comparisons.wrong_name) -}}
+      {{ act_intro(id, act) }}
+      {{ problem_scene(id, segment, screen.problem) }}
+
+      <div id="{{ id }}-concept" class="scene">
+        <div class="zone">
+          {# The robot whose stack this is. #}
+          <div id="{{ id }}-robot-panel" class="robot-panel placed {{ id }}-robot"><canvas id="{{ id }}-robot" class="robot-canvas"></canvas></div>
+          <div id="{{ id }}-frame" class="frame placed {{ id }}-frame">
+            <span id="{{ id }}-stack-name" class="frame-name" data-layout="over">{{ screen.stack }}</span>
+            {{ node(id + "-daemon", screen.daemon, "daemon", "is-daemon placed", "left: " ~ middle_left ~ "px; top: " ~ daemon_top ~ "px") }}
+            <div id="{{ id }}-holder" class="placed {{ id }}-holder">
+              <div class="{{ id }}-holder-name">{{ icon("camera") }}<span>{{ screen.nodes.camera }}</span></div>
+              {% for instance in screen.instances %}
+              <div id="{{ id }}-instance-{{ loop.index }}" class="{{ id }}-instance">
+                <span>{{ instance }}</span>
+                <span id="{{ id }}-running-{{ loop.index }}" class="{{ id }}-state">{{ screen.states.running }}</span>
+                {% if loop.last %}<span id="{{ id }}-failed" class="{{ id }}-state is-failed">{{ screen.states.failed }}</span>{% endif %}
+              </div>
+              {% endfor %}
+            </div>
+            {{ node(id + "-camera", screen.nodes.camera, "camera", "placed", "left: " ~ camera_left ~ "px; top: " ~ nodes_top ~ "px") }}
+            {{ node(id + "-arm", screen.nodes.arm, "arm", "placed", "left: " ~ arm_left ~ "px; top: " ~ nodes_top ~ "px") }}
+            {{ node(id + "-brain", screen.nodes.brain, "brain", "placed", "left: " ~ middle_left ~ "px; top: " ~ brain_top ~ "px") }}
+          </div>
+          <div class="placed {{ id }}-list">{{ command(id + "-list", screen.list_command) }}</div>
+        </div>
+        <svg class="wires" viewBox="0 0 1920 1080">
+          <path id="{{ id }}-on-machine" class="wire is-quiet" pathLength="1" />
+          <path id="{{ id }}-root-holder" class="wire" pathLength="1" />
+          <path id="{{ id }}-root-camera" class="wire" pathLength="1" />
+          <path id="{{ id }}-root-arm" class="wire" pathLength="1" />
+          {{ wire(id + "-needs-camera", "is-dim") }}
+          {{ wire(id + "-needs-arm", "is-dim") }}
+          {{ wire(id + "-cycle", "is-fault") }}
+        </svg>
+        <div id="{{ id }}-dot" class="dot" data-layout="free"></div>
+        {{ mark(id + "-cycle-refused", "fault", "position: absolute") }}
+        {{ mark(id + "-camera-ok", "ok", "position: absolute") }}
+        {{ mark(id + "-arm-wrong", "fault", "position: absolute") }}
+        <div id="{{ id }}-checked" class="label is-ok placed">{{ screen.checked }}</div>
+        {{ rail(id, screen, [
+          ["daemon", screen.cards.daemon.term, term_card(id + "-card-daemon", screen.cards.daemon)],
+          ["instance", screen.cards.instance.term, term_card(id + "-card-instance", screen.cards.instance)],
+          ["no_cycle", screen.cards.no_cycle.term, term_card(id + "-card-no_cycle", screen.cards.no_cycle)],
+        ]) }}
+      </div>
+
       </div>
     </div>
   </div>
@@ -146,94 +172,118 @@
       const DURATION = {{ duration }};
       const tl = gsap.timeline({ paused: true });
       const grows = { from: { opacity: 0, scale: 0.2, y: 0 } };
-      const fades = { from: { opacity: 0, y: 0 }, duration: 0.2 };
-      // The colours of the look, from the variables of the shared styles.
-      const look = getComputedStyle(document.documentElement);
-      const [OK, FAULT, PEPPY, QUIET] = ["--ok", "--fault", "--peppy", "--ink-dim"].map((name) => look.getPropertyValue(name).trim());
-      // The ends of the two wires of the daemon, for the dots that go down them.
-      const WIRES = [
-        [{ x: 790, y: {{ daemon_top + 92 }} }, { x: {{ camera_left + 120 }}, y: {{ instance_top - 6 }} }],
-        [{ x: 850, y: {{ daemon_top + 92 }} }, { x: {{ arm_left + 120 }}, y: {{ instance_top - 6 }} }],
-      ];
+      const [OK, FAULT, PEPPY, QUIET] = ["ok", "fault", "peppy", "ink-dim"].map(Motion.colour);
+
+      // The wires. The line from the robot comes to the daemon at its height,
+      // and the line of the daemon comes down to the camera with its instances.
+      const daemon = Motion.boxOf(ID + "-daemon");
+      Motion.connect(ID + "-on-machine", [ID + "-robot-panel", "right", daemon.y - Motion.boxOf(ID + "-robot-panel").y], [ID + "-daemon", "left"], { gap: 8, endGap: 8 });
+      Motion.connect(ID + "-root-holder", [ID + "-daemon", "bottom"], [ID + "-holder", "top", daemon.x - Motion.boxOf(ID + "-holder").x], { endGap: 0 });
+      Motion.connect(ID + "-root-camera", [ID + "-daemon", "bottom", -50], [ID + "-camera", "top"], { endGap: 0 });
+      Motion.connect(ID + "-root-arm", [ID + "-daemon", "bottom", 50], [ID + "-arm", "top"], { endGap: 0 });
+      // The arrow of each dependency of the brain goes out of a side of the
+      // brain, then up to the bottom of the dependency.
+      Motion.connect(ID + "-needs-camera", [ID + "-brain", "left"], [ID + "-camera", "bottom", -40]);
+      Motion.connect(ID + "-needs-arm", [ID + "-brain", "right"], [ID + "-arm", "bottom", 40]);
+      Motion.connect(ID + "-cycle", [ID + "-camera", "bottom", 70], [ID + "-brain", "top", -70]);
+      // Each mark is on its arrow.
+      const onArrow = function (markId, wire, share) {
+        const point = Motion.pointOn(ID + "-" + wire, share);
+        gsap.set(ID + "-" + markId, { left: point.x - 22, top: point.y - 22 });
+        return point;
+      };
+      onArrow("cycle-refused", "cycle", 0.5);
+      const checked = onArrow("camera-ok", "needs-camera", 0.62);
+      onArrow("arm-wrong", "needs-arm", 0.62);
+      gsap.set(ID + "-checked", { left: checked.x + 36, top: checked.y - 18 });
       // Give the arrow of a dependency a colour.
       const colour = function (name, value, time) {
         tl.to(ID + "-needs-" + name, { stroke: value, duration: 0.3 }, time);
         tl.to(ID + "-needs-" + name + "-head", { fill: value, duration: 0.3 }, time);
       };
-      Motion.endSegment(tl, ID + "-content", DURATION);
-      Motion.show(tl, ID + "-robot-panel", 0.1, { from: { opacity: 0, y: 0 } });
+
+      Motion.chapter(tl, ID, {
+        duration: DURATION,
+        map: [0.2, at.problem.start - 0.3],
+        problem: [at.problem.start - 0.2, at.daemon.start - 0.2],
+        terms: [
+          ["daemon", at.daemon.start + 0.4, at.instance.start + 0.1],
+          ["instance", at.instance.start + 0.3, at.one_graph.start + 0.3],
+          ["no_cycle", at.no_cycle.start + 0.2, at.early.start - 0.1],
+        ],
+        benefit: at.early.start,
+        ros2: at.early.end,
+      });
       RobotView.mount({
         canvas: document.querySelector(ID + "-robot"),
         segmentStart: {{ start }},
         segmentDuration: DURATION,
-        turns: [[0, -35], [at.daemon.start, 0]],
+        turns: [[at.daemon.start - 0.3, -35], [at.daemon_work.start, 0]],
       });
-      // A node in operation is an instance, and one node can have many.
-      Motion.show(tl, ID + "-holder", at.instance.start + 0.1);
-      Motion.card(tl, ID + "-card-instance", at.instance.start + 0.3, at.daemon.start - 0.2);
-      [Motion.within(at.instance, 0.58), at.many_instances.start + 0.8].forEach(function (time, index) {
-        Motion.show(tl, ID + "-instance-" + (index + 1), time, grows);
-        Motion.show(tl, ID + "-running-" + (index + 1), time + 0.3, fades);
-      });
-      [1, 2].forEach((number) => Motion.pulse(tl, ID + "-instance-" + number, Motion.within(at.many_instances, 0.52) + number * 0.4));
+
       // The daemon runs on the machine: it builds the node, starts its
       // instances and monitors their health.
       Motion.show(tl, ID + "-daemon", at.daemon.start + 0.2);
-      Motion.card(tl, ID + "-card-daemon", at.daemon.start + 0.4, at.one_graph.start - 0.3);
       Motion.draw(tl, ID + "-on-machine", Motion.within(at.daemon, 0.55), 0.5);
-      ["camera", "arm"].forEach((name, index) => Motion.draw(tl, ID + "-root-" + name, at.daemon.start + 0.8 + index * 0.2, 0.5));
-      Motion.pulse(tl, ID + "-holder", at.daemon_work.start + 0.5);
-      [1, 2].forEach((number) => Motion.pulse(tl, ID + "-instance-" + number, Motion.within(at.daemon_work, 0.42) + number * 0.15));
-      WIRES.forEach(([from, to], index) => Motion.travel(tl, ID + "-dot-" + (index + 1), from, to, Motion.within(at.daemon_work, 0.7), 0.6, 2));
+      Motion.show(tl, ID + "-holder", Motion.within(at.daemon_work, 0.12));
+      Motion.draw(tl, ID + "-root-holder", Motion.within(at.daemon_work, 0.3), 0.5);
+      [0.4, 0.5].forEach(function (share, index) {
+        Motion.show(tl, ID + "-instance-" + (index + 1), Motion.within(at.daemon_work, share), grows);
+        Motion.show(tl, ID + "-running-" + (index + 1), Motion.within(at.daemon_work, share) + 0.4, Motion.appears);
+      });
+      Motion.follow(tl, ID + "-dot", ID + "-root-holder", Motion.within(at.daemon_work, 0.7), 0.6, 2);
+      // One node can have many instances.
+      [1, 2].forEach((number) => Motion.pulse(tl, ID + "-instance-" + number, Motion.within(at.instance, 0.5) + number * 0.4));
+
       // An instance fails, and the daemon starts it again.
       const failTime = at.restart.start + 0.6;
       const againTime = Motion.within(at.restart, 0.75);
       Motion.hide(tl, ID + "-running-2", failTime);
-      Motion.showBetween(tl, ID + "-failed", failTime, againTime, fades);
-      tl.to(ID + "-instance-2", { borderColor: FAULT, duration: 0.2 }, failTime);
-      Motion.travel(tl, ID + "-dot-2", ...WIRES[1], againTime - 0.6, 0.6, 1);
-      tl.to(ID + "-instance-2", { borderColor: PEPPY, duration: 0.2 }, againTime);
-      Motion.show(tl, ID + "-running-2", againTime, fades);
+      Motion.showBetween(tl, ID + "-failed", failTime, againTime, Motion.appears);
+      Motion.paint(tl, ID + "-instance-2", { borderColor: FAULT }, failTime);
+      Motion.follow(tl, ID + "-dot", ID + "-root-holder", againTime - 0.6, 0.6, 1);
+      Motion.paint(tl, ID + "-instance-2", { borderColor: PEPPY }, againTime);
+      Motion.show(tl, ID + "-running-2", againTime, Motion.appears);
       Motion.pulse(tl, ID + "-instance-2", againTime);
+
       // The node stack: the box of the camera becomes one node of the graph,
       // then the other nodes and the dependencies come in.
       const graphTime = at.one_graph.start;
-      Motion.hide(tl, [ID + "-holder", "." + "{{ id }}-instance", "." + "{{ id }}-state", ID + "-root-arm"], graphTime + 0.35);
-      Motion.show(tl, ID + "-camera", graphTime + 0.2, { from: { opacity: 0, y: 0 } });
+      Motion.hide(tl, [ID + "-holder", ID + "-root-holder"], graphTime + 0.35);
+      Motion.show(tl, ID + "-camera", graphTime + 0.2, Motion.appears);
+      Motion.draw(tl, ID + "-root-camera", graphTime + 0.4, 0.4);
       Motion.show(tl, ID + "-arm", graphTime + 0.8);
       Motion.draw(tl, ID + "-root-arm", graphTime + 1.0, 0.4);
       Motion.show(tl, ID + "-brain", graphTime + 1.3);
-      ["camera", "arm"].forEach(function (name, index) {
-        Motion.draw(tl, ID + "-needs-" + name, Motion.within(at.one_graph, 0.38) + index * 0.3, 0.6);
-        Motion.show(tl, ID + "-needs-" + name + "-head", Motion.within(at.one_graph, 0.38) + index * 0.3 + 0.5, fades);
-      });
-      Motion.card(tl, ID + "-card-node-stack", graphTime + 0.3, at.no_cycle.start - 0.1);
-      Motion.card(tl, ID + "-compare-graph", graphTime + 0.8, at.no_cycle.end + 0.2);
+      ["camera", "arm"].forEach((name, index) => Motion.drawArrow(tl, ID + "-needs-" + name, Motion.within(at.one_graph, 0.4) + index * 0.3, 0.6));
+      Motion.paint(tl, ID + "-frame", { borderColor: Motion.colour("line-strong"), backgroundColor: "rgba(14, 22, 38, 0.55)" }, Motion.within(at.one_graph, 0.7));
+      Motion.show(tl, ID + "-stack-name", Motion.within(at.one_graph, 0.75));
+
       // No cycle: an arrow back from the camera to the brain is not possible.
       // Thus the brain starts after the camera and the arm.
-      Motion.card(tl, ID + "-card-no-cycle", at.no_cycle.start + 0.2, at.check.start + 1.0);
-      Motion.draw(tl, ID + "-cycle", at.no_cycle.start + 0.3, 0.4);
-      Motion.show(tl, ID + "-cycle-head", at.no_cycle.start + 0.6, fades);
+      Motion.drawArrow(tl, ID + "-cycle", at.no_cycle.start + 0.3, 0.4);
       Motion.show(tl, ID + "-cycle-refused", at.no_cycle.start + 0.8, grows);
-      Motion.hide(tl, [ID + "-cycle", ID + "-cycle-head", ID + "-cycle-refused"], Motion.within(at.no_cycle, 0.4));
-      [["camera", 0.46], ["arm", 0.58], ["brain", 0.76]].forEach(([name, share]) => Motion.pulse(tl, ID + "-" + name, Motion.within(at.no_cycle, share)));
+      Motion.hide(tl, [ID + "-cycle", ID + "-cycle-head", ID + "-cycle-refused"], Motion.within(at.no_cycle, 0.42));
+      [["camera", 0.5], ["arm", 0.62], ["brain", 0.8]].forEach(([name, share]) => Motion.pulse(tl, ID + "-" + name, Motion.within(at.no_cycle, share)));
+
       // The stack makes sure of the interfaces of each dependency. A wrong
       // connection shows when the node is added.
-      Motion.card(tl, ID + "-compare-wrong-name", at.check.start + 1.3, at.list.start - 0.3);
       Motion.pulse(tl, ID + "-brain", at.check.start + 0.2);
       const checkTime = Motion.within(at.check, 0.42);
       colour("camera", OK, checkTime);
       Motion.show(tl, ID + "-camera-ok", checkTime, grows);
-      Motion.show(tl, ID + "-checked", checkTime + 0.2, { from: { opacity: 0, x: -20, y: 0 } });
+      Motion.show(tl, ID + "-checked", checkTime + 0.2, Motion.fromSide);
       const wrongTime = at.early.start + 0.5;
       const wrongEnd = at.list.start - 0.3;
       colour("arm", FAULT, wrongTime);
       Motion.showBetween(tl, ID + "-arm-wrong", wrongTime, wrongEnd, grows);
       colour("arm", QUIET, wrongEnd - 0.3);
+
       // One command shows the full graph.
-      Motion.show(tl, ID + "-list", at.list.start + 0.1);
-      Motion.draw(tl, ID + "-full-graph", Motion.within(at.list, 0.3), 0.8);
-      ["daemon", "camera", "arm", "brain"].forEach((name, index) => Motion.pulse(tl, ID + "-" + name, Motion.within(at.list, 0.45) + index * 0.3));
+      Motion.show(tl, ID + "-list", at.list.start + 0.3);
+      Motion.glow(tl, ID + "-frame", Motion.within(at.list, 0.4));
+      ["daemon", "camera", "arm", "brain"].forEach((name, index) => Motion.pulse(tl, ID + "-" + name, Motion.within(at.list, 0.5) + index * 0.25));
+
       window.__timelines["{{ id }}"] = tl;
     })();
   </script>

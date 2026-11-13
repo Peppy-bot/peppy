@@ -2,8 +2,8 @@
 
 import pytest
 
-from tests.factories import segment_table, splash_table, transcript_document, transcript_of
-from tools.transcript import CodeBlock, Splash, TranscriptError, parse_transcript
+from tests.factories import act_table, segment_table, splash_table, transcript_document, transcript_of
+from tools.transcript import Chapter, CodeBlock, Splash, TranscriptError, parse_transcript
 
 
 def test_a_segment_holds_its_sources_its_sentences_and_its_screen_texts() -> None:
@@ -150,3 +150,54 @@ def test_the_video_of_the_splash_screen_has_the_first_segment_after_it() -> None
 def test_a_part_that_the_video_does_not_have_is_refused(part_id: str) -> None:
     with pytest.raises(KeyError, match=part_id):
         transcript_of([segment_table("opening")]).part(part_id)
+
+
+def test_an_act_holds_the_chapters_of_its_segments_in_order() -> None:
+    transcript = transcript_of(
+        [
+            segment_table("opening"),
+            segment_table("node", act="one_node", chapter="A node"),
+            segment_table("file", act="one_node", chapter="A file"),
+            segment_table("stack", act="stack", chapter="The stack"),
+        ],
+        act=[act_table("one_node", title="One node"), act_table("stack")],
+    )
+
+    first, second = transcript.acts
+    assert (first.number, first.title, second.number) == (1, "One node", 2)
+    assert first.chapters == (Chapter("node", 2, "A node"), Chapter("file", 3, "A file"))
+    assert first.chapter_index("file") == 1
+    assert transcript.act("stack").chapters == (Chapter("stack", 4, "The stack"),)
+    assert transcript.segment("opening").act is None
+
+
+def test_the_video_of_one_segment_keeps_the_chapters_of_each_act() -> None:
+    transcript = transcript_of(
+        [segment_table("node", act="one_node"), segment_table("file", act="one_node")], act=[act_table("one_node")]
+    )
+
+    assert transcript.part("file").acts == transcript.acts
+
+
+@pytest.mark.parametrize(
+    ("segments", "acts", "reason"),
+    [
+        ([segment_table("node", act="absent")], [act_table("one_node")], "the transcript has no such act"),
+        ([segment_table("node")], [act_table("one_node")], "each act has segments"),
+        (
+            [segment_table("node", act="one_node"), segment_table("stack", act="stack"), segment_table("file", act="one_node")],
+            [act_table("one_node"), act_table("stack")],
+            "which follow each other",
+        ),
+        (
+            [segment_table("stack", act="stack"), segment_table("node", act="one_node")],
+            [act_table("one_node"), act_table("stack")],
+            "in the order of the acts",
+        ),
+        ([segment_table("node", act="one_node")], [act_table("one_node"), act_table("one_node")], "two entries have the id `one_node`"),
+        ([segment_table("node", act="one_node")], [act_table("one_node", question=" ")], "`question` is not a text"),
+    ],
+)
+def test_acts_that_the_segments_do_not_fill_are_refused(segments: list[dict], acts: list[dict], reason: str) -> None:
+    with pytest.raises(TranscriptError, match=reason):
+        transcript_of(segments, act=acts)

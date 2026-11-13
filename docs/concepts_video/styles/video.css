@@ -3,7 +3,12 @@
    One visual language in all segments: a node is a box with its interfaces,
    the stack is a graph that grows, a contract is a socket that several nodes
    fit, and a machine is a frame around a part of the graph. A term card and a
-   comparison card with ROS 2 have two different looks. */
+   comparison with ROS 2 have two different looks.
+
+   One layout in all segments: the header at the top, the diagram in the
+   zone on the left, and the rail on the right. The rail holds the words of
+   the chapter in a fixed order: the problem, the terms, then what the
+   viewer gets. */
 
 @font-face {
   font-family: "Peppy Sans";
@@ -57,6 +62,19 @@
   --logo-ground: #dfe6f7;
   --sans: "Peppy Sans", sans-serif;
   --mono: "Peppy Mono", monospace;
+  /* The frame: each text stays inside these margins. */
+  --frame-side: 96px;
+  --frame-top: 54px;
+  /* The zone of the diagram, and the rail on its right. */
+  --zone-top: 196px;
+  --zone-height: 830px;
+  --zone-width: 1120px;
+  --rail-left: 1256px;
+  --rail-width: 568px;
+  --full-width: 1728px;
+  /* The look of a panel: a node, a card, a window. */
+  --panel-fill: linear-gradient(180deg, #141e35 0%, #0c1424 100%);
+  --panel-shadow: 0 16px 40px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 * {
@@ -85,18 +103,38 @@ code {
 .stage {
   position: absolute;
   inset: 0;
+  overflow: hidden;
   background-color: var(--ground);
   background-image:
-    linear-gradient(rgba(148, 170, 220, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(148, 170, 220, 0.045) 1px, transparent 1px);
+    linear-gradient(rgba(148, 170, 220, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 170, 220, 0.04) 1px, transparent 1px);
   background-size: 60px 60px;
 }
+/* Two soft lights behind the content, which move slowly during the segment. */
+.stage-glow {
+  position: absolute;
+  left: -260px;
+  top: -260px;
+  width: 2440px;
+  height: 1600px;
+  background:
+    radial-gradient(620px 520px at 22% 26%, rgba(200, 245, 66, 0.075), rgba(200, 245, 66, 0) 70%),
+    radial-gradient(760px 620px at 78% 74%, rgba(95, 212, 240, 0.085), rgba(95, 212, 240, 0) 70%);
+}
+/* The sides of the frame are darker than its middle. */
+.stage-shade {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(1500px 900px at 50% 46%, rgba(7, 11, 20, 0) 55%, rgba(4, 6, 12, 0.55) 100%);
+}
 
-/* The chapter of the segment, at the top left of each composition. */
+/* The header: the chapter of the segment at the top left, and the place of
+   the segment in its act at the top right. */
 .chapter {
   position: absolute;
-  left: 96px;
-  top: 58px;
+  left: var(--frame-side);
+  top: var(--frame-top);
+  height: 56px;
   display: flex;
   align-items: center;
   gap: 20px;
@@ -105,52 +143,453 @@ code {
   color: var(--ink-dim);
 }
 .chapter-number {
-  min-width: 52px;
+  min-width: 60px;
   padding: 4px 12px;
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--peppy);
   color: var(--peppy-ink);
   font-family: var(--mono);
   font-weight: 700;
   font-size: 28px;
+  line-height: 40px;
   text-align: center;
 }
-
-/* A placed part of a diagram. The composition gives its position. */
-.placed {
+.act-progress {
   position: absolute;
+  right: var(--frame-side);
+  top: var(--frame-top);
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+.act-progress-number {
+  color: var(--peppy);
+  font-weight: 700;
+}
+.pips {
+  display: flex;
+  gap: 10px;
+}
+.pip {
+  width: 44px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--line);
+}
+.pip.is-done {
+  background: rgba(200, 245, 66, 0.45);
+}
+.pip.is-current {
+  background: var(--peppy);
+}
+
+/* A scene: one group of parts of the full frame, which shows for a time. */
+.scene {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+}
+
+/* The zone of the diagram, on the left of the rail. A full zone has the
+   width of the frame, for a scene with no rail. */
+.zone {
+  position: absolute;
+  left: var(--frame-side);
+  top: var(--zone-top);
+  width: var(--zone-width);
+  height: var(--zone-height);
+}
+.zone.is-full {
+  width: var(--full-width);
+}
+/* A zone that puts its content in its middle. */
+.zone.is-centered {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The problem scene: the problem that the chapter solves, in large text. */
+.problem {
+  position: absolute;
+  left: var(--frame-side);
+  top: var(--zone-top);
+  width: var(--full-width);
+  height: var(--zone-height);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-bottom: 60px;
+}
+.problem-number {
+  position: absolute;
+  right: -20px;
+  bottom: -70px;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 560px;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: rgba(148, 170, 220, 0.055);
+}
+.scene-label {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-family: var(--mono);
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.scene-label::before {
+  content: "";
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: currentColor;
+}
+.scene-label.is-problem {
+  color: var(--fault);
+}
+.scene-label.is-benefit {
+  color: var(--peppy);
+}
+.scene-label.is-ros2 {
+  color: var(--ros2);
+}
+.problem-headline {
+  position: relative;
+  max-width: 1400px;
+  margin-top: 30px;
+  padding-left: 34px;
+  border-left: 8px solid var(--fault);
+  font-size: 76px;
+  font-weight: 700;
+  line-height: 1.14;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+
+/* The heading of the scene that opens an act. */
+.act-heading {
+  position: absolute;
+  left: var(--frame-side);
+  top: 176px;
+}
+.act-heading-kicker {
+  font-family: var(--mono);
+  font-size: 36px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--peppy);
+}
+.act-heading-title {
+  font-size: 108px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+/* The map of the video: one card for each act, with its chapters. */
+.map {
+  position: absolute;
+  left: var(--frame-side);
+  width: var(--full-width);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 36px;
+}
+.map-act {
+  padding: 30px 34px 34px;
+  border: 2px solid var(--line);
+  border-radius: 24px;
+  background: var(--panel-fill);
+  box-shadow: var(--panel-shadow);
+}
+.map-act-kicker {
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--peppy);
+}
+.map-act-title {
+  margin-top: 6px;
+  font-size: 56px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+.map-act-question {
+  min-height: 80px;
+  margin-top: 12px;
+  font-size: 30px;
+  line-height: 40px;
+  color: var(--ink-dim);
+}
+.map-chapters {
+  margin-top: 22px;
+  padding-top: 22px;
+  border-top: 2px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  list-style: none;
+}
+.map-chapter {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 18px;
+  align-items: start;
+  font-size: 30px;
+  line-height: 40px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.map-chapter-number {
+  border-radius: 8px;
+  background: rgba(148, 170, 220, 0.16);
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 40px;
+  text-align: center;
+  color: var(--ink-dim);
+}
+/* In a chapter that opens an act, the card of that act has the colour of
+   Peppy, and the other cards are in the background. */
+.map-act.is-current {
+  border-color: var(--peppy);
+  box-shadow: 0 0 0 6px rgba(200, 245, 66, 0.1), var(--panel-shadow);
+}
+.map.has-current .map-act:not(.is-current) > * {
+  opacity: 0.4;
+}
+
+/* The rail: the words of the chapter, on the right of the diagram. From its
+   top: the problem, one chip for each term, then one slot that holds the
+   card of the term of the moment and, at the end, what the viewer gets. */
+.rail {
+  position: absolute;
+  left: var(--rail-left);
+  top: var(--zone-top);
+  width: var(--rail-width);
+  height: var(--zone-height);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.rail-block {
+  padding: 20px 26px 24px;
+  border-radius: 18px;
+}
+.rail-block .scene-label {
+  font-size: 28px;
+  gap: 14px;
+}
+.rail-block .scene-label::before {
+  width: 14px;
+  height: 14px;
+}
+.rail-text {
+  margin-top: 10px;
+  font-size: 30px;
+  line-height: 40px;
+  color: var(--ink);
+}
+.rail-problem {
+  border: 2px solid rgba(255, 107, 129, 0.34);
+  background: rgba(255, 107, 129, 0.07);
+}
+.rail-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.rail-chip {
+  padding: 4px 18px;
+  border: 2px solid var(--line-strong);
+  border-radius: 26px;
+  background: var(--panel);
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 40px;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+.rail-slot {
+  position: relative;
+  flex: 1;
+}
+.rail-slot > * {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+}
+.rail-benefit {
+  border: 2px solid rgba(200, 245, 66, 0.55);
+  background: rgba(200, 245, 66, 0.08);
+}
+.rail-benefit .rail-text {
+  font-size: 34px;
+  line-height: 44px;
+  font-weight: 700;
+}
+.rail-ros2 {
+  margin-top: 18px;
+  border: 2px dashed rgba(255, 179, 71, 0.6);
+  background: rgba(7, 11, 20, 0.6);
+}
+.rail-ros2 .rail-text {
+  font-size: 28px;
+  line-height: 38px;
+  color: var(--ink-dim);
+}
+
+/* A term card: a term, its definition in plain words, and its equivalent in
+   general software. A solid panel with a lime bar on its left side. */
+.term-card {
+  padding: 22px 28px 26px;
+  border-left: 10px solid var(--peppy);
+  border-radius: 18px;
+  background: var(--panel-raised);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+.card-kind {
+  margin-bottom: 8px;
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--peppy);
+}
+.card-term {
+  margin-bottom: 10px;
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+.card-term code {
+  color: var(--ink);
+}
+.card-definition {
+  font-size: 30px;
+  line-height: 40px;
+  color: var(--ink);
+}
+.card-equivalent {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 2px solid var(--line);
+  font-size: 28px;
+  line-height: 38px;
+  color: var(--data);
+}
+.card-equivalent-label {
+  display: block;
+  font-weight: 500;
+  color: var(--ink-dim);
+}
+/* A term card for several terms: one row for each. */
+.card-row {
+  display: grid;
+  grid-template-columns: 112px 1fr;
+  gap: 18px;
+  align-items: start;
+  font-size: 28px;
+  line-height: 36px;
+}
+.card-row + .card-row {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 2px solid var(--line);
+}
+.card-row-term {
+  border-radius: 8px;
+  background: rgba(200, 245, 66, 0.14);
+  font-family: var(--mono);
+  font-weight: 700;
+  text-align: center;
+  color: var(--peppy);
+}
+.card-row.is-wide {
+  grid-template-columns: 1fr;
+  gap: 4px;
+}
+.card-row.is-wide .card-row-term {
+  justify-self: start;
+  padding: 0 14px;
 }
 
 /* A node: a box with its name. */
 .node {
-  position: absolute;
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 14px;
   min-width: 220px;
-  height: 92px;
-  padding: 0 28px;
+  height: 96px;
+  padding: 0 30px;
   border: 3px solid var(--peppy);
-  border-radius: 16px;
-  background: var(--panel);
+  border-radius: 18px;
+  background: var(--panel-fill);
+  box-shadow: var(--panel-shadow);
   font-family: var(--mono);
   font-weight: 500;
-  font-size: 32px;
+  font-size: 34px;
   color: var(--ink);
   white-space: nowrap;
+}
+.node .icon {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  color: var(--peppy);
 }
 .node.is-daemon {
   border-color: var(--data);
 }
+.node.is-daemon .icon {
+  color: var(--data);
+}
 .node.is-quiet {
   border-color: var(--line-strong);
+}
+.node.is-quiet .icon {
+  color: var(--ink-dim);
+}
+
+/* A line icon. */
+.icon {
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 /* A label of a diagram. */
 .label {
-  position: absolute;
   font-size: 28px;
   font-weight: 500;
+  line-height: 36px;
   color: var(--ink-dim);
   white-space: nowrap;
 }
@@ -166,10 +605,42 @@ code {
 .label.is-fault {
   color: var(--fault);
 }
+.label.is-ok {
+  color: var(--ok);
+}
+/* A label on a small panel, which a line can cross. */
+.label.is-tag {
+  padding: 4px 16px;
+  border: 2px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--ground);
+  color: var(--ink);
+}
+
+/* A pill: the name of an interface, of a link or of a state. */
+.pill {
+  padding: 2px 20px;
+  border: 2px solid var(--data);
+  border-radius: 24px;
+  background: var(--ground);
+  font-family: var(--mono);
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 42px;
+  color: var(--data);
+  white-space: nowrap;
+}
+.pill.is-peppy {
+  border-color: var(--peppy);
+  color: var(--peppy);
+}
+.pill.is-contract {
+  border-color: var(--contract);
+  color: var(--contract);
+}
 
 /* A large line of text on the stage. */
 .headline {
-  position: absolute;
   font-size: 64px;
   font-weight: 700;
   line-height: 1.12;
@@ -179,22 +650,22 @@ code {
 
 /* A command in its general form. */
 .command {
-  position: absolute;
   display: inline-flex;
   align-items: center;
   gap: 18px;
-  padding: 18px 28px;
+  height: 84px;
+  padding: 0 30px;
   border: 2px solid var(--line-strong);
-  border-radius: 12px;
+  border-radius: 14px;
   background: #05080f;
+  box-shadow: var(--panel-shadow);
   font-family: var(--mono);
-  font-size: 34px;
+  font-size: 32px;
   font-weight: 500;
   color: var(--ink);
   white-space: nowrap;
 }
-.command::before {
-  content: "$";
+.command-prompt {
   color: var(--peppy);
 }
 .command code {
@@ -205,7 +676,8 @@ code {
 /* The lines of the diagrams, which are SVG paths. */
 .wires {
   position: absolute;
-  inset: 0;
+  left: 0;
+  top: 0;
   width: 1920px;
   height: 1080px;
   overflow: visible;
@@ -218,30 +690,48 @@ code {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+.wire-head {
+  fill: var(--data);
+}
 .wire.is-quiet {
   stroke: var(--line-strong);
+}
+.wire-head.is-quiet {
+  fill: var(--line-strong);
+}
+.wire.is-dim {
+  stroke: var(--ink-dim);
+}
+.wire-head.is-dim {
+  fill: var(--ink-dim);
 }
 .wire.is-peppy {
   stroke: var(--peppy);
 }
+.wire-head.is-peppy {
+  fill: var(--peppy);
+}
 .wire.is-contract {
   stroke: var(--contract);
+}
+.wire-head.is-contract {
+  fill: var(--contract);
 }
 .wire.is-fault {
   stroke: var(--fault);
 }
-.wire.is-dashed {
-  stroke-dasharray: 10 12;
+.wire-head.is-fault {
+  fill: var(--fault);
 }
-.wire-head {
-  fill: var(--data);
+.wire.is-ok {
+  stroke: var(--ok);
 }
 
 /* The robot: its 3D model on a light panel, as a studio picture. */
 .robot-panel {
-  position: absolute;
-  border-radius: 32px;
+  border-radius: 28px;
   background: radial-gradient(120% 90% at 50% 38%, #f4f7fd 0%, #d5dcec 62%, #b9c3d9 100%);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
   overflow: hidden;
 }
 .robot-canvas {
@@ -249,31 +739,33 @@ code {
   width: 100%;
   height: 100%;
 }
-.label.is-part {
-  padding: 4px 16px;
-  border-radius: 10px;
-  background: var(--ground);
-  border: 2px solid var(--line-strong);
-  color: var(--ink);
-}
 
-/* A message that moves on a wire. `Motion.travel` moves it from the top left
+/* A message that moves on a wire. The motion moves it from the top left
    corner of the stage. */
 .dot {
   position: absolute;
   left: 0;
   top: 0;
-  width: 16px;
-  height: 16px;
-  margin: -8px 0 0 -8px;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
   border-radius: 50%;
   background: var(--data);
+  box-shadow: 0 0 14px rgba(95, 212, 240, 0.7);
+}
+.dot.is-peppy {
+  background: var(--peppy);
+  box-shadow: 0 0 14px rgba(200, 245, 66, 0.7);
+}
+.dot.is-stop {
+  border-radius: 4px;
+  background: var(--ink);
+  box-shadow: none;
 }
 
 /* A round mark on a part: a check when the part is correct, a cross when it
    is refused. */
 .mark {
-  position: absolute;
   width: 44px;
   height: 44px;
   border-radius: 50%;
@@ -293,146 +785,54 @@ code {
   stroke-linejoin: round;
 }
 
-/* A machine: a frame around a part of the graph. */
-.machine {
-  position: absolute;
+/* A frame around a group of parts: a machine, a stack, a framework. Its
+   name is on its top border. */
+.frame {
+  position: relative;
   border: 3px dashed var(--line-strong);
   border-radius: 28px;
   background: rgba(14, 22, 38, 0.55);
 }
-.machine-name {
+.frame-name {
   position: absolute;
   left: 28px;
-  top: -22px;
+  top: -24px;
   padding: 4px 16px;
+  border: 2px solid var(--line-strong);
   border-radius: 10px;
   background: var(--ground);
-  border: 2px solid var(--line-strong);
   font-size: 28px;
   font-weight: 500;
+  line-height: 36px;
   color: var(--ink-dim);
   white-space: nowrap;
 }
 
-/* A card. The term card and the comparison card share only their place. */
-.card {
+/* A comparison of steps: ROS 2 on the left and Peppy on the right. An
+   outline with an amber dashed border, so a viewer does not read it as a
+   definition. */
+.steps-scene {
   position: absolute;
-  right: 96px;
-  width: 680px;
-  padding: 28px 34px 32px;
-  border-radius: 20px;
-}
-.card-kind {
-  margin-bottom: 12px;
-  font-family: var(--mono);
-  font-size: 28px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-/* A term card: a term, its definition in plain words, and its equivalent in
-   general software. A solid panel with a lime bar on its left side. */
-.term-card {
-  bottom: 70px;
-  background: var(--panel-raised);
-  border-left: 10px solid var(--peppy);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
-}
-.term-card .card-kind {
-  color: var(--peppy);
-}
-.term-card .card-term {
-  margin-bottom: 12px;
-  font-size: 46px;
-  font-weight: 700;
-  line-height: 1.1;
-}
-.term-card .card-definition {
-  font-size: 32px;
-  line-height: 1.32;
-  color: var(--ink);
-}
-.term-card .card-equivalent {
-  margin-top: 20px;
-  padding-top: 18px;
-  border-top: 2px solid var(--line);
-  font-size: 30px;
-  line-height: 1.32;
-  color: var(--data);
-}
-.term-card .card-equivalent-label {
-  display: block;
-  margin-bottom: 4px;
-  font-size: 28px;
-  font-weight: 500;
-  color: var(--ink-dim);
-}
-
-/* A comparison card: what ROS 2 does and what Peppy does. An outline with an
-   amber dashed border, so a viewer does not read it as a definition. */
-.comparison-card {
+  left: var(--frame-side);
   top: 150px;
-  background: rgba(7, 11, 20, 0.92);
-  border: 3px dashed var(--ros2);
+  width: var(--full-width);
+  height: 876px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
-.comparison-card .card-kind {
-  color: var(--ros2);
-}
-.comparison-card .card-about {
-  margin-bottom: 18px;
-  font-size: 28px;
-  line-height: 1.3;
-  color: var(--ink-dim);
-}
-.comparison-side {
-  display: grid;
-  grid-template-columns: 116px 1fr;
-  gap: 18px;
-  align-items: start;
-  font-size: 30px;
-  line-height: 1.32;
-}
-.comparison-side + .comparison-side {
-  margin-top: 18px;
-  padding-top: 18px;
-  border-top: 2px solid var(--line);
-}
-.side-name {
-  padding: 3px 0;
-  border-radius: 8px;
-  font-family: var(--mono);
-  font-size: 28px;
-  font-weight: 700;
-  text-align: center;
-}
-.side-name.is-ros2 {
-  background: rgba(255, 179, 71, 0.16);
-  color: var(--ros2);
-}
-.side-name.is-peppy {
-  background: rgba(200, 245, 66, 0.16);
-  color: var(--peppy);
-}
-.comparison-card code {
-  color: var(--ink);
-}
-
-/* A comparison of steps: ROS 2 on the left and Peppy on the right. */
 .steps {
-  position: absolute;
-  left: 96px;
-  right: 96px;
-  top: 140px;
-  bottom: 60px;
-  padding: 34px 44px;
+  padding: 24px 44px 26px;
   border: 3px dashed var(--ros2);
   border-radius: 24px;
   background: rgba(7, 11, 20, 0.96);
 }
+.steps .card-kind {
+  color: var(--ros2);
+}
 .steps-title {
   margin-bottom: 6px;
-  font-size: 40px;
+  font-size: 44px;
   font-weight: 700;
 }
 .steps-about {
@@ -443,7 +843,16 @@ code {
   display: grid;
   grid-template-columns: 1.25fr 1fr;
   gap: 44px;
-  margin-top: 26px;
+  margin-top: 18px;
+}
+.steps-side {
+  padding: 18px 28px 20px;
+  border: 2px solid transparent;
+  border-radius: 18px;
+  background: rgba(255, 179, 71, 0.05);
+}
+.steps-side.is-peppy {
+  background: rgba(200, 245, 66, 0.06);
 }
 .steps-side-name {
   display: inline-block;
@@ -453,16 +862,16 @@ code {
   font-size: 28px;
   font-weight: 700;
 }
-.steps-side.is-ros2 .steps-side-name {
+.steps-side-name.is-ros2 {
   background: rgba(255, 179, 71, 0.16);
   color: var(--ros2);
 }
-.steps-side.is-peppy .steps-side-name {
+.steps-side-name.is-peppy {
   background: rgba(200, 245, 66, 0.16);
   color: var(--peppy);
 }
 .steps-summary {
-  margin: 14px 0 16px;
+  margin: 10px 0 10px;
   font-size: 30px;
   font-weight: 500;
   color: var(--ink);
@@ -474,12 +883,12 @@ code {
 .step {
   counter-increment: step;
   display: grid;
-  grid-template-columns: 44px 1fr;
-  gap: 14px;
+  grid-template-columns: 36px 1fr;
+  gap: 12px;
   align-items: baseline;
-  padding: 7px 0;
+  padding: 4px 0;
   font-size: 28px;
-  line-height: 1.3;
+  line-height: 1.25;
   color: var(--ink);
 }
 .step::before {
@@ -499,13 +908,19 @@ code {
   color: var(--ink);
 }
 .steps-note {
-  position: absolute;
-  left: 44px;
-  right: 44px;
-  bottom: 26px;
+  margin-top: 18px;
   font-size: 28px;
   line-height: 1.3;
   color: var(--ink-dim);
+}
+/* A comparison with few steps has larger text. */
+.steps.is-large .step,
+.steps.is-large .steps-summary {
+  padding: 10px 0;
+  font-size: 34px;
+}
+.steps.is-large .step::before {
+  font-size: 34px;
 }
 .steps-row-name {
   font-size: 28px;
@@ -517,25 +932,38 @@ code {
 
 /* Code on the screen: a window with one element for each line. */
 .code-window {
-  position: absolute;
-  padding: 26px 30px 28px;
+  padding: 22px 28px 26px;
   border: 2px solid var(--line-strong);
-  border-radius: 16px;
+  border-radius: 18px;
   background: #05080f;
+  box-shadow: var(--panel-shadow);
   font-family: var(--mono);
   font-size: 28px;
-  line-height: 1.5;
+  line-height: 42px;
   color: var(--ink);
 }
 .code-title {
-  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
   font-size: 28px;
   font-weight: 500;
   color: var(--ink-dim);
 }
+.code-title::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+.code-title code {
+  color: var(--ink-dim);
+}
 .code-line {
   white-space: pre;
-  min-height: 1.5em;
+  min-height: 42px;
   border-radius: 6px;
 }
 .code-keyword {
@@ -553,12 +981,32 @@ code {
 
 /* A short note below a diagram or a code window. */
 .note {
-  position: absolute;
   font-size: 28px;
-  line-height: 1.35;
+  line-height: 38px;
   color: var(--ink-dim);
 }
 .note.is-strong {
   color: var(--ink);
   font-weight: 500;
+}
+.note code {
+  color: var(--ink);
+}
+
+/* The light of a part in operation, at the top right of the part. */
+.status {
+  position: absolute;
+  right: 14px;
+  top: 14px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 12px rgba(74, 222, 128, 0.7);
+}
+
+/* A placed part of a diagram. The composition gives its position. This rule
+   is the last one, so a placed part of each kind has this position. */
+.placed {
+  position: absolute;
 }

@@ -1,295 +1,182 @@
-{# Segment 6. A launcher is one file that describes a full stack. One command
-   starts it, Peppy finds each part by name in repositories, and the first
-   run is two steps. #}
-{% from "_parts.html.j2" import chapter, term_card, steps_comparison %}
+{# Segment 7. A launcher is one file that describes a full stack, and one
+   command starts it. Peppy finds the nodes by name in repositories, so the
+   first run of a stack is two steps. #}
+{% from "_parts.html.j2" import backdrop, header, problem_scene, rail, term_card, steps_comparison, node, command, icon, wire %}
 {% set id = segment.id %}
-
-{# The file is at the top left, with the command below it and the store of
-   the repositories below the command. The nodes that the command starts are
-   at the right of the file. #}
-{% set left = 96 %}
-{% set file_top = 160 %}
-{% set file_width = 400 %}
-{% set part_height = 70 %}
-{# The window of the file has 84 px above its first part, for its border, its
-   padding and its title, and 30 px below its last part. #}
-{% set file_height = 84 + screen.stack_parts | length * part_height + 30 %}
-{% set file_middle = left + file_width // 2 %}
-{% set command_top = file_top + file_height + 48 %}
-{% set command_height = 85 %}
-{% set store_top = command_top + command_height + 60 %}
-{% set store_width = file_width %}
-{% set store_height = 1010 - store_top %}
-{% set store_middle = left + store_width // 2 %}
-{# The nodes of the stack, in the order of their dependencies: the last node
-   depends on each of the two nodes before it, which are in one row above
-   it. #}
-{% set dependencies = screen.stack_nodes[:-1] %}
-{% set node_width = 240 %}
-{% set node_height = 92 %}
-{% set nodes_left = 580 %}
-{% set node_gap = 30 %}
-{% set node_pitch = node_width + node_gap %}
-{% set nodes_right = nodes_left + dependencies | length * node_pitch - node_gap %}
-{% set last_node_left = (nodes_left + nodes_right - node_width) // 2 %}
-{% set last_node_top = file_top + 270 %}
-{% set last_node_middle = last_node_top + node_height // 2 %}
-{# Where the wire from the command goes up to the first node. #}
-{% set starts_x = 540 %}
-
-{# The small picture of a part of a stack, by its place in `stack_parts`. #}
-{% macro part_icon(place) %}
-<svg class="{{ id }}-icon" viewBox="0 0 40 40">
-  {% if place == 1 %}
-  <rect class="is-node" x="5" y="10" width="30" height="20" rx="5" />
-  {% elif place == 2 %}
-  <rect class="is-node" x="4" y="6" width="24" height="17" rx="5" />
-  <rect class="is-node is-front" x="12" y="17" width="24" height="17" rx="5" />
-  {% elif place == 3 %}
-  <path d="M 5 13 H 35 M 5 27 H 35" />
-  <circle class="is-knob" cx="25" cy="13" r="5" />
-  <circle class="is-knob" cx="14" cy="27" r="5" />
-  {% else %}
-  <path class="is-link" d="M 12 20 H 28" />
-  <circle class="is-link" cx="8" cy="20" r="5" />
-  <circle class="is-link" cx="32" cy="20" r="5" />
-  {% endif %}
-</svg>
-{% endmacro %}
-
+{# The diagram, in the zone: the launcher file and the stack that it starts
+   at the top, the launch command below the file, and the repositories at
+   the bottom. Each number is a left side, a top or a size in the zone. #}
+{% set file = {"width": 400, "height": 390} %}
+{% set stack = {"left": 560, "width": 560, "height": 390} %}
+{% set stack_node_width = 230 %}
+{# The space between a node of the stack and the side of its frame. #}
+{% set stack_inset = 30 %}
+{% set command_top = 454 %}
+{% set store_top = 612 %}
+{% set part_icons = ["box", "copies", "sliders", "link"] %}
+{% set node_icons = ["camera", "arm", "brain"] %}
 <template>
   <style>
     #root {
       position: absolute;
       inset: 0;
     }
-    .{{ id }}-part {
-      position: relative;
-      height: {{ part_height }}px;
-    }
-    {# A line of the file, before the voice names the part that it holds. #}
-    .{{ id }}-line {
-      position: absolute;
-      left: 0;
-      top: {{ part_height // 2 - 6 }}px;
-      height: 12px;
-      border-radius: 6px;
-      background: var(--line);
-    }
-    .{{ id }}-part-name {
-      display: flex;
-      align-items: center;
-      gap: 20px;
-      height: 100%;
-      font-size: 34px;
-      font-weight: 500;
-    }
-    .{{ id }}-icon {
-      width: 40px;
-      height: 40px;
-      fill: none;
-      stroke: var(--ink-dim);
-      stroke-width: 3;
-      stroke-linecap: round;
-    }
-    .{{ id }}-icon .is-node {
-      stroke: var(--peppy);
-    }
-    .{{ id }}-icon .is-front,
-    .{{ id }}-icon .is-knob {
-      fill: #05080f;
-    }
-    .{{ id }}-icon .is-knob {
-      stroke: var(--ink);
-    }
-    .{{ id }}-icon .is-link {
-      stroke: var(--data);
-    }
-    .{{ id }}-quiet-head {
-      fill: var(--line-strong);
-    }
-    .{{ id }}-peppy-head {
-      fill: var(--peppy);
-    }
-    {# The arrow of a dependency, from a node to the node that it needs. #}
-    .{{ id }}-needs {
-      fill: none;
-      stroke: var(--ink-dim);
-      stroke-width: 4;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-    }
-    .{{ id }}-needs-head {
-      fill: var(--ink-dim);
-    }
-    {# A node that Peppy did not start yet. #}
-    .node.{{ id }}-node {
-      border-style: dashed;
-      border-color: var(--line-strong);
-    }
-    .{{ id }}-status {
-      position: absolute;
-      width: 16px;
-      height: 16px;
-      border-radius: 50%;
-      background: var(--ok);
-    }
-    .{{ id }}-store {
-      position: absolute;
-      left: {{ left }}px;
-      top: {{ store_top }}px;
-      width: {{ store_width }}px;
-      height: {{ store_height }}px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
-    .{{ id }}-store svg {
-      position: absolute;
+    {# The launcher file: one line for each part of a stack. #}
+    .{{ id }}-file {
       left: 0;
       top: 0;
-      width: 100%;
-      height: 100%;
-      overflow: visible;
+      width: {{ file.width }}px;
+      height: {{ file.height }}px;
+      padding: 22px 30px;
+      font-family: var(--sans);
     }
-    .{{ id }}-store svg * {
-      fill: var(--panel);
-      stroke: var(--line-strong);
-      stroke-width: 3;
-    }
-    .{{ id }}-store svg ellipse {
-      fill: var(--panel-raised);
-    }
-    .{{ id }}-store-name {
-      position: relative;
-      margin-top: 56px;
-      font-size: 30px;
-      font-weight: 500;
-      line-height: 40px;
-      color: var(--ink);
-    }
-    .{{ id }}-found {
-      position: relative;
-      width: 230px;
-      height: 44px;
-      margin-top: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border: 2px solid var(--line-strong);
-      border-radius: 10px;
-      background: var(--ground);
-      font-family: var(--mono);
-      font-size: 28px;
-      font-weight: 500;
-      color: var(--ink);
-    }
-    .{{ id }}-found.is-node {
-      border-color: var(--peppy);
-    }
-    .{{ id }}-found.is-contract {
-      border-color: var(--contract);
-    }
-    .{{ id }}-free {
-      position: absolute;
-      left: {{ left + store_width + 50 }}px;
+    {# The four lines fill the window below its title. #}
+    .{{ id }}-part {
       display: flex;
       align-items: center;
       gap: 18px;
-      font-size: 32px;
+      height: 72px;
+      font-family: var(--mono);
+      font-size: 34px;
       font-weight: 500;
-      white-space: nowrap;
     }
-    .{{ id }}-free svg {
+    .{{ id }}-part .icon {
       width: 40px;
       height: 40px;
+      color: var(--data);
+    }
+    .{{ id }}-command {
+      left: 0;
+      top: {{ command_top }}px;
+    }
+    {# The stack that the launch starts. #}
+    .{{ id }}-stack {
+      left: {{ stack.left }}px;
+      top: 0;
+      width: {{ stack.width }}px;
+      height: {{ stack.height }}px;
+    }
+    .{{ id }}-stack .node {
+      width: {{ stack_node_width }}px;
+      min-width: 0;
+    }
+    {# The repositories, and what they hold. #}
+    .{{ id }}-store {
+      left: 0;
+      top: {{ store_top }}px;
+      width: {{ file.width }}px;
+      padding: 20px 30px 26px;
+      border: 2px solid var(--data);
+      border-radius: 18px;
+      background: var(--panel-fill);
+      box-shadow: var(--panel-shadow);
+    }
+    .{{ id }}-store-name {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 16px;
+      font-size: 34px;
+      font-weight: 500;
+      line-height: 44px;
+    }
+    .{{ id }}-store-name .icon {
+      width: 40px;
+      height: 40px;
+      color: var(--data);
+    }
+    .{{ id }}-found {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .{{ id }}-found .pill {
+      font-size: 28px;
+      padding: 0 16px;
+    }
+    {# What a developer does not need. #}
+    .{{ id }}-not-needed {
+      left: {{ stack.left }}px;
+      top: {{ store_top }}px;
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+    }
+    .{{ id }}-free {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      font-size: 34px;
+      font-weight: 500;
+      line-height: 44px;
+      white-space: nowrap;
+    }
+    .{{ id }}-free .icon {
+      width: 44px;
+      height: 44px;
+      padding: 8px;
       border-radius: 50%;
       background: var(--ok);
-      fill: none;
-      stroke: var(--ground);
-      stroke-width: 5;
-      stroke-linecap: round;
-      stroke-linejoin: round;
+      color: var(--ground);
+      stroke-width: 3.2;
     }
   </style>
   <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
     <div id="{{ id }}-stage" class="stage">
-      {{ chapter(number, segment.chapter) }}
+      {{ backdrop(id) }}
+      {{ header(segment, act) }}
       <div id="{{ id }}-content">
-      <div id="{{ id }}-diagram">
+      {{ problem_scene(id, segment, screen.problem) }}
 
-      <svg class="wires" viewBox="0 0 1920 1080">
-        <path id="{{ id }}-reads" class="wire is-quiet" pathLength="1" d="M {{ file_middle }} {{ file_top + file_height + 4 }} V {{ command_top - 16 }}" />
-        <polygon id="{{ id }}-reads-head" class="{{ id }}-quiet-head" points="{{ file_middle - 10 }},{{ command_top - 18 }} {{ file_middle + 10 }},{{ command_top - 18 }} {{ file_middle }},{{ command_top - 2 }}" />
-        <path id="{{ id }}-starts" class="wire is-peppy" pathLength="1" d="M {{ starts_x }} {{ command_top - 2 }} V {{ file_top + 62 }} Q {{ starts_x }} {{ file_top + 46 }} {{ starts_x + 16 }} {{ file_top + 46 }} H {{ nodes_left - 16 }}" />
-        <polygon id="{{ id }}-starts-head" class="{{ id }}-peppy-head" points="{{ nodes_left - 18 }},{{ file_top + 36 }} {{ nodes_left - 2 }},{{ file_top + 46 }} {{ nodes_left - 18 }},{{ file_top + 56 }}" />
-        {# Each arrow goes out of a side of the last node, then up to the
-           bottom of the node that the last node needs. #}
-        {% for node in dependencies %}
-        {% set side = last_node_left if loop.first else last_node_left + node_width %}
-        {% set x = nodes_left + 60 if loop.first else nodes_right - 60 %}
-        {% set turn = -24 if loop.first else 24 %}
-        {% set bottom = file_top + node_height %}
-        <path id="{{ id }}-needs-{{ loop.index }}" class="{{ id }}-needs" pathLength="1" d="M {{ side }} {{ last_node_middle }} H {{ x - turn }} Q {{ x }} {{ last_node_middle }} {{ x }} {{ last_node_middle - 24 }} V {{ bottom + 16 }}" />
-        <polygon id="{{ id }}-needs-{{ loop.index }}-head" class="{{ id }}-needs-head" points="{{ x - 10 }},{{ bottom + 18 }} {{ x + 10 }},{{ bottom + 18 }} {{ x }},{{ bottom + 2 }}" />
-        {% endfor %}
-        <path id="{{ id }}-finds" class="wire" pathLength="1" d="M {{ store_middle }} {{ store_top - 6 }} V {{ command_top + command_height + 18 }}" />
-        <polygon id="{{ id }}-finds-head" class="wire-head" points="{{ store_middle - 10 }},{{ command_top + command_height + 20 }} {{ store_middle + 10 }},{{ command_top + command_height + 20 }} {{ store_middle }},{{ command_top + command_height + 4 }}" />
-      </svg>
-
-      {# The launcher: one file, and the parts of the stack that it describes. #}
-      <div id="{{ id }}-file" class="code-window" style="left: {{ left }}px; top: {{ file_top }}px; width: {{ file_width }}px; height: {{ file_height }}px">
-        <div class="code-title">{{ screen.file }}</div>
-        {% set line_widths = [62, 84, 54, 72] %}
-        {% for part in screen.stack_parts %}
-        <div class="{{ id }}-part">
-          <div id="{{ id }}-line-{{ loop.index }}" class="{{ id }}-line" style="width: {{ line_widths[loop.index0 % 4] }}%"></div>
-          <div id="{{ id }}-part-{{ loop.index }}" class="{{ id }}-part-name">
-            {{ part_icon(loop.index) }}
-            <span>{{ part }}</span>
+      <div id="{{ id }}-concept" class="scene">
+        <div class="zone">
+          <div id="{{ id }}-file" class="code-window placed {{ id }}-file">
+            <div class="code-title">{{ screen.file }}</div>
+            {% for part in screen.stack_parts %}
+            <div id="{{ id }}-part-{{ loop.index }}" class="{{ id }}-part">{{ icon(part_icons[loop.index0]) }}<span>{{ part }}</span></div>
+            {% endfor %}
+          </div>
+          {{ command(id + "-command", screen.launch_command, "placed " + id + "-command") }}
+          <div id="{{ id }}-stack" class="frame placed {{ id }}-stack">
+            {% for name in screen.stack_nodes %}
+            {# The frame has a border of 3 px on each side. #}
+            {% set inner_width = stack.width - 6 %}
+            {% set left = [stack_inset, inner_width - stack_inset - stack_node_width, (inner_width - stack_node_width) // 2][loop.index0] %}
+            {# The last node is as far from the bottom of the frame as the first ones from its top. #}
+            {% set top = stack.height - 6 - 44 - 96 if loop.last else 44 %}
+            {% call node(id + "-node-" ~ loop.index, name, node_icons[loop.index0], "placed", "left: " ~ left ~ "px; top: " ~ top ~ "px") %}
+            <span id="{{ id }}-status-{{ loop.index }}" class="status" data-layout="over"></span>
+            {% endcall %}
+            {% endfor %}
+          </div>
+          <div id="{{ id }}-store" class="placed {{ id }}-store">
+            <div class="{{ id }}-store-name">{{ icon("store") }}<span>{{ screen.repositories }}</span></div>
+            <div class="{{ id }}-found">
+              {% for kind in screen.found_by_name %}
+              <span id="{{ id }}-found-{{ loop.index }}" class="pill">{{ kind }}</span>
+              {% endfor %}
+            </div>
+          </div>
+          <div class="placed {{ id }}-not-needed">
+            {% for item in screen.not_needed %}
+            <div id="{{ id }}-free-{{ loop.index }}" class="{{ id }}-free">{{ icon("check") }}<span>{{ item }}</span></div>
+            {% endfor %}
           </div>
         </div>
-        {% endfor %}
-      </div>
-
-      <div id="{{ id }}-command" class="command" style="left: {{ left }}px; top: {{ command_top }}px; height: {{ command_height }}px">{{ screen.launch_command | rich }}</div>
-
-      {# The nodes of the stack, in the order of their dependencies. #}
-      {% for node in screen.stack_nodes %}
-      {% set node_left = last_node_left if loop.last else nodes_left + loop.index0 * node_pitch %}
-      {% set node_top = last_node_top if loop.last else file_top %}
-      <div id="{{ id }}-node-{{ loop.index }}" class="node {{ id }}-node" style="left: {{ node_left }}px; top: {{ node_top }}px; width: {{ node_width }}px">{{ node }}</div>
-      <div id="{{ id }}-status-{{ loop.index }}" class="{{ id }}-status" style="left: {{ node_left + node_width - 28 }}px; top: {{ node_top + 12 }}px"></div>
-      {% endfor %}
-
-      {# The repositories: the store where Peppy finds each part by its name. #}
-      <div id="{{ id }}-store" class="{{ id }}-store">
-        <svg viewBox="0 0 {{ store_width }} {{ store_height }}">
-          <path d="M 2 26 V {{ store_height - 26 }} A {{ store_width // 2 - 2 }} 24 0 0 0 {{ store_width - 2 }} {{ store_height - 26 }} V 26" />
-          <ellipse cx="{{ store_width // 2 }}" cy="26" rx="{{ store_width // 2 - 2 }}" ry="24" />
+        <svg class="wires" viewBox="0 0 1920 1080">
+          {{ wire(id + "-reads", "is-quiet") }}
+          {{ wire(id + "-starts", "is-peppy") }}
+          {{ wire(id + "-finds") }}
+          {{ wire(id + "-needs-1", "is-dim") }}
+          {{ wire(id + "-needs-2", "is-dim") }}
         </svg>
-        <span class="{{ id }}-store-name">{{ screen.repositories }}</span>
-        {# The colour of each kind of part: lime for a node, violet for a
-           contract. #}
-        {% set kinds = ["is-node", "is-file", "is-contract"] %}
-        {% for found in screen.found_by_name %}
-        <span id="{{ id }}-found-{{ loop.index }}" class="{{ id }}-found {{ kinds[loop.index0] }}">{{ found }}</span>
-        {% endfor %}
-      </div>
-      <div id="{{ id }}-dot" class="dot"></div>
-
-      {% for line in screen.not_needed %}
-      <div id="{{ id }}-free-{{ loop.index }}" class="{{ id }}-free" style="top: {{ store_top + 30 + (loop.index - 1) * 78 }}px">
-        <svg viewBox="0 0 40 40"><path d="M 11 21 L 17 27 L 29 14" /></svg>
-        <span>{{ line }}</span>
-      </div>
-      {% endfor %}
-
+        {{ rail(id, screen, [
+          ["launcher", screen.cards.launcher.term, term_card(id + "-card-launcher", screen.cards.launcher)],
+          ["repository", screen.cards.repository.term, term_card(id + "-card-repository", screen.cards.repository)],
+        ]) }}
       </div>
 
-      {{ term_card(id + "-card-launcher", screen.cards.launcher) }}
-      {{ term_card(id + "-card-repository", screen.cards.repository) }}
-      {{ steps_comparison(id + "-steps", screen.comparisons.first_run) }}
+      {{ steps_comparison(id + "-steps", screen.comparisons.first_run, columns="0.86fr 1fr") }}
       </div>
     </div>
   </div>
@@ -299,92 +186,63 @@
       const at = {{ at | tojson }};
       const DURATION = {{ duration }};
       const tl = gsap.timeline({ paused: true });
-      /* Bring attention to a box: its border goes to lime, then back. */
+      const grows = { from: { opacity: 0, scale: 0.2, y: 0 } };
 
-      Motion.endSegment(tl, ID + "-content", DURATION);
+      // The wires. The command is below the file and above the repositories,
+      // so its two wires are straight lines at the middle of the file.
+      const file = Motion.boxOf(ID + "-file");
+      const fromFile = file.x - Motion.boxOf(ID + "-command").x;
+      Motion.connect(ID + "-reads", [ID + "-file", "bottom"], [ID + "-command", "top", fromFile], { gap: 6 });
+      Motion.connect(ID + "-finds", [ID + "-store", "top"], [ID + "-command", "bottom", fromFile], { gap: 6 });
+      Motion.connect(ID + "-starts", [ID + "-command", "right"], [ID + "-stack", "bottom"], { gap: 6 });
+      // The last node depends on the two first ones.
+      Motion.connect(ID + "-needs-1", [ID + "-node-3", "left"], [ID + "-node-1", "bottom", -30]);
+      Motion.connect(ID + "-needs-2", [ID + "-node-3", "right"], [ID + "-node-2", "bottom", 30]);
 
-      // A launcher is one file. It describes a full stack, part by part.
-      Motion.show(tl, ID + "-file", at.launcher.start + 0.1);
-      Motion.card(tl, ID + "-card-launcher", at.launcher.start + 0.9, at.one_command.end + 0.4);
-      [0.47, 0.59, 0.73, 0.86].forEach(function (share, index) {
-        Motion.hide(tl, ID + "-line-" + (index + 1), Motion.within(at.launcher, share) + 0.15);
-        Motion.show(tl, ID + "-part-" + (index + 1), Motion.within(at.launcher, share), Motion.fromSide);
+      const stepsTime = at.two_steps.start - 0.3;
+      Motion.chapter(tl, ID, {
+        duration: DURATION,
+        problem: [0.3, at.launcher.start - 0.2],
+        terms: [
+          ["launcher", at.launcher.start + 0.4, at.by_name.start + 0.1],
+          ["repository", at.by_name.start + 0.3, at.nothing_to_clone.start + 0.3],
+        ],
+        benefit: at.nothing_to_clone.start + 0.5,
       });
 
-      // One command starts it.
-      Motion.draw(tl, ID + "-reads", at.one_command.start, 0.3);
-      Motion.showHead(tl, ID + "-reads-head", at.one_command.start + 0.25);
-      Motion.show(tl, ID + "-command", at.one_command.start + 0.2);
+      // A launcher is one file that describes the full stack.
+      Motion.show(tl, ID + "-file", at.launcher.start + 0.1);
+      Motion.show(tl, "." + "{{ id }}-part", Motion.within(at.launcher, 0.4), { from: { opacity: 0, x: -20, y: 0 }, stagger: 0.25 });
 
-      // Peppy adds, builds and starts each node, in the order of the
-      // dependencies: a dashed box, then a box, then a node in operation. The
-      // first node changes when the voice names each step, and the other
-      // nodes follow. The last node comes with the arrows of its dependencies.
-      const NODES = {{ screen.stack_nodes | length }};
-      const nextNodeSeconds = (Motion.lasts(at.in_order) * 0.44) / (NODES - 1);
-      const nodeTimes = function (number) {
-        if (number === 1) {
-          return { added: Motion.within(at.in_order, 0.1), built: Motion.within(at.in_order, 0.22), started: Motion.within(at.in_order, 0.42) };
-        }
-        const added = Motion.within(at.in_order, 0.52) + (number - 2) * nextNodeSeconds;
-        return { added, built: added + nextNodeSeconds * 0.33, started: added + nextNodeSeconds * 0.66 };
-      };
-      Motion.draw(tl, ID + "-starts", at.in_order.start, 0.5);
-      Motion.showHead(tl, ID + "-starts-head", at.in_order.start + 0.4);
-      for (let number = 1; number <= NODES; number += 1) {
-        const node = ID + "-node-" + number;
-        const times = nodeTimes(number);
-        Motion.show(tl, node, times.added, Motion.grows);
-        tl.set(node, { borderStyle: "solid" }, times.built);
-        tl.to(node, { borderColor: "#c8f542", duration: 0.25 }, times.started);
-        Motion.show(tl, ID + "-status-" + number, times.started, { from: { opacity: 0, scale: 0.2, y: 0 } });
-      }
-      for (let dependency = 1; dependency < NODES; dependency += 1) {
-        const needsTime = nodeTimes(NODES).added + 0.1 + (dependency - 1) * 0.15;
-        Motion.draw(tl, ID + "-needs-" + dependency, needsTime, 0.45);
-        Motion.showHead(tl, ID + "-needs-" + dependency + "-head", needsTime + 0.4);
-      }
+      // One command starts it: each node comes in the order of the dependencies.
+      Motion.show(tl, ID + "-command", at.one_command.start + 0.1);
+      Motion.drawArrow(tl, ID + "-reads", at.one_command.start + 0.5, 0.4);
+      Motion.show(tl, ID + "-stack", Motion.within(at.one_command, 0.2), Motion.appears);
+      Motion.drawArrow(tl, ID + "-starts", Motion.within(at.one_command, 0.25), 0.6);
+      [0.45, 0.6, 0.8].forEach(function (share, index) {
+        const time = Motion.within(at.one_command, share);
+        Motion.show(tl, ID + "-node-" + (index + 1), time);
+        Motion.show(tl, ID + "-status-" + (index + 1), time + 0.5, grows);
+      });
+      [1, 2].forEach((number) => Motion.drawArrow(tl, ID + "-needs-" + number, Motion.within(at.one_command, 0.8) + number * 0.2, 0.5));
 
       // Peppy finds nodes, launchers and contracts by name in repositories.
       Motion.show(tl, ID + "-store", at.by_name.start + 0.1);
-      Motion.card(tl, ID + "-card-repository", at.by_name.start + 0.4, at.nothing_to_clone.end + 0.4);
-      [0.17, 0.34, 0.53].forEach(function (share, index) {
-        Motion.show(tl, ID + "-found-" + (index + 1), Motion.within(at.by_name, share), Motion.grows);
-      });
-      const findsTime = Motion.within(at.by_name, 0.68);
-      Motion.draw(tl, ID + "-finds", findsTime, 0.35);
-      Motion.showHead(tl, ID + "-finds-head", findsTime + 0.3);
-      Motion.travel(
-        tl,
-        ID + "-dot",
-        { x: {{ store_middle }}, y: {{ store_top - 8 }} },
-        { x: {{ store_middle }}, y: {{ command_top + command_height + 22 }} },
-        findsTime + 0.4,
-        0.45,
-        3,
-      );
-      Motion.glow(tl, ID + "-command", findsTime + 0.9);
+      Motion.show(tl, ID + "-store .pill", Motion.within(at.by_name, 0.25), { from: { opacity: 0, scale: 0.6, y: 0 }, stagger: 0.45 });
+      Motion.drawArrow(tl, ID + "-finds", Motion.within(at.by_name, 0.7), 0.5);
 
-      // Nothing to clone, to build or to source.
-      [0.06, 0.55, 0.76].forEach(function (share, index) {
-        Motion.show(tl, ID + "-free-" + (index + 1), Motion.within(at.nothing_to_clone, share), Motion.fromSide);
-      });
+      // Thus a developer has no repository to clone and no workspace to build.
+      [0.35, 0.7, 1.05].forEach((share, index) => Motion.show(tl, ID + "-free-" + (index + 1), Motion.within(at.nothing_to_clone, share), Motion.fromSide));
 
-      // The first run: two steps with Peppy, then seven steps with ROS 2.
-      const steps = ID + "-steps";
-      Motion.hide(tl, ID + "-diagram", at.two_steps.start + 0.35);
-      Motion.show(tl, steps, at.two_steps.start + 0.1);
-      Motion.show(tl, steps + " .steps-side.is-peppy", at.two_steps.start + 0.5);
-      [0.63, 0.84].forEach(function (share, index) {
-        Motion.show(tl, steps + "-peppy-" + (index + 1), Motion.within(at.two_steps, share), Motion.fromSide);
+      // The first run of a stack: the two steps of Peppy come in with the
+      // voice, then the seven steps of ROS 2.
+      Motion.hide(tl, ID + "-concept", stepsTime + 0.2);
+      Motion.show(tl, ID + "-steps", stepsTime);
+      [0.55, 0.85].forEach((share, index) => Motion.show(tl, ID + "-steps-peppy-" + (index + 1), Motion.within(at.two_steps, share), Motion.fromSide));
+      {{ range(1, screen.comparisons.first_run.ros2 | length + 1) | list | tojson }}.forEach(function (step) {
+        Motion.show(tl, ID + "-steps-ros2-" + step, at.seven_steps.start + step * 0.4, Motion.fromSide);
       });
-      Motion.show(tl, steps + " .steps-side.is-ros2", at.seven_steps.start + 0.1);
-      const ros2Steps = {{ screen.comparisons.first_run.ros2 | length }};
-      for (let step = 1; step <= ros2Steps; step += 1) {
-        Motion.show(tl, steps + "-ros2-" + step, at.seven_steps.start + 0.5 + (step - 1) * 0.4, Motion.fromSide);
-      }
-      Motion.pulse(tl, steps + " .steps-side.is-peppy .steps-side-name", at.one_tool.start + 0.3);
-      Motion.show(tl, steps + " .steps-note", at.one_tool.start + 0.2);
+      Motion.glow(tl, ID + "-steps .steps-side.is-peppy", at.one_tool.start + 0.4);
 
       window.__timelines["{{ id }}"] = tl;
     })();

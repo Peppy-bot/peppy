@@ -1,131 +1,82 @@
-{# Segment 10. The benefits of Peppy as one list, with the most important one
-   first, then the next step: the quickstart. #}
-{% from "_parts.html.j2" import chapter %}
+{# Segment 11. The map of the video again, with what the viewer gets from
+   each chapter, then the next step: the quickstart below the video. #}
+{% from "_parts.html.j2" import backdrop, header, act_map, command, icon %}
 {% set id = segment.id %}
-{# The column of the list, to the right of the robot. #}
-{% set column_left = 680 %}
-{% set column_width = 1144 %}
 <template>
   <style>
     #root {
       position: absolute;
       inset: 0;
     }
-    .{{ id }}-logo {
-      position: absolute;
-      left: 26px;
-      top: 26px;
-      width: 88px;
-      height: 88px;
+    .{{ id }}-title {
+      left: var(--frame-side);
+      top: 176px;
+      font-size: 56px;
     }
-    .{{ id }}-benefits {
-      position: absolute;
-      left: {{ column_left }}px;
-      top: 150px;
-      width: {{ column_width }}px;
-      display: flex;
-      flex-direction: column;
-      gap: 15px;
+    {# The card of an act is in the background until the voice names the act. #}
+    .{{ id }}-acts .map-act {
+      border-color: var(--line);
     }
-    .{{ id }}-benefit {
+    .{{ id }}-acts .map-chapter-number {
+      background: rgba(200, 245, 66, 0.16);
+      color: var(--peppy);
+    }
+    {# Below the map: how simple the start is, then the next step. #}
+    .{{ id }}-start {
+      left: var(--frame-side);
+      top: 688px;
+      width: var(--full-width);
       display: flex;
       align-items: center;
+      justify-content: space-between;
       gap: 40px;
-      height: 44px;
-      padding-left: 49px;
-      font-size: 32px;
+    }
+    .{{ id }}-simple {
+      padding-left: 30px;
+      border-left: 8px solid var(--peppy);
+      font-size: 38px;
       font-weight: 500;
-      color: var(--ink);
-      white-space: nowrap;
+      line-height: 50px;
     }
-    .{{ id }}-benefit svg {
+    .{{ id }}-start .command {
       flex: none;
-      width: 28px;
-      height: 28px;
-      fill: none;
-      stroke: var(--peppy);
-      stroke-width: 5;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-    }
-    .{{ id }}-benefit.is-first {
-      gap: 24px;
-      height: auto;
-      margin-bottom: 9px;
-      padding: 22px 30px;
-      border: 3px solid var(--peppy);
-      border-radius: 20px;
-      background: rgba(200, 245, 66, 0.1);
-      font-size: 44px;
-      font-weight: 700;
-      line-height: 1.14;
-      color: var(--peppy);
-      white-space: normal;
-      text-wrap: balance;
-    }
-    .{{ id }}-benefit.is-first svg {
-      width: 60px;
-      height: 60px;
-      padding: 14px;
-      border-radius: 50%;
-      background: var(--peppy);
-      stroke: var(--peppy-ink);
-      stroke-width: 6;
     }
     .{{ id }}-next {
-      position: absolute;
-      left: {{ column_left }}px;
-      top: 806px;
+      left: var(--frame-side);
+      top: 876px;
+      width: var(--full-width);
+      height: 104px;
       display: flex;
       align-items: center;
-      gap: 22px;
-      height: 84px;
-      padding: 0 32px 0 20px;
-      border-radius: 18px;
+      justify-content: center;
+      gap: 24px;
+      border-radius: 22px;
       background: var(--peppy);
-      font-size: 36px;
+      box-shadow: 0 0 60px rgba(200, 245, 66, 0.22);
+      font-size: 44px;
       font-weight: 700;
       color: var(--peppy-ink);
-      white-space: nowrap;
     }
-    .{{ id }}-next svg {
-      flex: none;
-      width: 48px;
-      height: 48px;
-      padding: 10px;
-      border-radius: 50%;
-      background: var(--peppy-ink);
-      fill: none;
-      stroke: var(--peppy);
-      stroke-width: 5;
-      stroke-linecap: round;
-      stroke-linejoin: round;
+    .{{ id }}-next .icon {
+      width: 52px;
+      height: 52px;
+      stroke-width: 2.6;
     }
   </style>
   <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
     <div id="{{ id }}-stage" class="stage">
-      {{ chapter(number, segment.chapter) }}
+      {{ backdrop(id) }}
+      {{ header(segment, act) }}
       <div id="{{ id }}-content">
-
-      <div id="{{ id }}-robot-panel" class="robot-panel" style="left: 96px; top: 150px; width: 540px; height: 860px">
-        <canvas id="{{ id }}-robot" class="robot-canvas"></canvas>
-        <img id="{{ id }}-logo" class="{{ id }}-logo" src="assets/pictures/peppy-logo.webp" alt="" />
+      <div id="{{ id }}-recap" class="scene {{ id }}-acts">
+        <div id="{{ id }}-title" class="headline placed {{ id }}-title">{{ screen.title }}</div>
+        {{ act_map(id, 270, lines=screen.benefits) }}
       </div>
-
-      <div class="{{ id }}-benefits">
-        {% for benefit in screen.benefits %}
-        <div id="{{ id }}-benefit-{{ loop.index }}" class="{{ id }}-benefit{{ " is-first" if loop.first else "" }}">
-          <svg viewBox="0 0 28 28"><path d="M 4 15 L 11 22 L 24 6" /></svg>
-          <span>{{ benefit }}</span>
-        </div>
-        {% endfor %}
+      <div class="placed {{ id }}-start">
+        <div id="{{ id }}-simple" class="{{ id }}-simple">{{ screen.simple }}</div>
+        {{ command(id + "-install", screen.install_command) }}
       </div>
-
-      <div id="{{ id }}-next" class="{{ id }}-next">
-        <svg id="{{ id }}-next-arrow" viewBox="0 0 28 28"><path d="M 14 3 V 24 M 5 15 L 14 24 L 23 15" /></svg>
-        <span>{{ screen.next_step }}</span>
-      </div>
-      <div id="{{ id }}-install" class="command" style="left: {{ column_left }}px; top: 914px">{{ screen.install_command | rich }}</div>
+      <div id="{{ id }}-next" class="placed {{ id }}-next"><span id="{{ id }}-next-arrow">{{ icon("down") }}</span><span>{{ screen.next_step }}</span></div>
       </div>
     </div>
   </div>
@@ -135,48 +86,40 @@
       const at = {{ at | tojson }};
       const DURATION = {{ duration }};
       const tl = gsap.timeline({ paused: true });
-      const FROM_THE_RIGHT = { from: { opacity: 0, x: 50, y: 0 } };
+      const ACTS = {{ acts | map(attribute="id") | list | tojson }};
+      const act = (actId) => ID + "-map-act-" + actId;
 
+      tl.fromTo(ID + "-glow", { x: -50, y: -30 }, { x: 70, y: 40, duration: DURATION, ease: "sine.inOut" }, 0);
       Motion.endSegment(tl, ID + "-content", DURATION);
 
-      // The robot turns slowly for the full segment.
-      RobotView.mount({
-        canvas: document.querySelector(ID + "-robot"),
-        segmentStart: {{ start }},
-        segmentDuration: DURATION,
-        turns: [[0, 38], [DURATION, -28]],
-      });
-      Motion.show(tl, ID + "-robot-panel", Math.max(0, at.concepts.start - 0.6), { from: { opacity: 0, scale: 0.97 } });
-      Motion.show(tl, ID + "-logo", at.concepts.start + 0.2, { from: { opacity: 0, scale: 0.6, y: 0 } });
+      // These are the concepts of Peppy: the three acts of the video, in the
+      // middle of the frame until the next step comes in below them.
+      const RECAP_SHIFT = 190;
+      gsap.set(ID + "-recap", { y: RECAP_SHIFT });
+      tl.to(ID + "-recap", { y: 0, duration: 0.7, ease: "power2.inOut" }, at.simple.start - 0.5);
+      Motion.show(tl, ID + "-title", 0.2, Motion.fromSide);
+      Motion.show(tl, ID + "-map .map-act", 0.4, { stagger: 0.15 });
 
-      // One benefit for each sentence. The benefits 4 and 5 come in after
-      // the sentence of the graph, and the benefit 8 with the end of the
-      // sentence of the launcher.
-      const benefitTimes = [
-        at.simple.start + 0.1,
-        at.file.start + 0.1,
-        at.graph.start + 0.1,
-        at.graph.start + 0.9,
-        at.graph.start + 1.7,
-        at.contracts.start + 0.1,
-        at.launcher.start + 0.1,
-        at.launcher.start + Motion.lasts(at.launcher) * 0.62,
-        at.llm.start + 0.1,
-      ];
-      benefitTimes.forEach(function (time, index) {
-        Motion.show(tl, ID + "-benefit-" + (index + 1), time, FROM_THE_RIGHT);
+      // Each act, with what the viewer gets from each of its chapters.
+      ACTS.forEach(function (actId) {
+        const sentence = at["act_" + actId];
+        Motion.paint(tl, act(actId), { borderColor: Motion.colour("peppy") }, sentence.start);
+        Motion.pulse(tl, act(actId) + " .map-act-title", sentence.start + 0.1);
+        Motion.show(tl, act(actId) + " .map-chapter", Motion.within(sentence, 0.22), {
+          from: { opacity: 0, x: -20, y: 0 },
+          stagger: Motion.lasts(sentence) * 0.26,
+        });
       });
-      Motion.pulse(tl, ID + "-benefit-1 svg", at.simple.start + 0.7);
+      // And an LLM reaches only what you open: the last chapter.
+      Motion.pulse(tl, ID + "-map-chapter-{{ acts[-1].chapters[-1].segment_id }}", at.llm.start + 0.3);
 
-      // The next step, and its first command.
-      Motion.show(tl, ID + "-next", at.next.start + 0.2, { from: { opacity: 0, scale: 0.92, y: 20 } });
-      tl.fromTo(
-        ID + "-next-arrow",
-        { y: -5 },
-        { y: 5, duration: 0.45, ease: "sine.inOut", yoyo: true, repeat: 11, immediateRender: false },
-        at.next.start + 0.8,
-      );
-      Motion.show(tl, ID + "-install", at.next.start + Motion.lasts(at.next) * 0.55);
+      // One command installs Peppy, and one command starts a full stack.
+      Motion.show(tl, ID + "-simple", at.simple.start, Motion.fromSide);
+      Motion.show(tl, ID + "-install", Motion.within(at.simple, 0.2), Motion.fromRight);
+
+      // The next step: the quickstart below the video.
+      Motion.show(tl, ID + "-next", at.next.start, { from: { opacity: 0, scale: 0.94, y: 0 } });
+      tl.fromTo(ID + "-next-arrow", { y: 0 }, { y: 10, duration: 0.45, ease: "sine.inOut", yoyo: true, repeat: 9, immediateRender: false }, at.next.start + 0.6);
 
       window.__timelines["{{ id }}"] = tl;
     })();

@@ -16,6 +16,11 @@ EXECUTABLE = paths.NODE_MODULES / ".bin" / "hyperframes"
 LINT_FAULT_SEVERITIES = ("error", "warning")
 # The end of the code of each lint finding that says that a media file is absent.
 ABSENT_MEDIA_CODE_SUFFIX = "_src_not_found"
+# The lint finding about the number of lines of a composition file. A compiled
+# composition is the output of a template with the texts of the transcript in
+# it, so its number of lines does not say how large the template is that a
+# person reads and changes.
+COMPILED_FILE_SIZE_CODE = "composition_file_too_large"
 
 
 class LintFailed(Exception):
@@ -81,7 +86,8 @@ def lint(project: Path, media_are_present: bool) -> None:
     """Lint a compiled project. Fail on each error and on each warning.
 
     Without the voice and the footage, which the repository does not hold,
-    the finding that a media file is absent is not a fault.
+    the finding that a media file is absent is not a fault. The finding about
+    the number of lines of a compiled composition is never a fault.
     """
     completed = subprocess.run(
         [str(EXECUTABLE), "lint", str(project), "--json"],
@@ -101,5 +107,6 @@ def lint_faults(findings: list[dict], media_are_present: bool) -> list[dict]:
         finding
         for finding in findings
         if finding["severity"] in LINT_FAULT_SEVERITIES
+        and finding["code"] != COMPILED_FILE_SIZE_CODE
         and (media_are_present or not finding["code"].endswith(ABSENT_MEDIA_CODE_SUFFIX))
     ]

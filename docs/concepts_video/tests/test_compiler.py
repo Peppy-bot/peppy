@@ -116,3 +116,16 @@ def test_the_root_composition_plays_the_voice_and_the_music_with_its_levels(
     points = [(point["t"], point["v"]) for point in automation["lanes"][0]["points"]]
     assert points == mix.music_levels(timeline(transcript))
     assert f'src="{compiler.VOICE_TRACK}"' in root and f'src="{compiler.MUSIC_TRACK}"' in root
+
+
+def test_a_composition_of_an_act_shows_its_act_and_the_map_of_the_video(transcript: Transcript, tmp_path: Path) -> None:
+    opens_an_act = next(segment for segment in transcript.segments if segment.act is not None)
+    act = transcript.act(opens_an_act.act)
+
+    compiled_root(transcript.part(opens_an_act.id), tmp_path / "project")
+
+    composition = (tmp_path / "project" / "compositions" / f"{opens_an_act.id}.html").read_text(encoding="utf-8")
+    assert f'<div class="act-heading-title">{act.title}</div>' in composition
+    for other in transcript.acts:
+        assert f'id="{opens_an_act.id}-map-act-{other.id}"' in composition
+        assert all(chapter.title in composition for chapter in other.chapters)

@@ -1,113 +1,123 @@
-{# Segment 7. A launcher declares the parts of a stack that can change as
+{# Segment 8. A launcher declares the parts of a stack that can change as
    component axes. One word of the launch command selects an option, so the
    same launcher runs a simulation, then the real robot. #}
-{% from "_parts.html.j2" import chapter, term_card %}
+{% from "_parts.html.j2" import backdrop, header, act_intro, problem_scene, rail, term_card, command, icon %}
 {% set id = segment.id %}
-
-{# The launcher is a window with one row for each axis. A row holds the name
-   of the axis and its two options, side by side. The seat of the row is the
-   place in the stack: it is around the option that runs. #}
-{% set left = 96 %}
-{% set window_top = 160 %}
-{% set window_width = 960 %}
-{% set row_height = 128 %}
-{% set row_gap = 18 %}
-{# The window has 84 px above its first row, for its border, its padding and
-   its title, and 30 px below its last row. #}
-{% set rows_top = window_top + 84 %}
 {% set axis_count = screen.axes.items() | list | length %}
-{% set window_height = 84 + axis_count * (row_height + row_gap) - row_gap + 30 %}
-{# In a row: the left side of each option, and the size of an option. #}
-{% set option_lefts = [250, 590] %}
-{% set option_width = 300 %}
-{% set option_height = 84 %}
-{% set option_top = (row_height - 4 - option_height) // 2 %}
-{# On the stage: the left side of a row, the middle of the first option and
-   the right side of the second option of the first row, and their height. #}
-{% set row_left = left + 32 %}
-{% set seat_middle = row_left + 2 + option_lefts[0] + option_width // 2 %}
-{% set last_option_right = row_left + 2 + option_lefts[1] + option_width %}
-{% set first_row_middle = rows_top + row_height // 2 %}
-{% set command_top = window_top + window_height + 48 %}
-{# The middle of the last word of the command: the option. #}
-{% set command_option = left + 854 %}
-{% set robot_left = 1144 %}
-
+{# The space between the selected option of an axis and the frame around it. #}
+{% set seat_gap = 7 %}
+{# The width of the picture of what the first axis runs, and the space
+   between the launcher and it. #}
+{% set world_width = 420 %}
+{% set world_gap = 40 %}
 <template>
   <style>
     #root {
       position: absolute;
       inset: 0;
     }
+    .{{ id }}-layout {
+      gap: 56px;
+    }
+    .{{ id }}-top {
+      align-self: stretch;
+      display: flex;
+      gap: {{ world_gap }}px;
+    }
+    {# The launcher: a window with one row for each axis. #}
+    .{{ id }}-launcher {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      font-family: var(--sans);
+    }
+    .{{ id }}-launcher .code-title {
+      margin-bottom: 0;
+    }
+    .{{ id }}-same {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 30px;
+      font-weight: 500;
+      line-height: 42px;
+      color: var(--ink);
+      white-space: nowrap;
+    }
+    .{{ id }}-same .icon {
+      width: 32px;
+      height: 32px;
+      color: var(--peppy);
+    }
+    {# A row holds the name of the axis and its two options, which have the
+       same size. The padding of the row is the same on its four sides. #}
     .{{ id }}-axis {
       position: relative;
-      height: {{ row_height }}px;
-      margin-bottom: {{ row_gap }}px;
+      display: grid;
+      grid-template-columns: 136px 1fr 1fr;
+      gap: 18px;
+      align-items: center;
+      padding: 20px;
       border: 2px dashed var(--line-strong);
-      border-radius: 16px;
+      border-radius: 18px;
       background: rgba(14, 22, 38, 0.7);
     }
     .{{ id }}-axis-name {
-      position: absolute;
-      left: 26px;
-      top: 0;
-      height: {{ row_height - 4 }}px;
-      display: flex;
-      align-items: center;
-      font-size: 32px;
+      font-size: 30px;
       font-weight: 500;
       color: var(--data);
     }
-    .{{ id }}-seat {
-      position: absolute;
-      left: {{ option_lefts[0] - 7 }}px;
-      top: {{ option_top - 7 }}px;
-      width: {{ option_width + 14 }}px;
-      height: {{ option_height + 14 }}px;
-      border: 3px solid var(--peppy);
-      border-radius: 19px;
-      z-index: 1;
-    }
     .{{ id }}-option {
-      position: absolute;
-      top: {{ option_top }}px;
-      width: {{ option_width }}px;
-      height: {{ option_height }}px;
       display: flex;
       align-items: center;
       justify-content: center;
+      height: 76px;
       border: 2px solid var(--line-strong);
       border-radius: 12px;
       background: var(--panel);
-      font-family: var(--sans);
-      font-size: 34px;
+      font-size: 30px;
       font-weight: 500;
       color: var(--ink-dim);
       white-space: nowrap;
     }
-    .{{ id }}-option.is-seated {
-      color: var(--ink);
+    {# The seat of the row is the place in the stack: a frame around the
+       option that runs. The script gives it the place of the first option. #}
+    .{{ id }}-seat {
+      position: absolute;
+      border: 3px solid var(--peppy);
+      border-radius: {{ 12 + seat_gap }}px;
     }
-    .{{ id }}-same {
-      right: 30px;
-      top: 24px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      font-family: var(--sans);
-      white-space: nowrap;
+    {# What the first axis runs: the robot in a simulation, or the real robot. #}
+    .{{ id }}-world {
+      position: relative;
+      flex: none;
+      width: {{ world_width }}px;
+      border-radius: 28px;
+      overflow: hidden;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
     }
-    .{{ id }}-same svg {
-      width: 30px;
-      height: 30px;
-      fill: none;
-      stroke: var(--ink);
-      stroke-width: 3;
-      stroke-linecap: round;
+    .{{ id }}-world-ground {
+      position: absolute;
+      inset: 0;
     }
-    {# At this size, the command is as wide as the launcher. #}
-    #{{ id }}-command {
-      font-size: 32px;
+    .{{ id }}-world-ground.is-simulation {
+      background-color: #16223d;
+      background-image:
+        linear-gradient(rgba(95, 212, 240, 0.22) 2px, transparent 2px),
+        linear-gradient(90deg, rgba(95, 212, 240, 0.22) 2px, transparent 2px);
+      background-size: 42px 42px;
+    }
+    .{{ id }}-world-ground.is-real {
+      background: radial-gradient(120% 90% at 50% 38%, #f4f7fd 0%, #d5dcec 62%, #b9c3d9 100%);
+    }
+    .{{ id }}-world canvas {
+      position: absolute;
+      inset: 0;
+    }
+    .{{ id }}-world-name {
+      left: 22px;
+      top: 22px;
     }
     .{{ id }}-word {
       position: absolute;
@@ -119,50 +129,51 @@
       border-radius: 50%;
       background: var(--peppy);
     }
-    .{{ id }}-runs-head {
-      fill: var(--peppy);
-    }
   </style>
   <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
     <div id="{{ id }}-stage" class="stage">
-      {{ chapter(number, segment.chapter) }}
+      {{ backdrop(id) }}
+      {{ header(segment, act) }}
       <div id="{{ id }}-content">
+      {{ act_intro(id, act) }}
+      {{ problem_scene(id, segment, screen.problem) }}
 
-      {# The launcher: one row for each component axis. #}
-      <div id="{{ id }}-launcher" class="code-window" style="left: {{ left }}px; top: {{ window_top }}px; width: {{ window_width }}px; height: {{ window_height }}px">
-        <div class="code-title">{{ screen.launcher }}</div>
-        <div id="{{ id }}-same" class="note is-strong {{ id }}-same">
-          <svg viewBox="0 0 30 30"><path d="M 6 14 H 24 V 26 H 6 Z M 10 14 V 9 A 5 5 0 0 1 20 9 V 14" /></svg>
-          <span>{{ screen.same_file }}</span>
-        </div>
-        {% for key, axis in screen.axes.items() %}
-        <div id="{{ id }}-axis-{{ loop.index }}" class="{{ id }}-axis">
-          <span id="{{ id }}-axis-{{ loop.index }}-name" class="{{ id }}-axis-name">{{ axis.name }}</span>
-          <div id="{{ id }}-axis-{{ loop.index }}-seat" class="{{ id }}-seat"></div>
-          {% set row = loop.index %}
-          {% for option in axis.options %}
-          <div id="{{ id }}-axis-{{ row }}-option-{{ loop.index }}" class="{{ id }}-option{{ ' is-seated' if loop.first else '' }}" style="left: {{ option_lefts[loop.index0] }}px">
-            <span id="{{ id }}-axis-{{ row }}-option-{{ loop.index }}-name">{{ option }}</span>
+      <div id="{{ id }}-concept" class="scene">
+        <div class="zone is-centered {{ id }}-layout">
+          <div id="{{ id }}-top" class="{{ id }}-top">
+            {# The launcher: one row for each component axis. #}
+            <div id="{{ id }}-launcher" class="code-window {{ id }}-launcher">
+              <div class="code-title">{{ screen.launcher }}</div>
+              {% for key, axis in screen.axes.items() %}
+              {% set row = loop.index %}
+              <div id="{{ id }}-axis-{{ row }}" class="{{ id }}-axis">
+                <span id="{{ id }}-axis-{{ row }}-name" class="{{ id }}-axis-name">{{ axis.name }}</span>
+                {% for option in axis.options %}
+                <div id="{{ id }}-axis-{{ row }}-option-{{ loop.index }}" class="{{ id }}-option"><span id="{{ id }}-axis-{{ row }}-option-{{ loop.index }}-name">{{ option }}</span></div>
+                {% endfor %}
+                <div id="{{ id }}-axis-{{ row }}-seat" class="{{ id }}-seat" data-layout="over"></div>
+              </div>
+              {% endfor %}
+              <div id="{{ id }}-same" class="{{ id }}-same">{{ icon("lock") }}<span>{{ screen.same_file }}</span></div>
+            </div>
+            {# What the first axis runs. #}
+            <div id="{{ id }}-world" class="{{ id }}-world">
+              <div class="{{ id }}-world-ground is-simulation"></div>
+              <div id="{{ id }}-real-ground" class="{{ id }}-world-ground is-real"></div>
+              <canvas id="{{ id }}-robot" class="robot-canvas"></canvas>
+              <span id="{{ id }}-simulation-name" class="label is-tag placed {{ id }}-world-name">{{ screen.simulation }}</span>
+              <span id="{{ id }}-real-name" class="label is-tag placed {{ id }}-world-name">{{ screen.real_robot }}</span>
+            </div>
           </div>
-          {% endfor %}
+          {{ command(id + "-command", screen.command) }}
         </div>
-        {% endfor %}
+        <div id="{{ id }}-word" class="{{ id }}-word" data-layout="free"></div>
+        {{ rail(id, screen, [
+          ["axis", screen.cards.component_axis.term, term_card(id + "-card-axis", screen.cards.component_axis)],
+          ["simulation", screen.cards.simulation.term, term_card(id + "-card-simulation", screen.cards.simulation)],
+        ]) }}
       </div>
 
-      <div id="{{ id }}-command" class="command" style="left: {{ left }}px; top: {{ command_top }}px">{{ screen.command | rich }}</div>
-      <div id="{{ id }}-word" class="{{ id }}-word"></div>
-
-      {# The real robot, which the second option of the first axis runs. #}
-      <svg class="wires" viewBox="0 0 1920 1080">
-        <path id="{{ id }}-runs" class="wire is-peppy" pathLength="1" d="M {{ last_option_right + 6 }} {{ first_row_middle }} H {{ robot_left - 18 }}" />
-        <polygon id="{{ id }}-runs-head" class="{{ id }}-runs-head" points="{{ robot_left - 20 }},{{ first_row_middle - 10 }} {{ robot_left - 4 }},{{ first_row_middle }} {{ robot_left - 20 }},{{ first_row_middle + 10 }}" />
-      </svg>
-      <div id="{{ id }}-robot-panel" class="robot-panel" style="left: {{ robot_left }}px; top: {{ window_top }}px; width: 680px; height: 850px">
-        <canvas id="{{ id }}-robot" class="robot-canvas"></canvas>
-      </div>
-
-      {{ term_card(id + "-card-axis", screen.cards.component_axis) }}
-      {{ term_card(id + "-card-simulation", screen.cards.simulation) }}
       </div>
     </div>
   </div>
@@ -172,42 +183,58 @@
       const at = {{ at | tojson }};
       const DURATION = {{ duration }};
       const tl = gsap.timeline({ paused: true });
-      const appears = { from: { opacity: 0, y: 0 } };
-
       const AXES = {{ axis_count }};
-      const SEAT_STEP = {{ option_lefts[1] - option_lefts[0] }};
-      const LIT = { backgroundColor: "#c8f542", borderColor: "#c8f542", color: "#141a05" };
-      const NOT_LIT = { backgroundColor: "#0e1626", borderColor: "rgba(148, 170, 220, 0.5)", color: "#a3b0c9" };
+      const SEAT_GAP = {{ seat_gap }};
+      const LIT = { backgroundColor: Motion.colour("peppy"), borderColor: Motion.colour("peppy"), color: Motion.colour("peppy-ink") };
+      const NOT_LIT = { backgroundColor: Motion.colour("panel"), borderColor: Motion.colour("line-strong"), color: Motion.colour("ink-dim") };
       const axis = (number, part) => ID + "-axis-" + number + (part ? "-" + part : "");
       const eachAxis = function (action) {
         for (let number = 1; number <= AXES; number += 1) action(number, number - 1);
       };
-      const light = (target, look, time) => tl.to(target, Object.assign({ duration: 0.3, ease: "power1.inOut" }, look), time);
+
+      // The seat of each row is around its first option, and it goes to the
+      // second option by the distance between the two.
+      const row = Motion.boxOf(axis(1));
+      const first = Motion.boxOf(axis(1, "option-1"));
+      const second = Motion.boxOf(axis(1, "option-2"));
+      // The border of a row is 2 px wide, and a seat is in the box inside it.
+      gsap.set("." + "{{ id }}-seat", {
+        left: first.left - row.left - 2 - SEAT_GAP,
+        top: first.top - row.top - 2 - SEAT_GAP,
+        width: first.width + 2 * SEAT_GAP,
+        height: first.height + 2 * SEAT_GAP,
+      });
+      const SEAT_STEP = second.left - first.left;
+      // Before the picture of what the first axis runs comes in, the launcher
+      // is in the middle of the zone.
+      const ALONE_SHIFT = {{ (world_width + world_gap) // 2 }};
+      gsap.set(ID + "-top", { x: ALONE_SHIFT });
       const moveSeat = (number, x, time, duration) => tl.to(axis(number, "seat"), { x, duration, ease: "power2.inOut" }, time);
-      /* Bring attention to a box: its border goes to lime, then back. */
 
-      Motion.endSegment(tl, ID + "-content", DURATION);
-
-      // Some parts of a stack can change: the launcher has one row for each.
-      Motion.show(tl, ID + "-launcher", 0.2);
-      eachAxis(function (number, index) {
-        Motion.show(tl, axis(number), Motion.within(at.parts_change, 0.15) + index * 0.3, Motion.fromSide);
-        Motion.glow(tl, axis(number), Motion.within(at.parts_change, 0.7) + index * 0.25);
+      Motion.chapter(tl, ID, {
+        duration: DURATION,
+        map: [0.2, at.problem.start - 0.3],
+        problem: [at.problem.start - 0.2, at.axes.start - 0.2],
+        terms: [
+          ["axis", at.axes.start + 0.5, at.select.start + 0.2],
+          ["simulation", at.no_robot.start + 0.2, at.later.start - 0.1],
+        ],
+        benefit: at.later.start,
       });
 
-      // The launcher declares these parts as component axes.
-      Motion.glow(tl, ID + "-launcher", at.axes.start + 0.2);
+      // The launcher declares the parts that can change as component axes.
+      Motion.show(tl, ID + "-launcher", at.axes.start - 0.1);
       eachAxis(function (number, index) {
-        Motion.show(tl, axis(number, "name"), Motion.within(at.axes, 0.34) + index * 0.3, Motion.fromSide);
+        Motion.show(tl, axis(number), Motion.within(at.axes, 0.15) + index * 0.3, Motion.fromSide);
+        Motion.show(tl, axis(number, "name"), Motion.within(at.axes, 0.5) + index * 0.3, Motion.fromSide);
       });
-      Motion.card(tl, ID + "-card-axis", Motion.within(at.axes, 0.55), at.examples.end + 0.3);
 
       // Each axis has options, and one of them fills the place in the stack:
       // the seat goes from one option to the other, then back.
       eachAxis(function (number, index) {
         Motion.show(tl, axis(number, "option-1"), Motion.within(at.options, 0.2) + index * 0.15, Motion.grows);
         Motion.show(tl, axis(number, "option-2"), Motion.within(at.options, 0.2) + 0.3 + index * 0.15, Motion.grows);
-        Motion.show(tl, axis(number, "seat"), Motion.within(at.options, 0.5) + index * 0.1, appears);
+        Motion.show(tl, axis(number, "seat"), Motion.within(at.options, 0.5) + index * 0.1, Motion.appears);
         moveSeat(number, SEAT_STEP, Motion.within(at.options, 0.62) + index * 0.1, 0.5);
         moveSeat(number, 0, Motion.within(at.options, 0.84) + index * 0.1, 0.5);
       });
@@ -216,53 +243,48 @@
       [0.2, 0.37, 0.58, 0.67, 0.81, 0.92].forEach(function (share, index) {
         const number = Math.floor(index / 2) + 1;
         const option = (index % 2) + 1;
-        Motion.show(tl, axis(number, "option-" + option + "-name"), Motion.within(at.examples, share), appears);
+        Motion.show(tl, axis(number, "option-" + option + "-name"), Motion.within(at.examples, share), Motion.appears);
       });
 
-      // One word in the launch command selects an option.
+      // One word in the launch command selects an option: the word goes from
+      // the end of the command to the first option of the first axis.
       Motion.show(tl, ID + "-command", at.select.start + 0.1);
       const selects = Motion.within(at.select, 0.3);
-      Motion.travel(
-        tl,
-        ID + "-word",
-        { x: {{ command_option }}, y: {{ command_top }} },
-        { x: {{ seat_middle }}, y: {{ first_row_middle + 30 }} },
-        selects,
-        0.5,
-        1,
-      );
-      light(axis(1, "option-1"), LIT, selects + 0.5);
+      const command = Motion.boxOf(ID + "-command");
+      Motion.travel(tl, ID + "-word", { x: command.right - 110, y: command.top }, { x: first.x + ALONE_SHIFT, y: first.bottom }, selects, 0.5, 1);
+      Motion.paint(tl, axis(1, "option-1"), LIT, selects + 0.5);
       Motion.pulse(tl, axis(1, "option-1"), selects + 0.5);
       // The launcher file stays the same.
-      Motion.show(tl, ID + "-same", Motion.within(at.select, 0.62), appears);
+      Motion.show(tl, ID + "-same", Motion.within(at.select, 0.62), Motion.appears);
 
-      // With no robot, the first axis holds the simulation.
+      // With no robot, the first axis runs a simulation.
       const otherAxes = [];
       eachAxis(function (number) {
         if (number > 1) otherAxes.push(axis(number));
       });
-      Motion.card(tl, ID + "-card-simulation", at.no_robot.start, at.later.start + 0.4);
+      RobotView.mount({
+        canvas: document.querySelector(ID + "-robot"),
+        segmentStart: {{ start }},
+        segmentDuration: DURATION,
+        turns: [[at.no_robot.start, -50], [DURATION, 30]],
+      });
+      tl.to(ID + "-top", { x: 0, duration: 0.6, ease: "power2.inOut" }, at.no_robot.start - 0.3);
+      Motion.show(tl, ID + "-world", at.no_robot.start + 0.2, Motion.fromRight);
+      Motion.show(tl, ID + "-simulation-name", at.no_robot.start + 0.6, Motion.appears);
       Motion.fade(tl, otherAxes.join(", "), 0.4, at.no_robot.start + 0.1);
       Motion.pulse(tl, axis(1, "option-1"), Motion.within(at.no_robot, 0.7));
 
       // Later, the same launcher runs the real robot: the seat of the first
       // axis goes to the other option, and nothing else in the launcher moves.
-      RobotView.mount({
-        canvas: document.querySelector(ID + "-robot"),
-        segmentStart: {{ start }},
-        segmentDuration: DURATION,
-        turns: [[at.later.start, -50], [DURATION, 25]],
-      });
       const swaps = Motion.within(at.later, 0.4);
       Motion.fade(tl, otherAxes.join(", "), 1, at.later.start + 0.1);
-      Motion.glow(tl, ID + "-launcher", at.later.start + 0.5);
-      light(axis(1, "option-1"), NOT_LIT, swaps);
+      Motion.paint(tl, axis(1, "option-1"), NOT_LIT, swaps);
       moveSeat(1, SEAT_STEP, swaps, 0.6);
-      light(axis(1, "option-2"), LIT, swaps + 0.5);
+      Motion.paint(tl, axis(1, "option-2"), LIT, swaps + 0.5);
       Motion.pulse(tl, axis(1, "option-2"), swaps + 0.5);
-      Motion.draw(tl, ID + "-runs", swaps + 0.7, 0.35);
-      Motion.showHead(tl, ID + "-runs-head", swaps + 1.0);
-      Motion.show(tl, ID + "-robot-panel", swaps + 0.8, { from: { opacity: 0, x: 60, y: 0 } });
+      Motion.show(tl, ID + "-real-ground", swaps + 0.5, { from: { opacity: 0, y: 0 }, duration: 0.8 });
+      Motion.hide(tl, ID + "-simulation-name", swaps + 0.8);
+      Motion.show(tl, ID + "-real-name", swaps + 0.8, Motion.appears);
 
       window.__timelines["{{ id }}"] = tl;
     })();

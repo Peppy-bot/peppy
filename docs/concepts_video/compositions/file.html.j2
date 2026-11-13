@@ -1,0 +1,222 @@
+{# Segment 3. One file declares a node, and the sync generates typed code
+   from the file, so the code and the file always agree. #}
+{% from "_parts.html.j2" import backdrop, header, problem_scene, rail, term_card, steps_comparison, code_window, command, icon, mark, wire %}
+{% set id = segment.id %}
+{# The parts of the file: the lines of each part, and the share of the
+   sentence `file_parts` at which the voice names the part. #}
+{% set file_parts = [
+  {"key": "identity", "first": 2, "last": 2, "share": 0.1},
+  {"key": "interfaces", "first": 3, "last": 12, "share": 0.27},
+  {"key": "parameters", "first": 15, "last": 15, "share": 0.47},
+  {"key": "commands", "first": 16, "last": 17, "share": 0.67},
+] %}
+{# The height of one line of the file, and the top of its first line in its
+   window, which is below the padding and the title of the window. #}
+{% set line_height = 38 %}
+{% set first_line_top = 22 + 52 %}
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    #{{ id }}-file {
+      position: relative;
+      width: 100%;
+      line-height: {{ line_height }}px;
+    }
+    #{{ id }}-file .code-title {
+      height: 40px;
+    }
+    #{{ id }}-file .code-line {
+      min-height: {{ line_height }}px;
+    }
+    {# The name of a part of the file, at the right of its first line, and
+       the bar at the side of its lines. #}
+    .{{ id }}-part {
+      position: absolute;
+      right: 52px;
+      height: {{ line_height }}px;
+      display: flex;
+      align-items: center;
+      font-family: var(--sans);
+      font-size: 30px;
+      font-weight: 500;
+      color: var(--peppy);
+      white-space: nowrap;
+    }
+    .{{ id }}-bar {
+      position: absolute;
+      right: 26px;
+      width: 6px;
+      border-radius: 3px;
+      background: var(--peppy);
+      transform-origin: center top;
+    }
+    {# The sync: the file, the command and the typed code, from top to bottom. #}
+    .{{ id }}-flow {
+      gap: 72px;
+    }
+    .{{ id }}-flow .command {
+      height: 104px;
+      padding: 0 38px;
+      font-size: 42px;
+    }
+    .{{ id }}-source {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      height: 112px;
+      padding: 0 40px;
+      border: 2px solid var(--line-strong);
+      border-radius: 18px;
+      background: #05080f;
+      box-shadow: var(--panel-shadow);
+      font-family: var(--mono);
+      font-size: 46px;
+      font-weight: 500;
+    }
+    .{{ id }}-source .icon {
+      width: 52px;
+      height: 52px;
+      color: var(--ink-dim);
+    }
+    .{{ id }}-generated {
+      padding: 26px 48px 36px;
+      border: 3px solid var(--peppy);
+      border-radius: 20px;
+      background: var(--panel-fill);
+      box-shadow: var(--panel-shadow);
+      text-align: center;
+    }
+    .{{ id }}-generated-name {
+      margin-bottom: 20px;
+      font-size: 54px;
+      font-weight: 700;
+      line-height: 64px;
+    }
+    .{{ id }}-languages {
+      display: flex;
+      justify-content: center;
+      gap: 20px;
+    }
+    .{{ id }}-language {
+      padding: 6px 28px;
+      border: 2px solid var(--line-strong);
+      border-radius: 14px;
+      background: var(--ground);
+      font-family: var(--mono);
+      font-size: 40px;
+      font-weight: 500;
+      line-height: 54px;
+    }
+  </style>
+  <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
+    <div id="{{ id }}-stage" class="stage">
+      {{ backdrop(id) }}
+      {{ header(segment, act) }}
+      <div id="{{ id }}-content">
+      {{ problem_scene(id, segment, screen.problem) }}
+
+      <div id="{{ id }}-concept" class="scene">
+        {# The file that declares the node, and the names of its parts. #}
+        <div id="{{ id }}-declaration" class="zone">
+          {% call code_window(id + "-file", screen.file, screen.file_name) %}
+          {% for part in file_parts %}
+          <span id="{{ id }}-part-{{ part.key }}" class="{{ id }}-part" style="top: {{ first_line_top + (part.first - 1) * line_height }}px">{{ screen.file_parts[part.key] }}</span>
+          <span id="{{ id }}-bar-{{ part.key }}" class="{{ id }}-bar" style="top: {{ first_line_top + (part.first - 1) * line_height + 4 }}px; height: {{ (part.last - part.first + 1) * line_height - 8 }}px"></span>
+          {% endfor %}
+          {% endcall %}
+        </div>
+        {# The sync: the command reads the file and generates typed code. The
+           green line says that the code and the file agree. #}
+        <div id="{{ id }}-sync-flow" class="zone is-centered {{ id }}-flow">
+          <div id="{{ id }}-source" class="{{ id }}-source">{{ icon("file") }}{{ screen.file_name | rich }}</div>
+          {{ command(id + "-sync", screen.sync_command) }}
+          <div id="{{ id }}-generated" class="{{ id }}-generated">
+            <div class="{{ id }}-generated-name">{{ screen.generated }}</div>
+            <div class="{{ id }}-languages">
+              {% for language in screen.languages %}
+              <span id="{{ id }}-language-{{ loop.index }}" class="{{ id }}-language">{{ language }}</span>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+        <svg class="wires" viewBox="0 0 1920 1080">
+          {{ wire(id + "-reads") }}
+          {{ wire(id + "-generates") }}
+          <path id="{{ id }}-agree" class="wire is-ok" pathLength="1" />
+        </svg>
+        {{ mark(id + "-agree-mark", "ok", "position: absolute") }}
+        {{ rail(id, screen, [
+          ["file", screen.cards.node_file.term, term_card(id + "-card-file", screen.cards.node_file)],
+        ]) }}
+      </div>
+
+      {{ steps_comparison(id + "-steps", screen.comparisons.new_message, large=true) }}
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const ID = "#{{ id }}";
+      const at = {{ at | tojson }};
+      const DURATION = {{ duration }};
+      const tl = gsap.timeline({ paused: true });
+
+      Motion.connect(ID + "-reads", [ID + "-source", "bottom"], [ID + "-sync", "top"], { gap: 6 });
+      Motion.connect(ID + "-generates", [ID + "-sync", "bottom"], [ID + "-generated", "top"], { gap: 6 });
+      // The line of the agreement goes out of the right side of the typed
+      // code, and comes back to the right side of the file.
+      Motion.connect(ID + "-agree", [ID + "-generated", "right"], [ID + "-source", "right"], { gap: 8, endGap: 8, reach: 150 });
+      // Its mark is on it, at the height of the command.
+      gsap.set(ID + "-agree-mark", { left: Motion.pointOn(ID + "-agree", 0.5).x - 22, top: Motion.boxOf(ID + "-sync").y - 22 });
+
+      Motion.chapter(tl, ID, {
+        duration: DURATION,
+        problem: [0.3, at.one_file.start - 0.2],
+        terms: [["file", at.one_file.start + 0.6, at.agree.start - 0.1]],
+        benefit: at.agree.start,
+      });
+
+      // One file declares the node.
+      Motion.show(tl, ID + "-file", at.one_file.start);
+      // The parts of the file, one part for each part of the sentence.
+      {{ file_parts | tojson }}.forEach(function (part) {
+        const time = Motion.within(at.file_parts, part.share);
+        const lines = Array.from({ length: part.last - part.first + 1 }, (_, index) => part.first + index);
+        Motion.focusLines(tl, ID + "-file", lines, time);
+        tl.fromTo(ID + "-bar-" + part.key, { opacity: 0, scaleY: 0 }, { opacity: 1, scaleY: 1, duration: 0.4, ease: "power2.out" }, time);
+        Motion.show(tl, ID + "-part-" + part.key, time + 0.15, Motion.fromRight);
+      });
+      Motion.focusLines(tl, ID + "-file", [], at.file_parts.end + 0.2);
+
+      // The sync: the command reads the file and generates typed code for
+      // each interface.
+      const readTime = Motion.within(at.sync, 0.3);
+      const generateTime = Motion.within(at.sync, 0.54);
+      Motion.hide(tl, ID + "-declaration", at.sync.start + 0.1);
+      Motion.show(tl, ID + "-source", at.sync.start, Motion.grows);
+      Motion.show(tl, ID + "-sync", at.sync.start + 0.3);
+      Motion.drawArrow(tl, ID + "-reads", readTime, 0.4);
+      Motion.drawArrow(tl, ID + "-generates", generateTime, 0.4);
+      Motion.show(tl, ID + "-generated", generateTime + 0.3);
+      [1, 2].forEach((number) => Motion.show(tl, ID + "-language-" + number, generateTime + 0.4 + number * 0.25, Motion.grows));
+
+      // The code and the file agree.
+      Motion.draw(tl, ID + "-agree", at.agree.start + 0.2, 0.7);
+      Motion.show(tl, ID + "-agree-mark", at.agree.start + 0.8, Motion.grows);
+
+      // A new message: the steps of ROS 2 come in fast, then the two steps
+      // of Peppy come in with the voice.
+      Motion.hide(tl, ID + "-concept", at.new_message.start + 0.1);
+      Motion.show(tl, ID + "-steps", at.new_message.start - 0.1);
+      {{ range(1, screen.comparisons.new_message.ros2 | length + 1) | list | tojson }}.forEach(function (step) {
+        Motion.show(tl, ID + "-steps-ros2-" + step, at.new_message.start + 0.4 + step * 0.12, Motion.fromSide);
+      });
+      [0.3, 0.72].forEach((share, index) => Motion.show(tl, ID + "-steps-peppy-" + (index + 1), Motion.within(at.new_message, share), Motion.fromSide));
+
+      window.__timelines["{{ id }}"] = tl;
+    })();
+  </script>
+</template>
