@@ -1481,7 +1481,7 @@ pub fn encode_cancel_ack(state: CancelState) -> Result<Payload> {
     let mut builder = ::capnp::message::Builder::new_default();
     {
         let mut root =
-            builder.init_root::<crate::action_cancel_capnp::action_cancel_response::Builder>();
+            builder.init_root::<crate::action_cancel_capnp::action_cancel_response::Builder<'_>>();
         root.set_state(state as u8);
     }
     crate::encoding::encode_message(&builder)
@@ -1493,7 +1493,7 @@ pub fn encode_cancel_ack(state: CancelState) -> Result<Payload> {
 pub fn decode_cancel_ack(payload: &[u8]) -> Result<CancelState> {
     let reader = crate::encoding::decode_message(payload)?;
     let root = reader
-        .get_root::<crate::action_cancel_capnp::action_cancel_response::Reader>()
+        .get_root::<crate::action_cancel_capnp::action_cancel_response::Reader<'_>>()
         .map_err(|e| Error::Deserialization(e.to_string()))?;
     let tag = root.get_state();
     CancelState::from_tag(tag)

@@ -15,14 +15,14 @@ impl RepoListRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let _req = builder.init_root::<repo_capnp::repo_list_request::Builder>();
+            let _req = builder.init_root::<repo_capnp::repo_list_request::Builder<'_>>();
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let _req = reader.get_root::<repo_capnp::repo_list_request::Reader>()?;
+        let _req = reader.get_root::<repo_capnp::repo_list_request::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -130,7 +130,7 @@ impl RepoListResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
+            let mut response = builder.init_root::<repo_capnp::repo_list_response::Builder<'_>>();
             let node_count = capnp_list_len(self.nodes.len(), "RepoListResponse.nodes")?;
             let mut nodes_builder = response.reborrow().init_nodes(node_count);
             for (i, node) in self.nodes.iter().enumerate() {
@@ -165,7 +165,7 @@ impl RepoListResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<repo_capnp::repo_list_response::Reader>()?;
+        let response = reader.get_root::<repo_capnp::repo_list_response::Reader<'_>>()?;
         let nodes_reader = response.get_nodes()?;
         let mut nodes = Vec::with_capacity(nodes_reader.len() as usize);
         for i in 0..nodes_reader.len() {
@@ -338,7 +338,7 @@ mod tests {
         // A peer that puts an unrecognized source type on the wire is rejected.
         let mut builder = Builder::new_default();
         {
-            let response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
+            let response = builder.init_root::<repo_capnp::repo_list_response::Builder<'_>>();
             let mut nodes = response.init_nodes(1);
             let mut entry = nodes.reborrow().get(0);
             entry.set_node_name("robot");
@@ -363,7 +363,7 @@ mod tests {
     fn list_response_decode_rejects_unknown_repo_source_type() {
         let mut builder = Builder::new_default();
         {
-            let response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
+            let response = builder.init_root::<repo_capnp::repo_list_response::Builder<'_>>();
             let mut entry = response.init_repos(1).get(0);
             entry.set_id(1);
             entry.set_label("/abs/repo");
@@ -407,7 +407,7 @@ mod tests {
         // silently handed to a caller that has no recovery path for it.
         let mut builder = Builder::new_default();
         {
-            let response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
+            let response = builder.init_root::<repo_capnp::repo_list_response::Builder<'_>>();
             let mut repos = response.init_repos(1);
             let mut entry = repos.reborrow().get(0);
             entry.set_id(1);

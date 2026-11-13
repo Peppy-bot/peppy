@@ -284,7 +284,7 @@ impl NodeAddGoal {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut goal = builder.init_root::<node_capnp::node_add_goal::Builder>();
+            let mut goal = builder.init_root::<node_capnp::node_add_goal::Builder<'_>>();
             goal.set_git_hash(&self.git_hash);
             let mut source = goal.reborrow().init_source();
             match &self.source {
@@ -347,7 +347,7 @@ impl NodeAddGoal {
     pub fn decode(data: &[u8]) -> Result<Self> {
         use crate::node_capnp::node_add_goal::source::Which;
         let reader = decode_message(data)?;
-        let goal = reader.get_root::<node_capnp::node_add_goal::Reader>()?;
+        let goal = reader.get_root::<node_capnp::node_add_goal::Reader<'_>>()?;
         let source = match goal.get_source().which()? {
             Which::Fs(fs) => NodeSource::decode_fs(fs?.to_str()?)?,
             Which::Git(git) => {
@@ -406,7 +406,8 @@ impl NodeAddGoalResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_add_goal_response::Builder>();
+            let mut response =
+                builder.init_root::<node_capnp::node_add_goal_response::Builder<'_>>();
             response.set_log_path(self.log_path.to_string_lossy().as_ref());
         }
         encode_message(&builder)
@@ -414,7 +415,7 @@ impl NodeAddGoalResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_add_goal_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::node_add_goal_response::Reader<'_>>()?;
         Ok(Self {
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
         })
@@ -465,7 +466,7 @@ impl NodeAddFeedback {
     pub fn encode(&self) -> Result<NonEmptyPayload> {
         let mut builder = Builder::new_default();
         {
-            let mut feedback = builder.init_root::<node_capnp::node_add_feedback::Builder>();
+            let mut feedback = builder.init_root::<node_capnp::node_add_feedback::Builder<'_>>();
             feedback.set_stream(self.stream.to_capnp());
             feedback.set_line(&self.line);
         }
@@ -474,7 +475,7 @@ impl NodeAddFeedback {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let feedback = reader.get_root::<node_capnp::node_add_feedback::Reader>()?;
+        let feedback = reader.get_root::<node_capnp::node_add_feedback::Reader<'_>>()?;
         Ok(Self {
             stream: FeedbackStream::from_capnp(feedback.get_stream()?),
             line: feedback.get_line()?.to_str()?.to_owned(),
@@ -505,7 +506,7 @@ impl NodeAddResult {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut result = builder.init_root::<node_capnp::node_add_result::Builder>();
+            let mut result = builder.init_root::<node_capnp::node_add_result::Builder<'_>>();
             result.set_node_name(&self.node_name);
             result.set_node_tag(&self.node_tag);
         }
@@ -514,7 +515,7 @@ impl NodeAddResult {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let result = reader.get_root::<node_capnp::node_add_result::Reader>()?;
+        let result = reader.get_root::<node_capnp::node_add_result::Reader<'_>>()?;
         Ok(Self {
             node_name: required_text(result.get_node_name()?.to_str()?, "NodeAddResult.node_name")?,
             node_tag: required_text(result.get_node_tag()?.to_str()?, "NodeAddResult.node_tag")?,

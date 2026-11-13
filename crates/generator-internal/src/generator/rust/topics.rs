@@ -636,7 +636,7 @@ pub fn sender_target_expression(
 }
 
 pub fn build_consumed_topic_subscription(
-    spec: ConsumedTopicSubscriptionSpec,
+    spec: ConsumedTopicSubscriptionSpec<'_>,
 ) -> Result<TokenStream> {
     let ConsumedTopicSubscriptionSpec {
         helper_fn_ident,

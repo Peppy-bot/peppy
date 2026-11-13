@@ -38,7 +38,7 @@ pub struct ExposedServiceMethodSpec<'a> {
 }
 
 pub fn build_exposed_service_method(
-    spec: &ExposedServiceMethodSpec,
+    spec: &ExposedServiceMethodSpec<'_>,
 ) -> Result<(TokenStream, Vec<TokenStream>)> {
     let ExposedServiceMethodSpec {
         params,
@@ -244,7 +244,7 @@ pub struct RequestDeserializerSpec<'a> {
     pub request_struct: Option<&'a Ident>,
 }
 
-pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> Result<TokenStream> {
+pub fn build_request_deserializer(spec: &RequestDeserializerSpec<'_>) -> Result<TokenStream> {
     let RequestDeserializerSpec {
         deserializer_fn_name,
         request_spec,
@@ -282,7 +282,7 @@ pub struct ResponseSerialization {
 }
 
 pub fn build_response_serialization_code(
-    response_spec: Option<&ServiceResponseSpec>,
+    response_spec: Option<&ServiceResponseSpec<'_>>,
     callback_call: &TokenStream,
 ) -> Result<ResponseSerialization> {
     let Some(spec) = response_spec else {
@@ -396,7 +396,7 @@ pub fn build_result_expr_from_values(
 }
 
 pub fn build_response_payload_tokens(
-    spec: &ServiceResponseSpec,
+    spec: &ServiceResponseSpec<'_>,
     response_ident: &Ident,
     error_context: &TokenStream,
 ) -> Result<TokenStream> {

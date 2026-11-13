@@ -11,8 +11,8 @@ use crate::types::Payload;
 
 super::capnp_empty_message!(
     NodeEndpointsRequest,
-    endpoints_capnp::node_endpoints_request::Builder,
-    endpoints_capnp::node_endpoints_request::Reader
+    endpoints_capnp::node_endpoints_request::Builder<'_>,
+    endpoints_capnp::node_endpoints_request::Reader<'_>
 );
 
 /// The sealed announced set of an instance, in label order.
@@ -29,7 +29,7 @@ impl NodeEndpointsResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = ::capnp::message::Builder::new_default();
         {
-            let root = builder.init_root::<endpoints_capnp::node_endpoints_response::Builder>();
+            let root = builder.init_root::<endpoints_capnp::node_endpoints_response::Builder<'_>>();
             let mut wire_endpoints = root.init_endpoints(self.endpoints.len() as u32);
             for (idx, endpoint) in self.endpoints.iter().enumerate() {
                 let mut wire = wire_endpoints.reborrow().get(idx as u32);
@@ -46,7 +46,7 @@ impl NodeEndpointsResponse {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = super::decode_message(data)?;
         let root = reader
-            .get_root::<endpoints_capnp::node_endpoints_response::Reader>()
+            .get_root::<endpoints_capnp::node_endpoints_response::Reader<'_>>()
             .map_err(|e| Error::Deserialization(e.to_string()))?;
         let wire_endpoints = root
             .get_endpoints()

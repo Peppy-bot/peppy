@@ -239,7 +239,7 @@ impl LaunchGoal {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut goal = builder.init_root::<launch_capnp::launch_goal::Builder>();
+            let mut goal = builder.init_root::<launch_capnp::launch_goal::Builder<'_>>();
 
             let env_var_count = capnp_list_len(self.budgets.env_vars.len(), "LaunchGoal.env_vars")?;
             self.budgets
@@ -313,7 +313,7 @@ impl LaunchGoal {
         use launch_capnp::launch_goal::placement::Which as PlacementWhich;
 
         let reader = decode_message(data)?;
-        let goal = reader.get_root::<launch_capnp::launch_goal::Reader>()?;
+        let goal = reader.get_root::<launch_capnp::launch_goal::Reader<'_>>()?;
 
         let budgets = StackBudgets::decode(
             goal.get_env_vars()?,
@@ -479,7 +479,8 @@ impl LaunchGoalResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<launch_capnp::launch_goal_response::Builder>();
+            let mut response =
+                builder.init_root::<launch_capnp::launch_goal_response::Builder<'_>>();
             response.set_log_path(self.log_path.to_string_lossy().as_ref());
         }
         encode_message(&builder)
@@ -487,7 +488,7 @@ impl LaunchGoalResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<launch_capnp::launch_goal_response::Reader>()?;
+        let response = reader.get_root::<launch_capnp::launch_goal_response::Reader<'_>>()?;
         Ok(Self {
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
         })
@@ -593,7 +594,7 @@ impl LaunchFeedback {
     pub fn encode(&self) -> Result<NonEmptyPayload> {
         let mut builder = Builder::new_default();
         {
-            let feedback = builder.init_root::<launch_capnp::launch_feedback::Builder>();
+            let feedback = builder.init_root::<launch_capnp::launch_feedback::Builder<'_>>();
             match self {
                 Self::Output(output) => {
                     let mut wire = feedback.init_output();
@@ -609,7 +610,7 @@ impl LaunchFeedback {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let feedback = reader.get_root::<launch_capnp::launch_feedback::Reader>()?;
+        let feedback = reader.get_root::<launch_capnp::launch_feedback::Reader<'_>>()?;
         match feedback.which()? {
             launch_capnp::launch_feedback::Output(output) => Ok(Self::Output(LaunchOutput {
                 stream: output.get_stream()?.to_str()?.to_owned(),
@@ -815,7 +816,7 @@ impl LaunchResult {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut result = builder.init_root::<launch_capnp::launch_result::Builder>();
+            let mut result = builder.init_root::<launch_capnp::launch_result::Builder<'_>>();
             let instance_count = capnp_list_len(
                 self.instance_endpoints.len(),
                 "LaunchResult.instance_endpoints",
@@ -841,7 +842,7 @@ impl LaunchResult {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let result = reader.get_root::<launch_capnp::launch_result::Reader>()?;
+        let result = reader.get_root::<launch_capnp::launch_result::Reader<'_>>()?;
         let instances_reader = result.get_instance_endpoints()?;
         let mut instance_endpoints = Vec::with_capacity(instances_reader.len() as usize);
         for e in instances_reader.iter() {
@@ -1016,7 +1017,7 @@ mod tests {
     fn launch_wire(
         builder: &mut Builder<capnp::message::HeapAllocator>,
     ) -> launch_capnp::launch_goal::Builder<'_> {
-        let mut wire = builder.init_root::<launch_capnp::launch_goal::Builder>();
+        let mut wire = builder.init_root::<launch_capnp::launch_goal::Builder<'_>>();
         wire.set_launch_id("launch-1");
         wire.set_node_add_idle_timeout_secs(1);
         wire.set_node_build_idle_timeout_secs(1);

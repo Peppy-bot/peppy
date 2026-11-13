@@ -23,7 +23,7 @@ impl BindingUpdateRequest {
         let mut builder = ::capnp::message::Builder::new_default();
         {
             let mut root =
-                builder.init_root::<binding_update_capnp::binding_update_request::Builder>();
+                builder.init_root::<binding_update_capnp::binding_update_request::Builder<'_>>();
             root.set_link_id(&self.link_id);
             root.set_sequence(self.sequence);
             let members = self.producers.as_slice();
@@ -43,7 +43,7 @@ impl BindingUpdateRequest {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = super::decode_message(data)?;
         let root = reader
-            .get_root::<binding_update_capnp::binding_update_request::Reader>()
+            .get_root::<binding_update_capnp::binding_update_request::Reader<'_>>()
             .map_err(|e| Error::Deserialization(e.to_string()))?;
         let link_id = super::read_text(root.get_link_id(), "binding_update", "linkId")?;
         let wire = root
@@ -136,8 +136,8 @@ mod tests {
         for (core_node, instance_id) in [("", "front"), ("core_a", "a/b"), ("core_a", "*")] {
             let mut builder = ::capnp::message::Builder::new_default();
             {
-                let mut root =
-                    builder.init_root::<binding_update_capnp::binding_update_request::Builder>();
+                let mut root = builder
+                    .init_root::<binding_update_capnp::binding_update_request::Builder<'_>>();
                 root.set_link_id("cameras");
                 root.set_sequence(1);
                 let mut entry = root.init_producers(1).get(0);
@@ -161,8 +161,8 @@ mod tests {
         let payload = |tags: [(&str, &str); 2]| {
             let mut builder = ::capnp::message::Builder::new_default();
             {
-                let mut root =
-                    builder.init_root::<binding_update_capnp::binding_update_request::Builder>();
+                let mut root = builder
+                    .init_root::<binding_update_capnp::binding_update_request::Builder<'_>>();
                 root.set_link_id("cameras");
                 root.set_sequence(1);
                 let mut wire = root.init_producers(2);

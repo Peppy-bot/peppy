@@ -409,12 +409,13 @@ mod tests {
             let mut message = Builder::new_default();
             {
                 let request = message
-                    .init_root::<crate::federation_capnp::participant_reserve_request::Builder>();
+                    .init_root::<crate::federation_capnp::participant_reserve_request::Builder<'_>>(
+                    );
                 let len = capnp_list_len(values.len(), "test").expect("len fits");
                 write_text_list(request.init_deployment_pins_json5(len), &values);
             }
             let request = message
-                .get_root_as_reader::<crate::federation_capnp::participant_reserve_request::Reader>(
+                .get_root_as_reader::<crate::federation_capnp::participant_reserve_request::Reader<'_>>(
                 )
                 .expect("root");
             let read = read_text_list(request.get_deployment_pins_json5().expect("list present"))
@@ -450,7 +451,8 @@ mod tests {
             let mut message = Builder::new_default();
             {
                 let request = message
-                    .init_root::<crate::federation_capnp::participant_reserve_request::Builder>();
+                    .init_root::<crate::federation_capnp::participant_reserve_request::Builder<'_>>(
+                    );
                 let mut pins = request.init_deployment_pins_json5(pin_count);
                 for index in 0..pin_count {
                     pins.set(index, "{ node: 'pinned' }");
@@ -472,7 +474,7 @@ mod tests {
         // Any builder serializes to at least the capnp segment-table header, so
         // the non-empty wrapper construction is infallible and the bytes decode.
         let mut builder = Builder::new_default();
-        builder.init_root::<crate::clock_capnp::clock_request::Builder>();
+        builder.init_root::<crate::clock_capnp::clock_request::Builder<'_>>();
         let payload = encode_message_non_empty(&builder)
             .expect("non-empty wrap")
             .into_inner();

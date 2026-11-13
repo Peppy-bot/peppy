@@ -342,7 +342,7 @@ where
     {
         type Value = IndexMap<String, V>;
 
-        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             formatter.write_str(self.expecting)
         }
 

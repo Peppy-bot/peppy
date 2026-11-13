@@ -115,7 +115,7 @@ mod tests {
     fn decode_budgets(env_vars: &[(&str, &str)], timeouts: [u64; 4]) -> Result<StackBudgets> {
         let mut message = Builder::new_default();
         {
-            let goal = message.init_root::<launch_capnp::launch_goal::Builder>();
+            let goal = message.init_root::<launch_capnp::launch_goal::Builder<'_>>();
             let mut wire = goal.init_env_vars(env_vars.len() as u32);
             for (index, (key, value)) in env_vars.iter().enumerate() {
                 let mut entry = wire.reborrow().get(index as u32);
@@ -124,7 +124,7 @@ mod tests {
             }
         }
         let goal = message
-            .get_root_as_reader::<launch_capnp::launch_goal::Reader>()
+            .get_root_as_reader::<launch_capnp::launch_goal::Reader<'_>>()
             .expect("root");
         let [add, build, run, max] = timeouts;
         StackBudgets::decode(goal.get_env_vars().expect("env vars"), add, build, run, max)

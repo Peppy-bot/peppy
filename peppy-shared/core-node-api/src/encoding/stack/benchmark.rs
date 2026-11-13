@@ -47,7 +47,8 @@ impl StackBenchmarkGoal {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut goal = builder.init_root::<benchmark_capnp::stack_benchmark_goal::Builder>();
+            let mut goal =
+                builder.init_root::<benchmark_capnp::stack_benchmark_goal::Builder<'_>>();
             goal.set_samples(self.samples);
             goal.set_warmup(self.warmup);
             goal.set_per_sample_timeout_ms(self.per_sample_timeout_ms);
@@ -57,7 +58,7 @@ impl StackBenchmarkGoal {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let goal = reader.get_root::<benchmark_capnp::stack_benchmark_goal::Reader>()?;
+        let goal = reader.get_root::<benchmark_capnp::stack_benchmark_goal::Reader<'_>>()?;
         Ok(Self {
             samples: with_default(goal.get_samples(), DEFAULT_SAMPLES),
             warmup: goal.get_warmup(),
@@ -86,13 +87,13 @@ impl StackBenchmarkGoalResponse {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<benchmark_capnp::stack_benchmark_goal_response::Builder>();
+        builder.init_root::<benchmark_capnp::stack_benchmark_goal_response::Builder<'_>>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<benchmark_capnp::stack_benchmark_goal_response::Reader>()?;
+        reader.get_root::<benchmark_capnp::stack_benchmark_goal_response::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -164,7 +165,7 @@ impl StackBenchmarkFeedback {
         let mut builder = Builder::new_default();
         {
             let mut feedback =
-                builder.init_root::<benchmark_capnp::stack_benchmark_feedback::Builder>();
+                builder.init_root::<benchmark_capnp::stack_benchmark_feedback::Builder<'_>>();
             feedback.set_stream(&self.stream);
             feedback.set_line(&self.line);
             feedback.set_step(self.step.to_capnp());
@@ -174,7 +175,8 @@ impl StackBenchmarkFeedback {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let feedback = reader.get_root::<benchmark_capnp::stack_benchmark_feedback::Reader>()?;
+        let feedback =
+            reader.get_root::<benchmark_capnp::stack_benchmark_feedback::Reader<'_>>()?;
         Ok(Self {
             stream: feedback.get_stream()?.to_str()?.to_owned(),
             line: feedback.get_line()?.to_str()?.to_owned(),
@@ -381,7 +383,7 @@ impl StackBenchmarkResult {
         let mut builder = Builder::new_default();
         {
             let mut result =
-                builder.init_root::<benchmark_capnp::stack_benchmark_result::Builder>();
+                builder.init_root::<benchmark_capnp::stack_benchmark_result::Builder<'_>>();
             let row_count = capnp_list_len(self.rows.len(), "StackBenchmarkResult.rows")?;
             let mut rows = result.reborrow().init_rows(row_count);
             for (i, row) in self.rows.iter().enumerate() {
@@ -418,7 +420,7 @@ impl StackBenchmarkResult {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let result = reader.get_root::<benchmark_capnp::stack_benchmark_result::Reader>()?;
+        let result = reader.get_root::<benchmark_capnp::stack_benchmark_result::Reader<'_>>()?;
 
         let rows_reader = result.get_rows()?;
         let mut rows = Vec::with_capacity(rows_reader.len() as usize);

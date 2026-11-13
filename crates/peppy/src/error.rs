@@ -95,7 +95,7 @@ pub enum Error {
 }
 
 impl Display for Error {
-    fn fmt(&self, fmt: &mut Formatter) -> core::result::Result<(), core::fmt::Error> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> core::result::Result<(), core::fmt::Error> {
         match self {
             Error::Io(e) => write!(fmt, "IO error: {e}"),
             Error::Daemon(e) => write!(fmt, "{e}"),

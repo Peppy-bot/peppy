@@ -114,7 +114,7 @@ impl DatastoreStoreRequest {
         let mut builder = Builder::new_default();
         {
             let mut request =
-                builder.init_root::<datastore_capnp::datastore_store_request::Builder>();
+                builder.init_root::<datastore_capnp::datastore_store_request::Builder<'_>>();
             request.set_key(self.key.as_str());
             request.set_value(&self.value);
             request.set_encoding(&self.encoding);
@@ -124,7 +124,7 @@ impl DatastoreStoreRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<datastore_capnp::datastore_store_request::Reader>()?;
+        let request = reader.get_root::<datastore_capnp::datastore_store_request::Reader<'_>>()?;
         Ok(Self {
             key: DatastoreKey::try_from(request.get_key()?.to_str()?)?,
             value: request.get_value()?.to_vec(),
@@ -145,14 +145,14 @@ impl DatastoreStoreResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            builder.init_root::<datastore_capnp::datastore_store_response::Builder>();
+            builder.init_root::<datastore_capnp::datastore_store_response::Builder<'_>>();
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<datastore_capnp::datastore_store_response::Reader>()?;
+        reader.get_root::<datastore_capnp::datastore_store_response::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -177,7 +177,7 @@ impl DatastoreGetRequest {
         let mut builder = Builder::new_default();
         {
             let mut request =
-                builder.init_root::<datastore_capnp::datastore_get_request::Builder>();
+                builder.init_root::<datastore_capnp::datastore_get_request::Builder<'_>>();
             request.set_key(self.key.as_str());
         }
         encode_message(&builder)
@@ -185,7 +185,7 @@ impl DatastoreGetRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<datastore_capnp::datastore_get_request::Reader>()?;
+        let request = reader.get_root::<datastore_capnp::datastore_get_request::Reader<'_>>()?;
         Ok(Self {
             key: DatastoreKey::try_from(request.get_key()?.to_str()?)?,
         })
@@ -230,7 +230,7 @@ impl DatastoreGetResponse {
         let mut builder = Builder::new_default();
         {
             let mut response =
-                builder.init_root::<datastore_capnp::datastore_get_response::Builder>();
+                builder.init_root::<datastore_capnp::datastore_get_response::Builder<'_>>();
             response.set_found(self.found);
             response.set_value(&self.value);
             response.set_encoding(&self.encoding);
@@ -241,7 +241,7 @@ impl DatastoreGetResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<datastore_capnp::datastore_get_response::Reader>()?;
+        let response = reader.get_root::<datastore_capnp::datastore_get_response::Reader<'_>>()?;
         Ok(Self {
             found: response.get_found(),
             value: response.get_value()?.to_vec(),
@@ -264,14 +264,14 @@ impl DatastoreListRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            builder.init_root::<datastore_capnp::datastore_list_request::Builder>();
+            builder.init_root::<datastore_capnp::datastore_list_request::Builder<'_>>();
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<datastore_capnp::datastore_list_request::Reader>()?;
+        reader.get_root::<datastore_capnp::datastore_list_request::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -305,7 +305,7 @@ impl DatastoreListResponse {
         let mut builder = Builder::new_default();
         {
             let mut response =
-                builder.init_root::<datastore_capnp::datastore_list_response::Builder>();
+                builder.init_root::<datastore_capnp::datastore_list_response::Builder<'_>>();
             let entry_count = capnp_list_len(self.entries.len(), "DatastoreListResponse.entries")?;
             let mut entries = response.reborrow().init_entries(entry_count);
             for (i, entry) in self.entries.iter().enumerate() {
@@ -320,7 +320,7 @@ impl DatastoreListResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<datastore_capnp::datastore_list_response::Reader>()?;
+        let response = reader.get_root::<datastore_capnp::datastore_list_response::Reader<'_>>()?;
         let entries_reader = response.get_entries()?;
         let mut entries = Vec::with_capacity(entries_reader.len() as usize);
         for i in 0..entries_reader.len() {
@@ -355,7 +355,7 @@ impl DatastoreRemoveRequest {
         let mut builder = Builder::new_default();
         {
             let mut request =
-                builder.init_root::<datastore_capnp::datastore_remove_request::Builder>();
+                builder.init_root::<datastore_capnp::datastore_remove_request::Builder<'_>>();
             request.set_key(self.key.as_str());
         }
         encode_message(&builder)
@@ -363,7 +363,7 @@ impl DatastoreRemoveRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<datastore_capnp::datastore_remove_request::Reader>()?;
+        let request = reader.get_root::<datastore_capnp::datastore_remove_request::Reader<'_>>()?;
         Ok(Self {
             key: DatastoreKey::try_from(request.get_key()?.to_str()?)?,
         })
@@ -385,7 +385,7 @@ impl DatastoreRemoveResponse {
         let mut builder = Builder::new_default();
         {
             let mut response =
-                builder.init_root::<datastore_capnp::datastore_remove_response::Builder>();
+                builder.init_root::<datastore_capnp::datastore_remove_response::Builder<'_>>();
             response.set_removed(self.removed);
         }
         encode_message(&builder)
@@ -393,7 +393,8 @@ impl DatastoreRemoveResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<datastore_capnp::datastore_remove_response::Reader>()?;
+        let response =
+            reader.get_root::<datastore_capnp::datastore_remove_response::Reader<'_>>()?;
         Ok(Self {
             removed: response.get_removed(),
         })
@@ -454,8 +455,8 @@ impl DatastoreStoreExclusiveResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response =
-                builder.init_root::<datastore_capnp::datastore_store_exclusive_response::Builder>();
+            let mut response = builder
+                .init_root::<datastore_capnp::datastore_store_exclusive_response::Builder<'_>>();
             match self {
                 DatastoreStoreExclusiveResponse::Stored => response.set_stored(()),
                 DatastoreStoreExclusiveResponse::Refused {
@@ -476,7 +477,7 @@ impl DatastoreStoreExclusiveResponse {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let response =
-            reader.get_root::<datastore_capnp::datastore_store_exclusive_response::Reader>()?;
+            reader.get_root::<datastore_capnp::datastore_store_exclusive_response::Reader<'_>>()?;
         Ok(match response.which()? {
             datastore_capnp::datastore_store_exclusive_response::Which::Unset(()) => {
                 return Err(crate::Error::Decoding(
@@ -766,7 +767,7 @@ mod tests {
         let mut builder = Builder::new_default();
         {
             let mut request =
-                builder.init_root::<datastore_capnp::datastore_store_request::Builder>();
+                builder.init_root::<datastore_capnp::datastore_store_request::Builder<'_>>();
             request.set_key("");
             request.set_value(b"v");
             request.set_encoding("text/plain");
@@ -781,7 +782,7 @@ mod tests {
         let mut builder = Builder::new_default();
         {
             let mut request =
-                builder.init_root::<datastore_capnp::datastore_get_request::Builder>();
+                builder.init_root::<datastore_capnp::datastore_get_request::Builder<'_>>();
             request.set_key("");
         }
         let payload = encode_message(&builder).expect("encode raw request");
@@ -794,7 +795,7 @@ mod tests {
         let mut builder = Builder::new_default();
         {
             let mut request =
-                builder.init_root::<datastore_capnp::datastore_remove_request::Builder>();
+                builder.init_root::<datastore_capnp::datastore_remove_request::Builder<'_>>();
             request.set_key("");
         }
         let payload = encode_message(&builder).expect("encode raw request");
@@ -805,7 +806,7 @@ mod tests {
     #[test]
     fn store_exclusive_response_decode_refuses_a_message_with_no_outcome() {
         let mut builder = Builder::new_default();
-        builder.init_root::<datastore_capnp::datastore_store_exclusive_response::Builder>();
+        builder.init_root::<datastore_capnp::datastore_store_exclusive_response::Builder<'_>>();
         let payload = encode_message(&builder).expect("encode raw response");
 
         let err = DatastoreStoreExclusiveResponse::decode(payload.as_ref())

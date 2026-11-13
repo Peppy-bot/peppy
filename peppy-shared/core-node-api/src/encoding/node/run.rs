@@ -453,7 +453,7 @@ impl NodeRunGoal {
             .map_err(|e| crate::Error::Encoding(format!("NodeRunGoal.instance_plan: {e}")))?;
         let mut builder = Builder::new_default();
         {
-            let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder>();
+            let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder<'_>>();
             goal.set_instance_plan_json5(&instance_plan_json5);
             goal.set_manifest_sha256(self.manifest_sha256.as_deref().unwrap_or(""));
             goal.set_launch_id(self.launch_id.as_deref().unwrap_or(""));
@@ -513,7 +513,7 @@ impl NodeRunGoal {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let goal = reader.get_root::<node_capnp::node_run_goal::Reader>()?;
+        let goal = reader.get_root::<node_capnp::node_run_goal::Reader<'_>>()?;
 
         let env_vars = super::read_env_vars(goal.get_env_vars()?)?;
 
@@ -915,7 +915,8 @@ impl NodeRunGoalResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_run_goal_response::Builder>();
+            let mut response =
+                builder.init_root::<node_capnp::node_run_goal_response::Builder<'_>>();
             response.set_log_path(self.log_path.to_string_lossy().as_ref());
         }
         encode_message(&builder)
@@ -923,7 +924,7 @@ impl NodeRunGoalResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_run_goal_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::node_run_goal_response::Reader<'_>>()?;
         Ok(Self {
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
         })
@@ -974,7 +975,7 @@ impl NodeRunFeedback {
     pub fn encode(&self) -> Result<NonEmptyPayload> {
         let mut builder = Builder::new_default();
         {
-            let mut feedback = builder.init_root::<node_capnp::node_run_feedback::Builder>();
+            let mut feedback = builder.init_root::<node_capnp::node_run_feedback::Builder<'_>>();
             feedback.set_stream(self.stream.to_capnp());
             feedback.set_line(&self.line);
         }
@@ -983,7 +984,7 @@ impl NodeRunFeedback {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let feedback = reader.get_root::<node_capnp::node_run_feedback::Reader>()?;
+        let feedback = reader.get_root::<node_capnp::node_run_feedback::Reader<'_>>()?;
         Ok(Self {
             stream: FeedbackStream::from_capnp(feedback.get_stream()?),
             line: feedback.get_line()?.to_str()?.to_owned(),
@@ -1021,7 +1022,7 @@ impl NodeRunResult {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut result = builder.init_root::<node_capnp::node_run_result::Builder>();
+            let mut result = builder.init_root::<node_capnp::node_run_result::Builder<'_>>();
             result.set_pid(self.pid.unwrap_or(0));
             let endpoint_count = capnp_list_len(self.endpoints.len(), "NodeRunResult.endpoints")?;
             write_node_endpoints(result.init_endpoints(endpoint_count), &self.endpoints)?;
@@ -1031,7 +1032,7 @@ impl NodeRunResult {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let result = reader.get_root::<node_capnp::node_run_result::Reader>()?;
+        let result = reader.get_root::<node_capnp::node_run_result::Reader<'_>>()?;
         let pid = Some(result.get_pid()).filter(|pid| *pid != 0);
         Ok(Self {
             pid,
@@ -1392,12 +1393,12 @@ mod tests {
         message
             .set_root(
                 reader
-                    .get_root::<node_capnp::node_run_goal::Reader>()
+                    .get_root::<node_capnp::node_run_goal::Reader<'_>>()
                     .expect("root"),
             )
             .expect("copy the goal");
         let goal = message
-            .get_root::<node_capnp::node_run_goal::Builder>()
+            .get_root::<node_capnp::node_run_goal::Builder<'_>>()
             .expect("root");
         let pair = goal.get_requested_pairs().expect("requested pairs").get(0);
         edit(pair.get_remote_peer().expect("remote peer"));
@@ -1519,7 +1520,7 @@ mod tests {
     fn node_run_goal_decode_rejects_a_goal_carrying_no_instance_plan() {
         let mut builder = Builder::new_default();
         {
-            let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder>();
+            let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder<'_>>();
             goal.set_node_name("node");
             goal.set_tag("tag");
         }
@@ -1544,7 +1545,7 @@ mod tests {
     ) -> Payload {
         let mut builder = Builder::new_default();
         {
-            let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder>();
+            let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder<'_>>();
             goal.set_instance_plan_json5(
                 serde_json5::to_string(&plan("inst_1")).expect("serialize plan"),
             );
@@ -1834,7 +1835,7 @@ mod tests {
         for (policy, origin, max_restarts, refusal) in cases {
             let mut builder = Builder::new_default();
             {
-                let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder>();
+                let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder<'_>>();
                 goal.set_instance_plan_json5(
                     serde_json5::to_string(&plan("inst_1")).expect("a plan serializes"),
                 );

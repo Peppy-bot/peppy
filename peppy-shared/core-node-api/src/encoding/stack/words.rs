@@ -802,7 +802,7 @@ mod tests {
             assert_eq!(copy_round_trip(&copy), copy);
         }
         let mut message = Builder::new_default();
-        let mut wire = message.init_root::<launch_capnp::copy_reference::Builder>();
+        let mut wire = message.init_root::<launch_capnp::copy_reference::Builder<'_>>();
         wire.set_option("openarm_sim");
         wire.set_name("delta");
         let bytes = encode_message(&message).unwrap();
@@ -814,7 +814,7 @@ mod tests {
         );
 
         let mut message = Builder::new_default();
-        let mut wire = message.init_root::<launch_capnp::copy_reference::Builder>();
+        let mut wire = message.init_root::<launch_capnp::copy_reference::Builder<'_>>();
         wire.set_option("openarm_sim");
         wire.set_name("self");
         wire.init_core_node().set_coordinator(());
@@ -847,7 +847,7 @@ mod tests {
 
         let mut message = Builder::new_default();
         message
-            .init_root::<launch_capnp::launch_word::Builder>()
+            .init_root::<launch_capnp::launch_word::Builder<'_>>()
             .init_copy()
             .set_copy("xiaozhu");
         let bytes = encode_message(&message).unwrap();
@@ -859,7 +859,7 @@ mod tests {
         );
 
         let mut message = Builder::new_default();
-        message.init_root::<launch_capnp::selection_word::Builder>();
+        message.init_root::<launch_capnp::selection_word::Builder<'_>>();
         let bytes = encode_message(&message).unwrap();
         let decoded = decode_message(&bytes).unwrap();
         let refusal = read_selection_word(decoded.get_root().unwrap(), "word").unwrap_err();
@@ -869,7 +869,7 @@ mod tests {
         );
 
         let mut message = Builder::new_default();
-        let mut word = message.init_root::<launch_capnp::option_choice::Builder>();
+        let mut word = message.init_root::<launch_capnp::option_choice::Builder<'_>>();
         word.reborrow().init_axis().set_named("brain");
         word.set_option("bad/option");
         let bytes = encode_message(&message).unwrap();
@@ -892,7 +892,7 @@ mod tests {
             );
         }
         let mut message = Builder::new_default();
-        let mut wire = message.init_root::<node_capnp::axis_selection::Builder>();
+        let mut wire = message.init_root::<node_capnp::axis_selection::Builder<'_>>();
         wire.set_axis("brain");
         wire.set_option("ai_brain_vla");
         wire.init_core_node().set_named("self");

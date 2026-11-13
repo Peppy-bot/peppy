@@ -53,7 +53,10 @@ pub enum Error {
 }
 
 impl core::fmt::Display for Error {
-    fn fmt(&self, fmt: &mut core::fmt::Formatter) -> core::result::Result<(), core::fmt::Error> {
+    fn fmt(
+        &self,
+        fmt: &mut core::fmt::Formatter<'_>,
+    ) -> core::result::Result<(), core::fmt::Error> {
         match self {
             Self::RetainingTopicMismatch {
                 topic,

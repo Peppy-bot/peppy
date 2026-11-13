@@ -41,7 +41,7 @@ impl NodeInfoRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<node_capnp::node_info_request::Builder>();
+            let mut request = builder.init_root::<node_capnp::node_info_request::Builder<'_>>();
             request.set_node_name(&self.node_name);
             request.set_node_tag(&self.node_tag);
         }
@@ -50,7 +50,7 @@ impl NodeInfoRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<node_capnp::node_info_request::Reader>()?;
+        let request = reader.get_root::<node_capnp::node_info_request::Reader<'_>>()?;
         Ok(Self {
             node_name: request.get_node_name()?.to_str()?.to_owned(),
             node_tag: request.get_node_tag()?.to_str()?.to_owned(),
@@ -131,7 +131,7 @@ impl NodeInfoResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_info_response::Builder>();
+            let mut response = builder.init_root::<node_capnp::node_info_response::Builder<'_>>();
             match self {
                 // Select the `notInStack :Void` arm of the union.
                 NodeInfoResponse::NotInStack => response.set_not_in_stack(()),
@@ -143,7 +143,7 @@ impl NodeInfoResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_info_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::node_info_response::Reader<'_>>()?;
         match response.which()? {
             node_capnp::node_info_response::Which::NotInStack(()) => {
                 Ok(NodeInfoResponse::NotInStack)
@@ -692,7 +692,7 @@ mod tests {
     ) -> Payload {
         let mut builder = Builder::new_default();
         {
-            let response = builder.init_root::<node_capnp::node_info_response::Builder>();
+            let response = builder.init_root::<node_capnp::node_info_response::Builder<'_>>();
             let mut found = response.init_found();
             found.set_config_json5(
                 serde_json5::to_string(&sample_config_for_roundtrip()).expect("serialize config"),
@@ -895,13 +895,13 @@ mod tests {
         builder
             .set_root(
                 reader
-                    .get_root::<node_capnp::node_info_response::Reader>()
+                    .get_root::<node_capnp::node_info_response::Reader<'_>>()
                     .expect("a response"),
             )
             .expect("a copy");
         {
             let root = builder
-                .get_root::<node_capnp::node_info_response::Builder>()
+                .get_root::<node_capnp::node_info_response::Builder<'_>>()
                 .expect("a response");
             let node_capnp::node_info_response::Which::Found(found) =
                 root.which().expect("a union")

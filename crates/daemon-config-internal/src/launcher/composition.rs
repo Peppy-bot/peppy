@@ -664,7 +664,7 @@ impl<'de> Deserialize<'de> for DeploymentEntries {
         impl<'de> Visitor<'de> for EntriesVisitor {
             type Value = DeploymentEntries;
 
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.write_str(
                     "a list of deployments: `{ source: { name, tag }, instances: [...] }` for \
                      a node, `{ <component>: \"<option>\" }` for a component's option",
@@ -1189,7 +1189,7 @@ impl<'de> Deserialize<'de> for OptionSpec {
         impl<'de> Visitor<'de> for OptionSpecVisitor {
             type Value = OptionSpec;
 
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.write_str(
                     "a fragment path string, or an object naming files under `fragments` \
                      beside a body of its own and, in a launcher, `adjustments`, e.g. \

@@ -21,7 +21,8 @@ impl PeerUpdateRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = ::capnp::message::Builder::new_default();
         {
-            let mut root = builder.init_root::<peer_update_capnp::peer_update_request::Builder>();
+            let mut root =
+                builder.init_root::<peer_update_capnp::peer_update_request::Builder<'_>>();
             root.set_link_id(&self.link_id);
             root.set_sequence(self.sequence);
             let mut members = root.init_members(self.members.len() as u32);
@@ -39,7 +40,7 @@ impl PeerUpdateRequest {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = super::decode_message(data)?;
         let root = reader
-            .get_root::<peer_update_capnp::peer_update_request::Reader>()
+            .get_root::<peer_update_capnp::peer_update_request::Reader<'_>>()
             .map_err(|e| Error::Deserialization(e.to_string()))?;
         let link_id = super::read_text(root.get_link_id(), "peer_update", "linkId")?;
         let sequence = root.get_sequence();

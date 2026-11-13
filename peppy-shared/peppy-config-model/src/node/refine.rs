@@ -178,7 +178,7 @@ struct FormatRefinementVisitor;
 impl<'de> Visitor<'de> for FormatRefinementVisitor {
     type Value = FormatRefinement;
 
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("a non-empty map of field name to refinement")
     }
 
@@ -235,7 +235,7 @@ struct FieldRefinementVisitor;
 impl<'de> Visitor<'de> for FieldRefinementVisitor {
     type Value = FieldRefinement;
 
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(
             "a `{ $length: N }` leaf, a `{ $items: { ... } }` block, or a map of nested field \
              refinements",
@@ -311,7 +311,7 @@ impl<'de> Deserialize<'de> for StrictLength {
         impl Visitor<'_> for LengthVisitor {
             type Value = StrictLength;
 
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str("a non-negative integer `$length`")
             }
 

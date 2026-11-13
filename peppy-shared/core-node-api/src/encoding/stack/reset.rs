@@ -15,13 +15,13 @@ impl StackResetRequest {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<node_capnp::stack_reset_request::Builder>();
+        builder.init_root::<node_capnp::stack_reset_request::Builder<'_>>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<node_capnp::stack_reset_request::Reader>()?;
+        reader.get_root::<node_capnp::stack_reset_request::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -38,13 +38,13 @@ impl StackResetResponse {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<node_capnp::stack_reset_response::Builder>();
+        builder.init_root::<node_capnp::stack_reset_response::Builder<'_>>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<node_capnp::stack_reset_response::Reader>()?;
+        reader.get_root::<node_capnp::stack_reset_response::Reader<'_>>()?;
         Ok(Self)
     }
 }

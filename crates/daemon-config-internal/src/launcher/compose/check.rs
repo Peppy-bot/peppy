@@ -143,7 +143,7 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
         Err(e) => return vec![format!("{label}: {e}")],
     };
     let mut problems = check_bare_launch(&prepared, &label);
-    let repeatable: Vec<Repeatable> = launcher
+    let repeatable: Vec<Repeatable<'_>> = launcher
         .repeatable_axes()
         .flat_map(|axis| {
             prepared

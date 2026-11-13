@@ -164,7 +164,7 @@ impl StackJoinGoal {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut message = Builder::new_default();
-        let mut goal = message.init_root::<launch_capnp::stack_join_goal::Builder>();
+        let mut goal = message.init_root::<launch_capnp::stack_join_goal::Builder<'_>>();
         write_copy_reference(goal.reborrow().init_copy(), &self.copy);
         goal.set_node_add_idle_timeout_secs(self.budgets.node_add_idle_timeout_secs);
         goal.set_node_build_idle_timeout_secs(self.budgets.node_build_idle_timeout_secs);
@@ -199,7 +199,7 @@ impl StackJoinGoal {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let message = decode_message(data)?;
-        let goal = message.get_root::<launch_capnp::stack_join_goal::Reader>()?;
+        let goal = message.get_root::<launch_capnp::stack_join_goal::Reader<'_>>()?;
         if !goal.has_copy() {
             return Err(crate::Error::Decoding(
                 "`StackJoinGoal.copy` is missing".to_owned(),
@@ -284,7 +284,7 @@ mod tests {
     fn wire_goal(
         message: &mut Builder<capnp::message::HeapAllocator>,
     ) -> launch_capnp::stack_join_goal::Builder<'_> {
-        let mut goal = message.init_root::<launch_capnp::stack_join_goal::Builder>();
+        let mut goal = message.init_root::<launch_capnp::stack_join_goal::Builder<'_>>();
         let mut copy = goal.reborrow().init_copy();
         copy.set_option("openarm_real");
         copy.set_name("alpha");
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn a_goal_without_its_copy_is_refused() {
         let mut message = Builder::new_default();
-        message.init_root::<launch_capnp::stack_join_goal::Builder>();
+        message.init_root::<launch_capnp::stack_join_goal::Builder<'_>>();
         let refusal = decoding_error(StackJoinGoal::decode(&encode_message(&message).unwrap()));
         assert!(
             refusal.contains("`StackJoinGoal.copy` is missing"),
@@ -326,7 +326,7 @@ mod tests {
         );
 
         let mut message = Builder::new_default();
-        let mut wire = message.init_root::<launch_capnp::stack_join_goal::Builder>();
+        let mut wire = message.init_root::<launch_capnp::stack_join_goal::Builder<'_>>();
         let mut copy = wire.reborrow().init_copy();
         copy.set_option("openarm_real");
         copy.set_name("alpha");

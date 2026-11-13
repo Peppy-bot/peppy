@@ -376,7 +376,7 @@ pub fn plan_deployment(
     let targets = DeploymentTargets::of_exposures(exposures)?;
     let fleet_slot = fleet_slot_of(&ordered, &targets)?;
 
-    let mut slots: BTreeMap<String, Slot> = BTreeMap::new();
+    let mut slots: BTreeMap<String, Slot<'_>> = BTreeMap::new();
     let mut topics: BTreeSet<(String, String)> = BTreeSet::new();
     let mut services: BTreeSet<(String, String)> = BTreeSet::new();
     let mut actions: BTreeSet<(String, String)> = BTreeSet::new();

@@ -106,13 +106,13 @@ impl StackListRequest {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<node_capnp::stack_list_request::Builder>();
+        builder.init_root::<node_capnp::stack_list_request::Builder<'_>>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<node_capnp::stack_list_request::Reader>()?;
+        let request = reader.get_root::<node_capnp::stack_list_request::Reader<'_>>()?;
         let size = request.total_size()?;
         if size.word_count != 0 || size.cap_count != 0 {
             return Err(crate::Error::Decoding(format!(
@@ -230,7 +230,7 @@ impl StackListResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::stack_list_response::Builder>();
+            let mut response = builder.init_root::<node_capnp::stack_list_response::Builder<'_>>();
             response.set_graph_json(&self.graph_json);
             response.set_shutdown_grace_secs(self.shutdown_grace_secs);
             response.set_core_node(&self.core_node);
@@ -276,7 +276,7 @@ impl StackListResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::stack_list_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::stack_list_response::Reader<'_>>()?;
 
         // The unions make "part of a launch or not" and "held by a launch or
         // not" wire facts, so there is no half-formed identity left to police
@@ -586,7 +586,7 @@ mod tests {
             ("alpha", "openarm_v2", "jetson-1", "bad/id"),
         ] {
             let mut builder = Builder::new_default();
-            let mut wire = builder.init_root::<node_capnp::stack_list_response::Builder>();
+            let mut wire = builder.init_root::<node_capnp::stack_list_response::Builder<'_>>();
             let mut member = wire.reborrow().init_copies(1).get(0);
             member.set_name(name);
             member.set_option(option);
@@ -630,7 +630,7 @@ mod tests {
         assert_eq!(decoded, response);
 
         let mut builder = Builder::new_default();
-        let mut wire = builder.init_root::<node_capnp::stack_list_response::Builder>();
+        let mut wire = builder.init_root::<node_capnp::stack_list_response::Builder<'_>>();
         let mut member = wire.reborrow().init_launch_copies(1).get(0);
         member.set_name("");
         member.set_option("openarm_v2");
@@ -676,7 +676,7 @@ mod tests {
             ),
         ] {
             let mut builder = Builder::new_default();
-            let wire = builder.init_root::<node_capnp::stack_list_response::Builder>();
+            let wire = builder.init_root::<node_capnp::stack_list_response::Builder<'_>>();
             let mut copy = wire.init_copies(1).get(0);
             copy.set_name("alpha");
             copy.set_option("openarm_v2");
@@ -789,7 +789,7 @@ mod tests {
             ("bravo", "", "copy_change.option"),
         ] {
             let mut builder = Builder::new_default();
-            let wire = builder.init_root::<node_capnp::stack_list_response::Builder>();
+            let wire = builder.init_root::<node_capnp::stack_list_response::Builder<'_>>();
             let mut copy = wire.init_copy_change().init_join();
             copy.set_name(name);
             copy.set_option(option);

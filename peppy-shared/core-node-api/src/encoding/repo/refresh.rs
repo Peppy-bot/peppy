@@ -13,14 +13,14 @@ impl RepoRefreshGoal {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let _goal = builder.init_root::<repo_capnp::repo_refresh_goal::Builder>();
+            let _goal = builder.init_root::<repo_capnp::repo_refresh_goal::Builder<'_>>();
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let _goal = reader.get_root::<repo_capnp::repo_refresh_goal::Reader>()?;
+        let _goal = reader.get_root::<repo_capnp::repo_refresh_goal::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -38,13 +38,13 @@ impl RepoRefreshGoalResponse {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<repo_capnp::repo_refresh_goal_response::Builder>();
+        builder.init_root::<repo_capnp::repo_refresh_goal_response::Builder<'_>>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<repo_capnp::repo_refresh_goal_response::Reader>()?;
+        reader.get_root::<repo_capnp::repo_refresh_goal_response::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -119,7 +119,7 @@ impl RepoRefreshFeedback {
     pub fn encode(&self) -> Result<NonEmptyPayload> {
         let mut builder = Builder::new_default();
         {
-            let feedback = builder.init_root::<repo_capnp::repo_refresh_feedback::Builder>();
+            let feedback = builder.init_root::<repo_capnp::repo_refresh_feedback::Builder<'_>>();
             let payload = feedback.init_payload();
             match self {
                 Self::Discovered {
@@ -158,7 +158,7 @@ impl RepoRefreshFeedback {
     pub fn decode(data: &[u8]) -> Result<Self> {
         use repo_capnp::repo_refresh_feedback::payload::Which;
         let reader = decode_message(data)?;
-        let feedback = reader.get_root::<repo_capnp::repo_refresh_feedback::Reader>()?;
+        let feedback = reader.get_root::<repo_capnp::repo_refresh_feedback::Reader<'_>>()?;
         match feedback.get_payload().which()? {
             Which::Discovered(d) => {
                 let kind_str = d.get_kind()?.to_str()?;
@@ -235,7 +235,7 @@ impl RepoRefreshResult {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut result = builder.init_root::<repo_capnp::repo_refresh_result::Builder>();
+            let mut result = builder.init_root::<repo_capnp::repo_refresh_result::Builder<'_>>();
             result.set_total_nodes_found(self.total_nodes_found);
             result.set_total_launchers_found(self.total_launchers_found);
             result.set_total_contracts_found(self.total_contracts_found);
@@ -248,7 +248,7 @@ impl RepoRefreshResult {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let result = reader.get_root::<repo_capnp::repo_refresh_result::Reader>()?;
+        let result = reader.get_root::<repo_capnp::repo_refresh_result::Reader<'_>>()?;
         Ok(Self {
             total_nodes_found: result.get_total_nodes_found(),
             total_launchers_found: result.get_total_launchers_found(),
@@ -407,14 +407,14 @@ mod tests {
     fn feedback_decode_refuses_an_unknown_source_type() {
         let mut discovered = Builder::new_default();
         {
-            let feedback = discovered.init_root::<repo_capnp::repo_refresh_feedback::Builder>();
+            let feedback = discovered.init_root::<repo_capnp::repo_refresh_feedback::Builder<'_>>();
             let mut payload = feedback.init_payload().init_discovered();
             payload.set_kind(RepoItemKind::Node.as_str());
             payload.set_source_type("bogus");
         }
         let mut excluded = Builder::new_default();
         {
-            let feedback = excluded.init_root::<repo_capnp::repo_refresh_feedback::Builder>();
+            let feedback = excluded.init_root::<repo_capnp::repo_refresh_feedback::Builder<'_>>();
             feedback
                 .init_payload()
                 .init_excluded()

@@ -1379,12 +1379,12 @@ mod tests {
         let tree = repo.find_tree(tree_id).expect("find tree");
         let signature =
             git2::Signature::now("Peppy", "peppy@example.com").expect("create signature");
-        let parents: Vec<git2::Commit> = repo
+        let parents: Vec<git2::Commit<'_>> = repo
             .head()
             .ok()
             .and_then(|head| head.target())
             .map_or_default(|oid| vec![repo.find_commit(oid).expect("find parent commit")]);
-        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+        let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
         repo.commit(
             Some("HEAD"),
             &signature,
@@ -2623,10 +2623,10 @@ mod tests {
             let tree_id = index.write_tree().expect("write tree");
             let tree = repo.find_tree(tree_id).expect("find tree");
 
-            let parent_commits: Vec<git2::Commit> = commits
+            let parent_commits: Vec<git2::Commit<'_>> = commits
                 .last()
                 .map_or_default(|oid| vec![repo.find_commit(*oid).expect("find parent")]);
-            let parent_refs: Vec<&git2::Commit> = parent_commits.iter().collect();
+            let parent_refs: Vec<&git2::Commit<'_>> = parent_commits.iter().collect();
 
             let oid = repo
                 .commit(

@@ -42,7 +42,7 @@ impl NodeInitRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<node_capnp::node_init_request::Builder>();
+            let mut request = builder.init_root::<node_capnp::node_init_request::Builder<'_>>();
             request.set_node_root_dir(encode_fs_path(&self.node_root_dir, "node_root_dir")?);
             request.set_node_name(&self.node_name);
             request.set_description(self.description.as_str());
@@ -55,7 +55,7 @@ impl NodeInitRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<node_capnp::node_init_request::Reader>()?;
+        let request = reader.get_root::<node_capnp::node_init_request::Reader<'_>>()?;
         let toolchain_str = request.get_toolchain()?.to_str()?;
         let toolchain = toolchain_str.parse()?;
         let description = Description::new(request.get_description()?.to_str()?)
@@ -84,14 +84,14 @@ impl NodeInitResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            builder.init_root::<node_capnp::node_init_response::Builder>();
+            builder.init_root::<node_capnp::node_init_response::Builder<'_>>();
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<node_capnp::node_init_response::Reader>()?;
+        reader.get_root::<node_capnp::node_init_response::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -172,7 +172,7 @@ mod tests {
     fn init_request_decode_refuses_a_blank_description() {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<node_capnp::node_init_request::Builder>();
+            let mut request = builder.init_root::<node_capnp::node_init_request::Builder<'_>>();
             request.set_node_root_dir("/var/lib/node-root");
             request.set_node_name("my_node");
             request.set_description("  ");

@@ -50,7 +50,7 @@ impl Ask {
     }
 
     /// The answer to `menu`, or `None` when there is nobody to ask.
-    fn answer(&mut self, menu: &Menu) -> Result<Option<MenuAnswer>> {
+    fn answer(&mut self, menu: &Menu<'_>) -> Result<Option<MenuAnswer>> {
         match self {
             Self::Never => Ok(None),
             Self::Terminal if can_show_menu() => menu.show().map(Some),
@@ -122,7 +122,7 @@ struct Candidates<T> {
 /// Picks one workspace of the account.
 pub(crate) fn pick_workspace(
     api: &mut PlatformApi,
-    question: Question,
+    question: Question<'_>,
     ask: &mut Ask,
 ) -> Result<Picked<Workspace>> {
     let candidates = Candidates {
@@ -141,7 +141,7 @@ pub(crate) fn pick_workspace(
 pub(crate) fn pick_project(
     api: &mut PlatformApi,
     workspace: &Workspace,
-    question: Question,
+    question: Question<'_>,
     ask: &mut Ask,
 ) -> Result<Picked<Project>> {
     let candidates = Candidates {
@@ -372,7 +372,7 @@ fn project_listing(api: &mut PlatformApi) -> Result<String> {
 }
 
 /// Picks one candidate, in the order of the module docs.
-fn pick<T>(candidates: Candidates<T>, question: Question, ask: &mut Ask) -> Result<Picked<T>> {
+fn pick<T>(candidates: Candidates<T>, question: Question<'_>, ask: &mut Ask) -> Result<Picked<T>> {
     let Candidates {
         what,
         items,

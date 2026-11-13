@@ -4,7 +4,7 @@ use config::NodeArguments;
 pub use config::node::{QoSProfile, TopicRetention};
 
 /// Format a JSON schema validation error into a human-readable message.
-fn format_validation_error(error: &jsonschema::ValidationError) -> String {
+fn format_validation_error(error: &jsonschema::ValidationError<'_>) -> String {
     let message = error.to_string();
 
     // Extract field name from "required property" errors

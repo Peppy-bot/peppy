@@ -18,14 +18,14 @@ impl InfoRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            builder.init_root::<info_capnp::info_request::Builder>();
+            builder.init_root::<info_capnp::info_request::Builder<'_>>();
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<info_capnp::info_request::Reader>()?;
+        reader.get_root::<info_capnp::info_request::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -75,7 +75,7 @@ impl InfoResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<info_capnp::info_response::Builder>();
+            let mut response = builder.init_root::<info_capnp::info_response::Builder<'_>>();
             response.set_uptime_secs(self.uptime_secs);
             response.set_core_node_name(&self.core_node_name);
             response.set_core_node_instance_id(&self.core_node_instance_id);
@@ -92,7 +92,7 @@ impl InfoResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<info_capnp::info_response::Reader>()?;
+        let response = reader.get_root::<info_capnp::info_response::Reader<'_>>()?;
         let container = response.get_container_info()?;
         Ok(Self {
             uptime_secs: response.get_uptime_secs(),

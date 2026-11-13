@@ -23,7 +23,7 @@ impl ClockRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<clock_capnp::clock_request::Builder>();
+            let mut request = builder.init_root::<clock_capnp::clock_request::Builder<'_>>();
             request.set_client_send_time(self.client_send_time);
         }
         encode_message(&builder)
@@ -31,7 +31,7 @@ impl ClockRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<clock_capnp::clock_request::Reader>()?;
+        let request = reader.get_root::<clock_capnp::clock_request::Reader<'_>>()?;
         Ok(Self {
             client_send_time: request.get_client_send_time(),
         })
@@ -57,7 +57,7 @@ impl ClockResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<clock_capnp::clock_response::Builder>();
+            let mut response = builder.init_root::<clock_capnp::clock_response::Builder<'_>>();
             response.set_client_send_time(self.client_send_time);
             response.set_server_recv_time(self.server_recv_time);
             response.set_server_send_time(self.server_send_time);
@@ -67,7 +67,7 @@ impl ClockResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<clock_capnp::clock_response::Reader>()?;
+        let response = reader.get_root::<clock_capnp::clock_response::Reader<'_>>()?;
         Ok(Self {
             client_send_time: response.get_client_send_time(),
             server_recv_time: response.get_server_recv_time(),
@@ -88,13 +88,13 @@ impl ClockOffsetRequest {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<clock_capnp::clock_offset_request::Builder>();
+        builder.init_root::<clock_capnp::clock_offset_request::Builder<'_>>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<clock_capnp::clock_offset_request::Reader>()?;
+        reader.get_root::<clock_capnp::clock_offset_request::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -138,7 +138,8 @@ impl ClockOffsetResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<clock_capnp::clock_offset_response::Builder>();
+            let mut response =
+                builder.init_root::<clock_capnp::clock_offset_response::Builder<'_>>();
             response.set_offset_ns(self.offset_ns);
             response.set_round_trip_delay_ns(self.round_trip_delay_ns);
             response.set_domain(self.domain.as_deref().unwrap_or(""));
@@ -148,7 +149,7 @@ impl ClockOffsetResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<clock_capnp::clock_offset_response::Reader>()?;
+        let response = reader.get_root::<clock_capnp::clock_offset_response::Reader<'_>>()?;
         Ok(Self {
             offset_ns: response.get_offset_ns(),
             round_trip_delay_ns: response.get_round_trip_delay_ns(),
@@ -191,7 +192,7 @@ impl ClockTick {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut tick = builder.init_root::<clock_capnp::clock_tick::Builder>();
+            let mut tick = builder.init_root::<clock_capnp::clock_tick::Builder<'_>>();
             tick.set_time(self.time);
         }
         encode_message(&builder)
@@ -201,7 +202,7 @@ impl ClockTick {
     /// [`Self::MIN_TIME_NS`] so the invariant holds for bytes off the wire too.
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let tick = reader.get_root::<clock_capnp::clock_tick::Reader>()?;
+        let tick = reader.get_root::<clock_capnp::clock_tick::Reader<'_>>()?;
         Ok(Self::new(tick.get_time()))
     }
 }
@@ -237,13 +238,13 @@ impl ClockListRequest {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<clock_capnp::clock_list_request::Builder>();
+        builder.init_root::<clock_capnp::clock_list_request::Builder<'_>>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<clock_capnp::clock_list_request::Reader>()?;
+        reader.get_root::<clock_capnp::clock_list_request::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -294,7 +295,7 @@ impl ClockListResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<clock_capnp::clock_list_response::Builder>();
+            let mut response = builder.init_root::<clock_capnp::clock_list_response::Builder<'_>>();
             {
                 let count = capnp_list_len(self.domains.len(), "domains")?;
                 let mut domains = response.reborrow().init_domains(count);
@@ -332,7 +333,7 @@ impl ClockListResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<clock_capnp::clock_list_response::Reader>()?;
+        let response = reader.get_root::<clock_capnp::clock_list_response::Reader<'_>>()?;
         let mut domains = Vec::new();
         for entry in response.get_domains()?.iter() {
             domains.push(ClockDomainInfo {
@@ -531,7 +532,7 @@ mod tests {
 
         let mut builder = Builder::new_default();
         builder
-            .init_root::<clock_capnp::clock_tick::Builder>()
+            .init_root::<clock_capnp::clock_tick::Builder<'_>>()
             .set_time(0);
         let raw_zero = encode_message(&builder).expect("encode");
         assert_eq!(

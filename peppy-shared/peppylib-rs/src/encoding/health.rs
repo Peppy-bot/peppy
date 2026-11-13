@@ -4,12 +4,12 @@ use crate::health_capnp;
 
 super::capnp_empty_message!(
     NodeHealthRequest,
-    health_capnp::node_health_request::Builder,
-    health_capnp::node_health_request::Reader
+    health_capnp::node_health_request::Builder<'_>,
+    health_capnp::node_health_request::Reader<'_>
 );
 
 super::capnp_empty_message!(
     NodeHealthResponse,
-    health_capnp::node_health_response::Builder,
-    health_capnp::node_health_response::Reader
+    health_capnp::node_health_response::Builder<'_>,
+    health_capnp::node_health_response::Reader<'_>
 );

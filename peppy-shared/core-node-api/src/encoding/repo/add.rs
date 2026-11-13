@@ -155,7 +155,7 @@ impl RepoAddRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<repo_capnp::repo_add_request::Builder>();
+            let mut request = builder.init_root::<repo_capnp::repo_add_request::Builder<'_>>();
             request.set_top(self.top);
             if let Some(id) = self.id {
                 request.reborrow().init_id().set_explicit(id);
@@ -179,7 +179,7 @@ impl RepoAddRequest {
         use crate::repo_capnp::repo_add_request::source::Which;
 
         let reader = decode_message(data)?;
-        let request = reader.get_root::<repo_capnp::repo_add_request::Reader>()?;
+        let request = reader.get_root::<repo_capnp::repo_add_request::Reader<'_>>()?;
         let top = request.get_top();
         // An `auto` discriminant is what a sender that never set the union
         // leaves on the wire, so a request that pins no id decodes as `None`.
@@ -240,13 +240,13 @@ impl RepoAddResponse {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<repo_capnp::repo_add_response::Builder>();
+        builder.init_root::<repo_capnp::repo_add_response::Builder<'_>>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<repo_capnp::repo_add_response::Reader>()?;
+        reader.get_root::<repo_capnp::repo_add_response::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -407,7 +407,7 @@ mod tests {
     fn add_request_decode_refuses_a_ref_peppy_cannot_read() {
         let mut builder = Builder::new_default();
         {
-            let request = builder.init_root::<repo_capnp::repo_add_request::Builder>();
+            let request = builder.init_root::<repo_capnp::repo_add_request::Builder<'_>>();
             let mut git = request.init_source().init_git();
             git.set_repo_url("https://github.com/org/repo");
             git.set_repo_ref("@{upstream}");
@@ -444,7 +444,7 @@ mod tests {
     fn add_request_decode_refuses_an_oci_url_that_names_no_repository() {
         let mut builder = Builder::new_default();
         {
-            let request = builder.init_root::<repo_capnp::repo_add_request::Builder>();
+            let request = builder.init_root::<repo_capnp::repo_add_request::Builder<'_>>();
             request.init_source().set_oci("oci://ghcr.io");
         }
         let bytes = encode_message(&builder).expect("encode");

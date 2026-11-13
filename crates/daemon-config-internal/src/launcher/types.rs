@@ -166,7 +166,7 @@ impl<'de> Deserialize<'de> for ClockDeclaration {
         impl<'de> Visitor<'de> for ClockDeclarationVisitor {
             type Value = ClockDeclaration;
 
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str(FORMS)
             }
 
@@ -914,7 +914,7 @@ impl<'de> Deserialize<'de> for LinkValue {
         impl<'de> de::Visitor<'de> for LinkValueVisitor {
             type Value = LinkValue;
 
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str(
                     "a target instance_id string, an array of instance_id strings, or \
                      { vacant: \"<why>\" }",

@@ -23,7 +23,7 @@ impl ObservationUpdateRequest {
         let mut builder = ::capnp::message::Builder::new_default();
         {
             let mut root = builder
-                .init_root::<observation_update_capnp::observation_update_request::Builder>();
+                .init_root::<observation_update_capnp::observation_update_request::Builder<'_>>();
             root.set_link_id(&self.link_id);
             root.set_sequence(self.sequence);
             let mut members = root.init_members(self.members.len() as u32);
@@ -48,7 +48,7 @@ impl ObservationUpdateRequest {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = super::decode_message(data)?;
         let root = reader
-            .get_root::<observation_update_capnp::observation_update_request::Reader>()
+            .get_root::<observation_update_capnp::observation_update_request::Reader<'_>>()
             .map_err(|e| Error::Deserialization(e.to_string()))?;
         let link_id = super::read_text(root.get_link_id(), "observation_update", "linkId")?;
         let sequence = root.get_sequence();

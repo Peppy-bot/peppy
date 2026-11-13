@@ -25,7 +25,7 @@ impl InstanceDocumentsRequest {
         let mut builder = Builder::new_default();
         {
             let mut request =
-                builder.init_root::<node_capnp::instance_documents_request::Builder>();
+                builder.init_root::<node_capnp::instance_documents_request::Builder<'_>>();
             request.set_instance_id(&self.instance_id);
         }
         encode_message(&builder)
@@ -33,7 +33,7 @@ impl InstanceDocumentsRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<node_capnp::instance_documents_request::Reader>()?;
+        let request = reader.get_root::<node_capnp::instance_documents_request::Reader<'_>>()?;
         Ok(Self {
             instance_id: required_text(request.get_instance_id()?.to_str()?, "instanceId")?,
         })
@@ -133,7 +133,7 @@ impl InstanceDocuments {
         let mut builder = Builder::new_default();
         {
             let mut response =
-                builder.init_root::<node_capnp::instance_documents_response::Builder>();
+                builder.init_root::<node_capnp::instance_documents_response::Builder<'_>>();
             response.set_core_node(&self.core_node);
             response.set_instance_id(&self.instance_id);
             self.manifest.write(response.reborrow().init_manifest());
@@ -153,7 +153,7 @@ impl InstanceDocuments {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::instance_documents_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::instance_documents_response::Reader<'_>>()?;
         Ok(Self {
             core_node: required_text(response.get_core_node()?.to_str()?, "coreNode")?,
             instance_id: required_text(response.get_instance_id()?.to_str()?, "instanceId")?,
@@ -237,7 +237,7 @@ mod tests {
         let mut builder = Builder::new_default();
         {
             let mut response =
-                builder.init_root::<node_capnp::instance_documents_response::Builder>();
+                builder.init_root::<node_capnp::instance_documents_response::Builder<'_>>();
             response.set_core_node("robot-7");
             response.set_instance_id("arm_inst");
             let mut manifest = response.reborrow().init_manifest();
