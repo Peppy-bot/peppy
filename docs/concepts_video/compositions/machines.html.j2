@@ -1,0 +1,387 @@
+{# Segment 8. One stack runs on several machines. Each machine is a core node
+   with a name. A launcher declares core node links, and the launch command
+   gives each link the name of a core node. #}
+{% from "_parts.html.j2" import chapter, term_card, comparison_card %}
+{% set id = segment.id %}
+{# The places of the parts on the page, in pixels. #}
+{% set frame_top = 492 %}
+{% set frame_height = 483 %}
+{% set robot_left = 96 %}
+{% set robot_width = 504 %}
+{% set cloud_left = 660 %}
+{% set cloud_width = 440 %}
+{% set robot_center = robot_left + robot_width // 2 %}
+{% set cloud_center = cloud_left + cloud_width // 2 %}
+{% set launcher_top = 240 %}
+{% set launcher_height = 92 %}
+{% set link_width = 156 %}
+{% set link_height = 52 %}
+{% set link_top = launcher_top + (launcher_height - link_height) // 2 %}
+{% set link_bottom = link_top + link_height %}
+{% set node_width = 236 %}
+{% set node_height = 80 %}
+{% set node_top = 730 %}
+{% set robot_node_left = 344 %}
+{% set cloud_node_left = 682 %}
+{% set hang_top = 366 %}
+{% set name_tab_top = frame_top - 24 %}
+{% set wire_y = node_top + node_height // 2 %}
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    .{{ id }}-site {
+      position: absolute;
+      inset: 0;
+    }
+    .{{ id }}-what {
+      position: absolute;
+      left: 24px;
+      top: 34px;
+      font-size: 28px;
+      font-weight: 500;
+      color: var(--ink);
+      white-space: nowrap;
+    }
+    .{{ id }}-name-row {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: -24px;
+      display: flex;
+      justify-content: center;
+    }
+    .{{ id }}-name {
+      padding: 4px 18px;
+      border: 2px solid var(--peppy);
+      border-radius: 10px;
+      background: var(--ground);
+      font-family: var(--mono);
+      font-size: 28px;
+      font-weight: 500;
+      color: var(--peppy);
+      white-space: nowrap;
+    }
+    .{{ id }}-robot-panel {
+      left: 20px;
+      top: 96px;
+      width: 214px;
+      height: 350px;
+      border-radius: 18px;
+    }
+    .{{ id }}-gpu {
+      position: absolute;
+      right: 22px;
+      top: 150px;
+      width: 150px;
+      height: 250px;
+    }
+    .{{ id }}-gpu .{{ id }}-gpu-line {
+      fill: var(--panel-raised);
+      stroke: var(--ink-dim);
+      stroke-width: 4;
+      stroke-linejoin: round;
+      stroke-linecap: round;
+    }
+    .{{ id }}-gpu .{{ id }}-gpu-light {
+      fill: var(--ok);
+    }
+    .{{ id }}-launcher {
+      display: flex;
+      align-items: center;
+      padding: 0 0 0 20px;
+    }
+    .{{ id }}-launcher .code-title {
+      margin-bottom: 0;
+    }
+    .{{ id }}-link {
+      position: absolute;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: {{ link_width }}px;
+      height: {{ link_height }}px;
+      border: 3px dashed var(--peppy);
+      border-radius: {{ link_height // 2 }}px;
+      background: var(--ground);
+      font-family: var(--mono);
+      font-size: 28px;
+      font-weight: 500;
+      color: var(--peppy);
+    }
+    .{{ id }}-node {
+      width: {{ node_width }}px;
+      min-width: 0;
+      height: {{ node_height }}px;
+      padding: 0;
+      font-size: 30px;
+    }
+    .{{ id }}-node-blank {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 120px;
+      height: 12px;
+      margin: -6px 0 0 -60px;
+      border-radius: 6px;
+      background: var(--line-strong);
+    }
+    .{{ id }}-status {
+      position: absolute;
+      right: 9px;
+      top: 9px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--ok);
+    }
+    .{{ id }}-system {
+      position: absolute;
+      padding: 2px 14px;
+      border: 2px solid var(--line-strong);
+      border-radius: 10px;
+      background: var(--ground);
+      font-size: 28px;
+      font-weight: 500;
+      color: var(--ink);
+      white-space: nowrap;
+    }
+    .{{ id }}-login-row {
+      position: absolute;
+      display: flex;
+      justify-content: center;
+    }
+    .{{ id }}-login {
+      position: static;
+      gap: 12px;
+      padding: 12px 20px;
+      font-size: 28px;
+    }
+    .{{ id }}-flag {
+      display: inline-block;
+      color: var(--peppy);
+    }
+    .{{ id }}-tools-note {
+      left: 1144px;
+      top: 934px;
+      width: 680px;
+      padding-left: 20px;
+      border-left: 4px solid var(--line-strong);
+    }
+  </style>
+  <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
+    <div id="{{ id }}-stage" class="stage">
+      {{ chapter(number, segment.chapter) }}
+      <div id="{{ id }}-content">
+
+      <div id="{{ id }}-place-command" class="command {{ id }}-command" style="left: 96px; top: 130px">{{ screen.place_command | rich }}</div>
+      <div id="{{ id }}-local-command" class="command {{ id }}-command" style="left: 96px; top: 130px">{{ screen.local_command | rich }}</div>
+
+      <div id="{{ id }}-launcher" class="code-window {{ id }}-launcher" style="left: 96px; top: {{ launcher_top }}px; width: 1004px; height: {{ launcher_height }}px">
+        <span class="code-title">{{ screen.launcher }}</span>
+      </div>
+
+      <svg class="wires" viewBox="0 0 1920 1080">
+        <path id="{{ id }}-hang-robot" class="wire is-peppy" pathLength="1" d="M {{ robot_center }} {{ link_bottom }} V {{ hang_top }}" />
+        <path id="{{ id }}-hang-cloud" class="wire is-peppy" pathLength="1" d="M {{ cloud_center }} {{ link_bottom }} V {{ hang_top }}" />
+        <path id="{{ id }}-bind-robot" class="wire is-peppy" pathLength="1" d="M {{ robot_center }} {{ link_bottom }} V {{ name_tab_top }}" />
+        <path id="{{ id }}-bind-cloud" class="wire is-peppy" pathLength="1" d="M {{ cloud_center }} {{ link_bottom }} V {{ name_tab_top }}" />
+        <path id="{{ id }}-local-robot" class="wire is-peppy" pathLength="1" d="M {{ robot_center }} {{ link_bottom }} V {{ frame_top }}" />
+        <path id="{{ id }}-local-cloud" class="wire is-peppy" pathLength="1" d="M {{ cloud_center }} {{ link_bottom }} V {{ frame_top }}" />
+      </svg>
+
+      <div id="{{ id }}-link-robot" class="{{ id }}-link" style="left: {{ robot_center - link_width // 2 }}px; top: {{ link_top }}px">{{ screen.robot.link }}</div>
+      <div id="{{ id }}-link-cloud" class="{{ id }}-link" style="left: {{ cloud_center - link_width // 2 }}px; top: {{ link_top }}px">{{ screen.cloud.link }}</div>
+
+      <div id="{{ id }}-site" class="{{ id }}-site">
+        <div id="{{ id }}-frame-robot" class="machine" style="left: {{ robot_left }}px; top: {{ frame_top }}px; width: {{ robot_width }}px; height: {{ frame_height }}px">
+          <div class="{{ id }}-name-row"><span id="{{ id }}-name-robot" class="{{ id }}-name">{{ screen.robot.name }}</span></div>
+          <div id="{{ id }}-what-robot" class="{{ id }}-what">{{ screen.robot.machine }}</div>
+          <div class="robot-panel {{ id }}-robot-panel">
+            <canvas id="{{ id }}-robot" class="robot-canvas"></canvas>
+          </div>
+        </div>
+        <div id="{{ id }}-frame-cloud" class="machine" style="left: {{ cloud_left }}px; top: {{ frame_top }}px; width: {{ cloud_width }}px; height: {{ frame_height }}px">
+          <div class="{{ id }}-name-row"><span id="{{ id }}-name-cloud" class="{{ id }}-name">{{ screen.cloud.name }}</span></div>
+          <div id="{{ id }}-what-cloud" class="{{ id }}-what">{{ screen.cloud.machine }}</div>
+          <svg class="{{ id }}-gpu" viewBox="0 0 150 250">
+            <path class="{{ id }}-gpu-line" d="M 40 84 H 112 A 25 25 0 0 0 116 34 A 36 36 0 0 0 48 28 A 28 28 0 0 0 40 84 Z" />
+            <path class="{{ id }}-gpu-line" d="M 75 84 V 112" />
+            <rect class="{{ id }}-gpu-line" x="12" y="112" width="126" height="126" rx="16" />
+            <rect class="{{ id }}-gpu-line" x="49" y="149" width="52" height="52" rx="8" />
+            <path class="{{ id }}-gpu-line" d="M 62 149 V 136 M 75 149 V 136 M 88 149 V 136 M 62 201 V 214 M 75 201 V 214 M 88 201 V 214 M 49 162 H 36 M 49 175 H 36 M 49 188 H 36 M 101 162 H 114 M 101 175 H 114 M 101 188 H 114" />
+            <circle class="{{ id }}-gpu-light" cx="122" cy="128" r="5" />
+          </svg>
+        </div>
+        <div id="{{ id }}-workstation" class="machine" style="left: {{ robot_left }}px; top: {{ frame_top }}px; width: {{ cloud_left + cloud_width - robot_left }}px; height: {{ frame_height }}px">
+          <span class="machine-name">{{ screen.workstation }}</span>
+        </div>
+      </div>
+
+      <div id="{{ id }}-login-robot" class="{{ id }}-login-row" style="left: {{ robot_left }}px; top: {{ frame_top + frame_height - 34 }}px; width: {{ robot_width }}px">
+        <div class="command {{ id }}-login">{{ screen.login_command | rich }}</div>
+      </div>
+      <div id="{{ id }}-login-cloud" class="{{ id }}-login-row" style="left: {{ cloud_left }}px; top: {{ frame_top + frame_height - 34 }}px; width: {{ cloud_width }}px">
+        <div class="command {{ id }}-login">{{ screen.login_command | rich }}</div>
+      </div>
+      <div id="{{ id }}-tools-note" class="note {{ id }}-tools-note">{{ screen.tools_note | rich }}</div>
+
+      <svg class="wires" viewBox="0 0 1920 1080">
+        <path id="{{ id }}-wire-brains" class="wire" pathLength="1" d="M {{ cloud_node_left }} {{ wire_y }} H {{ robot_node_left + node_width + 14 }}" />
+        <polygon id="{{ id }}-head-brains" class="wire-head" points="{{ robot_node_left + node_width + 18 }},{{ wire_y - 10 }} {{ robot_node_left + node_width + 2 }},{{ wire_y }} {{ robot_node_left + node_width + 18 }},{{ wire_y + 10 }}" />
+      </svg>
+      <div id="{{ id }}-dot-brains" class="dot"></div>
+
+      <div id="{{ id }}-node-robot" class="node {{ id }}-node" style="left: {{ robot_node_left }}px; top: {{ node_top }}px">
+        <span id="{{ id }}-blank-robot" class="{{ id }}-node-blank"></span>
+        <span id="{{ id }}-brain-robot">{{ screen.robot.brain }}</span>
+        <span id="{{ id }}-status-robot" class="{{ id }}-status"></span>
+      </div>
+      <div id="{{ id }}-node-cloud" class="node {{ id }}-node" style="left: {{ cloud_node_left }}px; top: {{ node_top }}px">
+        <span id="{{ id }}-blank-cloud" class="{{ id }}-node-blank"></span>
+        <span id="{{ id }}-brain-cloud">{{ screen.cloud.brain }}</span>
+        <span id="{{ id }}-status-cloud" class="{{ id }}-status"></span>
+      </div>
+      <div id="{{ id }}-system-robot" class="{{ id }}-system" style="left: {{ robot_node_left }}px; top: {{ node_top - 58 }}px">{{ screen.robot.system }}</div>
+      <div id="{{ id }}-system-cloud" class="{{ id }}-system" style="left: {{ cloud_node_left }}px; top: {{ node_top - 58 }}px">{{ screen.cloud.system }}</div>
+
+      {{ term_card(id + "-card-core-node", screen.cards.core_node) }}
+      {{ term_card(id + "-card-link", screen.cards.core_node_link) }}
+      {{ term_card(id + "-card-system-2", screen.cards.system_2) }}
+      {{ term_card(id + "-card-system-1", screen.cards.system_1) }}
+      {{ comparison_card(id + "-comparison", screen.comparisons.machines) }}
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const ID = "#{{ id }}";
+      const at = {{ at | tojson }};
+      const DURATION = {{ duration }};
+      const tl = gsap.timeline({ paused: true });
+      const MACHINES = ["robot", "cloud"];
+      const POP = { from: { opacity: 0, scale: 0.6, y: 0 } };
+      // Where a node hangs below its link, from its place in its machine.
+      const HANG = {
+        robot: { x: {{ robot_center - node_width // 2 - robot_node_left }}, y: {{ hang_top - node_top }} },
+        cloud: { x: {{ cloud_center - node_width // 2 - cloud_node_left }}, y: {{ hang_top - node_top }} },
+      };
+
+      Motion.endSegment(tl, ID + "-content", DURATION);
+
+      // Each flag of a command has the colour of Peppy.
+      document.querySelectorAll("." + "{{ id }}-command code").forEach(function (command) {
+        command.innerHTML = command.innerHTML.replace(/--[a-z]+/g, '<span class="{{ id }}-flag">$&</span>');
+      });
+
+      RobotView.mount({
+        canvas: document.querySelector(ID + "-robot"),
+        segmentStart: {{ start }},
+        turns: [[0, -38], [DURATION, -8]],
+      });
+
+      // Two machines. They are in the middle of the page until the launcher
+      // comes in above them.
+      tl.fromTo(ID + "-site", { y: -170 }, { y: 0, duration: 0.9, ease: "power2.inOut" }, at.links.start - 0.45);
+      Motion.show(tl, ID + "-frame-robot", at.several.start + 0.1, { from: { opacity: 0, scale: 0.96 } });
+      Motion.show(tl, ID + "-frame-cloud", at.several.start + Motion.lasts(at.several) * 0.55, { from: { opacity: 0, scale: 0.96 } });
+
+      // Each machine is a core node, and each core node has a name.
+      Motion.card(tl, ID + "-card-core-node", at.core_node.start + 0.4, at.name.end + 0.3);
+      Motion.show(tl, ID + "-what-robot", at.core_node.start + Motion.lasts(at.core_node) * 0.42);
+      Motion.show(tl, ID + "-what-cloud", at.core_node.start + Motion.lasts(at.core_node) * 0.74);
+      MACHINES.forEach(function (machine, index) {
+        Motion.show(tl, ID + "-name-" + machine, at.name.start + 0.2 + index * 0.7, POP);
+      });
+
+      // The launcher declares one link for each machine, and each instance
+      // names its link.
+      Motion.show(tl, ID + "-launcher", at.links.start + 0.3, { from: { opacity: 0, y: -26 } });
+      const linksTime = at.links.start + Motion.lasts(at.links) * 0.42;
+      MACHINES.forEach(function (machine, index) {
+        Motion.show(tl, ID + "-link-" + machine, linksTime + index * 0.4, POP);
+      });
+      Motion.card(tl, ID + "-card-link", linksTime + 0.2, at.instance_link.end + 0.5);
+      MACHINES.forEach(function (machine, index) {
+        const time = at.instance_link.start + 0.3 + index * 0.6;
+        const hang = HANG[machine];
+        Motion.draw(tl, ID + "-hang-" + machine, time, 0.3);
+        tl.fromTo(
+          ID + "-node-" + machine,
+          { opacity: 0, x: hang.x, y: hang.y - 22 },
+          { opacity: 1, x: hang.x, y: hang.y, duration: 0.5, ease: "power3.out" },
+          time + 0.2,
+        );
+      });
+
+      // The sign-in, one time on each machine.
+      MACHINES.forEach(function (machine, index) {
+        Motion.showBetween(tl, ID + "-login-" + machine, at.sign_in.start + 0.3 + index * 0.5, at.place.start + 0.4);
+      });
+      Motion.showBetween(tl, ID + "-tools-note", at.sign_in.start + 1.3, at.place.start + 1.4);
+
+      // The launch command gives each link the name of a core node, and the
+      // instances of the link go to that machine.
+      Motion.showBetween(tl, ID + "-place-command", at.place.start + 0.2, at.across.start + 0.3);
+      const placeTime = at.place.start + Motion.lasts(at.place) * 0.42;
+      MACHINES.forEach(function (machine, index) {
+        const time = placeTime + index * 0.45;
+        Motion.pulse(tl, ID + "-link-" + machine, time);
+        Motion.draw(tl, ID + "-bind-" + machine, time + 0.1, 0.5);
+        tl.set(ID + "-link-" + machine, { borderStyle: "solid" }, time + 0.6);
+        Motion.pulse(tl, ID + "-name-" + machine, time + 0.6);
+        tl.set(ID + "-hang-" + machine, { opacity: 0 }, time + 0.6);
+        tl.to(ID + "-node-" + machine, { x: 0, y: 0, duration: 0.9, ease: "power2.inOut" }, time + 0.7);
+      });
+
+      // The example: the two brains of the robot.
+      function nameBrain(machine, time) {
+        tl.to(ID + "-blank-" + machine, { opacity: 0, duration: 0.25 }, time);
+        tl.fromTo(ID + "-brain-" + machine, { opacity: 0 }, { opacity: 1, duration: 0.4 }, time + 0.1);
+        Motion.pulse(tl, ID + "-node-" + machine, time + 0.1);
+        Motion.show(tl, ID + "-system-" + machine, time + 0.7);
+      }
+      nameBrain("cloud", at.large_brain.start + Motion.lasts(at.large_brain) * 0.22);
+      nameBrain("robot", at.small_brain.start + 0.2);
+      Motion.card(tl, ID + "-card-system-2", at.large_brain.start + 0.6, at.small_brain.start + 0.4);
+      Motion.card(tl, ID + "-card-system-1", at.small_brain.start + 0.5, at.systems.end + 0.3);
+      Motion.pulse(tl, ID + "-system-cloud", at.systems.start + Motion.lasts(at.systems) * 0.2);
+      Motion.pulse(tl, ID + "-system-robot", at.systems.start + Motion.lasts(at.systems) * 0.45);
+
+      // A link between two nodes crosses the machines: the large brain sends
+      // data to the small brain. Each node starts after the node that it
+      // depends on, so the large brain starts first.
+      function sendData(time, times) {
+        const from = { x: {{ cloud_node_left - 6 }}, y: {{ wire_y }} };
+        const to = { x: {{ robot_node_left + node_width + 20 }}, y: {{ wire_y }} };
+        Motion.travel(tl, ID + "-dot-brains", from, to, time, 0.55, times);
+      }
+      Motion.draw(tl, ID + "-wire-brains", at.across.start + 0.3, 0.5);
+      Motion.show(tl, ID + "-head-brains", at.across.start + 0.7, { from: { opacity: 0 }, duration: 0.2 });
+      sendData(at.across.start + 1.0, 4);
+      Motion.show(tl, ID + "-comparison", at.across.start + 0.7, { from: { opacity: 0, x: 70, y: 0 } });
+      const orderTime = at.across.start + Motion.lasts(at.across) * 0.55;
+      ["cloud", "robot"].forEach(function (machine, index) {
+        const time = orderTime + index * 0.9;
+        Motion.show(tl, ID + "-status-" + machine, time, POP);
+        Motion.pulse(tl, ID + "-node-" + machine, time);
+      });
+      sendData(orderTime + 1.4, 3);
+
+      // One flag: each link is this workstation.
+      Motion.show(tl, ID + "-local-command", at.local.start + 0.1);
+      Motion.pulse(tl, ID + "-local-command ." + "{{ id }}-flag", at.local.start + 0.7);
+      const localTime = at.local.start + Motion.lasts(at.local) * 0.45;
+      const machineParts = MACHINES.flatMap((machine) => [ID + "-frame-" + machine, ID + "-bind-" + machine]);
+      Motion.hide(tl, machineParts, localTime + 0.35);
+      Motion.show(tl, ID + "-workstation", localTime + 0.1, { from: { opacity: 0, scale: 0.98 } });
+      MACHINES.forEach(function (machine) {
+        Motion.draw(tl, ID + "-local-" + machine, localTime + 0.4, 0.4);
+      });
+
+      window.__timelines["{{ id }}"] = tl;
+    })();
+  </script>
+</template>

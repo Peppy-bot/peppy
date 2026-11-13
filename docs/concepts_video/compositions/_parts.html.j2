@@ -87,3 +87,8 @@
   {% endfor %}
 </div>
 {% endmacro %}
+
+{# A round mark at a place of the stage: a check (`ok`) or a cross (`fault`). #}
+{% macro mark(id, kind, left, top) %}
+<div id="{{ id }}" class="mark is-{{ kind }}" style="left: {{ left }}px; top: {{ top }}px"><svg viewBox="0 0 44 44" width="44" height="44"><path d="{{ "M 12 23 L 19 30 L 32 15" if kind == "ok" else "M 14 14 L 30 30 M 30 14 L 14 30" }}" /></svg></div>
+{% endmacro %}

@@ -1,0 +1,390 @@
+{# Segment 2. Each program is a node. One file declares the node. A node has
+   three types of interface, and the sync generates typed code from the file. #}
+{% from "_parts.html.j2" import chapter, term_card, steps_comparison, code_window, mark %}
+{% set id = segment.id %}
+{# The code window of the file: its top, the height of one line, and the top
+   of its first line, which is below the padding and the title of the window. #}
+{% set file_top = 160 %}
+{% set line_height = 38 %}
+{% set first_line_top = file_top + 26 + 56 %}
+{# The parts of the file: the lines of each part, and the share of the
+   sentence `file_parts` at which the voice names the part. #}
+{% set file_parts = [
+  {"key": "identity", "first": 2, "last": 2, "share": 0.1},
+  {"key": "interfaces", "first": 3, "last": 12, "share": 0.27},
+  {"key": "parameters", "first": 15, "last": 15, "share": 0.47},
+  {"key": "commands", "first": 16, "last": 17, "share": 0.67},
+] %}
+{# The three interfaces: one row for each one. `y` is the middle of the nodes
+   of the row, and `wire` is the height of its top wire. #}
+{% set rows = {
+  "topic": {"y": 300, "wire": 300},
+  "service": {"y": 570, "wire": 552},
+  "action": {"y": 840, "wire": 822},
+} %}
+{% set left_node = 96 %}
+{% set right_node = 840 %}
+{% set node_width = 260 %}
+{% set wire_start = left_node + node_width %}
+{# The camera has the place of the first node of the topic row. A transform
+   makes it large at the start, then puts it at the side of its file. #}
+{% set camera_large = {"x": 324, "y": 210, "scale": 2.2} %}
+{% set camera_at_file = {"x": 1468, "y": 150 - (rows.topic.y - 46), "scale": 1} %}
+{# The name of an interface above its wires, and what each of its two nodes
+   does below the nodes. #}
+{% macro interface_texts(id, kind, interface, row, left_node, right_node, wire_start) %}
+<div class="{{ id }}-slot" style="left: {{ wire_start }}px; top: {{ row.wire - 66 }}px; width: {{ right_node - wire_start }}px"><span id="{{ id }}-{{ kind }}-name" class="{{ id }}-pill">{{ interface.name }}</span></div>
+<div id="{{ id }}-{{ kind }}-from" class="label {{ id }}-role" style="left: {{ left_node }}px; top: {{ row.y + 58 }}px">{{ interface["from"] }}</div>
+<div id="{{ id }}-{{ kind }}-to" class="label {{ id }}-role" style="left: {{ right_node }}px; top: {{ row.y + 58 }}px">{{ interface["to"] }}</div>
+{%- endmacro %}
+{# A wire with its head, from `start` to `end` at the height `y`. #}
+{% macro row_wire(id, name, y, start, end) %}
+{% set way = 1 if end > start else -1 %}
+<path id="{{ id }}-{{ name }}" class="wire" pathLength="1" d="M {{ start }} {{ y }} H {{ end - 14 * way }}" /><polygon id="{{ id }}-{{ name }}-head" class="wire-head" points="{{ end - 16 * way }},{{ y - 10 }} {{ end }},{{ y }} {{ end - 16 * way }},{{ y + 10 }}" />
+{%- endmacro %}
+{# The messages of the wires of a row: one dot for each name. #}
+{% macro dots(id, names) %}
+{% for name in names %}<div id="{{ id }}-{{ name }}" class="dot{{ " is-stop" if "stop" in name else "" }}"></div>{% endfor %}
+{%- endmacro %}
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    .{{ id }}-group {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1920px;
+      height: 1080px;
+    }
+    .{{ id }}-slot {
+      position: absolute;
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+    }
+    .{{ id }}-slot.is-sync {
+      left: 1144px;
+      width: 680px;
+    }
+    .{{ id }}-slot .command {
+      position: relative;
+    }
+    .{{ id }}-language {
+      padding: 8px 24px;
+      border: 2px solid var(--line-strong);
+      border-radius: 12px;
+      background: var(--panel);
+      font-family: var(--mono);
+      font-size: 34px;
+      font-weight: 500;
+      color: var(--ink);
+    }
+    #{{ id }}-file {
+      left: 96px;
+      top: {{ file_top }}px;
+      width: 1056px;
+    }
+    #{{ id }}-file .code-line {
+      line-height: {{ line_height }}px;
+      min-height: {{ line_height }}px;
+    }
+    .{{ id }}-quiet-head {
+      fill: var(--line-strong);
+    }
+    .{{ id }}-bracket {
+      fill: none;
+      stroke: var(--data);
+      stroke-width: 3;
+      stroke-linecap: round;
+    }
+    .{{ id }}-part {
+      position: absolute;
+      left: 1206px;
+      font-size: 36px;
+      font-weight: 500;
+      line-height: 44px;
+      color: var(--ink);
+      white-space: nowrap;
+    }
+    .{{ id }}-pill {
+      padding: 2px 20px;
+      border: 2px solid var(--data);
+      border-radius: 22px;
+      background: var(--ground);
+      font-family: var(--mono);
+      font-size: 30px;
+      font-weight: 700;
+      line-height: 40px;
+      color: var(--data);
+    }
+    .{{ id }}-role {
+      width: {{ node_width }}px;
+      text-align: center;
+    }
+    .dot.is-stop {
+      border-radius: 4px;
+      background: var(--ink);
+    }
+    .{{ id }}-task {
+      position: absolute;
+      left: 24px;
+      right: 24px;
+      bottom: 11px;
+      height: 8px;
+      border-radius: 4px;
+      background: var(--line);
+      overflow: hidden;
+    }
+    .{{ id }}-task-done {
+      width: 100%;
+      height: 100%;
+      background: var(--data);
+      transform-origin: left center;
+    }
+    .{{ id }}-source {
+      padding: 16px 30px;
+      border: 2px solid var(--line-strong);
+      border-radius: 14px;
+      background: #05080f;
+      font-family: var(--mono);
+      font-size: 36px;
+      font-weight: 500;
+      line-height: 48px;
+    }
+    .{{ id }}-generated {
+      width: 520px;
+      padding: 24px 30px 30px;
+      border: 3px solid var(--peppy);
+      border-radius: 18px;
+      background: var(--panel);
+      text-align: center;
+    }
+    .{{ id }}-generated-name {
+      margin-bottom: 18px;
+      font-size: 42px;
+      font-weight: 700;
+      line-height: 50px;
+      color: var(--ink);
+    }
+    .{{ id }}-generated .{{ id }}-slot {
+      position: static;
+    }
+    .{{ id }}-agree {
+      fill: none;
+      stroke: var(--ok);
+      stroke-width: 4;
+      stroke-linecap: round;
+    }
+    #{{ id }}-steps code {
+      font-size: 1em;
+    }
+  </style>
+  <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
+    <div id="{{ id }}-stage" class="stage">
+      {{ chapter(number, segment.chapter) -}}
+      <div id="{{ id }}-content">
+      <div id="{{ id }}-diagram" class="{{ id }}-group">
+      {# The languages of a node, below the large camera. #}
+      <div id="{{ id }}-languages" class="{{ id }}-slot" style="left: 290px; top: 648px; width: 520px">
+        {% for language in screen.languages %}
+        <span id="{{ id }}-language-{{ loop.index }}" class="{{ id }}-language">{{ language }}</span>
+        {% endfor %}
+      </div>
+      {# The file that declares the node, and the names of its parts. #}
+      <div id="{{ id }}-declaration" class="{{ id }}-group">
+        {{ code_window(id + "-file", screen.file, screen.file_name) -}}
+        <svg class="wires" viewBox="0 0 1920 1080">
+          <path id="{{ id }}-declares" class="wire is-quiet" pathLength="1" d="M 1162 196 H 1548" /><polygon id="{{ id }}-declares-head" class="{{ id }}-quiet-head" points="1548,186 1564,196 1548,206" />
+          {% for part in file_parts %}
+          {% set top = first_line_top + (part.first - 1) * line_height + 5 %}
+          {% set bottom = first_line_top + part.last * line_height - 5 %}
+          <path id="{{ id }}-bracket-{{ part.key }}" class="{{ id }}-bracket" pathLength="1" d="M 1168 {{ top }} H 1176 Q 1184 {{ top }} 1184 {{ top + 8 }} V {{ bottom - 8 }} Q 1184 {{ bottom }} 1176 {{ bottom }} H 1168" />
+          {% endfor %}
+        </svg>
+        {% for part in file_parts %}
+        {% set middle = first_line_top + (part.first - 1 + part.last) * line_height // 2 %}
+        <div id="{{ id }}-part-{{ part.key }}" class="{{ id }}-part" style="top: {{ middle - 22 }}px">{{ screen.file_parts[part.key] }}</div>
+        {% endfor %}
+      </div>
+      {# A topic: the camera publishes, and the brain subscribes. #}
+      <div id="{{ id }}-row-topic" class="{{ id }}-group">
+        <svg class="wires" viewBox="0 0 1920 1080">{{ row_wire(id, "topic-wire", rows.topic.wire, wire_start, right_node) }}</svg>
+        <div id="{{ id }}-camera" class="node" style="left: {{ left_node }}px; top: {{ rows.topic.y - 46 }}px; width: {{ node_width }}px">{{ screen.nodes.camera }}</div>
+        <div id="{{ id }}-topic-to-node" class="node" style="left: {{ right_node }}px; top: {{ rows.topic.y - 46 }}px; width: {{ node_width }}px">{{ screen.nodes.brain }}</div>
+        {{ interface_texts(id, "topic", screen.interfaces.topic, rows.topic, left_node, right_node, wire_start) }}
+        {{ dots(id, ["topic-dot-0", "topic-dot-1", "topic-dot-2"]) }}
+      </div>
+      {# A service: the brain asks, and the arm replies. #}
+      <div id="{{ id }}-row-service" class="{{ id }}-group">
+        <svg class="wires" viewBox="0 0 1920 1080">
+          {{ row_wire(id, "service-request", rows.service.wire, wire_start, right_node) }}
+          {{ row_wire(id, "service-reply", rows.service.wire + 36, right_node, wire_start) }}
+        </svg>
+        <div id="{{ id }}-service-from-node" class="node" style="left: {{ left_node }}px; top: {{ rows.service.y - 46 }}px; width: {{ node_width }}px">{{ screen.nodes.brain }}</div>
+        <div id="{{ id }}-service-to-node" class="node" style="left: {{ right_node }}px; top: {{ rows.service.y - 46 }}px; width: {{ node_width }}px">{{ screen.nodes.arm }}</div>
+        {{ interface_texts(id, "service", screen.interfaces.service, rows.service, left_node, right_node, wire_start) }}
+        {{ dots(id, ["service-request-dot", "service-reply-dot"]) }}
+      </div>
+      {# An action: the brain starts a long task of the arm, and the arm gives
+         feedback. The bar in the arm shows how much of the task is done. #}
+      <div id="{{ id }}-row-action" class="{{ id }}-group">
+        <svg class="wires" viewBox="0 0 1920 1080">
+          {{ row_wire(id, "action-goal", rows.action.wire, wire_start, right_node) }}
+          {{ row_wire(id, "action-feedback", rows.action.wire + 36, right_node, wire_start) }}
+        </svg>
+        <div id="{{ id }}-action-from-node" class="node" style="left: {{ left_node }}px; top: {{ rows.action.y - 46 }}px; width: {{ node_width }}px">{{ screen.nodes.brain }}</div>
+        <div id="{{ id }}-action-to-node" class="node" style="left: {{ right_node }}px; top: {{ rows.action.y - 46 }}px; width: {{ node_width }}px">
+          {{ screen.nodes.arm }}<div id="{{ id }}-task" class="{{ id }}-task"><div id="{{ id }}-task-done" class="{{ id }}-task-done"></div></div>
+        </div>
+        {{ interface_texts(id, "action", screen.interfaces.action, rows.action, left_node, right_node, wire_start) }}
+        {{ dots(id, ["action-goal-dot", "action-feedback-dot", "action-stop-dot"]) }}
+      </div>
+      {# The sync: the command reads the file and generates typed code. The
+         green line says that the code and the file agree. #}
+      <svg class="wires" viewBox="0 0 1920 1080">
+        <path id="{{ id }}-reads" class="wire" pathLength="1" d="M 1484 334 V 414" /><polygon id="{{ id }}-reads-head" class="wire-head" points="1474,412 1494,412 1484,428" />
+        <path id="{{ id }}-generates" class="wire" pathLength="1" d="M 1484 516 V 594" /><polygon id="{{ id }}-generates-head" class="wire-head" points="1474,592 1494,592 1484,608" />
+        <path id="{{ id }}-agree" class="{{ id }}-agree" pathLength="1" d="M 1744 700 H 1772 Q 1796 700 1796 676 V 314 Q 1796 290 1772 290 H 1628" />
+      </svg>
+      <div class="{{ id }}-slot is-sync" style="top: 250px"><div id="{{ id }}-source" class="{{ id }}-source">{{ screen.file_name | rich }}</div></div>
+      <div class="{{ id }}-slot is-sync" style="top: 430px"><div id="{{ id }}-sync" class="command">{{ screen.sync_command | rich }}</div></div>
+      <div class="{{ id }}-slot is-sync" style="top: 610px">
+        <div id="{{ id }}-generated" class="{{ id }}-generated">
+          <div class="{{ id }}-generated-name">{{ screen.generated }}</div>
+          <div class="{{ id }}-slot">
+            {% for language in screen.languages %}
+            <span id="{{ id }}-generated-language-{{ loop.index }}" class="{{ id }}-language">{{ language }}</span>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      {{ mark(id + "-agree-mark", "ok", 1774, 473) }}
+      </div>
+      {{ term_card(id + "-card-node", screen.cards.node) -}}
+      {{ term_card(id + "-card-topic", screen.cards.topic) -}}
+      {{ term_card(id + "-card-service", screen.cards.service) -}}
+      {{ term_card(id + "-card-action", screen.cards.action) -}}
+      {{ steps_comparison(id + "-steps", screen.comparisons.new_message) -}}
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const ID = "#{{ id }}";
+      const at = {{ at | tojson }};
+      const DURATION = {{ duration }};
+      const tl = gsap.timeline({ paused: true });
+      const KINDS = ["topic", "service", "action"];
+      const ROWS = {{ rows | tojson }};
+      const toRight = (y) => [{ x: {{ wire_start + 10 }}, y }, { x: {{ right_node - 20 }}, y }];
+      const toLeft = (y) => [{ x: {{ right_node - 10 }}, y }, { x: {{ wire_start + 20 }}, y }];
+      Motion.endSegment(tl, ID + "-content", DURATION);
+      // One node: the camera. It has one function, in one of two languages.
+      const large = {{ camera_large | tojson }};
+      tl.fromTo(ID + "-camera", { opacity: 0, ...large, scale: large.scale * 0.86 }, { opacity: 1, ...large, duration: 0.5, ease: "power3.out" }, 0.3);
+      Motion.card(tl, ID + "-card-node", at.is_a_node.start + 0.4, at.one_file.start - 0.1);
+      [0.58, 0.8].forEach((share, index) => Motion.show(tl, ID + "-language-" + (index + 1), Motion.within(at.one_function, share)));
+      // One file declares the node. The node goes to the side of its file.
+      Motion.hide(tl, ID + "-languages", at.one_file.start + 0.3);
+      tl.to(ID + "-camera", { ...{{ camera_at_file | tojson }}, duration: 0.8, ease: "power2.inOut" }, at.one_file.start);
+      Motion.show(tl, ID + "-file", at.one_file.start + 0.5);
+      Motion.draw(tl, ID + "-declares", at.one_file.start + 1.3, 0.5);
+      Motion.showHead(tl, ID + "-declares-head", at.one_file.start + 1.7);
+      // The parts of the file, one part for each part of the sentence.
+      {{ file_parts | tojson }}.forEach(function (part) {
+        const time = Motion.within(at.file_parts, part.share);
+        const lines = Array.from({ length: part.last - part.first + 1 }, (_, index) => part.first + index);
+        Motion.focusLines(tl, ID + "-file", lines, time);
+        Motion.draw(tl, ID + "-bracket-" + part.key, time, 0.4);
+        Motion.show(tl, ID + "-part-" + part.key, time + 0.15, Motion.fromSide);
+      });
+      Motion.focusLines(tl, ID + "-file", [], at.file_parts.end + 0.2);
+      // Three types of interface. The file goes out, and the camera goes to
+      // its place in the row of the topic.
+      Motion.hide(tl, ID + "-declaration", at.three_types.start + 0.35);
+      tl.to(ID + "-camera", { x: 0, y: 0, duration: 0.8, ease: "power2.inOut" }, at.three_types.start);
+      KINDS.forEach((kind, index) => Motion.show(tl, ID + "-" + kind + "-name", at.three_types.start + 0.6 + index * 0.45, Motion.grows));
+      // A topic: a stream of messages from the publisher to the subscriber.
+      Motion.card(tl, ID + "-card-topic", at.topic.start + 0.1, at.topic_how.end + 0.4);
+      Motion.pulse(tl, ID + "-topic-name", at.topic.start + 0.1);
+      Motion.show(tl, ID + "-topic-to-node", at.topic.start + 0.2);
+      Motion.draw(tl, ID + "-topic-wire", at.topic.start + 0.6, 0.6);
+      Motion.showHead(tl, ID + "-topic-wire-head", at.topic.start + 1.1);
+      Motion.show(tl, ID + "-topic-from", at.topic_how.start + 0.1);
+      Motion.pulse(tl, ID + "-camera", at.topic_how.start + 0.1);
+      const streamStart = at.topic_how.start + 0.4;
+      const streamSeconds = (at.topic_how.end + 0.3 - streamStart) / (4 + 2 / 3);
+      [0, 1, 2].forEach(function (index) {
+        Motion.travel(tl, ID + "-topic-dot-" + index, ...toRight(ROWS.topic.wire), streamStart + (index * streamSeconds) / 3, streamSeconds, 4);
+      });
+      Motion.show(tl, ID + "-topic-to", Motion.within(at.topic_how, 0.5));
+      Motion.pulse(tl, ID + "-topic-to-node", Motion.within(at.topic_how, 0.5));
+      // A service and an action come in the same way: the row before goes to
+      // the background, then the two nodes and the two wires come in.
+      [["service", "topic", "request", "reply"], ["action", "service", "goal", "feedback"]].forEach(function ([kind, before, there, back]) {
+        const start = at[kind].start;
+        Motion.fade(tl, ID + "-row-" + before, 0.45, start - 0.2);
+        Motion.card(tl, ID + "-card-" + kind, start + 0.1, at[kind + "_how"].end + 0.4);
+        Motion.pulse(tl, ID + "-" + kind + "-name", start + 0.1);
+        Motion.show(tl, ID + "-" + kind + "-from-node", start + 0.2);
+        Motion.show(tl, ID + "-" + kind + "-to-node", start + 0.4);
+        Motion.draw(tl, ID + "-" + kind + "-" + there, start + 0.8, 0.5);
+        Motion.showHead(tl, ID + "-" + kind + "-" + there + "-head", start + 1.2);
+        const backTime = kind === "service" ? start + 1.3 : at.action_how.start;
+        Motion.draw(tl, ID + "-" + kind + "-" + back, backTime, 0.5);
+        Motion.showHead(tl, ID + "-" + kind + "-" + back + "-head", backTime + 0.4);
+      });
+      // A service: one request, and one reply.
+      const replyTime = Motion.within(at.service_how, 0.5);
+      Motion.show(tl, ID + "-service-from", at.service_how.start + 0.1);
+      Motion.pulse(tl, ID + "-service-from-node", at.service_how.start + 0.1);
+      Motion.travel(tl, ID + "-service-request-dot", ...toRight(ROWS.service.wire), at.service_how.start + 0.3, 0.7, 1);
+      Motion.show(tl, ID + "-service-to", replyTime);
+      Motion.pulse(tl, ID + "-service-to-node", replyTime);
+      Motion.travel(tl, ID + "-service-reply-dot", ...toLeft(ROWS.service.wire + 36), replyTime + 0.2, 0.7, 1);
+      // An action: a long task that gives feedback, and that stops before
+      // its end when a stop message comes.
+      const taskStart = at.action.start + 2.0;
+      const stopTime = Motion.within(at.action_how, 0.62);
+      Motion.show(tl, ID + "-action-from", at.action.start + 1.0);
+      Motion.travel(tl, ID + "-action-goal-dot", ...toRight(ROWS.action.wire), taskStart - 0.7, 0.7, 1);
+      Motion.show(tl, ID + "-task", taskStart - 0.3, { from: { opacity: 0, y: 0 } });
+      tl.fromTo(ID + "-task-done", { scaleX: 0 }, { scaleX: 0.72, duration: stopTime + 0.7 - taskStart, ease: "none" }, taskStart);
+      Motion.show(tl, ID + "-action-to", at.action_how.start + 0.2);
+      Motion.travel(tl, ID + "-action-feedback-dot", ...toLeft(ROWS.action.wire + 36), at.action_how.start + 0.5, 0.6, 3);
+      Motion.travel(tl, ID + "-action-stop-dot", ...toRight(ROWS.action.wire), stopTime, 0.7, 1);
+      const stopped = getComputedStyle(document.documentElement).getPropertyValue("--ink-dim").trim();
+      tl.to(ID + "-task-done", { backgroundColor: stopped, duration: 0.3 }, stopTime + 0.7);
+      Motion.pulse(tl, ID + "-action-to-node", stopTime + 0.7);
+      // The sync: the command reads the file and generates typed code for
+      // each interface.
+      const readTime = Motion.within(at.sync, 0.3);
+      const generateTime = Motion.within(at.sync, 0.54);
+      ["topic", "service"].forEach((kind) => Motion.fade(tl, ID + "-row-" + kind, 1, at.sync.start - 0.1));
+      Motion.show(tl, ID + "-sync", at.sync.start + 0.1);
+      Motion.show(tl, ID + "-source", readTime);
+      Motion.draw(tl, ID + "-reads", readTime + 0.3, 0.4);
+      Motion.showHead(tl, ID + "-reads-head", readTime + 0.6);
+      Motion.draw(tl, ID + "-generates", generateTime, 0.4);
+      Motion.showHead(tl, ID + "-generates-head", generateTime + 0.3);
+      Motion.show(tl, ID + "-generated", generateTime + 0.3);
+      [1, 2].forEach((number) => Motion.show(tl, ID + "-generated-language-" + number, generateTime + 0.4 + number * 0.25, Motion.grows));
+      KINDS.forEach((kind, index) => Motion.pulse(tl, ID + "-" + kind + "-name", Motion.within(at.sync, 0.8) + index * 0.25));
+      // The code and the file agree.
+      Motion.draw(tl, ID + "-agree", at.agree.start + 0.2, 0.7);
+      Motion.show(tl, ID + "-agree-mark", at.agree.start + 0.8, Motion.grows);
+      // A new message: the steps of ROS 2 come in fast, then the two steps
+      // of Peppy come in with the voice.
+      Motion.hide(tl, ID + "-diagram", at.new_message.start + 0.35);
+      Motion.show(tl, ID + "-steps", at.new_message.start + 0.1);
+      {{ range(1, screen.comparisons.new_message.ros2 | length + 1) | list | tojson }}.forEach(function (step) {
+        Motion.show(tl, ID + "-steps-ros2-" + step, at.new_message.start + 0.4 + step * 0.12, Motion.fromSide);
+      });
+      [0.3, 0.72].forEach((share, index) => Motion.show(tl, ID + "-steps-peppy-" + (index + 1), Motion.within(at.new_message, share), Motion.fromSide));
+      window.__timelines["{{ id }}"] = tl;
+    })();
+  </script>
+</template>

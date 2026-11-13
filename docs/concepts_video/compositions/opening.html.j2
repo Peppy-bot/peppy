@@ -58,16 +58,6 @@
       border-radius: 50%;
       background: var(--ok);
     }
-    .{{ id }}-dot {
-      position: absolute;
-      left: 0;
-      top: 0;
-      width: 16px;
-      height: 16px;
-      margin: -8px 0 0 -8px;
-      border-radius: 50%;
-      background: var(--data);
-    }
     .{{ id }}-priority {
       position: absolute;
       left: 1250px;
@@ -116,8 +106,8 @@
       <div class="{{ id }}-status" style="left: 1092px; top: 252px"></div>
       <div class="{{ id }}-status" style="left: 1092px; top: 457px"></div>
       <div class="{{ id }}-status" style="left: 1092px; top: 662px"></div>
-      <div id="{{ id }}-dot-to-brain" class="{{ id }}-dot"></div>
-      <div id="{{ id }}-dot-from-brain" class="{{ id }}-dot"></div>
+      <div id="{{ id }}-dot-to-brain" class="dot"></div>
+      <div id="{{ id }}-dot-from-brain" class="dot"></div>
 
       {% for need in screen.needs %}
       <div id="{{ id }}-need-{{ loop.index }}" class="{{ id }}-need" style="top: {{ 232 + (loop.index - 1) * 70 }}px">{{ need }}</div>
@@ -142,7 +132,6 @@
       const at = {{ at | tojson }};
       const DURATION = {{ duration }};
       const tl = gsap.timeline({ paused: true });
-      const lasts = (sentence) => sentence.end - sentence.start;
 
       Motion.endSegment(tl, ID + "-content", DURATION);
 
@@ -181,7 +170,7 @@
       Motion.draw(tl, ID + "-wire-camera", at.drivers.start + 0.2, 0.8);
       Motion.show(tl, ID + "-head-camera", at.drivers.start + 0.9, { from: { opacity: 0 }, duration: 0.2 });
       Motion.show(tl, ID + "-node-camera", at.drivers.start + 0.7);
-      const motorTime = at.drivers.start + lasts(at.drivers) * 0.55;
+      const motorTime = at.drivers.start + Motion.lasts(at.drivers) * 0.55;
       Motion.show(tl, ID + "-node-motor", motorTime);
       Motion.draw(tl, ID + "-wire-motor", motorTime + 0.3, 0.8);
       Motion.show(tl, ID + "-head-motor", motorTime + 1.0, { from: { opacity: 0 }, duration: 0.2 });
@@ -197,16 +186,16 @@
       // What the programs need, one need for each part of the sentence.
       const needShares = [0.14, 0.36, 0.55, 0.8];
       needShares.forEach(function (share, index) {
-        Motion.show(tl, ID + "-need-" + (index + 1), at.needs.start + lasts(at.needs) * share);
+        Motion.show(tl, ID + "-need-" + (index + 1), at.needs.start + Motion.lasts(at.needs) * share);
       });
-      const dataTime = at.needs.start + lasts(at.needs) * needShares[1];
+      const dataTime = at.needs.start + Motion.lasts(at.needs) * needShares[1];
       Motion.travel(tl, ID + "-dot-to-brain", { x: 970, y: 340 }, { x: 970, y: 430 }, dataTime, 0.6, 4);
       Motion.travel(tl, ID + "-dot-from-brain", { x: 970, y: 545 }, { x: 970, y: 635 }, dataTime + 0.3, 0.6, 4);
-      const orderTime = at.needs.start + lasts(at.needs) * needShares[2];
+      const orderTime = at.needs.start + Motion.lasts(at.needs) * needShares[2];
       ["camera", "brain", "motor"].forEach(function (node, index) {
         Motion.pulse(tl, ID + "-node-" + node, orderTime + index * 0.3);
       });
-      const operationTime = at.needs.start + lasts(at.needs) * needShares[3];
+      const operationTime = at.needs.start + Motion.lasts(at.needs) * needShares[3];
       Motion.show(tl, "." + "{{ id }}-status", operationTime, { from: { opacity: 0, scale: 0.2 }, stagger: 0.15 });
 
       // A robotics framework does this work, and Peppy is one.
@@ -216,7 +205,7 @@
       tl.to(ID + "-frame", { borderColor: "#c8f542", duration: 0.5 }, at.peppy.start + 0.1);
       const priorityShares = [0.5, 0.72];
       priorityShares.forEach(function (share, index) {
-        Motion.show(tl, ID + "-priority-" + (index + 1), at.peppy.start + lasts(at.peppy) * share);
+        Motion.show(tl, ID + "-priority-" + (index + 1), at.peppy.start + Motion.lasts(at.peppy) * share);
       });
 
       window.__timelines["{{ id }}"] = tl;

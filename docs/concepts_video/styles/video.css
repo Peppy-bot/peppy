@@ -255,6 +255,42 @@ code {
   color: var(--ink);
 }
 
+/* A message that moves on a wire. `Motion.travel` moves it from the top left
+   corner of the stage. */
+.dot {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border-radius: 50%;
+  background: var(--data);
+}
+
+/* A round mark on a part: a check when the part is correct, a cross when it
+   is refused. */
+.mark {
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+.mark.is-fault {
+  background: var(--fault);
+}
+.mark svg {
+  display: block;
+}
+.mark path {
+  fill: none;
+  stroke: var(--ground);
+  stroke-width: 5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 /* A machine: a frame around a part of the graph. */
 .machine {
   position: absolute;

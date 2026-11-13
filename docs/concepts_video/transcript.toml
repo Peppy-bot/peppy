@@ -24,6 +24,7 @@ tail_seconds = 1.0
 "peppy.json5" = "peppy dot jason five"
 "ROS 2" = "ross two"
 "uv" = "you vee"
+"VLA" = "V L A"
 
 # The words of the frames of the cards.
 [labels]
@@ -235,6 +236,11 @@ interfaces = "interfaces"
 parameters = "parameters"
 commands = "build and run commands"
 
+[segment.screen.nodes]
+camera = "camera"
+brain = "brain"
+arm = "arm"
+
 [segment.screen.interfaces.topic]
 name = "topic"
 from = "publishes"
@@ -407,8 +413,8 @@ definition = "Parts with arrows between them, where no path comes back to its st
 equivalent = "The dependency graph of a build."
 
 [segment.screen.comparisons.graph]
-ros2 = "ROS 2 makes the connections when the nodes run. To see the graph, you examine the system while it runs."
-peppy = "The daemon holds the graph, from the declarations of the nodes, and one command shows it."
+ros2 = "The nodes connect when they run. To see the graph, you examine them while they run."
+peppy = "The daemon holds the graph, from the declarations of the nodes. One command shows it."
 
 [segment.screen.comparisons.wrong_name]
 ros2 = "A topic name is a string in the code. A wrong name shows at run time: the subscription receives no message."
@@ -539,6 +545,8 @@ peppy = "`peppy node sync` generates each mock and the test harness."
 
 [segment.screen.standalone]
 label = "A node is a regular Python program: run it, and debug it in your IDE."
+stack = "node stack"
+nodes = ["camera", "arm"]
 
 [segment.screen.standalone.code]
 language = "python"
@@ -552,6 +560,7 @@ NodeBuilder().standalone(standalone_config).run(setup)
 
 [segment.screen.test]
 label = "One test, with no daemon and no camera node: a generated mock is the camera."
+mock = "mock"
 
 [segment.screen.test.code]
 language = "python"
@@ -750,6 +759,7 @@ pause_after_seconds = 2.0
 file = "launcher"
 stack_parts = ["nodes", "instances", "parameters", "links"]
 launch_command = "`peppy stack launch <launcher>`"
+stack_nodes = ["camera", "arm", "brain"]
 found_by_name = ["nodes", "launchers", "contracts"]
 repositories = "repositories"
 not_needed = ["no repository to clone", "no workspace to build", "no environment file to source"]
@@ -963,6 +973,7 @@ login_command = "`peppy platform login`"
 place_command = "`peppy stack launch --place <link>@<core node> <launcher>`"
 local_command = "`peppy stack launch --local <launcher>`"
 tools_note = "Each machine builds its nodes with its own tools, such as `uv`."
+launcher = "launcher"
 workstation = "workstation"
 
 [segment.screen.robot]
@@ -1054,6 +1065,7 @@ text = "Thus you open the functions that are not critical to an LLM, and the oth
 client = "LLM application"
 server = "MCP server of Peppy"
 exposure = "exposure"
+contract = "contract"
 closed = "not in the exposure: not reachable"
 
 [segment.screen.published.topic]
@@ -1066,7 +1078,8 @@ as = "tool"
 
 [segment.screen.published.action]
 from = "action"
-as = "tool that can run as a task"
+as = "tool"
+task = "can run as a task"
 
 [segment.screen.cards.mcp]
 term = "MCP"

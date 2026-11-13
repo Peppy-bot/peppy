@@ -1,0 +1,183 @@
+{# Segment 10. The benefits of Peppy as one list, with the most important one
+   first, then the next step: the quickstart. #}
+{% from "_parts.html.j2" import chapter %}
+{% set id = segment.id %}
+{# The column of the list, to the right of the robot. #}
+{% set column_left = 680 %}
+{% set column_width = 1144 %}
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    .{{ id }}-logo {
+      position: absolute;
+      left: 26px;
+      top: 26px;
+      width: 88px;
+      height: 88px;
+    }
+    .{{ id }}-benefits {
+      position: absolute;
+      left: {{ column_left }}px;
+      top: 150px;
+      width: {{ column_width }}px;
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+    .{{ id }}-benefit {
+      display: flex;
+      align-items: center;
+      gap: 40px;
+      height: 44px;
+      padding-left: 49px;
+      font-size: 32px;
+      font-weight: 500;
+      color: var(--ink);
+      white-space: nowrap;
+    }
+    .{{ id }}-benefit svg {
+      flex: none;
+      width: 28px;
+      height: 28px;
+      fill: none;
+      stroke: var(--peppy);
+      stroke-width: 5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .{{ id }}-benefit.is-first {
+      gap: 24px;
+      height: auto;
+      margin-bottom: 9px;
+      padding: 22px 30px;
+      border: 3px solid var(--peppy);
+      border-radius: 20px;
+      background: rgba(200, 245, 66, 0.1);
+      font-size: 44px;
+      font-weight: 700;
+      line-height: 1.14;
+      color: var(--peppy);
+      white-space: normal;
+      text-wrap: balance;
+    }
+    .{{ id }}-benefit.is-first svg {
+      width: 60px;
+      height: 60px;
+      padding: 14px;
+      border-radius: 50%;
+      background: var(--peppy);
+      stroke: var(--peppy-ink);
+      stroke-width: 6;
+    }
+    .{{ id }}-next {
+      position: absolute;
+      left: {{ column_left }}px;
+      top: 806px;
+      display: flex;
+      align-items: center;
+      gap: 22px;
+      height: 84px;
+      padding: 0 32px 0 20px;
+      border-radius: 18px;
+      background: var(--peppy);
+      font-size: 36px;
+      font-weight: 700;
+      color: var(--peppy-ink);
+      white-space: nowrap;
+    }
+    .{{ id }}-next svg {
+      flex: none;
+      width: 48px;
+      height: 48px;
+      padding: 10px;
+      border-radius: 50%;
+      background: var(--peppy-ink);
+      fill: none;
+      stroke: var(--peppy);
+      stroke-width: 5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+  </style>
+  <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
+    <div id="{{ id }}-stage" class="stage">
+      {{ chapter(number, segment.chapter) }}
+      <div id="{{ id }}-content">
+
+      <div id="{{ id }}-robot-panel" class="robot-panel" style="left: 96px; top: 150px; width: 540px; height: 860px">
+        <canvas id="{{ id }}-robot" class="robot-canvas"></canvas>
+        <img id="{{ id }}-logo" class="{{ id }}-logo" src="assets/pictures/peppy-logo.webp" alt="" />
+      </div>
+
+      <div class="{{ id }}-benefits">
+        {% for benefit in screen.benefits %}
+        <div id="{{ id }}-benefit-{{ loop.index }}" class="{{ id }}-benefit{{ " is-first" if loop.first else "" }}">
+          <svg viewBox="0 0 28 28"><path d="M 4 15 L 11 22 L 24 6" /></svg>
+          <span>{{ benefit }}</span>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div id="{{ id }}-next" class="{{ id }}-next">
+        <svg id="{{ id }}-next-arrow" viewBox="0 0 28 28"><path d="M 14 3 V 24 M 5 15 L 14 24 L 23 15" /></svg>
+        <span>{{ screen.next_step }}</span>
+      </div>
+      <div id="{{ id }}-install" class="command" style="left: {{ column_left }}px; top: 914px">{{ screen.install_command | rich }}</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const ID = "#{{ id }}";
+      const at = {{ at | tojson }};
+      const DURATION = {{ duration }};
+      const tl = gsap.timeline({ paused: true });
+      const FROM_THE_RIGHT = { from: { opacity: 0, x: 50, y: 0 } };
+
+      Motion.endSegment(tl, ID + "-content", DURATION);
+
+      // The robot turns slowly for the full segment.
+      RobotView.mount({
+        canvas: document.querySelector(ID + "-robot"),
+        segmentStart: {{ start }},
+        turns: [[0, 38], [DURATION, -28]],
+      });
+      Motion.show(tl, ID + "-robot-panel", Math.max(0, at.concepts.start - 0.6), { from: { opacity: 0, scale: 0.97 } });
+      Motion.show(tl, ID + "-logo", at.concepts.start + 0.2, { from: { opacity: 0, scale: 0.6, y: 0 } });
+
+      // One benefit for each sentence. The benefits 4 and 5 come in after
+      // the sentence of the graph, and the benefit 8 with the end of the
+      // sentence of the launcher.
+      const benefitTimes = [
+        at.simple.start + 0.1,
+        at.file.start + 0.1,
+        at.graph.start + 0.1,
+        at.graph.start + 0.9,
+        at.graph.start + 1.7,
+        at.contracts.start + 0.1,
+        at.launcher.start + 0.1,
+        at.launcher.start + Motion.lasts(at.launcher) * 0.62,
+        at.llm.start + 0.1,
+      ];
+      benefitTimes.forEach(function (time, index) {
+        Motion.show(tl, ID + "-benefit-" + (index + 1), time, FROM_THE_RIGHT);
+      });
+      Motion.pulse(tl, ID + "-benefit-1 svg", at.simple.start + 0.7);
+
+      // The next step, and its first command.
+      Motion.show(tl, ID + "-next", at.next.start + 0.2, { from: { opacity: 0, scale: 0.92, y: 20 } });
+      tl.fromTo(
+        ID + "-next-arrow",
+        { y: -5 },
+        { y: 5, duration: 0.45, ease: "sine.inOut", yoyo: true, repeat: 11, immediateRender: false },
+        at.next.start + 0.8,
+      );
+      Motion.show(tl, ID + "-install", at.next.start + Motion.lasts(at.next) * 0.55);
+
+      window.__timelines["{{ id }}"] = tl;
+    })();
+  </script>
+</template>

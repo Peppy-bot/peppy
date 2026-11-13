@@ -196,8 +196,8 @@
     "spoken_sha256": "280f3266a29fe981784787483511a962abc02faf6611ca71b98e6087f35914db"
   },
   "contracts/same_contract": {
-    "seconds": 5.8027,
-    "spoken_sha256": "84cbaaaaaa29749f52f9bb30e0a16146ada34819a009c74b2925b4c8dbee5aed"
+    "seconds": 6.4427,
+    "spoken_sha256": "09d87671f7e0a8ee99b2c614df1cd37961659c14593f7fd4e7545d54bf536a61"
   },
   "contracts/same_io": {
     "seconds": 3.6693,
