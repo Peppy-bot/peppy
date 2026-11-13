@@ -239,7 +239,7 @@ use peppygen::{NodeBuilder, Parameters, Result};
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+    NodeBuilder::new().run(async |_args: Parameters, node_runner| {
         let node_runner_clone = node_runner.clone();
         tokio::spawn(async move {
             // Declare the publisher once; every publish below is then lock-free.
@@ -445,7 +445,7 @@ use peppygen::consumed_topics::uvc_camera::video_stream;
 use peppygen::{NodeBuilder, Parameters, Result};
 
 fn main() -> Result<()> {
-    NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+    NodeBuilder::new().run(async |_args: Parameters, node_runner| {
         // Same subscribe() as every cardinality: it covers the slot's complete
         // bound set, which for `one` is exactly one producer. The yielded
         // ProducerRef is constant here, so the loop ignores it.
@@ -571,7 +571,7 @@ use peppygen::consumed_topics::uvc_camera::video_stream;
 use peppygen::{NodeBuilder, NodeRunner, Parameters, Result};
 
 fn main() -> Result<()> {
-    NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+    NodeBuilder::new().run(async |_args: Parameters, node_runner| {
         tokio::spawn(receive_frames(node_runner));
         Ok(())
     })
@@ -642,7 +642,7 @@ use peppygen::{NodeBuilder, Parameters, ProducerRef, Result};
 use std::collections::HashMap;
 
 fn main() -> Result<()> {
-    NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+    NodeBuilder::new().run(async |_args: Parameters, node_runner| {
         // One subscription covering every producer bound to the `camera`
         // slot. The shape is identical for every cardinality; only the
         // size of the bound set changes.

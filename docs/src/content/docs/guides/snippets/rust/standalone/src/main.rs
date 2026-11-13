@@ -26,7 +26,7 @@ fn main() -> Result<()> {
     let standalone_config = StandaloneConfig::new().with_parameters(&params);
     NodeBuilder::new()
         .standalone(standalone_config)
-        .run(|args: Parameters, node_runner| async {
+        .run(async |args: Parameters, node_runner| {
             println!("Inside the run closure!");
             let _ = args;
             let _ = node_runner;

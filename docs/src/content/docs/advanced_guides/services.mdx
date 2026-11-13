@@ -157,7 +157,7 @@ use peppygen::exposed_services::enable_camera;
 use peppygen::{NodeBuilder, Parameters, Result};
 
 fn main() -> Result<()> {
-    NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+    NodeBuilder::new().run(async |_args: Parameters, node_runner| {
         tokio::spawn(async move {
             enable_camera::handle_requests(
                 &node_runner,
@@ -406,7 +406,7 @@ use peppygen::{NodeBuilder, Parameters, Result};
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+    NodeBuilder::new().run(async |_args: Parameters, node_runner| {
         // `one`: launch resolved the slot to exactly one producer, so the
         // accessor is singular and infallible; no emptiness handling exists.
         // The target is still passed explicitly, same discipline as the

@@ -4,7 +4,7 @@ use peppygen::consumed_topics::greeter::message_stream;
 use peppygen::{NodeBuilder, NodeRunner, Parameters, Result};
 
 fn main() -> Result<()> {
-    NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+    NodeBuilder::new().run(async |_args: Parameters, node_runner| {
         // The `greeter` slot declares `cardinality: "zero_or_one"`, so its
         // accessor is an `Option`: `Some` where the deployment linked a
         // producer, `None` where it wrote the slot vacant. There is no third
