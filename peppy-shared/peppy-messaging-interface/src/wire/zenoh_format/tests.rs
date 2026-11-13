@@ -10,6 +10,7 @@ use crate::wire::WirePeer;
 use crate::wire::test_support::{node, seg};
 use crate::wire::{Segment, SenderTarget};
 use config::namespace::Namespace;
+use std::assert_matches;
 
 /// Test-local shorthand: wrap a `&str` in a validated [`Namespace`]. Panics on
 /// invalid input.
@@ -298,24 +299,24 @@ fn a_pairing_emission_checks_its_target_then_each_segment_in_order() {
             WirePeer::new("core_b", "ctrl_1", "arm").unwrap(),
         )
     };
-    assert!(matches!(
+    assert_matches!(
         build("core/a", node("uvc_camera", "v1"), "*"),
         Err(Error::PeerOnNonPairingPublish)
-    ));
-    assert!(matches!(
+    );
+    assert_matches!(
         build("core/a", pairing("arm_link", "v1"), "*"),
         Err(Error::InvalidSegment(SegmentError::ContainsSlash(_)))
-    ));
-    assert!(matches!(
+    );
+    assert_matches!(
         build("core_a", pairing("arm_link", "v1"), "*"),
         Err(Error::InvalidSegment(SegmentError::ReservedSentinel(_)))
-    ));
+    );
     assert!(build("core_a", pairing("arm_link", "v1"), "controller").is_ok());
 }
 
 #[test]
 fn a_pairing_key_without_its_recipient_is_refused() {
-    assert!(matches!(
+    assert_matches!(
         TopicWireSender::new(
             "core_a",
             "arm_1",
@@ -324,8 +325,8 @@ fn a_pairing_key_without_its_recipient_is_refused() {
             "joint_states"
         ),
         Err(crate::error::Error::PairingPublishNamesNoPeer)
-    ));
-    assert!(matches!(
+    );
+    assert_matches!(
         TopicWireSender::to_peer(
             "core_a",
             "arm_1",
@@ -335,8 +336,8 @@ fn a_pairing_key_without_its_recipient_is_refused() {
             WirePeer::new("core_b", "ctrl_1", "arm").unwrap(),
         ),
         Err(crate::error::Error::PeerOnNonPairingPublish)
-    ));
-    assert!(matches!(
+    );
+    assert_matches!(
         TopicWireReceiver::new(
             "core_b",
             "ctrl_1",
@@ -347,8 +348,8 @@ fn a_pairing_key_without_its_recipient_is_refused() {
             "joint_states"
         ),
         Err(crate::error::Error::PairingSubscriptionNamesNoRecipient)
-    ));
-    assert!(matches!(
+    );
+    assert_matches!(
         TopicWireReceiver::observing(
             "core_c",
             "rec_1",
@@ -357,7 +358,7 @@ fn a_pairing_key_without_its_recipient_is_refused() {
             "joint_states",
         ),
         Err(crate::error::Error::RecipientOnNonPairingSubscription)
-    ));
+    );
 }
 
 #[test]
@@ -763,13 +764,13 @@ fn parse_inbound_query_rejects_concrete_target_core_mismatch() {
     let err =
         ZenohWireFormat::parse_inbound_query(&receiver, query, &user_request_attachment_bytes())
             .unwrap_err();
-    assert!(matches!(
+    assert_matches!(
         err,
         ZenohWireParseError::TargetSlotMismatch {
             field: "target_core_node",
             ..
         }
-    ));
+    );
 }
 
 #[test]
@@ -779,13 +780,13 @@ fn parse_inbound_query_rejects_concrete_target_instance_mismatch() {
     let err =
         ZenohWireFormat::parse_inbound_query(&receiver, query, &user_request_attachment_bytes())
             .unwrap_err();
-    assert!(matches!(
+    assert_matches!(
         err,
         ZenohWireParseError::TargetSlotMismatch {
             field: "target_instance_id",
             ..
         }
-    ));
+    );
 }
 
 #[test]
@@ -812,10 +813,7 @@ fn parse_inbound_query_rejects_missing_attachment_with_structured_error() {
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping";
     let err = ZenohWireFormat::parse_inbound_query(&receiver, query, &[]).unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::MissingServiceQueryAttachment
-    ));
+    assert_matches!(err, ZenohWireParseError::MissingServiceQueryAttachment);
 }
 
 #[test]
@@ -826,10 +824,10 @@ fn parse_inbound_query_rejects_v1_magic_with_structured_error() {
     let query = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping";
     let v1_bytes: &[u8] = &[0x01, 0x00];
     let err = ZenohWireFormat::parse_inbound_query(&receiver, query, v1_bytes).unwrap_err();
-    assert!(matches!(
+    assert_matches!(
         err,
         ZenohWireParseError::ServiceQueryAttachmentMagicMismatch { .. }
-    ));
+    );
 }
 
 #[test]
@@ -840,10 +838,7 @@ fn parse_inbound_query_rejects_service_root_mismatch() {
     let err =
         ZenohWireFormat::parse_inbound_query(&receiver, query, &user_request_attachment_bytes())
             .unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::ServiceRootMismatch { .. }
-    ));
+    assert_matches!(err, ZenohWireParseError::ServiceRootMismatch { .. });
 }
 
 #[test]
@@ -856,10 +851,7 @@ fn parse_inbound_query_rejects_discriminator_mismatch() {
     let err =
         ZenohWireFormat::parse_inbound_query(&receiver, query, &user_request_attachment_bytes())
             .unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::ServiceRootMismatch { .. }
-    ));
+    assert_matches!(err, ZenohWireParseError::ServiceRootMismatch { .. });
 }
 
 #[test]
@@ -869,7 +861,7 @@ fn parse_inbound_query_rejects_too_short() {
     let err =
         ZenohWireFormat::parse_inbound_query(&receiver, query, &user_request_attachment_bytes())
             .unwrap_err();
-    assert!(matches!(err, ZenohWireParseError::MissingSegment(_)));
+    assert_matches!(err, ZenohWireParseError::MissingSegment(_));
 }
 
 // ─── Actions: feedback ────────────────────────────────────────────────────
@@ -1078,21 +1070,17 @@ fn namespace_scoped_parser_matches_on_chunk_boundaries_not_string_prefixes() {
 
     // `ws-ab/...` starts with the string `ws-a`, and must still be rejected.
     let neighbours = format!("ws-ab/{bare}");
-    assert!(
-        matches!(
-            ZenohWireFormat::parse_core_node_presence(
-                PresenceScope::Namespace(&workspace),
-                &neighbours
-            ),
-            Err(ZenohWireParseError::InvalidCoreNodePresenceKey(_))
+    assert_matches!(
+        ZenohWireFormat::parse_core_node_presence(
+            PresenceScope::Namespace(&workspace),
+            &neighbours
         ),
+        Err(ZenohWireParseError::InvalidCoreNodePresenceKey(_)),
         "namespace ws-a must not accept a token from ws-ab"
     );
-    assert!(
-        matches!(
-            ZenohWireFormat::parse_core_node_presence(PresenceScope::Namespace(&neighbour), &own),
-            Err(ZenohWireParseError::InvalidCoreNodePresenceKey(_))
-        ),
+    assert_matches!(
+        ZenohWireFormat::parse_core_node_presence(PresenceScope::Namespace(&neighbour), &own),
+        Err(ZenohWireParseError::InvalidCoreNodePresenceKey(_)),
         "namespace ws-ab must not accept a token from ws-a"
     );
 }
@@ -1107,11 +1095,9 @@ fn core_node_presence_parser_rejects_non_concrete_or_wrong_shape_keys() {
         "core_node_presence/daemon_a/_",
         "core_node_presence/daemon@a/generation_42",
     ] {
-        assert!(
-            matches!(
-                ZenohWireFormat::parse_core_node_presence(PresenceScope::Session, malformed),
-                Err(ZenohWireParseError::InvalidCoreNodePresenceKey(_))
-            ),
+        assert_matches!(
+            ZenohWireFormat::parse_core_node_presence(PresenceScope::Session, malformed),
+            Err(ZenohWireParseError::InvalidCoreNodePresenceKey(_)),
             "malformed key should be rejected: {malformed}"
         );
     }
@@ -1135,14 +1121,12 @@ fn namespace_scoped_parser_rejects_unprefixed_and_malformed_keys() {
         "ws-a",
         "ws-a/",
     ] {
-        assert!(
-            matches!(
-                ZenohWireFormat::parse_core_node_presence(
-                    PresenceScope::Namespace(&workspace),
-                    malformed
-                ),
-                Err(ZenohWireParseError::InvalidCoreNodePresenceKey(_))
+        assert_matches!(
+            ZenohWireFormat::parse_core_node_presence(
+                PresenceScope::Namespace(&workspace),
+                malformed
             ),
+            Err(ZenohWireParseError::InvalidCoreNodePresenceKey(_)),
             "malformed key should be rejected: {malformed}"
         );
     }
@@ -1354,10 +1338,7 @@ fn parse_inbound_query_node_receiver_rejects_contract_shaped_query() {
         &user_request_attachment_bytes(),
     )
     .unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::ServiceRootMismatch { .. }
-    ));
+    assert_matches!(err, ZenohWireParseError::ServiceRootMismatch { .. });
 
     let contract_receiver = ServiceWireReceiver::new(
         "server_core",
@@ -1375,10 +1356,7 @@ fn parse_inbound_query_node_receiver_rejects_contract_shaped_query() {
         &user_request_attachment_bytes(),
     )
     .unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::ServiceRootMismatch { .. }
-    ));
+    assert_matches!(err, ZenohWireParseError::ServiceRootMismatch { .. });
 }
 
 // ─── Topic attachment ────────────────────────────────────────────────────
@@ -1520,47 +1498,47 @@ fn service_query_attachment_decode_rejects_a_proof_that_does_not_decode() {
         &crate::Payload::from_bytes(bytes::Bytes::new()),
     );
     let cut = &attachment[..attachment.len() - 1];
-    assert!(matches!(
+    assert_matches!(
         ServiceQueryAttachment::decode(cut),
         Err(ZenohWireParseError::CallProof(_))
-    ));
+    );
 }
 
 #[test]
 fn service_query_attachment_decode_rejects_empty_bytes() {
-    assert!(matches!(
+    assert_matches!(
         ServiceQueryAttachment::decode(&[]),
         Err(ZenohWireParseError::MissingServiceQueryAttachment)
-    ));
+    );
 }
 
 #[test]
 fn service_query_attachment_decode_rejects_older_magic() {
     // A query attachment with another magic, such as `0x02`, is refused so
     // schema skew surfaces loudly.
-    assert!(matches!(
+    assert_matches!(
         ServiceQueryAttachment::decode(&[0x02, 0x00, 0x00]),
         Err(ZenohWireParseError::ServiceQueryAttachmentMagicMismatch { .. })
-    ));
+    );
 }
 
 #[test]
 fn service_query_attachment_decode_rejects_unknown_kind_byte() {
     let bytes = [ServiceQueryAttachment::MAGIC_V3, 0xff];
-    assert!(matches!(
+    assert_matches!(
         ServiceQueryAttachment::decode(&bytes),
         Err(ZenohWireParseError::UnknownServiceQueryKind(0xff))
-    ));
+    );
 }
 
 #[test]
 fn service_query_attachment_decode_rejects_truncated_payload() {
     // Magic present without the kind byte.
     let bytes = vec![ServiceQueryAttachment::MAGIC_V3];
-    assert!(matches!(
+    assert_matches!(
         ServiceQueryAttachment::decode(&bytes),
         Err(ZenohWireParseError::TruncatedServiceQueryAttachment)
-    ));
+    );
 }
 
 // ─── Service reply attachment (Ack / Response / Failure) ─────────────────
@@ -1581,27 +1559,27 @@ fn service_reply_attachment_roundtrips_every_kind() {
 
 #[test]
 fn service_reply_attachment_decode_rejects_empty_bytes() {
-    assert!(matches!(
+    assert_matches!(
         ServiceReplyAttachment::decode(&[]),
         Err(ZenohWireParseError::MissingServiceReplyAttachment)
-    ));
+    );
 }
 
 #[test]
 fn service_reply_attachment_decode_rejects_unknown_magic() {
-    assert!(matches!(
+    assert_matches!(
         ServiceReplyAttachment::decode(&[0xff, 0x00]),
         Err(ZenohWireParseError::ServiceReplyAttachmentMagicMismatch { .. })
-    ));
+    );
 }
 
 #[test]
 fn service_reply_attachment_decode_rejects_unknown_kind_byte() {
     let bytes = [ServiceReplyAttachment::MAGIC_V1, 0xff];
-    assert!(matches!(
+    assert_matches!(
         ServiceReplyAttachment::decode(&bytes),
         Err(ZenohWireParseError::UnknownServiceReplyKind(0xff))
-    ));
+    );
 }
 
 // ─── ParsedInboundQuery::claim ───────────────────────────────────────────

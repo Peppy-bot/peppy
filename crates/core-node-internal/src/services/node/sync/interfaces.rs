@@ -768,6 +768,7 @@ mod implements_tests {
     use config::failure_kind::MemberSection;
     use config::node::{Interfaces, Manifest};
     use generator::InterfaceVariant;
+    use std::assert_matches;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1217,11 +1218,9 @@ mod implements_tests {
                     let goal = action.goal_service.as_ref().unwrap();
                     let request = goal.request_message_format.as_ref();
                     assert_eq!(array_length(request, "joint_positions"), Some(7));
-                    assert!(
-                        matches!(
-                            request.unwrap().0["arm_id"],
-                            config::node::SchemaType::Type(config::node::TypeToken::U8)
-                        ),
+                    assert_matches!(
+                        request.unwrap().0["arm_id"],
+                        config::node::SchemaType::Type(config::node::TypeToken::U8),
                         "unpinned fields stay as the contract declares them"
                     );
                     let response = action

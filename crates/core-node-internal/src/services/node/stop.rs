@@ -309,6 +309,7 @@ fn clear_without_process(entity_handle: &EntityHandle, instance_id: &Name) -> Sl
 }
 
 /// How a start a stop claimed ended.
+#[derive(Debug)]
 enum ClaimedStart {
     /// The claimed start's slot is gone; a slot now under the id is another
     /// instance's.
@@ -1183,6 +1184,7 @@ fn pid_running_in(system: &sysinfo::System, pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     /// Each bound sums its terms: a stop's is its force phase (the force-kill
     /// deadline, the in-VM kill and the reap) and the notice of its end; a
@@ -1254,17 +1256,17 @@ mod tests {
             Some(slot)
         };
         assert!(claimed_start(slot(InstanceState::Starting, true)).is_none());
-        assert!(matches!(
+        assert_matches!(
             claimed_start(slot(InstanceState::Running, true)),
             Some(ClaimedStart::Committed { .. })
-        ));
+        );
         for ended in [
             None,
             slot(InstanceState::Starting, false),
             slot(InstanceState::Running, false),
             slot(InstanceState::Restarting, true),
         ] {
-            assert!(matches!(claimed_start(ended), Some(ClaimedStart::Ended)));
+            assert_matches!(claimed_start(ended), Some(ClaimedStart::Ended));
         }
     }
 }

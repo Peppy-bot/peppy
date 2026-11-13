@@ -270,6 +270,7 @@ impl crate::encoding::Wire for StackJoinGoal {
 mod tests {
     use super::*;
     use crate::encoding::decoding_error;
+    use std::assert_matches;
 
     fn goal(name: &str) -> StackJoinGoal {
         StackJoinGoal::new(
@@ -462,7 +463,7 @@ mod tests {
             .unwrap();
         assert_eq!(argument.instance_id().as_str(), "arm_inst");
         assert_eq!(argument.argument().as_str(), "options");
-        assert!(matches!(argument.value(), AnyType::Object(_)));
+        assert_matches!(argument.value(), AnyType::Object(_));
         for word in ["", "arm.speed"] {
             assert_eq!(
                 word.parse::<ArgumentOverride>().unwrap_err(),
@@ -470,20 +471,18 @@ mod tests {
                 "{word}"
             );
         }
-        assert!(matches!(
+        assert_matches!(
             "bad/inst.speed=2".parse::<ArgumentOverride>(),
             Err(ArgumentOverrideError::InstanceName(_))
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             "arm..speed=2".parse::<ArgumentOverride>(),
             Err(ArgumentOverrideError::ArgumentName(_))
-        ));
+        );
         for word in ["arm.speed=", "arm.speed=pose"] {
-            assert!(
-                matches!(
-                    word.parse::<ArgumentOverride>(),
-                    Err(ArgumentOverrideError::Value { .. })
-                ),
+            assert_matches!(
+                word.parse::<ArgumentOverride>(),
+                Err(ArgumentOverrideError::Value { .. }),
                 "{word}"
             );
         }

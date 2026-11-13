@@ -3368,6 +3368,7 @@ mod engine_tests {
     use super::*;
     use futures::poll;
     use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+    use std::assert_matches;
 
     const CORE: &str = "engine_core";
     const PRODUCER: &str = "engine_producer";
@@ -3715,10 +3716,10 @@ mod engine_tests {
             GoalAnswer::Refused(failure) => assert_eq!(failure.kind().as_str(), "rejected"),
             GoalAnswer::Accepted(_) => panic!("a malformed request must be refused"),
         }
-        assert!(matches!(
+        assert_matches!(
             unwrap_goal_ack(&accepted.payload().into_inner()).unwrap(),
             GoalAnswer::Accepted(_)
-        ));
+        );
         assert_eq!(next_goal_id, "next_goal");
     }
 
@@ -3806,10 +3807,10 @@ mod engine_tests {
         let caller = process_on(&session);
         let (mut goal, context) = accept_and_overflow_one_message(&caller, &mut action).await;
 
-        assert!(matches!(
+        assert_matches!(
             goal.try_next_feedback(),
             Err(Error::ActionFeedbackOverflow { bound: 1, .. })
-        ));
+        );
         drop(goal);
 
         assert!(cancelled_within(&context, Duration::from_secs(5)).await);

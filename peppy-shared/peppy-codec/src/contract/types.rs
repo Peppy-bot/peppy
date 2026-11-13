@@ -394,6 +394,7 @@ mod tests {
     use config::node::{
         ArrayKind, MessageFormat, QoSProfile, SchemaType, TopicRetention, TypeToken,
     };
+    use std::assert_matches;
 
     /// The depth-camera example from the schema doc parses end-to-end and
     /// exposes every field the way the user wrote it.
@@ -468,10 +469,10 @@ mod tests {
         assert_eq!(topic.name, "video_stream");
         assert_eq!(topic.qos_profile, QoSProfile::SensorData);
         let mf = topic.message_format.as_ref().expect("message_format set");
-        assert!(matches!(
+        assert_matches!(
             mf.0.get("encoding"),
             Some(SchemaType::Type(TypeToken::String))
-        ));
+        );
         let SchemaType::Array(frame) = mf.0.get("frame").unwrap() else {
             panic!("frame should be an array");
         };

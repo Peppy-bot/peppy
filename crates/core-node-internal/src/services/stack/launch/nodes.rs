@@ -686,6 +686,7 @@ mod tests {
     use super::*;
     use core_node_api::encoding::LaunchGoal;
     use daemon_config::launcher::ForwardedEnv;
+    use std::assert_matches;
     use std::sync::Mutex;
     use tokio::sync::{mpsc, oneshot};
 
@@ -1018,8 +1019,9 @@ mod tests {
         )
         .await;
 
-        assert!(
-            matches!(outcome.failure, Some(WorkStop::Cancelled(_))),
+        assert_matches!(
+            outcome.failure,
+            Some(WorkStop::Cancelled(_)),
             "the cancel stopped the group: {:?}",
             outcome.failure
         );

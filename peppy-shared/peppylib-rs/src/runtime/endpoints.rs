@@ -183,6 +183,7 @@ impl AnnouncedEndpoints {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn declared(labels: &[&str]) -> AnnouncedEndpoints {
         AnnouncedEndpoints::new(
@@ -236,7 +237,7 @@ mod tests {
         let error = endpoints
             .announce("viewer", binding("http", "127.0.0.1:8765", ""))
             .expect_err("undeclared");
-        assert!(matches!(error, Error::UndeclaredEndpoint { ref label } if label == "viewer"));
+        assert_matches!(error, Error::UndeclaredEndpoint { ref label } if label == "viewer");
         assert!(error.to_string().contains("`viewer`"), "{error}");
     }
 
@@ -249,7 +250,7 @@ mod tests {
         let error = endpoints
             .announce("panel", binding("http", "127.0.0.1:8766", ""))
             .expect_err("second");
-        assert!(matches!(error, Error::EndpointAlreadyAnnounced { ref label } if label == "panel"));
+        assert_matches!(error, Error::EndpointAlreadyAnnounced { ref label } if label == "panel");
         assert_eq!(
             endpoints.snapshot()[0].binding.address.port(),
             8765,
@@ -270,7 +271,7 @@ mod tests {
         let error = endpoints
             .announce("panel", binding("http", "127.0.0.1:8765", ""))
             .expect_err("sealed");
-        assert!(matches!(error, Error::EndpointsSealed { ref label } if label == "panel"));
+        assert_matches!(error, Error::EndpointsSealed { ref label } if label == "panel");
     }
 
     #[test]
@@ -280,8 +281,7 @@ mod tests {
             let error = endpoints
                 .announce("panel", binding(scheme, "127.0.0.1:8765", ""))
                 .expect_err("malformed scheme");
-            assert!(
-                matches!(error, Error::InvalidEndpointBinding { ref label, .. } if label == "panel"),
+            assert_matches!(error, Error::InvalidEndpointBinding { ref label, .. } if label == "panel",
                 "{error}"
             );
             assert!(error.to_string().contains("scheme"), "{error}");
@@ -290,10 +290,7 @@ mod tests {
         let error = endpoints
             .announce("panel", binding("http", "127.0.0.1:8765", "mcp"))
             .expect_err("path without a leading slash");
-        assert!(
-            matches!(error, Error::InvalidEndpointBinding { .. }),
-            "{error}"
-        );
+        assert_matches!(error, Error::InvalidEndpointBinding { .. }, "{error}");
         assert!(error.to_string().contains("path"), "{error}");
         assert!(
             endpoints.snapshot().is_empty(),
@@ -318,7 +315,7 @@ mod tests {
             .announce("panel", binding("http", "127.0.0.1:8765", ""))
             .expect("first");
         let error = endpoints.seal().expect_err("viewer is missing");
-        assert!(matches!(error, Error::EndpointNotAnnounced { ref label } if label == "viewer"));
+        assert_matches!(error, Error::EndpointNotAnnounced { ref label } if label == "viewer");
         assert!(error.to_string().contains("`viewer`"), "{error}");
     }
 

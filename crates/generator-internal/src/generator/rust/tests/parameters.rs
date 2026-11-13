@@ -1,5 +1,6 @@
 use super::*;
 use config::node::NodeConfig;
+use std::assert_matches;
 use std::fs;
 use tempfile::TempDir;
 
@@ -373,8 +374,7 @@ fn reject_array_parameters_with_their_dotted_path() {
 
     for (schema, expected_path) in cases {
         let error = generate_parameters_struct(&schema).unwrap_err();
-        assert!(
-            matches!(&error, Error::UnsupportedArrayParameter { path } if path == expected_path),
+        assert_matches!(&error, Error::UnsupportedArrayParameter { path } if path == expected_path,
             "expected UnsupportedArrayParameter at `{expected_path}`, got: {error:?}"
         );
     }

@@ -366,6 +366,7 @@ pub struct RunningHealth {
 mod tests {
     use super::{Attempt, NextAttempt, RestartBackoff, Supervision};
     use config::node::{ResolvedRestart, RestartDeclaration, RestartOrigin, RestartPolicy};
+    use std::assert_matches;
     use std::num::NonZeroU32;
     use std::time::{Duration, Instant};
 
@@ -440,8 +441,7 @@ mod tests {
         };
         let mut supervision = Supervision::default();
         let attempt = supervision.advance_backoff(&unbounded, None, Instant::now());
-        assert!(
-            matches!(attempt, Attempt::Scheduled { delay, .. } if delay == Duration::MAX),
+        assert_matches!(attempt, Attempt::Scheduled { delay, .. } if delay == Duration::MAX,
             "{attempt:?}"
         );
         assert_eq!(supervision.attempt, 1);

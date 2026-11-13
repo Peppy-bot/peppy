@@ -178,6 +178,7 @@ mod tests {
     use crate::error::Error;
     use crate::generator::naming::sanitize_component;
     use crate::generator::types::InterfaceKind;
+    use std::assert_matches;
     use tempfile::TempDir;
 
     /// Minimal writer: sanitizes like the real backends and writes nothing, so
@@ -228,8 +229,9 @@ mod tests {
             &mut NoopWriter,
         )
         .expect_err("colliding link_ids must be rejected");
-        assert!(
-            matches!(err, Error::ModuleNameCollision { .. }),
+        assert_matches!(
+            err,
+            Error::ModuleNameCollision { .. },
             "expected ModuleNameCollision, got {err:?}"
         );
     }
@@ -247,8 +249,9 @@ mod tests {
             &mut NoopWriter,
         )
         .expect_err("a native leaf colliding with a slot directory must be rejected");
-        assert!(
-            matches!(err, Error::ModuleNameCollision { .. }),
+        assert_matches!(
+            err,
+            Error::ModuleNameCollision { .. },
             "expected ModuleNameCollision, got {err:?}"
         );
     }

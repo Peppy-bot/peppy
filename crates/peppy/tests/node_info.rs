@@ -5,6 +5,7 @@ use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, TimeoutConfig};
 use peppy::context::AppContext;
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
+use std::assert_matches;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -389,8 +390,9 @@ fn node_info_returns_not_in_stack_when_node_not_in_stack() {
         ))
         .expect("node_info should return a successful response for an unknown node");
 
-    assert!(
-        matches!(response, NodeInfoResponse::NotInStack),
+    assert_matches!(
+        response,
+        NodeInfoResponse::NotInStack,
         "expected NotInStack for ghost_node:v999, got: {response:?}"
     );
 

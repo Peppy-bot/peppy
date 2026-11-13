@@ -293,6 +293,7 @@ mod tests {
         Messenger, MessengerAdapter, MessengerBackend, SubscriberBufferSizes, ZenohAdapter,
         ZenohNetProtocol,
     };
+    use std::assert_matches;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -399,8 +400,7 @@ mod tests {
             Err(err) => err,
             Ok(_token) => panic!("a committed token landing mid-settle must refuse the claim"),
         };
-        assert!(
-            matches!(err, crate::Error::CoreNodeNameTaken { ref name } if name == "settle_node"),
+        assert_matches!(err, crate::Error::CoreNodeNameTaken { ref name } if name == "settle_node",
             "the refusal must be the boot refusal: {err}"
         );
     }

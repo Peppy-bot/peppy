@@ -12,6 +12,7 @@ use peppylib::runtime::CancellationToken;
 use peppylib::runtime::{NodeBuilder, StandaloneConfig};
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
+use std::assert_matches;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -385,15 +386,13 @@ async fn standalone_runner_announces_declared_endpoints_during_setup_only() {
                 let undeclared = node_runner
                     .announce_endpoint("admin", binding("http", "127.0.0.1:9000", ""))
                     .expect_err("an undeclared label is refused");
-                assert!(
-                    matches!(undeclared, PeppyError::UndeclaredEndpoint { ref label } if label == "admin"),
+                assert_matches!(undeclared, PeppyError::UndeclaredEndpoint { ref label } if label == "admin",
                     "{undeclared}"
                 );
                 let twice = node_runner
                     .announce_endpoint("panel", binding("http", "0.0.0.0:8766", ""))
                     .expect_err("a second announcement is refused");
-                assert!(
-                    matches!(twice, PeppyError::EndpointAlreadyAnnounced { ref label } if label == "panel"),
+                assert_matches!(twice, PeppyError::EndpointAlreadyAnnounced { ref label } if label == "panel",
                     "{twice}"
                 );
                 node_runner
@@ -482,8 +481,7 @@ async fn standalone_runner_fails_when_a_declared_endpoint_is_not_announced() {
         .expect("runner should exit")
         .expect("runner task should not panic")
         .expect_err("a declared label left unannounced fails the run");
-    assert!(
-        matches!(error, PeppyError::EndpointNotAnnounced { ref label } if label == "viewer"),
+    assert_matches!(error, PeppyError::EndpointNotAnnounced { ref label } if label == "viewer",
         "{error}"
     );
     assert!(error.to_string().contains("`viewer`"), "{error}");
@@ -1355,8 +1353,9 @@ fn init_parameters_can_only_be_taken_once() {
     assert_eq!(params.value, 42);
 
     let err = ctx.take_parameters().expect_err("second take should fail");
-    assert!(
-        matches!(err, PeppyError::ParametersAlreadyTaken),
+    assert_matches!(
+        err,
+        PeppyError::ParametersAlreadyTaken,
         "expected ParametersAlreadyTaken, got: {err:?}"
     );
 }
@@ -1434,8 +1433,9 @@ fn init_takes_a_non_utf8_runtime_config_as_daemon_mode() {
         panic!("init should select daemon mode and fail on the non-UTF-8 value");
     };
 
-    assert!(
-        matches!(err, PeppyError::MissingInstanceIdEnvVar { .. }),
+    assert_matches!(
+        err,
+        PeppyError::MissingInstanceIdEnvVar { .. },
         "expected MissingInstanceIdEnvVar, got: {err:?}"
     );
 }
@@ -1470,8 +1470,7 @@ async fn slot_helpers_name_an_undeclared_slot() {
     else {
         panic!("subscribe_peer must refuse an undeclared pairing slot");
     };
-    assert!(
-        matches!(&subscribe_error, PeppyError::UnknownPairingSlot { link_id } if link_id == "missing"),
+    assert_matches!(&subscribe_error, PeppyError::UnknownPairingSlot { link_id } if link_id == "missing",
         "expected UnknownPairingSlot for `missing`, got: {subscribe_error:?}"
     );
 
@@ -1485,8 +1484,7 @@ async fn slot_helpers_name_an_undeclared_slot() {
     ) else {
         panic!("declare_peer_publisher must refuse an undeclared pairing slot");
     };
-    assert!(
-        matches!(&publisher_error, PeppyError::UnknownPairingSlot { link_id } if link_id == "missing"),
+    assert_matches!(&publisher_error, PeppyError::UnknownPairingSlot { link_id } if link_id == "missing",
         "expected UnknownPairingSlot for `missing`, got: {publisher_error:?}"
     );
 
@@ -1502,8 +1500,7 @@ async fn slot_helpers_name_an_undeclared_slot() {
     else {
         panic!("subscribe_observed must refuse an undeclared observer slot");
     };
-    assert!(
-        matches!(&observe_error, PeppyError::UnknownObservationSlot { link_id } if link_id == "missing"),
+    assert_matches!(&observe_error, PeppyError::UnknownObservationSlot { link_id } if link_id == "missing",
         "expected UnknownObservationSlot for `missing`, got: {observe_error:?}"
     );
 }

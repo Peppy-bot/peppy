@@ -209,6 +209,7 @@ enum Transport {
 /// [`SessionScope::Discovery`]: the gossip seed list, the gossip toggle, and
 /// subscriber buffer sizing. The workspace namespace travels on
 /// [`MessengerConnect`] itself, not here.
+#[derive(Debug)]
 struct DiscoveryParams {
     seed_peers: Vec<String>,
     gossip: bool,
@@ -218,6 +219,7 @@ struct DiscoveryParams {
 /// How a [`MessengerConnect`] session attaches to the messaging fabric at
 /// `host:port`. Selected by [`MessengerConnect::scope`]; the default is
 /// [`SessionKind::GossipPeer`].
+#[derive(Debug)]
 enum SessionKind {
     /// Gossip peer: binds a wildcard listener and forms direct links with
     /// peers discovered via gossip seeded by `host:port`.

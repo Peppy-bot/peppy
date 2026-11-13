@@ -135,6 +135,7 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use test_support::latest;
 
     const KEYEXPR: &str = "*/core/*/instance/topic/node/robot/v1/_/mode";
@@ -183,12 +184,10 @@ mod tests {
             (TopicRetention::LiveOnly, PublisherQoS::Standard),
         ] {
             let error = declared(&mut topics, retention, qos).expect_err("another policy or QoS");
-            assert!(
-                matches!(
+            assert_matches!(
                     error,
                     Error::RetainingTopicMismatch { ref topic, requested_retention, requested_qos, .. }
-                        if topic == KEYEXPR && requested_retention == retention && requested_qos == qos
-                ),
+                        if topic == KEYEXPR && requested_retention == retention && requested_qos == qos,
                 "{error}"
             );
         }
@@ -271,14 +270,12 @@ mod tests {
         let error = topics
             .refuse_live_only(KEYEXPR, PublisherQoS::Standard)
             .expect_err("the key retains");
-        assert!(
-            matches!(
-                error,
-                Error::RetainingTopicMismatch {
-                    requested_retention: TopicRetention::LiveOnly,
-                    ..
-                }
-            ),
+        assert_matches!(
+            error,
+            Error::RetainingTopicMismatch {
+                requested_retention: TopicRetention::LiveOnly,
+                ..
+            },
             "{error}"
         );
 

@@ -599,6 +599,7 @@ mod tests {
     use super::*;
     use crate::encoding::{decode_message, encode_message};
     use capnp::message::Builder;
+    use std::assert_matches;
 
     fn name(value: &str) -> Name {
         Name::new(value).unwrap()
@@ -734,14 +735,14 @@ mod tests {
             "brain=ai_brain_vla".parse::<AxisSelection>().unwrap(),
             with_copy
         );
-        assert!(matches!(
+        assert_matches!(
             "ai_brain_vla".parse::<AxisSelection>(),
             Err(WordError::MissingPart { .. })
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             "brain=ai_brain_vla@self".parse::<AxisSelection>(),
             Err(WordError::BadMachine { .. })
-        ));
+        );
         assert_eq!(
             serde_json::to_value(&with_copy).unwrap(),
             serde_json::json!({ "axis": "brain", "option": "ai_brain_vla" })

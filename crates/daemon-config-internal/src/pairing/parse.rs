@@ -29,6 +29,7 @@ mod tests {
     use super::*;
     use crate::error::{Error, ParsingError};
     use config::schema::PeppySchema;
+    use std::assert_matches;
     use tempfile::NamedTempFile;
 
     #[test]
@@ -67,28 +68,28 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), b"").unwrap();
         let result = PeppyPairingParser::from_path(tmp.path());
-        assert!(matches!(
+        assert_matches!(
             result.unwrap_err(),
             Error::Parsing(ParsingError::EmptyContent(_))
-        ));
+        );
     }
 
     #[test]
     fn missing_file_rejected() {
         let result = PeppyPairingParser::from_path("/path/does/not/exist.json5");
-        assert!(matches!(
+        assert_matches!(
             result.unwrap_err(),
             Error::Parsing(ParsingError::CannotRead(..))
-        ));
+        );
     }
 
     #[test]
     fn malformed_json5_rejected() {
         let result = PeppyPairingParser::from_content("{ manifest: [unclosed");
-        assert!(matches!(
+        assert_matches!(
             result.unwrap_err(),
             Error::Parsing(ParsingError::CannotParseConfig(_))
-        ));
+        );
     }
 
     /// A contract document must not be misread as a pairing. The schema

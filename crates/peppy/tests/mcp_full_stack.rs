@@ -28,6 +28,7 @@ use peppy::commands::stack::{
 use peppy::context::AppContext;
 use peppy::error::CallEnd;
 use peppy::test_support::ServeCommandEmulation;
+use std::assert_matches;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::runtime::CopyName;
@@ -2805,11 +2806,9 @@ async fn await_resource_list_changed(subscription: &mut Subscription) {
         .unwrap_or_else(|_| panic!("no resources/list_changed within {WAIT:?}"))
         .expect("the subscription stream is healthy")
         .expect("the stream did not end");
-    assert!(
-        matches!(
-            notification,
-            ServerNotification::ResourceListChangedNotification(_)
-        ),
+    assert_matches!(
+        notification,
+        ServerNotification::ResourceListChangedNotification(_),
         "expected resources/list_changed, got {notification:?}"
     );
 }
@@ -3596,10 +3595,7 @@ async fn a_client_adds_robots_with_features_on_the_machines_it_names() {
         .await
         .expect("the presence arrives")
         .expect("the watch is open");
-    assert!(
-        matches!(event, peppylib::LivelinessEvent::Alive(_)),
-        "{event:?}"
-    );
+    assert_matches!(event, peppylib::LivelinessEvent::Alive(_), "{event:?}");
     let mut machines = vec![this.clone(), "cn-gpu-box".to_owned()];
     machines.sort();
     assert_eq!(

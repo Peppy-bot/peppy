@@ -692,6 +692,7 @@ mod tests {
         PYPI_MIRROR_SECTION_SNIPPET, PeppyConfig, SHUTDOWN_GRACE_FIELD_SNIPPET, TEMPLATE_HEADER,
     };
     use super::*;
+    use std::assert_matches;
 
     /// Parses completed content the way `load_or_create` would, so every test
     /// proves its splice result is real loadable config, not just plausible text.
@@ -897,10 +898,10 @@ mod tests {
         let completed = complete_config_content(content)
             .expect("top-level sections are missing")
             .content;
-        assert!(matches!(
+        assert_matches!(
             parse(&completed).zenoh,
             super::super::ZenohConfig::External(_)
-        ));
+        );
         let document: Value = serde_json5::from_str(&completed).unwrap();
         assert_eq!(
             document["zenoh"],

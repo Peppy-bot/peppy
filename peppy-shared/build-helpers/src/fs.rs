@@ -256,6 +256,7 @@ impl Drop for CleanupDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn cache_dir_under_creates_and_returns_peppy_tmp_subdir() {
@@ -602,10 +603,7 @@ mod tests {
             .write(true)
             .open(&lock_path)
             .expect("open second handle");
-        assert!(matches!(
-            second.try_lock(),
-            Err(std::fs::TryLockError::WouldBlock)
-        ));
+        assert_matches!(second.try_lock(), Err(std::fs::TryLockError::WouldBlock));
 
         drop(first);
         // Blocking acquire rather than try_lock: a child process forked by a

@@ -2,6 +2,7 @@
 //! `NodeEntity`.
 
 use parking_lot::RwLock;
+use std::assert_matches;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -556,7 +557,7 @@ async fn concurrent_builds_are_rejected_immediately() {
     );
 
     // Entity ended up in Ready, with the archive present exactly once.
-    assert!(matches!(handle.read().stage(), NodeStage::Ready { .. }));
+    assert_matches!(handle.read().stage(), NodeStage::Ready { .. });
     let archive = winner_result.expect("checked above");
     assert_keyed_artifact_path(&archive, &peppy_dirs);
     assert!(archive.is_file(), "expected archive at {archive:?}");
@@ -811,7 +812,7 @@ async fn build_runs_build_cmd_for_process_node() {
 
     // The entity is Ready.
     let guard = handle.read();
-    assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
+    assert_matches!(guard.stage(), NodeStage::Ready { .. });
     assert_eq!(guard.artifact_path(), Some(archive.as_path()));
     drop(guard);
 
@@ -950,8 +951,9 @@ async fn a_missing_working_dir_fails_the_build_at_fingerprinting() {
         ),
         other => panic!("expected BuildFailed, got {other:?}"),
     }
-    assert!(
-        matches!(handle.read().stage(), NodeStage::Building { .. }),
+    assert_matches!(
+        handle.read().stage(),
+        NodeStage::Building { .. },
         "the failure contract leaves the entity in Building"
     );
 }
@@ -1129,10 +1131,7 @@ async fn a_python_build_that_fails_puts_the_staged_lock_back() {
     .await
     .expect_err("build_cmd exits 1");
 
-    assert!(
-        matches!(error, NodeStackError::BuildFailed { .. }),
-        "{error:?}"
-    );
+    assert_matches!(error, NodeStackError::BuildFailed { .. }, "{error:?}");
     let mirror_url = format!("{}{WHEEL_ON_MIRROR}", mirror.base.as_str());
     assert!(
         std::fs::read_to_string(&seen_by_build)
@@ -1358,7 +1357,7 @@ async fn prepare_and_spawn_rejects_when_not_built() {
 
     // Entity remained in Added.
     let guard = handle.read();
-    assert!(matches!(guard.stage(), NodeStage::Added { .. }));
+    assert_matches!(guard.stage(), NodeStage::Added { .. });
 }
 
 #[tokio::test]
@@ -1375,8 +1374,9 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
     // Entity is in Ready with the new instance in Starting state.
     {
         let guard = handle.read();
-        assert!(
-            matches!(guard.stage(), NodeStage::Ready { .. }),
+        assert_matches!(
+            guard.stage(),
+            NodeStage::Ready { .. },
             "entity should remain in Ready during prepare_and_spawn, got {:?}",
             guard.stage()
         );
@@ -1655,8 +1655,9 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
     // Entity is still in Ready, but the Starting instance was removed.
     {
         let guard = handle.read();
-        assert!(
-            matches!(guard.stage(), NodeStage::Ready { .. }),
+        assert_matches!(
+            guard.stage(),
+            NodeStage::Ready { .. },
             "entity should remain in Ready after abort, got {:?}",
             guard.stage()
         );
@@ -1747,8 +1748,9 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
     // and new Starting.
     {
         let guard = handle.read();
-        assert!(
-            matches!(guard.stage(), NodeStage::Ready { .. }),
+        assert_matches!(
+            guard.stage(),
+            NodeStage::Ready { .. },
             "expected Ready, got {:?}",
             guard.stage()
         );
@@ -2014,8 +2016,9 @@ async fn rollback_to_added_if_matches_rolls_building_back_and_reattaches_working
         ),
         "a different handle must not roll back"
     );
-    assert!(
-        matches!(handle.read().stage(), NodeStage::Building { .. }),
+    assert_matches!(
+        handle.read().stage(),
+        NodeStage::Building { .. },
         "the entity must still be Building after the mismatch cases"
     );
 

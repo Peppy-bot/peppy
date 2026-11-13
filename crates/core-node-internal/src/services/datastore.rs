@@ -448,6 +448,7 @@ fn handle_store_exclusive_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::sync::Barrier;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -798,8 +799,7 @@ mod tests {
                     "arm".to_owned(),
                 )
                 .expect_err("the key exists with no owner");
-            assert!(
-                matches!(&err, Error::DatastoreKeyUnowned { key: k } if k == key),
+            assert_matches!(&err, Error::DatastoreKeyUnowned { key: k } if k == key,
                 "{err:?}"
             );
         }
@@ -821,8 +821,7 @@ mod tests {
                 "unrun_inst".to_owned(),
             )
             .expect_err("no process runs under the id");
-        assert!(
-            matches!(&err, Error::DatastoreOwnerNotRunning { instance_id } if instance_id == "unrun_inst"),
+        assert_matches!(&err, Error::DatastoreOwnerNotRunning { instance_id } if instance_id == "unrun_inst",
             "{err:?}"
         );
         assert!(datastore.get("bus").is_none(), "nothing was written");

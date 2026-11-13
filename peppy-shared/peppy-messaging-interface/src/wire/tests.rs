@@ -1,5 +1,6 @@
 use super::test_support::{node, seg};
 use super::*;
+use std::assert_matches;
 
 // ─── Identifier constructors ─────────────────────────────────────────────
 
@@ -44,17 +45,14 @@ fn target_constructors_keep_an_underscored_tag() {
 fn target_constructors_reject_a_segment_with_a_slash() {
     for (kind, new_target) in TARGET_CONSTRUCTORS {
         let err = new_target("nav/sub", "v1").unwrap_err();
-        assert!(
-            matches!(err, SenderTargetError::InvalidSegment(_)),
-            "{kind}"
-        );
+        assert_matches!(err, SenderTargetError::InvalidSegment(_), "{kind}");
     }
 }
 
 #[test]
 fn contract_new_rejects_reserved_sentinel() {
     let err = ContractIdentifier::new("_", "v1").unwrap_err();
-    assert!(matches!(err, SenderTargetError::InvalidSegment(_)));
+    assert_matches!(err, SenderTargetError::InvalidSegment(_));
 }
 
 // ─── Segment validators ───────────────────────────────────────────────────
@@ -62,25 +60,25 @@ fn contract_new_rejects_reserved_sentinel() {
 #[test]
 fn segment_try_from_rejects_at_sign() {
     let err = Segment::try_from("foo@bar").unwrap_err();
-    assert!(matches!(err, SegmentError::ContainsAt(s) if s == "foo@bar"));
+    assert_matches!(err, SegmentError::ContainsAt(s) if s == "foo@bar");
 }
 
 #[test]
 fn segment_try_link_id_rejects_at_sign() {
     let err = Segment::try_link_id("cam@a").unwrap_err();
-    assert!(matches!(err, SegmentError::ContainsAt(s) if s == "cam@a"));
+    assert_matches!(err, SegmentError::ContainsAt(s) if s == "cam@a");
 }
 
 #[test]
 fn segment_try_link_id_still_rejects_slash_and_wildcards() {
-    assert!(matches!(
+    assert_matches!(
         Segment::try_link_id("a/b"),
         Err(SegmentError::ContainsSlash(_))
-    ));
-    assert!(matches!(
+    );
+    assert_matches!(
         Segment::try_link_id("*"),
         Err(SegmentError::ReservedSentinel(_))
-    ));
+    );
 }
 
 // ─── SenderTarget ─────────────────────────────────────────────────────────

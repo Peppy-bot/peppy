@@ -494,6 +494,7 @@ mod tests {
     use core_node_api::encoding::{GitRepoRef, GitRepoRefError, PeppyBuild, ReadRef, RepoSource};
     use daemon_config::consts::PeppyDirs;
     use serde_json::Value;
+    use std::assert_matches;
     use std::path::PathBuf;
 
     fn listed(id: u32, path: &str) -> ListedRepo {
@@ -600,10 +601,7 @@ mod tests {
             RepoEntryError::OciRef
         );
         let bad_url = serde_json::json!({"id": 900, "type": "oci", "url": "https://ghcr.io/x"});
-        assert!(matches!(
-            parse_repo_entry(&bad_url),
-            Err(RepoEntryError::OciUrl(_))
-        ));
+        assert_matches!(parse_repo_entry(&bad_url), Err(RepoEntryError::OciUrl(_)));
         let no_url = serde_json::json!({"id": 900, "type": "oci"});
         assert_eq!(parse_repo_entry(&no_url), Err(RepoEntryError::Unrecognized));
     }
@@ -701,7 +699,7 @@ mod tests {
         let ids: Vec<u32> = listed.iter().map(|repo| repo.id).collect();
         assert_eq!(ids, vec![7]);
         assert_eq!(listed[0].label, kept.to_string_lossy());
-        assert!(matches!(listed[0].source, RepoSource::Fs(_)));
+        assert_matches!(listed[0].source, RepoSource::Fs(_));
     }
 
     fn git_source(repo_ref: GitRepoRef) -> RepoSource {

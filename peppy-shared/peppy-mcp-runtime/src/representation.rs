@@ -573,6 +573,7 @@ fn set_field(value: &mut Value, name: &str, new_value: Value) {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::assert_matches;
 
     fn policies(raw: Value) -> ResourcePolicies {
         serde_json::from_value(raw).expect("valid policies")
@@ -794,20 +795,19 @@ mod tests {
         });
         let error = apply_content_policies(png16_policies(None, None).content(), png)
             .expect_err("an 8-bit color PNG is not a depth frame");
-        assert!(matches!(error, PublishError::BadFrame { .. }));
+        assert_matches!(error, PublishError::BadFrame { .. });
 
         let color = solid_frame("rgb8", [1, 2, 3], 2, 2);
         let error = apply_content_policies(png16_policies(None, None).content(), color)
             .expect_err("a color frame is not a 16-bit frame");
-        assert!(
-            matches!(error, PublishError::UnsupportedEncoding { encoding } if encoding == "rgb8")
+        assert_matches!(error, PublishError::UnsupportedEncoding { encoding } if encoding == "rgb8"
         );
 
         let mut short = depth_frame("z16", 4, 4);
         short["frame"] = json!(BASE64.encode([0u8; 6]));
         let error = apply_content_policies(png16_policies(None, None).content(), short)
             .expect_err("a short buffer is a bad frame");
-        assert!(matches!(error, PublishError::BadFrame { .. }));
+        assert_matches!(error, PublishError::BadFrame { .. });
     }
 
     #[test]
@@ -1005,10 +1005,7 @@ mod tests {
         });
         let error = apply_content_policies(depth_policies(None, None).content(), value)
             .expect_err("3 bytes are not a 4x4 depth frame");
-        assert!(
-            matches!(error, PublishError::BadFrame { .. }),
-            "got {error:?}"
-        );
+        assert_matches!(error, PublishError::BadFrame { .. }, "got {error:?}");
     }
 
     #[test]
@@ -1058,10 +1055,7 @@ mod tests {
         });
         let error = apply_content_policies(jpeg_policies(None, None).content(), value)
             .expect_err("3 bytes are not a 4x4 frame");
-        assert!(
-            matches!(error, PublishError::BadFrame { .. }),
-            "got {error:?}"
-        );
+        assert_matches!(error, PublishError::BadFrame { .. }, "got {error:?}");
     }
 
     #[test]
@@ -1074,10 +1068,7 @@ mod tests {
         });
         let error = apply_content_policies(jpeg_policies(None, None).content(), value)
             .expect_err("the RGB8 buffer those dimensions ask for exceeds usize");
-        assert!(
-            matches!(error, PublishError::BadFrame { .. }),
-            "got {error:?}"
-        );
+        assert_matches!(error, PublishError::BadFrame { .. }, "got {error:?}");
     }
 
     #[test]
@@ -1118,8 +1109,9 @@ mod tests {
         let value = json!({ "status": "x".repeat(64) });
         let error = apply_content_policies(reject_policies.content(), value)
             .expect_err("oversize snapshot should be rejected");
-        assert!(
-            matches!(error, PublishError::Oversize { limit: 32, .. }),
+        assert_matches!(
+            error,
+            PublishError::Oversize { limit: 32, .. },
             "got {error:?}"
         );
     }
@@ -1248,8 +1240,9 @@ mod tests {
         let long = json!({ "message": "x".repeat(160), "frame": "" });
         let error = apply_response_policies(policies.content(), long)
             .expect_err("160 bytes of message exceed the 128 byte limit");
-        assert!(
-            matches!(error, PublishError::Oversize { limit: 128, .. }),
+        assert_matches!(
+            error,
+            PublishError::Oversize { limit: 128, .. },
             "got {error:?}"
         );
     }
@@ -1260,8 +1253,9 @@ mod tests {
         let error =
             apply_content_policies(jpeg_policies(Some(24), Some("downscale")).content(), value)
                 .expect_err("24 bytes can never fit a frame");
-        assert!(
-            matches!(error, PublishError::Oversize { limit: 24, .. }),
+        assert_matches!(
+            error,
+            PublishError::Oversize { limit: 24, .. },
             "got {error:?}"
         );
     }

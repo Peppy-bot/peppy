@@ -34,6 +34,7 @@ mod registry_e2e_tests {
     };
     use oci_registry::test_support::{LocalRegistry, RegistryAuth};
     use oci_registry::{Access, CredentialStore, RegistryClient};
+    use std::assert_matches;
     use std::fmt::Display;
     use std::ops::ControlFlow;
     use std::path::{Path, PathBuf};
@@ -416,11 +417,9 @@ mod registry_e2e_tests {
             again.artifact_path, None,
             "a platform published already builds nothing"
         );
-        assert!(
-            matches!(
-                again.published[0].outcome,
-                PublishOutcome::AlreadyPublished { .. }
-            ),
+        assert_matches!(
+            again.published[0].outcome,
+            PublishOutcome::AlreadyPublished { .. },
             "{again:?}"
         );
 

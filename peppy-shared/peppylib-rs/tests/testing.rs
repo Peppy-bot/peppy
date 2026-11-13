@@ -4,6 +4,7 @@
 //! readiness, the harness barrier and teardown convergence) are proven HERE,
 //! once, before any codegen consumes them.
 
+use std::assert_matches;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -905,8 +906,9 @@ async fn mock_clock_consumer_drives_the_nodes_own_clock() {
     let peppy_clock = peppylib::clock::for_node(&node_runner)
         .await
         .expect("build PeppyClock");
-    assert!(
-        matches!(peppy_clock.now_ns(), Err(PeppyError::ClockNotReady)),
+    assert_matches!(
+        peppy_clock.now_ns(),
+        Err(PeppyError::ClockNotReady),
         "a domain that has not ticked is not ready",
     );
 

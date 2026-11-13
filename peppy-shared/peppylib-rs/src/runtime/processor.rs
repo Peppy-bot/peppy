@@ -1079,6 +1079,7 @@ mod tests {
     use config::{
         AnyType, ParameterSchema, ParameterSpec, runtime::RuntimeConfig, validate_node_arguments,
     };
+    use std::assert_matches;
     use std::{collections::BTreeMap, path::Path};
     use tempfile::TempDir;
 
@@ -1416,8 +1417,9 @@ mod tests {
         ) else {
             panic!("expected codegen fingerprint read error");
         };
-        assert!(
-            matches!(err, Error::CodegenFingerprintRead { .. }),
+        assert_matches!(
+            err,
+            Error::CodegenFingerprintRead { .. },
             "expected CodegenFingerprintRead error, got: {err:?}"
         );
     }
@@ -1882,11 +1884,9 @@ mod tests {
         let Err(err) = standalone_processor(PAIRING_SLOTS_CONFIG, &config) else {
             panic!("a scalar slot holds one pair");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
-                crate::error::Error::PairingSeedNotScalar { link_id, count: 2, .. } if link_id == "arm"
-            ),
+                crate::error::Error::PairingSeedNotScalar { link_id, count: 2, .. } if link_id == "arm",
             "got: {err:?}"
         );
         assert!(err.to_string().contains("one_or_more"), "{err}");
@@ -1899,8 +1899,7 @@ mod tests {
         let Err(err) = standalone_processor(PAIRING_SLOTS_CONFIG, &config) else {
             panic!("a copy is a name");
         };
-        assert!(
-            matches!(&err, crate::error::Error::InvalidCopyName { copy, .. } if copy == "robot a"),
+        assert_matches!(&err, crate::error::Error::InvalidCopyName { copy, .. } if copy == "robot a",
             "got: {err:?}"
         );
     }
@@ -1920,8 +1919,9 @@ mod tests {
         let Err(err) = result else {
             panic!("expected error when required parameters are missing");
         };
-        assert!(
-            matches!(err, crate::error::Error::NodeArgumentsValidation(_)),
+        assert_matches!(
+            err,
+            crate::error::Error::NodeArgumentsValidation(_),
             "expected NodeArgumentsValidation error, got: {err:?}"
         );
         let err_string = err.to_string();
@@ -2178,12 +2178,10 @@ mod tests {
         let Err(err) = daemon_processor_with_bindings(CONSUMER_PEPPY_CONFIG, None) else {
             panic!("expected unbound-slot startup error");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::SlotUnbound { link_id, cardinality }
-                    if link_id == "main" && *cardinality == Cardinality::One
-            ),
+                    if link_id == "main" && *cardinality == Cardinality::One,
             "expected SlotUnbound for `main`, got: {err}"
         );
     }
@@ -2220,12 +2218,10 @@ mod tests {
         let Err(err) = daemon_processor_with_bindings(DAEMON_TARGET_PEPPY_CONFIG, None) else {
             panic!("expected unbound-slot startup error");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::SlotUnbound { link_id, cardinality }
-                    if link_id == "fleet" && *cardinality == Cardinality::One
-            ),
+                    if link_id == "fleet" && *cardinality == Cardinality::One,
             "expected SlotUnbound for `fleet`, got: {err}"
         );
     }
@@ -2296,12 +2292,10 @@ mod tests {
         let err = processor
             .ensure_target_bound("main", &right_arm)
             .expect_err("cross-slot target must fail the membership check");
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::TargetNotBound { link_id, instance_id, .. }
-                    if link_id == "main" && instance_id == "right_arm"
-            ),
+                    if link_id == "main" && instance_id == "right_arm",
             "expected TargetNotBound, got: {err}"
         );
     }
@@ -2499,12 +2493,10 @@ mod tests {
         let Err(two_on_a_one_slot) = two_on_a_one_slot else {
             panic!("two producers on a `one` slot must fail startup");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &two_on_a_one_slot,
                 crate::error::Error::SlotCardinalityViolated { link_id, cardinality, bound }
-                    if link_id == "main" && *cardinality == Cardinality::One && *bound == 2
-            ),
+                    if link_id == "main" && *cardinality == Cardinality::One && *bound == 2,
             "expected SlotCardinalityViolated for `main`, got: {two_on_a_one_slot}"
         );
 
@@ -2522,12 +2514,10 @@ mod tests {
         let Err(empty_one_or_more) = empty_one_or_more else {
             panic!("an empty set on a `one_or_more` slot must fail startup");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &empty_one_or_more,
                 crate::error::Error::SlotCardinalityViolated { link_id, cardinality, bound }
-                    if link_id == "arms" && *cardinality == Cardinality::OneOrMore && *bound == 0
-            ),
+                    if link_id == "arms" && *cardinality == Cardinality::OneOrMore && *bound == 0,
             "expected SlotCardinalityViolated for `arms`, got: {empty_one_or_more}"
         );
 
@@ -2548,14 +2538,12 @@ mod tests {
         let Err(two_on_a_zero_or_one_slot) = two_on_a_zero_or_one_slot else {
             panic!("two producers on a `zero_or_one` slot must fail startup");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &two_on_a_zero_or_one_slot,
                 crate::error::Error::SlotCardinalityViolated { link_id, cardinality, bound }
                     if link_id == "wrist_camera"
                         && *cardinality == Cardinality::ZeroOrOne
-                        && *bound == 2
-            ),
+                        && *bound == 2,
             "expected SlotCardinalityViolated for `wrist_camera`, got: \
              {two_on_a_zero_or_one_slot}"
         );
@@ -2580,12 +2568,10 @@ mod tests {
         ) else {
             panic!("a missing zero_or_one entry must fail startup");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::SlotUnbound { link_id, cardinality }
-                    if link_id == "wrist_camera" && *cardinality == Cardinality::ZeroOrOne
-            ),
+                    if link_id == "wrist_camera" && *cardinality == Cardinality::ZeroOrOne,
             "expected SlotUnbound for `wrist_camera`, got: {err}"
         );
     }
@@ -2700,12 +2686,10 @@ mod tests {
         let Err(err) = daemon_processor_with_bindings(OBSERVER_PEPPY_CONFIG, None) else {
             panic!("expected missing-seed startup error");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::ObservationSeedViolated { link_id, cardinality, seeded }
-                    if link_id == "sole_arm" && *cardinality == Cardinality::One && *seeded == 0
-            ),
+                    if link_id == "sole_arm" && *cardinality == Cardinality::One && *seeded == 0,
             "expected ObservationSeedViolated for `sole_arm`, got: {err}"
         );
     }
@@ -2739,14 +2723,12 @@ mod tests {
         ) else {
             panic!("expected oversized-seed startup error");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::ObservationSeedViolated { link_id, cardinality, seeded }
                     if link_id == "maybe_arm"
                         && *cardinality == Cardinality::ZeroOrOne
-                        && *seeded == 2
-            ),
+                        && *seeded == 2,
             "expected ObservationSeedViolated for `maybe_arm`, got: {err}"
         );
     }
@@ -2780,12 +2762,10 @@ mod tests {
         ) else {
             panic!("expected duplicate-seed startup error");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::ObservationSeedDuplicate { link_id, instance_id, .. }
-                    if link_id == "spare_arms" && instance_id == "arm_1"
-            ),
+                    if link_id == "spare_arms" && instance_id == "arm_1",
             "expected ObservationSeedDuplicate, got: {err}"
         );
     }
@@ -2805,11 +2785,9 @@ mod tests {
         ) else {
             panic!("expected undeclared-seed startup error");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
-                crate::error::Error::ObservationSeedUndeclared { link_id } if link_id == "phantom_slot"
-            ),
+                crate::error::Error::ObservationSeedUndeclared { link_id } if link_id == "phantom_slot",
             "expected ObservationSeedUndeclared, got: {err}"
         );
     }
@@ -2946,12 +2924,10 @@ mod tests {
         let Err(err) = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &unnamed) else {
             panic!("a copy is a name");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::InvalidCopyName { link_id, copy, .. }
-                    if link_id == "arms" && copy == "not a name"
-            ),
+                    if link_id == "arms" && copy == "not a name",
             "got: {err:?}"
         );
 
@@ -2964,12 +2940,10 @@ mod tests {
         let Err(err) = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &unnamed_id) else {
             panic!("an id inside a copy is a name");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::InvalidInstanceIdInCopy { link_id, instance_id, .. }
-                    if link_id == "arms" && instance_id == "not a name"
-            ),
+                    if link_id == "arms" && instance_id == "not a name",
             "got: {err:?}"
         );
     }
@@ -2999,8 +2973,9 @@ mod tests {
         .expect("the boot config is written");
         let err = Processor::load_runtime_config(path.to_str().unwrap())
             .expect_err("a bare producer address is no member");
-        assert!(
-            matches!(&err, crate::error::Error::LaunchConfigParse { .. }),
+        assert_matches!(
+            &err,
+            crate::error::Error::LaunchConfigParse { .. },
             "got: {err:?}"
         );
         let message = err.to_string();
@@ -3020,11 +2995,9 @@ mod tests {
         let Err(err) = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &unseeded) else {
             panic!("expected unbound-slot startup error");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
-                crate::error::Error::SlotUnbound { link_id, .. } if link_id == "main"
-            ),
+                crate::error::Error::SlotUnbound { link_id, .. } if link_id == "main",
             "expected SlotUnbound for `main`, got: {err}"
         );
 
@@ -3087,12 +3060,10 @@ mod tests {
         let Err(err) = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &vacant_one_slot) else {
             panic!("a vacant `one` slot must fail startup");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::SlotCardinalityViolated { link_id, cardinality, bound }
-                    if link_id == "main" && *cardinality == Cardinality::One && *bound == 0
-            ),
+                    if link_id == "main" && *cardinality == Cardinality::One && *bound == 0,
             "expected SlotCardinalityViolated for `main`, got: {err}"
         );
     }
@@ -3107,12 +3078,10 @@ mod tests {
         let Err(err) = standalone_processor(OBSERVER_PEPPY_CONFIG, &unseeded) else {
             panic!("expected an unseeded floored observer slot to fail startup");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::ObservationSeedViolated { link_id, cardinality, seeded }
-                    if link_id == "sole_arm" && *cardinality == Cardinality::One && *seeded == 0
-            ),
+                    if link_id == "sole_arm" && *cardinality == Cardinality::One && *seeded == 0,
             "expected ObservationSeedViolated for `sole_arm`, got: {err}"
         );
 

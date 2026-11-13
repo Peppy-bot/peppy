@@ -1949,6 +1949,7 @@ mod tests {
     use crate::failure::test_support::failure;
     use crate::tasks::CancelledGoal;
     use rmcp::model::ErrorCode;
+    use std::assert_matches;
     use std::sync::atomic::Ordering;
 
     fn test_bundle() -> ExposureBundle {
@@ -3509,10 +3510,10 @@ mod tests {
                 .await
                 .expect("attached and published");
             assert_eq!(read.contents.len(), 1);
-            assert!(matches!(
+            assert_matches!(
                 events.try_recv().expect("the publish is announced"),
                 CatalogEvent::ResourceUpdated { .. }
-            ));
+            );
 
             members
                 .lock()
@@ -3520,10 +3521,10 @@ mod tests {
                 .retain(|member| member.robot.as_deref() != Some("alpha"));
             handle.detach(&camera);
             handle.changed();
-            assert!(matches!(
+            assert_matches!(
                 events.try_recv().expect("the change is announced"),
                 CatalogEvent::ResourceListChanged
-            ));
+            );
             let gone = server
                 .read_snapshot("peppy://resource/alpha/wrist_left/camera.latest_frame")
                 .await
@@ -4396,10 +4397,7 @@ mod tests {
         let no_representation = no_picture_resource(|bundle| {
             bundle.pictures[0].resource = "front_camera.status".to_string();
         });
-        assert!(matches!(
-            no_representation,
-            BuildError::NoPictureResource { .. }
-        ));
+        assert_matches!(no_representation, BuildError::NoPictureResource { .. });
 
         // Nor does one whose frames are data: 16-bit samples.
         let png16 = no_picture_resource(|bundle| {
@@ -4411,13 +4409,13 @@ mod tests {
                 .expect("a representation"),
             );
         });
-        assert!(matches!(png16, BuildError::NoPictureResource { .. }));
+        assert_matches!(png16, BuildError::NoPictureResource { .. });
 
         // The resource of another target is not the picture's.
         let other_target = no_picture_resource(|bundle| {
             bundle.pictures[0].target = "recorder".to_string();
         });
-        assert!(matches!(other_target, BuildError::NoPictureResource { .. }));
+        assert_matches!(other_target, BuildError::NoPictureResource { .. });
 
         let duplicate = no_picture_resource(|bundle| {
             bundle.pictures[0].name = "front_camera.set_brightness".to_string();
@@ -4480,10 +4478,7 @@ mod tests {
         let (server, nanos) = built_picture_server();
         let mut events = server.state.events.subscribe();
         publish_status(&server, 87);
-        assert!(matches!(
-            events.try_recv(),
-            Ok(CatalogEvent::ResourceUpdated { .. })
-        ));
+        assert_matches!(events.try_recv(), Ok(CatalogEvent::ResourceUpdated { .. }));
 
         // 100 ms into the 500 ms gate interval, a read arrives, then a
         // message: the message is admitted for the reader, answers it, and

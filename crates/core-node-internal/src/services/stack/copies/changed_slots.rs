@@ -477,6 +477,7 @@ mod tests {
     use core_node_api::encoding::ObservationTarget;
     use core_node_api::encoding::SetMember;
     use daemon_config::launcher::{CopyInstance, PeppyLauncherParser, UnitSelection};
+    use std::assert_matches;
 
     /// A monitor with a `zero_or_more` node slot `robots`, a `zero_or_more`
     /// contract slot `camera_profiles`, a `one` node slot `lead_robot`, a
@@ -898,8 +899,8 @@ mod tests {
             ],
             "each producer member carries the copy the plan stamped on it"
         );
-        assert!(matches!(sets[0].members, SlotMembers::Producers(_)));
-        assert!(matches!(sets[1].members, SlotMembers::Observed(_)));
+        assert_matches!(sets[0].members, SlotMembers::Producers(_));
+        assert_matches!(sets[1].members, SlotMembers::Observed(_));
 
         let before = without_members_of(&sets, &copy_adding(&[("robots", "alpha_arm_inst")]));
         assert_eq!(

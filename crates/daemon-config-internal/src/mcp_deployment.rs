@@ -724,6 +724,7 @@ mod tests {
     use crate::internal::repository::{
         EntryOrigin, GitCommit, ItemName, ItemTag, RepoRelativePath,
     };
+    use std::assert_matches;
 
     const CAMERA_CONTRACT: &str = r#"{
         peppy_schema: "contract/v1",
@@ -1280,8 +1281,7 @@ mod tests {
 
         let refusal = plan_deployment(&[camera("fleet")], &[contract(CAMERA_CONTRACT)])
             .expect_err("a contract target takes the name of the fleet slot");
-        assert!(
-            matches!(&refusal, McpDeploymentError::FleetSlotTaken { target, .. } if target == "fleet"),
+        assert_matches!(&refusal, McpDeploymentError::FleetSlotTaken { target, .. } if target == "fleet",
             "{refusal}"
         );
         assert!(
@@ -1402,8 +1402,7 @@ mod tests {
         ));
         let error = plan_deployment(&[mismatched], &[contract(CAMERA_CONTRACT)])
             .expect_err("the author pin disagrees");
-        assert!(
-            matches!(error, McpDeploymentError::ContractPinMismatch { ref exposure, ref contract, .. } if exposure == "a:v1" && contract == "rgb_camera:v1"),
+        assert_matches!(error, McpDeploymentError::ContractPinMismatch { ref exposure, ref contract, .. } if exposure == "a:v1" && contract == "rgb_camera:v1",
             "{error}"
         );
 
@@ -1430,8 +1429,7 @@ mod tests {
         ));
         let error =
             plan_deployment(&[orphan], &[contract(RECORDING_CONTRACT)]).expect_err("no camera pin");
-        assert!(
-            matches!(error, McpDeploymentError::ContractNotPinned { ref contract, .. } if contract == "rgb_camera:v1"),
+        assert_matches!(error, McpDeploymentError::ContractNotPinned { ref contract, .. } if contract == "rgb_camera:v1",
             "{error}"
         );
     }
@@ -1598,10 +1596,10 @@ mod tests {
 
     #[test]
     fn an_empty_list_and_a_repeated_exposure_are_refused() {
-        assert!(matches!(
+        assert_matches!(
             plan_deployment(&[], &[]).expect_err("nothing to serve"),
             McpDeploymentError::NoExposures
-        ));
+        );
         let one = exposure(&exposure_document(
             "a",
             "v1",
@@ -1612,8 +1610,7 @@ mod tests {
         ));
         let error = plan_deployment(&[one.clone(), one], &[contract(CAMERA_CONTRACT)])
             .expect_err("listed twice");
-        assert!(
-            matches!(error, McpDeploymentError::DuplicateExposure { ref exposure } if exposure == "a:v1"),
+        assert_matches!(error, McpDeploymentError::DuplicateExposure { ref exposure } if exposure == "a:v1",
             "{error}"
         );
     }

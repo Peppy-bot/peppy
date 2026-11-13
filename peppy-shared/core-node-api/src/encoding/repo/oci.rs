@@ -524,6 +524,7 @@ impl<'de> serde::Deserialize<'de> for OciDigest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn version(text: &str) -> ArtifactVersion {
         ArtifactVersion::parse(text).expect("valid version")
@@ -600,10 +601,10 @@ mod tests {
             );
         }
         let url = "oci://ghcr.io/acme//nodes";
-        assert!(matches!(
+        assert_matches!(
             OciRepository::parse(url),
             Err(OciRepositoryError::InvalidPathComponent { .. })
-        ));
+        );
     }
 
     #[test]

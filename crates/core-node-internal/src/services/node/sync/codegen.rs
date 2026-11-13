@@ -223,6 +223,7 @@ fn generate_peppy_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn needs_sync_returns_true_when_dir_missing() {
@@ -350,8 +351,9 @@ mod tests {
 
         let result = auto_sync_node_without_config(tmp.path());
 
-        assert!(
-            matches!(result, Err(crate::Error::GeneratorError(_))),
+        assert_matches!(
+            result,
+            Err(crate::Error::GeneratorError(_)),
             "a missing peppy.json5 must fail the generation, got {result:?}"
         );
         assert_eq!(std::fs::read(peppy.join("marker")).unwrap(), b"previous");

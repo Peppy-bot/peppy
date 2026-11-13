@@ -458,6 +458,7 @@ impl Default for PeppyDirs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn a_build_without_a_release_tag_has_no_artifact_version() {
@@ -479,7 +480,7 @@ mod tests {
             );
         }
         let error = artifact_version_of(Some("v1+build")).expect_err("a `+`");
-        assert!(matches!(error, NoArtifactVersion::Unusable(..)), "{error}");
+        assert_matches!(error, NoArtifactVersion::Unusable(..), "{error}");
         assert!(error.to_string().contains("v1+build"), "{error}");
     }
 

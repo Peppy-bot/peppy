@@ -14,6 +14,7 @@ use daemon_config::launcher::{
     UnitSelection, check_daemon_scopes,
 };
 use serde_json::json;
+use std::assert_matches;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -1252,8 +1253,9 @@ fn a_join_runs_no_trial() {
     )
     .expect_err("a scope that does not parse is refused at a join too")
     .0;
-    assert!(
-        matches!(&refused[..], [DaemonScopeError::InvalidScope { .. }]),
+    assert_matches!(
+        &refused[..],
+        [DaemonScopeError::InvalidScope { .. }],
         "{refused:?}"
     );
 }

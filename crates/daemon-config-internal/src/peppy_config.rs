@@ -1166,6 +1166,7 @@ fn write_config_file(path: &Path, content: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -2454,8 +2455,9 @@ mod tests {
         let (_tmp, peppy_dirs, path) = dirs_with_config(malformed);
 
         let err = load_or_create(&peppy_dirs).unwrap_err();
-        assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(_))),
+        assert_matches!(
+            err,
+            Error::Parsing(ParsingError::CannotParseConfig(_)),
             "expected a parse error, got: {err:?}"
         );
         // A failed load never modifies the file, even though it omits knobs.

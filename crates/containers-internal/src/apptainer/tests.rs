@@ -10,6 +10,7 @@ use super::facade::{
 use super::facade::{Apptainer, Backend, GuestSignal, is_uri, prepare_scratch_dir};
 use super::registry_auth::{RegistryAuth, RegistryAuthSource};
 use crate::error::Error;
+use std::assert_matches;
 use std::fs;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
@@ -384,8 +385,7 @@ fn a_lima_entry_that_would_break_a_line_is_refused() {
             .apptainer_env(key, value)
             .into_std_command()
             .expect_err("an entry that breaks a line is refused");
-        assert!(
-            matches!(&error, Error::GuestEnvEntryUnsendable { key: refused } if refused == key),
+        assert_matches!(&error, Error::GuestEnvEntryUnsendable { key: refused } if refused == key,
             "{key}: {error}"
         );
     }
@@ -573,9 +573,8 @@ fn test_a_bind_path_holding_a_separator_is_refused() {
             .bind(src, dest, None)
             .build_args()
             .expect_err("a separator in a bind path is refused");
-        assert!(
-            matches!(&error, crate::Error::BindPathHoldsDelimiter { delimiter, .. }
-                if *delimiter == ':' || *delimiter == ','),
+        assert_matches!(&error, crate::Error::BindPathHoldsDelimiter { delimiter, .. }
+                if *delimiter == ':' || *delimiter == ',',
             "got: {error}"
         );
     }
@@ -767,9 +766,8 @@ fn a_run_with_nv_fails_before_spawning_when_the_nv_list_cannot_be_updated() {
         .into_std_command()
         .expect_err("a list that cannot be read fails the command");
 
-    assert!(
-        matches!(&error, Error::NvliblistUpdateFailed { path, .. }
-            if *path == jetson.nvliblist().display().to_string()),
+    assert_matches!(&error, Error::NvliblistUpdateFailed { path, .. }
+            if *path == jetson.nvliblist().display().to_string(),
         "{error:?}"
     );
 }
@@ -1978,8 +1976,7 @@ fn prepare_scratch_dir_rejects_existing_non_writable_directory() {
     }
 
     let err = result.expect_err("a non-writable scratch directory should be rejected");
-    assert!(
-        matches!(&err, Error::ScratchDirUnavailable { path, .. } if path == &scratch.display().to_string()),
+    assert_matches!(&err, Error::ScratchDirUnavailable { path, .. } if path == &scratch.display().to_string(),
         "expected ScratchDirUnavailable naming {scratch:?}, got: {err:?}"
     );
 }
@@ -2569,8 +2566,7 @@ fn wait_for_child_bounded_returns_exit_status_on_clean_exit() {
         stepping_clock(Instant::now(), Duration::from_secs(1)),
         |_| panic!("must not sleep: the child has already exited"),
     );
-    assert!(
-        matches!(result, Ok(Some(status)) if status.success()),
+    assert_matches!(result, Ok(Some(status)) if status.success(),
         "a clean exit should yield Ok(Some(success)), got: {result:?}"
     );
     assert!(!child.killed, "a cleanly-exited child must not be killed");
@@ -2597,8 +2593,9 @@ fn wait_for_child_bounded_returns_none_and_reaps_on_timeout() {
         stepping_clock(Instant::now(), Duration::from_secs(10)),
         |_| {},
     );
-    assert!(
-        matches!(result, Ok(None)),
+    assert_matches!(
+        result,
+        Ok(None),
         "a child that never exits should time out to Ok(None), got: {result:?}"
     );
     assert!(

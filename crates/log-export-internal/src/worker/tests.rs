@@ -6,6 +6,7 @@ use crate::otlp::messages::{
 use crate::record::{LogIdentity, LogKind};
 use crate::test_fixtures::{headers_file, resource};
 use daemon_config::peppy_config::Severity;
+use std::assert_matches;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -563,10 +564,7 @@ fn each_answer_decides_what_becomes_of_the_request() {
         assert_eq!(status(delivered), Attempt::Delivered { rejected: 0 });
     }
     for retried in [429, 502, 503, 504] {
-        assert!(matches!(
-            status(retried),
-            Attempt::Retry { after: None, .. }
-        ));
+        assert_matches!(status(retried), Attempt::Retry { after: None, .. });
     }
     for unauthorized in [401, 403] {
         assert_eq!(

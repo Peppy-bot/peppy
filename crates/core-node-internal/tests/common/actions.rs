@@ -219,6 +219,7 @@ pub fn default_instance_plan(instance_id: &str) -> config::runtime::NodeInstance
 }
 
 /// Why [`drain_feedback`] returned.
+#[derive(Debug)]
 pub enum FeedbackDrainOutcome {
     /// The feedback handler asked to stop after a feedback line.
     Stopped,

@@ -5,6 +5,7 @@
 use super::*;
 use crate::CredentialStore;
 use httpmock::prelude::*;
+use std::assert_matches;
 use std::ffi::OsString;
 
 const REPOSITORY_PATH: &str = "acme/nodes";
@@ -225,8 +226,7 @@ async fn a_registry_that_asks_for_a_credential_the_auth_file_lacks_says_so() {
         .await
         .expect_err("no credential");
 
-    assert!(
-        matches!(&error, RegistryError::NoCredential { registry: r } if *r == registry.registry()),
+    assert_matches!(&error, RegistryError::NoCredential { registry: r } if *r == registry.registry(),
         "{error}"
     );
     assert!(error.to_string().contains("docker login"), "{error}");
@@ -254,10 +254,7 @@ async fn a_refused_credential_is_an_error_with_the_answer_of_the_registry() {
         .await
         .expect_err("refused");
 
-    assert!(
-        matches!(error, RegistryError::Unauthorized { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::Unauthorized { .. }, "{error}");
     assert!(
         error
             .to_string()
@@ -302,10 +299,7 @@ async fn a_manifest_is_read_with_its_digest_and_a_missing_one_is_none() {
         .manifest(digest.as_str())
         .await
         .expect_err("a manifest asked by digest must have it");
-    assert!(
-        matches!(error, RegistryError::DigestMismatch { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::DigestMismatch { .. }, "{error}");
 }
 
 #[tokio::test]
@@ -349,20 +343,14 @@ async fn a_downloaded_blob_lands_only_when_its_digest_and_size_match() {
         .download_blob(&tampered, content.len() as u64, &bad, &mut |_| {})
         .await
         .expect_err("digest mismatch");
-    assert!(
-        matches!(error, RegistryError::DigestMismatch { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::DigestMismatch { .. }, "{error}");
 
     let short = dir.path().join("short.sif");
     let error = client
         .download_blob(&digest, content.len() as u64 - 1, &short, &mut |_| {})
         .await
         .expect_err("more bytes than the descriptor states");
-    assert!(
-        matches!(error, RegistryError::SizeMismatch { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::SizeMismatch { .. }, "{error}");
 
     // Nothing but the good blob is left: no partial file, no bad blob.
     let names: Vec<String> = std::fs::read_dir(dir.path())
@@ -398,7 +386,7 @@ async fn a_missing_blob_is_not_found() {
         .await
         .expect_err("absent");
 
-    assert!(matches!(error, RegistryError::NotFound { .. }), "{error}");
+    assert_matches!(error, RegistryError::NotFound { .. }, "{error}");
 }
 
 #[tokio::test]
@@ -668,10 +656,7 @@ async fn an_unreachable_registry_names_itself_and_the_cause() {
 
     let error = client.list_tags().await.expect_err("unreachable");
 
-    assert!(
-        matches!(error, RegistryError::Unreachable { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::Unreachable { .. }, "{error}");
     assert!(
         error.to_string().contains(&format!("127.0.0.1:{port}")),
         "{error}"

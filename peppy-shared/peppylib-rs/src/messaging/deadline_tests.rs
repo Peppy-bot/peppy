@@ -12,6 +12,7 @@ use pmi::{
     ActionWireSender, Messenger, MessengerAdapter, MessengerBackend, MockAdapter, ResponseToken,
     ServiceKind, ServiceQueryKind, ServiceQueryable, ServiceWireReceiver, ServiceWireSender,
 };
+use std::assert_matches;
 use std::{
     cell::Cell,
     future::{Future, poll_fn, ready},
@@ -140,10 +141,10 @@ async fn assert_no_request(handle: &MessengerHandle, queryable: &ServiceQueryabl
         .poll_service(&sender(), Payload::new(), ServiceQueryKind::Probe, None)
         .await
         .unwrap();
-    assert!(matches!(
-        queryable.rx.try_recv(),
-        Err(flume::TryRecvError::Empty)
-    ));
+    assert_matches!(
+        queryable.rx.try_recv().err(),
+        Some(flume::TryRecvError::Empty)
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -169,7 +170,7 @@ async fn pending_issuance_is_cancelled_at_the_deadline() {
     let mut issuance = Box::pin(within_service_deadline(Some(deadline), rx));
     assert!(poll!(issuance.as_mut()).is_pending());
     sleep_until(deadline).await;
-    assert!(matches!(poll!(issuance.as_mut()), Poll::Ready(None)));
+    assert_matches!(poll!(issuance.as_mut()), Poll::Ready(None));
     assert!(tx.is_closed(), "expiry must drop the pending future");
 }
 
@@ -562,9 +563,8 @@ async fn issuance_errors_remain_transport_errors() {
             )
             .await
             .unwrap_err();
-        assert!(
-            matches!(error, Error::PeppyMessagingInterface(pmi::PeppyMessagingInterfaceError::PublishError { topic })
-            if topic == SERVICE)
+        assert_matches!(error, Error::PeppyMessagingInterface(pmi::PeppyMessagingInterfaceError::PublishError { topic })
+            if topic == SERVICE
         );
     }
 }
@@ -595,12 +595,12 @@ async fn liveliness_issuance_errors_remain_transport_errors() {
         .unwrap_err();
 
     for error in [probe_error, presence_error] {
-        assert!(matches!(
+        assert_matches!(
             error,
             Error::PeppyMessagingInterface(
                 pmi::PeppyMessagingInterfaceError::MessagingSessionError(_)
             )
-        ));
+        );
     }
 }
 

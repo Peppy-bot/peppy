@@ -10,6 +10,7 @@ use crate::generator::testgen::{
     DepLinkSpec, DepServiceSpec, DepTopicSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
 };
 use config::node::{Cardinality, MessageFormat, NativeEmittedTopic, TopicRetention};
+use std::assert_matches;
 
 fn registry_with_pairing(cardinality: Cardinality) -> TestGenRegistry {
     let mut registry = TestGenRegistry::default();
@@ -257,14 +258,12 @@ fn a_link_qualified_name_still_collides_with_a_member_that_carries_it() {
         &registry_with_camera_topics(&["session", "camera_session"]),
     )
     .expect_err("two members on one module must not render");
-    assert!(
-        matches!(
+    assert_matches!(
             &error,
             crate::error::Error::ModuleNameCollision { sanitized, first, second, .. }
                 if sanitized == "camera_session"
                     && first == "camera/session"
-                    && second == "camera/camera_session"
-        ),
+                    && second == "camera/camera_session",
         "expected `session` and `camera_session` to collide on `camera_session`, got: {error}"
     );
 }

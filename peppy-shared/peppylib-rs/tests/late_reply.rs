@@ -14,6 +14,7 @@ use peppylib::messaging::{
 use peppylib::testing::{acquire_mesh_serial, ensure_test_fd_limit, wait_service_reachable};
 use peppylib::types::Payload;
 use pmi::{MessengerBackend, ZenohAdapter};
+use std::assert_matches;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -273,12 +274,10 @@ async fn run_routed_late_reply(recorder: &Arc<Recorder>) {
         .send(())
         .expect("caller waits for clock advancement");
     let result = caller.await.expect("caller runtime did not panic");
-    assert!(
-        matches!(
+    assert_matches!(
             result,
             Err(PeppyError::ServiceTimeout { ref instance_id, ref service_name })
-                if instance_id.as_deref() == Some(SERVER_INSTANCE) && service_name == SERVICE
-        ),
+                if instance_id.as_deref() == Some(SERVER_INSTANCE) && service_name == SERVICE,
         "the actual caller must time out after ACK, got {result:?}"
     );
 

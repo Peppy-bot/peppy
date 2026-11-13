@@ -2662,6 +2662,7 @@ mod tests {
     use super::*;
     use crate::action_log::test_support::scratch_log;
     use config::node::ResolvedRestart;
+    use std::assert_matches;
     use std::collections::BTreeMap;
     use tokio::sync::mpsc;
 
@@ -2783,7 +2784,7 @@ mod tests {
 
         assert_eq!(built, slot.path);
         assert_eq!(handle.read().artifact_path(), Some(slot.path.as_path()));
-        assert!(matches!(handle.read().stage(), NodeStage::Ready { .. }));
+        assert_matches!(handle.read().stage(), NodeStage::Ready { .. });
         let line = feedback_rx.try_recv().expect("the reuse is announced").line;
         assert_eq!(
             line,
@@ -2800,14 +2801,12 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(entity.stage().to_serialized(), SerializedNodeStage::Ready);
-        assert!(
-            matches!(
-                entity.stage(),
-                NodeStage::Ready {
-                    artifact: Artifact::BuiltIn(_),
-                    ..
-                }
-            ),
+        assert_matches!(
+            entity.stage(),
+            NodeStage::Ready {
+                artifact: Artifact::BuiltIn(_),
+                ..
+            },
             "the recipe is the entity's artifact"
         );
         assert_eq!(
@@ -2888,8 +2887,9 @@ mod tests {
             Instant::now(),
         )
         .await;
-        assert!(
-            matches!(committed, Err(Error::InvalidStageTransition { .. })),
+        assert_matches!(
+            committed,
+            Err(Error::InvalidStageTransition { .. }),
             "a stale generation refuses the commit"
         );
         let emptied = tokio::time::timeout(Duration::from_secs(5), async {
@@ -4060,12 +4060,10 @@ mod tests {
             Registrations::default,
         )
         .expect("a running instance exits");
-        assert!(
-            matches!(
+        assert_matches!(
                 exited.next,
                 Some(Attempt::Scheduled { attempt, delay, .. })
-                    if attempt.get() == 6 && delay == BACKOFF.max_delay
-            ),
+                    if attempt.get() == 6 && delay == BACKOFF.max_delay,
             "a short run backs off further: {:?}",
             exited.next
         );
@@ -4139,11 +4137,9 @@ mod tests {
         )
         .expect("a running instance exits");
         assert_eq!(handle.read().instances()[0].state(), InstanceState::Failed);
-        assert!(
-            matches!(
+        assert_matches!(
                 exited.next,
-                Some(Attempt::Capped { max_restarts, .. }) if max_restarts.get() == 2
-            ),
+                Some(Attempt::Capped { max_restarts, .. }) if max_restarts.get() == 2,
             "{:?}",
             exited.next
         );
@@ -4297,8 +4293,7 @@ mod tests {
             NodeEntity::prepare_and_spawn(&handle, respawn(&other, &peppy_dirs, &feedback_tx))
                 .await
                 .expect_err("no slot waits under this id");
-        assert!(
-            matches!(&error, Error::RespawnTargetMissing { instance_id } if instance_id == "other-1"),
+        assert_matches!(&error, Error::RespawnTargetMissing { instance_id } if instance_id == "other-1",
             "{error}"
         );
         // A slot a stop path claimed, and one that is `Running`, refuse too.
@@ -4306,17 +4301,17 @@ mod tests {
         let error = NodeEntity::prepare_and_spawn(&handle, respawn(&id, &peppy_dirs, &feedback_tx))
             .await
             .expect_err("a claimed slot is a stop path's");
-        assert!(matches!(error, Error::RespawnTargetMissing { .. }));
+        assert_matches!(error, Error::RespawnTargetMissing { .. });
         assert!(NodeEntity::respawn_inputs_of(&handle, &id).is_none());
-        assert!(matches!(
+        assert_matches!(
             NodeEntity::claim_and_remove(&handle, &id, None),
             SlotRemoval::Removed(_)
-        ));
+        );
         assert!(handle.read().instances().is_empty());
         let error = NodeEntity::prepare_and_spawn(&handle, respawn(&id, &peppy_dirs, &feedback_tx))
             .await
             .expect_err("a stopped slot is gone");
-        assert!(matches!(error, Error::RespawnTargetMissing { .. }));
+        assert_matches!(error, Error::RespawnTargetMissing { .. });
         assert!(NodeEntity::respawn_inputs_of(&handle, &id).is_none());
         let running = Name::new("running-1").unwrap();
         let handle = ready_entity_with(TrackedNodeInstance::new(
@@ -4328,7 +4323,7 @@ mod tests {
             NodeEntity::prepare_and_spawn(&handle, respawn(&running, &peppy_dirs, &feedback_tx))
                 .await
                 .expect_err("a running slot is not respawned");
-        assert!(matches!(error, Error::RespawnTargetMissing { .. }));
+        assert_matches!(error, Error::RespawnTargetMissing { .. });
         assert_eq!(handle.read().instances()[0].state(), InstanceState::Running);
     }
 
@@ -4411,10 +4406,9 @@ mod tests {
 
         let capped_id = Name::new("waiting-4").unwrap();
         let handle = ready_entity_with(waiting_instance_under(&capped_id, capped(2)));
-        assert!(matches!(
+        assert_matches!(
             NodeEntity::mark_start_failed(&handle, &capped_id, spawn_failed.clone(), &BACKOFF, Instant::now()),
-            Some(Attempt::Scheduled { attempt, .. }) if attempt.get() == 2
-        ));
+            Some(Attempt::Scheduled { attempt, .. }) if attempt.get() == 2);
         let next = NodeEntity::mark_start_failed(
             &handle,
             &capped_id,
@@ -4423,11 +4417,9 @@ mod tests {
             Instant::now(),
         )
         .expect("the capped attempt is taken");
-        assert!(
-            matches!(
+        assert_matches!(
                 next,
-                Attempt::Capped { max_restarts, .. } if max_restarts.get() == 2
-            ),
+                Attempt::Capped { max_restarts, .. } if max_restarts.get() == 2,
             "{next:?}"
         );
         {

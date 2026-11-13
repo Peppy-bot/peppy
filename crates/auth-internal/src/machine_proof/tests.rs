@@ -1,5 +1,6 @@
 use super::*;
 use crate::test_support::{EXPIRES_AT, ISSUED_AT, TestMachineCa};
+use std::assert_matches;
 use std::time::Duration;
 
 const NAMESPACE: &str = "ws-a";
@@ -78,12 +79,11 @@ fn the_proof_of_a_client_gives_the_key_that_the_boot_endorses_for_it_alone() {
             is_daemon: false
         }
     );
-    assert!(matches!(
+    assert_matches!(
         machine
             .trust()
             .verify(&proof, sender("arm_inst"), during_validity()),
-        Err(MachineProofError::NoEndorsement(client)) if client == "arm_inst"
-    ));
+        Err(MachineProofError::NoEndorsement(client)) if client == "arm_inst");
 }
 
 #[test]
@@ -99,24 +99,24 @@ fn a_proof_that_names_another_namespace_or_machine_is_refused() {
         namespace: "ws-b",
         ..sender(BOOT)
     };
-    assert!(matches!(
+    assert_matches!(
         trust.verify(&proof, elsewhere, during_validity()),
         Err(MachineProofError::NamesAnother {
             field: "the namespace",
             ..
         })
-    ));
+    );
     let other_machine = ClaimedSender {
         core_node: "cn-desk",
         ..sender(BOOT)
     };
-    assert!(matches!(
+    assert_matches!(
         trust.verify(&proof, other_machine, during_validity()),
         Err(MachineProofError::NamesAnother {
             field: "the core node",
             ..
         })
-    ));
+    );
 }
 
 #[test]
@@ -129,23 +129,23 @@ fn a_certificate_of_another_ca_or_out_of_its_validity_is_refused() {
     let their_machine = operator_machine(&theirs, &their_directory, MACHINE);
     let (_, their_credential) = boot(&their_machine);
 
-    assert!(matches!(
+    assert_matches!(
         our_machine.trust().verify(
             &their_credential.daemon_proof(),
             sender(BOOT),
             during_validity()
         ),
         Err(MachineProofError::Chain(_))
-    ));
+    );
 
     let (_, our_credential) = boot(&our_machine);
     let after = SystemTime::UNIX_EPOCH + Duration::from_secs(EXPIRES_AT as u64 + 1);
-    assert!(matches!(
+    assert_matches!(
         our_machine
             .trust()
             .verify(&our_credential.daemon_proof(), sender(BOOT), after),
         Err(MachineProofError::Chain(_))
-    ));
+    );
 }
 
 #[test]
@@ -155,12 +155,11 @@ fn an_operator_certificate_names_the_core_node_of_its_machine() {
     let impostor = operator_machine(&ca, &directory, "cn-desk");
     let (_, credential) = boot(&impostor);
 
-    assert!(matches!(
+    assert_matches!(
         impostor
             .trust()
             .verify(&credential.daemon_proof(), sender(BOOT), during_validity()),
-        Err(MachineProofError::CommonName { named, .. }) if named == "cn-desk"
-    ));
+        Err(MachineProofError::CommonName { named, .. }) if named == "cn-desk");
 }
 
 #[test]
@@ -205,10 +204,10 @@ fn a_tampered_statement_or_endorsement_is_refused() {
 
     let mut statement = MachineProof::decode(&credential.daemon_proof()).unwrap();
     statement.boot.public_key = ClientKey::generate().public_key();
-    assert!(matches!(
+    assert_matches!(
         trust.verify(&statement.encode(), sender(BOOT), during_validity()),
         Err(MachineProofError::BootStatement)
-    ));
+    );
 
     let client_key = ClientKey::generate().public_key();
     let mut endorsed =
@@ -218,15 +217,15 @@ fn a_tampered_statement_or_endorsement_is_refused() {
         .as_mut()
         .expect("a client proof holds an endorsement")
         .public_key = ClientKey::generate().public_key();
-    assert!(matches!(
+    assert_matches!(
         trust.verify(&endorsed.encode(), sender("arm_inst"), during_validity()),
         Err(MachineProofError::Endorsement)
-    ));
+    );
 
-    assert!(matches!(
+    assert_matches!(
         trust.verify(b"not json", sender(BOOT), during_validity()),
         Err(MachineProofError::Decode(_))
-    ));
+    );
 }
 
 #[test]
@@ -238,8 +237,8 @@ fn a_key_that_is_not_a_supported_pkcs8_key_is_refused() {
         "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n",
     )
     .unwrap();
-    assert!(matches!(
-        MachineKey::read(&path),
-        Err(MachineProofError::UnsupportedKey)
-    ));
+    assert_matches!(
+        MachineKey::read(&path).err(),
+        Some(MachineProofError::UnsupportedKey)
+    );
 }

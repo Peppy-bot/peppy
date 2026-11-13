@@ -1074,6 +1074,7 @@ pub fn validate_named_items<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn json5<T: serde::de::DeserializeOwned>(s: &str) -> T {
         serde_json5::from_str(s).unwrap()
@@ -1167,13 +1168,13 @@ mod tests {
         let ParameterSpec::Group(video_fields) = video else {
             panic!("expected group");
         };
-        assert!(matches!(
+        assert_matches!(
             video_fields.get("fps"),
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::U16,
                 default: None
             })
-        ));
+        );
         let resolution = video_fields.get("resolution").unwrap();
         let ParameterSpec::Group(_) = resolution else {
             panic!("expected nested group");
@@ -1193,20 +1194,20 @@ mod tests {
         let ParameterSpec::Group(fields) = parsed.get("device").unwrap() else {
             panic!("expected group");
         };
-        assert!(matches!(
+        assert_matches!(
             fields.get("path"),
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::String,
                 default: Some(DefaultValue::String(_))
             })
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             fields.get("serial"),
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::String,
                 default: None
             })
-        ));
+        );
     }
 
     // ---- Parse-time validation errors ----
@@ -1336,25 +1337,25 @@ mod tests {
     #[test]
     fn f64_default_accepts_int_above_f32_range() {
         let parsed: ParameterSpec = json5(r#"{ $type: "f64", $default: 16777217 }"#);
-        assert!(matches!(
+        assert_matches!(
             parsed,
             ParameterSpec::Primitive {
                 kind: TypeToken::F64,
                 default: Some(DefaultValue::Float(_))
             }
-        ));
+        );
     }
 
     #[test]
     fn f64_default_accepts_large_float() {
         let parsed: ParameterSpec = json5(r#"{ $type: "f64", $default: 1e100 }"#);
-        assert!(matches!(
+        assert_matches!(
             parsed,
             ParameterSpec::Primitive {
                 kind: TypeToken::F64,
                 default: Some(DefaultValue::Float(_))
             }
-        ));
+        );
     }
 
     #[test]
@@ -1371,7 +1372,7 @@ mod tests {
         let s = schema(r#"{ gain: "f32" }"#);
         let raw = BTreeMap::from([("gain".to_string(), AnyType::Float(1e100))]);
         let err = validate_node_arguments(raw, &s).unwrap_err();
-        assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+        assert_matches!(err, NodeArgumentsError::TypeMismatch(_));
     }
 
     #[test]
@@ -1379,7 +1380,7 @@ mod tests {
         let s = schema(r#"{ gain: "f32" }"#);
         let raw = BTreeMap::from([("gain".to_string(), AnyType::Float(f64::INFINITY))]);
         let err = validate_node_arguments(raw, &s).unwrap_err();
-        assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+        assert_matches!(err, NodeArgumentsError::TypeMismatch(_));
 
         let raw_nan = BTreeMap::from([("gain".to_string(), AnyType::Float(f64::NAN))]);
         assert!(validate_node_arguments(raw_nan, &s).is_err());
@@ -1419,13 +1420,13 @@ mod tests {
         let parsed: ParameterSpec = json5(r#"{ $type: "array", $items: "string" }"#);
         match parsed {
             ParameterSpec::Array { items, length } => {
-                assert!(matches!(
+                assert_matches!(
                     *items,
                     ParameterSpec::Primitive {
                         kind: TypeToken::String,
                         ..
                     }
-                ));
+                );
                 assert_eq!(length, None);
             }
             other => panic!("expected array, got: {other:?}"),
@@ -1477,20 +1478,20 @@ mod tests {
         let ParameterSpec::Group(fields) = parsed else {
             panic!("expected group");
         };
-        assert!(matches!(
+        assert_matches!(
             fields.get("enabled"),
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::Bool,
                 ..
             })
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             fields.get("gain"),
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::I64,
                 ..
             })
-        ));
+        );
     }
 
     #[test]
@@ -1756,7 +1757,7 @@ mod tests {
         let s = schema(r#"{ fps: "u16" }"#);
         let raw = BTreeMap::from([("fps".to_string(), AnyType::String("not a number".into()))]);
         let err = validate_node_arguments(raw, &s).unwrap_err();
-        assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+        assert_matches!(err, NodeArgumentsError::TypeMismatch(_));
     }
 
     #[test]
@@ -1773,7 +1774,7 @@ mod tests {
         let s = schema(r#"{ count: "u32" }"#);
         let raw = BTreeMap::from([("count".to_string(), AnyType::Int(-1))]);
         let err = validate_node_arguments(raw, &s).unwrap_err();
-        assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+        assert_matches!(err, NodeArgumentsError::TypeMismatch(_));
     }
 
     #[test]
@@ -1804,7 +1805,7 @@ mod tests {
             ("extra".to_string(), AnyType::String("b".into())),
         ]);
         let err = validate_node_arguments(raw, &s).unwrap_err();
-        assert!(matches!(err, NodeArgumentsError::UnknownParameter { .. }));
+        assert_matches!(err, NodeArgumentsError::UnknownParameter { .. });
     }
 
     // ---- resolve_parameter_path ----
@@ -1813,34 +1814,34 @@ mod tests {
     fn resolve_parameter_path_simple() {
         let params = schema(r#"{ device_path: "string" }"#);
         let resolved = resolve_parameter_path(&params, "device_path");
-        assert!(matches!(
+        assert_matches!(
             resolved,
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::String,
                 ..
             })
-        ));
+        );
     }
 
     #[test]
     fn resolve_parameter_path_nested() {
         let params = schema(r#"{ video: { device_path: "string", fps: "u16" } }"#);
         let resolved = resolve_parameter_path(&params, "video.device_path");
-        assert!(matches!(
+        assert_matches!(
             resolved,
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::String,
                 ..
             })
-        ));
+        );
         let fps = resolve_parameter_path(&params, "video.fps");
-        assert!(matches!(
+        assert_matches!(
             fps,
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::U16,
                 ..
             })
-        ));
+        );
     }
 
     #[test]
@@ -1905,7 +1906,7 @@ mod tests {
             &s,
         )
         .expect_err("string for u16 should fail");
-        assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+        assert_matches!(err, NodeArgumentsError::TypeMismatch(_));
     }
 
     #[test]
@@ -1919,7 +1920,7 @@ mod tests {
             &s,
         )
         .expect_err("unknown key should fail");
-        assert!(matches!(err, NodeArgumentsError::UnknownParameter { .. }));
+        assert_matches!(err, NodeArgumentsError::UnknownParameter { .. });
     }
 
     #[test]

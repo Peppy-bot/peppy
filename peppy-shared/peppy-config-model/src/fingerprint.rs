@@ -138,6 +138,7 @@ pub fn create_wrong_codegen_fingerprint(peppy_config_path: &Path, output_path: &
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::fs;
     use tempfile::TempDir;
 
@@ -234,8 +235,9 @@ mod tests {
         fs::write(&config_path, "tampered contents").expect("failed to rewrite config");
         let err = verify_codegen_fingerprint(&config_path, rel_output)
             .expect_err("verify should fail after tampering");
-        assert!(
-            matches!(err, crate::error::Error::FingerprintMismatch { .. }),
+        assert_matches!(
+            err,
+            crate::error::Error::FingerprintMismatch { .. },
             "expected FingerprintMismatch, got {err:?}"
         );
     }

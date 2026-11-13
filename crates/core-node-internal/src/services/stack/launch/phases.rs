@@ -59,6 +59,7 @@ pub(super) struct DrainOnCancel {
 }
 
 /// Outcome of a per-phase operation wrapped with idle + (optional) launch-deadline enforcement.
+#[derive(Debug)]
 enum PhaseOutcome<T> {
     Completed(T),
     IdleTimeout,
@@ -289,6 +290,7 @@ where
 mod tests {
     use super::*;
     use log_export::{LogExporter, LogKind};
+    use std::assert_matches;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::mpsc;
 
@@ -423,8 +425,9 @@ mod tests {
         )
         .await;
 
-        assert!(
-            matches!(outcome, PhaseOutcome::IdleTimeout),
+        assert_matches!(
+            outcome,
+            PhaseOutcome::IdleTimeout,
             "idle timeout branch expected",
         );
         assert!(
@@ -451,8 +454,9 @@ mod tests {
         )
         .await;
 
-        assert!(
-            matches!(outcome, PhaseOutcome::MaxTimeout),
+        assert_matches!(
+            outcome,
+            PhaseOutcome::MaxTimeout,
             "max timeout branch expected",
         );
         assert!(
@@ -512,7 +516,7 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(outcome, PhaseOutcome::IdleTimeout));
+        assert_matches!(outcome, PhaseOutcome::IdleTimeout);
         assert!(
             cleanup_ran.load(Ordering::SeqCst),
             "the cleanup ends within the drain budget"
@@ -590,7 +594,7 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(outcome, PhaseOutcome::IdleTimeout));
+        assert_matches!(outcome, PhaseOutcome::IdleTimeout);
         assert!(
             dropped.load(Ordering::SeqCst),
             "an add or build phase is dropped, not drained, when its idle budget runs out"
@@ -611,7 +615,7 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(outcome, PhaseOutcome::MaxTimeout));
+        assert_matches!(outcome, PhaseOutcome::MaxTimeout);
         assert!(
             dropped.load(Ordering::SeqCst),
             "the phase is dropped when the launch deadline fires"
@@ -667,7 +671,7 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(outcome, PhaseOutcome::IdleTimeout));
+        assert_matches!(outcome, PhaseOutcome::IdleTimeout);
         assert_eq!(feedback_rx.recv().await, Some("working"));
         assert!(
             feedback_rx.recv().await.is_none(),

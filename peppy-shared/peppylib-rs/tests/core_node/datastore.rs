@@ -10,6 +10,7 @@
 //! (from the wire envelope, exactly as the real daemon does) so the
 //! `last_modified_by` contract is exercised too.
 
+use std::assert_matches;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -310,13 +311,11 @@ async fn store_rejects_invalid_key() {
     .await
     .expect_err("an empty key should be rejected");
 
-    assert!(
-        matches!(
-            err,
-            peppylib::PeppyError::CoreNodeApi(core_node_api::Error::InvalidDatastoreKey(
-                core_node_api::encoding::DatastoreKeyError::Empty
-            ))
-        ),
+    assert_matches!(
+        err,
+        peppylib::PeppyError::CoreNodeApi(core_node_api::Error::InvalidDatastoreKey(
+            core_node_api::encoding::DatastoreKeyError::Empty
+        )),
         "expected an empty-key datastore error, got: {err:?}"
     );
 }

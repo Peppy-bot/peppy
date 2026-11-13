@@ -208,6 +208,7 @@ impl<'de> Deserialize<'de> for PeppyPairing {
 mod tests {
     use super::*;
     use config::node::{SchemaType, TypeToken};
+    use std::assert_matches;
 
     const ARM_LINK: &str = r#"{
         peppy_schema: "pairing/v1",
@@ -248,10 +249,10 @@ mod tests {
         assert_eq!(commands.name, "joint_commands");
         assert_eq!(commands.qos_profile, QoSProfile::Reliable);
         let mf = commands.message_format.as_ref().expect("message_format");
-        assert!(matches!(
+        assert_matches!(
             mf.0.get("max_velocity"),
             Some(SchemaType::Type(TypeToken::F64))
-        ));
+        );
 
         assert!(parsed.has_role("arm"));
         assert!(!parsed.has_role("observer"));

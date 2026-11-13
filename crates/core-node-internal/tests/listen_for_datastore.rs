@@ -26,6 +26,7 @@ use core_node_api::encoding::{
 };
 use core_node_api::{InstanceState, stop_command};
 use peppylib::core_node::transport::poll_node_stop;
+use std::assert_matches;
 use tempfile::TempDir;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -483,11 +484,9 @@ async fn a_restarted_owner_does_not_own_its_previous_processs_key() {
         DatastoreStoreExclusiveResponse::Stored,
         "the first process's key is gone"
     );
-    assert!(
-        matches!(
+    assert_matches!(
             store_driver_key_exclusively(&started, OWNER).await,
-            DatastoreStoreExclusiveResponse::Refused { last_modified_by, .. } if last_modified_by == OTHER
-        ),
+            DatastoreStoreExclusiveResponse::Refused { last_modified_by, .. } if last_modified_by == OTHER,
         "the restarted owner does not own the key"
     );
 }

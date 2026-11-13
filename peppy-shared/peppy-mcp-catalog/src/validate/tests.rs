@@ -5,6 +5,7 @@ use peppy_config_model::contract_member::{
 };
 use peppy_config_model::failure_kind::ContractFailureKinds;
 use serde::Deserialize;
+use std::assert_matches;
 use std::num::NonZeroU64;
 use std::path::Path;
 
@@ -1309,8 +1310,9 @@ fn a_fixed_bundle_carries_no_robot_surface() {
         WALKTHROUGH_EXPOSURE,
         &[&fixture(CAMERA_CONTRACT), &fixture(RECORDING_CONTRACT)],
     );
-    assert!(
-        matches!(bundle.surface, BundleSurface::Fixed { .. }),
+    assert_matches!(
+        bundle.surface,
+        BundleSurface::Fixed { .. },
         "a document without `robots` derives a fixed surface"
     );
     assert!(

@@ -407,6 +407,7 @@ pub fn prune_siblings(artifact_path: &Path, platform: ArtifactPlatform) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::os::unix::fs::symlink;
 
     const AMD64: ArtifactKind = ArtifactKind::Container(ArtifactPlatform::LinuxAmd64);
@@ -666,11 +667,9 @@ mod tests {
 
         let outcome = daemon_config::per_boot_root::clear_if_new_boot(&peppy_dirs).expect("clear");
 
-        assert!(
-            matches!(
-                outcome,
-                daemon_config::per_boot_root::ClearOutcome::Cleared { .. }
-            ),
+        assert_matches!(
+            outcome,
+            daemon_config::per_boot_root::ClearOutcome::Cleared { .. },
             "the root was used by an earlier boot"
         );
         let again = resolve();

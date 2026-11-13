@@ -1,3 +1,4 @@
+use std::assert_matches;
 use std::path::PathBuf;
 
 use config::runtime::Name;
@@ -1019,8 +1020,9 @@ fn removing_a_dependency_and_adding_it_again_rewires_its_dependants() {
         .push_config(dependent, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("dependent dependency is present");
 
-    assert!(
-        matches!(stack.remove_config("lidar", "v1"), Ok(true)),
+    assert_matches!(
+        stack.remove_config("lidar", "v1"),
+        Ok(true),
         "lidar has no instances, so it can be removed"
     );
     stack
@@ -1044,11 +1046,9 @@ fn removing_a_dependency_and_adding_it_again_rewires_its_dependants() {
         false,
         PathBuf::from("/tmp"),
     );
-    assert!(
-        matches!(
-            result,
-            Err(NodeStackError::CannotOverwriteNodeWithDependents { .. })
-        ),
+    assert_matches!(
+        result,
+        Err(NodeStackError::CannotOverwriteNodeWithDependents { .. }),
         "brain still depends on lidar, so its interfaces cannot change, got {result:?}"
     );
 }

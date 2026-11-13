@@ -543,6 +543,7 @@ pub fn creds_from_login(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn api_paths_are_joined_as_encoded_segments() {
@@ -608,10 +609,10 @@ mod tests {
                 .to_string()
                 .contains("returned 404")
         );
-        assert!(matches!(
+        assert_matches!(
             interpret_refusal(&response(401, "", None), "GET", "u"),
             Error::NotAuthenticated
-        ));
+        );
     }
 
     /// What a refusal says about the slots a restart frees reaches the caller

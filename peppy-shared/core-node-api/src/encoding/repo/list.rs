@@ -227,6 +227,7 @@ impl crate::encoding::Wire for RepoListResponse {
 mod tests {
     use super::*;
     use crate::encoding::decoding_error;
+    use std::assert_matches;
 
     fn sample_entry() -> RepoListNodeEntry {
         RepoListNodeEntry {
@@ -351,8 +352,9 @@ mod tests {
         let payload = encode_message(&builder).expect("encode raw response");
         let err = RepoListResponse::decode(payload.as_ref())
             .expect_err("unknown source type must be rejected");
-        assert!(
-            matches!(err, crate::Error::Decoding(_)),
+        assert_matches!(
+            err,
+            crate::Error::Decoding(_),
             "expected Decoding error, got {err:?}"
         );
     }
@@ -419,8 +421,9 @@ mod tests {
         let payload = encode_message(&builder).expect("encode raw response");
         let err = RepoListResponse::decode(payload.as_ref())
             .expect_err("unknown read failure must be rejected");
-        assert!(
-            matches!(err, crate::Error::Decoding(_)),
+        assert_matches!(
+            err,
+            crate::Error::Decoding(_),
             "expected Decoding error, got {err:?}"
         );
     }

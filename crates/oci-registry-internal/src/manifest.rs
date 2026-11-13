@@ -305,6 +305,7 @@ impl NodeArtifactManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn digest(byte: char) -> OciDigest {
         OciDigest::from_sha256_hex(&byte.to_string().repeat(64)).expect("digest")
@@ -398,10 +399,10 @@ mod tests {
 
     #[test]
     fn manifests_of_other_artifacts_are_refused() {
-        assert!(matches!(
+        assert_matches!(
             NodeArtifactManifest::parse(b"not json"),
             Err(ManifestError::NotAnImageManifest(_))
-        ));
+        );
         assert_eq!(
             with_json(|json| json["artifactType"] = "application/vnd.other".into()),
             Err(ManifestError::NotANodeArtifact(Some(
@@ -455,8 +456,7 @@ mod tests {
             (annotations::SOURCE_DIGEST, "sha256:abc"),
         ] {
             let result = with_json(|json| json["annotations"][key] = value.into());
-            assert!(
-                matches!(result, Err(ManifestError::InvalidAnnotation { key: k, .. }) if k == key),
+            assert_matches!(result, Err(ManifestError::InvalidAnnotation { key: k, .. }) if k == key,
                 "{key}: {result:?}"
             );
         }
@@ -466,9 +466,6 @@ mod tests {
                 .expect("annotations")
                 .remove(annotations::SOURCE_COMMIT);
         });
-        assert!(matches!(
-            partial,
-            Err(ManifestError::InvalidAnnotation { .. })
-        ));
+        assert_matches!(partial, Err(ManifestError::InvalidAnnotation { .. }));
     }
 }

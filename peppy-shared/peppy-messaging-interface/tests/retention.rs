@@ -21,6 +21,7 @@
 
 mod common;
 use common::{RECV_TIMEOUT, ZENOH_SERIAL, next_message_within, receiver, sender, test_node_target};
+use std::assert_matches;
 
 use bytes::Bytes;
 use config::node::TopicRetention;
@@ -678,11 +679,9 @@ async fn a_second_declaration_states_the_same_retention_and_qos() {
         .expect("the same retention and QoS share the publisher");
 
     let refused = declare(&session, &topic, PublisherQoS::Standard, latest(3));
-    assert!(
-        matches!(
-            refused,
-            Err(PeppyMessagingInterfaceError::RetainingTopicMismatch { .. })
-        ),
+    assert_matches!(
+        refused.err(),
+        Some(PeppyMessagingInterfaceError::RetainingTopicMismatch { .. }),
         "another depth should be refused"
     );
 
@@ -700,11 +699,9 @@ async fn a_second_declaration_states_the_same_retention_and_qos() {
         PublisherQoS::Standard,
         latest(1),
     );
-    assert!(
-        matches!(
-            refused,
-            Err(PeppyMessagingInterfaceError::RetainingTopicMismatch { .. })
-        ),
+    assert_matches!(
+        refused.err(),
+        Some(PeppyMessagingInterfaceError::RetainingTopicMismatch { .. }),
         "a retaining declaration after a live-only one should be refused"
     );
     let one_shot = session
@@ -715,11 +712,9 @@ async fn a_second_declaration_states_the_same_retention_and_qos() {
             true,
         )
         .await;
-    assert!(
-        matches!(
-            one_shot,
-            Err(PeppyMessagingInterfaceError::RetainingTopicMismatch { .. })
-        ),
+    assert_matches!(
+        one_shot,
+        Err(PeppyMessagingInterfaceError::RetainingTopicMismatch { .. }),
         "a one-shot publish on a retaining topic should be refused"
     );
 }

@@ -32,6 +32,7 @@ use peppylib::testing::{
 };
 use peppylib::types::Payload;
 use serde_json::{Value, json};
+use std::assert_matches;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
@@ -460,8 +461,9 @@ async fn a_whole_goal_deadline_is_not_pushed_back_by_feedback_and_cancels_the_go
     }
 
     let outcome = bridge.ended().await;
-    assert!(
-        matches!(outcome, Err(ActionExit::Error(_))),
+    assert_matches!(
+        outcome,
+        Err(ActionExit::Error(_)),
         "the deadline fails the goal: {outcome:?}"
     );
     // The bridge stopped following the goal, so the provider gets a cancel.

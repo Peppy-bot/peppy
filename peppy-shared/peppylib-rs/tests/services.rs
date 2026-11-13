@@ -9,6 +9,7 @@ use peppylib::messaging::{
 };
 use peppylib::types::Payload;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter, ZenohAdapter};
+use std::assert_matches;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, oneshot};
@@ -212,8 +213,9 @@ async fn an_endpoint_that_handles_its_requests_answers_calls_with_no_deadline_ba
     let error = call(b"third")
         .await
         .expect_err("no queryable receives the call");
-    assert!(
-        matches!(error, PeppyError::ServiceUnreachable { .. }),
+    assert_matches!(
+        error,
+        PeppyError::ServiceUnreachable { .. },
         "a call with no deadline to a service that does not listen is unreachable: {error:?}"
     );
 }

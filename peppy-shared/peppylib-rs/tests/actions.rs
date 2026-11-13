@@ -13,6 +13,7 @@ use peppylib::messaging::{
 };
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
+use std::assert_matches;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -360,8 +361,9 @@ async fn action_feedback_publish_end_signals_channel_closed_via_try_next() {
 #[test]
 fn non_empty_payload_rejects_empty_payload() {
     let result = NonEmptyPayload::try_new(Payload::new());
-    assert!(
-        matches!(result, Err(EmptyPayloadError)),
+    assert_matches!(
+        result.err(),
+        Some(EmptyPayloadError),
         "empty payload must be rejected by NonEmptyPayload::try_new",
     );
 }
@@ -1692,10 +1694,10 @@ mod unread_feedback {
             .expect("the read must cancel the goal")
             .expect("the provider task ends");
         assert_eq!(cause, Some(peppylib::messaging::CancelCause::Caller));
-        assert!(matches!(
+        assert_matches!(
             goal.try_next_feedback(),
             Err(PeppyError::ActionFeedbackOverflow { .. })
-        ));
+        );
     }
 
     /// A caller exactly at its bound keeps every message: only a message past

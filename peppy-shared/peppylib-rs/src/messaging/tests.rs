@@ -8,6 +8,7 @@ use crate::types::Payload;
 use config::node::{QoSProfile, TopicRetention};
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
+use std::assert_matches;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -4491,7 +4492,7 @@ async fn probes_answered_while_pinned_producer_is_busy() {
 #[test]
 fn connect_defaults_to_gossip_peer_under_local_namespace() {
     let conn = MessengerHandle::connect("127.0.0.1", 7448);
-    assert!(matches!(conn.kind, super::SessionKind::GossipPeer));
+    assert_matches!(conn.kind, super::SessionKind::GossipPeer);
     assert_eq!(conn.namespace, config::namespace::Namespace::local());
 }
 
@@ -4501,7 +4502,7 @@ fn namespace_scope_selects_client_kind() {
     let ns = config::namespace::Namespace::parse("workspace-a").expect("valid namespace");
     let conn = MessengerHandle::connect("127.0.0.1", 7448)
         .scope(super::SessionScope::Namespace(ns.clone()));
-    assert!(matches!(conn.kind, super::SessionKind::Client));
+    assert_matches!(conn.kind, super::SessionKind::Client);
     assert_eq!(conn.namespace, ns);
 }
 
@@ -4541,7 +4542,7 @@ fn discovery_scope_applies_stamped_namespace() {
     let conn =
         MessengerHandle::connect("127.0.0.1", 7448).scope(super::SessionScope::Discovery(&cfg));
     assert_eq!(conn.namespace, ns);
-    assert!(matches!(conn.kind, super::SessionKind::Discovery(_)));
+    assert_matches!(conn.kind, super::SessionKind::Discovery(_));
 }
 
 /// Chained `scope` calls stay mutually exclusive: the last call wins the kind
@@ -4557,7 +4558,7 @@ fn chained_scopes_last_call_wins() {
     let conn = MessengerHandle::connect("127.0.0.1", 7448)
         .scope(super::SessionScope::Discovery(&cfg))
         .scope(super::SessionScope::Namespace(ns.clone()));
-    assert!(matches!(conn.kind, super::SessionKind::Client));
+    assert_matches!(conn.kind, super::SessionKind::Client);
     assert_eq!(conn.namespace, ns);
 
     let conn = MessengerHandle::connect("127.0.0.1", 7448)

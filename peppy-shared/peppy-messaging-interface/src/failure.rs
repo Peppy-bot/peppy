@@ -116,6 +116,7 @@ impl std::error::Error for FailureDecodeError {}
 mod tests {
     use super::*;
     use config::failure_kind::PeppyFailureKind;
+    use std::assert_matches;
 
     fn kind(name: &str) -> FailureKindName {
         FailureKindName::parse(name).unwrap()
@@ -148,10 +149,10 @@ mod tests {
             Failure::decode(b"\x09timeout"),
             Err(FailureDecodeError::Truncated { kind_len: 9 })
         );
-        assert!(matches!(
+        assert_matches!(
             Failure::decode(b"\x07Timeout"),
             Err(FailureDecodeError::InvalidKind(_))
-        ));
+        );
         assert_eq!(
             Failure::decode(b"\x07timeout\xff"),
             Err(FailureDecodeError::MessageNotUtf8)

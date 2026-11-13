@@ -13,6 +13,7 @@ use daemon_config::launcher::{
     Placements, PlannedObservation, PlannedPairEndpoint, PlannedPairing, PreparedLauncher,
     ResolvedClocks, resolve_clocks, validate_clock_connections,
 };
+use std::assert_matches;
 use std::collections::BTreeMap;
 use std::path::Path;
 use tempfile::tempdir;
@@ -94,8 +95,7 @@ fn assert_arm_follows_the_engine(composed: &ComposedLaunch, origin: &str) {
         .iter()
         .find(|entry| entry.target == "arm_inst")
         .expect("an adjustment binds the arm's clock");
-    assert!(
-        matches!(&bound.change, AppliedChange::Clock { old: None, new } if new.as_str() == "simulation"),
+    assert_matches!(&bound.change, AppliedChange::Clock { old: None, new } if new.as_str() == "simulation",
         "{:?}",
         bound.change
     );

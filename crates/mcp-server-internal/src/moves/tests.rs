@@ -29,6 +29,7 @@ use peppylib::testing::{
 };
 use peppylib::types::Payload;
 use serde_json::json;
+use std::assert_matches;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -351,8 +352,7 @@ async fn a_marked_call_goes_on_only_when_the_daemon_allows_it() {
             .await
             .expect("the daemon answers with an error");
     });
-    assert!(
-        matches!(&refused, Err(MoveRefused::Unanswered(message)) if message.contains("the daemon did not answer the move check of `alpha_arm_inst`")),
+    assert_matches!(&refused, Err(MoveRefused::Unanswered(message)) if message.contains("the daemon did not answer the move check of `alpha_arm_inst`"),
         "{refused:?}"
     );
 }
@@ -620,8 +620,9 @@ async fn a_lost_follow_stops_its_goals_and_the_next_goal_follows_again() {
     assert!(reason.contains("the daemon ended the follow"), "{reason}");
 
     let second = rules.follow_marked_goal(cleared_at(0));
-    assert!(
-        matches!(stop_of(&first).await, FleetStop::FollowLost(_)),
+    assert_matches!(
+        stop_of(&first).await,
+        FleetStop::FollowLost(_),
         "a new follow does not save the goals of the lost one"
     );
     mesh.changes

@@ -524,6 +524,7 @@ fn resolve_core_node_name(flag: Option<String>, config: Option<String>) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn some(s: &str) -> Option<String> {
         Some(s.to_string())
@@ -557,8 +558,9 @@ mod tests {
             let err = resolve_core_node_name(some(bad), None)
                 .expect_err("an invalid explicit name must be rejected");
             let msg = err.to_string();
-            assert!(
-                matches!(err, Error::ExecutionFailed(_)),
+            assert_matches!(
+                err,
+                Error::ExecutionFailed(_),
                 "expected ExecutionFailed for {bad:?}, got: {msg}"
             );
             assert!(

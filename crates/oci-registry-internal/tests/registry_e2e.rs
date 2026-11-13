@@ -5,6 +5,7 @@ use core_node_api::encoding::{ArtifactPlatform, ArtifactVersion, OciRepository};
 use oci_registry::manifest::{BlobDescriptor, EMPTY_CONFIG, NodeArtifact, NodeArtifactManifest};
 use oci_registry::test_support::{LocalRegistry, RegistryAuth, write_stub_credential_helper};
 use oci_registry::{Access, CredentialStore, RegistryClient, RegistryError, digest};
+use std::assert_matches;
 use std::ffi::OsString;
 use std::path::Path;
 
@@ -220,10 +221,7 @@ async fn a_registry_with_basic_auth_takes_the_credential_of_the_auth_file() {
         Access::Pull,
     );
     let error = anonymous.list_tags().await.expect_err("no credential");
-    assert!(
-        matches!(error, RegistryError::NoCredential { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::NoCredential { .. }, "{error}");
     let error = client(
         &registry,
         store_with_file(anonymous_dir.path(), None),
@@ -232,10 +230,7 @@ async fn a_registry_with_basic_auth_takes_the_credential_of_the_auth_file() {
     .check_push_access()
     .await
     .expect_err("no credential");
-    assert!(
-        matches!(error, RegistryError::NoCredential { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::NoCredential { .. }, "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -285,8 +280,5 @@ async fn a_wrong_password_is_refused_by_the_registry() {
     .await
     .expect_err("wrong password");
 
-    assert!(
-        matches!(error, RegistryError::Unauthorized { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::Unauthorized { .. }, "{error}");
 }

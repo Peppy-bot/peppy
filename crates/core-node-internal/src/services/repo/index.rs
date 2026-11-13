@@ -1161,6 +1161,7 @@ mod tests {
     use super::*;
     use config::consts::NODE_CONFIG_FILE;
     use config::fingerprint::fingerprint_for_bytes;
+    use std::assert_matches;
 
     /// The identities the walk found, of one kind, as `name:tag` labels.
     fn found(walked: &WalkResult, kind: RepoItemKind) -> Vec<String> {
@@ -1666,7 +1667,7 @@ mod tests {
 
         let err = generate_repository_index(&repo).expect_err("a contested identity is refused");
 
-        assert!(matches!(err, IndexError::ContestedIdentity(_)));
+        assert_matches!(err, IndexError::ContestedIdentity(_));
         let message = err.to_string();
         assert!(message.contains("uvc:v1"), "{message}");
         assert!(message.contains("uvc/rust/peppy.json5"), "{message}");
@@ -1694,7 +1695,7 @@ mod tests {
         write_node_json5(&repo.join("dotted"), "my_sensor", "v0.1.0");
 
         let err = generate_repository_index(&repo).expect_err("a dotted tag is refused");
-        assert!(matches!(err, IndexError::Unrepresentable(_)));
+        assert_matches!(err, IndexError::Unrepresentable(_));
         let message = err.to_string();
         assert!(message.contains("dotted/peppy.json5"), "{message}");
         assert!(message.contains("v0.1.0"), "{message}");

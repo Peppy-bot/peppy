@@ -449,6 +449,7 @@ pub fn declare_peer_publisher_with_watch(
 mod tests {
     use super::*;
     use futures::FutureExt;
+    use std::assert_matches;
 
     fn member(instance: &str) -> PeerMember {
         PeerMember {
@@ -557,10 +558,7 @@ mod tests {
         let (tx, rx) = watch::channel(PeerSetState::empty());
         let mut slot = PeerSlot::new("arm", Cardinality::One, rx);
         drop(tx);
-        assert!(matches!(
-            slot.wait_paired().await,
-            Err(Error::PairingSlotClosed)
-        ));
+        assert_matches!(slot.wait_paired().await, Err(Error::PairingSlotClosed));
     }
 
     /// `is_followed` answers as `desired` does for every pair the slot holds

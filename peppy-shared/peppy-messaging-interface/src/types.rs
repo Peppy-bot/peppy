@@ -1465,6 +1465,7 @@ mod tests {
     };
     use crate::error::Error;
     use crate::wire::ServiceReplyKind;
+    use std::assert_matches;
     use std::borrow::Cow;
     #[cfg(feature = "zenoh")]
     use zenoh::bytes::ZBytes;
@@ -1490,7 +1491,7 @@ mod tests {
         let wire_address = source.as_ptr();
         let payload = Payload::from_bytes(source);
 
-        assert!(matches!(payload.as_bytes(), Cow::Borrowed(_)));
+        assert_matches!(payload.as_bytes(), Cow::Borrowed(_));
         assert_eq!(buffer_address(&payload), wire_address);
         assert_eq!(buffer_address(&payload.clone()), wire_address);
         // On this arm the owned accessor clones the `Bytes` handle, so it is a
@@ -1510,7 +1511,7 @@ mod tests {
         let payload = Payload::from_zbytes(ZBytes::from(vec![9u8; WIRE_BUFFER_LEN]));
         let wire_address = buffer_address(&payload);
 
-        assert!(matches!(payload.as_bytes(), Cow::Borrowed(_)));
+        assert_matches!(payload.as_bytes(), Cow::Borrowed(_));
         assert_eq!(buffer_address(&payload.clone()), wire_address);
         assert_ne!(payload.to_bytes().as_ptr(), wire_address);
         assert_eq!(payload.to_bytes().as_ref(), payload.as_bytes().as_ref());
@@ -1540,7 +1541,7 @@ mod tests {
         writer.append(ZBytes::from(vec![3u8]));
         let payload = Payload::from_zbytes(writer.finish());
 
-        assert!(matches!(payload.as_bytes(), Cow::Owned(_)));
+        assert_matches!(payload.as_bytes(), Cow::Owned(_));
         assert_eq!(payload.to_bytes().as_ref(), [1u8, 2, 3]);
         assert_eq!(payload.into_bytes().as_ref(), [1u8, 2, 3]);
     }

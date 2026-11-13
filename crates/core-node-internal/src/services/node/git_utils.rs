@@ -674,6 +674,7 @@ pub(crate) fn install_credentials(callbacks: &mut git2::RemoteCallbacks<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn github() -> SshTarget {
         SshTarget {
@@ -751,7 +752,7 @@ mod tests {
         );
         assert_eq!(plan.answer(0), agent_key());
         assert_eq!(plan.answer(1), key_file(&ssh_dir.join("id_rsa")));
-        assert!(matches!(plan.answer(2), CredentialAnswer::Refuse(_)));
+        assert_matches!(plan.answer(2), CredentialAnswer::Refuse(_));
     }
 
     #[test]

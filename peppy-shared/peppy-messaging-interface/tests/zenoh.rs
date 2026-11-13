@@ -13,6 +13,7 @@ mod zenoh_tests {
         MessengerBackend, Payload, PresenceScope, PublisherQoS, RouterId, SubscriberBufferSizes,
         SubscriberQoS, TopicBuffer, ZenohAdapter, ZenohNetProtocol,
     };
+    use std::assert_matches;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::time::{Duration, Instant};
 
@@ -1511,11 +1512,9 @@ mod zenoh_tests {
             .await
             .expect("start a router on the reserved port");
 
-        assert!(
-            matches!(
-                tokio::time::timeout(UNBLOCKS_WITHIN, opened_rx).await,
-                Ok(Ok(true))
-            ),
+        assert_matches!(
+            tokio::time::timeout(UNBLOCKS_WITHIN, opened_rx).await,
+            Ok(Ok(true)),
             "the blocked client open must complete once a router accepts it, \
              which is what makes the retry worth keeping"
         );

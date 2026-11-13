@@ -109,6 +109,7 @@ mod tests {
     use crate::test_support::{EXPIRES_AT, ISSUED_AT, PROJECT, ZID, leaf, leaf_pem, router_peer};
     use config::namespace::Namespace;
     use pmi::RouterId;
+    use std::assert_matches;
 
     const DAY: i64 = 24 * 60 * 60;
 
@@ -183,7 +184,7 @@ mod tests {
 
         let err = renew_with(&dirs, |_| Err(Error::NotAuthenticated)).expect_err("refused");
 
-        assert!(matches!(err, Error::NotAuthenticated));
+        assert_matches!(err, Error::NotAuthenticated);
         assert_eq!(leaf_on_disk(&dirs), first_leaf);
         assert_eq!(enrollment::load(&dirs).unwrap(), before);
     }

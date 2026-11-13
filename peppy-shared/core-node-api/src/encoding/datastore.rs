@@ -540,6 +540,7 @@ impl crate::encoding::Wire for DatastoreStoreExclusiveResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn store_request_round_trips_text_value() {
@@ -703,8 +704,9 @@ mod tests {
     /// datastore key.
     fn assert_invalid_datastore_key<T: std::fmt::Debug>(request: &str, result: crate::Result<T>) {
         let err = result.expect_err(&format!("the {request} request should refuse an empty key"));
-        assert!(
-            matches!(err, crate::Error::InvalidDatastoreKey(_)),
+        assert_matches!(
+            err,
+            crate::Error::InvalidDatastoreKey(_),
             "{request} request: expected InvalidDatastoreKey, got {err:?}"
         );
     }
@@ -808,7 +810,7 @@ mod tests {
 
         let err = DatastoreStoreExclusiveResponse::decode(payload.as_ref())
             .expect_err("an unset outcome is refused");
-        assert!(matches!(err, crate::Error::Decoding(_)), "{err:?}");
+        assert_matches!(err, crate::Error::Decoding(_), "{err:?}");
     }
 
     #[test]

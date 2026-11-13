@@ -1,5 +1,6 @@
 #![cfg(feature = "multi_daemon_e2e")]
 
+use std::assert_matches;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
 use std::os::unix::fs::PermissionsExt;
@@ -160,8 +161,9 @@ async fn the_suite_waits_for_an_engine_answer_that_testcontainers_gives_up_on() 
     };
 
     let gave_up = connect(TESTCONTAINERS_REQUEST_TIMEOUT).ping().await;
-    assert!(
-        matches!(gave_up, Err(EngineError::RequestTimeoutError)),
+    assert_matches!(
+        gave_up,
+        Err(EngineError::RequestTimeoutError),
         "the testcontainers client must give up on the late answer, got {gave_up:?}"
     );
 

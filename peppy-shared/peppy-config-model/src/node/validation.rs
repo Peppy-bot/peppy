@@ -391,6 +391,7 @@ fn find_exposure<'a>(node: &'a NodeConfig, kind: InterfaceKind, name: &str) -> E
 mod tests {
     use super::*;
     use crate::node::NodeConfigParser;
+    use std::assert_matches;
 
     fn parse(content: &str) -> NodeConfig {
         NodeConfigParser::from_content(content).expect("parse node config")
@@ -519,12 +520,10 @@ mod tests {
                     None
                 });
             assert_eq!(errors.len(), 1, "errors: {errors:?}");
-            assert!(
-                matches!(
+            assert_matches!(
                     &errors[0],
                     ParsingError::ConsumedItemReferencesPairingLinkId { link_id, section: s, .. }
-                        if link_id == "controller" && s == section
-                ),
+                        if link_id == "controller" && s == section,
                 "expected ConsumedItemReferencesPairingLinkId({section}), got: {:?}",
                 errors[0]
             );
@@ -739,7 +738,7 @@ mod tests {
             |name, _| (name == "hybrid").then(|| producer.clone()),
         );
         assert_eq!(errors.len(), 1, "errors: {errors:?}");
-        assert!(matches!(&errors[0], ParsingError::MissingInterface(_)));
+        assert_matches!(&errors[0], ParsingError::MissingInterface(_));
     }
 
     /// Producer providing the same name both natively and contract-backed:
@@ -799,11 +798,9 @@ mod tests {
             1,
             "`{cardinality}`: exactly the missing-node error: {errors:?}"
         );
-        assert!(
-            matches!(
+        assert_matches!(
                 &errors[0],
-                ParsingError::MissingDependency { dependency, .. } if dependency == "recorder"
-            ),
+                ParsingError::MissingDependency { dependency, .. } if dependency == "recorder",
             "`{cardinality}`: an absent dependency stays a missing node: {:?}",
             errors[0]
         );
@@ -860,8 +857,9 @@ mod tests {
             |name, _| (name == "recorder").then(|| recorder_without_finish.clone()),
         );
         assert_eq!(errors.len(), 1, "errors: {errors:?}");
-        assert!(
-            matches!(&errors[0], ParsingError::MissingInterface(_)),
+        assert_matches!(
+            &errors[0],
+            ParsingError::MissingInterface(_),
             "a resolved dependency missing the consumed service is still reported: {:?}",
             errors[0]
         );

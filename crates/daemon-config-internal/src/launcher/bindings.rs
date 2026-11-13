@@ -585,6 +585,7 @@ fn slot_matches_producer(slot: &SlotMeta<'_>, producer: &BindingValidationItem<'
 mod tests {
     use super::super::compose::{CopyInstance, CopyRecord};
     use super::*;
+    use std::assert_matches;
 
     /// The launching daemon's core_node stamped into every resolved
     /// binding by these tests.
@@ -1353,10 +1354,9 @@ mod tests {
             item("camera", "v1", &prod_instances, None),
         ];
         let out = validate_bindings(&items, &all_local(), &no_copies());
-        assert!(matches!(
+        assert_matches!(
             out.errors.as_slice(),
-            [ParsingError::BindingCardinalityUnmet { binding, .. }] if binding == "cameras"
-        ));
+            [ParsingError::BindingCardinalityUnmet { binding, .. }] if binding == "cameras");
     }
 
     /// Rule 3 runs per bound instance on a multi slot: one bad target
@@ -2254,8 +2254,7 @@ mod tests {
         let copies = CopyMembership::of(&[copy_of("alpha", &["left"])]);
         let out = validate_bindings(&items, &all_local(), &copies);
         assert_eq!(out.errors.len(), 1, "unexpected errors: {:?}", out.errors);
-        assert!(
-            matches!(&out.errors[0], ParsingError::UnknownInstanceId { instance_id, .. } if instance_id == "ghost"),
+        assert_matches!(&out.errors[0], ParsingError::UnknownInstanceId { instance_id, .. } if instance_id == "ghost",
             "got {:?}",
             out.errors[0]
         );

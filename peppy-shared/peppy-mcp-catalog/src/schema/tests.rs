@@ -1,6 +1,7 @@
 use super::*;
 use peppy_config_model::node::{FormatRuleViolation, MessageFormat};
 use serde_json::json;
+use std::assert_matches;
 use std::path::Path;
 
 /// Golden pairs: the format under `goldens/` and the committed schema the
@@ -253,11 +254,9 @@ fn a_fixed_length_array_of_non_scalars_is_refused() {
         let Err(err) = message_format_to_json_schema(&parse_format(source)) else {
             panic!("fixed arrays hold scalars only: {source}");
         };
-        assert!(
-            matches!(
-                err,
-                FormatRuleViolation::UnsupportedFixedArrayItemType { .. }
-            ),
+        assert_matches!(
+            err,
+            FormatRuleViolation::UnsupportedFixedArrayItemType { .. },
             "{source}: {err}"
         );
     }
@@ -267,10 +266,7 @@ fn a_fixed_length_array_of_non_scalars_is_refused() {
 fn a_reserved_field_name_is_refused() {
     let format = parse_format(r#"{ instance_id: "u32" }"#);
     let err = message_format_to_json_schema(&format).expect_err("reserved names are refused");
-    assert!(
-        matches!(err, FormatRuleViolation::ReservedFieldName { .. }),
-        "{err}"
-    );
+    assert_matches!(err, FormatRuleViolation::ReservedFieldName { .. }, "{err}");
 }
 
 /// The size bound is exact for closed shapes: serializing the worst-case

@@ -10,6 +10,7 @@ use config::runtime::Name;
 use core_node_api::encoding::{InstanceDocumentsRequest, NodeInfoRequest, NodeInfoResponse};
 use core_node_api::{InstanceState, NodeStage};
 use peppylib::messaging::MessengerHandle;
+use std::assert_matches;
 use std::sync::Arc;
 
 /// Happy path: add a node + start an instance, then `node info` reports the
@@ -261,8 +262,9 @@ async fn node_info_reports_not_in_stack_and_recovers() {
         &NodeInfoRequest::new("ghost_node", "v999"),
     )
     .await;
-    assert!(
-        matches!(response, NodeInfoResponse::NotInStack),
+    assert_matches!(
+        response,
+        NodeInfoResponse::NotInStack,
         "expected NotInStack for an unknown `(name, tag)`, got: {response:?}"
     );
 

@@ -45,6 +45,7 @@ use peppylib::PeppyError;
 use peppylib::core_node::transport::{poll, poll_node_stop};
 use peppylib::messaging::{Failure, MessengerHandle, ServiceAnswer};
 use peppylib::services::shutdown::listen_for_shutdown;
+use std::assert_matches;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1049,10 +1050,9 @@ async fn a_respawn_that_dies_during_startup_schedules_the_next_attempt() {
         "each stack log line is one event, the failure's first line alone:\n{log}"
     );
     let instance = serialized(&started, ID);
-    assert!(
-        matches!(&instance.restart_status.last_exit, Some(ExitCause::Message(text))
+    assert_matches!(&instance.restart_status.last_exit, Some(ExitCause::Message(text))
             if text.starts_with("node process exited during startup (exit code 3)")
-                && !text.contains('\n')),
+                && !text.contains('\n'),
         "a start failure's first line is the last exit: {:?}",
         instance.restart_status.last_exit
     );
@@ -1193,9 +1193,8 @@ async fn a_respawn_whose_spawn_fails_schedules_the_next_attempt() {
     );
     signal_process(pid, "-9");
     wait_for_line(&started, "restarting in 0 s (attempt 2)").await;
-    assert!(
-        matches!(&serialized(&started, ID).restart_status.last_exit, Some(ExitCause::Message(text))
-            if text.contains("failed to spawn")),
+    assert_matches!(&serialized(&started, ID).restart_status.last_exit, Some(ExitCause::Message(text))
+            if text.contains("failed to spawn"),
         "{:?}",
         serialized(&started, ID).restart_status.last_exit
     );

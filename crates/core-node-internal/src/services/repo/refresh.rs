@@ -1181,6 +1181,7 @@ fn shown_label(source: &RepoSource, build: &PeppyBuild) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn a_label_shows_a_git_url_without_its_credentials_and_keeps_its_ref() {
@@ -1624,8 +1625,9 @@ mod tests {
             &mut |line| feedback.push(line),
             Some(&cancel),
         );
-        assert!(
-            matches!(read, Err(crate::Error::RefreshCancelled)),
+        assert_matches!(
+            read.err(),
+            Some(crate::Error::RefreshCancelled),
             "the cancel stops the refresh"
         );
         assert!(feedback.is_empty(), "no repository is read: {feedback:?}");
@@ -1639,8 +1641,9 @@ mod tests {
             Some(&cancel),
         )
         .await;
-        assert!(
-            matches!(published, Err(crate::Error::RefreshCancelled)),
+        assert_matches!(
+            published.err(),
+            Some(crate::Error::RefreshCancelled),
             "the cancel stops the refresh"
         );
         assert!(
@@ -3175,7 +3178,7 @@ mod tests {
             "a version change never writes repositories.json5"
         );
 
-        assert!(matches!(
+        assert_matches!(
             refresh_release_repositories_for_this_version(
                 &peppy_dirs,
                 &release("v0.31.2"),
@@ -3184,7 +3187,7 @@ mod tests {
             .await
             .unwrap(),
             VersionRefresh::NotNeeded
-        ));
+        );
 
         drop(daemon);
         for _ in 0..2 {

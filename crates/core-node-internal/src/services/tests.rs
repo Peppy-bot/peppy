@@ -3,6 +3,7 @@ use crate::test_support::LogCapture;
 use daemon_config::consts::PeppyDirs;
 use peppylib::CoreNodePresenceMessenger;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+use std::assert_matches;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -285,7 +286,7 @@ async fn start_with_ready_rejects_a_second_start() {
         .start_with_ready(None)
         .await
         .expect_err("a second start must be rejected");
-    assert!(matches!(err, crate::Error::AlreadyStarted));
+    assert_matches!(err, crate::Error::AlreadyStarted);
 
     first_task.abort();
 }
@@ -322,8 +323,7 @@ async fn start_refuses_to_boot_when_name_already_claimed() {
         .start_with_ready(None)
         .await
         .expect_err("boot must refuse while the name is claimed");
-    assert!(
-        matches!(err, crate::Error::CoreNodeNameTaken { ref name } if name == "collision_node"),
+    assert_matches!(err, crate::Error::CoreNodeNameTaken { ref name } if name == "collision_node",
         "expected CoreNodeNameTaken for `collision_node`, got: {err}"
     );
     assert!(
@@ -420,10 +420,9 @@ async fn simultaneous_daemons_with_same_derived_name_allow_exactly_one_claim() {
         .await
         .expect("losing startup task should not panic")
         .expect_err("losing startup must fail");
-    assert!(matches!(
+    assert_matches!(
         loser_error,
-        crate::Error::CoreNodeNameTaken { ref name } if name == &core_node_name
-    ));
+        crate::Error::CoreNodeNameTaken { ref name } if name == &core_node_name);
     winner_task.abort();
 }
 

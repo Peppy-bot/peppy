@@ -515,6 +515,7 @@ fn compute_sync(t0: u64, t1: u64, t2: u64, t3: u64) -> (i64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn peppy_clock_wall_returns_a_value() {
@@ -558,7 +559,7 @@ mod tests {
         let err = clock
             .now_ns()
             .expect_err("empty cache must surface ClockNotReady");
-        assert!(matches!(err, Error::ClockNotReady), "got {err:?}");
+        assert_matches!(err, Error::ClockNotReady, "got {err:?}");
 
         cache.store(42, Ordering::Relaxed);
         assert_eq!(clock.now_ns().expect("populated cache reads ok"), 42);
@@ -579,7 +580,7 @@ mod tests {
         let err = clock
             .now_ns()
             .expect_err("nothing committed yet is not ready");
-        assert!(matches!(err, Error::ClockNotReady), "got {err:?}");
+        assert_matches!(err, Error::ClockNotReady, "got {err:?}");
 
         cache.store(7, Ordering::Relaxed);
         assert_eq!(clock.now_ns().expect("committed instant reads back"), 7);
@@ -589,6 +590,7 @@ mod tests {
 #[cfg(test)]
 mod clock_source_tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn wall_clock_source_returns_a_value() {
@@ -603,7 +605,7 @@ mod clock_source_tests {
         let err = source
             .now_ns()
             .expect_err("empty cache must surface NotReady");
-        assert!(matches!(err, ClockSourceError::NotReady));
+        assert_matches!(err, ClockSourceError::NotReady);
 
         cache.store(42, Ordering::Relaxed);
         assert_eq!(source.now_ns().expect("cache populated"), 42);

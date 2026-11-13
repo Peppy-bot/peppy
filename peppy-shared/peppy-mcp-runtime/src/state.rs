@@ -301,6 +301,7 @@ mod tests {
     use super::*;
     use crate::clock::test_support::{MS, manual_clock};
     use serde_json::json;
+    use std::assert_matches;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// A read spawned to wait for the next message, registered as waiting
@@ -368,11 +369,9 @@ mod tests {
     #[test]
     fn reads_report_unavailable_then_fresh_then_stale() {
         let (ingest, nanos) = ingest_with_clock();
-        assert!(
-            matches!(
-                ingest.state.snapshot_for_read(0),
-                Err(ReadRefusal::Unavailable)
-            ),
+        assert_matches!(
+            ingest.state.snapshot_for_read(0),
+            Err(ReadRefusal::Unavailable),
             "nothing published yet"
         );
 
@@ -436,7 +435,7 @@ mod tests {
         let error = ingest
             .publish(token, json!({ "status": "y".repeat(64) }))
             .expect_err("oversize snapshot is rejected");
-        assert!(matches!(error, PublishError::Oversize { .. }));
+        assert_matches!(error, PublishError::Oversize { .. });
 
         let view = ingest
             .state
@@ -594,20 +593,20 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_resource_without_a_snapshot_or_with_a_stale_one_is_refused_without_waiting() {
         let (ingest, nanos) = ingest_with_clock();
-        assert!(matches!(
+        assert_matches!(
             ingest.state.next_snapshot(&ingest.clock).await,
             Err(ReadRefusal::Unavailable)
-        ));
+        );
         assert_eq!(ingest.state.waiting.load(Ordering::SeqCst), 0);
         let token = ingest.admit().expect("gate open");
         ingest
             .publish(token, json!({ "battery": 1 }))
             .expect("publishes");
         nanos.store(3_000 * MS, Ordering::SeqCst);
-        assert!(matches!(
+        assert_matches!(
             ingest.state.next_snapshot(&ingest.clock).await,
             Err(ReadRefusal::Stale { .. })
-        ));
+        );
     }
 
     #[test]

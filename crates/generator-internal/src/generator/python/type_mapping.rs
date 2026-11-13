@@ -168,6 +168,7 @@ pub fn qos_profile_python(profile: &QoSProfile) -> &'static str {
 mod tests {
     use super::*;
     use config::node::{ArrayKind, ArraySchema, MessageFormat, PeppygenLanguage};
+    use std::assert_matches;
 
     #[test]
     fn collect_fields_rejects_nested_array_item_shapes() {
@@ -193,10 +194,9 @@ mod tests {
 
         let mut nested = Vec::new();
         let result = collect_fields_from_format(&format, "Message", &mut nested);
-        assert!(matches!(
-            result,
-            Err(Error::UnsupportedArrayItemSchema { field }) if field == "samples"
-        ));
+        assert_matches!(
+            result.err(),
+            Some(Error::UnsupportedArrayItemSchema { field }) if field == "samples");
     }
 
     #[rstest::rstest]

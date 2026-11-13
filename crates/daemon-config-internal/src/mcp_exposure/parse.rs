@@ -29,6 +29,7 @@ mod tests {
     use super::*;
     use crate::error::{Error, ParsingError};
     use config::schema::PeppySchema;
+    use std::assert_matches;
     use tempfile::NamedTempFile;
 
     const MINIMAL_EXPOSURE: &str = r#"{
@@ -75,30 +76,21 @@ mod tests {
     fn empty_file_rejected() {
         let file = NamedTempFile::new().expect("temp file");
         let err = PeppyMcpExposureParser::from_path(file.path()).expect_err("empty rejected");
-        assert!(matches!(
-            err,
-            Error::Parsing(ParsingError::EmptyContent { .. })
-        ));
+        assert_matches!(err, Error::Parsing(ParsingError::EmptyContent { .. }));
     }
 
     #[test]
     fn missing_file_rejected() {
         let err = PeppyMcpExposureParser::from_path("/nonexistent/exposure.json5")
             .expect_err("missing rejected");
-        assert!(matches!(
-            err,
-            Error::Parsing(ParsingError::CannotRead { .. })
-        ));
+        assert_matches!(err, Error::Parsing(ParsingError::CannotRead { .. }));
     }
 
     #[test]
     fn malformed_json5_rejected() {
         let err =
             PeppyMcpExposureParser::from_content("{ not valid").expect_err("malformed rejected");
-        assert!(matches!(
-            err,
-            Error::Parsing(ParsingError::CannotParseConfig { .. })
-        ));
+        assert_matches!(err, Error::Parsing(ParsingError::CannotParseConfig { .. }));
     }
 
     #[test]

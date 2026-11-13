@@ -196,6 +196,7 @@ mod tests {
     use super::*;
     use httpmock::Method::GET;
     use httpmock::MockServer;
+    use std::assert_matches;
 
     #[test]
     fn redact_strips_query() {
@@ -207,7 +208,7 @@ mod tests {
     fn client_uses_verified_platform_trust_roots() {
         let client = HttpClient::new();
         let tls = client.agent.config().tls_config();
-        assert!(matches!(tls.root_certs(), RootCerts::PlatformVerifier));
+        assert_matches!(tls.root_certs(), RootCerts::PlatformVerifier);
         assert!(tls.use_sni());
         assert!(!tls.disable_verification());
     }

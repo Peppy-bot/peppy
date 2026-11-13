@@ -17,6 +17,7 @@ use peppylib::runtime::{
     PeerSubscription, declare_peer_publisher_with_watch, subscribe_peer_with_watch,
 };
 use peppylib::types::Payload;
+use std::assert_matches;
 use std::time::Duration;
 use tokio::sync::watch;
 
@@ -631,11 +632,11 @@ async fn a_publisher_reaches_each_peer_of_its_slot_alone() {
 
     // A multi slot publishes only to a peer it holds.
     tx.send(paired_with(2, &["arm_2"])).expect("watch send");
-    assert!(matches!(
+    assert_matches!(
         publisher
             .publish_to(&pin_to("arm_1"), Payload::from_static(b"gone"))
             .await,
         Err(Error::PeerNotPaired { .. })
-    ));
+    );
     assert_eq!(publisher.peers(), vec![pin_to("arm_2")]);
 }

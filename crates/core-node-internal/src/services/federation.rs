@@ -625,6 +625,7 @@ fn end_held_reservation(state: &mut OwnershipState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     /// Stands in for a real launch-scoped goal. The gate only ever reads
     /// `launch_id()`, so exercising it does not need a whole `NodeRunGoal`.
@@ -701,11 +702,9 @@ mod tests {
     fn re_reserving_the_same_launch_reports_the_reservation_as_already_held() {
         let ownership = SliceOwnership::new("cn-held");
         reserve_expecting_a_fresh_lifetime(&ownership, "launch-a", "cn-robot-7");
-        assert!(
-            matches!(
-                ownership.try_reserve("launch-a", "cn-robot-7"),
-                ReserveOutcome::AlreadyHeld
-            ),
+        assert_matches!(
+            ownership.try_reserve("launch-a", "cn-robot-7"),
+            ReserveOutcome::AlreadyHeld,
             "a retry of the same launch owes no second presence watch"
         );
     }

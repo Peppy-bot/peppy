@@ -1032,6 +1032,7 @@ impl MockPublisher {
 mod tests {
     use super::*;
     use crate::wire::test_support::seg;
+    use std::assert_matches;
 
     #[test]
     fn test_key_exprs_intersect_exact() {
@@ -1588,11 +1589,9 @@ mod tests {
             old_watch.rx.recv_async().await.expect("gone event"),
             LivelinessEvent::Gone(())
         );
-        assert!(
-            matches!(
-                old_watch.rx.try_recv(),
-                Err(flume::TryRecvError::Disconnected)
-            ),
+        assert_matches!(
+            old_watch.rx.try_recv(),
+            Err(flume::TryRecvError::Disconnected),
             "the stopped session's watch should be retired"
         );
 
@@ -1614,8 +1613,9 @@ mod tests {
         );
 
         drop(old_token);
-        assert!(
-            matches!(new_watch.rx.try_recv(), Err(flume::TryRecvError::Empty)),
+        assert_matches!(
+            new_watch.rx.try_recv(),
+            Err(flume::TryRecvError::Empty),
             "an old token guard must not remove the restarted session's token"
         );
         let probe = adapter
@@ -2238,8 +2238,9 @@ mod tests {
             retaining_publisher(&adapter, 1);
             let refused =
                 adapter.declare_topic_publisher(&sender, PublisherQoS::Standard, latest(3));
-            assert!(
-                matches!(refused, Err(Error::RetainingTopicMismatch { .. })),
+            assert_matches!(
+                refused.err(),
+                Some(Error::RetainingTopicMismatch { .. }),
                 "another depth should be refused"
             );
 
@@ -2256,8 +2257,9 @@ mod tests {
                 PublisherQoS::Standard,
                 latest(1),
             );
-            assert!(
-                matches!(refused, Err(Error::RetainingTopicMismatch { .. })),
+            assert_matches!(
+                refused.err(),
+                Some(Error::RetainingTopicMismatch { .. }),
                 "a retaining declaration after a live-only one should be refused"
             );
             let one_shot = adapter
@@ -2268,8 +2270,9 @@ mod tests {
                     true,
                 )
                 .await;
-            assert!(
-                matches!(one_shot, Err(Error::RetainingTopicMismatch { .. })),
+            assert_matches!(
+                one_shot,
+                Err(Error::RetainingTopicMismatch { .. }),
                 "a one-shot publish on a retaining topic should be refused"
             );
         }

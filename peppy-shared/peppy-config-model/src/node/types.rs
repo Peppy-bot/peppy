@@ -2632,6 +2632,7 @@ impl Interfaces {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn extract_parameter_refs_pulls_each_dot_path() {
@@ -2901,38 +2902,26 @@ mod tests {
             SchemaType::Object(object) => {
                 assert_eq!(object.kind, ObjectKind::Object);
                 let map = &object.fields;
-                assert!(matches!(
-                    map.get("stamp"),
-                    Some(SchemaType::Type(TypeToken::Time))
-                ));
-                assert!(matches!(
-                    map.get("frame_id"),
-                    Some(SchemaType::Type(TypeToken::U32))
-                ));
+                assert_matches!(map.get("stamp"), Some(SchemaType::Type(TypeToken::Time)));
+                assert_matches!(map.get("frame_id"), Some(SchemaType::Type(TypeToken::U32)));
             }
             _ => panic!("header should be an object"),
         }
 
         // encoding
-        assert!(matches!(
+        assert_matches!(
             mf.0.get("encoding"),
             Some(SchemaType::Type(TypeToken::String))
-        ));
+        );
         // dimensions
-        assert!(matches!(
-            mf.0.get("width"),
-            Some(SchemaType::Type(TypeToken::U32))
-        ));
-        assert!(matches!(
-            mf.0.get("height"),
-            Some(SchemaType::Type(TypeToken::U32))
-        ));
+        assert_matches!(mf.0.get("width"), Some(SchemaType::Type(TypeToken::U32)));
+        assert_matches!(mf.0.get("height"), Some(SchemaType::Type(TypeToken::U32)));
 
         // image array of tokens
         match mf.0.get("image").unwrap() {
             SchemaType::Array(array) => {
                 assert_eq!(array.kind, ArrayKind::Array);
-                assert!(matches!(&*array.items, SchemaType::Type(TypeToken::U8)));
+                assert_matches!(&*array.items, SchemaType::Type(TypeToken::U8));
                 assert_eq!(array.length, Some(3));
             }
             _ => panic!("image should be an array"),
@@ -3856,8 +3845,7 @@ mod tests {
                 serde_json5::from_str::<DependsOn>(json5)
                     .expect_err("a missing role must be rejected"),
             );
-            assert!(
-                matches!(&err, crate::error::ParsingError::PairingSlotMissingRole { link_id } if link_id == "x"),
+            assert_matches!(&err, crate::error::ParsingError::PairingSlotMissingRole { link_id } if link_id == "x",
                 "expected PairingSlotMissingRole, got {err:?}"
             );
         }

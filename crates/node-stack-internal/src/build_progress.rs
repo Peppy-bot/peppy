@@ -283,6 +283,7 @@ fn format_duration(time: Duration) -> String {
 mod tests {
     use super::*;
     use crate::build_io::FeedbackStream;
+    use std::assert_matches;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     const MB: u64 = 1024 * 1024;
@@ -531,7 +532,7 @@ mod tests {
             .await
             .expect("a growth tick must emit within an interval")
             .expect("channel open");
-        assert!(matches!(line.stream, FeedbackStream::Stdout));
+        assert_matches!(line.stream, FeedbackStream::Stdout);
         assert!(
             line.line.contains("(+300.0 MB)"),
             "the line must report the growth delta, got: {}",
