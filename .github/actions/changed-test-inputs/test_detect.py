@@ -255,6 +255,29 @@ class Detection(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(select(path)["scripts"], "true")
 
+    def test_the_concepts_video_checks_run_for_the_video_project_and_the_docs_content(self):
+        # The transcript test holds the transcript of the video to the docs
+        # pages that it names, and to the snippet files that these pages show.
+        for path in (
+            "docs/concepts_video/transcript.toml",
+            "docs/concepts_video/compositions/opening.html.j2",
+            "docs/concepts_video/pixi.lock",
+            "docs/src/content/docs/reference/concepts.mdx",
+            "docs/src/content/docs/guides/snippets/python/standalone/params.json",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(select(path)["concepts_video"], "true")
+
+    def test_the_concepts_video_checks_do_not_run_for_the_rest_of_the_docs_site(self):
+        for path in (
+            "docs/astro.config.mjs",
+            "docs/src/components/YouTubeEmbed.astro",
+            "docs/src/content/releases/v0.36.4.html",
+            "scripts/install.sh",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(select(path)["concepts_video"], "false")
+
     def test_the_install_tests_run_for_what_reaches_the_runner(self):
         for path in (
             "scripts/install.sh",

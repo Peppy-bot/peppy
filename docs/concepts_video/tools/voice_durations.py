@@ -15,7 +15,7 @@ from typing import Iterator, Mapping
 
 from tools import markup
 from tools.timing import sentence_key
-from tools.transcript import Sentence, Transcript, Voice
+from tools.transcript import Transcript, Voice
 
 
 @dataclass(frozen=True)

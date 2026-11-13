@@ -106,6 +106,12 @@ TREE_SUITES = {
         ".github/actions/sticky-disk-report/**",
         ".github/actions/install-test/**",
     ],
+    # pixi run test and pixi run lint in docs/concepts_video. The transcript
+    # test holds the transcript of the video to the sections of the docs
+    # pages that it names, and a section shows the snippet files of its page,
+    # so the suite runs on a change of the video project and on a change of
+    # the docs content.
+    "concepts_video": ["docs/concepts_video/**", "docs/src/content/docs/**"],
 }
 
 # The sealed tree, and the one member of it whose suite is not a cargo test:
@@ -128,6 +134,7 @@ JOBS = {
     "docs-integration": ["docs_integration"],
     "cross-check": ["cross_check"],
     "release-scripts": ["scripts"],
+    "concepts-video": ["concepts_video"],
     "install-archive-aarch64": ["install_script"],
     "install-script": ["install_script"],
     "install-script-aarch64": ["install_script"],

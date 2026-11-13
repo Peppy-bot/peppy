@@ -71,9 +71,9 @@ def _parse_page(page_path: Path) -> _Page:
     title = _title(frontmatter, page_path)
     snippets: dict[str, Path] = {}
     body: list[str] = []
-    in_fence = _FenceTracker()
+    code_blocks = _FenceTracker()
     for line in rest:
-        if not in_fence.is_code_line(line):
+        if not code_blocks.is_code_line(line):
             raw_import = RAW_IMPORT.match(line)
             if raw_import:
                 snippets[raw_import.group(1)] = (page_path.parent / raw_import.group(2)).resolve()
@@ -131,9 +131,9 @@ class _FenceTracker:
 def _headings(body: list[str]) -> list[tuple[int, str]]:
     """The line index and the text of each heading outside of the code blocks."""
     found: list[tuple[int, str]] = []
-    in_fence = _FenceTracker()
+    code_blocks = _FenceTracker()
     for index, line in enumerate(body):
-        if in_fence.is_code_line(line):
+        if code_blocks.is_code_line(line):
             continue
         match = HEADING.match(line)
         if match:

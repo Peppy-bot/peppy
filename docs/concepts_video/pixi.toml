@@ -38,3 +38,5 @@ add-footage = "python -m tools.add_footage"
 # What CI runs: the transcript test and the lint of the compositions.
 test = "pytest tests -v"
 lint = "python -m tools.lint"
+# Pictures of one segment at given times, to look at a composition.
+snapshot = "python -m tools.snapshot"

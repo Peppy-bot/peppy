@@ -21,6 +21,9 @@ const FILL = 1.0;
 const ANCHORS = {
   camera: [0.075, 0.812, 0.0],
   left_wrist: [0.3, 0.485, -0.13],
+  right_wrist: [0.3, 0.485, 0.13],
+  torso: [0.02, 0.66, 0.0],
+  base: [0.0, 0.02, 0.0],
 };
 
 let modelLoad = null;

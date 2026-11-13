@@ -37,6 +37,11 @@ outputs:
   scripts:
     description: Whether the mocked release scripts suite's inputs changed.
     value: ${{ steps.detect.outputs.scripts }}
+  concepts_video:
+    description: >-
+      Whether the inputs of the concepts video checks changed: the video
+      project, or the docs content that its transcript rests on.
+    value: ${{ steps.detect.outputs.concepts_video }}
   install_script:
     description: >-
       Whether the inputs of the install.sh tests changed: what decides what a

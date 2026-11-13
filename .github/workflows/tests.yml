@@ -96,6 +96,7 @@ jobs:
       docs_integration: ${{ steps.changes.outputs.docs_integration }}
       cross_check: ${{ steps.changes.outputs.cross_check }}
       scripts: ${{ steps.changes.outputs.scripts }}
+      concepts_video: ${{ steps.changes.outputs.concepts_video }}
       install_script: ${{ steps.changes.outputs.install_script }}
       peppy_shared_packages: ${{ steps.changes.outputs.peppy_shared_packages }}
       peppy_shared_peppylib_py: ${{ steps.changes.outputs.peppy_shared_peppylib_py }}
@@ -368,6 +369,40 @@ jobs:
 
       - name: Run the mocked release scripts tests
         run: ./scripts/run_tests.sh -m 'not install'
+
+  # The concepts video of the docs (docs/concepts_video). CI does not build
+  # the video. This job runs the transcript test, which holds the transcript
+  # of the video to the sections of the docs pages that it names, and the lint
+  # of HyperFrames on the compiled compositions. Both need the pinned tools of
+  # the project only: no voice model, no Chrome and no footage.
+  concepts-video:
+    needs: changes
+    if: needs.changes.outputs.concepts_video == 'true'
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: docs/concepts_video
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Provides the pixi the project runs under.
+      - uses: ./.github/actions/rust-build-env
+
+      - name: Install the pinned tools
+        run: |
+          pixi install --locked
+          pixi run npm ci
+
+      - name: Run the transcript test
+        run: pixi run test
+
+      - name: Lint the compositions
+        run: pixi run lint
 
   # Builds the release archive of this change for x86_64 Linux, the way a
   # release host builds it, with the release target directory, the cargo
@@ -679,6 +714,7 @@ jobs:
       - multi-daemon-e2e
       - docs-integration
       - release-scripts
+      - concepts-video
       - install-archive
       - install-script
       - install-archive-aarch64

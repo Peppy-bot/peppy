@@ -69,11 +69,16 @@ def lint(project: Path, media_are_present: bool) -> None:
         capture_output=True,
         text=True,
     )
-    findings = [
+    faults = lint_faults(json.loads(completed.stdout)["findings"], media_are_present)
+    if faults:
+        raise LintFailed("\n".join(f"{fault['file']}: {fault['code']}: {fault['message']}" for fault in faults))
+
+
+def lint_faults(findings: list[dict], media_are_present: bool) -> list[dict]:
+    """The findings of a lint that are faults of the compositions."""
+    return [
         finding
-        for finding in json.loads(completed.stdout)["findings"]
+        for finding in findings
         if finding["severity"] in LINT_FAULT_SEVERITIES
         and (media_are_present or not finding["code"].endswith(ABSENT_MEDIA_CODE_SUFFIX))
     ]
-    if findings:
-        raise LintFailed("\n".join(f"{finding['file']}: {finding['code']}: {finding['message']}" for finding in findings))
