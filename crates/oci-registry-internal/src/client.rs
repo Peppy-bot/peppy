@@ -411,7 +411,8 @@ impl RegistryClient {
         let mut sent = 0u64;
         while sent < size {
             let length = self.upload_chunk_bytes.min(size - sent);
-            let mut chunk = vec![0u8; length as usize];
+            let mut chunk =
+                vec![0u8; usize::try_from(length).expect("an upload chunk fits in memory")];
             file.read_exact(&mut chunk)
                 .await
                 .map_err(|e| RegistryError::io(path, e))?;

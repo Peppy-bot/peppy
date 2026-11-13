@@ -744,7 +744,7 @@ mod tests {
     fn restarts_spaced_beyond_the_window_never_flap() {
         let start = Instant::now();
         let mut flap = FlapWindow::new();
-        for restart in 0..=2 * FLAP_CAP as u32 {
+        for restart in 0..=u32::try_from(2 * FLAP_CAP).unwrap() {
             assert!(
                 !flap.record_and_is_flapping(start + FLAP_WINDOW * restart),
                 "restart {restart} is alone in its window"

@@ -55,7 +55,7 @@ static MINTED: AtomicU64 = AtomicU64::new(0);
 pub fn mint_incarnation() -> ClockIncarnation {
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or_default(|since_epoch| since_epoch.as_millis() as u64);
+        .map_or_default(|since_epoch| u64::try_from(since_epoch.as_millis()).unwrap_or(u64::MAX));
     MINTED.fetch_max(seed, Ordering::Relaxed);
     let value = MINTED.fetch_add(1, Ordering::Relaxed) + 1;
     ClockIncarnation::try_from(value).expect("a counter seeded from unix-millis is in range")
@@ -343,10 +343,13 @@ mod tests {
 
     #[test]
     fn a_lifetime_starts_past_the_wall_clock_so_a_restart_never_repeats_one() {
-        let before = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("the test host is past the epoch")
-            .as_millis() as u64;
+        let before = u64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("the test host is past the epoch")
+                .as_millis(),
+        )
+        .expect("the milliseconds since the epoch fit in a u64");
         assert!(
             mint_incarnation().get() > before,
             "a fresh process resumes above every value the last one reached"

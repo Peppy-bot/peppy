@@ -9,7 +9,8 @@ const BOOT: &str = "calm-heron-5678";
 
 /// A moment in the validity of the test certificates.
 fn during_validity() -> SystemTime {
-    SystemTime::UNIX_EPOCH + Duration::from_secs(i64::midpoint(ISSUED_AT, EXPIRES_AT) as u64)
+    SystemTime::UNIX_EPOCH
+        + Duration::from_secs(i64::midpoint(ISSUED_AT, EXPIRES_AT).unsigned_abs())
 }
 
 fn sender(instance_id: &str) -> ClaimedSender<'_> {

@@ -220,7 +220,7 @@ fn a_timestamp_outside_the_window_and_a_replayed_call_are_refused() {
 fn the_nonces_of_the_calls_that_left_the_window_are_dropped() {
     let mut window = NonceWindow::default();
     let key = ClientKey::generate().public_key();
-    let window_ms = TIMESTAMP_WINDOW.as_millis() as u64;
+    let window_ms = crate::services::saturating_millis(TIMESTAMP_WINDOW);
     assert!(window.take(key, [1; NONCE_LEN], 1_000, 1_000, window_ms));
     assert!(!window.take(key, [1; NONCE_LEN], 1_000, 2_000, window_ms));
     assert!(window.take(key, [2; NONCE_LEN], 40_000, 40_000, window_ms));

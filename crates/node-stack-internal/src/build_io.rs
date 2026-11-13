@@ -99,6 +99,10 @@ fn feedback_stream(stream: Iostream) -> FeedbackStream {
 
 /// Renders byte counts in the compact `KB`/`MB`/`GB` form shared by peppy's
 /// progress lines (clone/fetch transfer reports, build disk-growth feedback).
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the count is shown with one decimal, far below the precision of an f64"
+)]
 pub fn format_bytes(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = 1024.0 * 1024.0;

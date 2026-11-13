@@ -321,7 +321,7 @@ mod tests {
                 clock: Arc::new(move || clock.load(Ordering::SeqCst)),
                 sleeper: Arc::new(move |time| {
                     sleeps.lock().unwrap().push(time);
-                    slept_clock.fetch_add(time.as_secs() as i64, Ordering::SeqCst);
+                    slept_clock.fetch_add(i64::try_from(time.as_secs()).unwrap(), Ordering::SeqCst);
                     Box::pin(async {})
                 }),
             }

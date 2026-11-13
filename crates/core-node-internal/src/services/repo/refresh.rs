@@ -1041,7 +1041,7 @@ fn merge_published<E: RepoCacheEntry>(
 /// (including same-identity duplicates from lower-priority repos).
 fn count_unique<E: RepoCacheEntry>(entries: &[E]) -> u32 {
     let set: HashSet<(&str, &str)> = entries.iter().map(|e| (e.name(), e.tag())).collect();
-    set.len() as u32
+    u32::try_from(set.len()).unwrap_or(u32::MAX)
 }
 
 /// What one repository read yields, or why it failed.

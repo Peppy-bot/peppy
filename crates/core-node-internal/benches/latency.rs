@@ -103,9 +103,9 @@ fn main() {
             current.insert(
                 name.clone(),
                 StoredStats {
-                    p50_ns: stats.p50().as_nanos() as u64,
-                    p90_ns: stats.p90().as_nanos() as u64,
-                    mean_ns: stats.mean().as_nanos() as u64,
+                    p50_ns: saturating_nanos(stats.p50()),
+                    p90_ns: saturating_nanos(stats.p90()),
+                    mean_ns: saturating_nanos(stats.mean()),
                 },
             );
             rows.push(Row {
@@ -152,6 +152,12 @@ fn main() {
     }
 }
 
+/// The whole nanoseconds of `duration`. A count that does not fit stops at
+/// `u64::MAX`.
+fn saturating_nanos(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
 /// Times the proof of a call to a daemon, `samples` times after `warmup`: the
 /// signature of the call by its sender and the check of the signature by the
 /// daemon. The payload is a small request, as most calls to a daemon carry.
@@ -166,13 +172,13 @@ fn time_call_proofs(warmup: u64, samples: u64) -> latency_report::stats::Summary
         kind: ServiceQueryKind::UserRequest,
         payload: &[0u8; 64],
     };
-    let mut nanos = Vec::with_capacity(samples as usize);
+    let mut nanos = Vec::new();
     for sample in 0..warmup + samples {
         let started = std::time::Instant::now();
         let proof = signer.prove(&call, CallReceiver::ThisMachine);
         assert!(proof.verifies(&key, &call), "a proof verifies its own call");
         if sample >= warmup {
-            nanos.push(started.elapsed().as_nanos() as u64);
+            nanos.push(saturating_nanos(started.elapsed()));
         }
     }
     latency_report::stats::summarize(&nanos)
@@ -227,7 +233,7 @@ fn print_table(rows: &[Row]) {
         let (prev, delta) = match row.prev_p50_ns {
             Some(prev_ns) => (
                 format::fmt_duration(Duration::from_nanos(prev_ns)),
-                format::fmt_delta(row.p50.as_nanos() as u64, prev_ns),
+                format::fmt_delta(saturating_nanos(row.p50), prev_ns),
             ),
             None => ("-".to_string(), "-".to_string()),
         };

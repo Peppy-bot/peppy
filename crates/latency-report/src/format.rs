@@ -3,6 +3,10 @@
 use std::time::Duration;
 
 /// Format a duration as `ns` / `µs` / `ms`, picking the unit by magnitude.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a duration is shown with two decimals, far below the precision of an f64"
+)]
 pub fn fmt_duration(duration: Duration) -> String {
     let nanos = duration.as_nanos();
     if nanos < 1_000 {
@@ -16,6 +20,10 @@ pub fn fmt_duration(duration: Duration) -> String {
 
 /// Format the percentage change of `now_ns` versus `prev_ns` (e.g. `+12.3%`).
 /// Returns `-` when there is no usable baseline.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a change is shown with one decimal, far below the precision of an f64"
+)]
 pub fn fmt_delta(now_ns: u64, prev_ns: u64) -> String {
     if prev_ns == 0 {
         return "-".to_string();

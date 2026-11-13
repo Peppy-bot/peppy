@@ -305,7 +305,7 @@ fn binding(member: &str) -> MemberBinding {
 
 fn expected_frame() -> Value {
     let pixels: Vec<u8> = Vec::from_fn(FRAME_WIDTH as usize * FRAME_HEIGHT as usize * 3, |i| {
-        (i % 251) as u8
+        u8::try_from(i % 251).unwrap()
     });
     json!({
         "frame": bytes_to_base64(&pixels),

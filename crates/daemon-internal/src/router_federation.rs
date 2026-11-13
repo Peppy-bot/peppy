@@ -379,7 +379,10 @@ mod tests {
         let (record, millis) = (Arc::clone(&seen), Arc::clone(&timeout_millis));
         let prober: Prober = Arc::new(move |host, port, tls, timeout| -> ProbeFuture {
             *record.lock().unwrap() = Some((host, port, tls));
-            millis.store(timeout.as_millis() as u64, Ordering::SeqCst);
+            millis.store(
+                u64::try_from(timeout.as_millis()).unwrap(),
+                Ordering::SeqCst,
+            );
             Box::pin(async { Ok(()) })
         });
         let deps = FederationDeps { prober, ..deps() };
@@ -401,7 +404,7 @@ mod tests {
         assert!(tls.verify_name_on_connect);
         assert_eq!(
             timeout_millis.load(Ordering::SeqCst),
-            PROBE_TIMEOUT.as_millis() as u64
+            u64::try_from(PROBE_TIMEOUT.as_millis()).unwrap()
         );
     }
 

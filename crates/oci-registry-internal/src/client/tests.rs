@@ -470,7 +470,7 @@ async fn a_file_is_pushed_in_chunks_with_their_ranges_then_closed_with_its_diges
 #[tokio::test]
 async fn the_progress_of_a_push_moves_by_the_parts_of_a_chunk() {
     let registry = Registry::start().await;
-    let content: Vec<u8> = Vec::from_fn(2 * UPLOAD_PART_BYTES + 100, |i| i as u8);
+    let content: Vec<u8> = Vec::from_fn(2 * UPLOAD_PART_BYTES + 100, |i| i.to_le_bytes()[0]);
     let digest = digest::of_bytes(&content);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("node.sif");

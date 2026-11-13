@@ -15,6 +15,12 @@ pub struct Summary {
 /// `p` is a fraction in `[0.0, 1.0]` (e.g. `0.5` for the median). Returns `0`
 /// for an empty slice. Internal to [`summarize`]; consumers read percentiles off
 /// the [`Summary`] it returns.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "`clamped` is between 0 and 1, so the index is between 0 and the last index"
+)]
 fn percentile(sorted: &[u64], p: f64) -> u64 {
     if sorted.is_empty() {
         return 0;
@@ -36,7 +42,7 @@ pub fn summarize(samples: &[u64]) -> Summary {
     sorted.sort_unstable();
     let count = sorted.len() as u64;
     let sum: u128 = sorted.iter().map(|&v| u128::from(v)).sum();
-    let mean_ns = (sum / u128::from(count)) as u64;
+    let mean_ns = u64::try_from(sum / u128::from(count)).unwrap_or(u64::MAX);
     Summary {
         p50_ns: percentile(&sorted, 0.5),
         p90_ns: percentile(&sorted, 0.9),

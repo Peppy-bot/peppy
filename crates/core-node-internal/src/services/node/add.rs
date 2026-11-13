@@ -622,7 +622,7 @@ fn download_progress_line(downloaded: u64, total: Option<u64>) -> String {
     };
     let percent = match total {
         0 => 0,
-        _ => (downloaded as f64 / total as f64 * 100.0) as u64,
+        _ => downloaded.saturating_mul(100) / total,
     };
     format!(
         "Downloading: {} / {} ({}%)",
@@ -655,7 +655,9 @@ fn decode_sha256_hex(input: &str) -> std::result::Result<Vec<u8>, String> {
 /// The value of one hexadecimal digit of either case, or `None` for any
 /// other byte.
 fn hex_digit_value(digit: u8) -> Option<u8> {
-    (digit as char).to_digit(16).map(|value| value as u8)
+    (digit as char)
+        .to_digit(16)
+        .and_then(|value| u8::try_from(value).ok())
 }
 
 fn extract_http_bundle(

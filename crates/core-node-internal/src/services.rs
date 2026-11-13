@@ -87,6 +87,12 @@ fn clear_instances_dir(peppy_dirs: &PeppyDirs) {
     }
 }
 
+/// The whole milliseconds of `duration`. A count that does not fit stops at
+/// `u64::MAX`.
+pub(crate) fn saturating_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Returns this daemon's hostname for operator-facing annotations.
 ///
 /// Hostname is not part of core-node identity; callers must continue to route
@@ -136,18 +142,18 @@ impl CoreNodeArguments {
             "node_startup_timeout_ms".to_string(),
             ParameterSpec::Primitive {
                 kind: TypeToken::U64,
-                default: Some(DefaultValue::UInt(
-                    self.node_startup_timeout.as_millis() as u64
-                )),
+                default: Some(DefaultValue::UInt(saturating_millis(
+                    self.node_startup_timeout,
+                ))),
             },
         );
         params.insert(
             "default_setup_timeout_ms".to_string(),
             ParameterSpec::Primitive {
                 kind: TypeToken::U64,
-                default: Some(DefaultValue::UInt(
-                    self.default_setup_timeout.as_duration().as_millis() as u64,
-                )),
+                default: Some(DefaultValue::UInt(saturating_millis(
+                    self.default_setup_timeout.as_duration(),
+                ))),
             },
         );
         params

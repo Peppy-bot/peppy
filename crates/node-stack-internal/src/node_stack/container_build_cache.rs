@@ -380,7 +380,9 @@ fn next_server_port() -> u16 {
     const PORT_RANGE_START: u16 = 24000;
     const PORT_RANGE_LEN: u16 = 2000;
     static COUNTER: AtomicU16 = AtomicU16::new(0);
-    let offset = (std::process::id() as u16)
+    // The low 16 bits of the PID are enough to spread the daemons.
+    let [low, high, ..] = std::process::id().to_le_bytes();
+    let offset = u16::from_le_bytes([low, high])
         .wrapping_mul(31)
         .wrapping_add(COUNTER.fetch_add(1, Ordering::Relaxed));
     PORT_RANGE_START + offset % PORT_RANGE_LEN

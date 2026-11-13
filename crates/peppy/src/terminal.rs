@@ -186,7 +186,9 @@ impl ScrollingOutput {
             return;
         }
 
-        let _ = self.stdout.execute(MoveUp(self.rendered_lines as u16));
+        let _ = self
+            .stdout
+            .execute(MoveUp(saturating_rows(self.rendered_lines)));
         for _ in 0..self.rendered_lines {
             let _ = self.stdout.execute(MoveToColumn(0));
             let _ = self.stdout.execute(Clear(ClearType::CurrentLine));
@@ -194,12 +196,20 @@ impl ScrollingOutput {
         }
 
         // Move back up again so subsequent output starts at the right place
-        let _ = self.stdout.execute(MoveUp(self.rendered_lines as u16));
+        let _ = self
+            .stdout
+            .execute(MoveUp(saturating_rows(self.rendered_lines)));
         let _ = self.stdout.flush();
 
         self.rendered_lines = 0;
         self.lines.clear();
     }
+}
+
+/// `rows` as a count that the cursor can move over. A count that does not fit
+/// stops at `u16::MAX`.
+fn saturating_rows(rows: usize) -> u16 {
+    u16::try_from(rows).unwrap_or(u16::MAX)
 }
 
 /// Draws one frame of a [`ScrollingOutput`] region into `out`: moves up over
@@ -219,7 +229,7 @@ fn draw_frame(
 ) {
     // Move up to overwrite the previous frame.
     if rendered_lines > 0 {
-        let _ = out.queue(MoveUp(rendered_lines as u16));
+        let _ = out.queue(MoveUp(saturating_rows(rendered_lines)));
     }
 
     for line in lines {

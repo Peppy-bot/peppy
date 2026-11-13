@@ -599,6 +599,10 @@ fn formats_from_contract(
 }
 
 /// Human-readable byte count (decimal units, matching the rest of the output).
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the count is shown with one decimal, far below the precision of an f64"
+)]
 fn human_bytes(n: usize) -> String {
     let f = n as f64;
     if n < 1_000 {
@@ -843,7 +847,7 @@ async fn measure_probe(
     // real response size, so the round-trip reflects real serialization +
     // transport, still without running the handler.
     let request_size = edge.probe_request_size;
-    let response_size = edge.probe_response_size.min(u32::MAX as usize) as u32;
+    let response_size = u32::try_from(edge.probe_response_size).unwrap_or(u32::MAX);
 
     let total = warmup.saturating_add(samples);
     let mut out = Vec::new();
@@ -891,7 +895,7 @@ async fn measure_probe(
             consecutive_errors = 0;
             honored_full |= resp_bytes >= edge.probe_response_size;
             if i >= warmup {
-                out.push(d.as_nanos() as u64);
+                out.push(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
             }
         } else {
             consecutive_errors += 1;
@@ -1104,10 +1108,13 @@ async fn measure_topic_delivery(
                 let recv = wall_now_ns().unwrap_or(0);
                 let corrected = i128::from(recv) - i128::from(src) - off;
                 measured += 1;
-                if (0..=IMPLAUSIBLE_DELIVERY_NS).contains(&corrected) {
-                    out.push(corrected as u64);
-                } else {
-                    had_implausible = true;
+                // A negative delivery time, or one above the bound, is not a
+                // measurement.
+                match u64::try_from(corrected) {
+                    Ok(delivery_ns) if corrected <= IMPLAUSIBLE_DELIVERY_NS => {
+                        out.push(delivery_ns);
+                    }
+                    _ => had_implausible = true,
                 }
             }
             // Channel closed or no traffic within the window; stop observing.

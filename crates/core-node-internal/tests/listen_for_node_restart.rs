@@ -79,6 +79,10 @@ const KILL_AFTER_SECS: u64 = 100;
 const KILL_AFTER: Duration = Duration::from_secs(KILL_AFTER_SECS);
 /// The probes after the last answered one at which a silent instance is
 /// killed.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the count of seconds is a small constant, and `try_from` is not const"
+)]
 const PROBES_TO_THE_KILL: usize = KILL_AFTER_SECS as usize;
 /// The default cooperative-shutdown grace, which the daemons of these tests
 /// run under unless a test chooses the shortest one.
@@ -2619,7 +2623,12 @@ async fn a_kill_after_a_long_answered_run_starts_the_backoff_over() {
     for restarts in 1..=2 {
         // The run counts to its last answer, which comes a whole reset
         // window after the start.
-        ticks(&started, RESET_WINDOW.as_secs() as usize, 1).await;
+        ticks(
+            &started,
+            usize::try_from(RESET_WINDOW.as_secs()).unwrap(),
+            1,
+        )
+        .await;
         drop(health);
         ticks(&started, PROBES_TO_THE_KILL - 1, 1).await;
         time(&started).advance(PROBE_INTERVAL);

@@ -323,7 +323,7 @@ impl CallCheck for DaemonCallCheck {
         let now = (self.clock)();
         let now_ms = unix_millis(now);
         let skew_ms = now_ms.abs_diff(proof.timestamp_ms());
-        let window_ms = TIMESTAMP_WINDOW.as_millis() as u64;
+        let window_ms = crate::services::saturating_millis(TIMESTAMP_WINDOW);
         if skew_ms > window_ms {
             return Err(refused(format!(
                 "the timestamp of the call of {sender} is {} s away from the clock of this \

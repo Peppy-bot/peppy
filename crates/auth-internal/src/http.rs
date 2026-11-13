@@ -267,7 +267,7 @@ mod tests {
         server.mock(|when, then| {
             when.method(GET).path("/large");
             then.status(200)
-                .body("a".repeat(MAX_RESPONSE_BYTES as usize + 1));
+                .body("a".repeat(usize::try_from(MAX_RESPONSE_BYTES).unwrap() + 1));
         });
 
         let message = HttpClient::new()
