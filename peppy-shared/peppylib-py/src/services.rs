@@ -25,20 +25,18 @@ impl PyServiceTask {
 #[pymethods]
 impl PyServiceTask {
     /// Returns true if the service task has finished.
-    fn is_finished(&self) -> PyResult<bool> {
-        Ok(self
-            .inner
+    fn is_finished(&self) -> bool {
+        self.inner
             .lock()
             .as_ref()
-            .is_none_or(TaskHandle::is_finished))
+            .is_none_or(TaskHandle::is_finished)
     }
 
     /// Abort the service task.
-    fn abort(&self) -> PyResult<()> {
+    fn abort(&self) {
         if let Some(h) = self.inner.lock().take() {
             h.abort();
         }
-        Ok(())
     }
 }
 

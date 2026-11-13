@@ -131,9 +131,8 @@ fn call_setup_function(
     event_loop_slot: &SharedEventLoopSlot,
 ) -> PyResult<Py<PyAny>> {
     let py_params = pythonize(py, params)
-        .map_err(|e| PyRuntimeError::new_err(format!("failed to convert params to Python: {e}")))?
-        .unbind();
-    let py_params = hydrate_parameters(py, py_params)?;
+        .map_err(|e| PyRuntimeError::new_err(format!("failed to convert params to Python: {e}")))?;
+    let py_params = hydrate_parameters(py, &py_params)?;
     let py_runner = Py::new(
         py,
         PyNodeRunner::with_event_loop_slot(Arc::clone(node_runner), Arc::clone(event_loop_slot)),
@@ -147,10 +146,10 @@ fn call_setup_function(
 /// Converts a plain Python dict into the generated `Parameters` dataclass
 /// instance by importing `peppygen.parameters.Parameters` and calling its
 /// `from_dict` classmethod.
-fn hydrate_parameters(py: Python<'_>, params: Py<PyAny>) -> PyResult<Py<PyAny>> {
+fn hydrate_parameters(py: Python<'_>, params: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let module = py.import("peppygen.parameters")?;
     let params_cls = module.getattr("Parameters")?;
-    let instance = params_cls.call_method1("from_dict", (params.bind(py),))?;
+    let instance = params_cls.call_method1("from_dict", (params,))?;
     Ok(instance.unbind())
 }
 
@@ -1547,9 +1546,7 @@ impl PyStandaloneConfig {
     }
 
     /// Set runtime parameters from a Python dict or dataclass instance.
-    fn with_parameters(&self, py: Python<'_>, params: Py<PyAny>) -> PyResult<Self> {
-        let params = params.bind(py);
-
+    fn with_parameters(&self, py: Python<'_>, params: &Bound<'_, PyAny>) -> PyResult<Self> {
         // If the input is a dataclass instance, convert it to a dict so
         // that depythonize (which requires the mapping protocol) can handle it.
         let dataclasses = py.import("dataclasses")?;

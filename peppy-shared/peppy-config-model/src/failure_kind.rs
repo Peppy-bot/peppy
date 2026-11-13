@@ -261,7 +261,7 @@ impl ContractKinds {
                 }
             }
             if !given.is_empty() {
-                listed.insert((section, member), in_declared_order(&declared, given));
+                listed.insert((section, member), in_declared_order(&declared, &given));
             }
         }
         if let Some((unlisted, _)) = declared.iter().find(|(name, _)| {
@@ -303,7 +303,7 @@ impl ContractKinds {
 /// `given`, a subset of `declared`, in the order of `declared`.
 fn in_declared_order(
     declared: &ContractFailureKinds,
-    given: IndexMap<FailureKindName, String>,
+    given: &IndexMap<FailureKindName, String>,
 ) -> ContractFailureKinds {
     ContractFailureKinds(
         declared

@@ -65,13 +65,13 @@ pub struct PyBoundMember {
 impl PyBoundMember {
     #[new]
     #[pyo3(signature = (producer, copy=None))]
-    fn new(producer: &PyProducerRef, copy: Option<&PyCopyTag>) -> PyResult<Self> {
-        Ok(Self {
+    fn new(producer: &PyProducerRef, copy: Option<&PyCopyTag>) -> Self {
+        Self {
             inner: BoundMember {
                 producer: producer.as_inner().clone(),
                 copy: copy.map(|copy| copy.inner.clone()),
             },
-        })
+        }
     }
 
     /// The member's producer: its full wire address.

@@ -1006,14 +1006,13 @@ impl ExposureServer {
 
     /// Answers the record tool: every kept call, newest first.
     fn recent_calls(
-        &self,
         record: &CallRecord,
-        arguments: JsonObject,
+        arguments: &JsonObject,
     ) -> Result<CallToolResult, McpError> {
         refuse_arguments(
             record.name(),
             "lists the last calls of this endpoint",
-            &arguments,
+            arguments,
         )?;
         Ok(CallToolResult::structured(record.answer()))
     }
@@ -1890,7 +1889,7 @@ impl ServerHandler for ExposureServer {
         if let Some(record) = &self.state.record
             && name == record.name()
         {
-            return self.recent_calls(record, arguments).map(Into::into);
+            return Self::recent_calls(record, &arguments).map(Into::into);
         }
         if let Some(picture) = self.state.pictures.get(name) {
             return self.look(picture, arguments).await.map(Into::into);
@@ -4583,6 +4582,10 @@ mod tests {
     /// `test_bundle` plus a service that answers with a frame under
     /// `representation`, and a result larger than 4096 bytes under
     /// `on_oversize`.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "each test builds the value in the call"
+    )]
     fn snap_bundle_under(representation: Value, on_oversize: &str) -> ExposureBundle {
         let mut bundle = test_bundle();
         bundle.tools.push(
@@ -4802,20 +4805,19 @@ mod tests {
             .record
             .as_ref()
             .expect("the bundle keeps a record");
-        let answer = server
-            .recent_calls(record, JsonObject::new())
-            .expect("the record answers");
+        let answer =
+            ExposureServer::recent_calls(record, &JsonObject::new()).expect("the record answers");
         answer.structured_content.expect("structured")["calls"]
             .as_array()
             .cloned()
             .expect("the calls")
     }
 
-    fn a_client() -> Option<ClientIdentity> {
-        Some(ClientIdentity {
+    fn a_client() -> ClientIdentity {
+        ClientIdentity {
             name: "claude-code".to_string(),
             version: "2.1".to_string(),
-        })
+        }
     }
 
     #[test]
@@ -4848,8 +4850,7 @@ mod tests {
         assert!(tool.output_schema.is_some());
 
         let record = server.state.record.as_ref().expect("a record");
-        let error = server
-            .recent_calls(record, object(json!({ "count": 1 })))
+        let error = ExposureServer::recent_calls(record, &object(json!({ "count": 1 })))
             .expect_err("takes no argument");
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
         assert!(recorded_calls(&server).is_empty());
@@ -4876,12 +4877,16 @@ mod tests {
             .execute_tool(
                 "front_camera.set_brightness",
                 object(json!({ "value": 12 })),
-                a_client(),
+                Some(a_client()),
             )
             .await
             .expect("answers");
         server
-            .execute_tool("front_camera.get_brightness", JsonObject::new(), a_client())
+            .execute_tool(
+                "front_camera.get_brightness",
+                JsonObject::new(),
+                Some(a_client()),
+            )
             .await
             .expect("answers");
         let calls = recorded_calls(&server);
@@ -4922,7 +4927,7 @@ mod tests {
             .execute_tool(
                 "front_camera.set_brightness",
                 object(json!({ "value": 1 })),
-                a_client(),
+                Some(a_client()),
             )
             .await
             .expect("an error reply is a tool error, not a protocol error");
@@ -5071,7 +5076,7 @@ mod tests {
             .run_action_in_call(
                 &task_named(&server, "recorder.resume_session"),
                 JsonObject::new(),
-                a_client(),
+                Some(a_client()),
                 CancellationToken::new(),
                 NO_PROGRESS_TOKEN,
             )
@@ -5089,7 +5094,7 @@ mod tests {
             .start_task(
                 &task_named(&server, "recorder.resume_session"),
                 JsonObject::new(),
-                a_client(),
+                Some(a_client()),
             )
             .expect("the task starts");
         let calls = recorded_calls(&server);

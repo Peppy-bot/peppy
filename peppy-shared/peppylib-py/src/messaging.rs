@@ -80,6 +80,10 @@ pub(crate) fn failure_from_py(kind: &str, message: String) -> PyResult<Failure> 
 
 /// The failure a Python service handler raised: the kind and message of a
 /// `FailureError`, or `attempt_failed` with the text of any other exception.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
 pub(crate) fn failure_of_py_err(err: PyErr) -> Failure {
     let raised = crate::py_future::try_attach_gated(|py| {
         if !err.is_instance_of::<FailureError>(py) {
@@ -114,6 +118,10 @@ pub(crate) fn failure_of_py_err(err: PyErr) -> Failure {
 /// provider gave (an error reply, or a failed goal) is a `FailureError` that
 /// carries its kind and message, and a feedback overflow is a
 /// `FeedbackOverflowError`.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
 pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
     if let Some(failure) = err.failure() {
         return FailureError::new_err((failure.kind().to_string(), failure.message().to_string()));
@@ -179,7 +187,7 @@ pub(crate) fn encoded_to_py_bytes<'py>(
 /// Wrap a `core_node_api::Error` from a `decode()` call as a Python
 /// `ValueError`: decode failures usually mean the bytes the caller passed in
 /// don't match the expected wire schema.
-pub(crate) fn decode_err(what: &str, err: core_node_api::Error) -> PyErr {
+pub(crate) fn decode_err(what: &str, err: &core_node_api::Error) -> PyErr {
     PyValueError::new_err(format!("failed to decode {what}: {err}"))
 }
 

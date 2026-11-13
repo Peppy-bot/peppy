@@ -236,6 +236,7 @@ struct CheckedCompletor;
 
 #[pymethods]
 impl CheckedCompletor {
+    #[expect(clippy::unused_self, reason = "Python calls the method on an instance")]
     fn __call__(
         &self,
         future: &Bound<'_, PyAny>,

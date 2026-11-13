@@ -299,6 +299,10 @@ pub(crate) fn capnp_list_len(len: usize, field: &str) -> Result<u32> {
 /// header for it. Serializing into a `Vec` cannot fail; the function returns
 /// a `Result` so that every codec calls it the same way as the fallible encode
 /// steps around it.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "each codec calls it the same way as the fallible encode steps around it"
+)]
 pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
     Ok(Payload::from(serialize::write_message_to_words(message)))
 }

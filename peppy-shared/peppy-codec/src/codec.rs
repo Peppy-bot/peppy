@@ -530,6 +530,10 @@ mod tests {
         MessageCodec::new("codec_test", &format).expect("the format lays out")
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "each test builds the value in the call"
+    )]
     fn round_trip(codec: &MessageCodec, value: Value) -> Vec<u8> {
         let bytes = codec.encode(&value).expect("encodes");
         let decoded = codec.decode(&bytes).expect("decodes");

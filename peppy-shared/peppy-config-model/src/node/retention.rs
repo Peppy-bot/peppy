@@ -68,7 +68,7 @@ impl TopicRetention {
     }
 
     /// How many messages the topic keeps: 0 when it is live only.
-    const fn depth(&self) -> usize {
+    const fn depth(self) -> usize {
         match self {
             Self::LiveOnly => 0,
             Self::Latest { depth } => depth.get(),

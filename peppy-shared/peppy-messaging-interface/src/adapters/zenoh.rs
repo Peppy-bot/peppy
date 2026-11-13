@@ -229,6 +229,10 @@ impl ZenohAdapter {
         clippy::too_many_arguments,
         reason = "each argument is one setting of the session"
     )]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the caller hands over the identity that it loaded for this router"
+    )]
     pub fn with_router(
         protocol: ZenohNetProtocol,
         host: &str,
@@ -601,7 +605,7 @@ impl ZenohAdapter {
             self.client_config.port,
             self.client_config.tls.clone(),
         );
-        zenohd::RouterLinksProbe::new(probe_config, zenohd.configured_connect_endpoints())
+        zenohd::RouterLinksProbe::new(probe_config, &zenohd.configured_connect_endpoints())
     }
 
     #[cfg(feature = "router")]

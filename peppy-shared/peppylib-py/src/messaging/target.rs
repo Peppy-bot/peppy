@@ -5,6 +5,10 @@ use peppylib::messaging::{
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
 fn sender_target_error_to_py(err: SenderTargetError) -> PyErr {
     PyValueError::new_err(err.to_string())
 }

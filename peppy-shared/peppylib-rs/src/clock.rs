@@ -86,6 +86,10 @@ impl ClockSource for SimClockSource {
 /// NTP-style exchange [`synchronize`] performs. The single implementation of
 /// the t1/t2 stamping discipline, shared by the daemon's clock service and
 /// the test harness's stand-in.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a request handler owns the context of its request"
+)]
 pub fn handle_clock_request(
     source: &dyn ClockSource,
     context: ServiceRequestContext,
@@ -108,6 +112,10 @@ pub fn handle_clock_request(
 /// The error reply of a `clock` request when the source has no time to give.
 /// It is built only on a failure, so the success path pays nothing between
 /// the t1 and t2 stamps.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
 fn clock_unavailable(error: ClockSourceError) -> Failure {
     let kind = match error {
         ClockSourceError::NotReady => PeppyFailureKind::PreconditionFailed,

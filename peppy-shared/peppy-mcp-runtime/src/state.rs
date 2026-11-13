@@ -281,6 +281,10 @@ impl ResourceIngest {
     /// snapshot, wakes the readers that wait for it and, for a message the
     /// interval admitted, notifies subscribed clients. On refusal the
     /// previous snapshot stays current and ages toward staleness.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "a publish spends the admit token of its message"
+    )]
     pub fn publish(&self, token: AdmitToken, value: Value) -> Result<(), PublishError> {
         let content = apply_content_policies(self.state.entry.policies.content(), value)?;
         self.state.store(Snapshot {

@@ -547,7 +547,7 @@ pub(crate) struct TopicAttachment {
 }
 
 impl TopicAttachment {
-    pub(crate) fn encode(&self) -> bytes::Bytes {
+    pub(crate) fn encode(self) -> bytes::Bytes {
         bytes::Bytes::from_static(if self.is_primary {
             &[0x01u8]
         } else {

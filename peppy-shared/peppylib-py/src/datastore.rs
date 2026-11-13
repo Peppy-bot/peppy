@@ -34,6 +34,7 @@ impl PyDatastoreStoreResponse {
         Self
     }
 
+    #[expect(clippy::unused_self, reason = "Python calls the method on an instance")]
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         encoded_to_py_bytes(
             py,

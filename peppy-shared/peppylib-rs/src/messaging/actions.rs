@@ -1701,8 +1701,8 @@ type EarlyCancels = Arc<StdMutex<HashMap<(String, Option<VerifiedCaller>), Insta
 /// Whether `canceller` may cancel the goal of `slot`: only the sender of the
 /// goal, on an endpoint that verifies its callers. On an endpoint with no
 /// check both are `None`, so every caller may.
-fn may_cancel(slot: &GoalSlot, canceller: &Option<VerifiedCaller>) -> bool {
-    slot.owner == *canceller
+fn may_cancel(slot: &GoalSlot, canceller: Option<&VerifiedCaller>) -> bool {
+    slot.owner.as_ref() == canceller
 }
 
 /// The refusal of the cancel of `goal_id` by a client that did not send it.
@@ -1727,7 +1727,7 @@ const EARLY_CANCELS_CAP: usize = 1024;
 /// finds it.
 fn remember_early_cancel(
     goal_id: &str,
-    canceller: &Option<VerifiedCaller>,
+    canceller: Option<&VerifiedCaller>,
     registry: &GoalRegistry,
     early_cancels: &EarlyCancels,
 ) -> std::result::Result<CancelState, Failure> {
@@ -1737,7 +1737,7 @@ fn remember_early_cancel(
     }
     if early.len() < EARLY_CANCELS_CAP {
         early.insert(
-            (goal_id.to_string(), canceller.clone()),
+            (goal_id.to_string(), canceller.cloned()),
             Instant::now() + PENDING_WAITER_MAX_PARK,
         );
     }
@@ -1749,7 +1749,7 @@ fn remember_early_cancel(
 fn cancel_slot(
     goal_id: &str,
     slot: &GoalSlot,
-    canceller: &Option<VerifiedCaller>,
+    canceller: Option<&VerifiedCaller>,
 ) -> std::result::Result<CancelState, Failure> {
     if !may_cancel(slot, canceller) {
         return Err(cancel_of_another_client(goal_id));
@@ -2025,11 +2025,16 @@ async fn run_cancel_loop(
         // without holding the registry lock across the network reply.
         let found = registry.lock().unwrap().get(&goal_id).cloned();
         let state = match found {
-            Some(slot) => cancel_slot(&goal_id, &slot, &verified_caller),
+            Some(slot) => cancel_slot(&goal_id, &slot, verified_caller.as_ref()),
             None if tombstones.lock().unwrap().contains(&goal_id) => {
                 Ok(CancelState::AlreadyTerminal)
             }
-            None => remember_early_cancel(&goal_id, &verified_caller, &registry, &early_cancels),
+            None => remember_early_cancel(
+                &goal_id,
+                verified_caller.as_ref(),
+                &registry,
+                &early_cancels,
+            ),
         };
         let state = match state {
             Ok(state) => state,
@@ -2952,8 +2957,8 @@ mod envelope_tests {
         )
     }
 
-    fn roundtrip_outcome(outcome: GoalOutcome) -> GoalOutcome {
-        let wire = wrap_result_outcome(&outcome).into_inner();
+    fn roundtrip_outcome(outcome: &GoalOutcome) -> GoalOutcome {
+        let wire = wrap_result_outcome(outcome).into_inner();
         unwrap_result_outcome(&wire).expect("unwrap outcome")
     }
 
@@ -2975,7 +2980,7 @@ mod envelope_tests {
             GoalOutcome::Abandoned,
             GoalOutcome::Expired,
         ] {
-            assert_eq!(roundtrip_outcome(outcome.clone()), outcome);
+            assert_eq!(roundtrip_outcome(&outcome), outcome);
         }
     }
 

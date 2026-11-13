@@ -73,10 +73,18 @@ mod exceptions {
 
 use exceptions::{ContractError, UndeclaredFailureKindError};
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
 fn codec_err(error: CodecError) -> PyErr {
     exceptions::CodecError::new_err(error.to_string())
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
 fn conversion_err(error: ConversionError) -> PyErr {
     exceptions::ConversionError::new_err(error.to_string())
 }
@@ -254,6 +262,10 @@ impl PyContract {
     /// The closed set of strings of a `string` field (`$enum`), or `None`
     /// for a field with no enum. Raises `KeyError` for a field that the
     /// format does not have.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "pyo3 extracts the list of the caller into an owned `Vec`"
+    )]
     fn field_enum(
         &self,
         kind: &str,
@@ -267,6 +279,10 @@ impl PyContract {
 
     /// The marks of a field (`$marks`), empty for a field with none. Raises
     /// `KeyError` for a field that the format does not have.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "pyo3 extracts the list of the caller into an owned `Vec`"
+    )]
     fn field_marks(
         &self,
         kind: &str,
@@ -296,6 +312,10 @@ impl PyContract {
     /// The description of a field (`$description`), or `None` for a field
     /// with none. Raises `KeyError` for a field that the format does not
     /// have.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "pyo3 extracts the list of the caller into an owned `Vec`"
+    )]
     fn field_description(
         &self,
         kind: &str,

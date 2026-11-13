@@ -392,11 +392,11 @@ mod tests {
         (record, nanos)
     }
 
-    fn client(name: &str) -> Option<ClientIdentity> {
-        Some(ClientIdentity {
+    fn client(name: &str) -> ClientIdentity {
+        ClientIdentity {
             name: name.into(),
             version: "1.0".into(),
-        })
+        }
     }
 
     #[test]
@@ -404,7 +404,7 @@ mod tests {
         let (record, nanos) = record(10);
         nanos.store(1_000 * MS, Ordering::SeqCst);
         let mut first = record.start(
-            client("alice"),
+            Some(client("alice")),
             "robot.move_arm",
             &object(json!({ "arm_name": "left_arm" })),
             DroppedCall::Call,
@@ -530,6 +530,10 @@ mod tests {
     }
 
     /// The entry an action's exit leaves, newest first in the record.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "each test builds the value in the call"
+    )]
     fn entry_of(exit: Result<Value, ActionExit>) -> Value {
         let (record, _) = record(1);
         record

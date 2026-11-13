@@ -750,10 +750,10 @@ impl PyPendingGoal {
     fn refuse<'py>(
         &self,
         py: Python<'py>,
-        kind: String,
+        kind: &str,
         message: String,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let failure = failure_from_py(&kind, message)?;
+        let failure = failure_from_py(kind, message)?;
         let inner = Arc::clone(&self.inner);
         future_into_py_unit(py, async move {
             let pending =
@@ -864,10 +864,10 @@ impl PyGoalContext {
     fn fail<'py>(
         &self,
         py: Python<'py>,
-        kind: String,
+        kind: &str,
         message: String,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let failure = failure_from_py(&kind, message)?;
+        let failure = failure_from_py(kind, message)?;
         let inner = Arc::clone(&self.inner);
         future_into_py_unit(py, async move {
             inner.fail(failure).await.map_err(to_py_err)?;

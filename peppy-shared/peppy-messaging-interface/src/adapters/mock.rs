@@ -270,7 +270,6 @@ impl MessengerBackend for MockAdapter {
             drop_secondary,
             retention,
         )
-        .await
     }
 
     async fn publish_topic(
@@ -407,7 +406,6 @@ impl MessengerBackend for MockAdapter {
             false,
             TopicRetention::LiveOnly,
         )
-        .await
     }
 
     async fn declare_action_liveliness(
@@ -883,7 +881,7 @@ impl MockAdapter {
         rx
     }
 
-    async fn subscribe_keyexpr(
+    fn subscribe_keyexpr(
         &self,
         topic: &str,
         qos: SubscriberQoS,

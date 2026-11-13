@@ -60,7 +60,7 @@ pub(crate) fn subscription_channel(
             (SubscriptionSink::KeepLatest(Arc::new(queue)), rx)
         }
         Buffering::Feedback(buffer) => {
-            let (sink, rx) = FeedbackSink::open(keyexpr, buffer);
+            let (sink, rx) = FeedbackSink::open(keyexpr, &buffer);
             (SubscriptionSink::Feedback(Arc::new(sink)), rx)
         }
     }
@@ -224,7 +224,7 @@ enum FeedbackState {
 
 impl FeedbackSink {
     /// Opens the buffer and the receiver its reader drains.
-    fn open(keyexpr: &str, buffer: FeedbackBuffer) -> (Self, flume::Receiver<TopicMessage>) {
+    fn open(keyexpr: &str, buffer: &FeedbackBuffer) -> (Self, flume::Receiver<TopicMessage>) {
         let (tx, rx) = flume::unbounded();
         let sink = Self {
             tx,

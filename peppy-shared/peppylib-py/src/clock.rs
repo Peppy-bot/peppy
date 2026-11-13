@@ -59,7 +59,7 @@ impl PyClockRequest {
     fn decode(data: &[u8]) -> PyResult<Self> {
         ClockRequest::decode(data)
             .map(Self::from)
-            .map_err(|e| decode_err("ClockRequest", e))
+            .map_err(|e| decode_err("ClockRequest", &e))
     }
 }
 
@@ -112,7 +112,7 @@ impl PyClockResponse {
     fn decode(data: &[u8]) -> PyResult<Self> {
         ClockResponse::decode(data)
             .map(Self::from)
-            .map_err(|e| decode_err("ClockResponse", e))
+            .map_err(|e| decode_err("ClockResponse", &e))
     }
 }
 
@@ -155,7 +155,7 @@ impl PyClockTick {
     fn decode(data: &[u8]) -> PyResult<Self> {
         ClockTick::decode(data)
             .map(Self::from)
-            .map_err(|e| decode_err("ClockTick", e))
+            .map_err(|e| decode_err("ClockTick", &e))
     }
 }
 
@@ -237,7 +237,7 @@ impl PyClockSubscription {
             match guard.on_next_message().await {
                 Some(message) => {
                     let tick = ClockTick::decode(message.payload_bytes().as_ref())
-                        .map_err(|e| decode_err("ClockTick", e))?;
+                        .map_err(|e| decode_err("ClockTick", &e))?;
                     Ok(Some(PyClockTick::from(tick)))
                 }
                 None => Ok(None),

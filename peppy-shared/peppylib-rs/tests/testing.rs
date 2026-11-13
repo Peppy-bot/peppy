@@ -51,7 +51,11 @@ fn write_peppy_config(dir: &TempDir) -> PathBuf {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct EmptyParameters;
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "the parameters of a node are a JSON object, which a struct with braces describes"
+)]
+struct EmptyParameters {}
 
 /// Scripted responses are served automatically in FIFO order; unscripted
 /// requests park for `next_request`; every request lands in the capture

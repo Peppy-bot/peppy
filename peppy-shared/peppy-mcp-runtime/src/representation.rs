@@ -593,6 +593,10 @@ mod tests {
 
     /// Policies under `representation`, with `max_result_bytes` and
     /// `on_oversize` when given.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "each test builds the value in the call"
+    )]
     fn representation_policies(
         representation: Value,
         max_result_bytes: Option<u64>,

@@ -115,6 +115,10 @@ fn carried_bytes() -> Result<Cow<'static, [u8]>, CompilerError> {
 }
 
 #[cfg(feature = "embedded-compiler")]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a build without the `embedded-compiler` feature has no bytes to give"
+)]
 fn embedded_bytes() -> Option<&'static [u8]> {
     mod embedded {
         include!(concat!(env!("OUT_DIR"), "/embedded_capnp.rs"));

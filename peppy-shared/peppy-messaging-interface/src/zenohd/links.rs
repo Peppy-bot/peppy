@@ -126,7 +126,7 @@ impl RouterLinksProbe {
     /// Builds a probe for `endpoints`, or `None` when none of them parses (an
     /// unparseable endpoint is the operator's to dial, not ours to wait for:
     /// it is warned about and skipped).
-    pub(crate) fn new(probe_config: zenoh::config::Config, endpoints: Vec<String>) -> Option<Self> {
+    pub(crate) fn new(probe_config: zenoh::config::Config, endpoints: &[String]) -> Option<Self> {
         let endpoints: Vec<ConfiguredEndpoint> = endpoints
             .iter()
             .filter_map(|endpoint| {
@@ -343,15 +343,15 @@ mod tests {
         let config = zenoh::config::Config::default();
         let probe = RouterLinksProbe::new(
             config.clone(),
-            vec!["tcp/172.17.0.2:7447".to_string(), "garbage".to_string()],
+            &["tcp/172.17.0.2:7447".to_string(), "garbage".to_string()],
         )
         .expect("one parseable endpoint keeps the probe");
         assert_eq!(probe.endpoints(), vec!["tcp/172.17.0.2:7447".to_string()]);
 
         assert!(
-            RouterLinksProbe::new(config.clone(), vec!["garbage".to_string()]).is_none(),
+            RouterLinksProbe::new(config.clone(), &["garbage".to_string()]).is_none(),
             "nothing parseable ⇒ nothing to wait for"
         );
-        assert!(RouterLinksProbe::new(config, Vec::new()).is_none());
+        assert!(RouterLinksProbe::new(config, &[]).is_none());
     }
 }

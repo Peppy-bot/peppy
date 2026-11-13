@@ -231,6 +231,10 @@ fn collect_field_descriptions<'a>(
     }
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde calls a `skip_serializing_if` function with a reference"
+)]
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -917,7 +921,7 @@ macro_rules! impl_produced_entry {
                 }
 
                 let raw = Raw::deserialize(deserializer)?;
-                let name = require_interface_name(raw.name, $entry::SECTION)?;
+                let name = require_interface_name(raw.name.as_deref(), $entry::SECTION)?;
                 match raw.link_id {
                     Some(link_id) => {
                         let link_id = validate_non_empty_identifier(
@@ -1008,10 +1012,10 @@ fn require_native_description<E: de::Error>(
 /// surfacing a [`StructuredError::EmptyInterfaceName`] through the serde
 /// bridge on failure.
 fn require_interface_name<E: de::Error>(
-    name: Option<String>,
+    name: Option<&str>,
     section: &'static str,
 ) -> Result<String, E> {
-    validate_non_empty_identifier(name.as_deref().unwrap_or_default(), section).map_err(|_| {
+    validate_non_empty_identifier(name.unwrap_or_default(), section).map_err(|_| {
         E::custom(
             crate::error::StructuredError::EmptyInterfaceName {
                 section: section.to_owned(),
@@ -2054,22 +2058,21 @@ impl Manifest {
         let implements = self
             .implements
             .iter()
-            .map(|e| DocumentReference::new(Contract, &e.name, &e.tag, &e.sha256));
+            .map(|e| DocumentReference::new(Contract, &e.name, &e.tag, e.sha256.as_deref()));
         let contracts = depends_on.into_iter().flat_map(|d| {
             d.contracts
                 .iter()
-                .map(|c| DocumentReference::new(Contract, &c.name, &c.tag, &c.sha256))
+                .map(|c| DocumentReference::new(Contract, &c.name, &c.tag, c.sha256.as_deref()))
         });
-        let pairings = depends_on.into_iter().flat_map(|d| {
-            d.pairings
-                .iter()
-                .map(|p| DocumentReference::new(Pairing, &p.name, &p.tag, &p.sha256))
-                .chain(
-                    d.pairing_observers
-                        .iter()
-                        .map(|o| DocumentReference::new(Pairing, &o.name, &o.tag, &o.sha256)),
-                )
-        });
+        let pairings =
+            depends_on.into_iter().flat_map(|d| {
+                d.pairings
+                    .iter()
+                    .map(|p| DocumentReference::new(Pairing, &p.name, &p.tag, p.sha256.as_deref()))
+                    .chain(d.pairing_observers.iter().map(|o| {
+                        DocumentReference::new(Pairing, &o.name, &o.tag, o.sha256.as_deref())
+                    }))
+            });
         implements.chain(contracts).chain(pairings)
     }
 }
@@ -2101,12 +2104,12 @@ pub struct DocumentReference<'a> {
 }
 
 impl<'a> DocumentReference<'a> {
-    fn new(kind: DocumentKind, name: &'a Name, tag: &'a str, sha256: &'a Option<String>) -> Self {
+    fn new(kind: DocumentKind, name: &'a Name, tag: &'a str, sha256: Option<&'a str>) -> Self {
         Self {
             kind,
             name: name.as_str(),
             tag,
-            sha256: sha256.as_deref(),
+            sha256,
         }
     }
 }

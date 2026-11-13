@@ -143,6 +143,10 @@ impl Processor {
     /// the slot caches from the launch config's bindings and the manifest's
     /// `depends_on`. Public so an embedder holding both documents in memory
     /// builds the same processor a spawned node builds from its files.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the exported constructor takes the manifest that its caller hands over"
+    )]
     pub fn daemon_from_manifest(
         runtime_config: RuntimeConfig,
         node_config: NodeConfig,
@@ -173,6 +177,10 @@ impl Processor {
 
     /// [`new_standalone`](Self::new_standalone) for a manifest held in
     /// memory rather than read from `peppy.json5`.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the exported constructor takes the manifest that its caller hands over"
+    )]
     pub fn standalone_from_manifest(
         node_config: NodeConfig,
         config: &StandaloneConfig,

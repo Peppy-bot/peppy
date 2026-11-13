@@ -141,7 +141,7 @@ where
             .handle_requests(|context| {
                 let slots = Arc::clone(&slots);
                 let daemon_core_node = daemon_core_node.clone();
-                async move { handle_slot_update_request::<U>(context, &daemon_core_node, &slots) }
+                async move { handle_slot_update_request::<U>(&context, &daemon_core_node, &slots) }
             })
             .await
     });
@@ -149,7 +149,7 @@ where
 }
 
 fn handle_slot_update_request<U>(
-    context: ServiceRequestContext,
+    context: &ServiceRequestContext,
     daemon_core_node: &str,
     slots: &BTreeMap<String, SlotChannel<U::State>>,
 ) -> ServiceAnswer
@@ -185,6 +185,10 @@ where
 }
 
 /// The error reply of a refused delivery.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
 fn refusal(reason: impl ToString) -> Failure {
     Failure::new(PeppyFailureKind::Rejected, reason.to_string())
 }

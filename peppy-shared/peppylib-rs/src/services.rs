@@ -9,8 +9,9 @@ pub mod ready;
 pub mod shutdown;
 pub mod slot_update;
 
-use crate::messaging::{SenderTarget, ServiceAnswer, ServiceRequestContext};
+use crate::messaging::{SenderTarget, ServiceRequestContext};
 use crate::runtime::TaskHandle;
+use crate::types::Payload;
 use crate::{MessengerHandle, PeppyResult, ServiceMessenger};
 use tracing::debug;
 
@@ -30,17 +31,16 @@ pub(crate) async fn listen_for_echo_service(
 
     let handle = crate::runtime::spawn(async move {
         endpoint
-            .handle_requests(|context| handle_echo_request(context, service_name))
+            .handle_requests(|context| std::future::ready(Ok(echo(&context, service_name))))
             .await
     });
     Ok(handle)
 }
 
-async fn handle_echo_request(context: ServiceRequestContext, service_name: &str) -> ServiceAnswer {
+/// The payload of the request, which is the answer of an echo service: the
+/// service validates connectivity, not message structure.
+fn echo(context: &ServiceRequestContext, service_name: &str) -> Payload {
     let sender_instance_id = context.message().instance_id();
     debug!("Received `{service_name}` request from {sender_instance_id}");
-
-    // Echo service validates connectivity, not message structure.
-    let payload = context.message().payload();
-    Ok(payload)
+    context.message().payload()
 }

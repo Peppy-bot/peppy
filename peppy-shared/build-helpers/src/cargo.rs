@@ -273,15 +273,15 @@ fn cargo_install_binary_with(
     target: &str,
     cache_dir: &Path,
 ) -> Option<PathBuf> {
-    fn use_cached(name: &str, cached_binary: PathBuf) -> Option<PathBuf> {
+    fn use_cached(name: &str, cached_binary: PathBuf) -> PathBuf {
         crate::progress!("Using cached {name} binary from {cached_binary:?}");
-        Some(cached_binary)
+        cached_binary
     }
 
     let cached_binary = cache_dir.join(format!("{name}-{version}-{target}"));
 
     if cached_binary.exists() {
-        return use_cached(name, cached_binary);
+        return Some(use_cached(name, cached_binary));
     }
 
     // Serialize concurrent installs sharing this cache dir, then re-check:
@@ -290,7 +290,7 @@ fn cargo_install_binary_with(
     // shared by all versions and targets of the tool.
     let _lock = acquire_file_lock(&cache_dir.join(format!("{name}.lock")));
     if cached_binary.exists() {
-        return use_cached(name, cached_binary);
+        return Some(use_cached(name, cached_binary));
     }
 
     crate::progress!(

@@ -165,9 +165,9 @@ impl ExitCause {
     /// The cause of a reaped process's exit.
     pub fn of(status: &std::io::Result<std::process::ExitStatus>) -> Self {
         match status {
-            Ok(status) => match (status.code(), signal_of(status)) {
+            Ok(status) => match (status.code(), signal_of(*status)) {
                 (Some(code), _) => Self::Code(code),
-                (None, Some(signal)) => Self::signal(signal, core_dumped(status)),
+                (None, Some(signal)) => Self::signal(signal, core_dumped(*status)),
                 (None, None) => Self::Message(status.to_string()),
             },
             Err(e) => Self::Message(format!("could not read exit status: {e}")),
@@ -190,22 +190,22 @@ impl ExitCause {
 }
 
 #[cfg(unix)]
-fn signal_of(status: &std::process::ExitStatus) -> Option<i32> {
+fn signal_of(status: std::process::ExitStatus) -> Option<i32> {
     status.signal()
 }
 
 #[cfg(not(unix))]
-fn signal_of(_status: &std::process::ExitStatus) -> Option<i32> {
+fn signal_of(_status: std::process::ExitStatus) -> Option<i32> {
     None
 }
 
 #[cfg(unix)]
-fn core_dumped(status: &std::process::ExitStatus) -> bool {
+fn core_dumped(status: std::process::ExitStatus) -> bool {
     status.core_dumped()
 }
 
 #[cfg(not(unix))]
-fn core_dumped(_status: &std::process::ExitStatus) -> bool {
+fn core_dumped(_status: std::process::ExitStatus) -> bool {
     false
 }
 

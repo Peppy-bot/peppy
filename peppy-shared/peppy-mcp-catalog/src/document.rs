@@ -929,6 +929,10 @@ impl From<ActionExposure> for RawActionExposure {
     }
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde calls a `skip_serializing_if` function with a reference"
+)]
 fn is_false(value: &bool) -> bool {
     !value
 }

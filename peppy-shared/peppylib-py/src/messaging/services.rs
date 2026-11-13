@@ -104,10 +104,10 @@ impl PyServiceResponder {
     fn respond_failure<'py>(
         &self,
         py: Python<'py>,
-        kind: String,
+        kind: &str,
         message: String,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let failure = super::failure_from_py(&kind, message)?;
+        let failure = super::failure_from_py(kind, message)?;
         let inner = Arc::clone(&self.inner);
         super::future_into_py_unit(py, async move {
             let responder = inner
