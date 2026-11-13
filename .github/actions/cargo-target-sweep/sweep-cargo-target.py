@@ -8,12 +8,12 @@ links builds all of them again, so on the sticky disk a target dir that
 nothing sweeps grows by a full set of test binaries each time, until a link
 has no room left to write its output.
 
-Every unit cargo builds is named by a hash of 16 hex digits: its outputs in
-`deps/` or `examples/`, the directories of its build script in `build/`, and
-its fingerprint in `.fingerprint/` all end in `-<hash>`. The build lists, in
-its JSON messages, the outputs of every unit it used, fresh or rebuilt. The
-hashes in those paths are the live units, and an entry with any other hash
-is left over from an earlier build.
+Every unit cargo builds has a directory of its own, named by a hash of 16 hex
+digits, in the directory of its package: `build/<package>/<hash>/`. The
+outputs of the unit are in `out/` there, beside its fingerprint. The build
+lists, in its JSON messages, the outputs of every unit it used, fresh or
+rebuilt. The hashes in those paths are the live units, and a unit directory
+with any other hash is left over from an earlier build.
 
 Cargo also puts a copy of each binary and example it builds outside the unit
 directories (`debug/<bin>`, `debug/examples/<example>`) and lists only that
@@ -65,11 +65,19 @@ from pathlib import Path, PurePosixPath
 PROFILE_DIR = "debug"
 # The record, in the target dir itself, which cargo does not write to.
 RECORD_NAME = "live-units.json"
-# The directories of the profile dir whose entries are named by unit.
-UNIT_DIRS = ("deps", "build", ".fingerprint", "examples")
-# The directories the build lists outputs in; `.fingerprint` is cargo's own.
-OUTPUT_DIRS = ("deps", "build", "examples")
-UNIT_HASH = re.compile(r"-([0-9a-f]{16})(?=\.|$)")
+# The directory of the profile dir that holds the units: a directory for each
+# package, and in it a directory for each unit of the package, named by the
+# hash of the unit.
+UNITS_DIR = "build"
+# The directory of a unit that holds its outputs.
+UNIT_OUTPUT_DIR = "out"
+# The directory of the profile dir that holds the copies of the examples.
+EXAMPLES_DIR = "examples"
+# The directories of the profile dir that cargo writes. Nothing in
+# `incremental/` is named by unit (CI builds with incremental compilation
+# off).
+CARGO_DIRS = (UNITS_DIR, EXAMPLES_DIR, "incremental")
+UNIT_HASH = re.compile(r"[0-9a-f]{16}")
 # The live dir of `prune` that is the target root itself.
 ROOT = PurePosixPath(".")
 
@@ -100,10 +108,6 @@ class LiveUnits:
     def union(self, other: LiveUnits) -> LiveUnits:
         return LiveUnits(self.hashes | other.hashes, self.copies | other.copies)
 
-    def keeps_unit_entry(self, name: str) -> bool:
-        unit_hash = hash_in_name(name)
-        return unit_hash is not None and unit_hash in self.hashes
-
     def keeps_copy(self, path: str) -> bool:
         # Cargo writes the dep-info of each copy beside it.
         return path in self.copies or path.removesuffix(".d") in self.copies
@@ -121,11 +125,6 @@ class Removal:
 
 
 NOTHING_REMOVED = Removal(0, 0)
-
-
-def hash_in_name(name: str) -> str | None:
-    match = UNIT_HASH.search(name)
-    return match.group(1) if match else None
 
 
 def read_listing(lines: Iterable[str], build_root: PurePosixPath) -> BuildListing:
@@ -171,21 +170,18 @@ def live_units(target_dir: Path, outputs: Iterable[PurePosixPath]) -> LiveUnits:
     profile_dir = target_dir / PROFILE_DIR
     hashes: set[str] = set()
     copies: set[str] = set()
-    inode_indexes: dict[str, dict[tuple[int, int], str]] = {}
+    unit_of_inode: dict[tuple[int, int], str] | None = None
     for output in outputs:
         inner = path_in_profile_dir(output)
-        unit_hash = unit_hash_of_output(inner)
-        if unit_hash is not None:
-            hashes.add(unit_hash)
+        if inner[0] == UNITS_DIR:
+            hashes.add(unit_hash_of_output(output, inner))
             continue
-        copy, unit_dir = copy_and_its_unit_dir(output, inner)
-        if unit_dir not in inode_indexes:
-            inode_indexes[unit_dir] = inode_index(profile_dir / unit_dir)
-        unit_hash = inode_indexes[unit_dir].get(inode_of(profile_dir / copy))
+        copy = copy_of_output(output, inner)
+        if unit_of_inode is None:
+            unit_of_inode = unit_output_inodes(profile_dir / UNITS_DIR)
+        unit_hash = unit_of_inode.get(inode_of(profile_dir / copy))
         if unit_hash is None:
-            raise UnknownLayout(
-                f"{output} is a hardlink to the output of no unit in {unit_dir}/"
-            )
+            raise UnknownLayout(f"{output} is a hardlink to the output of no unit")
         hashes.add(unit_hash)
         copies.add(copy)
     return LiveUnits(frozenset(hashes), frozenset(copies))
@@ -199,25 +195,26 @@ def path_in_profile_dir(output: PurePosixPath) -> tuple[str, ...]:
     return parts[1:]
 
 
-def unit_hash_of_output(inner: tuple[str, ...]) -> str | None:
-    """The unit hash that names the entry of an output directory the output
-    is in; None when no unit hash names it."""
-    if len(inner) >= 2 and inner[0] in OUTPUT_DIRS:
-        return hash_in_name(inner[1])
-    return None
+def unit_hash_of_output(output: PurePosixPath, inner: tuple[str, ...]) -> str:
+    """The hash of the unit whose output directory a listed output of the
+    units directory is, or is in."""
+    in_unit_output_dir = (
+        len(inner) >= 4
+        and UNIT_HASH.fullmatch(inner[2]) is not None
+        and inner[3] == UNIT_OUTPUT_DIR
+    )
+    if not in_unit_output_dir:
+        raise UnknownLayout(f"{output} is in the output directory of no unit")
+    return inner[2]
 
 
-def copy_and_its_unit_dir(
-    output: PurePosixPath, inner: tuple[str, ...]
-) -> tuple[str, str]:
-    """Names an output that no unit hash names as a copy of a binary or an
-    example, with the unit dir of the output the copy is a hardlink to."""
+def copy_of_output(output: PurePosixPath, inner: tuple[str, ...]) -> str:
+    """Names a listed output outside the units directory as the copy of a
+    binary or of an example, relative to the profile dir."""
     if len(inner) == 1:
-        return inner[0], "deps"
-    if len(inner) == 2 and inner[0] == "examples":
-        return f"examples/{inner[1]}", "examples"
-    if inner[0] in OUTPUT_DIRS:
-        raise UnknownLayout(f"{output} names no unit hash")
+        return inner[0]
+    if len(inner) == 2 and inner[0] == EXAMPLES_DIR:
+        return f"{EXAMPLES_DIR}/{inner[1]}"
     raise UnknownLayout(f"{output} is in no directory cargo lists outputs in")
 
 
@@ -226,15 +223,14 @@ def inode_of(path: Path) -> tuple[int, int]:
     return status.st_dev, status.st_ino
 
 
-def inode_index(directory: Path) -> dict[tuple[int, int], str]:
-    """Maps the inode of each unit output in a directory to its unit hash."""
+def unit_output_inodes(units_dir: Path) -> dict[tuple[int, int], str]:
+    """Maps the inode of each output of each unit to the hash of the unit."""
     index = {}
-    with os.scandir(directory) as entries:
-        for entry in entries:
-            unit_hash = hash_in_name(entry.name)
-            if unit_hash is not None and entry.is_file(follow_symlinks=False):
-                status = entry.stat(follow_symlinks=False)
-                index[(status.st_dev, status.st_ino)] = unit_hash
+    for package_dir in directories(units_dir):
+        for unit_dir in directories(package_dir):
+            for output in children(unit_dir / UNIT_OUTPUT_DIR):
+                if output.is_file() and not output.is_symlink():
+                    index[inode_of(output)] = unit_dir.name
     return index
 
 
@@ -300,6 +296,11 @@ def children(directory: Path) -> list[Path]:
     return sorted(directory.iterdir())
 
 
+def directories(directory: Path) -> list[Path]:
+    """The children of `directory` that are directories themselves."""
+    return [entry for entry in children(directory) if is_directory_not_symlink(entry)]
+
+
 def clear(target_dir: Path) -> Removal:
     removed = NOTHING_REMOVED
     for entry in children(target_dir):
@@ -308,28 +309,39 @@ def clear(target_dir: Path) -> Removal:
 
 
 def sweep_to(target_dir: Path, live: LiveUnits) -> Removal:
-    """Removes every unit entry and copy of the profile dir that `live` does
-    not keep.
+    """Removes from the profile dir every unit and copy that `live` does not
+    keep, and every directory that cargo does not write.
 
-    The profile dir's other entries stay: cargo's lock files, and
-    `incremental/`, whose entries are not named by unit (CI builds with
-    incremental compilation off).
+    The hidden files of the profile dir stay: they are cargo's locks.
     """
     profile_dir = target_dir / PROFILE_DIR
     removed = NOTHING_REMOVED
-    for unit_dir in UNIT_DIRS:
-        for entry in children(profile_dir / unit_dir):
-            copy = f"{unit_dir}/{entry.name}"
-            if not live.keeps_unit_entry(entry.name) and not live.keeps_copy(copy):
-                removed += remove(entry)
+    for package_dir in children(profile_dir / UNITS_DIR):
+        removed += sweep_package_dir(package_dir, live)
+    for copy in children(profile_dir / EXAMPLES_DIR):
+        if not live.keeps_copy(f"{EXAMPLES_DIR}/{copy.name}"):
+            removed += remove(copy)
     for entry in children(profile_dir):
-        is_copy = (
-            entry.is_file()
-            and not entry.is_symlink()
-            and not entry.name.startswith(".")
-        )
-        if is_copy and not live.keeps_copy(entry.name):
+        if is_directory_not_symlink(entry):
+            if entry.name not in CARGO_DIRS:
+                removed += remove(entry)
+            continue
+        if not entry.name.startswith(".") and not live.keeps_copy(entry.name):
             removed += remove(entry)
+    return removed
+
+
+def sweep_package_dir(package_dir: Path, live: LiveUnits) -> Removal:
+    """Removes the units of a package that `live` does not keep, and the
+    directory of the package when no unit stays in it."""
+    if not is_directory_not_symlink(package_dir):
+        return remove(package_dir)
+    removed = NOTHING_REMOVED
+    for unit_dir in children(package_dir):
+        if unit_dir.name not in live.hashes:
+            removed += remove(unit_dir)
+    if not children(package_dir):
+        package_dir.rmdir()
     return removed
 
 

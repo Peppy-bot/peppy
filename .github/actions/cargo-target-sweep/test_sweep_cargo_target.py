@@ -1,9 +1,9 @@
 """What `sweep-cargo-target.py` keeps in a target dir or a target root, and what
 it removes.
 
-Each case lays out a target dir the way cargo does: every unit named by its
-hash in `deps/`, `build/`, `.fingerprint/` and `examples/`, and the copies of
-binaries and examples hardlinked to their unit's output.
+Each case lays out a target dir the way cargo does: every unit in the
+directory `build/<package>/<hash>/`, and the copies of binaries and examples
+hardlinked to their unit's output.
 """
 
 import contextlib
@@ -49,6 +49,15 @@ OLD_EXAMPLE = "9999999999999999"
 NEW_EXAMPLE = "aaaaaaaaaaaaaaaa"
 TEST_BINARY = "bbbbbbbbbbbbbbbb"
 
+# The package of the workspace that the binary, the example and the test
+# binary belong to.
+WORKSPACE_PACKAGE = "ws"
+
+
+def unit_dir(package, unit_hash):
+    """The directory of a unit, relative to the profile dir."""
+    return f"build/{package}/{unit_hash}"
+
 
 def artifact(*outputs):
     return json.dumps(
@@ -85,52 +94,52 @@ class TargetDir:
         return str(BUILD_ROOT / "debug" / relative)
 
     def library(self, name, unit_hash):
-        self.write(f"deps/lib{name}-{unit_hash}.rlib")
-        self.write(f"deps/lib{name}-{unit_hash}.rmeta")
-        self.write(f"deps/{name}-{unit_hash}.d")
-        self.write(f".fingerprint/{name}-{unit_hash}/lib-{name}")
+        unit = unit_dir(name, unit_hash)
+        self.write(f"{unit}/out/lib{name}-{unit_hash}.rlib")
+        self.write(f"{unit}/out/lib{name}-{unit_hash}.rmeta")
+        self.write(f"{unit}/out/{name}-{unit_hash}.d")
+        self.write(f"{unit}/fingerprint/lib-{name}")
         return artifact(
-            self.listed(f"deps/lib{name}-{unit_hash}.rlib"),
-            self.listed(f"deps/lib{name}-{unit_hash}.rmeta"),
+            self.listed(f"{unit}/out/lib{name}-{unit_hash}.rlib"),
+            self.listed(f"{unit}/out/lib{name}-{unit_hash}.rmeta"),
         )
 
     def build_script(self, package, compile_hash, run_hash):
-        self.write(f"build/{package}-{compile_hash}/build-script-build")
-        self.write(
-            f".fingerprint/{package}-{compile_hash}/build-script-build-script-build"
-        )
-        self.write(f"build/{package}-{run_hash}/out/generated.rs")
-        self.write(f"build/{package}-{run_hash}/output")
-        self.write(
-            f".fingerprint/{package}-{run_hash}/run-build-script-build-script-build"
-        )
+        compiled = unit_dir(package, compile_hash)
+        run = unit_dir(package, run_hash)
+        self.write(f"{compiled}/out/build_script_build")
+        self.write(f"{compiled}/fingerprint/build-script-build-script-build")
+        self.write(f"{run}/out/generated.rs")
+        self.write(f"{run}/run/stdout")
+        self.write(f"{run}/fingerprint/run-build-script-build-script-build")
         return [
-            artifact(self.listed(f"build/{package}-{compile_hash}/build-script-build")),
-            build_script_run(self.listed(f"build/{package}-{run_hash}/out")),
+            artifact(self.listed(f"{compiled}/out/build_script_build")),
+            build_script_run(self.listed(f"{run}/out")),
         ]
 
     def test_binary(self, name, unit_hash):
-        self.write(f"deps/{name}-{unit_hash}")
-        self.write(f"deps/{name}-{unit_hash}.d")
-        self.write(f".fingerprint/ws-{unit_hash}/test-integration-test-{name}")
-        return artifact(self.listed(f"deps/{name}-{unit_hash}"))
+        unit = unit_dir(WORKSPACE_PACKAGE, unit_hash)
+        self.write(f"{unit}/out/{name}-{unit_hash}")
+        self.write(f"{unit}/out/{name}-{unit_hash}.d")
+        self.write(f"{unit}/fingerprint/test-integration-test-{name}")
+        return artifact(self.listed(f"{unit}/out/{name}-{unit_hash}"))
 
     def binary(self, name, unit_hash):
         """A binary, whose copy in the profile dir is the one cargo lists."""
-        output = self.write(f"deps/{name}-{unit_hash}", content=f"{name} {unit_hash}")
-        self.write(f"deps/{name}-{unit_hash}.d")
-        self.write(f".fingerprint/ws-{unit_hash}/bin-{name}")
+        unit = unit_dir(WORKSPACE_PACKAGE, unit_hash)
+        output = self.write(f"{unit}/out/{name}", content=f"{name} {unit_hash}")
+        self.write(f"{unit}/out/{name}.d")
+        self.write(f"{unit}/fingerprint/bin-{name}")
         self.link_copy(output, self.profile / name)
         self.write(f"{name}.d")
         return artifact(self.listed(name))
 
     def example(self, name, unit_hash):
         """An example, whose copy in `examples/` is the one cargo lists."""
-        output = self.write(
-            f"examples/{name}-{unit_hash}", content=f"{name} {unit_hash}"
-        )
-        self.write(f"examples/{name}-{unit_hash}.d")
-        self.write(f".fingerprint/ws-{unit_hash}/example-{name}")
+        unit = unit_dir(WORKSPACE_PACKAGE, unit_hash)
+        output = self.write(f"{unit}/out/{name}", content=f"{name} {unit_hash}")
+        self.write(f"{unit}/out/{name}.d")
+        self.write(f"{unit}/fingerprint/example-{name}")
         self.link_copy(output, self.profile / "examples" / name)
         self.write(f"examples/{name}.d")
         return artifact(self.listed(f"examples/{name}"))
@@ -138,24 +147,38 @@ class TargetDir:
     @staticmethod
     def link_copy(output, copy):
         """Cargo replaces the copy of a rebuilt unit, as this does."""
+        copy.parent.mkdir(parents=True, exist_ok=True)
         copy.unlink(missing_ok=True)
         os.link(output, copy)
 
     def entries(self):
-        """Every unit entry and copy, the way the sweep sees them."""
+        """Every unit and copy, the way the sweep sees them: each unit by its
+        directory, a package directory that holds no unit by its own name,
+        each copy by its path, and each other entry of the profile dir that
+        is not hidden by its name."""
         found = set()
-        for unit_dir in sweep.UNIT_DIRS:
-            directory = self.profile / unit_dir
-            if directory.is_dir():
-                found.update(
-                    f"{unit_dir}/{entry.name}" for entry in directory.iterdir()
-                )
-        found.update(
-            entry.name
-            for entry in self.profile.iterdir()
-            if entry.is_file() and not entry.name.startswith(".")
-        )
+        for entry in self.profile.iterdir():
+            if entry.name.startswith("."):
+                continue
+            if entry.name == sweep.UNITS_DIR:
+                found.update(self.unit_entries(entry))
+            elif entry.name == sweep.EXAMPLES_DIR:
+                found.update(f"{entry.name}/{copy.name}" for copy in entry.iterdir())
+            elif entry.name not in sweep.CARGO_DIRS:
+                found.add(entry.name)
         return found
+
+    @staticmethod
+    def unit_entries(units):
+        for package_dir in units.iterdir():
+            if not package_dir.is_dir():
+                yield f"{units.name}/{package_dir.name}"
+                continue
+            unit_names = [unit.name for unit in package_dir.iterdir()]
+            if not unit_names:
+                yield f"{units.name}/{package_dir.name}/"
+            for unit_name in unit_names:
+                yield f"{units.name}/{package_dir.name}/{unit_name}"
 
     def listing(self, messages, name="listing.jsonl"):
         path = self.root.parent / name
@@ -220,8 +243,10 @@ class ReadListingTest(unittest.TestCase):
     def test_lists_unit_outputs_and_build_script_outputs_under_the_build_root(self):
         listing = sweep.read_listing(
             [
-                artifact("/target/debug/deps/libserde-1111111111111111.rlib"),
-                build_script_run("/target/debug/build/serde-4444444444444444/out"),
+                artifact(
+                    "/target/debug/build/serde/1111111111111111/out/libserde-1111111111111111.rlib"
+                ),
+                build_script_run("/target/debug/build/serde/4444444444444444/out"),
                 build_finished(True),
             ],
             BUILD_ROOT,
@@ -230,14 +255,21 @@ class ReadListingTest(unittest.TestCase):
         self.assertEqual(
             listing.outputs,
             (
-                PurePosixPath("debug/deps/libserde-1111111111111111.rlib"),
-                PurePosixPath("debug/build/serde-4444444444444444/out"),
+                PurePosixPath(
+                    "debug/build/serde/1111111111111111/out/libserde-1111111111111111.rlib"
+                ),
+                PurePosixPath("debug/build/serde/4444444444444444/out"),
             ),
         )
 
     def test_a_build_that_listed_no_end_is_unfinished(self):
         listing = sweep.read_listing(
-            [artifact("/target/debug/deps/libserde-1111111111111111.rlib")], BUILD_ROOT
+            [
+                artifact(
+                    "/target/debug/build/serde/1111111111111111/out/libserde-1111111111111111.rlib"
+                )
+            ],
+            BUILD_ROOT,
         )
         self.assertFalse(listing.finished)
 
@@ -261,7 +293,11 @@ class ReadListingTest(unittest.TestCase):
     def test_an_output_outside_the_build_root_is_an_unknown_layout(self):
         with self.assertRaises(sweep.UnknownLayout):
             sweep.read_listing(
-                [artifact("/elsewhere/debug/deps/libserde-1111111111111111.rlib")],
+                [
+                    artifact(
+                        "/elsewhere/debug/build/serde/1111111111111111/out/libserde-1111111111111111.rlib"
+                    )
+                ],
                 BUILD_ROOT,
             )
 
@@ -271,7 +307,7 @@ class LiveUnitsTest(SweepTestCase):
         listing = sweep.read_listing(messages, BUILD_ROOT)
         return sweep.live_units(self.target.root, listing.outputs)
 
-    def test_attributes_each_output_to_the_hash_in_its_path(self):
+    def test_attributes_each_output_to_the_unit_directory_in_its_path(self):
         live = self.live(
             [
                 self.target.library("serde", OLD_SERDE),
@@ -300,19 +336,37 @@ class LiveUnitsTest(SweepTestCase):
         self.assertEqual(live.copies, {"tool", "examples/demo"})
 
     def test_a_copy_that_is_no_hardlink_is_an_unknown_layout(self):
-        self.target.write(f"deps/tool-{OLD_TOOL}", content="tool")
+        self.target.write(
+            f"{unit_dir(WORKSPACE_PACKAGE, OLD_TOOL)}/out/tool", content="tool"
+        )
         self.target.write("tool", content="tool")
         with self.assertRaisesRegex(sweep.UnknownLayout, "hardlink"):
             self.live([artifact("/target/debug/tool")])
 
-    def test_an_output_named_by_no_unit_hash_is_an_unknown_layout(self):
-        self.target.write("deps/libmember.so")
-        with self.assertRaisesRegex(sweep.UnknownLayout, "no unit hash"):
-            self.live([artifact("/target/debug/deps/libmember.so")])
+    def test_an_output_in_the_output_directory_of_no_unit_is_an_unknown_layout(self):
+        for output in (
+            "/target/debug/build/ws/libmember.so",
+            "/target/debug/build/ws/not-a-unit-hash/out/libmember.so",
+            f"/target/debug/build/ws/{OLD_TOOL}/fingerprint/bin-tool",
+            f"/target/debug/build/ws/{OLD_TOOL}",
+        ):
+            with (
+                self.subTest(output=output),
+                self.assertRaisesRegex(
+                    sweep.UnknownLayout, "output directory of no unit"
+                ),
+            ):
+                self.live([artifact(output)])
 
     def test_an_output_outside_the_profile_dir_is_an_unknown_layout(self):
         with self.assertRaisesRegex(sweep.UnknownLayout, "profile dir"):
-            self.live([artifact("/target/release/deps/libserde-1111111111111111.rlib")])
+            self.live(
+                [
+                    artifact(
+                        "/target/release/build/serde/1111111111111111/out/libserde-1111111111111111.rlib"
+                    )
+                ]
+            )
 
     def test_an_output_in_no_output_dir_is_an_unknown_layout(self):
         with self.assertRaisesRegex(sweep.UnknownLayout, "no directory"):
@@ -353,20 +407,38 @@ class SweepTest(SweepTestCase):
             self.target.root,
             sweep.LiveUnits(frozenset({OLD_SERDE, TEST_BINARY}), frozenset()),
         )
-        self.target.write("deps/rustcAbC123/symbols.o")
         sweep.sweep(self.target.root)
         self.assertEqual(
             self.target.entries(),
             {
-                f"deps/libserde-{OLD_SERDE}.rlib",
-                f"deps/libserde-{OLD_SERDE}.rmeta",
-                f"deps/serde-{OLD_SERDE}.d",
-                f".fingerprint/serde-{OLD_SERDE}",
-                f"deps/it-{TEST_BINARY}",
-                f"deps/it-{TEST_BINARY}.d",
-                f".fingerprint/ws-{TEST_BINARY}",
+                unit_dir("serde", OLD_SERDE),
+                unit_dir(WORKSPACE_PACKAGE, TEST_BINARY),
             },
         )
+
+    def test_removes_the_directory_of_a_package_that_keeps_no_unit(self):
+        old_build(self.target)
+        sweep.write_record(
+            self.target.root, sweep.LiveUnits(frozenset({TEST_BINARY}), frozenset())
+        )
+        sweep.sweep(self.target.root)
+        self.assertEqual(
+            self.target.entries(), {unit_dir(WORKSPACE_PACKAGE, TEST_BINARY)}
+        )
+
+    def test_removes_what_the_units_directory_holds_besides_the_units(self):
+        self.target.library("serde", OLD_SERDE)
+        sweep.write_record(
+            self.target.root, sweep.LiveUnits(frozenset({OLD_SERDE}), frozenset())
+        )
+        self.target.write("build/serde/rustcAbC123/symbols.o")
+        self.target.write("build/stray.o")
+        outside = self.target.root / "outside"
+        outside.mkdir()
+        (self.target.profile / "build" / "linked").symlink_to(outside)
+        sweep.sweep(self.target.root)
+        self.assertEqual(self.target.entries(), {unit_dir("serde", OLD_SERDE)})
+        self.assertTrue(outside.is_dir())
 
     def test_keeps_the_copies_the_record_lists_and_their_dep_info(self):
         old_build(self.target)
@@ -380,20 +452,27 @@ class SweepTest(SweepTestCase):
         self.assertEqual(
             self.target.entries(),
             {
-                f"deps/tool-{OLD_TOOL}",
-                f"deps/tool-{OLD_TOOL}.d",
-                f".fingerprint/ws-{OLD_TOOL}",
+                unit_dir(WORKSPACE_PACKAGE, OLD_TOOL),
                 "tool",
                 "tool.d",
-                f"examples/demo-{OLD_EXAMPLE}",
-                f"examples/demo-{OLD_EXAMPLE}.d",
-                f".fingerprint/ws-{OLD_EXAMPLE}",
+                unit_dir(WORKSPACE_PACKAGE, OLD_EXAMPLE),
                 "examples/demo",
                 "examples/demo.d",
             },
         )
 
-    def test_leaves_what_is_not_named_by_unit(self):
+    def test_removes_a_directory_of_the_profile_dir_that_cargo_does_not_write(self):
+        self.target.library("serde", OLD_SERDE)
+        sweep.write_record(
+            self.target.root, sweep.LiveUnits(frozenset({OLD_SERDE}), frozenset())
+        )
+        self.target.write("native/libmember.a")
+        self.target.write(".hidden/leftover")
+        sweep.sweep(self.target.root)
+        self.assertEqual(self.target.entries(), {unit_dir("serde", OLD_SERDE)})
+        self.assertFalse((self.target.profile / ".hidden").exists())
+
+    def test_leaves_the_locks_and_what_is_not_named_by_unit(self):
         old_build(self.target)
         sweep.write_record(self.target.root, sweep.LiveUnits(frozenset(), frozenset()))
         cargo_lock = self.target.write(".cargo-lock")
@@ -443,10 +522,9 @@ class RecordTest(SweepTestCase):
         fresh = self.target_dir("fresh")
         new_build(fresh)
         self.assertEqual(self.target.entries(), fresh.entries())
-        # serde's four entries, the two directories of the build script, the
-        # two fingerprints of its run and compile, and three entries each for
-        # the binary and the example.
-        self.assertEqual(removed.entries, 4 + 2 + 2 + 3 + 3)
+        # The unit of serde, the two units of its build script, the unit of
+        # the binary and the unit of the example.
+        self.assertEqual(removed.entries, 1 + 2 + 1 + 1)
 
     def test_after_an_unfinished_build_keeps_the_units_the_record_listed_too(self):
         self.record(old_build(self.target))
@@ -463,8 +541,8 @@ class RecordTest(SweepTestCase):
                 NEW_SERDE,
             },
         )
-        self.assertIn(f"deps/libserde-{OLD_SERDE}.rlib", self.target.entries())
-        self.assertIn(f"deps/libserde-{NEW_SERDE}.rlib", self.target.entries())
+        self.assertIn(unit_dir("serde", OLD_SERDE), self.target.entries())
+        self.assertIn(unit_dir("serde", NEW_SERDE), self.target.entries())
 
     def test_after_an_unfinished_first_build_records_what_it_built(self):
         self.record([self.target.library("serde", NEW_SERDE)])
@@ -474,10 +552,10 @@ class RecordTest(SweepTestCase):
 
     def test_an_unknown_layout_drops_the_record_and_removes_nothing(self):
         self.record(old_build(self.target))
-        self.target.write("deps/libmember.so")
+        self.target.write("build/ws/libmember.so")
         before = self.target.entries()
         removed = self.record(
-            [*old_build(self.target), artifact("/target/debug/deps/libmember.so")]
+            [*old_build(self.target), artifact("/target/debug/build/ws/libmember.so")]
         )
         self.assertEqual(removed, sweep.NOTHING_REMOVED)
         self.assertEqual(self.target.entries(), before)
@@ -506,6 +584,11 @@ class RecordTest(SweepTestCase):
         )
 
 
+# The output of a unit, relative to the profile dir, that marks a target dir
+# a prune must leave whole.
+SERDE_OUTPUT = f"{unit_dir('serde', OLD_SERDE)}/out/libserde-{OLD_SERDE}.rlib"
+
+
 class PruneTest(unittest.TestCase):
     """A target root that holds the target dir of each project at the path of
     the project."""
@@ -518,7 +601,7 @@ class PruneTest(unittest.TestCase):
 
     def project_target(self, project):
         target = TargetDir(self.root / project)
-        target.write(f"deps/libserde-{OLD_SERDE}.rlib")
+        target.write(SERDE_OUTPUT)
         return target.root
 
     def prune(self, *live_dirs):
@@ -528,7 +611,7 @@ class PruneTest(unittest.TestCase):
 
     def assertIntact(self, target_dir):
         self.assertTrue(
-            (target_dir / "debug" / "deps" / f"libserde-{OLD_SERDE}.rlib").is_file(),
+            (target_dir / "debug" / SERDE_OUTPUT).is_file(),
             target_dir,
         )
 
@@ -574,7 +657,7 @@ class PruneTest(unittest.TestCase):
     def test_removes_a_symlink_on_the_path_without_following_it(self):
         outside = self.scratch / "outside"
         outside_target = TargetDir(outside / "member")
-        outside_target.write(f"deps/libserde-{OLD_SERDE}.rlib")
+        outside_target.write(SERDE_OUTPUT)
         self.root.mkdir()
         (self.root / "node").symlink_to(outside)
         self.prune("node/member")
