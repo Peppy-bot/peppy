@@ -15,7 +15,6 @@ config = { package = "peppy-config-model", path = "../peppy-config-model" }
 # which carries no alignment guarantee.
 capnp = { version = "0.27", features = ["unaligned"] }
 bytes = "1.10"
-chrono = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json5 = "0.2"
 thiserror = "2.0"

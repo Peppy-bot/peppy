@@ -943,7 +943,6 @@ dependencies = [
  "bytes",
  "capnp",
  "capnpc",
- "chrono",
  "gix-url",
  "libc",
  "peppy-config-model",
