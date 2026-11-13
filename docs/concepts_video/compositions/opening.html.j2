@@ -114,7 +114,7 @@
       {% endfor %}
 
       <div id="{{ id }}-peppy">
-        <div class="placed" style="left: 1244px; top: 206px; width: 132px; height: 132px; border-radius: 30px; background: #dfe6f7"></div>
+        <div class="placed" style="left: 1244px; top: 206px; width: 132px; height: 132px; border-radius: 30px; background: var(--logo-ground)"></div>
         <img class="placed" src="assets/pictures/peppy-logo.webp" alt="" style="left: 1252px; top: 214px; width: 116px; height: 116px" />
         <div class="headline" style="left: 1396px; top: 214px; font-size: 104px; color: var(--peppy)">{{ screen.peppy }}</div>
       </div>
@@ -133,6 +133,8 @@
       const DURATION = {{ duration }};
       const tl = gsap.timeline({ paused: true });
 
+      // The content comes in after the splash screen.
+      Motion.show(tl, ID + "-content", 0, { from: { opacity: 0, y: 0 } });
       Motion.endSegment(tl, ID + "-content", DURATION);
 
       // The robot turns to the viewer, then labels point to its parts.

@@ -16,7 +16,7 @@ The command does the full build with no step by hand:
 
 1. It installs the pinned tools.
 2. It gets the footage that the machine does not have, and refuses a file whose hash does not agree with `footage.json`.
-3. It makes the voice of each sentence of the transcript.
+3. It makes the voice of each sentence of the transcript, and the music.
 4. It compiles the compositions, lints them and renders the video.
 
 It writes these files into `build/`:
@@ -31,7 +31,7 @@ Two builds of the same commit on the same machine give the same MP4 file, byte f
 
 YouTube gives each upload a new link. After an upload, put the id of the new link in the `YouTubeEmbed` of `docs/src/content/docs/quickstart.mdx`.
 
-`pixi run build <segment id>` builds the video of one segment only, into `build/<segment id>.mp4`.
+`pixi run build <part id>` builds the video of one part only, into `build/<part id>.mp4`. A part is one segment, or `splash`: the splash screen with the first segment after it. The video of a segment has no splash screen.
 
 ## The files
 
@@ -39,7 +39,7 @@ YouTube gives each upload a new link. After an upload, put the id of the new lin
 |---|---|
 | `transcript.toml` | The transcript: the only source of the voice, of the captions and of each text that the video shows |
 | `voice_durations.json` | The duration of the voice of each sentence. The build writes it |
-| `compositions/` | The composition of each segment and the root composition, as Jinja templates, with the animation functions (`motion.js`) and the 3D view of the robot (`robot_view.js`) |
+| `compositions/` | The composition of each segment, the composition of the splash screen (`splash.html.j2`) and the root composition, as Jinja templates, with the animation functions (`motion.js`) and the 3D view of the robot (`robot_view.js`) |
 | `styles/` | The look that all the compositions share |
 | `assets/` | The fonts and the pictures |
 | `footage.json` | The list of the footage: the name, the SHA-256 and the key of each file |
@@ -58,6 +58,8 @@ YouTube gives each upload a new link. After an upload, put the id of the new lin
 
 A text between two backticks is a technical name: a command, a flag, a file name or a name of an API. In a technical name, a word in angle brackets is a placeholder.
 
+`[splash]` is the splash screen, which shows before the first segment with the music and with no voice. `seconds` is its duration, and `[splash.screen]` holds each text that its composition shows. The splash screen names no section of the docs, so its texts hold no technical name. A transcript with no `[splash]` gives a video with no splash screen.
+
 `pixi run test` runs the transcript test (`tests/test_project.py`). It fails in these cases:
 
 - A named section does not exist.
@@ -65,7 +67,7 @@ A text between two backticks is a technical name: a command, a flag, a file name
 - A technical name of a segment is not in the sections that the segment names. For a command, each flag and each run of the other words must be in a section. For a code block, each name must be in a section, but for the words of the language and the names that the block gives in `example_names`.
 - A sentence of the voice has more than 25 words, which is the limit that ASD-STE100 gives for a descriptive sentence.
 - `voice_durations.json` does not agree with the sentences of the transcript.
-- A composition shows a text that is not in the transcript, does not show a text of its segment, or names a footage file that is not in `footage.json`.
+- A composition shows a text that is not in the transcript, does not show a text of its segment or of the splash screen, or names a footage file that is not in `footage.json`.
 - The video is longer than 9 minutes.
 
 The test compares text, counts and hashes only. It calls no model.
@@ -80,6 +82,7 @@ When a sentence of the voice changes, run `pixi run build`: it makes the new voi
 
 - Each text comes from the transcript: `{{ screen.<key> }}` for a text of the segment, `{{ labels.<key> }}` for a word of the frame of a card, and `{{ segment.chapter }}`. The filter `rich` puts each technical name of a text in a `<code>` element.
 - Each time comes from the voice: `at.<sentence id>.start` and `at.<sentence id>.end`, in seconds from the start of the segment. `duration` is the duration of the segment, and `start` is its start in the video.
+- The splash screen has no voice. The time of each of its parts comes from the music: `bells` holds the time of each bell note of the start of the music, in seconds.
 - `footage("<name>")` gives the path of a footage file of `footage.json`.
 
 The parts of `_parts.html.j2` give the chapter, the term card, the comparison card, the comparison of steps and the code window. `Motion` (`motion.js`) gives the animation functions. `RobotView` (`robot_view.js`) draws the 3D model of the OpenArm v2 in a canvas. All the views of the video share one WebGL context, and a view draws during its segment only.
@@ -96,10 +99,26 @@ The rules of a composition:
 To look at a composition while you write it:
 
 ```sh
-pixi run snapshot <segment id> <times>
+pixi run snapshot <part id> <times>
 ```
 
-The command compiles the segment and writes one PNG file for each time, for example `pixi run snapshot opening 0,12,28`. `pixi run lint` compiles all the compositions and runs the lint of HyperFrames on them.
+The command compiles the video of one part and writes one PNG file for each time, for example `pixi run snapshot opening 0,12,28` or `pixi run snapshot splash 0.5,2,3.9`. `pixi run lint` compiles all the compositions and runs the lint of HyperFrames on them.
+
+## The splash screen and the chapters
+
+The video starts with the splash screen. The first segment starts at its end, so each time of the captions and of the chapters includes its duration. YouTube makes chapters only from a list that starts at `0:00`. Thus the first chapter of `concepts_video.chapters.txt` starts at `0:00`, and the splash screen is in it.
+
+## The music
+
+The music is an ambient bed below the voice. It is a calculation (`tools/music.py`), with no recording, no model and no licence: slow chords of a soft pad on a bass note, and a few bell notes with an echo. Its duration is its only input, and the same duration always gives the same samples. The build writes it for the duration of the video, and the repository holds no music file.
+
+The root composition plays the music at a level that changes with the time (`tools/mix.py`):
+
+- While the splash screen shows, the music is at the level of its file, which is near the level of the voice.
+- Before the first sentence, the music goes 14 dB down. It stays at this level below the voice.
+- After the last sentence, the music goes out until the end of the video.
+
+To change the music, change the chords, the phrases or the levels in `tools/music.py`, run `pixi run build splash`, and listen to `build/splash.mp4`.
 
 ## The footage
 
@@ -121,7 +140,7 @@ The build gets each tool that changes the result at a pinned version, from its s
 
 | Tool | Pinned in |
 |---|---|
-| Node.js, FFmpeg, Python, and the Python packages that make the voice | `pixi.toml` and `pixi.lock` |
+| Node.js, FFmpeg, Python, and the Python packages that make the voice and the music | `pixi.toml` and `pixi.lock` |
 | HyperFrames, GSAP, three.js and esbuild | `package.json` and `package-lock.json` |
 | The Chrome that renders | `pins.toml`. HyperFrames gets the Chrome of its version, and the build refuses another one |
 | Kokoro-82M, the model of the voice | `pins.toml`, with the SHA-256 of each file |
@@ -135,4 +154,4 @@ A new build gives the same video until a person changes a version. To change one
 
 ## The checks of CI
 
-CI does not build the video. The job `concepts-video` of the workflow `Tests` runs `pixi run test` and `pixi run lint`, with no voice model, no Chrome and no footage.
+CI does not build the video. The job `concepts-video` of the workflow `Tests` runs `pixi run test` and `pixi run lint`, with no voice model, no Chrome and no footage. The tests calculate some music, which needs no file and no model.

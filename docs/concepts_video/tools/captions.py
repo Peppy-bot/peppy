@@ -67,10 +67,16 @@ def split_evenly(text: str, parts: int) -> list[str]:
 
 
 def youtube_chapters(transcript: Transcript, timeline: Timeline) -> str:
-    """One line for each segment: the time of its start and its chapter title."""
+    """One line for each segment: the time of its start and its chapter title.
+
+    YouTube makes chapters only from a list that starts at 0:00. Thus the
+    first chapter starts at the start of the video, and the splash screen is
+    in it.
+    """
+    start_frames = [0] + [slot.start_frame for slot in timeline.segments[1:]]
     lines = [
-        f"{_chapter_time(slot.start_frame // FRAMES_PER_SECOND)} {segment.chapter}"
-        for segment, slot in zip(transcript.segments, timeline.segments, strict=True)
+        f"{_chapter_time(start_frame // FRAMES_PER_SECOND)} {segment.chapter}"
+        for segment, start_frame in zip(transcript.segments, start_frames, strict=True)
     ]
     return "\n".join(lines) + "\n"
 

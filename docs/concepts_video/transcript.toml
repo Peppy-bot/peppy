@@ -34,6 +34,15 @@ comparison = "Compared with ROS 2"
 ros2 = "ROS 2"
 peppy = "Peppy"
 
+# The splash screen, which shows before the first segment, with the music and
+# with no voice.
+[splash]
+seconds = 4.0
+
+[splash.screen]
+name = "Peppy"
+title = "The concepts"
+
 # ---------------------------------------------------------------------------
 
 [[segment]]

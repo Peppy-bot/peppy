@@ -1,9 +1,9 @@
 """Compiles the compositions of the video into a HyperFrames project.
 
-`compositions/` holds the composition of each segment and the root
-composition, as Jinja templates. A composition holds the layout and the
-animation, and no text of its own: each text comes from the transcript as
-`screen.<key>`, and each time comes from the timeline as
+`compositions/` holds the composition of each segment, the composition of the
+splash screen and the root composition, as Jinja templates. A composition
+holds the layout and the animation, and no text of its own: each text comes
+from the transcript as `screen.<key>`, and each time comes from the timeline as
 `at.<sentence id>.start` and `at.<sentence id>.end`, in seconds from the
 start of the segment. The compiled project has these values as plain HTML,
 which HyperFrames checks and renders.
@@ -18,13 +18,17 @@ from typing import Iterator, Mapping
 import jinja2
 from markupsafe import Markup, escape
 
-from tools import markup, paths
+from tools import markup, mix, music, paths
 from tools.footage import FootageFile
 from tools.timing import FRAMES_PER_SECOND, SegmentSlot, Timeline
-from tools.transcript import CodeBlock, ScreenText, Segment, Transcript
+from tools.transcript import SPLASH_ID, CodeBlock, ScreenText, Segment, Splash, Transcript, screen_leaves
 
 ROOT_TEMPLATE = "index.html.j2"
 TEMPLATE_SUFFIX = ".html.j2"
+# The voice and the music of the video, in the compiled project. The
+# repository does not hold them: the build makes them.
+VOICE_TRACK = "assets/voice.wav"
+MUSIC_TRACK = "assets/music.wav"
 # The templates that a composition imports. They are not compositions.
 SHARED_PREFIX = "_"
 # The animation functions that each composition uses.
@@ -100,8 +104,18 @@ def compile_project(
     for segment, slot in zip(transcript.segments, timeline.segments, strict=True):
         composition = _render_composition(environment, segment, slot)
         (destination / "compositions" / f"{segment.id}.html").write_text(composition, encoding="utf-8")
+    if transcript.splash is not None:
+        splash = _render_splash(environment, transcript.splash, timeline.splash_duration)
+        (destination / "compositions" / f"{SPLASH_ID}.html").write_text(splash, encoding="utf-8")
     root = environment.get_template(ROOT_TEMPLATE).render(
-        segments=timeline.segments, duration=timeline.duration, frames_per_second=FRAMES_PER_SECOND
+        splash_id=SPLASH_ID,
+        splash_duration=timeline.splash_duration,
+        segments=timeline.segments,
+        duration=timeline.duration,
+        frames_per_second=FRAMES_PER_SECOND,
+        voice_track=VOICE_TRACK,
+        music_track=MUSIC_TRACK,
+        music_automation=mix.volume_automation(mix.music_levels(timeline)),
     )
     (destination / "index.html").write_text(root, encoding="utf-8")
     shutil.copytree(paths.ASSETS, destination / "assets")
@@ -127,12 +141,10 @@ def link_footage(footage: tuple[FootageFile, ...], destination: Path) -> None:
         shutil.copyfile(file.cache_path, folder / file.name)
 
 
-def segment_templates() -> list[Path]:
-    """The template of the composition of each segment."""
+def composition_templates() -> list[Path]:
+    """The template of each composition: of each segment, of the splash screen and of the root."""
     return sorted(
-        path
-        for path in paths.COMPOSITIONS.glob(f"*{TEMPLATE_SUFFIX}")
-        if not path.name.startswith(SHARED_PREFIX) and path.name != ROOT_TEMPLATE
+        path for path in paths.COMPOSITIONS.glob(f"*{TEMPLATE_SUFFIX}") if not path.name.startswith(SHARED_PREFIX)
     )
 
 
@@ -181,18 +193,38 @@ def _render_composition(environment: jinja2.Environment, segment: Segment, slot:
         template = environment.get_template(name)
     except jinja2.TemplateNotFound:
         raise CompileError(f"the segment `{segment.id}` has no composition compositions/{name}") from None
-    read_paths: set[str] = set()
-    rendered = template.render(
+    return _render_with_each_text(
+        template,
+        segment.screen,
+        f"the segment `{segment.id}`",
         segment=segment,
         number=segment.number,
         start=slot.start,
         duration=slot.duration,
-        screen=TrackedTable(segment.screen, "screen", read_paths),
         at={sentence.id: {"start": sentence.start, "end": sentence.end} for sentence in slot.sentences},
     )
-    not_shown = [path for path, _ in segment.screen_leaves() if path not in read_paths]
+
+
+def _render_splash(environment: jinja2.Environment, splash: Splash, duration: float) -> str:
+    return _render_with_each_text(
+        environment.get_template(f"{SPLASH_ID}{TEMPLATE_SUFFIX}"),
+        splash.screen,
+        "the splash screen",
+        id=SPLASH_ID,
+        duration=duration,
+        bells=music.opening_bell_seconds(),
+    )
+
+
+def _render_with_each_text(
+    template: jinja2.Template, screen: Mapping[str, ScreenText], owner: str, **values: object
+) -> str:
+    """Render a composition with the texts of `screen`. Refuse a composition that does not show each text."""
+    read_paths: set[str] = set()
+    rendered = template.render(screen=TrackedTable(screen, "screen", read_paths), **values)
+    not_shown = [path for path, _ in screen_leaves(screen) if path not in read_paths]
     if not_shown:
-        raise CompileError(f"the composition of the segment `{segment.id}` does not show {', '.join(not_shown)}")
+        raise CompileError(f"the composition of {owner} does not show {', '.join(not_shown)}")
     return rendered
 
 

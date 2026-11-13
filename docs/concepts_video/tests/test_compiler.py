@@ -1,10 +1,35 @@
 """The compile step of the compositions."""
 
+from dataclasses import replace
+import html
+import json
+from pathlib import Path
+import re
+
 import pytest
 
-from tools import compiler
+from tools import compiler, mix, paths
 from tools.compiler import CompileError, TrackedTable
 from tools.footage import FootageFile
+from tools.project import timeline_of
+from tools.timing import Timeline
+from tools.transcript import SPLASH_ID, Transcript, read_transcript
+from tools.voice_durations import read_voice_durations
+
+
+@pytest.fixture(scope="module")
+def transcript() -> Transcript:
+    return read_transcript(paths.TRANSCRIPT)
+
+
+def timeline(transcript: Transcript) -> Timeline:
+    return timeline_of(transcript, read_voice_durations(paths.VOICE_DURATIONS))
+
+
+def compiled_root(transcript: Transcript, destination: Path) -> str:
+    """Compile the video of `transcript` with the compositions of the project, and give its root composition."""
+    compiler.compile_project(transcript, timeline(transcript), (), destination)
+    return (destination / "index.html").read_text(encoding="utf-8")
 
 
 def test_the_literal_text_of_a_template_has_no_value_no_script_and_no_style() -> None:
@@ -55,3 +80,39 @@ def test_a_composition_names_only_the_footage_of_the_list() -> None:
     assert footage_path("opening_two_arms.mp4") == "assets/footage/opening_two_arms.mp4"
     with pytest.raises(CompileError, match="`absent.mp4`, which is not in footage.json"):
         footage_path("absent.mp4")
+
+
+def test_a_video_with_a_splash_screen_shows_it_before_the_first_segment(transcript: Transcript, tmp_path: Path) -> None:
+    root = compiled_root(transcript, tmp_path / "project")
+
+    splash = (tmp_path / "project" / "compositions" / f"{SPLASH_ID}.html").read_text(encoding="utf-8")
+    assert all(text in splash for text in transcript.splash.screen.values())
+    assert f'data-composition-src="compositions/{SPLASH_ID}.html"' in root
+    assert f'data-duration="{timeline(transcript).splash_duration}"' in root
+
+
+def test_the_video_of_one_segment_has_no_splash_screen(transcript: Transcript, tmp_path: Path) -> None:
+    root = compiled_root(transcript.part(transcript.segments[0].id), tmp_path / "project")
+
+    assert SPLASH_ID not in root
+    assert not (tmp_path / "project" / "compositions" / f"{SPLASH_ID}.html").exists()
+
+
+def test_a_text_of_the_splash_screen_that_its_composition_does_not_show_is_refused(
+    transcript: Transcript, tmp_path: Path
+) -> None:
+    splash = replace(transcript.splash, screen={**transcript.splash.screen, "extra": "Not on the screen"})
+
+    with pytest.raises(CompileError, match="the composition of the splash screen does not show screen.extra"):
+        compiled_root(replace(transcript, splash=splash), tmp_path / "project")
+
+
+def test_the_root_composition_plays_the_voice_and_the_music_with_its_levels(
+    transcript: Transcript, tmp_path: Path
+) -> None:
+    root = compiled_root(transcript, tmp_path / "project")
+
+    automation = json.loads(html.unescape(re.search(r'data-automation="([^"]*)"', root).group(1)))
+    points = [(point["t"], point["v"]) for point in automation["lanes"][0]["points"]]
+    assert points == mix.music_levels(timeline(transcript))
+    assert f'src="{compiler.VOICE_TRACK}"' in root and f'src="{compiler.MUSIC_TRACK}"' in root

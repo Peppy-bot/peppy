@@ -53,6 +53,8 @@
   --contract: #b48cff;
   --fault: #ff6b81;
   --ok: #4ade80;
+  /* The light ground that the logo is on. */
+  --logo-ground: #dfe6f7;
   --sans: "Peppy Sans", sans-serif;
   --mono: "Peppy Mono", monospace;
 }

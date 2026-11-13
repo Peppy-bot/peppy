@@ -86,6 +86,17 @@ def is_in_cache(file: FootageFile) -> bool:
     return file.cache_path.is_file() and files.sha256_of(file.cache_path) == file.sha256
 
 
+def fetch_absent(listed: tuple[FootageFile, ...]) -> None:
+    """Get each file of the list that the cache does not hold."""
+    absent = [file for file in listed if not is_in_cache(file)]
+    if not absent:
+        return
+    client = bucket_client()
+    for file in absent:
+        print(f"Getting the footage {file.name}")
+        fetch(file, client)
+
+
 def fetch(file: FootageFile, client) -> None:
     """Get one file of the list into the cache, and refuse content with another hash."""
     file.cache_path.parent.mkdir(parents=True, exist_ok=True)

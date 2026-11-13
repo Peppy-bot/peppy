@@ -2,8 +2,9 @@
 
 The voice is the clock of the video. Each sentence of the voice has a duration,
 which `voice_durations.json` records. The start of each sentence and of each
-segment comes from these durations and from the silences of the transcript, in
-full frames, so the same durations always give the same frames.
+segment comes from these durations, from the silences of the transcript and
+from the duration of the splash screen, in full frames, so the same durations
+always give the same frames.
 """
 
 from dataclasses import dataclass
@@ -74,15 +75,34 @@ class SegmentSlot:
 
 @dataclass(frozen=True)
 class Timeline:
+    # The frames of the splash screen, which shows before the first segment.
+    # A video with no splash screen has 0.
+    splash_frames: int
     segments: tuple[SegmentSlot, ...]
 
     @property
     def frames(self) -> int:
-        return sum(segment.frames for segment in self.segments)
+        return self.splash_frames + sum(segment.frames for segment in self.segments)
 
     @property
     def duration(self) -> float:
         return seconds_of(self.frames)
+
+    @property
+    def splash_duration(self) -> float:
+        return seconds_of(self.splash_frames)
+
+    @property
+    def voice_start(self) -> float:
+        """The start of the first sentence of the video, from the start of the video."""
+        first = self.segments[0]
+        return seconds_of(first.start_frame + first.sentences[0].start_frame)
+
+    @property
+    def voice_end(self) -> float:
+        """The end of the last sentence of the video, from the start of the video."""
+        last = self.segments[-1]
+        return seconds_of(last.start_frame + last.sentences[-1].end_frame)
 
     def segment(self, segment_id: str) -> SegmentSlot:
         for slot in self.segments:
@@ -97,13 +117,14 @@ def lay_out(transcript: Transcript, voice_seconds: Mapping[str, float]) -> Timel
     `voice_seconds` gives the duration of the voice of each sentence, by its
     `sentence_key`.
     """
+    splash_frames = 0 if transcript.splash is None else frames_up(transcript.splash.seconds)
     segments: list[SegmentSlot] = []
-    start_frame = 0
+    start_frame = splash_frames
     for segment in transcript.segments:
         slot = _lay_out_segment(segment, transcript.voice, voice_seconds, start_frame)
         segments.append(slot)
         start_frame += slot.frames
-    return Timeline(segments=tuple(segments))
+    return Timeline(splash_frames=splash_frames, segments=tuple(segments))
 
 
 def _lay_out_segment(

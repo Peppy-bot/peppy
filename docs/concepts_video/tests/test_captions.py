@@ -1,6 +1,6 @@
 """The captions and the chapters of the video."""
 
-from tests.factories import segment_table, transcript_of
+from tests.factories import segment_table, splash_table, transcript_of
 from tools.captions import cues_of_sentence, split_evenly, subrip_captions, youtube_chapters
 from tools.timing import lay_out
 
@@ -61,3 +61,24 @@ def test_the_chapters_give_the_start_and_the_title_of_each_segment() -> None:
     timeline = lay_out(transcript, {"opening/only": 62.0, "node/only": 1.5})
 
     assert youtube_chapters(transcript, timeline) == "0:00 Why a robot needs a framework\n1:05 A node and its file\n"
+
+
+def test_the_first_chapter_starts_at_the_start_of_the_video_and_holds_the_splash_screen() -> None:
+    transcript = transcript_of(
+        [
+            segment_table("opening", chapter="Why a robot needs a framework"),
+            segment_table("node", chapter="A node and its file"),
+        ],
+        splash=splash_table(seconds=4.0),
+    )
+    timeline = lay_out(transcript, {"opening/only": 62.0, "node/only": 1.5})
+
+    assert youtube_chapters(transcript, timeline) == "0:00 Why a robot needs a framework\n1:09 A node and its file\n"
+
+
+def test_the_captions_of_a_video_with_a_splash_screen_start_after_it() -> None:
+    sentences = [{"id": "only", "text": "A node has one function."}]
+    transcript = transcript_of([segment_table("opening", sentences)], splash=splash_table(seconds=4.0))
+    timeline = lay_out(transcript, {"opening/only": 2.0})
+
+    assert subrip_captions(transcript, timeline) == "1\n00:00:05,000 --> 00:00:07,000\nA node has one function.\n"

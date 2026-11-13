@@ -120,6 +120,34 @@ def test_a_fetch_refuses_content_with_another_hash_and_leaves_no_file(tmp_path: 
     assert list(added.cache_path.parent.iterdir()) == []
 
 
+def test_a_fetch_of_the_absent_files_gets_each_file_that_the_cache_does_not_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bucket = FakeBucket()
+    cached = footage.upload(recording(tmp_path, "cached.mp4", b"in the cache"), bucket)
+    absent = footage.upload(recording(tmp_path, "absent.mp4", b"not in the cache"), bucket)
+    footage.fetch(cached, bucket)
+    del bucket.objects[cached.key]
+    monkeypatch.setattr(footage, "bucket_client", lambda: bucket)
+
+    footage.fetch_absent((cached, absent))
+
+    assert footage.is_in_cache(cached) and footage.is_in_cache(absent)
+
+
+def test_a_fetch_of_the_absent_files_does_not_reach_the_bucket_when_the_cache_holds_each_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bucket = FakeBucket()
+    cached = footage.upload(recording(tmp_path), bucket)
+    footage.fetch(cached, bucket)
+    for name in footage.BUCKET_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+
+    footage.fetch_absent((cached,))
+    footage.fetch_absent(())
+
+
 def test_a_cached_file_with_another_hash_is_not_in_the_cache(tmp_path: Path) -> None:
     bucket = FakeBucket()
     added = footage.upload(recording(tmp_path), bucket)

@@ -1,6 +1,6 @@
 <!doctype html>
-{# The root composition: it mounts the composition of each segment at its
-   time, and plays the voice. #}
+{# The root composition: it mounts the splash screen and the composition of
+   each segment at its time, and plays the voice and the music. #}
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -20,6 +20,19 @@
       data-width="1920"
       data-height="1080"
     >
+      {% if splash_duration %}
+      <div
+        id="{{ splash_id }}"
+        data-composition-id="{{ splash_id }}"
+        data-composition-src="compositions/{{ splash_id }}.html"
+        data-start="0"
+        data-duration="{{ splash_duration }}"
+        data-track-index="1"
+        data-track-kind="graphics"
+        data-width="1920"
+        data-height="1080"
+      ></div>
+      {% endif %}
       {% for slot in segments %}
       <div
         id="{{ slot.id }}"
@@ -37,11 +50,22 @@
          -17 LUFS, with its peaks below -1.5 dBFS. #}
       <audio
         id="voice"
-        src="assets/voice.wav"
+        src="{{ voice_track }}"
         data-start="0"
         data-duration="{{ duration }}"
         data-track-index="2"
         data-volume="1.3"
+      ></audio>
+      {# The music file is at -18 LUFS. Its level at each time of the video
+         is in `data-automation`. #}
+      <audio
+        id="music"
+        src="{{ music_track }}"
+        data-start="0"
+        data-duration="{{ duration }}"
+        data-track-index="3"
+        data-volume="1"
+        data-automation="{{ music_automation }}"
       ></audio>
     </div>
     <script>

@@ -3,19 +3,24 @@
 `transcript.toml` has one `[[segment]]` for each segment of the video. A
 segment names the sections of the docs that it rests on, with the hash of the
 text of each one. It holds the sentences of the voice in order, and the texts
-that its composition shows.
+that its composition shows. `[splash]` holds the splash screen, which shows
+before the first segment with no voice.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import re
 import tomllib
 from typing import Iterator, Mapping, Union
 
+from tools import markup
+
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 # The languages of the code blocks that the checks can read.
 CODE_LANGUAGES = frozenset({"python", "json5", "sh"})
+# The id of the composition of the splash screen. No segment has this id.
+SPLASH_ID = "splash"
 
 
 class TranscriptError(Exception):
@@ -32,6 +37,13 @@ class Voice:
     lead_in_seconds: float
     sentence_gap_seconds: float
     tail_seconds: float
+
+
+@dataclass(frozen=True)
+class Splash:
+    # How long the splash screen shows.
+    seconds: float
+    screen: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -77,7 +89,7 @@ class Segment:
 
     def screen_leaves(self) -> Iterator[tuple[str, str | CodeBlock]]:
         """Each text and each code block of the screen, with its dotted path."""
-        yield from _leaves("screen", self.screen)
+        return screen_leaves(self.screen)
 
 
 @dataclass(frozen=True)
@@ -87,6 +99,8 @@ class Transcript:
     pronunciation: Mapping[str, str]
     # The words of the frames of the cards, which each composition shows.
     labels: Mapping[str, str]
+    # The splash screen of the start of the video, when the video has one.
+    splash: Splash | None
     segments: tuple[Segment, ...]
 
     def segment(self, segment_id: str) -> Segment:
@@ -94,6 +108,24 @@ class Transcript:
             if segment.id == segment_id:
                 return segment
         raise KeyError(segment_id)
+
+    @property
+    def part_ids(self) -> list[str]:
+        """The id of each part that has a video of its own: the splash screen and each segment."""
+        splash_ids = [] if self.splash is None else [SPLASH_ID]
+        return splash_ids + [segment.id for segment in self.segments]
+
+    def part(self, part_id: str) -> "Transcript":
+        """The transcript of the video of one part.
+
+        The video of a segment has no splash screen. The video of the splash
+        screen has the first segment after it, because a video has a voice.
+        """
+        if part_id not in self.part_ids:
+            raise KeyError(part_id)
+        if part_id == SPLASH_ID:
+            return replace(self, segments=self.segments[:1])
+        return replace(self, splash=None, segments=(self.segment(part_id),))
 
 
 def read_transcript(path: Path) -> Transcript:
@@ -110,10 +142,13 @@ def parse_transcript(document: Mapping[str, object]) -> Transcript:
     if not segments:
         raise TranscriptError("transcript: it has no segment")
     _refuse_duplicates([segment.id for segment in segments], "transcript")
+    if any(segment.id == SPLASH_ID for segment in segments):
+        raise TranscriptError(f"transcript: a segment has the id `{SPLASH_ID}`, which is the id of the splash screen")
     return Transcript(
         voice=_parse_voice(_table(document, "voice", "transcript")),
         pronunciation=_parse_texts(document.get("pronunciation", {}), "pronunciation"),
         labels=_parse_texts(_table(document, "labels", "transcript"), "labels"),
+        splash=_parse_splash(_table(document, "splash", "transcript")) if "splash" in document else None,
         segments=segments,
     )
 
@@ -127,6 +162,17 @@ def _parse_voice(table: Mapping[str, object]) -> Voice:
         sentence_gap_seconds=_positive_number(table, "sentence_gap_seconds", "voice"),
         tail_seconds=_positive_number(table, "tail_seconds", "voice"),
     )
+
+
+def _parse_splash(table: Mapping[str, object]) -> Splash:
+    """The splash screen. It names no section of the docs, so its texts hold no technical name."""
+    screen = _parse_texts(_table(table, "screen", "splash"), "splash.screen")
+    for key, text in screen.items():
+        if markup.without_marks(text) != text:
+            raise TranscriptError(
+                f"splash.screen.{key}: it holds a technical name, and the splash screen names no section of the docs"
+            )
+    return Splash(seconds=_positive_number(table, "seconds", "splash"), screen=screen)
 
 
 def _parse_texts(table: object, where: str) -> Mapping[str, str]:
@@ -215,6 +261,11 @@ def _parse_code_block(table: Mapping[str, object], where: str) -> CodeBlock:
         code=_string(table, "code", where).strip("\n"),
         example_names=tuple(example_names),
     )
+
+
+def screen_leaves(screen: Mapping[str, ScreenText]) -> Iterator[tuple[str, str | CodeBlock]]:
+    """Each text and each code block of a screen table, with its dotted path."""
+    yield from _leaves("screen", screen)
 
 
 def _leaves(path: str, value: ScreenText) -> Iterator[tuple[str, str | CodeBlock]]:

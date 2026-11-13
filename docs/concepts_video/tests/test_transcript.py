@@ -2,8 +2,8 @@
 
 import pytest
 
-from tests.factories import segment_table, transcript_document, transcript_of
-from tools.transcript import CodeBlock, TranscriptError, parse_transcript
+from tests.factories import segment_table, splash_table, transcript_document, transcript_of
+from tools.transcript import CodeBlock, Splash, TranscriptError, parse_transcript
 
 
 def test_a_segment_holds_its_sources_its_sentences_and_its_screen_texts() -> None:
@@ -87,3 +87,66 @@ def test_a_segment_has_the_number_of_its_place_in_the_video() -> None:
     transcript = transcript_of([segment_table("opening"), segment_table("node")])
 
     assert [(segment.id, segment.number) for segment in transcript.segments] == [("opening", 1), ("node", 2)]
+
+
+def test_a_transcript_with_no_splash_table_has_no_splash_screen() -> None:
+    assert transcript_of().splash is None
+
+
+def test_the_splash_screen_holds_its_duration_and_its_texts() -> None:
+    transcript = transcript_of(splash=splash_table(3, name="Peppy", title="The concepts"))
+
+    assert transcript.splash == Splash(seconds=3.0, screen={"name": "Peppy", "title": "The concepts"})
+
+
+@pytest.mark.parametrize(
+    ("splash", "reason"),
+    [
+        ("Peppy", "`splash` is not a table"),
+        ({"seconds": 0, "screen": {"title": "A title"}}, "`seconds` is not a number above zero"),
+        ({"seconds": 4}, "`screen` is not a table"),
+        ({"seconds": 4, "screen": {"title": ["A title"]}}, "splash.screen.title: it is not a text"),
+        ({"seconds": 4, "screen": {"title": "Run `peppy`"}}, "splash.screen.title: it holds a technical name"),
+    ],
+)
+def test_a_splash_screen_in_another_form_is_refused(splash: object, reason: str) -> None:
+    with pytest.raises(TranscriptError, match=reason):
+        transcript_of(splash=splash)
+
+
+def test_a_segment_with_the_id_of_the_splash_screen_is_refused() -> None:
+    with pytest.raises(TranscriptError, match="a segment has the id `splash`"):
+        transcript_of([segment_table("splash")])
+
+
+def test_the_parts_of_a_video_are_its_splash_screen_and_its_segments() -> None:
+    with_splash = transcript_of([segment_table("opening"), segment_table("node")], splash=splash_table())
+    without_splash = transcript_of([segment_table("opening"), segment_table("node")])
+
+    assert with_splash.part_ids == ["splash", "opening", "node"]
+    assert without_splash.part_ids == ["opening", "node"]
+
+
+def test_the_video_of_a_segment_has_this_segment_only_and_no_splash_screen() -> None:
+    transcript = transcript_of([segment_table("opening"), segment_table("node")], splash=splash_table())
+
+    part = transcript.part("node")
+
+    assert part.splash is None
+    assert [segment.id for segment in part.segments] == ["node"]
+    assert part.segments[0].number == 2
+
+
+def test_the_video_of_the_splash_screen_has_the_first_segment_after_it() -> None:
+    transcript = transcript_of([segment_table("opening"), segment_table("node")], splash=splash_table())
+
+    part = transcript.part("splash")
+
+    assert part.splash == transcript.splash
+    assert [segment.id for segment in part.segments] == ["opening"]
+
+
+@pytest.mark.parametrize("part_id", ["absent", "splash"])
+def test_a_part_that_the_video_does_not_have_is_refused(part_id: str) -> None:
+    with pytest.raises(KeyError, match=part_id):
+        transcript_of([segment_table("opening")]).part(part_id)

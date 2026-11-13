@@ -14,7 +14,7 @@ requires-pixi = ">=0.72"
 # The tools that change the result have an exact version here, and pixi.lock
 # holds the build and the hash of each package. HyperFrames and GSAP are in
 # package.json and package-lock.json. The Chrome that renders and the model of
-# the voice are in pins.toml.
+# the voice are in pins.toml. numpy calculates the music.
 [dependencies]
 nodejs = "==24.22.3"
 ffmpeg = "==8.0.1"
@@ -25,6 +25,7 @@ pytest = "*"
 
 [pypi-dependencies]
 kokoro-onnx = "==0.6.1"
+numpy = "==2.5.4"
 soundfile = "==0.14.0"
 
 # The commands and the tests import the `tools` package of this directory.

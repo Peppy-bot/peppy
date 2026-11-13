@@ -8,7 +8,7 @@ from tools import checks, compiler, paths
 from tools.footage import read_footage_list
 from tools.pins import read_pins, voice_tools_identity
 from tools.project import recorded_timeline
-from tools.transcript import Transcript, read_transcript
+from tools.transcript import SPLASH_ID, Transcript, read_transcript
 from tools.voice_durations import out_of_date_problems, read_voice_durations
 
 # The video is 9 minutes long at most.
@@ -42,7 +42,7 @@ def test_the_video_is_not_longer_than_its_limit(transcript: Transcript) -> None:
     assert recorded_timeline(transcript, read_pins(paths.PINS)).duration <= MAX_VIDEO_SECONDS
 
 
-@pytest.mark.parametrize("template", compiler.segment_templates() + [paths.COMPOSITIONS / compiler.ROOT_TEMPLATE], ids=lambda path: path.name)
+@pytest.mark.parametrize("template", compiler.composition_templates(), ids=lambda path: path.name)
 def test_a_composition_shows_no_text_of_its_own(template: Path) -> None:
     literal_text = compiler.literal_text_of_template(template.read_text(encoding="utf-8"))
 
@@ -57,4 +57,4 @@ def test_the_compositions_compile_with_each_text_of_the_transcript_and_the_liste
     compiler.compile_project(transcript, timeline, read_footage_list(paths.FOOTAGE_LIST), tmp_path / "project")
 
     compiled = sorted(path.stem for path in (tmp_path / "project" / "compositions").iterdir())
-    assert compiled == sorted(segment.id for segment in transcript.segments)
+    assert compiled == sorted([SPLASH_ID] + [segment.id for segment in transcript.segments])
