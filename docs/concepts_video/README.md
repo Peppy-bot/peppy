@@ -27,7 +27,7 @@ It writes these files into `build/`:
 | `concepts_video.en.srt` | The captions. Upload them with the video |
 | `concepts_video.chapters.txt` | One chapter for each segment. Paste it into the description of the video on YouTube, which makes the chapters from it |
 
-Two builds of the same commit on the same machine give the same MP4 file, byte for byte.
+Two builds of the same commit on the same machine give the same MP4 file, byte for byte. The build renders with the software renderer of Chrome and with a fixed count of render workers, so the graphics card and the count of processors of a machine do not change the settings of the render.
 
 YouTube gives each upload a new link. After an upload, put the id of the new link in the `YouTubeEmbed` of `docs/src/content/docs/quickstart.mdx`.
 
@@ -82,7 +82,7 @@ When a sentence of the voice changes, run `pixi run build`: it makes the new voi
 - Each time comes from the voice: `at.<sentence id>.start` and `at.<sentence id>.end`, in seconds from the start of the segment. `duration` is the duration of the segment, and `start` is its start in the video.
 - `footage("<name>")` gives the path of a footage file of `footage.json`.
 
-The parts of `_parts.html.j2` give the chapter, the term card, the comparison card, the comparison of steps and the code window. `Motion` (`motion.js`) gives the animation functions. `RobotView` (`robot_view.js`) draws the 3D model of the OpenArm v2 in a canvas.
+The parts of `_parts.html.j2` give the chapter, the term card, the comparison card, the comparison of steps and the code window. `Motion` (`motion.js`) gives the animation functions. `RobotView` (`robot_view.js`) draws the 3D model of the OpenArm v2 in a canvas. All the views of the video share one WebGL context, and a view draws during its segment only.
 
 The rules of a composition:
 

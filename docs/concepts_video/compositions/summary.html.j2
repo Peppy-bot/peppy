@@ -143,6 +143,7 @@
       RobotView.mount({
         canvas: document.querySelector(ID + "-robot"),
         segmentStart: {{ start }},
+        segmentDuration: DURATION,
         turns: [[0, 38], [DURATION, -28]],
       });
       Motion.show(tl, ID + "-robot-panel", Math.max(0, at.concepts.start - 0.6), { from: { opacity: 0, scale: 0.97 } });

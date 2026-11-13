@@ -250,6 +250,7 @@
       RobotView.mount({
         canvas: document.querySelector(ID + "-robot"),
         segmentStart: {{ start }},
+        segmentDuration: DURATION,
         turns: [[at.later.start, -50], [DURATION, 25]],
       });
       const swaps = Motion.within(at.later, 0.4);

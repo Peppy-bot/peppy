@@ -162,7 +162,12 @@
       };
       Motion.endSegment(tl, ID + "-content", DURATION);
       Motion.show(tl, ID + "-robot-panel", 0.1, { from: { opacity: 0, y: 0 } });
-      RobotView.mount({ canvas: document.querySelector(ID + "-robot"), segmentStart: {{ start }}, turns: [[0, -35], [at.daemon.start, 0]] });
+      RobotView.mount({
+        canvas: document.querySelector(ID + "-robot"),
+        segmentStart: {{ start }},
+        segmentDuration: DURATION,
+        turns: [[0, -35], [at.daemon.start, 0]],
+      });
       // A node in operation is an instance, and one node can have many.
       Motion.show(tl, ID + "-holder", at.instance.start + 0.1);
       Motion.card(tl, ID + "-card-instance", at.instance.start + 0.3, at.daemon.start - 0.2);

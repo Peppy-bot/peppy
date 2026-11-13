@@ -18,10 +18,14 @@ from tools.timing import FRAMES_PER_SECOND, Timeline
 from tools.transcript import Transcript
 from tools.voice_durations import RecordedDuration, read_voice_durations, write_voice_durations
 
-# The render settings that change the frames. `delivery` is the quality of
+# The render settings that change the file. `delivery` is the quality of
 # HyperFrames for a final file. Chrome draws with its software renderer, so a
 # machine with a graphics card and a machine with none give the same frames.
-RENDER_OPTIONS = ["--quality", "delivery", "--no-browser-gpu", "--strict-all"]
+# The count of the workers is a part of the settings: each worker captures
+# one part of the frames, and the bytes of the video change with the count.
+# With no count, HyperFrames takes one from the processors of the machine and
+# from the speed that it measures.
+RENDER_OPTIONS = ["--quality", "delivery", "--no-browser-gpu", "--workers", "4", "--strict-all"]
 VOICE_TRACK = paths.COMPILED_PROJECT / "assets" / "voice.wav"
 
 

@@ -139,6 +139,7 @@
       const robot = RobotView.mount({
         canvas: document.querySelector(ID + "-robot"),
         segmentStart: {{ start }},
+        segmentDuration: DURATION,
         turns: [[0.2, -55], [at.many_programs.start, 0]],
       });
       robot.ready.then(function (view) {
