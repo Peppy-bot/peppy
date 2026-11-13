@@ -91,6 +91,7 @@ impl<T> Picked<T> {
 }
 
 /// What a pick knows besides its candidates.
+#[derive(Clone, Copy)]
 pub(crate) struct Question<'a> {
     /// The title of the menu: what the person selects, as a noun.
     pub title: &'a str,

@@ -320,7 +320,7 @@ impl RegistryClient {
         let what = format!("the blob {digest} of {}", self.repository);
         let mut hasher = Hasher::default();
         let mut received = 0u64;
-        while let Some(part) = answer.chunk().await.map_err(|e| self.unreachable(e))? {
+        while let Some(part) = answer.chunk().await.map_err(|e| self.unreachable(&e))? {
             received += part.len() as u64;
             if received > size {
                 return Err(RegistryError::SizeMismatch {
@@ -596,7 +596,7 @@ impl RegistryClient {
         let known = self.authorization.lock().await.clone();
         let answer = attempt(known.clone())
             .await
-            .map_err(|e| self.unreachable(e))?;
+            .map_err(|e| self.unreachable(&e))?;
         if answer.status() != StatusCode::UNAUTHORIZED {
             return Ok(answer);
         }
@@ -617,7 +617,7 @@ impl RegistryClient {
         *self.authorization.lock().await = Some(authorization.clone());
         let answer = attempt(Some(authorization))
             .await
-            .map_err(|e| self.unreachable(e))?;
+            .map_err(|e| self.unreachable(&e))?;
         if answer.status() != StatusCode::UNAUTHORIZED {
             return Ok(answer);
         }
@@ -690,7 +690,7 @@ impl RegistryClient {
                 builder.send().await
             }
         }
-        .map_err(|e| self.unreachable(e))?;
+        .map_err(|e| self.unreachable(&e))?;
         if token_answer.status() == StatusCode::UNAUTHORIZED
             || token_answer.status() == StatusCode::FORBIDDEN
         {
@@ -744,10 +744,10 @@ impl RegistryClient {
         }
     }
 
-    fn unreachable(&self, error: reqwest::Error) -> RegistryError {
+    fn unreachable(&self, error: &reqwest::Error) -> RegistryError {
         RegistryError::Unreachable {
             registry: self.repository.registry().to_owned(),
-            cause: error_with_causes(&error),
+            cause: error_with_causes(error),
         }
     }
 }
@@ -857,7 +857,7 @@ async fn read_limited(
     client: &RegistryClient,
 ) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    while let Some(part) = answer.chunk().await.map_err(|e| client.unreachable(e))? {
+    while let Some(part) = answer.chunk().await.map_err(|e| client.unreachable(&e))? {
         if bytes.len() as u64 + part.len() as u64 > limit {
             return Err(client.protocol(request, format!("more than {limit} bytes")));
         }

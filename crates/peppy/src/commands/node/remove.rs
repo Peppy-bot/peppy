@@ -85,7 +85,7 @@ async fn remove_node_async(
         remove_request_timeout(conn.shutdown_grace_secs),
     )
     .await
-    .map_err(|e| crate::commands::request_error("Failed to remove the node", e))?;
+    .map_err(|e| crate::commands::request_error("Failed to remove the node", &e))?;
 
     for instance_id in &remove_response.force_killed {
         warn_force_killed(instance_id);

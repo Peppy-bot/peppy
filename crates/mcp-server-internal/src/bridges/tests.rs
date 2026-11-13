@@ -142,8 +142,8 @@ fn unreachable_width_for_the_client() -> ProviderFailure {
     ProviderFailure::new(kind(UNREACHABLE), "no plan reaches 0.09 m")
 }
 
-fn encoded(codec: &MessageCodec, value: Value) -> Payload {
-    Payload::from(codec.encode(&value).expect("the value fits the format"))
+fn encoded(codec: &MessageCodec, value: &Value) -> Payload {
+    Payload::from(codec.encode(value).expect("the value fits the format"))
 }
 
 /// The task as `prepare` lays it out for an action with a result and,
@@ -244,7 +244,7 @@ fn percent_codec() -> MessageCodec {
 
 /// One feedback message of the goal: how far it got.
 fn percent(feedback: &MessageCodec, percent: u8) -> NonEmptyPayload {
-    NonEmptyPayload::try_new(encoded(feedback, json!({ "percent": percent })))
+    NonEmptyPayload::try_new(encoded(feedback, &json!({ "percent": percent })))
         .expect("an encoded message is never empty")
 }
 
@@ -272,7 +272,7 @@ fn completed_result() -> Value {
 }
 
 fn reached_width() -> Payload {
-    encoded(&result_codec(), completed_result())
+    encoded(&result_codec(), &completed_result())
 }
 
 /// The result the provider ends a cancelled goal with: where the gripper
@@ -290,7 +290,7 @@ async fn end_cancelled(context: &GoalContext) {
     context
         .complete_cancelled(
             PROVIDER_REASON,
-            encoded(&result_codec(), cancelled_result()),
+            encoded(&result_codec(), &cancelled_result()),
         )
         .await
         .expect("the provider settles the goal cancelled");
@@ -976,7 +976,7 @@ fn a_service_call_error_says_whether_the_provider_answered() {
     let failure = || unreachable_width();
     assert_eq!(
         service_call_error(
-            ConsumerError::Messaging(PeppyError::ServiceFailed {
+            &ConsumerError::Messaging(PeppyError::ServiceFailed {
                 instance_id: None,
                 service_name: SERVICE.to_owned(),
                 failure: failure(),
@@ -987,7 +987,7 @@ fn a_service_call_error_says_whether_the_provider_answered() {
     );
     assert_eq!(
         service_call_error(
-            ConsumerError::Messaging(PeppyError::ServiceTimeout {
+            &ConsumerError::Messaging(PeppyError::ServiceTimeout {
                 instance_id: None,
                 service_name: SERVICE.to_owned(),
             }),
@@ -1001,7 +1001,7 @@ fn a_service_call_error_says_whether_the_provider_answered() {
     };
     let words = unreachable.to_string();
     assert_eq!(
-        service_call_error(ConsumerError::Messaging(unreachable), DEADLINE),
+        service_call_error(&ConsumerError::Messaging(unreachable), DEADLINE),
         ToolCallError::Unavailable(words)
     );
 }

@@ -252,7 +252,7 @@ pub(crate) fn adopt_checkout(
     peppy_dirs: &PeppyDirs,
     repo_url: &str,
     commit: &GitCommit,
-    dir: PathBuf,
+    dir: &PathBuf,
 ) {
     let shown_url = SourceUrl::new(repo_url);
     let dst = checkout_dir_for(peppy_dirs, repo_url, commit);
@@ -263,15 +263,15 @@ pub(crate) fn adopt_checkout(
     // the same bytes and the donation is simply not needed.
     if is_checked_out_at(&dst, commit) {
         touch_last_used(&dst);
-        discard(&dir);
+        discard(dir);
         return;
     }
     if let Err(e) = clear_dir(&dst) {
         debug!("Keeping the clone of {shown_url} out of the checkout cache: {e}");
-        discard(&dir);
+        discard(dir);
         return;
     }
-    match std::fs::rename(&dir, &dst) {
+    match std::fs::rename(dir, &dst) {
         Ok(()) => {
             debug!(
                 "Adopted the clone of {shown_url} at {commit} as {}",
@@ -281,7 +281,7 @@ pub(crate) fn adopt_checkout(
         }
         Err(e) => {
             debug!("Keeping the clone of {shown_url} out of the checkout cache: {e}");
-            discard(&dir);
+            discard(dir);
         }
     }
 }
@@ -828,7 +828,7 @@ mod tests {
         let clone = donor.path().join("clone");
         crate::services::node::shallow_checkout_of_read_ref(&repo.url, None, &clone, &mut |_| {})
             .expect("clone the source");
-        adopt_checkout(&repo.peppy_dirs, &repo.url, commit, clone);
+        adopt_checkout(&repo.peppy_dirs, &repo.url, commit, &clone);
 
         std::fs::remove_dir_all(&repo.source_dir).expect("remove source repo");
         let (checkout, lines) = repo.checkout_recording_lines(None, commit);
@@ -865,7 +865,7 @@ mod tests {
         let clone = donor.path().join("clone");
         crate::services::node::shallow_checkout_of_read_ref(&repo.url, None, &clone, &mut |_| {})
             .expect("clone the source");
-        adopt_checkout(&repo.peppy_dirs, &repo.url, commit, clone.clone());
+        adopt_checkout(&repo.peppy_dirs, &repo.url, commit, &clone);
 
         assert!(
             existing.join("marker.txt").exists(),

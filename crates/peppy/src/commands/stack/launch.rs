@@ -436,7 +436,7 @@ mod tests {
     /// The wirings of a `--place` resolution, or a panic naming what came out
     /// instead. Every `--place` case must produce explicit places; `--local`
     /// has its own assertions.
-    fn resolved_places(args: PlacementArgs) -> BTreeMap<String, String> {
+    fn resolved_places(args: &PlacementArgs) -> BTreeMap<String, String> {
         match args.resolve().expect("valid wiring") {
             PlacementSpec::Places(places) => places
                 .into_iter()
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn place_wires_each_link_to_its_core_node() {
-        let resolved = resolved_places(places(&[
+        let resolved = resolved_places(&places(&[
             ("robot_onboard", "cn-robot-7"),
             ("cloud_inference", "cn-atlas-h100"),
         ]));
@@ -477,7 +477,7 @@ mod tests {
     /// describes a two-machine topology must still be runnable on one box.
     #[test]
     fn two_links_may_share_one_core_node() {
-        let resolved = resolved_places(places(&[
+        let resolved = resolved_places(&places(&[
             ("robot_onboard", "cn-solo"),
             ("cloud_inference", "cn-solo"),
         ]));
@@ -537,7 +537,7 @@ mod tests {
 
     #[test]
     fn no_placement_flags_wire_nothing() {
-        let resolved = resolved_places(PlacementArgs::default());
+        let resolved = resolved_places(&PlacementArgs::default());
         assert!(resolved.is_empty());
     }
 

@@ -142,7 +142,7 @@ impl ResolvedJoin {
         resolve::mint_doc_pins(ctx, &mut resolved, &placements)
             .await
             .map_err(rejected)?;
-        let planned = planned_from(&combined, active.resolved.iter().chain(&resolved));
+        let planned = planned_from(&combined, &active.resolved.iter().chain(&resolved));
 
         Ok(Self {
             combined,
@@ -163,7 +163,7 @@ impl ResolvedJoin {
 /// joins before it planned.
 pub(super) fn planned_from<'a>(
     launcher: &PeppyLauncher,
-    resolved: impl Iterator<Item = &'a PlannedDeployment> + Clone,
+    resolved: &(impl Iterator<Item = &'a PlannedDeployment> + Clone),
 ) -> Vec<PlannedDeployment> {
     launcher
         .deployments

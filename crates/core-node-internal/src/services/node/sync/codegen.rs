@@ -116,6 +116,7 @@ fn needs_sync(node_root_dir: &std::path::Path) -> bool {
 }
 
 /// Parameters for [`auto_sync_if_missing`].
+#[derive(Clone, Copy)]
 pub(crate) struct AutoSyncParams<'a> {
     pub node_dir: &'a std::path::Path,
     pub execution_language: config::node::PeppygenLanguage,

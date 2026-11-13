@@ -62,11 +62,11 @@ const PREVIEW_CORE_NODE: &str = "cn-preview";
 /// would misreport rules that need both endpoints.
 pub(super) fn resolve(
     launcher_config_path: PathBuf,
-    words: Vec<LaunchWord>,
-    joins: Vec<CopyReference>,
+    words: &[LaunchWord],
+    joins: &[CopyReference],
 ) -> Result<()> {
     let (document, report) =
-        resolve_rendered(&PeppyDirs::default(), launcher_config_path, &words, &joins)?;
+        resolve_rendered(&PeppyDirs::default(), launcher_config_path, words, joins)?;
     for line in report {
         eprintln!("{line}");
     }
@@ -125,6 +125,7 @@ pub fn resolve_rendered(
 
 /// Where the checks of daemon scopes read the targets of each deployment:
 /// the exposure documents, and the node manifests of the nodes cache.
+#[derive(Clone, Copy)]
 struct ScopeSources<'a> {
     dirs: &'a PeppyDirs,
     node_cache: &'a std::result::Result<Vec<NodeCacheEntry>, String>,

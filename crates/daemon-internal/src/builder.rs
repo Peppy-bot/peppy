@@ -526,6 +526,10 @@ mod tests {
     use super::*;
     use std::assert_matches;
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a test shorthand for a value that the code under test gives wrapped"
+    )]
     fn some(s: &str) -> Option<String> {
         Some(s.to_string())
     }

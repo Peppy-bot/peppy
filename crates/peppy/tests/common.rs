@@ -50,11 +50,15 @@ impl Drop for DaemonGuard {
 }
 
 /// The messaging engine a spawned daemon runs.
+#[derive(Clone, Copy)]
 pub(crate) enum MessagingEngine {
     Mock,
     /// A managed zenohd listening on this port. Only the Linux e2e in
     /// `daemon_lifecycle_e2e` boots one.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(dead_code, reason = "only the Linux end-to-end test starts a zenohd")
+    )]
     Zenoh {
         port: u16,
     },

@@ -183,7 +183,7 @@ mod tests {
     }
 
     fn render(kinds: &MemberFailureKinds, member: FailingMember) -> String {
-        render_tokens(build_failure_items(kinds, &quote!(SERVICE_NAME), member))
+        render_tokens(&build_failure_items(kinds, &quote!(SERVICE_NAME), member))
     }
 
     #[test]

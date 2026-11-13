@@ -1100,8 +1100,7 @@ mod tests {
         let refusal = || {
             let refusal = ownership
                 .try_begin_change()
-                .err()
-                .expect("admitted restarts hold the stack");
+                .expect_err("admitted restarts hold the stack");
             assert_eq!(refusal.kind().as_str(), "busy", "got: {refusal}");
             refusal.message().to_owned()
         };

@@ -498,9 +498,8 @@ impl RustGenerator {
     /// is then mapped onto a generated enum so user code never has to name a
     /// `peppylib` type (the user crate only depends on the generated `peppygen`).
     fn build_consumed_action_cancel_method(
-        &mut self,
         context: &mut GenerationContext,
-    ) -> Result<(TokenStream, Vec<TokenStream>)> {
+    ) -> (TokenStream, Vec<TokenStream>) {
         let response_ident = Ident::new("CancelResponse", Span::call_site());
         let state_ident = Ident::new("CancelState", Span::call_site());
         context.add_struct(
@@ -546,7 +545,7 @@ impl RustGenerator {
             }
         };
 
-        Ok((method_tokens, helper_items))
+        (method_tokens, helper_items)
     }
 
     /// Builds the `on_next_feedback_message` method for consumed actions.
@@ -831,7 +830,7 @@ impl RustGenerator {
         };
         let mut items = message.context.into_tokens();
         items.push(method_tokens);
-        let rendered = render_tokens(quote! {
+        let rendered = render_tokens(&quote! {
             #header_tokens
             #( #items )*
         });
@@ -896,7 +895,7 @@ impl LanguageGenerator for RustGenerator {
             #( #struct_tokens )*
             #method_tokens
         };
-        let rendered = render_tokens(tokens);
+        let rendered = render_tokens(&tokens);
 
         let mut module_label = topic.name.trim().to_string();
         if module_label.is_empty() {
@@ -1010,7 +1009,7 @@ impl LanguageGenerator for RustGenerator {
         let tokens: TokenStream = quote! {
             #( #service_tokens )*
         };
-        let rendered = render_tokens(tokens);
+        let rendered = render_tokens(&tokens);
         self.push_section(InterfaceArtifact::for_leaf(
             origin,
             &sanitize_node_display_name(&module_label),
@@ -1242,7 +1241,7 @@ impl LanguageGenerator for RustGenerator {
         let tokens: TokenStream = quote! {
             #( #items )*
         };
-        let rendered = render_tokens(tokens);
+        let rendered = render_tokens(&tokens);
         self.push_section(InterfaceArtifact::for_leaf(
             origin,
             &sanitize_node_display_name(&action.name),
@@ -1306,7 +1305,7 @@ impl LanguageGenerator for RustGenerator {
         let tokens: TokenStream = quote! {
             #( #items )*
         };
-        let rendered = render_tokens(tokens);
+        let rendered = render_tokens(&tokens);
 
         self.push_section(InterfaceArtifact {
             module_path: vec![topic.link_id.clone(), topic.name.clone()],
@@ -1557,7 +1556,7 @@ impl LanguageGenerator for RustGenerator {
         let tokens: TokenStream = quote! {
             #( #all_tokens )*
         };
-        let rendered = render_tokens(tokens);
+        let rendered = render_tokens(&tokens);
 
         self.push_section(InterfaceArtifact {
             module_path: vec![service.link_id.clone(), service.name.clone()],
@@ -1603,7 +1602,7 @@ impl LanguageGenerator for RustGenerator {
             #( #struct_tokens )*
             #method_tokens
         };
-        let rendered = render_tokens(tokens);
+        let rendered = render_tokens(&tokens);
         self.push_pair_topic_section(topic, peer, InterfaceKind::PeerEmittedTopic, rendered)
     }
 
@@ -1693,7 +1692,7 @@ impl LanguageGenerator for RustGenerator {
         helper_items.append(&mut goal_helpers);
 
         let (cancel_method, mut cancel_helpers) =
-            self.build_consumed_action_cancel_method(&mut context)?;
+            Self::build_consumed_action_cancel_method(&mut context);
         methods.push(cancel_method);
         helper_items.append(&mut cancel_helpers);
 
@@ -1764,7 +1763,7 @@ impl LanguageGenerator for RustGenerator {
         let tokens: TokenStream = quote! {
             #( #items )*
         };
-        let rendered = render_tokens(tokens);
+        let rendered = render_tokens(&tokens);
         self.push_section(InterfaceArtifact {
             module_path: vec![action.link_id.clone(), action.name.clone()],
             kind: InterfaceKind::ConsumedAction,

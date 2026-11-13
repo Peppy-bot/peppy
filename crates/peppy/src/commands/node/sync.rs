@@ -68,7 +68,7 @@ async fn sync_resolved_node(
         REQUEST_TIMEOUT,
     )
     .await
-    .map_err(|e| crate::commands::request_error("Failed to sync the node", e))?;
+    .map_err(|e| crate::commands::request_error("Failed to sync the node", &e))?;
 
     info!("Synced node interfaces at {}", node_root_dir.display());
 

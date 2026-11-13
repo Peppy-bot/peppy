@@ -361,7 +361,7 @@ pub struct ServeOptions {
 /// the in-process cap, or when the messaging port stays bound between
 /// generations, the loop cannot recover and exits for the external supervisor
 /// (systemd `Restart=on-failure` / launchd `KeepAlive`) to take over.
-pub fn serve(options: ServeOptions) -> Result<()> {
+pub fn serve(options: &ServeOptions) -> Result<()> {
     // One daemon per peppy data root: held for the WHOLE process lifetime,
     // above the restart loop, so an in-process restart never opens a window
     // for a second daemon. Every exit path releases it (kernel flock),
@@ -369,7 +369,7 @@ pub fn serve(options: ServeOptions) -> Result<()> {
     let _singleton_lock = crate::daemon_lock::acquire_daemon_singleton_lock(&options.peppy_dirs)?;
     let mut flap = FlapWindow::new();
     loop {
-        let (outcome, router_adopted) = run_one_generation(&options)?;
+        let (outcome, router_adopted) = run_one_generation(options)?;
         match outcome {
             ServeOutcome::Stop => return Ok(()),
             ServeOutcome::Restart => {

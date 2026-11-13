@@ -702,6 +702,10 @@ mod tests {
     type BuildResult = ChangeResult<NodeBuildResult>;
 
     /// A build that succeeded.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a test shorthand for a value that the code under test gives wrapped"
+    )]
     fn built() -> BuildResult {
         Ok(NodeBuildResult::new("/data/built_nodes/x.sif"))
     }

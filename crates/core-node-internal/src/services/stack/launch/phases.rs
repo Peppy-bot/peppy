@@ -316,6 +316,10 @@ mod tests {
 
     /// How a test reads the stop a phase gives: its cause, its kind and its
     /// message.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the phase runner gives the stop by value"
+    )]
     fn described(stop: WorkStop) -> String {
         let cause = match &stop {
             WorkStop::Failed(_) => "failed",

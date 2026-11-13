@@ -180,9 +180,9 @@ fn render_all_scenarios(node_dir: &Path) -> Vec<InterfaceArtifact> {
 
 /// The rendered surface as one reviewable document, with the sync-time node
 /// directory (a per-run temp path) normalized away.
-fn rendered_document(node_dir: &Path, artifacts: Vec<InterfaceArtifact>) -> String {
+fn rendered_document(node_dir: &Path, artifacts: &[InterfaceArtifact]) -> String {
     let mut document = String::new();
-    for artifact in &artifacts {
+    for artifact in artifacts {
         push_artifact_section(&mut document, artifact);
     }
     let canonical = std::fs::canonicalize(node_dir)
@@ -195,7 +195,7 @@ fn rendered_document(node_dir: &Path, artifacts: Vec<InterfaceArtifact>) -> Stri
 #[test]
 fn python_renderers_emit_the_golden_document() {
     let node_dir = TempDir::new().unwrap();
-    let rendered = rendered_document(node_dir.path(), render_all_scenarios(node_dir.path()));
+    let rendered = rendered_document(node_dir.path(), &render_all_scenarios(node_dir.path()));
     assert_matches_golden(&GOLDEN, &rendered);
 }
 

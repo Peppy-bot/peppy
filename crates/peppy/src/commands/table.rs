@@ -103,7 +103,7 @@ pub(super) fn wrap(s: &str, width: usize) -> String {
         lines: &mut Vec<String>,
         cur: &mut String,
         cur_w: &mut usize,
-        active: &Option<String>,
+        active: Option<&str>,
     ) {
         if let Some(code) = active {
             cur.push_str(RESET);
@@ -125,7 +125,7 @@ pub(super) fn wrap(s: &str, width: usize) -> String {
         let ww = col_width(word);
         if ww <= width {
             if cur_w > 0 && cur_w + 1 + ww > width {
-                break_line(&mut lines, &mut cur, &mut cur_w, &active);
+                break_line(&mut lines, &mut cur, &mut cur_w, active.as_deref());
             } else if cur_w > 0 {
                 cur.push(' ');
                 cur_w += 1;
@@ -143,7 +143,7 @@ pub(super) fn wrap(s: &str, width: usize) -> String {
         // A token wider than a whole line: place it character by character,
         // breaking at the column boundary.
         if cur_w > 0 {
-            break_line(&mut lines, &mut cur, &mut cur_w, &active);
+            break_line(&mut lines, &mut cur, &mut cur_w, active.as_deref());
         }
         let mut chars = word.chars();
         while let Some(c) = chars.next() {
@@ -155,7 +155,7 @@ pub(super) fn wrap(s: &str, width: usize) -> String {
             }
             let cw = UnicodeWidthChar::width(c).unwrap_or(0);
             if cur_w + cw > width {
-                break_line(&mut lines, &mut cur, &mut cur_w, &active);
+                break_line(&mut lines, &mut cur, &mut cur_w, active.as_deref());
             }
             cur.push(c);
             cur_w += cw;

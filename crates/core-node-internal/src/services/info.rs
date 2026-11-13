@@ -63,6 +63,10 @@ pub(super) async fn listen_for_info(
     Ok(handle)
 }
 
+#[expect(
+    clippy::unused_async,
+    reason = "the listener calls a handler that returns a future"
+)]
 async fn handle_info_request(
     context: ServiceRequestContext,
     core_node_name: &str,

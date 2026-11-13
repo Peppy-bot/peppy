@@ -154,6 +154,10 @@ fn field_descriptions<'a>(
 mod interface_kind_name {
     use super::{Deserialize, Deserializer, InterfaceKind, Serializer};
 
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde calls a `serialize_with` function with a reference"
+    )]
     pub(super) fn serialize<S: Serializer>(
         kind: &InterfaceKind,
         serializer: S,
@@ -173,6 +177,10 @@ mod interface_kind_name {
 mod message_side_name {
     use super::{Deserialize, Deserializer, MessageSide, Serializer};
 
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde calls a `serialize_with` function with a reference"
+    )]
     pub(super) fn serialize<S: Serializer>(
         side: &MessageSide,
         serializer: S,

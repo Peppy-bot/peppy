@@ -518,11 +518,11 @@ fn plan_ssh_credentials(
     user: String,
     target: &SshTarget,
     host_config: Option<SshHostConfig>,
-    process_agent: Option<PathBuf>,
+    process_agent: Option<&Path>,
     default_identity_files: Vec<PathBuf>,
 ) -> Result<SshCredentialPlan, String> {
-    let process_agent_offer = || match process_agent.clone() {
-        Some(socket) => OfferedAgent::Socket(socket),
+    let process_agent_offer = || match process_agent {
+        Some(socket) => OfferedAgent::Socket(socket.to_path_buf()),
         None => OfferedAgent::Unset,
     };
     let (agent, identity_files) = match host_config {
@@ -531,11 +531,11 @@ fn plan_ssh_credentials(
             let agent = match config.identity_agent {
                 IdentityAgent::FromEnvironment => process_agent_offer(),
                 IdentityAgent::Disabled => OfferedAgent::Disabled,
-                IdentityAgent::Socket(selected) if process_agent.as_ref() == Some(&selected) => {
+                IdentityAgent::Socket(selected) if process_agent == Some(selected.as_path()) => {
                     OfferedAgent::Socket(selected)
                 }
                 IdentityAgent::Socket(selected) => {
-                    return Err(agent_mismatch(target, &selected, process_agent.as_deref()));
+                    return Err(agent_mismatch(target, &selected, process_agent));
                 }
             };
             (agent, config.identity_files)
@@ -582,7 +582,7 @@ fn plan_for_url(url: &str, user: String) -> Result<SshCredentialPlan, String> {
         user,
         &target,
         host_config,
-        process_agent,
+        process_agent.as_deref(),
         default_identity_files(dirs::home_dir().as_deref()),
     )?;
     debug!(
@@ -706,7 +706,7 @@ mod tests {
     }
 
     fn plan_without_ssh(
-        process_agent: Option<PathBuf>,
+        process_agent: Option<&Path>,
         home: &Path,
     ) -> Result<SshCredentialPlan, String> {
         plan_ssh_credentials(
@@ -721,7 +721,7 @@ mod tests {
     fn plan_with_config(
         identity_agent: IdentityAgent,
         identity_files: Vec<PathBuf>,
-        process_agent: Option<PathBuf>,
+        process_agent: Option<&Path>,
     ) -> Result<SshCredentialPlan, String> {
         plan_ssh_credentials(
             "git".to_owned(),
@@ -739,7 +739,7 @@ mod tests {
     fn without_ssh_the_environment_agent_leads_and_the_default_identities_follow() {
         let (tmp, ssh_dir) = ssh_dir(&["id_rsa"]);
         let socket = tmp.path().join("agent.sock");
-        let plan = plan_without_ssh(Some(socket.clone()), tmp.path()).unwrap();
+        let plan = plan_without_ssh(Some(&socket), tmp.path()).unwrap();
 
         assert_eq!(plan.agent, OfferedAgent::Socket(socket));
         assert_eq!(plan.key_files, vec![ssh_dir.join("id_rsa")]);
@@ -778,7 +778,7 @@ mod tests {
         let plan = plan_with_config(
             IdentityAgent::Socket(socket.clone()),
             Vec::new(),
-            Some(socket.clone()),
+            Some(&socket),
         )
         .unwrap();
         assert_eq!(plan.agent, OfferedAgent::Socket(socket));
@@ -791,7 +791,7 @@ mod tests {
         let refusal = plan_with_config(
             IdentityAgent::Socket(selected.clone()),
             Vec::new(),
-            Some(PathBuf::from("/run/launchd.sock")),
+            Some(&PathBuf::from("/run/launchd.sock")),
         )
         .unwrap_err();
         assert_eq!(
@@ -817,7 +817,7 @@ mod tests {
         let plan = plan_with_config(
             IdentityAgent::Disabled,
             vec![ssh_dir.join("id_rsa")],
-            Some(tmp.path().join("agent.sock")),
+            Some(&tmp.path().join("agent.sock")),
         )
         .unwrap();
         assert_eq!(plan.agent, OfferedAgent::Disabled);
@@ -829,7 +829,7 @@ mod tests {
         let (tmp, ssh_dir) = ssh_dir(&["id_rsa"]);
         let socket = tmp.path().join("agent.sock");
         std::fs::write(&socket, b"").unwrap();
-        let plan = plan_without_ssh(Some(socket.clone()), tmp.path()).unwrap();
+        let plan = plan_without_ssh(Some(&socket), tmp.path()).unwrap();
 
         assert_eq!(
             plan.answer(2),
@@ -850,7 +850,7 @@ mod tests {
     fn a_missing_agent_socket_is_named_as_such() {
         let (tmp, _ssh_dir) = ssh_dir(&[]);
         let socket = tmp.path().join("gone.sock");
-        let plan = plan_without_ssh(Some(socket.clone()), tmp.path()).unwrap();
+        let plan = plan_without_ssh(Some(&socket), tmp.path()).unwrap();
         let CredentialAnswer::Refuse(refusal) = plan.answer(1) else {
             panic!("the second request has nothing left to offer");
         };

@@ -231,6 +231,7 @@ impl ComposedCopy {
 
 /// What one copy is asked to be: the option to copy, the name to run
 /// under, and the copy's own selection and overrides.
+#[derive(Clone, Copy)]
 pub(super) struct CopyRequest<'a> {
     pub axis: &'a str,
     pub loaded: &'a LoadedOption,
@@ -842,7 +843,7 @@ pub(super) fn attach(
                 if old != Some(new) {
                     return Err(refusal(format!(
                         "{field}: {}",
-                        transition(old.map(Name::to_string), new.to_string())
+                        transition(old.map(Name::to_string), new.as_ref())
                     )));
                 }
             }
@@ -854,7 +855,7 @@ pub(super) fn attach(
                         transition(
                             old.as_ref()
                                 .map(config::node::RestartDeclaration::launcher_spelling),
-                            new.launcher_spelling()
+                            &new.launcher_spelling()
                         )
                     )));
                 }

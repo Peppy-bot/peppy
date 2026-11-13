@@ -67,6 +67,10 @@ async fn handle_node_info_request(
     })
 }
 
+#[expect(
+    clippy::unused_async,
+    reason = "the caller awaits the lookup under a time limit"
+)]
 async fn handle_node_info_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
@@ -162,6 +166,10 @@ async fn handle_node_info_request_inner(
     .map_err(encode_failure)
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` gives the error by value"
+)]
 fn encode_failure(error: core_node_api::Error) -> peppylib::messaging::Failure {
     failure(
         PeppyFailureKind::AttemptFailed,

@@ -340,7 +340,7 @@ impl Command for StackCommand {
                 with,
                 arguments,
                 timeouts,
-            } => join::join(ctx, copy, with.words, arguments, timeouts),
+            } => join::join(ctx, copy, with.words, arguments, &timeouts),
             StackCommands::Remove { name } => remove::remove(ctx, name),
             StackCommands::List { json } => list::list_nodes(ctx, json),
             StackCommands::Reset { federated } => reset::reset_stack(ctx, federated),
@@ -348,7 +348,7 @@ impl Command for StackCommand {
                 launcher_config_path,
                 with,
                 joins,
-            } => resolve::resolve(launcher_config_path, with.words, joins.joins),
+            } => resolve::resolve(launcher_config_path, &with.words, &joins.joins),
             StackCommands::Launch(args) => {
                 info!("Launching stack...");
                 launch::launch::<LaunchGoal>(ctx, args, None)

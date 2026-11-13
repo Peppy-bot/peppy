@@ -66,7 +66,7 @@ pub(super) fn render(generator: &mut RustGenerator, registry: &TestGenRegistry) 
         generator.push_section(artifact);
     }
 
-    let harness = render_harness(registry, &node_name, &node_tag, &emitted_members)?;
+    let harness = render_harness(registry, &node_name, &node_tag, &emitted_members);
     generator.push_section(InterfaceArtifact {
         module_path: vec!["harness".to_string()],
         kind: InterfaceKind::Fixture,
@@ -211,7 +211,7 @@ fn render_emitted_topic(
         InterfaceArtifact {
             module_path,
             kind: InterfaceKind::Fixture,
-            code_output: render_tokens(module),
+            code_output: render_tokens(&module),
         },
         EmittedMember {
             field,
@@ -359,7 +359,7 @@ fn render_exposed_service(
     Ok(InterfaceArtifact {
         module_path,
         kind: InterfaceKind::Fixture,
-        code_output: render_tokens(module),
+        code_output: render_tokens(&module),
     })
 }
 
@@ -674,7 +674,7 @@ fn render_exposed_action(
     Ok(InterfaceArtifact {
         module_path,
         kind: InterfaceKind::Fixture,
-        code_output: render_tokens(module),
+        code_output: render_tokens(&module),
     })
 }
 
@@ -708,7 +708,7 @@ fn render_harness(
     node_name: &str,
     node_tag: &str,
     emitted_members: &[EmittedMember],
-) -> Result<String> {
+) -> String {
     let mut parts = HarnessParts::default();
     let mut dep_mocks = MockGroup::default();
     let mut pairing_mocks = MockGroup::default();
@@ -1067,7 +1067,7 @@ fn render_harness(
             }
         }
     };
-    Ok(render_tokens(tokens))
+    render_tokens(&tokens)
 }
 
 /// The harness parts of one dependency slot: its mock (one, an optional
@@ -1136,7 +1136,7 @@ fn render_dep_harness_parts(
                 "Leave the `{link_id}` dependency slot vacant (its cardinality admits \
                  an empty binding)."
             );
-            let vacant_field = declare_vacant_knob(parts, link_id, vacant_doc);
+            let vacant_field = declare_vacant_knob(parts, link_id, &vacant_doc);
             mocks.fields.push(quote!(pub #field: Option<#module::Mock>));
             parts.mock_starts.push(quote! {
                 let #field = if config.#vacant_field {
@@ -1289,7 +1289,7 @@ fn render_pairing_harness_parts(
                      `None`, its publishes on this slot are no-ops, and the \
                      still-started mock's subscriptions stay silent."
                 );
-                let vacant_field = declare_vacant_knob(parts, link_id, vacant_doc);
+                let vacant_field = declare_vacant_knob(parts, link_id, &vacant_doc);
                 parts.seeding.push(quote! {
                     if !config.#vacant_field {
                         #seed_pin
@@ -1415,7 +1415,7 @@ fn render_observed_harness_parts(
                 "Leave the `{link_id}` observer slot empty (its cardinality \
                  admits an empty set)."
             );
-            let vacant_field = declare_vacant_knob(parts, link_id, vacant_doc);
+            let vacant_field = declare_vacant_knob(parts, link_id, &vacant_doc);
             mocks.fields.push(quote!(pub #field: Option<#module::Mock>));
             parts.mock_starts.push(quote! {
                 let #field = if config.#vacant_field {
@@ -1493,7 +1493,7 @@ fn render_observed_harness_parts(
 
 /// Declares the `<link_id>_vacant` knob of a slot whose cardinality admits an
 /// empty set: a `Config` field documented by `doc`, false by default.
-fn declare_vacant_knob(parts: &mut HarnessParts, link_id: &str, doc: String) -> Ident {
+fn declare_vacant_knob(parts: &mut HarnessParts, link_id: &str, doc: &str) -> Ident {
     let vacant_field = suffixed_rust_identifier(link_id, "vacant");
     parts.config_fields.push(quote! {
         #[doc = #doc]

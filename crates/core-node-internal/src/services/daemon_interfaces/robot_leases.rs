@@ -55,6 +55,10 @@ fn authorize(
 }
 
 /// Answers one request of a service of `robot_leases:v1`.
+#[expect(
+    clippy::unused_async,
+    reason = "the daemon interfaces answer through one async signature"
+)]
 pub(super) async fn answer(
     ctx: &InterfaceContext,
     member: &str,

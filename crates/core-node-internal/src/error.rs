@@ -146,6 +146,10 @@ impl Error {
 /// that is gone is `resource_unavailable`, and a peer that answers too late
 /// is `timeout`. A peer that gave a kind the daemon does not give makes the
 /// request `attempt_failed`, with a message that names that kind.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a caller gives a message or an error, by value or by reference"
+)]
 pub(crate) fn peer_failure(error: &PeppyError, message: impl ToString) -> Failure {
     let message = message.to_string();
     if let Some(peer) = error.failure() {

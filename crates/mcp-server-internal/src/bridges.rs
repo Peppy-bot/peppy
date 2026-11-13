@@ -545,7 +545,7 @@ pub(crate) async fn call_service(
     tool.client
         .call(messenger, identity, binding, producer, input, tool.deadline)
         .await
-        .map_err(|error| service_call_error(error, tool.deadline))
+        .map_err(|error| service_call_error(&error, tool.deadline))
 }
 
 /// The tool error of a service call that failed with `error`, under the
@@ -554,7 +554,7 @@ pub(crate) async fn call_service(
 /// not answer in time overran the deadline, and every other error, an
 /// error reply with a kind that the member does not declare included, is
 /// a readable text.
-fn service_call_error(error: ConsumerError, deadline: Duration) -> ToolCallError {
+fn service_call_error(error: &ConsumerError, deadline: Duration) -> ToolCallError {
     let ConsumerError::Messaging(messaging) = &error else {
         return ToolCallError::Error(error.to_string());
     };
@@ -866,6 +866,10 @@ impl Drop for FollowedGoal<'_> {
 /// The end of a goal the bridge could not follow to its end. A refusal or
 /// a failure with a kind that the member does not declare is one: the
 /// error names the kind and gives the message of the provider.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` gives the error by value"
+)]
 fn failed(error: ConsumerError) -> ActionExit {
     ActionExit::Error(error.to_string())
 }

@@ -41,7 +41,7 @@ async fn exclude_repo_async(
         REQUEST_TIMEOUT,
     )
     .await
-    .map_err(|e| crate::commands::request_error("Failed to exclude repository", e))?;
+    .map_err(|e| crate::commands::request_error("Failed to exclude repository", &e))?;
 
     info!("Repository '{label}' excluded successfully");
     // The exclusion landed, but the re-index that makes it take effect may

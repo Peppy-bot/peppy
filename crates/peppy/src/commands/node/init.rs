@@ -92,7 +92,7 @@ impl NodeInitBuilder {
             self.timeout,
         )
         .await
-        .map_err(|e| crate::commands::request_error("Failed to initialize the node", e))?;
+        .map_err(|e| crate::commands::request_error("Failed to initialize the node", &e))?;
 
         info!(
             "Successfully created node '{}' at {}/{}",

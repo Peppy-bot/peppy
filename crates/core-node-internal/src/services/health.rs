@@ -42,6 +42,10 @@ pub(super) async fn listen_for_health(
     Ok(handle)
 }
 
+#[expect(
+    clippy::unused_async,
+    reason = "the listener calls a handler that returns a future"
+)]
 async fn handle_health_request(
     context: ServiceRequestContext,
     start_time: Instant,

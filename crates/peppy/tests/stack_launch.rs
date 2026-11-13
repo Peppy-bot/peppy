@@ -4256,6 +4256,7 @@ const CACHED_INSTANCE_ID: &str = "cached_launch_inst";
 
 /// Whether a [`CountedLaunch`] launch or build may reuse the artifact a
 /// previous build of identical sources stored.
+#[derive(Clone, Copy)]
 enum BuildCache {
     /// Reuses a cached artifact when one fits.
     Reuse,

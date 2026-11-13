@@ -79,7 +79,7 @@ impl Command for UnenrollCommand {
             println!("{}", external_router_note(&session.dirs));
             return Ok(());
         }
-        poke_federation_and_report(&session.dirs, FederationPokeAction::Unenroll)
+        poke_federation_and_report(&session.dirs, &FederationPokeAction::Unenroll)
     }
 }
 

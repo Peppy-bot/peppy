@@ -54,6 +54,10 @@ pub(super) enum WordOrigin {
 }
 
 impl WordOrigin {
+    #[expect(
+        clippy::unnecessary_box_returns,
+        reason = "each caller keeps the word boxed in an error"
+    )]
     fn written(self, copy: &CopyName, word: &SelectionWord) -> Box<WrittenWord> {
         Box::new(WrittenWord::Copy {
             launch_copy: (self == Self::Launch).then(|| copy.clone()),

@@ -54,6 +54,10 @@ pub(crate) async fn listen_for_repo_add(
 /// repository or an id already in the list, or an oci repository in a peppy
 /// that has no release tag, and `attempt_failed` for a list the daemon
 /// cannot read or write.
+#[expect(
+    clippy::unused_async,
+    reason = "the listener calls a handler that returns a future"
+)]
 async fn handle_repo_add_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,

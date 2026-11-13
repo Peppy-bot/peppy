@@ -32,7 +32,7 @@ pub struct ServeCommand {
 
 impl Command for ServeCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
-        daemon::serve(daemon::ServeOptions {
+        daemon::serve(&daemon::ServeOptions {
             root_dir: ctx.root_dir.clone(),
             messaging_engine: self.messaging_engine,
             core_node_name: self.core_node_name,

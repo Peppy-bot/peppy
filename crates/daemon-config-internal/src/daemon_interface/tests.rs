@@ -263,8 +263,8 @@ fn the_daemon_targets_of_an_exposure_resolve_through_the_registry() {
     );
 }
 
-fn scope(value: serde_json::Value) -> Result<RobotMembershipScope, String> {
-    match DaemonInterface::RobotMembership.parse_scope(&value)? {
+fn scope(value: &serde_json::Value) -> Result<RobotMembershipScope, String> {
+    match DaemonInterface::RobotMembership.parse_scope(value)? {
         DaemonScope::RobotMembership(scope) => Ok(scope),
         DaemonScope::RobotLeases(_) => {
             panic!("the robot_membership interface parses a robot_membership scope")
@@ -305,7 +305,7 @@ fn featureless_scope() -> serde_json::Value {
 
 #[test]
 fn a_robot_membership_scope_parses_into_its_type() {
-    let parsed = scope(simulation_scope()).expect("parses");
+    let parsed = scope(&simulation_scope()).expect("parses");
     let options: Vec<(&str, &str, &str, Vec<&str>)> = parsed
         .options()
         .iter()
@@ -362,7 +362,7 @@ fn a_robot_membership_scope_parses_into_its_type() {
 /// with the machine of its part.
 #[test]
 fn a_feature_gives_its_word_and_is_found_in_a_robots_selections() {
-    let parsed = scope(json!({
+    let parsed = scope(&json!({
         "max_copies": 4,
         "options": [{
             "option": "openarm_sim",
@@ -420,7 +420,7 @@ fn a_feature_gives_its_word_and_is_found_in_a_robots_selections() {
 #[test]
 fn a_robot_membership_scope_holds_its_rules() {
     let option = |option: &str, description: &str| json!({ "option": option, "model": "m", "description": description });
-    let refused = |value: serde_json::Value| scope(value).expect_err("the scope is refused");
+    let refused = |value: serde_json::Value| scope(&value).expect_err("the scope is refused");
 
     let error = refused(json!({ "options": [], "max_copies": 1 }));
     assert!(error.contains("`options` names no option"), "{error}");
@@ -451,7 +451,7 @@ fn a_robot_membership_scope_holds_its_rules() {
         "the description of option `a` is at most 200 characters, and this one has 201"
     );
     let longest = "é".repeat(MAX_DESCRIPTION_CHARS);
-    scope(json!({ "options": [option("a", &longest)], "max_copies": 1 }))
+    scope(&json!({ "options": [option("a", &longest)], "max_copies": 1 }))
         .expect("200 characters fit, counted as characters and not bytes");
 
     for max_copies in [json!(0), json!(65536), json!(-1), json!(1.5)] {
@@ -462,7 +462,7 @@ fn a_robot_membership_scope_holds_its_rules() {
         );
     }
     assert_eq!(
-        scope(json!({ "options": [option("a", "One.")], "max_copies": 65535 }))
+        scope(&json!({ "options": [option("a", "One.")], "max_copies": 65535 }))
             .expect("the largest u16")
             .max_copies()
             .get(),
@@ -502,10 +502,10 @@ fn the_features_of_an_option_hold_their_rules() {
             "max_copies": 1,
         })
     };
-    let refused = |value: serde_json::Value| scope(value).expect_err("the scope is refused");
+    let refused = |value: serde_json::Value| scope(&value).expect_err("the scope is refused");
 
     let none =
-        scope(json!({ "options": [{ "option": "a", "model": "m", "description": "One." }], "max_copies": 1 }))
+        scope(&json!({ "options": [{ "option": "a", "model": "m", "description": "One." }], "max_copies": 1 }))
             .expect("an option with no features key offers none");
     assert!(none.options()[0].features().is_empty());
 
@@ -537,7 +537,7 @@ fn the_features_of_an_option_hold_their_rules() {
     let six: Vec<serde_json::Value> = Vec::from_fn(MAX_FEATURES, |index| {
         feature(&format!("f{index}"), &format!("x{index}"))
     });
-    scope(with_features(json!(six))).expect("six features fit");
+    scope(&with_features(json!(six))).expect("six features fit");
     let seven: Vec<serde_json::Value> = Vec::from_fn(MAX_FEATURES + 1, |index| {
         feature(&format!("f{index}"), &format!("x{index}"))
     });
@@ -649,10 +649,10 @@ fn the_launch_copies_of_list_take_the_form_of_its_copies_without_running() {
 }
 
 /// The framework bundle with `value`'s scope narrowing its target.
-fn narrowed_bundle(value: serde_json::Value) -> ExposureBundle {
+fn narrowed_bundle(value: &serde_json::Value) -> ExposureBundle {
     let mut bundle = framework_controls_bundle();
     DaemonInterface::RobotMembership
-        .parse_scope(&value)
+        .parse_scope(value)
         .expect("parses")
         .narrow(&mut bundle, "stack");
     bundle
@@ -730,7 +730,7 @@ fn a_scope_narrows_the_published_schemas_of_its_target() {
     required.sort_unstable();
     assert_eq!(required, ["core_node", "features", "name", "option"]);
 
-    let narrowed = narrowed_bundle(simulation_scope());
+    let narrowed = narrowed_bundle(&simulation_scope());
     let name_rule = config::runtime::CoreNodeName::json_schema();
     assert_eq!(
         task_schema(&narrowed, "stack.join")["properties"],
@@ -769,7 +769,7 @@ fn a_scope_narrows_the_published_schemas_of_its_target() {
     );
 
     // A scope with no feature takes an empty `features` only.
-    let featureless = narrowed_bundle(featureless_scope());
+    let featureless = narrowed_bundle(&featureless_scope());
     assert_eq!(
         task_schema(&featureless, "stack.join")["properties"]["features"],
         with_description(
@@ -792,7 +792,7 @@ fn a_scope_narrows_the_published_schemas_of_its_target() {
 /// refuses a call whose arguments do not validate.
 #[test]
 fn the_runtime_validator_refuses_input_outside_the_narrowed_schema() {
-    let bundle = narrowed_bundle(simulation_scope());
+    let bundle = narrowed_bundle(&simulation_scope());
     let join = jsonschema::validator_for(task_schema(&bundle, "stack.join"))
         .expect("the narrowed join schema compiles");
     let remove = jsonschema::validator_for(task_schema(&bundle, "stack.remove"))
@@ -896,7 +896,7 @@ fn the_runtime_validator_refuses_input_outside_the_narrowed_schema() {
     });
     assert!(join.is_valid(&listed), "a listed copy is a valid join goal");
 
-    let featureless = narrowed_bundle(featureless_scope());
+    let featureless = narrowed_bundle(&featureless_scope());
     let featureless_join = jsonschema::validator_for(task_schema(&featureless, "stack.join"))
         .expect("the narrowed join schema compiles");
     assert!(featureless_join.is_valid(&goal(json!("bravo"), json!("cn-desk"), json!([]))));

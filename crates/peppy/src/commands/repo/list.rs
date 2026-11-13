@@ -26,7 +26,7 @@ async fn list_repos_async(ctx: &Arc<AppContext>) -> Result<()> {
         REQUEST_TIMEOUT,
     )
     .await
-    .map_err(|e| crate::commands::request_error("Failed to list repositories", e))?;
+    .map_err(|e| crate::commands::request_error("Failed to list repositories", &e))?;
 
     if response.repos.is_empty() {
         println!("No repositories configured. Run `peppy repo init` to add the defaults.");

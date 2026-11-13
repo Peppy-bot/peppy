@@ -201,6 +201,10 @@ pub struct ArgumentConflict {
     pub second_argument: Option<String>,
 }
 
+#[expect(
+    clippy::ref_option,
+    reason = "thiserror gives a field of the error by reference"
+)]
 fn argument_phrase(argument: &Option<String>) -> String {
     match argument {
         Some(argument) => format!("argument `{argument}`"),

@@ -108,7 +108,7 @@ impl TopicEcho {
             )));
         };
         let codec = MessageCodec::of_topic(&selected.codec_label(), topic)
-            .map_err(|error| selected.codec_error(error))?;
+            .map_err(|error| selected.codec_error(&error))?;
         Ok(Self {
             name,
             topic: topic.clone(),
@@ -309,8 +309,8 @@ mod tests {
             &messenger,
             &publisher,
             vec![
-                payload(format, json!({"joints": [0.1]})),
-                payload(format, json!({"joints": [0.2]})),
+                payload(format, &json!({"joints": [0.1]})),
+                payload(format, &json!({"joints": [0.2]})),
             ],
         )
         .await;
@@ -342,7 +342,7 @@ mod tests {
             &publisher,
             vec![payload(
                 r#"{ count: "u64" }"#,
-                json!({"count": "18446744073709551615"}),
+                &json!({"count": "18446744073709551615"}),
             )],
         )
         .await;
@@ -379,7 +379,7 @@ mod tests {
             &publisher,
             vec![payload(
                 r#"{ positions: { $type: "array", $items: "f64" } }"#,
-                json!({"positions": [1.0, 2.0]}),
+                &json!({"positions": [1.0, 2.0]}),
             )],
         )
         .await;

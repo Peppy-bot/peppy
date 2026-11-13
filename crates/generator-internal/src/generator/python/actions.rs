@@ -483,6 +483,7 @@ fn method_params(leading: &[&str], fields: &[PythonField]) -> String {
 // Subscribed actions
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy)]
 pub(super) struct ConsumedActionSchemaInfo<'a> {
     pub goal_request: Option<&'a PythonSchemaInfo>,
     pub goal_response: Option<&'a PythonSchemaInfo>,

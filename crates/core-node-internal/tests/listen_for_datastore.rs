@@ -181,7 +181,7 @@ async fn store_driver_key_exclusively(
         .unwrap_or_else(|e| panic!("the exclusive store of `{writer}` is answered: {e}"))
 }
 
-fn assert_refused_naming(err: peppylib::PeppyError, started: &StartedCoreNode, owner: &str) {
+fn assert_refused_naming(err: &peppylib::PeppyError, started: &StartedCoreNode, owner: &str) {
     let message = err.to_string();
     assert!(
         message.contains(&format!("is owned by instance '{owner}'")),
@@ -263,7 +263,7 @@ async fn one_running_instance_owns_a_key_and_another_cannot_write_it() {
     let store =
         DatastoreStoreRequest::new(DRIVER_KEY, b"other".to_vec(), "text/plain").expect("valid key");
     assert_refused_naming(
-        poll_core_node_as(&started, other, &store, WAIT)
+        &poll_core_node_as(&started, other, &store, WAIT)
             .await
             .expect_err("another instance owns the key"),
         &started,
@@ -271,7 +271,7 @@ async fn one_running_instance_owns_a_key_and_another_cannot_write_it() {
     );
     let remove = DatastoreRemoveRequest::new(DRIVER_KEY).expect("valid key");
     assert_refused_naming(
-        poll_core_node_as(&started, other, &remove, WAIT)
+        &poll_core_node_as(&started, other, &remove, WAIT)
             .await
             .expect_err("another instance owns the key"),
         &started,

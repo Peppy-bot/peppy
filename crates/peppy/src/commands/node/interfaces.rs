@@ -245,7 +245,7 @@ impl SelectedMember<'_> {
 
     /// The error of a codec of the member that does not lay out from the
     /// format of the pinned manifest.
-    pub(super) fn codec_error(&self, error: CodecError) -> Error {
+    pub(super) fn codec_error(&self, error: &CodecError) -> Error {
         Error::ExecutionFailed(format!("`{}`: {error}", self.full_name))
     }
 }

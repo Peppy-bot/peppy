@@ -622,11 +622,11 @@ impl CapturedChild {
 
         let stdout_drainer = child.stdout.take().map(|pipe| {
             let buf = Arc::clone(&stdout);
-            thread::spawn(move || drain_pipe(pipe, buf))
+            thread::spawn(move || drain_pipe(pipe, &buf))
         });
         let stderr_drainer = child.stderr.take().map(|pipe| {
             let buf = Arc::clone(&stderr);
-            thread::spawn(move || drain_pipe(pipe, buf))
+            thread::spawn(move || drain_pipe(pipe, &buf))
         });
 
         Self {
@@ -754,7 +754,7 @@ impl CapturedChild {
     }
 }
 
-fn drain_pipe<R: Read + Send + 'static>(mut pipe: R, buf: Arc<Mutex<Vec<u8>>>) {
+fn drain_pipe<R: Read + Send + 'static>(mut pipe: R, buf: &Arc<Mutex<Vec<u8>>>) {
     let mut chunk = [0u8; 4096];
     while let Ok(n) = pipe.read(&mut chunk) {
         if n == 0 {

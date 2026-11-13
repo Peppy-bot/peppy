@@ -741,7 +741,7 @@ impl std::error::Error for EmptyVacantReason {}
 /// Why a [`Selection`] does not satisfy its slot's declared `cardinality`,
 /// shape-only and vocabulary-free: the caller turns it into the error variant
 /// its own slot kind speaks (producer binding or observation).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CardinalityShapeViolation {
     /// A launch-file array value on a scalar slot, of any length.
     ArrayOnScalarSlot {

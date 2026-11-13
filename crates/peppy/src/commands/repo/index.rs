@@ -96,6 +96,10 @@ pub fn check_index(root: &Path, scope: CheckScope, peppy_dirs: &PeppyDirs) -> Re
     Err(Error::ExecutionFailed(report))
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` gives the error by value"
+)]
 fn index_failure(e: core_node::IndexError) -> Error {
     Error::ExecutionFailed(e.to_string())
 }

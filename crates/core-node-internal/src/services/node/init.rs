@@ -45,6 +45,10 @@ pub(crate) async fn listen_for_node_init(
     Ok(handle)
 }
 
+#[expect(
+    clippy::unused_async,
+    reason = "the listener calls a handler that returns a future"
+)]
 async fn handle_node_init_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,

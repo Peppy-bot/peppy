@@ -98,7 +98,7 @@ async fn remove_inner(
         changed_slots(&copy.record, &active.planned, Change::Removal).map_err(rejected)?;
     check_not_emptied(&copy.record, &shrunk_slots, &remaining).map_err(precondition_failed)?;
     let removed: HashSet<_> = copy.record.instance_ids().map(Name::as_str).collect();
-    let remaining_planned = planned_from(&remaining, active.resolved.iter());
+    let remaining_planned = planned_from(&remaining, &active.resolved.iter());
     let copies = CopyMembership::of(&staying);
     // The copy supplies a clock when one of its instances publishes a domain
     // this stack reads.

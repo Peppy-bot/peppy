@@ -41,6 +41,7 @@ use crate::common::{
     write_executable_script,
 };
 
+#[derive(Clone, Copy)]
 struct NodeConfigOptions<'a> {
     build_cmd: &'a [&'a str],
     run_cmd: &'a [&'a str],

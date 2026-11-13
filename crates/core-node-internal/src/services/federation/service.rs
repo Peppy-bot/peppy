@@ -589,6 +589,10 @@ async fn pair_commit_inner(
 
 /// Releases the reservation of the launch the request names, or refuses
 /// with `precondition_failed` when this daemon is reserved for another one.
+#[expect(
+    clippy::unused_async,
+    reason = "`federation_endpoint!` awaits the handler of each endpoint"
+)]
 async fn release_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,

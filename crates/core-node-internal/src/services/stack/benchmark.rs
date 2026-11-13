@@ -980,7 +980,7 @@ struct ProducerClock {
 }
 
 fn classify_clock(
-    offset: Option<ProducerClock>,
+    offset: Option<&ProducerClock>,
     had_implausible: bool,
 ) -> (ClockConfidence, Option<String>) {
     if had_implausible {
@@ -1122,7 +1122,7 @@ async fn measure_topic_delivery(
         }
     }
 
-    let (confidence, mut note) = classify_clock(offset, had_implausible);
+    let (confidence, mut note) = classify_clock(offset.as_ref(), had_implausible);
     if out.is_empty() && !had_implausible {
         note = Some("no live traffic observed within the timeout".to_string());
     }
@@ -1280,7 +1280,7 @@ mod tests {
         // The zero a sim-bound instance answers with falls inside every
         // same-host bound, so without the domain this edge claims the two
         // endpoints share a machine, which is a claim about topology.
-        let (confidence, note) = classify_clock(Some(domain_clock("robot@cn-sim")), false);
+        let (confidence, note) = classify_clock(Some(&domain_clock("robot@cn-sim")), false);
         assert_eq!(confidence, ClockConfidence::SharedClock);
         let note = note.expect("the row says why no offset applies");
         assert!(
@@ -1292,7 +1292,7 @@ mod tests {
     #[test]
     fn an_implausible_delta_is_flagged_even_on_a_simulated_domain() {
         assert_eq!(
-            classify_clock(Some(domain_clock("robot@cn-sim")), true).0,
+            classify_clock(Some(&domain_clock("robot@cn-sim")), true).0,
             ClockConfidence::CrossHostFlagged
         );
     }
@@ -1302,7 +1302,7 @@ mod tests {
         // The regression: a busy same-host producer's single-sample offset
         // (200µs) sits well inside half the round trip (1ms RTT → 500µs bound),
         // so it must read same-host, not cross-host `corrected`.
-        let (confidence, note) = classify_clock(Some(wall_clock(200_000, 1_000_000)), false);
+        let (confidence, note) = classify_clock(Some(&wall_clock(200_000, 1_000_000)), false);
         assert_eq!(confidence, ClockConfidence::SameHost);
         assert!(note.is_none());
     }
@@ -1311,7 +1311,7 @@ mod tests {
     fn classify_clock_flags_offset_beyond_half_rtt_as_cross_host() {
         // A 2ms offset on a 1ms round trip cannot come from asymmetry alone;
         // it's a genuine clock difference, so correct it.
-        let (confidence, _) = classify_clock(Some(wall_clock(2_000_000, 1_000_000)), false);
+        let (confidence, _) = classify_clock(Some(&wall_clock(2_000_000, 1_000_000)), false);
         assert_eq!(confidence, ClockConfidence::CrossHostCorrected);
     }
 
@@ -1319,14 +1319,14 @@ mod tests {
     fn classify_clock_absolute_floor_covers_near_instant_round_trip() {
         // Tiny RTT (20µs → 10µs half) but a 50µs offset: the absolute floor
         // keeps it same-host rather than over-reacting to sub-100µs noise.
-        let (confidence, _) = classify_clock(Some(wall_clock(50_000, 20_000)), false);
+        let (confidence, _) = classify_clock(Some(&wall_clock(50_000, 20_000)), false);
         assert_eq!(confidence, ClockConfidence::SameHost);
     }
 
     #[test]
     fn classify_clock_implausible_is_flagged_and_unavailable_is_same_host() {
         assert_eq!(
-            classify_clock(Some(wall_clock(123, 456)), true).0,
+            classify_clock(Some(&wall_clock(123, 456)), true).0,
             ClockConfidence::CrossHostFlagged
         );
         assert_eq!(classify_clock(None, false).0, ClockConfidence::SameHost);

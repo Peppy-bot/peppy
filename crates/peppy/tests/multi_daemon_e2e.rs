@@ -4627,21 +4627,21 @@ enum Placement {
 }
 
 impl Placement {
-    fn daemon<'a>(&self, federation: &'a Federation) -> &'a Daemon {
+    fn daemon(self, federation: &Federation) -> &Daemon {
         match self {
             Self::Coordinator => &federation.robot,
             Self::Peer => &federation.cloud,
         }
     }
 
-    fn core_node<'a>(&self, federation: &'a Federation) -> Option<&'a str> {
+    fn core_node(self, federation: &Federation) -> Option<&str> {
         match self {
             Self::Coordinator => None,
             Self::Peer => Some(&federation.cloud_core_node),
         }
     }
 
-    fn gate(&self) -> &'static str {
+    fn gate(self) -> &'static str {
         match self {
             Self::Coordinator => COORDINATOR_GATE,
             Self::Peer => PEER_GATE,

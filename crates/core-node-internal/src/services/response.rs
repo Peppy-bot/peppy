@@ -8,6 +8,10 @@ use peppylib::types::Payload;
 
 /// The failure of a request or a goal: `kind`, a kind of the daemon, and
 /// the message of `reason`.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a caller gives a message or an error, by value or by reference"
+)]
 pub(crate) fn failure(kind: impl Into<DaemonFailureKind>, reason: impl ToString) -> Failure {
     Failure::new(kind.into(), reason.to_string())
 }

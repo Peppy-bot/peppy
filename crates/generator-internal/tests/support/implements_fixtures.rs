@@ -61,6 +61,10 @@ pub(crate) fn make_move_arm_action(marker: &str) -> NativeExposedAction {
     }
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a test shorthand for a value that the code under test gives wrapped"
+)]
 fn contract_origin(link_id: &str, name: &str, tag: &str) -> Option<ContractOrigin> {
     Some(ContractOrigin {
         link_id: link_id.to_string(),

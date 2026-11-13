@@ -150,7 +150,7 @@ fn answer_with(verdict: &Verdict) -> ServiceAnswer {
 /// The failure of the error reply that `error` carries. Panics on an error
 /// without a reply: the `request` did not complete.
 #[track_caller]
-fn error_reply(error: PeppyError, request: &str) -> Failure {
+fn error_reply(error: &PeppyError, request: &str) -> Failure {
     error
         .failure()
         .cloned()
@@ -596,7 +596,7 @@ async fn remove(
         core_node::node_remove_bound(started.node_stack.shutdown_grace()) + REQUEST_MARGIN,
     )
     .await
-    .map_err(|error| error_reply(error, "node_remove"))
+    .map_err(|error| error_reply(&error, "node_remove"))
 }
 
 /// [`remove`] of `node`, which must succeed.
@@ -637,7 +637,7 @@ async fn stop(started: &StartedCoreNode, instance_id: &str) -> Result<NodeStopRe
         core_node::node_stop_bound(started.node_stack.shutdown_grace()) + REQUEST_MARGIN,
     )
     .await
-    .map_err(|error| error_reply(error, "node_stop"))
+    .map_err(|error| error_reply(&error, "node_stop"))
 }
 
 /// [`stop`] of `instance_id`, which must succeed.
@@ -3019,7 +3019,7 @@ async fn participant<R: core_node_api::ServiceRequest>(
         request_budget(),
     )
     .await
-    .map_err(|error| error_reply(error, R::ID.name()))
+    .map_err(|error| error_reply(&error, R::ID.name()))
 }
 
 /// Asks this daemon to reserve itself for [`LAUNCH`], as its coordinator
@@ -4268,7 +4268,7 @@ async fn ask_pair(
         request_budget(),
     )
     .await
-    .map_err(|error| error_reply(error, "pair_commit"))
+    .map_err(|error| error_reply(&error, "pair_commit"))
 }
 
 /// The pair commits [`WATCHER`]'s daemon was asked for, by whether each
@@ -5160,7 +5160,7 @@ async fn peer_daemon_asking_back(
                         request_budget(),
                     )
                     .await
-                    .map_err(|error| error_reply(error, "pair_commit"));
+                    .map_err(|error| error_reply(&error, "pair_commit"));
                     *recorder.lock().unwrap() = Some(verdict);
                 }
                 answer_with(&Ok(FederationAck))

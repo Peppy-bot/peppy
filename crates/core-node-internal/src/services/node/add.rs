@@ -655,9 +655,8 @@ fn decode_sha256_hex(input: &str) -> std::result::Result<Vec<u8>, String> {
 /// The value of one hexadecimal digit of either case, or `None` for any
 /// other byte.
 fn hex_digit_value(digit: u8) -> Option<u8> {
-    (digit as char)
-        .to_digit(16)
-        .and_then(|value| u8::try_from(value).ok())
+    let value = (digit as char).to_digit(16)?;
+    u8::try_from(value).ok()
 }
 
 fn extract_http_bundle(
@@ -677,16 +676,21 @@ async fn resolve_http_source_with_feedback(
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let url = url.clone();
     tokio::task::spawn_blocking(move || {
-        resolve_http_source_blocking(url, &peppy_dirs, expected_sha256, Some(&announcer))
+        resolve_http_source_blocking(
+            &url,
+            &peppy_dirs,
+            expected_sha256.as_deref(),
+            Some(&announcer),
+        )
     })
     .await
     .map_err(|e| format!("Failed to join HTTP download task: {e}"))?
 }
 
 fn resolve_http_source_download_and_extract(
-    url: url::Url,
+    url: &url::Url,
     peppy_dirs: &PeppyDirs,
-    expected_sha256: Option<String>,
+    expected_sha256: Option<&str>,
     announcer: Option<&Announcer>,
 ) -> std::result::Result<ExtractedHttpSource, String> {
     match url.scheme() {
@@ -698,7 +702,7 @@ fn resolve_http_source_download_and_extract(
         }
     }
 
-    if !is_supported_http_archive(&url) {
+    if !is_supported_http_archive(url) {
         return Err(
             "Only tar.zst (.tar.zstd/.tar.zst/.tzst) archives are supported for HTTP sources"
                 .to_string(),
@@ -717,13 +721,13 @@ fn resolve_http_source_download_and_extract(
 
     let mut operation_cleanup = CleanupDir::new(Some(operation_dir.clone()));
 
-    let bundle_path = operation_dir.join(bundle_file_name(&url));
+    let bundle_path = operation_dir.join(bundle_file_name(url));
     let extract_dir = operation_dir.join("extracted");
     std::fs::create_dir_all(&extract_dir)
         .map_err(|e| format!("Failed to create bundle extract directory: {e}"))?;
 
-    download_http_bundle(&url, &bundle_path, expected_sha256.as_deref(), announcer)?;
-    extract_http_bundle(&bundle_path, &extract_dir, &url)?;
+    download_http_bundle(url, &bundle_path, expected_sha256, announcer)?;
+    extract_http_bundle(&bundle_path, &extract_dir, url)?;
     let _ = std::fs::remove_file(&bundle_path);
 
     let node_root_dir = locate_node_root_dir(&extract_dir)?;
@@ -737,9 +741,9 @@ fn resolve_http_source_download_and_extract(
 }
 
 fn resolve_http_source_blocking(
-    url: url::Url,
+    url: &url::Url,
     peppy_dirs: &PeppyDirs,
-    expected_sha256: Option<String>,
+    expected_sha256: Option<&str>,
     announcer: Option<&Announcer>,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let extracted =

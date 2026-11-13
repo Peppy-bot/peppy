@@ -141,6 +141,10 @@ impl Command for LoginCommand {
 }
 
 /// The error of an enrollment that did not happen after a good sign-in.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` gives the error by value"
+)]
 fn not_enrolled(error: Error) -> Error {
     Error::Auth(format!(
         "signed in, but this machine is not enrolled: {error}"

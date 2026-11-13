@@ -713,6 +713,10 @@ mod tests {
     }
 
     /// Shorthand for the common single-producer expectation.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a test shorthand for a value that the code under test gives wrapped"
+    )]
     fn single(core_node: &str, instance_id: &str) -> Option<Vec<ProducerRef>> {
         Some(vec![ProducerRef::new(core_node, instance_id)])
     }

@@ -59,7 +59,7 @@ async fn add_repo_async(
         REQUEST_TIMEOUT,
     )
     .await
-    .map_err(|e| crate::commands::request_error("Failed to add repository", e))?;
+    .map_err(|e| crate::commands::request_error("Failed to add repository", &e))?;
 
     info!("Repository '{label}' added successfully");
     Ok(())

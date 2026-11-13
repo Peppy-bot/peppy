@@ -194,6 +194,7 @@ struct Delivery {
 /// instant this runs, and the one going down may still be in it. Stamping the
 /// event's own source from the event itself is what keeps "came up" and "went
 /// down" from ever disagreeing with the transition that triggered them.
+#[derive(Clone, Copy)]
 struct LivenessVerdict<'a> {
     source: &'a SourceKey,
     live: bool,

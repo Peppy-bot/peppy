@@ -166,14 +166,14 @@ impl MemberCall {
                     &service.service,
                     service.failure_kinds.clone(),
                 )
-                .map_err(|error| selected.codec_error(error))?;
+                .map_err(|error| selected.codec_error(&error))?;
                 let request = service.service.request_message_format.as_ref();
                 (CallClient::Service(client), request)
             }
             Member::Action(action) => {
                 let client =
                     ActionClient::of_action(&label, &action.action, action.failure_kinds.clone())
-                        .map_err(|error| selected.codec_error(error))?;
+                        .map_err(|error| selected.codec_error(&error))?;
                 let goal = action
                     .action
                     .goal_service
@@ -940,7 +940,7 @@ mod tests {
                 context
                     .complete_cancelled(
                         "stopped at the halt",
-                        payload(RESULT, json!({"reached": false})),
+                        payload(RESULT, &json!({"reached": false})),
                     )
                     .await
                     .expect("the goal ends cancelled");
@@ -968,7 +968,7 @@ mod tests {
             assert_eq!(request, json!({"joints": [0.1, 0.2, 0.3]}));
             Ok(payload(
                 r#"{ reachable: "bool" }"#,
-                json!({"reachable": true}),
+                &json!({"reachable": true}),
             ))
         })
         .await;
@@ -1011,7 +1011,7 @@ mod tests {
                         .expect("the request decodes");
                     let answer = Ok(payload(
                         r#"{ current_value: "i32" }"#,
-                        json!({"current_value": request["value"]}),
+                        &json!({"current_value": request["value"]}),
                     ));
                     async move { answer }
                 })
@@ -1103,7 +1103,7 @@ mod tests {
             let context = accept_move_to(&mut engine).await;
             for progress in [0.5, 1.0] {
                 let feedback =
-                    NonEmptyPayload::try_new(payload(FEEDBACK, json!({"progress": progress})))
+                    NonEmptyPayload::try_new(payload(FEEDBACK, &json!({"progress": progress})))
                         .expect("a feedback message");
                 context
                     .publish_feedback(feedback)
@@ -1111,7 +1111,7 @@ mod tests {
                     .expect("the feedback goes out");
             }
             context
-                .complete(payload(RESULT, json!({"reached": true})))
+                .complete(payload(RESULT, &json!({"reached": true})))
                 .await
                 .expect("the goal completes");
         });
@@ -1238,7 +1238,7 @@ mod tests {
             context
                 .complete_cancelled(
                     CancelCause::Caller.reason(),
-                    payload(RESULT, json!({"reached": false})),
+                    payload(RESULT, &json!({"reached": false})),
                 )
                 .await
                 .expect("the goal ends cancelled");
@@ -1319,7 +1319,7 @@ mod tests {
         let (ended, ()) = tokio::join!(run(&call, &messenger, &mut no_press, &mut out), async {
             let context = accept_move_to(&mut engine).await;
             context
-                .complete(payload(RESULT, json!({"reached": true})))
+                .complete(payload(RESULT, &json!({"reached": true})))
                 .await
                 .expect("the goal completes");
         });

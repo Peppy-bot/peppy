@@ -393,12 +393,10 @@ mod tests {
         assert_eq!(description.as_str(), "A node that greets.");
 
         let missing = Cli::try_parse_from(["peppy", "node", "init", "greeter"])
-            .err()
-            .expect("a node init without a description is refused");
+            .expect_err("a node init without a description is refused");
         assert!(missing.to_string().contains("<DESCRIPTION>"), "{missing}");
         let blank = Cli::try_parse_from(["peppy", "node", "init", "greeter", "  "])
-            .err()
-            .expect("a blank description is refused");
+            .expect_err("a blank description is refused");
         assert!(blank.to_string().contains("blank"), "{blank}");
     }
 
@@ -586,8 +584,7 @@ mod tests {
     #[test]
     fn repo_exposure_is_not_a_command() {
         let err = Cli::try_parse_from(["peppy", "repo", "exposure", "camera.json5"])
-            .err()
-            .expect("an unknown subcommand is a parse error");
+            .expect_err("an unknown subcommand is a parse error");
         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
     }
 
@@ -810,8 +807,7 @@ mod tests {
     fn version_flag_prints_the_release_tag() {
         for flag in ["--version", "-V"] {
             let err = Cli::try_parse_from(["peppy", flag])
-                .err()
-                .expect("--version ends parsing with a DisplayVersion error");
+                .expect_err("--version ends parsing with a DisplayVersion error");
             assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
             assert_eq!(err.to_string().trim_end(), format!("peppy {PEPPY_VERSION}"));
         }
@@ -837,8 +833,7 @@ mod tests {
     #[test]
     fn core_node_flag_rejects_the_reserved_self_name() {
         let error = Cli::try_parse_from(["peppy", "stack", "list", "--core-node", "self"])
-            .err()
-            .expect("--core-node self should be rejected");
+            .expect_err("--core-node self should be rejected");
         assert!(
             error.to_string().contains("is reserved"),
             "the refusal names the reserved word, got: {error}"

@@ -163,7 +163,7 @@ pub(crate) fn enroll_machine(
         println!("{}", external_router_note(&session.dirs));
         return Ok(());
     }
-    poke_federation_and_report(&session.dirs, FederationPokeAction::Enroll)
+    poke_federation_and_report(&session.dirs, &FederationPokeAction::Enroll)
 }
 
 /// Puts a refused enrollment into words the person can act on. The refusals

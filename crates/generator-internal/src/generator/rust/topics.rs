@@ -8,6 +8,7 @@ use encoding::{CapnpSchemaArtifacts, FunctionParam};
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
 
+#[derive(Clone, Copy)]
 pub(super) struct ConsumedTopicSubscriptionSpec<'a> {
     pub helper_fn_ident: &'a Ident,
     pub args_struct_ident: &'a Ident,
@@ -404,6 +405,7 @@ pub(super) fn build_peer_topic_publisher(
 
 /// Inputs of a pairing-topic subscription module, shared by the peer and
 /// observer consume sides.
+#[derive(Clone, Copy)]
 pub(super) struct PeerTopicSubscriptionSpec<'a> {
     pub helper_fn_ident: &'a Ident,
     pub args_struct_ident: &'a Ident,
@@ -534,9 +536,9 @@ fn build_pair_topic_subscription(
         ),
     };
     let subscription_tokens = build_subscription_struct(
-        struct_doc,
-        inner_type,
-        next_doc,
+        &struct_doc,
+        &inner_type,
+        &next_doc,
         tag,
         helper_fn_ident,
         args_struct_ident,
@@ -574,9 +576,9 @@ fn build_pair_topic_subscription(
 /// text (passed as `quote!`d `///` blocks so the generated docs stay
 /// per-module).
 fn build_subscription_struct(
-    struct_doc: TokenStream,
-    inner_type: TokenStream,
-    next_doc: TokenStream,
+    struct_doc: &TokenStream,
+    inner_type: &TokenStream,
+    next_doc: &TokenStream,
     tag: SubscriptionTag,
     helper_fn_ident: &Ident,
     args_struct_ident: &Ident,
@@ -665,7 +667,7 @@ pub(super) fn build_consumed_topic_subscription(
     // follows a join or a removal.
     let follows_the_set = follows_the_set_attrs(dependency.cardinality);
     let subscription_tokens = build_subscription_struct(
-        quote! {
+        &quote! {
             /// A held subscription covering every producer bound to this slot: one
             /// producer-pinned wire subscription per member of the slot's bound
             /// set, merged client-side. Message order is preserved independently
@@ -674,8 +676,8 @@ pub(super) fn build_consumed_topic_subscription(
             /// the yielded producer identity.
             #( #follows_the_set )*
         },
-        quote!(peppylib::runtime::BoundSetSubscription),
-        quote! {
+        &quote!(peppylib::runtime::BoundSetSubscription),
+        &quote! {
             /// Awaits the next message from any producer bound to this slot.
             ///
             /// Returns `Ok(Some((producer, message)))` for each message (the

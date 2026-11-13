@@ -751,6 +751,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a test shorthand for a value that the code under test gives wrapped"
+    )]
     fn version() -> Result<ArtifactVersion, NoArtifactVersion> {
         Ok(ArtifactVersion::parse("v0.36.0").expect("version"))
     }

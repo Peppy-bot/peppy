@@ -40,8 +40,8 @@ pub(crate) const CALLER_INSTANCE_ID: &str = core_node_api::names::COMMAND_LINE_I
 /// `doing` naming the request ("Failed to add repository"): the daemon's
 /// error reply with its failure kind, which is a refusal, or why the request
 /// did not reach the daemon, which is an error of the command.
-pub(crate) fn request_error(doing: &str, error: peppylib::PeppyError) -> Error {
-    let text = request_failure_text(doing, &error);
+pub(crate) fn request_error(doing: &str, error: &peppylib::PeppyError) -> Error {
+    let text = request_failure_text(doing, error);
     match error.failure() {
         Some(_) => Error::ended(CallEnd::Refused, text),
         None => Error::ExecutionFailed(text),

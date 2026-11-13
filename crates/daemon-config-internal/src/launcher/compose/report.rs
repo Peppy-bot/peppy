@@ -98,12 +98,10 @@ impl AppliedChange {
             }
             Self::LinkAdded { target, .. } => format!("+ {target}"),
             Self::LinkRemoved { old, .. } => format!("removed (was {})", render(old)),
-            Self::Clock { old, new } => {
-                transition(old.as_ref().map(Name::to_string), new.to_string())
-            }
+            Self::Clock { old, new } => transition(old.as_ref().map(Name::to_string), new.as_ref()),
             Self::Restart { old, new } => transition(
                 old.as_ref().map(RestartDeclaration::launcher_spelling),
-                new.launcher_spelling(),
+                &new.launcher_spelling(),
             ),
             Self::DaemonScope { old, new, .. } => {
                 format!("{} -> {}", render_option(old.as_ref()), render(new))
@@ -117,7 +115,7 @@ impl AppliedChange {
 
 /// `old -> new` for a framework knob, `(absent)` standing for a knob the
 /// entry did not write.
-pub(super) fn transition(old: Option<String>, new: String) -> String {
+pub(super) fn transition(old: Option<String>, new: &str) -> String {
     format!(
         "{} -> {new}",
         old.unwrap_or_else(|| String::from("(absent)"))

@@ -568,7 +568,7 @@ mod tests {
         )
         .expect("write malformed creds");
         let report = platform_report(&session, &auth::test_support::enrollment());
-        assert!(report.is_err());
+        report.unwrap_err();
     }
 
     /// [`session_in`], signed in as the subject of

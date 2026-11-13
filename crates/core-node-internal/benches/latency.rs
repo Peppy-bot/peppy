@@ -89,7 +89,7 @@ fn main() {
             .iter()
             .filter(|(l, _)| *l == lang)
             .map(|(_, t)| *t)
-            .filter(|t| selected(&filter, lang, *t))
+            .filter(|t| selected(filter.as_deref(), lang, *t))
             .collect();
         if transports.is_empty() {
             continue;
@@ -205,12 +205,12 @@ fn print_environment() {
 
 /// Whether a scenario matches the optional `cargo bench -- <filter>` substring,
 /// tested against the `lang/transport` id.
-fn selected(filter: &Option<String>, lang: Lang, transport: Transport) -> bool {
+fn selected(filter: Option<&str>, lang: Lang, transport: Transport) -> bool {
     match filter {
         None => true,
         Some(needle) => {
             let id = format!("{}/{}", lang.as_str(), transport.as_str());
-            id.contains(needle.as_str())
+            id.contains(needle)
         }
     }
 }

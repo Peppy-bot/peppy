@@ -103,7 +103,7 @@ pub(super) fn render(
         &node_tag,
         &emitted_members,
         node_dir.as_deref(),
-    )?;
+    );
     generator.push_section(InterfaceArtifact {
         module_path: vec!["harness".to_string()],
         kind: InterfaceKind::Fixture,
@@ -851,7 +851,7 @@ fn render_harness(
     node_tag: &str,
     emitted_members: &[EmittedMember],
     node_dir: Option<&str>,
-) -> Result<String> {
+) -> String {
     let mut builder = PythonCodeBuilder::new();
     builder.add_import("import os");
     builder.add_import("import peppylib");
@@ -1240,7 +1240,7 @@ raise
     let doc = "Generated test harness: ephemeral router + started mocks + seeded \
                StandaloneConfig + the node running in-process behind the readiness \
                barriers. Construct with `start(...)`.";
-    Ok(format!("\"\"\"{doc}\"\"\"\n\n{}", builder.build()))
+    format!("\"\"\"{doc}\"\"\"\n\n{}", builder.build())
 }
 
 /// The default of a set slot's instance-count kwarg: the fewest instances

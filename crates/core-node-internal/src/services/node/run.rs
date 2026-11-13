@@ -969,7 +969,7 @@ async fn publish_node_run_feedback(publisher: &ActionFeedbackPublisher, line: Fe
 fn bind_daemon_targets(
     slot_bindings: &mut config::runtime::SlotBindings,
     manifest: &config::node::Manifest,
-    daemon: config::runtime::ProducerRef,
+    daemon: &config::runtime::ProducerRef,
 ) {
     for target in manifest.depends_on.iter().flat_map(|deps| &deps.daemon) {
         slot_bindings.insert(
@@ -1395,7 +1395,7 @@ async fn process_node_run(
     bind_daemon_targets(
         &mut runtime_config.node_instance.slot_bindings,
         &node_config.manifest,
-        stack_daemon,
+        &stack_daemon,
     );
 
     // The policy of a new instance, resolved here for every path that starts
@@ -2339,7 +2339,7 @@ impl StartupProbe<'_> {
     }
 
     /// The failure when the probe's budget runs out.
-    fn timed_out(self, err: PeppyError) -> String {
+    fn timed_out(self, err: &PeppyError) -> String {
         match self {
             StartupProbe::Ready { first_start: true } => format!(
                 "startup timed out waiting for node to be ready (node may still be compiling): {err}"
@@ -2391,7 +2391,7 @@ async fn poll_startup_service<'a>(
                 instance_id: Some(target.target_instance_id.to_string()),
                 service_name: probe.service().to_string(),
             });
-            return Err(StartFailure::Reason(probe.timed_out(err)));
+            return Err(StartFailure::Reason(probe.timed_out(&err)));
         }
 
         let remaining = deadline - now;
@@ -2922,7 +2922,7 @@ mod tests {
             service_name: NODE_HEALTH_SERVICE.to_owned(),
         };
         assert_eq!(
-            StartupProbe::Health(&budget).timed_out(err),
+            StartupProbe::Health(&budget).timed_out(&err),
             budget.timed_out()
         );
     }
@@ -2979,10 +2979,10 @@ mod tests {
         };
         assert!(
             StartupProbe::Ready { first_start: true }
-                .timed_out(timeout())
+                .timed_out(&timeout())
                 .contains("(node may still be compiling)")
         );
-        let restart = StartupProbe::Ready { first_start: false }.timed_out(timeout());
+        let restart = StartupProbe::Ready { first_start: false }.timed_out(&timeout());
         assert!(
             !restart.contains("compiling") && restart.ends_with("; its run log says why"),
             "{restart}"
@@ -3061,7 +3061,7 @@ mod tests {
         ]);
         let daemon = config::runtime::ProducerRef::new("core_node", "core-node-boot");
 
-        bind_daemon_targets(&mut slot_bindings, &manifest, daemon.clone());
+        bind_daemon_targets(&mut slot_bindings, &manifest, &daemon);
 
         let bound_to_the_daemon = config::runtime::BoundProducers::from(daemon);
         assert_eq!(

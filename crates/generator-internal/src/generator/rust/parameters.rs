@@ -58,7 +58,7 @@ pub(crate) fn generate_parameters_struct(parameters: &config::ParameterSchema) -
         }
     };
 
-    Ok(render_tokens(quote! {
+    Ok(render_tokens(&quote! {
         #main_struct
         #( #modules )*
     }))

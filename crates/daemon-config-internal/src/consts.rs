@@ -484,6 +484,10 @@ mod tests {
         assert!(error.to_string().contains("v1+build"), "{error}");
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a test shorthand for a value that the code under test gives wrapped"
+    )]
     fn user_home() -> Option<PathBuf> {
         Some(PathBuf::from("/home/u"))
     }

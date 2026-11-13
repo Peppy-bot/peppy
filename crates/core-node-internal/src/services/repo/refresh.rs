@@ -1134,7 +1134,7 @@ fn read_git_repo(
     // just read resolves to, so donating it is the difference between the
     // daemon fetching one commit of one repository once and fetching it
     // again the first time anything from it is materialized.
-    node_cache::git::adopt_checkout(peppy_dirs, repo_url, &commit, tmp.keep());
+    node_cache::git::adopt_checkout(peppy_dirs, repo_url, &commit, &tmp.keep());
     Ok(items)
 }
 

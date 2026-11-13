@@ -389,7 +389,7 @@ fn stack_has_user_nodes(graph: &SerializedNodeGraph) -> bool {
 /// best-effort and never returns `Err`.
 pub(crate) fn poke_federation_and_report(
     dirs: &PeppyDirs,
-    action: FederationPokeAction,
+    action: &FederationPokeAction,
 ) -> Result<()> {
     let socket = daemon_control::federation_control_socket_path(dirs);
     let read_timeout = daemon_control::POKE_READ_TIMEOUT;
@@ -398,9 +398,9 @@ pub(crate) fn poke_federation_and_report(
             daemon_control::poke_refederate(&socket, read_timeout)
         });
     if matches!(outcome, PokeOutcome::Restarting) {
-        return await_restart(dirs, &socket, read_timeout, &action);
+        return await_restart(dirs, &socket, read_timeout, action);
     }
-    report(outcome, &action)
+    report(outcome, action)
 }
 
 fn report(outcome: PokeOutcome, action: &FederationPokeAction) -> Result<()> {

@@ -1436,7 +1436,7 @@ async fn start_confirmed_record_clip(
 }
 
 /// The document of a read: its first content, as JSON.
-fn text_snapshot(read: rmcp::model::ReadResourceResult) -> Value {
+fn text_snapshot(read: &rmcp::model::ReadResourceResult) -> Value {
     let rmcp::model::ResourceContents::TextResourceContents { text, .. } =
         read.contents.first().expect("one content item")
     else {
@@ -1713,7 +1713,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         .expect("status snapshot serves");
     assert_eq!(read.cache_scope, Some(CacheScope::Private));
     assert_eq!(
-        text_snapshot(read),
+        text_snapshot(&read),
         json!({ "battery": 87, "note": "operational", "recording": true })
     );
     let read = client
@@ -1739,7 +1739,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
     assert_eq!(mime_type.as_deref(), Some("image/jpeg"));
     assert_is_jpeg(blob);
     assert_eq!(
-        text_snapshot(read),
+        text_snapshot(&read),
         json!({ "encoding": "mjpeg", "width": 8, "height": 8 }),
         "the document leaves out the frame, which the blob carries"
     );
@@ -2971,7 +2971,7 @@ async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
         .await
         .expect("bravo's status serves once its camera publishes");
     assert_eq!(
-        text_snapshot(read),
+        text_snapshot(&read),
         json!({ "battery": 87, "note": "operational", "recording": true })
     );
 

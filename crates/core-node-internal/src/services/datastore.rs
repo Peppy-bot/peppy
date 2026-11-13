@@ -128,21 +128,21 @@ impl Datastore {
     /// another instance owns.
     pub(super) fn store(
         &self,
-        key: String,
+        key: &str,
         value: Vec<u8>,
         encoding: String,
         writer: String,
     ) -> Result<()> {
-        self.with_live_key(&key, |entries| {
-            let owner_incarnation = match entries.get(&key) {
+        self.with_live_key(key, |entries| {
+            let owner_incarnation = match entries.get(key) {
                 Some(entry) => {
-                    self.refuse_other_writer(entry, &key, &writer)?;
+                    self.refuse_other_writer(entry, key, &writer)?;
                     entry.owner_incarnation
                 }
                 None => None,
             };
             entries.insert(
-                key.clone(),
+                key.to_owned(),
                 Entry::new(value, encoding, writer, owner_incarnation),
             );
             Ok(())
@@ -156,7 +156,7 @@ impl Datastore {
     /// the core node runs no process under `writer`.
     pub(super) fn store_exclusive(
         &self,
-        key: String,
+        key: &str,
         value: Vec<u8>,
         encoding: String,
         writer: String,
@@ -166,10 +166,12 @@ impl Datastore {
                 instance_id: writer.clone(),
             }
         })?;
-        self.with_live_key(&key, |entries| {
-            if let Some(current) = entries.get(&key) {
+        self.with_live_key(key, |entries| {
+            if let Some(current) = entries.get(key) {
                 if current.owner_incarnation.is_none() {
-                    return Err(Error::DatastoreKeyUnowned { key: key.clone() });
+                    return Err(Error::DatastoreKeyUnowned {
+                        key: key.to_owned(),
+                    });
                 }
                 if current.owner_other_than(&writer).is_some() {
                     return Ok(DatastoreStoreExclusiveResponse::Refused {
@@ -180,7 +182,7 @@ impl Datastore {
                 }
             }
             entries.insert(
-                key.clone(),
+                key.to_owned(),
                 Entry::new(value, encoding, writer, Some(incarnation)),
             );
             Ok(DatastoreStoreExclusiveResponse::Stored)
@@ -355,7 +357,7 @@ fn handle_store_request(store: &Datastore, context: &ServiceRequestContext) -> R
     );
 
     store.store(
-        request.key.into_string(),
+        &request.key.into_string(),
         request.value,
         request.encoding,
         last_modified_by,
@@ -436,7 +438,7 @@ fn handle_store_exclusive_request(
 
     store
         .store_exclusive(
-            request.key.into_string(),
+            &request.key.into_string(),
             request.value,
             request.encoding,
             writer,
@@ -601,12 +603,7 @@ mod tests {
     /// `store` of a key no other instance owns.
     fn store(datastore: &Datastore, key: &str, value: &[u8], encoding: &str, writer: &str) {
         datastore
-            .store(
-                key.to_owned(),
-                value.to_vec(),
-                encoding.to_owned(),
-                writer.to_owned(),
-            )
+            .store(key, value.to_vec(), encoding.to_owned(), writer.to_owned())
             .expect("no other instance owns the key");
     }
 
@@ -619,7 +616,7 @@ mod tests {
     ) -> DatastoreStoreExclusiveResponse {
         datastore
             .store_exclusive(
-                key.to_owned(),
+                key,
                 value.to_vec(),
                 "text/plain".to_owned(),
                 writer.to_owned(),
@@ -799,7 +796,7 @@ mod tests {
         for key in ["bus", "own"] {
             let err = datastore
                 .store_exclusive(
-                    key.to_owned(),
+                    key,
                     b"arm".to_vec(),
                     "text/plain".to_owned(),
                     "arm".to_owned(),
@@ -821,7 +818,7 @@ mod tests {
 
         let err = datastore
             .store_exclusive(
-                "bus".to_owned(),
+                "bus",
                 b"v".to_vec(),
                 "text/plain".to_owned(),
                 "unrun_inst".to_owned(),
@@ -841,7 +838,7 @@ mod tests {
 
         assert_owned_by(
             datastore.store(
-                "bus".to_owned(),
+                "bus",
                 b"other".to_vec(),
                 "text/plain".to_owned(),
                 "other".to_owned(),

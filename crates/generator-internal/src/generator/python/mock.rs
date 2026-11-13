@@ -402,7 +402,7 @@ fn render_dep_topic(
         builder,
         loaders,
         attr,
-        PublisherVeneer {
+        &PublisherVeneer {
             production: production_module_path(
                 "consumed_topics",
                 &[spec.module_link.as_str(), topic_name],
@@ -461,7 +461,7 @@ fn emit_publisher_member(
     builder: &mut PythonCodeBuilder,
     loaders: &mut HashSet<String>,
     attr: String,
-    veneer: PublisherVeneer<'_>,
+    veneer: &PublisherVeneer<'_>,
 ) -> Result<MockMember> {
     let alias = format!("_{attr}");
     builder.add_import(&production_import_line(&veneer.production, &alias));
@@ -1199,7 +1199,7 @@ fn render_pair_publisher(
         builder,
         loaders,
         attr,
-        PublisherVeneer {
+        &PublisherVeneer {
             production: production_module_path("paired_topics", &[link_id, topic_name]),
             schema_key: crate::generator::naming::peer_schema_key(link_id, topic_name),
             format: &spec.format,
@@ -1449,7 +1449,7 @@ fn render_observed_publisher(
         builder,
         loaders,
         attr,
-        PublisherVeneer {
+        &PublisherVeneer {
             production: production_module_path("paired_topics", &[link_id, topic_name]),
             schema_key: crate::generator::naming::peer_schema_key(link_id, topic_name),
             format: &spec.format,

@@ -68,6 +68,10 @@ pub enum ComponentCardinality {
 }
 
 impl ComponentCardinality {
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde calls a `skip_serializing_if` function with a reference"
+    )]
     pub fn is_one(&self) -> bool {
         *self == Self::One
     }
