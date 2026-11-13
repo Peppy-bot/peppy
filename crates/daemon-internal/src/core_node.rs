@@ -127,7 +127,10 @@ pub(crate) struct CoreNodeRunner {
 }
 
 impl CoreNodeRunner {
-    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is a distinct input, and a struct of them only moves the list"
+    )]
     pub(crate) fn new(
         messenger: Arc<Mutex<Messenger>>,
         core_node_name: Option<String>,

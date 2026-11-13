@@ -968,7 +968,10 @@ async fn validate_links_against_stack(
 /// `DeploymentInstance` fed to the validator and the actual spawn refer to
 /// the same id; mismatching them would point validator errors at a
 /// different instance than the one that ends up running.
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input, and a struct of them only moves the list"
+)]
 pub(super) async fn validate_and_run_instance(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -1021,7 +1024,10 @@ pub(super) async fn validate_and_run_instance(
 /// this path routes to the local daemon only; the entry points enforce that via
 /// `reject_remote_target_for_local_routing`. Nothing on the goal is host-local,
 /// so the restriction is about routing rather than about the payload.
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input, and a struct of them only moves the list"
+)]
 pub async fn run_instance_async(
     messenger_handle: &MessengerHandle,
     core_node_name: &str,

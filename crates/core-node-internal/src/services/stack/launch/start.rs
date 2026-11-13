@@ -70,7 +70,10 @@ fn instance_environment(
 }
 
 /// Starts instances in dependency order, awaiting Running before each next start.
-#[expect(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input, and a struct of them only moves the list"
+)]
 pub(in crate::services::stack) async fn start_node_instances(
     ctx: &StackChangeContext,
     phase: &PhaseGoal,

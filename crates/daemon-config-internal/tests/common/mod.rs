@@ -1,5 +1,5 @@
-//! Helpers the launcher test binaries share. Each binary uses a subset.
-#![allow(dead_code)]
+//! Helpers the launcher test binaries share.
+#![allow(dead_code, reason = "each test binary uses a part of these helpers")]
 
 use config::runtime::{CopyName, Name};
 use core_node_api::encoding::{LaunchWord, SelectionWord};

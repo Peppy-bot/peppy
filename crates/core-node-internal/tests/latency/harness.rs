@@ -19,7 +19,10 @@
 //! This module is shared between `tests/latency.rs` (via `mod`) and
 //! `benches/latency.rs` (via `#[path]`), so it is the single source of truth for
 //! what the bench measures and what the threshold test guards.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "the test and the bench each use a part of this module"
+)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

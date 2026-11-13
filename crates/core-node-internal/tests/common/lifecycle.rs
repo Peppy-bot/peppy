@@ -1,4 +1,4 @@
-#![allow(dead_code)] // Each test binary uses only a subset of these shared helpers.
+#![allow(dead_code, reason = "each test binary uses a part of these helpers")]
 
 use super::{
     AbortOnDrop, GoalEnd, StartedCoreNode, TEST_NODE_TAG, TIMEOUTS, WAIT, answer_health_probes,

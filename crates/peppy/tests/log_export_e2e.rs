@@ -12,7 +12,10 @@
 
 #![cfg(target_os = "linux")]
 
-#[expect(dead_code)]
+#[expect(
+    dead_code,
+    reason = "this test binary uses a part of the shared helpers"
+)]
 mod common;
 
 use common::{ZenohDaemon, free_port};

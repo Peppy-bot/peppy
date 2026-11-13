@@ -491,9 +491,8 @@ pub(crate) struct RefreshedRepos {
     /// failed and kept for repositories outside the refresh's scope.
     pub(crate) items: RepoItems,
     /// Reported to the client through [`RepoRefreshFeedback::Excluded`]
-    /// as the scan runs, so the handler has nothing left to do with it;
-    /// kept on the result because the tests assert against it.
-    #[cfg_attr(not(test), expect(dead_code))]
+    /// as the scan runs, so the handler has nothing left to do with it.
+    #[cfg_attr(not(test), expect(dead_code, reason = "only the tests read the list"))]
     pub(crate) excluded: Vec<ExcludedRepo>,
     pub(crate) failures: Vec<RepoFailure>,
     /// One entry per repository that was actually read (excluded ones are

@@ -79,7 +79,10 @@ use types::{DeploymentInterface, LanguageGenerator};
 ///   `node_dir/peppy.json5`) does not exist
 /// - The configuration file cannot be parsed
 /// - Code generation fails
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input, and a struct of them only moves the list"
+)]
 pub fn generate_peppygen_lib(
     language: PeppygenLanguage,
     node_dir: impl AsRef<Path>,

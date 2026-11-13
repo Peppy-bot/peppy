@@ -69,7 +69,10 @@ pub(super) enum TrialRefusal {
 /// document. `repo index --check` tries every own-axis selection of every
 /// copy option this way, and a launch's scope checks every feature set.
 /// Returns the composed copy.
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input, and a struct of them only moves the list"
+)]
 pub(super) fn compose_trial_join(
     prepared: &PreparedLauncher,
     stack: &UnitSelection,

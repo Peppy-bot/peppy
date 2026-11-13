@@ -1,4 +1,4 @@
-#![allow(dead_code)] // Each test binary uses only a subset of these shared helpers.
+#![allow(dead_code, reason = "each test binary uses a part of these helpers")]
 
 use super::daemon::StartedCoreNode;
 use super::fixtures::write_peppy_json5;
@@ -567,7 +567,10 @@ pub(crate) async fn send_node_run_then_cancel(
 /// returns it alongside every feedback line observed. The health responder is
 /// kept alive until the result is fetched so health stays answered through
 /// commit.
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a test helper takes each value that a test varies as one argument"
+)]
 pub(crate) async fn send_node_run_with_delayed_health(
     caller_messenger: &MessengerHandle,
     node_messenger: &MessengerHandle,
@@ -750,7 +753,10 @@ async fn send_node_add_and_wait_internal<'a>(
     .await
 }
 
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a test helper takes each value that a test varies as one argument"
+)]
 pub(crate) async fn send_node_build_and_wait(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -777,7 +783,10 @@ pub(crate) async fn send_node_build_and_wait(
 
 /// Like [`send_node_build_and_wait`] but sets the `--force` flag, which cancels
 /// any in-flight build for the node and supersedes it.
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a test helper takes each value that a test varies as one argument"
+)]
 pub(crate) async fn send_node_build_and_wait_forced(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -802,7 +811,10 @@ pub(crate) async fn send_node_build_and_wait_forced(
     .await
 }
 
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a test helper takes each value that a test varies as one argument"
+)]
 async fn send_node_build_and_wait_internal(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -1105,7 +1117,10 @@ pub(crate) async fn send_node_run_and_wait(
     .await
 }
 
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a test helper takes each value that a test varies as one argument"
+)]
 pub(crate) async fn send_node_run_and_wait_with_env(
     messenger: &MessengerHandle,
     core_node_name: &str,

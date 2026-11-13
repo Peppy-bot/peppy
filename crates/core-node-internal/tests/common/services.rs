@@ -1,4 +1,4 @@
-#![allow(dead_code)] // Each test binary uses only a subset of these shared helpers.
+#![allow(dead_code, reason = "each test binary uses a part of these helpers")]
 
 use super::daemon::StartedCoreNode;
 use super::{CALLER_INSTANCE_ID, WAIT, core_node_target};

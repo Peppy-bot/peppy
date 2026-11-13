@@ -24,7 +24,10 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-#[expect(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a listener takes the identity of the daemon and the handles that the listeners share"
+)]
 pub(crate) async fn listen_for_node_build(
     messenger: &MessengerHandle,
     core_node_name: &str,

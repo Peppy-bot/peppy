@@ -226,10 +226,11 @@ pub fn wait_for_log(logs: impl Fn() -> String, needle: &str, timeout: Duration) 
 
 // Held only to keep the messaging router (a child process or in-process task)
 // alive for the emulation's lifetime: the variants are constructed and stored in
-// `_instance`, then dropped with the emulation, but never read. The dead-code
-// lint is allowed here deliberately because the value is a lifetime guard, not
-// data anyone inspects.
-#[expect(dead_code)]
+// `_instance`, then dropped with the emulation, but never read.
+#[expect(
+    dead_code,
+    reason = "the value keeps the router alive, and nothing reads it"
+)]
 #[derive(Debug)]
 enum MessengerInstance {
     Mock(MockInstance),

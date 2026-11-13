@@ -25,7 +25,10 @@ use super::RelationshipCoordinators;
 use super::common::unanswered;
 use super::stop::{DoomedInstance, StopOutcome, await_exit_then_force_kill};
 
-#[expect(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a listener takes the identity of the daemon and the handles that the listeners share"
+)]
 pub(crate) async fn listen_for_node_remove(
     messenger: &MessengerHandle,
     core_node_name: &str,

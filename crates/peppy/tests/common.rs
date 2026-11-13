@@ -509,7 +509,10 @@ pub(crate) fn write_minimal_node_config(
 /// build phase is skipped), optional `depends_on` / `implements` manifest
 /// blocks, and an optional top-level `interfaces` block, staged via
 /// [`install_node_manifest`].
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a test helper takes each value that a test varies as one argument"
+)]
 pub(crate) fn write_node_config_for_helper(
     nodes_directory: &std::path::Path,
     node_name: &str,

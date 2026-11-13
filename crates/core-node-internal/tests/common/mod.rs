@@ -1,4 +1,8 @@
-#![allow(dead_code, unused_imports)] // Each test binary uses only a subset of these shared helpers.
+#![allow(
+    dead_code,
+    unused_imports,
+    reason = "each test binary uses a part of these helpers"
+)]
 
 mod actions;
 mod daemon;

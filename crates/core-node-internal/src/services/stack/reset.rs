@@ -53,7 +53,10 @@ pub fn stack_reset_timeout(shutdown_grace_secs: u64) -> std::time::Duration {
         + crate::services::node::teardown_timeout(grace)
 }
 
-#[expect(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a listener takes the identity of the daemon and the handles that the listeners share"
+)]
 pub(crate) async fn listen_for_stack_reset(
     messenger: &MessengerHandle,
     core_node_node: &str,

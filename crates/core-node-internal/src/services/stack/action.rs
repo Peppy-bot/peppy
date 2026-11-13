@@ -314,7 +314,10 @@ pub(crate) struct StackChangeDefaults {
     pub peppy_version: String,
 }
 
-#[expect(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + two shared handles.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a listener takes the identity of the daemon and the handles that the listeners share"
+)]
 pub(crate) async fn listen_for_stack_action(
     action_id: ActionId,
     messenger: &MessengerHandle,

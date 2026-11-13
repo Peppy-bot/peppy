@@ -52,7 +52,10 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
-    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is a distinct input, and a struct of them only moves the list"
+    )]
     pub fn new(
         core_node_name: impl Into<String>,
         messaging_host: impl Into<String>,

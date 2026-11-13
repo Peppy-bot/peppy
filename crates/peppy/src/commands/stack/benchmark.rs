@@ -437,7 +437,10 @@ mod tests {
     use core_node_api::encoding::{ClockConfidence, InterfaceKind};
     use unicode_width::UnicodeWidthStr;
 
-    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a test helper takes each value that a test varies as one argument"
+    )]
     fn row(
         from: &str,
         to: &str,

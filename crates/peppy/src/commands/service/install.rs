@@ -291,7 +291,10 @@ fn is_root() -> bool {
 // (see the SAFETY notes on each call). The rest of the crate is
 // `#![deny(unsafe_code)]`.
 #[cfg(target_os = "linux")]
-#[expect(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "`env::set_var` is unsafe, and the function runs before a second thread exists"
+)]
 fn ensure_systemd_user_env() -> Result<()> {
     use std::env;
 

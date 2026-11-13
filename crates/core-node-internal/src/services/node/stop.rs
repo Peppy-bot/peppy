@@ -29,7 +29,10 @@ use super::common::unanswered;
 
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-#[expect(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a listener takes the identity of the daemon and the handles that the listeners share"
+)]
 pub(crate) async fn listen_for_node_stop(
     messenger: &MessengerHandle,
     core_node_node: &str,
