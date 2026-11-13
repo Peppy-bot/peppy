@@ -365,6 +365,7 @@ text = "The daemon keeps all the nodes and their dependencies in one graph: the 
 [[segment.voice]]
 id = "no_cycle"
 text = "The graph has no cycle, so each node starts after the nodes that it depends on."
+pause_after_seconds = 2.5
 
 [[segment.voice]]
 id = "check"
@@ -515,6 +516,7 @@ text = "One test then gives your node the messages of its dependencies, with no 
 [[segment.voice]]
 id = "ros2_mocks"
 text = "In ROS 2, you write each mock."
+pause_after_seconds = 2.5
 
 [segment.screen]
 other_tools = "Other tools also work: `pip`, `poetry`, `pixi`."
@@ -619,6 +621,7 @@ text = "A node that needs the job depends on the contract, and not on a specific
 [[segment.voice]]
 id = "binds"
 text = "At launch time, the launcher connects it to a node that implements the contract."
+pause_after_seconds = 3.0
 
 [[segment.voice]]
 id = "models_change"
@@ -832,6 +835,7 @@ text = "One word in the launch command selects an option, and the launcher file 
 [[segment.voice]]
 id = "no_robot"
 text = "Thus you can start with no robot: you run the stack in a simulation."
+pause_after_seconds = 1.5
 
 [[segment.voice]]
 id = "later"

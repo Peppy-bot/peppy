@@ -345,14 +345,14 @@
       Motion.show(tl, ID + "-client", at.built_in.start + Motion.lasts(at.built_in) * 0.8, { from: { opacity: 0, x: -40, y: 0 } });
       Motion.draw(tl, ID + "-trunk", at.built_in.end + 0.1, 0.4);
       Motion.show(tl, ID + "-trunk-head", at.built_in.end + 0.4, { from: { opacity: 0 }, duration: 0.2 });
-      Motion.card(tl, ID + "-card-mcp", at.built_in.start + 0.3, at.exposure.start + 2.9);
+      Motion.card(tl, ID + "-card-mcp", at.built_in.start + 0.3, at.exposure.end + 0.1);
 
       // The exposure: a list, with one row for each thing that it names.
       Motion.show(tl, ID + "-exposure", at.exposure.start + 0.2);
       KINDS.forEach(function (kind, index) {
         Motion.show(tl, ID + "-row-" + kind, at.exposure.start + Motion.lasts(at.exposure) * 0.5 + index * 0.3);
       });
-      Motion.card(tl, ID + "-card-exposure", at.exposure.start + 3.1, at.only_named.end + 0.3);
+      Motion.card(tl, ID + "-card-exposure", at.exposure.end + 0.3, at.only_named.end + 0.3);
 
       // What each row publishes.
       KINDS.forEach(function (kind) {

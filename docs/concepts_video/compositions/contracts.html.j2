@@ -265,7 +265,7 @@
       Motion.draw(tl, ID + "-consumer-takes", at.depends.start + 0.9, 0.35);
       Motion.showHead(tl, ID + "-consumer-takes-head", at.depends.start + 1.2);
       Motion.show(tl, ID + "-depends-on", Motion.within(at.depends, 0.3), Motion.fromSide);
-      Motion.card(tl, ID + "-comparison", at.depends.start + 0.5, at.binds.end + 0.3);
+      Motion.card(tl, ID + "-comparison", at.depends.start + 0.5, at.models_change.start - 0.1);
       const notSpecific = Motion.within(at.depends, 0.66);
       const brainsAndFits = "." + "{{ id }}-brain, ." + "{{ id }}-fits";
       Motion.fade(tl, brainsAndFits, 0.35, notSpecific);
