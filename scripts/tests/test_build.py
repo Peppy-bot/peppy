@@ -13,6 +13,7 @@ from unittest.mock import ANY, MagicMock, patch
 import pytest
 
 from functions.build import (
+    APPTAINER_BUILD_OUTPUT,
     _get_target_dir,
     _release_rustflags,
     build_and_package,
@@ -77,7 +78,8 @@ def test_find_zenohd_binary_found(tmp_path: Path) -> None:
         / triple
         / "release"
         / "build"
-        / "pmi-abc123"
+        / "pmi"
+        / "abc123"
         / "out"
         / "zenohd"
     )
@@ -109,7 +111,8 @@ def test_find_build_dir_found(tmp_path: Path) -> None:
         / triple
         / "release"
         / "build"
-        / "containers-abc123"
+        / "containers"
+        / "abc123"
         / "out"
         / "apptainer-install"
     )
@@ -117,7 +120,7 @@ def test_find_build_dir_found(tmp_path: Path) -> None:
 
     with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
         result = find_build_dir(
-            triple, tmp_path, "containers-*/out/apptainer-install", "apptainer install"
+            triple, tmp_path, APPTAINER_BUILD_OUTPUT, "apptainer install"
         )
     assert result == apptainer
 
@@ -134,7 +137,7 @@ def test_find_build_dir_not_found(tmp_path: Path) -> None:
         find_build_dir(
             triple,
             tmp_path,
-            "containers-*/out/apptainer-install",
+            APPTAINER_BUILD_OUTPUT,
             "apptainer install",
         )
 
