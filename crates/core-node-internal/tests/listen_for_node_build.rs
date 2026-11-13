@@ -330,12 +330,18 @@ fn read_build_log(
     node_tag: &str,
 ) -> String {
     assert!(!log_path.is_empty(), "log_path should not be empty");
-    assert!(log_path.exists(), "log file should exist at {log_path:?}");
+    assert!(
+        log_path.exists(),
+        "log file should exist at {log_path}",
+        log_path = log_path.display()
+    );
 
     let log_dir = started_core_node.peppy_dirs.logs_dir_build();
     assert!(
         log_path.starts_with(&log_dir),
-        "log file should be in logs_dir_build(), expected to start with {log_dir:?}, got {log_path:?}"
+        "log file should be in logs_dir_build(), expected to start with {log_dir}, got {log_path}",
+        log_dir = log_dir.display(),
+        log_path = log_path.display()
     );
 
     let log_filename = log_path

@@ -755,7 +755,8 @@ fn spawn_failure_message(
         if !working_dir.exists() {
             return format!(
                 "failed to execute build_cmd `{full_cmd_display}`: \
-                 working directory {working_dir:?} does not exist"
+                 working directory {working_dir} does not exist",
+                working_dir = working_dir.display()
             );
         }
         return format!(
@@ -1022,7 +1023,7 @@ mod tests {
         .await
         .expect_err("a missing working directory must fail the spawn");
         assert!(
-            err.contains("working directory \"/nonexistent-peppy-build-cwd\" does not exist"),
+            err.contains("working directory /nonexistent-peppy-build-cwd does not exist"),
             "the error must name the missing working directory, got: {err}"
         );
     }

@@ -281,7 +281,7 @@ mod apptainer_build {
                 "version={version}\nrecipe={APPTAINER_RECIPE_REVISION}\nsquashfuse={SQUASHFUSE_VERSION}\n"
             ),
         )
-        .unwrap_or_else(|e| panic!("Failed to write cache sentinel {sentinel:?}: {e}"));
+        .unwrap_or_else(|e| panic!("Failed to write cache sentinel {sentinel}: {e}", sentinel = sentinel.display()));
     }
 
     /// The bare directory name, also exported to the crate (see
@@ -416,9 +416,10 @@ mod apptainer_build {
         let _ = Command::new("rm").args(["-rf"]).arg(dir).status();
         assert!(
             !dir.exists(),
-            "Cannot remove stale apptainer cache at {dir:?} (likely contains root-owned files \
+            "Cannot remove stale apptainer cache at {dir} (likely contains root-owned files \
              from a previous Lima VM build). Please remove it manually:\n  \
-             sudo rm -rf {dir:?}"
+             sudo rm -rf {dir:?}",
+            dir = dir.display()
         );
     }
 
@@ -602,7 +603,8 @@ mod apptainer_build {
 
         if !cached_limactl.exists() {
             println!(
-                "cargo::warning=Lima archive extracted but bin/limactl not found in {cache_dir:?}"
+                "cargo::warning=Lima archive extracted but bin/limactl not found in {cache_dir}",
+                cache_dir = cache_dir.display()
             );
             return None;
         }
@@ -677,7 +679,8 @@ mod apptainer_build {
         let dest = lima_share.join(&agent_name);
         if let Err(e) = std::fs::copy(&src_agent, &dest) {
             println!(
-                "cargo::warning=Failed to install guest agent {agent_name} into {lima_share:?}: {e}"
+                "cargo::warning=Failed to install guest agent {agent_name} into {lima_share}: {e}",
+                lima_share = lima_share.display()
             );
             return false;
         }
@@ -951,14 +954,21 @@ mod apptainer_build {
 
         let lib_dir = install_dir.join(APPTAINER_BUNDLED_LIB_DIR);
         if let Err(e) = std::fs::create_dir_all(&lib_dir) {
-            println!("cargo::warning=Failed to create {lib_dir:?}: {e}");
+            println!(
+                "cargo::warning=Failed to create {lib_dir}: {e}",
+                lib_dir = lib_dir.display()
+            );
             return false;
         }
         // `fs::copy` follows the `libseccomp.so.2 -> libseccomp.so.2.x.y`
         // symlink, so the bundle holds a real file under its SONAME.
         let dest = lib_dir.join(LIBSECCOMP_SONAME);
         if let Err(e) = std::fs::copy(&source, &dest) {
-            println!("cargo::warning=Failed to copy {source:?} to {dest:?}: {e}");
+            println!(
+                "cargo::warning=Failed to copy {source} to {dest}: {e}",
+                source = source.display(),
+                dest = dest.display()
+            );
             return false;
         }
         build_helpers::progress!("Bundled {:?} into {:?}", source, lib_dir);
@@ -1052,7 +1062,8 @@ mod apptainer_build {
 
         if let Err(e) = std::fs::create_dir_all(&bin_dir) {
             println!(
-                "cargo::warning=Failed to create gocryptfs install directory {bin_dir:?}: {e}"
+                "cargo::warning=Failed to create gocryptfs install directory {bin_dir}: {e}",
+                bin_dir = bin_dir.display()
             );
             return false;
         }
@@ -1065,7 +1076,10 @@ mod apptainer_build {
         let _ = std::fs::remove_file(&archive_path);
 
         if !gocryptfs_bin.exists() {
-            println!("cargo::warning=gocryptfs extracted but binary missing at {gocryptfs_bin:?}");
+            println!(
+                "cargo::warning=gocryptfs extracted but binary missing at {gocryptfs_bin}",
+                gocryptfs_bin = gocryptfs_bin.display()
+            );
             return false;
         }
 
@@ -1074,7 +1088,12 @@ mod apptainer_build {
             &sentinel,
             format!("version={GOCRYPTFS_VERSION}\narch={arch}\n"),
         )
-        .unwrap_or_else(|e| panic!("Failed to write gocryptfs sentinel {sentinel:?}: {e}"));
+        .unwrap_or_else(|e| {
+            panic!(
+                "Failed to write gocryptfs sentinel {sentinel}: {e}",
+                sentinel = sentinel.display()
+            )
+        });
 
         true
     }
@@ -1130,7 +1149,8 @@ mod apptainer_build {
     fn complete_apptainer_cache(cache_dir: &Path, arch: &str) {
         assert!(
             ensure_gocryptfs_installed(cache_dir, arch),
-            "Failed to install gocryptfs {GOCRYPTFS_VERSION} into apptainer cache for {arch} at {cache_dir:?}"
+            "Failed to install gocryptfs {GOCRYPTFS_VERSION} into apptainer cache for {arch} at {cache_dir}",
+            cache_dir = cache_dir.display()
         );
         assert_squashfuse_bundled(cache_dir);
     }
@@ -1237,7 +1257,10 @@ mod apptainer_build {
 
         let built = source_dir.join("squashfuse_ll");
         if !built.exists() {
-            println!("cargo::warning=squashfuse build reported success but {built:?} is missing");
+            println!(
+                "cargo::warning=squashfuse build reported success but {built} is missing",
+                built = built.display()
+            );
             let _ = std::fs::remove_dir_all(&source_dir);
             return false;
         }
@@ -1281,12 +1304,16 @@ mod apptainer_build {
         let bin_dir = dest.parent().expect("squashfuse dest always has a parent");
         if let Err(e) = std::fs::create_dir_all(bin_dir) {
             println!(
-                "cargo::warning=Failed to create squashfuse install directory {bin_dir:?}: {e}"
+                "cargo::warning=Failed to create squashfuse install directory {bin_dir}: {e}",
+                bin_dir = bin_dir.display()
             );
             return false;
         }
         if let Err(e) = std::fs::copy(built, dest) {
-            println!("cargo::warning=Failed to copy squashfuse binary to {dest:?}: {e}");
+            println!(
+                "cargo::warning=Failed to copy squashfuse binary to {dest}: {e}",
+                dest = dest.display()
+            );
             return false;
         }
         build_helpers::set_executable(dest);
@@ -1306,8 +1333,10 @@ mod apptainer_build {
         let squashfuse = squashfuse_binary_path(install_dir);
         assert!(
             squashfuse.exists(),
-            "Bundled squashfuse missing at {squashfuse:?}. Without it apptainer extracts every SIF \
-             into --tmpdir instead of FUSE-mounting it. Remove {install_dir:?} and rebuild."
+            "Bundled squashfuse missing at {squashfuse}. Without it apptainer extracts every SIF \
+             into --tmpdir instead of FUSE-mounting it. Remove {install_dir} and rebuild.",
+            squashfuse = squashfuse.display(),
+            install_dir = install_dir.display()
         );
     }
 
@@ -1619,7 +1648,10 @@ mod apptainer_build {
                 Ok(entries) => entries,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => {
-                    println!("cargo::warning=Failed to read man page directory {dir:?}: {e}");
+                    println!(
+                        "cargo::warning=Failed to read man page directory {dir}: {e}",
+                        dir = dir.display()
+                    );
                     return false;
                 }
             };
@@ -1638,7 +1670,10 @@ mod apptainer_build {
                 if contents.contains(home.as_ref()) {
                     let scrubbed = contents.replace(home.as_ref(), MAN_PAGE_HOME_PLACEHOLDER);
                     if let Err(e) = std::fs::write(&path, scrubbed) {
-                        println!("cargo::warning=Failed to scrub man page {path:?}: {e}");
+                        println!(
+                            "cargo::warning=Failed to scrub man page {path}: {e}",
+                            path = path.display()
+                        );
                         return false;
                     }
                 }
@@ -2298,7 +2333,8 @@ echo "=== Apptainer build complete ==="
         );
         assert!(
             cache_dir.join("bin/apptainer").exists(),
-            "Apptainer source build completed but bin/apptainer not found in {cache_dir:?}"
+            "Apptainer source build completed but bin/apptainer not found in {cache_dir}",
+            cache_dir = cache_dir.display()
         );
         complete_apptainer_cache(&cache_dir, arch);
         write_cache_sentinel(&cache_dir, APPTAINER_VERSION);
