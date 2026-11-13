@@ -957,7 +957,6 @@ mod ctrl_c {
     use peppylib::messaging::{
         CancelCause, ConcurrentAction, Failure, FeedbackBound, GoalContext, SenderTarget,
     };
-    use peppylib::types::Payload;
 
     const CORE_NODE: &str = "cn-ctrl-c";
     const LOG_PATH: &str = "/logs/add/source_20260101_000000_000.log";

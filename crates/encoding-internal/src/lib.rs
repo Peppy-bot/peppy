@@ -369,8 +369,6 @@ fn collect_list_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::node::MessageFormat;
-    use proc_macro2::TokenStream;
     use std::path::PathBuf;
 
     fn canonicalize_tokens(tokens: &TokenStream) -> String {

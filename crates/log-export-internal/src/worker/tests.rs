@@ -1,8 +1,6 @@
 use super::*;
 use crate::exporter::LogExporter;
-use crate::otlp::messages::{
-    ExportLogsPartialSuccess, ExportLogsServiceRequest, ExportLogsServiceResponse,
-};
+use crate::otlp::messages::{ExportLogsPartialSuccess, ExportLogsServiceRequest};
 use crate::record::{LogIdentity, LogKind};
 use crate::test_fixtures::{headers_file, resource};
 use daemon_config::peppy_config::Severity;

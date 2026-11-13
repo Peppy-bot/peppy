@@ -167,7 +167,7 @@ pub fn qos_profile_python(profile: &QoSProfile) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::node::{ArrayKind, ArraySchema, MessageFormat, PeppygenLanguage};
+    use config::node::{ArrayKind, ArraySchema, MessageFormat};
     use std::assert_matches;
 
     #[test]

@@ -700,7 +700,7 @@ pub(in crate::services::stack) async fn mint_doc_pins_of(
 mod tests {
     use super::*;
     use crate::services::stack::fixtures::{launch_of_robots, placements_with, test_root_pin};
-    use daemon_config::launcher::{DeploymentInstance, DeploymentSource};
+    use daemon_config::launcher::DeploymentInstance;
     use daemon_config::repository::EntryOrigin;
 
     fn source(json5: &str) -> DeploymentSource {

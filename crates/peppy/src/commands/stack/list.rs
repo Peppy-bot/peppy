@@ -1012,7 +1012,6 @@ mod tests {
     use crate::commands::serialized_node;
     use crate::commands::table::strip_ansi;
     use config::runtime::{ClockBinding, ProducerRef};
-    use core_node_api::{NodeStage, SerializedInstance};
     use unicode_width::UnicodeWidthStr;
 
     /// A publisher that stopped leaves its consumers reading the instant it

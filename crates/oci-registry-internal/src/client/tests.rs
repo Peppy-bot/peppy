@@ -3,7 +3,6 @@
 //! registry live with the daemon.
 
 use super::*;
-use crate::CredentialStore;
 use httpmock::prelude::*;
 use std::assert_matches;
 use std::ffi::OsString;

@@ -377,7 +377,7 @@ mod tests {
         peppylib::MessengerHandle,
         ConcurrentAction,
     ) {
-        use peppylib::messaging::{FeedbackBound, SenderTarget};
+        use peppylib::messaging::FeedbackBound;
         let messenger = crate::services::tests::started_mock_messenger().await;
         let target = || {
             SenderTarget::node(CORE_NODE, core_node_api::names::CORE_NODE_TAG)

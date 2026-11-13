@@ -1,8 +1,5 @@
 use super::*;
 
-use config::node::{ConsumedAction, NativeExposedAction};
-use std::{collections::HashMap, fs};
-
 // --- Exposes examples
 const EXPOSED_ACTION_EXAMPLE: &str = r#"
 {

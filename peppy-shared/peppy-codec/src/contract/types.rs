@@ -390,10 +390,7 @@ fn object_field<'a>(field: &'a SchemaType, key: &str) -> Option<&'a SchemaType> 
 mod tests {
     use super::*;
     use config::failure_kind::{FailureKindName, MemberFailureKinds, MemberSection};
-    use config::node::InterfaceKind;
-    use config::node::{
-        ArrayKind, MessageFormat, QoSProfile, SchemaType, TopicRetention, TypeToken,
-    };
+    use config::node::{ArrayKind, QoSProfile, TopicRetention, TypeToken};
     use std::assert_matches;
 
     /// The depth-camera example from the schema doc parses end-to-end and

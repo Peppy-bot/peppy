@@ -1,9 +1,5 @@
 use super::*;
 use crate::error::Error;
-use config::node::{
-    ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    TopicRetention,
-};
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {

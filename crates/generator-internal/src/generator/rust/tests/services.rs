@@ -1,5 +1,4 @@
 use super::*;
-use config::node::{ConsumedService, NativeExposedService};
 
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {

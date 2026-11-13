@@ -1,12 +1,9 @@
 use super::*;
 use crate::test_support::LogCapture;
-use daemon_config::consts::PeppyDirs;
 use peppylib::CoreNodePresenceMessenger;
-use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+use pmi::{MessengerAdapter, MessengerBackend, MockAdapter};
 use std::assert_matches;
 use std::num::NonZeroU32;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 async fn wait_for_log(capture: &LogCapture, needle: &str) {
     let observed = tokio::time::timeout(Duration::from_secs(2), async {

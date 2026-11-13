@@ -3021,7 +3021,6 @@ mod tests {
     /// times.
     mod per_robot {
         use super::*;
-        use crate::fleet::{FleetMember, MemberAddress};
         use peppy_mcp_catalog::{BundleContractPin, RobotContractPin};
         use std::sync::Mutex;
 

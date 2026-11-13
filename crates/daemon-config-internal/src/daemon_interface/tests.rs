@@ -1,6 +1,6 @@
 use super::*;
 use crate::internal::mcp_exposure::PeppyMcpExposureParser;
-use peppy_mcp_catalog::{ExposureBundle, build_exposure_bundle};
+use peppy_mcp_catalog::build_exposure_bundle;
 use serde_json::json;
 
 /// The design's `framework/framework_controls.json5`: two daemon targets,

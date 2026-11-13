@@ -1,8 +1,6 @@
 use super::*;
 use config::node::NodeConfig;
 use std::assert_matches;
-use std::fs;
-use tempfile::TempDir;
 
 const NODE_EXAMPLE: &str = r#"
 {

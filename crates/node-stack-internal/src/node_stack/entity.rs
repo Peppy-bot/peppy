@@ -2663,7 +2663,6 @@ mod tests {
     use crate::action_log::test_support::scratch_log;
     use config::node::ResolvedRestart;
     use std::assert_matches;
-    use std::collections::BTreeMap;
     use tokio::sync::mpsc;
 
     /// The files of a fixture spawn, which no test reads.

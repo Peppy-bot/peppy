@@ -1,6 +1,4 @@
 use super::*;
-use config::node::{ConsumedAction, MessageFormat, NativeExposedAction};
-use std::collections::HashMap;
 
 // --- Exposes examples
 const EXPOSED_ACTION_EXAMPLE: &str = r#"

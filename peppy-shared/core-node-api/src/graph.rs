@@ -576,7 +576,6 @@ impl SerializedNodeGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::node::RestartPolicy;
     use std::num::NonZeroU32;
 
     use config::runtime::ProducerRef;

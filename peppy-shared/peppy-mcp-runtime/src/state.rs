@@ -302,7 +302,7 @@ mod tests {
     use crate::clock::test_support::{MS, manual_clock};
     use serde_json::json;
     use std::assert_matches;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::AtomicU64;
 
     /// A read spawned to wait for the next message, registered as waiting
     /// before this returns.

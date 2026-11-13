@@ -139,7 +139,6 @@ pub fn create_wrong_codegen_fingerprint(peppy_config_path: &Path, output_path: &
 mod tests {
     use super::*;
     use std::assert_matches;
-    use std::fs;
     use tempfile::TempDir;
 
     #[test]

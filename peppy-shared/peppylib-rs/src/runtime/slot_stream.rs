@@ -612,16 +612,13 @@ mod tests {
     /// before it is allowed to succeed.
     mod engine {
         use super::*;
-        use crate::messaging::{
-            MessengerHandle, ProducerRef, SenderTarget, TopicBuffer, TopicMessenger,
-        };
+        use crate::messaging::{SenderTarget, TopicBuffer, TopicMessenger};
         use crate::types::Payload;
-        use config::node::{QoSProfile, TopicRetention};
+        use config::node::TopicRetention;
         use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
         use std::collections::HashMap;
         use std::sync::Mutex as StdMutex;
-        use std::time::Duration;
-        use tokio::sync::{Mutex, watch};
+        use tokio::sync::Mutex;
 
         const CORE: &str = "test_core";
         const TOPIC: &str = "joint_states";

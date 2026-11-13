@@ -528,7 +528,7 @@ mod tests {
     use super::super::search::fixtures::*;
     use super::*;
     use config::node::Cardinality;
-    use core_node::{Consumer, Implementer, Observer, Participant};
+    use core_node::{Consumer, Implementer, Observer};
 
     fn shown(reports: Vec<SearchReport>, matches: Vec<MatchedItem>) -> ShowOutcome {
         ShowOutcome {

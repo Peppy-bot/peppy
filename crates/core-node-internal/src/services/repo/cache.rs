@@ -1916,8 +1916,6 @@ mod tests {
 
     // -- pin resolution tests --
 
-    use daemon_config::repository::{PinKind, PinnedItem};
-
     fn pin_for(
         name: &str,
         tag: &str,

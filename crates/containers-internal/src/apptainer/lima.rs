@@ -1243,7 +1243,6 @@ fn plan_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<MountPlan> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Error;
     use std::fs;
     use tempfile::tempdir;
 

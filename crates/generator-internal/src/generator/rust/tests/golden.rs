@@ -25,11 +25,6 @@ use crate::generator::golden_support::{
     assert_matches_golden, full_action_messages, parse, peer, push_artifact_section, push_section,
     register_bodyless_dependency, register_own_emitted_topics, register_own_services_and_actions,
 };
-use crate::generator::types::ConsumedActionMessage;
-use config::node::{
-    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    NativeExposedAction, NativeExposedService, TopicRetention,
-};
 
 const GOLDEN: GoldenDocument = GoldenDocument {
     relative_path: "src/generator/rust/tests/golden/rust_renderers.txt",

@@ -1250,7 +1250,6 @@ fn remote_planned_pair(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use node_stack::PairEndpoint;
 
     /// Every instance in these tests lives on one daemon, so slot addresses
     /// and pair targets all carry the same core node.

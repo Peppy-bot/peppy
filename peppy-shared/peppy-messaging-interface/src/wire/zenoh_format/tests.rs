@@ -8,7 +8,6 @@ use crate::adapters::mock::MockAdapter;
 use crate::call_proof::{CallReceiver, CallSigning, ClientCredential, ClientKey, ClientPublicKey};
 use crate::wire::WirePeer;
 use crate::wire::test_support::{node, seg};
-use crate::wire::{Segment, SenderTarget};
 use config::namespace::Namespace;
 use std::assert_matches;
 

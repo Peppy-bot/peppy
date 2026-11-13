@@ -4,7 +4,6 @@
 //! binding-slot involvement.
 
 use super::*;
-use config::node::{Cardinality, NativeEmittedTopic};
 use std::assert_matches;
 
 const JOINT_STATES: &str = r#"

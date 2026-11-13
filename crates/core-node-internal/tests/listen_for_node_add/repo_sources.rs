@@ -1,6 +1,5 @@
 use super::*;
 use common::{TestPackagesCache, write_plain_peppy_json5};
-use core_node_api::encoding::NodeAddResult;
 
 /// Adds `source` and asserts that the add succeeded, naming the add `what`
 /// in the failure messages. Returns the result of the add.

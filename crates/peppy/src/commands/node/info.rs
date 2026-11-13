@@ -516,8 +516,7 @@ mod tests {
 
     use config::node::NodeConfigParser;
     use config::node::RestartDeclaration;
-    use core_node_api::encoding::NodeInstanceInfo;
-    use core_node_api::{InstanceState, NodeStage};
+    use core_node_api::NodeStage;
     use std::path::PathBuf;
 
     /// A failed instance's restarts ended at the cap once its attempt is past

@@ -1167,7 +1167,6 @@ fn write_config_file(path: &Path, content: &str) -> Result<()> {
 mod tests {
     use super::*;
     use std::assert_matches;
-    use std::path::PathBuf;
     use tempfile::tempdir;
 
     /// Writes `content` as the config file in a fresh `~/.peppy`-style tempdir.

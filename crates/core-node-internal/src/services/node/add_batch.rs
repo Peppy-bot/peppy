@@ -618,8 +618,7 @@ impl Drop for RollbackGuard {
 mod tests {
     use super::*;
     use daemon_config::repository::{
-        EntryOrigin, GitCommit, ItemName, ItemTag, ManifestFingerprint, PinKind, PinnedItem,
-        RepoRelativePath,
+        GitCommit, ItemName, ItemTag, ManifestFingerprint, PinnedItem, RepoRelativePath,
     };
 
     fn materialized(

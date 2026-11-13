@@ -688,8 +688,8 @@ pub(super) fn leaf_paths(value: &Value) -> Vec<String> {
 mod tests {
     use super::super::{
         DEFAULT_DAEMON_GRACE_SECS, DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
-        DEFAULT_PEPPY_CONFIG_TEMPLATE, DEFAULT_SHUTDOWN_GRACE_SECS, PEPPY_CONFIG_FILE,
-        PYPI_MIRROR_SECTION_SNIPPET, PeppyConfig, SHUTDOWN_GRACE_FIELD_SNIPPET, TEMPLATE_HEADER,
+        DEFAULT_PEPPY_CONFIG_TEMPLATE, DEFAULT_SHUTDOWN_GRACE_SECS, PEPPY_CONFIG_FILE, PeppyConfig,
+        TEMPLATE_HEADER,
     };
     use super::*;
     use std::assert_matches;

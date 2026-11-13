@@ -1,5 +1,4 @@
 use super::*;
-use peppy_config_model::node::{FormatRuleViolation, MessageFormat};
 use serde_json::json;
 use std::assert_matches;
 use std::path::Path;

@@ -8,9 +8,7 @@ use super::*;
 use crate::generator::testgen::{
     DepLinkSpec, DepTopicSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
 };
-use config::node::{Cardinality, MessageFormat, NativeEmittedTopic, TopicRetention};
 use std::assert_matches;
-use std::path::Path;
 use tempfile::TempDir;
 
 fn registry_with_pairing(cardinality: Cardinality) -> TestGenRegistry {
