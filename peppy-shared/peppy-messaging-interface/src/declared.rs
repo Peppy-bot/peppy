@@ -188,9 +188,9 @@ mod tests {
         ] {
             let error = declared(&mut topics, retention, qos).expect_err("another policy or QoS");
             assert_matches!(
-                    error,
-                    Error::RetainingTopicMismatch { ref topic, requested_retention, requested_qos, .. }
-                        if topic == KEYEXPR && requested_retention == retention && requested_qos == qos,
+                    &error,
+                    Error::RetainingTopicMismatch { topic, requested_retention, requested_qos, .. }
+                        if topic == KEYEXPR && *requested_retention == retention && *requested_qos == qos,
                 "{error}"
             );
         }

@@ -1129,9 +1129,9 @@ async fn action_contract_scoped_native_and_implemented_do_not_collide() {
         let factory: ActionFeedbackPublisherFactory = action.feedback_publisher_factory.clone();
         let handle = tokio::spawn(async move {
             let ready_tx = std::sync::Mutex::new(Some(ready_tx));
-            let _publisher_keepalive: Arc<std::sync::Mutex<Option<ActionFeedbackPublisher>>> =
+            let publisher_keepalive: Arc<std::sync::Mutex<Option<ActionFeedbackPublisher>>> =
                 Arc::new(std::sync::Mutex::new(None));
-            let kept = Arc::clone(&_publisher_keepalive);
+            let kept = Arc::clone(&publisher_keepalive);
             let _ = action
                 .goal_service
                 .handle_next_request(|req| {

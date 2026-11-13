@@ -10,18 +10,24 @@ fn sha256_file(path: &Path) -> Option<String> {
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(e) => {
-            println!("cargo::warning=Failed to open {path:?} for SHA-256 verification: {e}");
+            println!(
+                "cargo::warning=Failed to open {} for SHA-256 verification: {e}",
+                path.display()
+            );
             return None;
         }
     };
 
     let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
+    let mut buffer = vec![0_u8; 64 * 1024];
     loop {
         let n = match file.read(&mut buffer) {
             Ok(n) => n,
             Err(e) => {
-                println!("cargo::warning=Failed to read {path:?} for SHA-256 verification: {e}");
+                println!(
+                    "cargo::warning=Failed to read {} for SHA-256 verification: {e}",
+                    path.display()
+                );
                 return None;
             }
         };
@@ -51,7 +57,8 @@ pub fn verify_sha256(path: &Path, expected: &str, label: &str) -> bool {
         true
     } else {
         println!(
-            "cargo::warning={label} SHA-256 mismatch for {path:?}: expected {expected}, got {actual}"
+            "cargo::warning={label} SHA-256 mismatch for {}: expected {expected}, got {actual}",
+            path.display()
         );
         false
     }

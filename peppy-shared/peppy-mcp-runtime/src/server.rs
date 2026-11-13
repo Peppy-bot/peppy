@@ -1959,14 +1959,14 @@ impl ServerHandler for ExposureServer {
                 CatalogEvent::ResourceUpdated { uri } => sink.notify_resource_updated(uri).await,
                 CatalogEvent::ResourceListChanged => sink.notify_resource_list_changed().await,
             };
-            match sent {
-                Ok(()) => {}
-                Err(
-                    SubscriptionSendError::SubscriptionClosed | SubscriptionSendError::Service(_),
-                ) => return Ok(()),
-                // The subscription's accepted filter does not cover this
-                // notification; other listeners may still want it.
-                Err(_) => {}
+            // Any other error means that the accepted filter of the
+            // subscription does not cover this notification; other listeners
+            // may still want it.
+            if let Err(
+                SubscriptionSendError::SubscriptionClosed | SubscriptionSendError::Service(_),
+            ) = sent
+            {
+                return Ok(());
             }
         }
     }

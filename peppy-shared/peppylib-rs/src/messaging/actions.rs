@@ -592,7 +592,7 @@ where
     for _ in 0..PRODUCER_GONE_CONFIRM_PROBES {
         tokio::time::sleep(PRODUCER_GONE_CONFIRM_DELAY).await;
         match probe().await {
-            Ok(false) => continue,
+            Ok(false) => {}
             Ok(true) | Err(_) => return false,
         }
     }

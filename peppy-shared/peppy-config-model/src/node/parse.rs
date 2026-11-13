@@ -1401,18 +1401,9 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
         let c = container(&config);
-        assert_eq!(
-            c.apptainer_build_extra_args.as_deref().unwrap(),
-            &[] as &[String]
-        );
-        assert_eq!(
-            c.apptainer_run_extra_args.as_deref().unwrap(),
-            &[] as &[String]
-        );
-        assert_eq!(
-            c.lima_shell_extra_args.as_deref().unwrap(),
-            &[] as &[String]
-        );
+        assert_eq!(c.apptainer_build_extra_args.as_deref(), Some([].as_slice()));
+        assert_eq!(c.apptainer_run_extra_args.as_deref(), Some([].as_slice()));
+        assert_eq!(c.lima_shell_extra_args.as_deref(), Some([].as_slice()));
     }
 
     /// A manifest with the given `execution.endpoints` body, the rest minimal.

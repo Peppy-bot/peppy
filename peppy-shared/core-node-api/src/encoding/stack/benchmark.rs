@@ -394,7 +394,7 @@ impl StackBenchmarkResult {
                 r.set_to_tag(&row.to_tag);
                 r.set_interface_name(&row.interface_name);
                 r.set_link_id(&row.link_id);
-                if let Some(ref via) = row.via_contract {
+                if let Some(via) = &row.via_contract {
                     r.set_via_contract(via);
                 }
                 r.set_kind(row.kind.to_capnp());
@@ -404,7 +404,7 @@ impl StackBenchmarkResult {
                 r.set_p90_ns(row.p90_ns);
                 r.set_mean_ns(row.mean_ns);
                 r.set_count(row.count);
-                if let Some(ref note) = row.note {
+                if let Some(note) = &row.note {
                     r.set_note(note);
                 }
                 let sample_count =

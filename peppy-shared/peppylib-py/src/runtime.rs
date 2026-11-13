@@ -1892,8 +1892,8 @@ impl PyNodeBuilder {
 
             run_result.map_err(|e| {
                 if let peppylib::PeppyError::NodeArgumentsValidation(
-                    config::NodeArgumentsError::MissingParameters(ref params),
-                ) = e
+                    config::NodeArgumentsError::MissingParameters(params),
+                ) = &e
                 {
                     return PyErr::new::<PyRuntimeError, _>(format!(
                         "missing required parameter(s) for standalone mode: {}. \

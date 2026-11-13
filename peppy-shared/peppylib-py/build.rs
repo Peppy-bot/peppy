@@ -74,7 +74,11 @@ fn configure_python_from_pixi() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let pixi_toml = manifest_dir.join("pixi.toml");
 
-    assert!(pixi_toml.exists(), "pixi.toml not found at {pixi_toml:?}");
+    assert!(
+        pixi_toml.exists(),
+        "pixi.toml not found at {}",
+        pixi_toml.display()
+    );
 
     // Serialize concurrent pixi invocations to avoid "Text file busy" races
     // when multiple build scripts run pixi on the same environment.

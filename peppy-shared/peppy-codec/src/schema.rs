@@ -15,7 +15,7 @@ use capnp::serialize::{self, OwnedSegments};
 use config::node::{MessageFormat, PrimitiveSchema, SchemaType, TypeToken};
 use indexmap::IndexMap;
 use std::collections::HashMap;
-use std::fmt;
+use std::fmt::{self, Write as _};
 
 /// The result of the schema functions.
 pub type Result<T> = std::result::Result<T, SchemaError>;
@@ -55,7 +55,7 @@ impl MessageSchema {
         schema_id |= 1; // ensure odd
         schema_id |= 1 << 63; // high bit set per capnp id recommendations
 
-        text.push_str(&format!("@0x{schema_id:016x};\n"));
+        let _ = writeln!(text, "@0x{schema_id:016x};");
         text.push('\n');
         text.push_str(&renderer.render_struct("Message", &format.0, 0));
 
@@ -356,7 +356,7 @@ impl SchemaRenderer {
     ) -> String {
         let indent = "  ".repeat(depth);
         let mut buffer = String::new();
-        buffer.push_str(&format!("{indent}struct {struct_name} {{\n"));
+        let _ = writeln!(buffer, "{indent}struct {struct_name} {{");
 
         let mut nested_defs = Vec::new();
 
@@ -366,9 +366,10 @@ impl SchemaRenderer {
             let TypeResolution { type_name, nested } =
                 self.resolve_type(struct_name, &sanitized_field, schema_type, depth + 1);
 
-            buffer.push_str(&format!(
-                "{field_indent}{sanitized_field} @{index} :{type_name};\n"
-            ));
+            let _ = writeln!(
+                buffer,
+                "{field_indent}{sanitized_field} @{index} :{type_name};"
+            );
 
             nested_defs.extend(nested);
         }
@@ -380,7 +381,7 @@ impl SchemaRenderer {
             }
         }
 
-        buffer.push_str(&format!("{indent}}}\n"));
+        let _ = writeln!(buffer, "{indent}}}");
         buffer
     }
 

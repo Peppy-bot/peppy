@@ -102,11 +102,9 @@ async fn presence_facade_declares_watches_and_lists_with_name_filtering() {
 async fn presence_facade_rejects_wildcard_identity_segments() {
     let (client, _shared_messenger) = get_client_server().await;
 
-    assert!(
-        CoreNodePresenceMessenger::declare(&client.caller_handle, "*", "instance-1")
-            .await
-            .is_err()
-    );
+    CoreNodePresenceMessenger::declare(&client.caller_handle, "*", "instance-1")
+        .await
+        .unwrap_err();
     CoreNodePresenceMessenger::list_live(&client.caller_handle, Some("_"), TIMEOUT)
         .await
         .unwrap_err();

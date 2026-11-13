@@ -53,7 +53,7 @@ async fn info_returns_typed_response_fields() {
         7447,
     );
 
-    let (_router, _temp_dir, node_runner) = setup_stub(response.clone()).await;
+    let (_router, _temp_dir, node_runner) = Box::pin(setup_stub(response.clone())).await;
 
     let result = info(&node_runner, Duration::from_secs(3))
         .await

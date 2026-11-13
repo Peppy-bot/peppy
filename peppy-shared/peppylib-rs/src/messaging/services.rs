@@ -323,7 +323,6 @@ impl ServiceEndpoint {
                         link_id = %incoming.link_id,
                         "dropping probe that leaked past the adapter dispatch"
                     );
-                    continue;
                 }
                 ServiceQueryKind::UserRequest => {
                     let verified_caller = match self.verify(&incoming) {
@@ -408,7 +407,7 @@ impl fmt::Debug for ServiceRequestContext {
             .field("instance_id", &self.message.instance_id())
             .field("request_id", &self.request_id)
             .field("link_id", &self.link_id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

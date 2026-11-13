@@ -43,17 +43,14 @@ async fn expect_payload(sub: &Subscription, expected: &Bytes, label: &str) {
 /// Asserts the subscriber receives no payload within `NO_MESSAGE_TIMEOUT`.
 async fn expect_no_payload(sub: &mut Subscription, label: &str) {
     match tokio::time::timeout(NO_MESSAGE_TIMEOUT, sub.rx.recv_async()).await {
-        Err(_) => {
-            // Timed out: no payload arrived, which is the success case.
-        }
+        // The wait timed out or the channel closed: no payload arrived,
+        // which is the success case.
+        Err(_) | Ok(Err(_)) => {}
         Ok(Ok(msg)) => {
             panic!(
                 "{label}: subscriber received an unexpected payload of {} bytes (collision)",
                 msg.payload().len()
             );
-        }
-        Ok(Err(_)) => {
-            // Channel closed: also acceptable, no payload arrived.
         }
     }
 }

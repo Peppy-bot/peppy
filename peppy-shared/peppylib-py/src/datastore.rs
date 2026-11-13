@@ -227,8 +227,14 @@ impl PyStoredValue {
 #[pyclass(name = "ExclusiveStore", eq, frozen, skip_from_py_object)]
 #[derive(Clone, PartialEq)]
 pub(crate) enum PyExclusiveStore {
+    #[expect(
+        clippy::empty_enum_variants_with_brackets,
+        reason = "pyo3 takes a variant without fields of a complex enum in the tuple form"
+    )]
     Stored(),
-    Refused { current: PyStoredValue },
+    Refused {
+        current: PyStoredValue,
+    },
 }
 
 impl From<ExclusiveStore> for PyExclusiveStore {

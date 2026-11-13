@@ -537,9 +537,9 @@ impl ZenohAdapter {
                     });
                 }
                 Err(_) if attempt + 1 < max_attempts => {
-                    // Drop messenger to stop the router, then retry on a fresh port.
+                    // Drop messenger to stop the router; the next attempt
+                    // takes a fresh port.
                     drop(messenger);
-                    continue;
                 }
                 Err(e) => {
                     return Err(Error::BackendError(format!(
@@ -1718,7 +1718,7 @@ impl SubscriberMatchWait {
             loop {
                 match listener.recv_async().await {
                     Ok(status) if status.matching() => return true,
-                    Ok(_) => continue,
+                    Ok(_) => {}
                     Err(_) => return false,
                 }
             }

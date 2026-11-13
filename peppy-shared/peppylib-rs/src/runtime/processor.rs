@@ -1565,8 +1565,7 @@ mod tests {
         .expect("runtime config builds");
 
         let error = Processor::daemon_from_manifest(runtime_config, in_memory_manifest())
-            .err()
-            .expect("a mistyped argument is refused");
+            .expect_err("a mistyped argument is refused");
         assert!(
             error.to_string().contains("port"),
             "the refusal names the argument: {error}"
@@ -2039,7 +2038,7 @@ mod tests {
 
         let config = StandaloneConfig::new();
         let result = standalone_processor(peppy_config, &config);
-        let err = result.err().expect("missing required leaf should error");
+        let err = result.expect_err("missing required leaf should error");
         let msg = err.to_string();
         assert!(
             msg.contains("device.serial"),

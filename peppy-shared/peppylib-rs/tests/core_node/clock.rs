@@ -51,7 +51,8 @@ async fn synchronize_returns_typed_clock_sync() {
     // so the local clock leads the server and the offset must come out negative.
     let response = ClockResponse::new(0, 2_000_000_000_000, 2_000_000_000_005);
 
-    let (_router, _temp_dir, node_runner) = setup_synchronize_stub(response.clone()).await;
+    let (_router, _temp_dir, node_runner) =
+        Box::pin(setup_synchronize_stub(response.clone())).await;
 
     let sync = clock::synchronize(&node_runner, Some(Duration::from_secs(3)))
         .await

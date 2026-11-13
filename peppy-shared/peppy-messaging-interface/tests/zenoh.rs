@@ -332,7 +332,7 @@ mod zenoh_tests {
     /// role delivers unstamped samples, which this test catches.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn peer_mode_samples_carry_source_timestamp() {
-        assert_topic_carries_source_timestamp(true).await;
+        Box::pin(assert_topic_carries_source_timestamp(true)).await;
     }
 
     /// Router mode (gossip off → client sessions relayed through zenohd) stamps
@@ -342,7 +342,7 @@ mod zenoh_tests {
     /// relays through the router, which stays alive for the whole test.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn router_mode_samples_carry_source_timestamp() {
-        assert_topic_carries_source_timestamp(false).await;
+        Box::pin(assert_topic_carries_source_timestamp(false)).await;
     }
 
     /// A peer session built with custom (tiny) subscriber buffers still delivers

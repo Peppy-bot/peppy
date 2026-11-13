@@ -149,9 +149,12 @@ fn walk_table(
 }
 
 fn parse_manifest(manifest_dir: &Path, manifest: &str) -> DocumentMut {
-    manifest
-        .parse()
-        .unwrap_or_else(|error| panic!("manifest in {manifest_dir:?} is not valid TOML: {error}"))
+    manifest.parse().unwrap_or_else(|error| {
+        panic!(
+            "manifest in {} is not valid TOML: {error}",
+            manifest_dir.display()
+        )
+    })
 }
 
 /// Every filesystem reference in `manifest` that leaves `root`, given the
@@ -175,10 +178,11 @@ fn manifests_and_symlinks(root: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut symlinks = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let entries =
-            std::fs::read_dir(&dir).unwrap_or_else(|error| panic!("cannot read {dir:?}: {error}"));
+        let entries = std::fs::read_dir(&dir)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", dir.display()));
         for entry in entries {
-            let entry = entry.unwrap_or_else(|error| panic!("cannot read {dir:?}: {error}"));
+            let entry =
+                entry.unwrap_or_else(|error| panic!("cannot read {}: {error}", dir.display()));
             let path = entry.path();
             // By name before by type: a tool directory may itself be a symlink.
             if TOOL_DIRS.contains(&entry.file_name().to_string_lossy().as_ref()) {
@@ -186,7 +190,7 @@ fn manifests_and_symlinks(root: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
             }
             let file_type = entry
                 .file_type()
-                .unwrap_or_else(|error| panic!("cannot stat {path:?}: {error}"));
+                .unwrap_or_else(|error| panic!("cannot stat {}: {error}", path.display()));
             if file_type.is_symlink() {
                 symlinks.push(path);
             } else if file_type.is_dir() {
@@ -262,7 +266,9 @@ fn tree_manifests(root: &Path) -> Vec<(PathBuf, String)> {
     let own_manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     assert!(
         manifests.contains(&own_manifest),
-        "the walk from {root:?} did not reach {own_manifest:?}"
+        "the walk from {} did not reach {}",
+        root.display(),
+        own_manifest.display()
     );
 
     manifests
@@ -273,7 +279,7 @@ fn tree_manifests(root: &Path) -> Vec<(PathBuf, String)> {
                 .expect("a manifest has a parent directory")
                 .to_path_buf();
             let contents = std::fs::read_to_string(manifest)
-                .unwrap_or_else(|error| panic!("cannot read {manifest:?}: {error}"));
+                .unwrap_or_else(|error| panic!("cannot read {}: {error}", manifest.display()));
             (manifest_dir, contents)
         })
         .collect()

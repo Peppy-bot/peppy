@@ -36,7 +36,7 @@ use peppy_config_model::node::{
 use peppy_config_model::type_token_name;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::fmt;
+use std::fmt::{self, Write as _};
 
 /// The members a contract or a daemon interface declares, in the contract
 /// format, the failure kinds it declares and that each of them gives, and
@@ -1101,24 +1101,26 @@ fn missing_member_violation(
         kind.singular()
     );
     if declared.is_empty() {
-        message.push_str(&format!(" (it declares no {})", kind.section()));
+        let _ = write!(message, " (it declares no {})", kind.section());
     } else {
-        message.push_str(&format!(
+        let _ = write!(
+            message,
             " (declared {}: `{}`)",
             kind.section(),
             declared.join("`, `")
-        ));
+        );
     }
     for other in [MemberKind::Topic, MemberKind::Service, MemberKind::Action] {
         if other == kind {
             continue;
         }
         if member_names(members, other).contains(&member) {
-            message.push_str(&format!(
+            let _ = write!(
+                message,
                 "; a {} with that name exists, select it under `{}`",
                 other.singular(),
                 other.section()
-            ));
+            );
         }
     }
     message

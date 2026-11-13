@@ -981,7 +981,7 @@ mod tests {
         );
         assert!(!ExitCause::signal(9, false).is_clean());
         // The core-dump flag is bit 7 of the wait status.
-        let segfault = std::process::ExitStatus::from_raw(11 | 0x80);
+        let segfault = std::process::ExitStatus::from_raw(libc::SIGSEGV | 0x80);
         assert_eq!(
             ExitCause::of(&Ok(segfault)).to_string(),
             "signal 11 (SIGSEGV), core dumped"

@@ -174,7 +174,7 @@ mod tests {
             Err(err) => assert!(err.to_string().contains("empty"), "got: {err}"),
         }
         // The `TryFrom` impl mirrors `try_new`.
-        assert!(NonEmptyPayload::try_from(Payload::new()).is_err());
+        NonEmptyPayload::try_from(Payload::new()).unwrap_err();
     }
 
     #[test]

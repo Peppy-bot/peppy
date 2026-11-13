@@ -248,6 +248,10 @@ fn max_value_bytes(schema: &SchemaType) -> Option<u64> {
 
 /// Worst-case serialized length of one primitive value, quotes included for
 /// string renderings.
+#[expect(
+    clippy::match_same_arms,
+    reason = "the table has one line for each type, and two lengths are equal by chance"
+)]
 fn max_primitive_bytes(token: &TypeToken) -> Option<u64> {
     match token {
         // "false"

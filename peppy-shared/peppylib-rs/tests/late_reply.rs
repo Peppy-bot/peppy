@@ -275,8 +275,8 @@ async fn run_routed_late_reply(recorder: &Arc<Recorder>) {
         .expect("caller waits for clock advancement");
     let result = caller.await.expect("caller runtime did not panic");
     assert_matches!(
-            result,
-            Err(PeppyError::ServiceTimeout { ref instance_id, ref service_name })
+            &result,
+            Err(PeppyError::ServiceTimeout { instance_id, service_name })
                 if instance_id.as_deref() == Some(SERVER_INSTANCE) && service_name == SERVICE,
         "the actual caller must time out after ACK, got {result:?}"
     );

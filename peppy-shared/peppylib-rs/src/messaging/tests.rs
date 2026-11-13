@@ -2758,9 +2758,8 @@ async fn action_communication_goal_cancelled() {
             Ok(Ok(_)) => {
                 quiet_deadline = tokio::time::Instant::now() + quiet_for;
             }
-            Ok(Err(Error::ActionFeedbackChannelClosed)) => break,
+            Ok(Err(Error::ActionFeedbackChannelClosed)) | Err(_) => break,
             Ok(Err(err)) => panic!("unexpected feedback error after cancellation: {err:?}"),
-            Err(_) => break,
         }
     }
 
@@ -2825,10 +2824,10 @@ async fn single_action_communication_multiple_polls() {
 
             let crate::messaging::ActionCreation {
                 mut goal_service,
-                cancel_service: _,
                 feedback_publisher_factory,
                 mut result_service,
                 liveliness_token: _liveliness_token,
+                ..
             } = action;
             let feedback_publisher_factory = Arc::new(feedback_publisher_factory);
 

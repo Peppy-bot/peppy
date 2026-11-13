@@ -1559,7 +1559,7 @@ mod tests {
     fn rejects_invalid_instance_id() {
         let err = runtime_config_from_json("bad id!").unwrap_err();
         assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref msg)) if msg.contains("Invalid name"))
+            matches!(&err, Error::Parsing(ParsingError::CannotParseConfig(msg)) if msg.contains("Invalid name"))
                 || matches!(err, Error::Parsing(ParsingError::InvalidName(_, _))),
             "expected parsing error about invalid name, got: {err}"
         );

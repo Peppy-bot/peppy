@@ -154,7 +154,7 @@ impl RepoListResponse {
                 // read at the epoch is not a case worth modelling.
                 entry.set_last_read_unix_secs(repo.last_read_unix_secs.unwrap_or(0));
                 entry.set_retained(repo.retained);
-                if let Some(ref failed_read) = repo.failed_read {
+                if let Some(failed_read) = &repo.failed_read {
                     entry.set_read_failure(failed_read.read_failure.as_str());
                     entry.set_read_failure_detail(&failed_read.detail);
                 }

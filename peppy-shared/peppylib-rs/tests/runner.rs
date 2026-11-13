@@ -384,13 +384,13 @@ async fn standalone_runner_announces_declared_endpoints_during_setup_only() {
                 let undeclared = node_runner
                     .announce_endpoint("admin", binding("http", "127.0.0.1:9000", ""))
                     .expect_err("an undeclared label is refused");
-                assert_matches!(undeclared, PeppyError::UndeclaredEndpoint { ref label } if label == "admin",
+                assert_matches!(&undeclared, PeppyError::UndeclaredEndpoint { label } if label == "admin",
                     "{undeclared}"
                 );
                 let twice = node_runner
                     .announce_endpoint("panel", binding("http", "0.0.0.0:8766", ""))
                     .expect_err("a second announcement is refused");
-                assert_matches!(twice, PeppyError::EndpointAlreadyAnnounced { ref label } if label == "panel",
+                assert_matches!(&twice, PeppyError::EndpointAlreadyAnnounced { label } if label == "panel",
                     "{twice}"
                 );
                 node_runner
@@ -479,7 +479,7 @@ async fn standalone_runner_fails_when_a_declared_endpoint_is_not_announced() {
         .expect("runner should exit")
         .expect("runner task should not panic")
         .expect_err("a declared label left unannounced fails the run");
-    assert_matches!(error, PeppyError::EndpointNotAnnounced { ref label } if label == "viewer",
+    assert_matches!(&error, PeppyError::EndpointNotAnnounced { label } if label == "viewer",
         "{error}"
     );
     assert!(error.to_string().contains("`viewer`"), "{error}");
