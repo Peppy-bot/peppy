@@ -947,7 +947,7 @@ async fn handle_goal_request(
     });
 }
 
-/// Publishes one node_run feedback line onto the goal's feedback stream.
+/// Publishes one `node_run` feedback line onto the goal's feedback stream.
 ///
 /// Encoding failures are intentionally dropped: a single malformed line should
 /// not abort the run, and the line is already captured verbatim in the

@@ -39,7 +39,7 @@ const JOINT_STATES: &str = r#"
 "#;
 
 /// The arm side of `arm_link/v1`: emits `joint_states`, consumes
-/// `joint_commands`, through one slot whose link_id is `controller`.
+/// `joint_commands`, through one slot whose `link_id` is `controller`.
 fn arm_peer_context() -> PeerContext {
     PeerContext {
         link_id: "controller".to_string(),

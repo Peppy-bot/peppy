@@ -122,7 +122,7 @@ mod tests {
         }
     }
 
-    /// A peer link_id the wire cannot carry refuses the delivery.
+    /// A peer `link_id` the wire cannot carry refuses the delivery.
     #[test]
     fn a_peer_link_id_the_wire_cannot_carry_is_refused() {
         let mut request = PeerUpdateRequest {

@@ -26,8 +26,8 @@ mod container_e2e_tests {
     /// End-to-end test: init a container node, build the container image, and
     /// start it using the real Apptainer runtime, once per toolchain.
     ///
-    /// Exercises the full chain: NodeInitRequest (with_container=true) ->
-    /// node_add (apptainer build) -> node_run (apptainer run).
+    /// Exercises the full chain: `NodeInitRequest` (`with_container=true`) ->
+    /// `node_add` (apptainer build) -> `node_run` (apptainer run).
     #[rstest::rstest]
     #[case::rust(
         "rust_e2e_node",

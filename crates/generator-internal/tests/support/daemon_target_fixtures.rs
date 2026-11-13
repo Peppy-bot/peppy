@@ -7,7 +7,7 @@ use config::node::{ConsumedAction, ConsumedService, DaemonTargetDependency};
 use daemon_config::daemon_interface::DaemonInterface;
 use generator::{ConsumedActionMessage, DependencyContext, DeploymentInterface};
 
-/// The link_id of the daemon target, and the name of its slot in the
+/// The `link_id` of the daemon target, and the name of its slot in the
 /// generated modules.
 pub(crate) const LINK_ID: &str = "fleet";
 

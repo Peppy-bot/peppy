@@ -1333,7 +1333,7 @@ async fn service_communication_poll_wrong_core_node() {
 /// Starts a `camera` listener at `listener` exposing `enable_camera`, then
 /// polls the service pinned to `pinned`, a pair that matches the listener in
 /// one half only. The poll must fail as unreachable, naming the pinned
-/// instance_id, and the listener's handler must never run. `listener_wait`
+/// `instance_id`, and the listener's handler must never run. `listener_wait`
 /// bounds how long the listener waits for a request, and `poll_timeout` is
 /// the poll's budget.
 async fn assert_poll_to_absent_producer_is_unreachable(
@@ -3230,7 +3230,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
 /// A FULL-wildcard `poll` (`target: None`) issued against two producers
 /// that share an `instance_id` but live on different `core_node`s must
 /// run discover-then-pin so exactly ONE handler runs. A half-pinned shape
-/// (core_node wildcard plus instance_id pin) is unrepresentable, because
+/// (`core_node` wildcard plus `instance_id` pin) is unrepresentable, because
 /// producer identity travels as a full `(core_node, instance_id)` pair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_communication_poll_full_wildcard_discovers() {
@@ -3372,7 +3372,7 @@ async fn service_communication_poll_full_wildcard_discovers() {
 /// sharing an `instance_id` on different `core_node`s must run
 /// discover-then-pin so exactly ONE goal handler runs; both executing
 /// would violate the safety contract for actions with side effects. A
-/// half-pinned shape (core_node wildcard plus instance_id pin) is
+/// half-pinned shape (`core_node` wildcard plus `instance_id` pin) is
 /// unrepresentable, because producer identity travels as a full
 /// `(core_node, instance_id)` pair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -3502,8 +3502,8 @@ async fn action_send_goal_full_wildcard_discovers() {
     router.shutdown().await;
 }
 
-/// Matrix corner from the bimanual field failure: same core_node, two
-/// instances of one node (same `(name, tag)`), distinct instance_ids,
+/// Matrix corner from the bimanual field failure: same `core_node`, two
+/// instances of one node (same `(name, tag)`), distinct `instance_ids`,
 /// caller pinned to each instance in turn. Both producers idle: each
 /// pinned poll must reach exactly the pinned listener and never its
 /// sibling.
@@ -3707,7 +3707,7 @@ async fn service_poll_same_core_pinned_producer_busy_waits_caller_budget() {
 
 /// Action mirror of
 /// [`service_poll_same_core_distinct_instances_pinned_routes_to_pinned`]:
-/// two idle instances of one node on one core_node; a pinned `send_goal`
+/// two idle instances of one node on one `core_node`; a pinned `send_goal`
 /// to each must run exactly that instance's goal handler.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn action_send_goal_same_core_distinct_instances_pinned_routes_to_pinned() {
@@ -3916,11 +3916,11 @@ async fn action_send_goal_same_core_pinned_producer_busy_waits_caller_budget() {
 /// watcher observes exactly the queries the caller puts on the wire.
 /// Dropping the query without replying finalizes it for the watcher, so
 /// the watched calls are not delayed. The mandatory query attachment is
-/// `[0x03 magic, kind]` with kind `0x00` = UserRequest, `0x01` = Probe
+/// `[0x03 magic, kind]` with kind `0x00` = `UserRequest`, `0x01` = Probe
 /// (see `pmi::wire::zenoh_format::ServiceQueryAttachment`), which is what
 /// lets the watcher discriminate probes wire-level.
 ///
-/// The watcher seeing the pinned calls' UserRequests (asserted `>= 1`
+/// The watcher seeing the pinned calls' `UserRequests` (asserted `>= 1`
 /// each) is what makes the zero-probe assertion meaningful: it proves the
 /// watcher observes this traffic at all. The control listener under a
 /// different unique name proves the same watcher counts discovery probes
@@ -4255,9 +4255,9 @@ async fn pinned_calls_issue_zero_probes() {
 
 /// Topic subscriptions pin the full `(core_node, instance_id)` pair on the
 /// wire, never `instance_id` alone. Two producers share `instance_id`
-/// "inst1" on different core_nodes; the subscription bound to
-/// `(core_a, inst1)` must never surface core_b's publishes even though they
-/// carry the same instance_id on the same topic.
+/// "inst1" on different `core_nodes`; the subscription bound to
+/// `(core_a, inst1)` must never surface `core_b`'s publishes even though they
+/// carry the same `instance_id` on the same topic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn topic_pinned_subscription_compares_full_pairs() {
     let router = TestRouterContext::start().await;

@@ -204,7 +204,7 @@ pub struct ZenohAdapter {
 }
 
 impl ZenohAdapter {
-    /// Creates a ZenohAdapter that owns and manages a zenohd router. `gossip`
+    /// Creates a `ZenohAdapter` that owns and manages a zenohd router. `gossip`
     /// selects the daemon session's own routing model (peer vs router-relay) and
     /// `buffer_sizes` its subscriber channel capacities. The adapter renders the
     /// router config, spawns zenohd, and reports an error if its port is busy.
@@ -253,7 +253,7 @@ impl ZenohAdapter {
         })
     }
 
-    /// Creates a ZenohAdapter that adopts an already-running, operator-managed
+    /// Creates a `ZenohAdapter` that adopts an already-running, operator-managed
     /// Zenoh router at `endpoint`.
     ///
     /// The endpoint is a dial locator in `tcp/<host>:<port>` form. Listen
@@ -283,7 +283,7 @@ impl ZenohAdapter {
         })
     }
 
-    /// Creates a ZenohAdapter that joins the mesh seeded by an existing zenohd
+    /// Creates a `ZenohAdapter` that joins the mesh seeded by an existing zenohd
     /// router, using the default discovery (gossip on, seed = `host:port`) and
     /// default subscriber buffers. The session runs in `peer` mode so data forms
     /// direct links instead of relaying through the router.
@@ -1532,7 +1532,7 @@ fn declare_retaining_publisher(
 }
 
 /// Per-query inbound handler. Parses the selector, verifies the caller's
-/// link_id slot resolves to the producer's default `_` segment via
+/// `link_id` slot resolves to the producer's default `_` segment via
 /// [`ParsedInboundQuery::claim`], builds an [`IncomingRequest`] with a
 /// [`ResponseToken::Zenoh`] (carrying the concrete reply keyexpr) and pushes
 /// it onto `tx`.
@@ -1540,7 +1540,7 @@ fn declare_retaining_publisher(
 /// The parser also re-validates concrete target core / instance slots against
 /// this receiver. That is defensive: Zenoh's matcher should already have
 /// filtered them out, but a stale peer-routing view must not let a pinned
-/// action goal run on a sibling instance. Queries whose link_id slot is neither
+/// action goal run on a sibling instance. Queries whose `link_id` slot is neither
 /// `*` nor `_` are dropped silently for the same reason.
 ///
 /// This runs inside zenoh's reception callback, so the function is sync:

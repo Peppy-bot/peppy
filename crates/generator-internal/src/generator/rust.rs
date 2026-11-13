@@ -200,7 +200,7 @@ impl RustGenerator {
         })
     }
 
-    /// Builds the fire_goal method for consumed actions using ActionMessenger::send_goal
+    /// Builds the `fire_goal` method for consumed actions using `ActionMessenger::send_goal`
     fn build_consumed_action_fire_goal_method(
         &mut self,
         context: &mut GenerationContext,
@@ -549,12 +549,12 @@ impl RustGenerator {
         Ok((method_tokens, helper_items))
     }
 
-    /// Builds the on_next_feedback_message method for consumed actions.
+    /// Builds the `on_next_feedback_message` method for consumed actions.
     ///
     /// `schema_key` is the producer-scoped key from
     /// [`consumed_action_schema_keys`][`crate::generator::naming::consumed_action_schema_keys`]
-    /// and determines both the artifact name (drives the cap'n proto schema_id)
-    /// and the registered file_stem.
+    /// and determines both the artifact name (drives the cap'n proto `schema_id`)
+    /// and the registered `file_stem`.
     fn build_consumed_action_feedback_method(
         &mut self,
         context: &mut GenerationContext,

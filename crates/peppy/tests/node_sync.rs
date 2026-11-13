@@ -469,7 +469,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     );
 }
 
-/// The arm side of `arm_link/v1`: one pairing slot, link_id `controller`, with
+/// The arm side of `arm_link/v1`: one pairing slot, `link_id` `controller`, with
 /// the topics the role emits and consumes.
 const ROBOT_ARM_ON_ARM_LINK: &str = r#"{
     peppy_schema: "node/v1",

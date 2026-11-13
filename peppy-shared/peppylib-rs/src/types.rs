@@ -48,9 +48,9 @@ impl Message {
         self.0.core_node()
     }
 
-    /// Producer's bound link_id, parsed from the inbound topic keyexpr.
+    /// Producer's bound `link_id`, parsed from the inbound topic keyexpr.
     /// Returns an empty string for messages that arrived via a non-topic
-    /// path (e.g. service responses), where no link_id is encoded in the
+    /// path (e.g. service responses), where no `link_id` is encoded in the
     /// reply keyexpr's caller slots.
     pub fn link_id(&self) -> &str {
         self.0.link_id()

@@ -308,7 +308,7 @@ mod tests {
         assert_eq!(robot.link_id(), "robot_0000000000001234");
     }
 
-    /// The link_id lands in a zenoh key segment, which forbids `/` and `@`
+    /// The `link_id` lands in a zenoh key segment, which forbids `/` and `@`
     /// and reserves `_` on its own. The rendering must never produce one.
     #[test]
     fn a_link_id_is_a_usable_wire_segment() {

@@ -181,7 +181,7 @@ async fn accept_loop(
 }
 
 /// Creates the runtime dir, removes any stale socket from a prior (crashed)
-/// daemon, binds, and restricts the socket to the owner. A leftover AF_UNIX path
+/// daemon, binds, and restricts the socket to the owner. A leftover `AF_UNIX` path
 /// is never connectable, so unconditional unlink-before-bind is safe.
 fn bind_listener(socket_path: &Path) -> std::io::Result<UnixListener> {
     if let Some(parent) = socket_path.parent() {

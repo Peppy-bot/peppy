@@ -317,7 +317,7 @@ where
 }
 
 /// Deserialize a document-order map, running `check_key` on each key and
-/// rejecting duplicates as `duplicate {key_label} `{key}``.
+/// rejecting duplicates as ``duplicate {key_label} `{key}` ``.
 fn deserialize_unique_map<'de, D, V>(
     deserializer: D,
     expecting: &'static str,

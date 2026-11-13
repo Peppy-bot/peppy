@@ -1,8 +1,8 @@
 //! Shared core for the framework slot-update services (`peer_update`,
 //! `observation_update`, `binding_update`). Each delivers ABSOLUTE per-slot
-//! state, keyed by the node's own slot link_id, and they share one protocol:
+//! state, keyed by the node's own slot `link_id`, and they share one protocol:
 //! registered pre-setup so delivery never waits on user `setup_fn`;
-//! daemon-authoritative, so a caller whose core_node is not this node's own
+//! daemon-authoritative, so a caller whose `core_node` is not this node's own
 //! daemon is rejected before slot state is touched; and sequence-gated and
 //! idempotent, so a delayed retry can never roll a slot back (a
 //! strictly-smaller sequence is stale, an equal one asserts the state the slot
@@ -65,7 +65,7 @@ pub(crate) trait SlotUpdate: Sized {
     fn admits(cardinality: Cardinality, members: usize) -> bool;
 
     /// Extra structured fields for the receipt debug log, beyond
-    /// link_id/sequence (e.g. `members=2 live=1`).
+    /// `link_id/sequence` (e.g. `members=2 live=1`).
     fn log_detail(&self) -> String;
 }
 
@@ -114,7 +114,7 @@ impl<S> SlotChannel<S> {
 }
 
 /// Shared map of one channel per declared slot, keyed by the node's own slot
-/// link_id. Built once by the `Processor`; the map itself is immutable (slots
+/// `link_id`. Built once by the `Processor`; the map itself is immutable (slots
 /// are declared in the manifest), only the channels' state moves.
 pub(crate) type SlotChannels<S> = Arc<BTreeMap<String, SlotChannel<S>>>;
 

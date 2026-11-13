@@ -106,7 +106,7 @@ pub struct PlacementArgs {
 }
 
 /// `--place NAME@CORE_NODE`: NAME is a core node link the flat launcher
-/// carries, which every copy's name is one of, and CORE_NODE a machine or
+/// carries, which every copy's name is one of, and `CORE_NODE` a machine or
 /// `self`.
 fn parse_place(raw: &str) -> std::result::Result<(Name, CoreNodeTarget), String> {
     let (link, target) =

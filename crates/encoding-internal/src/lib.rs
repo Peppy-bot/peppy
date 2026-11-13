@@ -87,7 +87,7 @@ where
     Ok(())
 }
 
-/// This struct turns a MessageFormat into a capnp proto and its associated Rust types
+/// This struct turns a `MessageFormat` into a capnp proto and its associated Rust types
 pub struct MessageFormatMapper {
     schema_name: String,
     message_format: MessageFormat,

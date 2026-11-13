@@ -35,12 +35,12 @@ pub struct NodeRunner {
 }
 
 impl NodeRunner {
-    /// Create a new NodeRunner, connecting to the messaging system.
+    /// Create a new `NodeRunner`, connecting to the messaging system.
     pub async fn new(processor: Processor) -> Result<Self> {
         Self::with_cancellation_token(processor, CancellationToken::new()).await
     }
 
-    /// Create a new NodeRunner with a provided cancellation token.
+    /// Create a new `NodeRunner` with a provided cancellation token.
     pub async fn with_cancellation_token(
         processor: Processor,
         cancellation_token: CancellationToken,

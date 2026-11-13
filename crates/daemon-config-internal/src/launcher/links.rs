@@ -230,7 +230,7 @@ impl LinkSlotKind {
     }
 }
 
-/// The declared link_ids of one node, tagged by family, for logarithmic lookup
+/// The declared `link_ids` of one node, tagged by family, for logarithmic lookup
 /// and a stable declared-keys listing in error messages.
 struct DeclaredLinkSlots<'a> {
     by_id: BTreeMap<&'a str, LinkSlotKind>,
@@ -273,7 +273,7 @@ impl DeclaredLinkSlots<'_> {
         self.by_id.get(link).copied()
     }
 
-    /// Every declared link_id across all families, sorted for a deterministic
+    /// Every declared `link_id` across all families, sorted for a deterministic
     /// message.
     fn declared_csv(&self) -> String {
         self.by_id.keys().copied().collect::<Vec<_>>().join(", ")

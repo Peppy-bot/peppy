@@ -45,7 +45,7 @@ impl MockInstance {
 }
 
 /// One active subscription entry. `drop_secondary` is set when the
-/// subscriber wildcards the link_id slot at the keyexpr level (the topic
+/// subscriber wildcards the `link_id` slot at the keyexpr level (the topic
 /// `from_link_id: None` case): `route_publish` drops non-primary fan-out
 /// for those entries so a multi-link `emit` yields one delivery.
 pub struct MockSubscription {
@@ -663,7 +663,7 @@ impl MockAdapter {
             .map(|(keyexpr, _)| keyexpr.as_str())
     }
 
-    /// Creates a new MockAdapter, wraps it in a Messenger, starts its router (the
+    /// Creates a new `MockAdapter`, wraps it in a Messenger, starts its router (the
     /// mock has none, so this does nothing), and returns the messenger in a
     /// [`MockInstance`].
     ///
@@ -812,7 +812,7 @@ impl MockAdapter {
     /// [`MockAdapter::publish_keyexpr`] (which holds the adapter directly)
     /// and [`MockPublisher::publish`] (which clones the same `Arc`s for
     /// lock-free per-topic publishing). `is_primary` is the wire-attachment
-    /// dedup marker: subscribers that wildcarded the link_id slot drop
+    /// dedup marker: subscribers that wildcarded the `link_id` slot drop
     /// non-primary fan-out. A retaining topic keeps the message in
     /// `retained`.
     async fn route_publish(
@@ -920,12 +920,12 @@ impl MockAdapter {
 
 /// Per-queryable forwarder for the mock adapter. Mirrors the zenoh
 /// adapter's `process_inbound_query`: drains inbound `MockQuery`s, parses
-/// the caller identity and link_id slot, claims the producer's default `_`
+/// the caller identity and `link_id` slot, claims the producer's default `_`
 /// segment via [`ParsedInboundQuery::claim`], builds an [`IncomingRequest`]
 /// with a [`ResponseToken::Mock`] carrying the per-query reply channel, and
-/// pushes it to peppylib. Queries whose link_id slot is neither `*` nor `_`
-/// are dropped (the `mock_query`'s reply_tx clone falls out of scope at end
-/// of iteration so the caller's reply stream finalizes once every reply_tx
+/// pushes it to peppylib. Queries whose `link_id` slot is neither `*` nor `_`
+/// are dropped (the `mock_query`'s `reply_tx` clone falls out of scope at end
+/// of iteration so the caller's reply stream finalizes once every `reply_tx`
 /// is dropped).
 async fn handle_mock_queryable(
     mut query_rx: mpsc::Receiver<MockQuery>,

@@ -22,7 +22,7 @@ pub fn build_target_triple() -> String {
 
 /// Embed the `PEPPY_GIT_TAG` environment variable into the binary at compile time.
 ///
-/// If `PEPPY_GIT_TAG` is set and non-empty (by build_release.sh), emits a
+/// If `PEPPY_GIT_TAG` is set and non-empty (by `build_release.sh`), emits a
 /// `cargo:rustc-env` directive so the crate can read it via `env!()`.
 /// Also registers `cargo:rerun-if-env-changed` so cargo rebuilds when the
 /// variable changes.

@@ -107,7 +107,7 @@ pub(crate) fn failure_of_py_err(err: PyErr) -> Failure {
 /// vanished), which keeps it type-distinguishable from the clean
 /// end-of-stream close (`ActionFeedbackChannelClosed` → `RuntimeError`).
 /// `UnknownPairingSlot`, `UnknownObservationSlot`, `UnknownProducerSlot` and
-/// `TargetNotBound` are caller misuse (a link_id the manifest never declared as
+/// `TargetNotBound` are caller misuse (a `link_id` the manifest never declared as
 /// a pairing, observer or consumer slot, or a producer outside the slot's bound
 /// set), so they map to `ValueError`, the same type `peer()` and
 /// `observation_slot()` raise for the same kind of input. A failure a
@@ -201,7 +201,7 @@ where
     })
 }
 
-/// Python wrapper for ZenohdInstance - an ephemeral zenohd router for testing.
+/// Python wrapper for `ZenohdInstance` - an ephemeral zenohd router for testing.
 ///
 /// Use as an async context manager (`async with`) or call `stop()` explicitly
 /// to ensure the router is cleanly shut down.
@@ -219,7 +219,7 @@ impl PyZenohdInstance {
     /// If port is None, an available port will be automatically selected.
     /// If port is Some, that specific port will be used.
     ///
-    /// Returns a ZenohdInstance that automatically stops the router when dropped.
+    /// Returns a `ZenohdInstance` that automatically stops the router when dropped.
     #[staticmethod]
     #[pyo3(signature = (host, port=None))]
     fn start_ephemeral(
@@ -291,7 +291,7 @@ impl PyZenohdInstance {
     }
 }
 
-/// Python wrapper for MessengerHandle.
+/// Python wrapper for `MessengerHandle`.
 ///
 /// `MessengerHandle` already manages its own internal `Arc<Mutex<Messenger>>`,
 /// so no additional outer lock is needed here. Cloning is a cheap `Arc` bump.

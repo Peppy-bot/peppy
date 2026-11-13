@@ -141,7 +141,7 @@ pub(crate) fn read_producer(
     ))
 }
 
-/// A slot's link_id from its text field, held to the wire's link_id rule.
+/// A slot's `link_id` from its text field, held to the wire's `link_id` rule.
 pub(crate) fn read_link_id(
     field: ::capnp::Result<::capnp::text::Reader<'_>>,
     codec: &str,

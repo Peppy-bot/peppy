@@ -164,7 +164,7 @@ fn is_awaitable(value: &Bound<'_, PyAny>) -> PyResult<bool> {
 /// and `asyncio.run`) reject awaitables that are not coroutine objects, such
 /// as Tasks, Futures, and custom `__await__` classes. Anything that
 /// `asyncio.iscoroutine` does not accept is wrapped in a pure-Python coroutine
-/// that simply awaits it. Pure Python (not a PyCFunction) for the same reason
+/// that simply awaits it. Pure Python (not a `PyCFunction`) for the same reason
 /// as `create_event_loop_helpers`: the wrapper body runs on an event loop
 /// thread and must not put `catch_unwind` in the call path.
 fn coerce_to_coroutine<'py>(
@@ -934,7 +934,7 @@ impl Drop for CancelSetupOnStop {
     }
 }
 
-/// Python wrapper for CancellationToken.
+/// Python wrapper for `CancellationToken`.
 #[pyclass(name = "CancellationToken")]
 pub struct PyCancellationToken {
     inner: CancellationToken,
@@ -967,7 +967,7 @@ impl PyCancellationToken {
     }
 }
 
-/// Python wrapper for NodeRunner.
+/// Python wrapper for `NodeRunner`.
 #[pyclass(name = "NodeRunner")]
 pub struct PyNodeRunner {
     pub(crate) inner: Arc<NodeRunner>,
@@ -1525,7 +1525,7 @@ impl PyNodeRunner {
     }
 }
 
-/// Python wrapper for StandaloneConfig.
+/// Python wrapper for `StandaloneConfig`.
 #[pyclass(name = "StandaloneConfig", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyStandaloneConfig {
@@ -1729,7 +1729,7 @@ impl PyStandaloneConfig {
     }
 }
 
-/// Python wrapper for NodeBuilder.
+/// Python wrapper for `NodeBuilder`.
 #[pyclass(name = "NodeBuilder")]
 pub struct PyNodeBuilder {
     standalone_config: Option<StandaloneConfig>,

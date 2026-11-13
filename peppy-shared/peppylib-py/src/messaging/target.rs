@@ -123,7 +123,7 @@ impl PySenderTarget {
 /// Python wrapper for [`ProducerRef`], the publisher's full
 /// `(core_node, instance_id)` wire identity. Returned alongside every consumed
 /// message, and accepted by every producer-targeting call site (topic
-/// subscribe, service poll, action send_goal) so a consumer can pass the
+/// subscribe, service poll, action `send_goal`) so a consumer can pass the
 /// identity it received straight back. `instance_id` alone is only unique
 /// within one stack, so the pair is what distinguishes producers across the
 /// whole mesh; consumers key per-slot state on it.

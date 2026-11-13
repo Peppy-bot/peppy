@@ -7,7 +7,7 @@ use crate::helpers::config_common::core_node_config;
 use crate::helpers::graph_query;
 
 /// The `brain` node, which consumes the `move_right_arm` action of
-/// `controller:v1` over link_id `controller`.
+/// `controller:v1` over `link_id` `controller`.
 fn brain_consuming_move_right_arm() -> config::node::NodeConfig {
     serde_json5::from_str(
         r#"{

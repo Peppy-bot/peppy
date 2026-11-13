@@ -245,7 +245,7 @@ pub fn served_interfaces(
     )
 }
 
-/// The daemon interface of each daemon target of a node, by its link_id, in
+/// The daemon interface of each daemon target of a node, by its `link_id`, in
 /// the order of `depends_on.daemon`, resolved through the registry, or one
 /// refusal per target that names an interface this peppy does not serve.
 pub fn served_targets(

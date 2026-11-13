@@ -553,7 +553,7 @@ fn expose_two_actions() {
     );
 }
 
-/// A real manifest dep (link_id present) wires the runtime binding into
+/// A real manifest dep (`link_id` present) wires the runtime binding into
 /// the module: this `one` slot's `bound_producer()` reads
 /// `node_runner.bound_producer(<link_id>)`, and the caller-selected
 /// `target` is membership-checked against the same slot before `send_goal`

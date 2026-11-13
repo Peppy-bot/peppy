@@ -8,7 +8,7 @@
 //! `PairingCoordinator` in core-node-internal, which serializes all pairing
 //! operations and calls into this registry to commit.
 
-/// Address of one pairing slot: core node × instance × link_id. A pair is
+/// Address of one pairing slot: core node × instance × `link_id`. A pair is
 /// one peer to one peer between two complementary slots; a slot holds as
 /// many pairs as its cardinality admits, each until cleared.
 ///

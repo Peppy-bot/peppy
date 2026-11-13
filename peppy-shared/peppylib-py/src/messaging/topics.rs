@@ -10,7 +10,7 @@ use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Python wrapper for TopicMessage
+/// Python wrapper for `TopicMessage`
 ///
 /// Keeps the received [`Message`] whole instead of destructuring it into owned
 /// fields. The message already owns every string the getters return and its
@@ -40,11 +40,11 @@ impl PyTopicMessage {
         self.inner.core_node()
     }
 
-    /// The producer's bound link_id, parsed from the inbound topic keyexpr.
-    /// On a pairing subscription this is the peer's own slot link_id, which is
+    /// The producer's bound `link_id`, parsed from the inbound topic keyexpr.
+    /// On a pairing subscription this is the peer's own slot `link_id`, which is
     /// what the Rust forwarding path re-checks against the slot's pin; exposing
     /// it here lets a Python node make the same check. Empty for messages that
-    /// arrived via a non-topic path, where the keyexpr encodes no link_id.
+    /// arrived via a non-topic path, where the keyexpr encodes no `link_id`.
     #[getter]
     fn link_id(&self) -> &str {
         self.inner.link_id()
@@ -144,7 +144,7 @@ impl From<PyTopicBuffer> for TopicBuffer {
     }
 }
 
-/// Python wrapper for TopicMessenger
+/// Python wrapper for `TopicMessenger`
 #[pyclass(name = "TopicMessenger")]
 pub struct PyTopicMessenger;
 
@@ -279,7 +279,7 @@ impl PyTopicMessenger {
     }
 
     /// A statically pinned peer-topic subscription: producer, pairing
-    /// target, producer-side link_id and the mock's own slot `as_link_id`
+    /// target, producer-side `link_id` and the mock's own slot `as_link_id`
     /// all pinned, the exact wire shape of a paired peer's subscription,
     /// without the pin-following machinery (a test mock's pin never
     /// changes). Test-support seam (`peppylib::testing`); generated pairing
@@ -359,7 +359,7 @@ impl PyTopicMessenger {
     /// [`wait_for_subscriber`](Self::wait_for_subscriber) for a publisher
     /// bound under a concrete producer-side `link_id` (a pairing slot
     /// publisher): the match is checked against the same keyexpr the
-    /// publisher will emit on, link_id segment included. `link_id` of `None`
+    /// publisher will emit on, `link_id` segment included. `link_id` of `None`
     /// matches the reserved default `_` segment.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, timeout_secs, link_id=None))]
@@ -400,8 +400,8 @@ impl PyTopicMessenger {
     /// lock-free. Declare once, then publish per message (a camera streaming
     /// frames, a sensor at rate).
     ///
-    /// `link_id` binds the publisher under a concrete producer-side link_id
-    /// wire segment (pairing slot publishers pass their own slot link_id);
+    /// `link_id` binds the publisher under a concrete producer-side `link_id`
+    /// wire segment (pairing slot publishers pass their own slot `link_id`);
     /// `None` falls back to the reserved default `_` segment.
     ///
     /// `retention` is the topic's declared policy.

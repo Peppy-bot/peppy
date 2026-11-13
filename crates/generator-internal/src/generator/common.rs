@@ -40,7 +40,7 @@ impl PeppyPythonConfigTemplate<'_> {
 /// peppygen's exact `peppylib==<this>` requirement can never be satisfied
 /// from PyPI; a node missing the `.peppy/libs/peppylib` path source fails
 /// loudly instead of silently installing an outdated release. Intentionally
-/// differs from `peppylib.__version__` (which is stamped from PEPPY_GIT_TAG).
+/// differs from `peppylib.__version__` (which is stamped from `PEPPY_GIT_TAG`).
 pub(crate) const PYTHON_PEPPYLIB_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+peppy");
 
 #[derive(Template)]

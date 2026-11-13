@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Identity of the peer paired on a pairing slot: the peer instance's full
-/// `(core_node, instance_id)` wire address plus the link_id of the peer's own
+/// `(core_node, instance_id)` wire address plus the `link_id` of the peer's own
 /// complementary slot. Returned by `PeerSlot.paired()` / `wait_paired()` and
 /// tagged onto every message a `PeerSubscription` yields. `frozen, eq, hash`
 /// make it usable directly as a `dict` key, mirroring the Rust
@@ -43,7 +43,7 @@ impl PyPeerInfo {
         PyProducerRef::from(self.inner.producer.clone())
     }
 
-    /// The link_id of the peer's complementary pairing slot.
+    /// The `link_id` of the peer's complementary pairing slot.
     #[getter]
     fn peer_link_id(&self) -> &str {
         &self.inner.peer_link_id

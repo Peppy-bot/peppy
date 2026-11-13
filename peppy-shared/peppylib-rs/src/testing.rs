@@ -219,7 +219,7 @@ pub async fn connect_messenger(host: &str, port: u16) -> Result<MessengerHandle>
 /// mode a freshly-connected publisher learns about existing subscribers
 /// asynchronously, so an unguarded first publish can be dropped before routing
 /// propagates; the wait is keyed by this publisher's exact wire identity
-/// (link_id segment included), so it matches precisely the subscription the
+/// (`link_id` segment included), so it matches precisely the subscription the
 /// consumer under test opened. Subsequent publishes skip the wait.
 ///
 /// No subscriber within [`READINESS_TIMEOUT`] is an error, not a silent drop:
@@ -566,7 +566,7 @@ async fn wait_reachable(
 pub struct CapturedServiceRequest {
     /// Caller identity and request payload.
     pub message: Message,
-    /// Producer-side link_id that received the request.
+    /// Producer-side `link_id` that received the request.
     pub link_id: String,
 }
 
@@ -1157,7 +1157,7 @@ impl Drop for MockClock {
 pub struct PublisherReadiness {
     /// The identity the node publishes under for this topic.
     pub target: SenderTarget,
-    /// The node's own producer-side link_id for slot-scoped publishers
+    /// The node's own producer-side `link_id` for slot-scoped publishers
     /// (pairing slots); `None` for plain emitted topics.
     pub link_id: Option<String>,
     /// The mock peer a pairing publisher addresses; `None` for plain emitted

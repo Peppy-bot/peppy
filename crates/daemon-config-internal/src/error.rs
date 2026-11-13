@@ -248,8 +248,8 @@ pub struct ClockMismatch {
     pub a_clock: String,
     pub b: String,
     pub b_clock: String,
-    /// The connection, as the deployment writes it: `binding \`cam\``,
-    /// `pairing \`left_arm\`` or `observation \`arms\``.
+    /// The connection, as the deployment writes it: ``binding `cam` ``,
+    /// ``pairing `left_arm` `` or ``observation `arms` ``.
     pub via: String,
 }
 
@@ -257,7 +257,7 @@ pub struct ClockMismatch {
 /// `--link KEY`) that names no declared slot of the instance's node across
 /// any family: `depends_on.{nodes,contracts}` producer slots or
 /// `depends_on.pairings` participant/observer slots. Every link key must be a
-/// declared slot link_id; there are no free-form keys.
+/// declared slot `link_id`; there are no free-form keys.
 #[derive(Debug, Clone, Error)]
 #[error(
     "link `{link}` on instance `{owner_instance_id}` names no \
@@ -351,7 +351,7 @@ pub struct PairingTargetAmbiguous {
 }
 
 /// Payload for [`ParsingError::PairingSlotAlreadyPaired`]. A `one` or
-/// `zero_or_one` slot (instance × link_id) was claimed by more than one pair
+/// `zero_or_one` slot (instance × `link_id`) was claimed by more than one pair
 /// in the same plan, or is already paired in the running stack.
 #[derive(Debug, Clone, Error)]
 #[error(
@@ -365,7 +365,7 @@ pub struct PairingSlotAlreadyPaired {
 }
 
 /// Payload for [`ParsingError::PairAlreadyHeld`]. A `one_or_more` or
-/// `zero_or_more` slot (instance × link_id) already holds the pair a
+/// `zero_or_more` slot (instance × `link_id`) already holds the pair a
 /// declaration names.
 #[derive(Debug, Clone, Error)]
 #[error(
@@ -482,7 +482,7 @@ pub struct ObservationTargetNotObservable {
 /// participant slot and the observer spec did not name one. Mirror of
 /// [`PairingTargetAmbiguous`]; unlike pairing there is no exclusivity, so
 /// every candidate is available, but the observer must still pick which
-/// producer-side link_id to pin.
+/// producer-side `link_id` to pin.
 #[derive(Debug, Clone, Error)]
 #[error(
     "observer link `{key}` on instance `{owner_instance_id}`: target `{source_instance_id}` \
@@ -1120,7 +1120,7 @@ pub enum Error {
 mod tests {
     use super::*;
 
-    /// A serde_json5 error carrying `msg`, as a custom deserializer raises it.
+    /// A `serde_json5` error carrying `msg`, as a custom deserializer raises it.
     fn make_err(msg: &str) -> serde_json5::Error {
         serde::de::Error::custom(msg)
     }

@@ -1,7 +1,7 @@
 //! Roundtrip latency benchmark between two real peppy nodes.
 //!
 //! Spins up a Rust **driver** node and a **responder** node (Rust or Python),
-//! both launched the way peppy launches nodes (NodeBuilder + PEPPY_RUNTIME_CONFIG
+//! both launched the way peppy launches nodes (`NodeBuilder` + `PEPPY_RUNTIME_CONFIG`
 //! with a generated peppygen library present). The driver times each topic /
 //! service roundtrip on a single clock and reports the distribution back over a
 //! raw control service.
@@ -23,7 +23,7 @@
 //! Run with:
 //!     cargo bench -p core-node --bench latency
 //!     cargo bench -p core-node --bench latency -- rust    # filter scenarios
-//! Set PEPPY_LATENCY_SKIP_PYTHON=1 to skip the Python responder (no `uv`).
+//! Set `PEPPY_LATENCY_SKIP_PYTHON=1` to skip the Python responder (no `uv`).
 
 #[path = "../tests/latency/harness.rs"]
 mod harness;

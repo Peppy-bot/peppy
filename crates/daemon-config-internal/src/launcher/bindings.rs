@@ -152,7 +152,7 @@ pub struct ValidatedBindings {
 ///    [`ParsingError::DuplicateInstanceIdAcrossStack`].
 /// 5. Every declared slot resolves. A `one` / `zero_or_one` /
 ///    `one_or_more` slot with no `links` entry emits one
-///    [`ParsingError::BindingSlotUnfulfilled`] per slot (in link_id order);
+///    [`ParsingError::BindingSlotUnfulfilled`] per slot (in `link_id` order);
 ///    a `zero_or_more` slot with no entry resolves to an explicit empty
 ///    set, and so does a `zero_or_one` slot the deployment wrote vacant.
 /// 6. A consumer whose addressing is [`MemberAddressing::ByCopy`] takes
@@ -587,7 +587,7 @@ mod tests {
     use super::*;
     use std::assert_matches;
 
-    /// The launching daemon's core_node stamped into every resolved
+    /// The launching daemon's `core_node` stamped into every resolved
     /// binding by these tests.
     const TEST_CORE: &str = "core_a";
 
@@ -807,7 +807,7 @@ mod tests {
     }
 
     /// Rule 5: every unfulfilled slot on an instance gets its own error,
-    /// in link_id order, and a slot WITH a binding entry never
+    /// in `link_id` order, and a slot WITH a binding entry never
     /// double-reports. `cons1` declares three slots and binds only
     /// `middle`.
     #[test]
@@ -884,8 +884,8 @@ mod tests {
 
     /// Depends-on fixture with one slot per cardinality, all expecting
     /// `camera:v1` nodes: `main` (one, omitted), `wrist_camera`
-    /// (zero_or_one), `cameras` (one_or_more), `spare_cameras`
-    /// (zero_or_more).
+    /// (`zero_or_one`), `cameras` (`one_or_more`), `spare_cameras`
+    /// (`zero_or_more`).
     fn all_cardinalities_depends_on() -> DependsOn {
         parse_depends_on(
             r#"{
@@ -1762,8 +1762,8 @@ mod tests {
         assert_eq!(instance_id, "ghost_producer");
     }
 
-    /// Rule 4: stack-wide instance_id duplicate across different
-    /// (node_name, node_tag).
+    /// Rule 4: stack-wide `instance_id` duplicate across different
+    /// (`node_name`, `node_tag`).
     #[test]
     fn rule4_rejects_stack_wide_duplicate_instance_id() {
         let camera_instances = parse_instances(r#"[{ instance_id: "shared_inst" }]"#);

@@ -23,8 +23,8 @@ pub(super) struct LoadedFragment {
     /// name it, and one per inline body.
     pub(super) id: usize,
     pub(super) body: Fragment,
-    /// The path relative to the launcher's directory for a file, `inline
-    /// option `axis.option`` for a body written where the option is.
+    /// The path relative to the launcher's directory for a file,
+    /// ``inline option `axis.option` `` for a body written where the option is.
     pub(super) origin: String,
     /// The directory a file fragment's own fragment paths resolve against.
     /// `None` for an inline fragment, whose paths resolve where the

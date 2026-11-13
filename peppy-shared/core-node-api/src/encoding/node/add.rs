@@ -1,4 +1,4 @@
-//! Encoding types for the NodeAdd action (streaming version with feedback).
+//! Encoding types for the `NodeAdd` action (streaming version with feedback).
 
 use crate::node_capnp;
 use crate::{NonEmptyPayload, Payload, Result};
@@ -152,7 +152,7 @@ fn validate_repo_node_tag(tag: &str, label: &str) -> Result<()> {
     config::repo_node_id::validate_repo_node_tag(tag, label).map_err(crate::Error::Decoding)
 }
 
-/// Goal message for the NodeAdd action.
+/// Goal message for the `NodeAdd` action.
 pub struct NodeAddGoal {
     pub source: NodeSource,
     pub git_hash: String,
@@ -174,7 +174,7 @@ pub struct NodeAddGoal {
 }
 
 impl NodeAddGoal {
-    /// Creates a new NodeAddGoal from a NodeSource.
+    /// Creates a new `NodeAddGoal` from a `NodeSource`.
     pub fn from_source(source: NodeSource, git_hash: impl Into<String>, timeout_secs: u64) -> Self {
         Self {
             source,
@@ -187,12 +187,12 @@ impl NodeAddGoal {
         }
     }
 
-    /// Creates a new NodeAddGoal from a filesystem path.
+    /// Creates a new `NodeAddGoal` from a filesystem path.
     pub fn new(path: impl Into<PathBuf>, git_hash: impl Into<String>, timeout_secs: u64) -> Self {
         Self::from_source(NodeSource::Fs(path.into()), git_hash, timeout_secs)
     }
 
-    /// Creates a new NodeAddGoal from a Git repository with an optional ref (tag/branch/commit).
+    /// Creates a new `NodeAddGoal` from a Git repository with an optional ref (tag/branch/commit).
     pub fn new_git(
         repo_url: GitUrl,
         repo_path: impl Into<String>,
@@ -211,7 +211,7 @@ impl NodeAddGoal {
         )
     }
 
-    /// Creates a new NodeAddGoal from an HTTP URL (for .tzst archives).
+    /// Creates a new `NodeAddGoal` from an HTTP URL (for .tzst archives).
     pub fn new_http(
         url: url::Url,
         sha256: Option<String>,
@@ -221,7 +221,7 @@ impl NodeAddGoal {
         Self::from_source(NodeSource::Http { url, sha256 }, git_hash, timeout_secs)
     }
 
-    /// Creates a new NodeAddGoal that names a node by `(name, tag)` for the
+    /// Creates a new `NodeAddGoal` that names a node by `(name, tag)` for the
     /// receiving daemon to resolve and pin. Returns an error when the name
     /// or tag fails the repo-node validation rules.
     pub fn new_resolve_ref(
@@ -422,7 +422,7 @@ impl NodeAddGoalResponse {
     }
 }
 
-/// Feedback message for the NodeAdd action.
+/// Feedback message for the `NodeAdd` action.
 /// One line the add reports, tagged with the stream it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddFeedback {

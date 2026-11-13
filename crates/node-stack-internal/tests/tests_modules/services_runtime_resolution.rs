@@ -7,7 +7,7 @@ use crate::helpers::config_common::core_node_config;
 use crate::helpers::graph_query;
 
 /// The `brain` node, which consumes the `reset_sensor` service of `lidar:v1`
-/// over link_id `lidar`.
+/// over `link_id` `lidar`.
 fn brain_consuming_reset_sensor() -> config::node::NodeConfig {
     serde_json5::from_str(
         r#"{

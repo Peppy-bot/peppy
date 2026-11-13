@@ -24,7 +24,7 @@ use super::zenohd::{RouterHealthChecker, RouterLinksProbe};
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublisherQoS {
     /// Best effort delivery with minimal latency
-    /// - Priority: DataLow
+    /// - Priority: `DataLow`
     /// - Congestion: Drop
     /// - Express: true
     BestEffort,
@@ -37,13 +37,13 @@ pub enum PublisherQoS {
     Standard,
 
     /// Important messages that should be prioritized
-    /// - Priority: DataHigh
+    /// - Priority: `DataHigh`
     /// - Congestion: Block
     /// - Express: false
     Important,
 
     /// Critical real-time messages (e.g., safety-critical commands)
-    /// - Priority: RealTime
+    /// - Priority: `RealTime`
     /// - Congestion: Block
     /// - Express: true
     Critical,
@@ -318,7 +318,7 @@ pub trait MessengerBackend {
 
     /// Publish a one-shot topic message. `is_primary` rides on the topic
     /// attachment (see `TopicAttachment` in `wire::zenoh_format`): a
-    /// subscriber that wildcards the link_id slot drops a publish marked
+    /// subscriber that wildcards the `link_id` slot drops a publish marked
     /// secondary. Refused on a topic the session retains.
     fn publish_topic(
         &mut self,
@@ -332,7 +332,7 @@ pub trait MessengerBackend {
 
     /// Declare the producer's service queryable and return the handle that
     /// receives its [`IncomingRequest`]s. One queryable serves every bound
-    /// link_id: its keyexpr has `*` at the link_id slot, and the adapter
+    /// `link_id`: its keyexpr has `*` at the `link_id` slot, and the adapter
     /// claims the default `_` segment for each query.
     fn listen_service(
         &self,
@@ -706,8 +706,8 @@ impl CoreNodePresenceList {
 /// Server-side handle yielded by [`MessengerBackend::listen_service`] for a
 /// service or action sub-service. The adapter-owned `_guard` keeps the
 /// producer's one queryable (a Zenoh `Queryable<()>`, or the mock's
-/// forwarder task) alive. Its keyexpr has `*` at the link_id slot, so it
-/// receives the queries for every bound link_id. Dropping the handle
+/// forwarder task) alive. Its keyexpr has `*` at the `link_id` slot, so it
+/// receives the queries for every bound `link_id`. Dropping the handle
 /// undeclares it.
 ///
 /// Like [`Subscription`], the channel uses `flume` so the zenoh reception
@@ -773,7 +773,7 @@ impl ReplyStream {
 
 /// A single service request delivered to the responder. `token` is the
 /// only legal way to send replies: peppylib calls `respond_ack` first
-/// (lets the consumer distinguish ServiceUnreachable from ServiceTimeout),
+/// (lets the consumer distinguish `ServiceUnreachable` from `ServiceTimeout`),
 /// then exactly one terminal `respond_response` / `respond_failure`.
 pub struct IncomingRequest {
     pub payload: Payload,
@@ -782,10 +782,10 @@ pub struct IncomingRequest {
     /// and an empty payload, never invoking the user handler). Decoded
     /// from the mandatory query attachment.
     pub kind: ServiceQueryKind,
-    /// The producer-side link_id that received this request: the link_id
+    /// The producer-side `link_id` that received this request: the `link_id`
     /// the adapter claimed for the query, which is always
     /// [`crate::DEFAULT_LINK_ID`]. Surfaced to action goal handlers so
-    /// per-goal feedback addresses the link_id the consumer targeted.
+    /// per-goal feedback addresses the `link_id` the consumer targeted.
     pub link_id: String,
     /// Caller's `core_node` segment, parsed from the inbound query selector.
     pub caller_core: String,
@@ -1109,9 +1109,9 @@ impl TopicMessage {
         &self.core_node
     }
 
-    /// Producer's bound link_id, parsed out of the inbound keyexpr at
+    /// Producer's bound `link_id`, parsed out of the inbound keyexpr at
     /// segment 8 of the topic publish format (a service reply carries the
-    /// responder's claimed link_id at the same segment). peppylib's pairing
+    /// responder's claimed `link_id` at the same segment). peppylib's pairing
     /// slot streams compare it with the slot a producer publishes on. Empty
     /// for a message built with [`Self::from_parts`], such as a service
     /// request.
@@ -1246,10 +1246,10 @@ impl Messenger {
 
     /// Pre-bind a per-goal action-feedback publisher. Mirrors
     /// [`declare_topic_publisher`](Self::declare_topic_publisher) for action
-    /// feedback streams keyed by `goal_id`. `link_id` is the link_id parsed
+    /// feedback streams keyed by `goal_id`. `link_id` is the `link_id` parsed
     /// from the goal's request keyexpr; feedback for a goal must publish
     /// under the same wire identity the consumer subscribed for, even when
-    /// the producer is bound to multiple link_ids.
+    /// the producer is bound to multiple `link_ids`.
     pub fn declare_action_feedback_publisher(
         &self,
         recv: &ActionWireReceiver,

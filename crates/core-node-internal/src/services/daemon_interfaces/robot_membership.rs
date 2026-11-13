@@ -759,8 +759,8 @@ fn refuse_removal(
     ))
 }
 
-/// The scope's options as a message names them: "option so101_sim",
-/// "options openarm_sim and so101_sim".
+/// The scope's options as a message names them: "option `so101_sim`",
+/// "options `openarm_sim` and `so101_sim`".
 fn options_phrase(scope: &RobotMembershipScope) -> String {
     let options: Vec<&str> = scope
         .options()

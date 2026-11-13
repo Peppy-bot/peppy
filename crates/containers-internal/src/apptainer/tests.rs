@@ -1485,7 +1485,7 @@ fn linux_apptainer_cache_dir() -> Option<PathBuf> {
     super::lima::peppy_home_dir(&format!("tmp/{}", crate::APPTAINER_CACHE_DIR_NAME))
 }
 
-/// The trees build.rs copies into OUT_DIR ship inside release archives: their
+/// The trees build.rs copies into `OUT_DIR` ship inside release archives: their
 /// `.copy-source` sentinels and the generated apptainer man pages must not
 /// carry the building machine's home directory.
 #[test]
@@ -2393,7 +2393,7 @@ fn ensure_host_mounts_is_noop_on_native() {
 
 /// The bundled `LIMA_VERSION` pin must be present and shaped like a version
 /// `parse_lima_version` can read, mirroring the bundled-binary checks that already
-/// exist for APPTAINER_VERSION and GOCRYPTFS_VERSION.
+/// exist for `APPTAINER_VERSION` and `GOCRYPTFS_VERSION`.
 #[test]
 fn lima_version_const_is_present_and_parses() {
     assert!(

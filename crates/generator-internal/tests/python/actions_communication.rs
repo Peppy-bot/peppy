@@ -36,7 +36,7 @@ const CONSUMED_ACTION_EXAMPLE: &str = r#"
 }
 "#;
 
-/// Runs one native move_arm action flow. The consumer fires goals at the
+/// Runs one native `move_arm` action flow. The consumer fires goals at the
 /// exposer of [`EXPOSED_ACTION_EXAMPLE`] through its `brain` slot, bound to
 /// that exposer, and exposes `flow_done_service`, which its script serves
 /// once it has run the flow. The exposer starts first, and both nodes are

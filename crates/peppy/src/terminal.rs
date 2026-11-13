@@ -40,7 +40,7 @@ fn terminal_width() -> usize {
 
 /// Whether the `NO_COLOR` convention asks for plain output: the variable set to
 /// a non-empty value. An empty `NO_COLOR` is treated as unset, per the
-/// convention at https://no-color.org.
+/// convention at <https://no-color.org>.
 fn no_color_requested() -> bool {
     no_color_from_env(std::env::var("NO_COLOR").ok())
 }

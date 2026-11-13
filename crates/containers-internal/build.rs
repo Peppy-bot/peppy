@@ -22,10 +22,10 @@ mod apptainer_build {
     /// Keep in sync with the same constants in `scripts/functions/lima.py`,
     /// which pins Go for the in-VM Linux target builds.
     const GO_VERSION: &str = "1.27.1";
-    /// SHA-256 of `go{GO_VERSION}.linux-amd64.tar.gz` from https://go.dev/dl.
+    /// SHA-256 of `go{GO_VERSION}.linux-amd64.tar.gz` from <https://go.dev/dl>.
     const GO_LINUX_AMD64_SHA256: &str =
         "63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445";
-    /// SHA-256 of `go{GO_VERSION}.linux-arm64.tar.gz` from https://go.dev/dl.
+    /// SHA-256 of `go{GO_VERSION}.linux-arm64.tar.gz` from <https://go.dev/dl>.
     const GO_LINUX_ARM64_SHA256: &str =
         "3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec";
 
@@ -324,7 +324,7 @@ mod apptainer_build {
     }
 
     /// Stable digest of a cache path, for `.copy-source` sentinels. The
-    /// sentinel only decides whether the copy under OUT_DIR is current, so a
+    /// sentinel only decides whether the copy under `OUT_DIR` is current, so a
     /// digest distinguishes source directories as well as the path did
     /// without writing the building machine's home directory into trees that
     /// ship inside release archives. The hash algorithm is not stable across
@@ -338,7 +338,7 @@ mod apptainer_build {
         format!("{:016x}", hasher.finish())
     }
 
-    /// The ELF e_machine a binary for `arch` must carry.
+    /// The ELF `e_machine` a binary for `arch` must carry.
     fn expected_elf_machine(arch: &str) -> u16 {
         match arch {
             "x86_64" => 62,
@@ -347,7 +347,7 @@ mod apptainer_build {
         }
     }
 
-    /// The ELF e_machine of the file at `path`, `None` when unreadable or not ELF.
+    /// The ELF `e_machine` of the file at `path`, `None` when unreadable or not ELF.
     fn elf_machine(path: &Path) -> Option<u16> {
         let mut header = [0u8; 20];
         let mut file = std::fs::File::open(path).ok()?;
@@ -422,7 +422,7 @@ mod apptainer_build {
         );
     }
 
-    /// LIMA_HOME for the build-time VM instance.
+    /// `LIMA_HOME` for the build-time VM instance.
     ///
     /// Uses `~/.peppy/lima-build/` instead of the temp dir because macOS temp
     /// directories (`/var/folders/.../T/`) are very long and push Unix socket
@@ -2070,7 +2070,7 @@ echo "=== Apptainer build complete ==="
 
     /// Downloads and caches the Lima of the host `lima_host` (`os`, `arch`),
     /// with the guest agent of the Linux architecture `other_arch`, which a
-    /// VM of that architecture runs, and copies it to OUT_DIR for release
+    /// VM of that architecture runs, and copies it to `OUT_DIR` for release
     /// packaging. `None` when Lima cannot be downloaded.
     fn setup_lima(out_dir: &str, lima_host: (&str, &str), other_arch: &str) -> Option<LimaConfig> {
         let (os, arch) = lima_host;
@@ -2106,7 +2106,7 @@ echo "=== Apptainer build complete ==="
         Some(lima)
     }
 
-    /// Copies the tree at `source` to `dest` under OUT_DIR, unless the
+    /// Copies the tree at `source` to `dest` under `OUT_DIR`, unless the
     /// `.copy-source` stamp in `dest` already holds `stamp`. Skipping the copy
     /// of an unchanged source avoids mtime bumps that trigger unnecessary
     /// recompilation. The stamp holds a digest of the source path, never the
@@ -2130,7 +2130,7 @@ echo "=== Apptainer build complete ==="
 
     /// Pre-build apptainer for all target architectures via Lima VMs.
     ///
-    /// By default only the native architecture is built. Set PEPPY_CROSS_ARCH=1
+    /// By default only the native architecture is built. Set `PEPPY_CROSS_ARCH=1`
     /// (used by the release script) to also build for non-native architectures.
     fn build_lima_targets(lima: &LimaConfig) {
         let cross_arch = env::var("PEPPY_CROSS_ARCH").unwrap_or_default() == "1";
@@ -2232,7 +2232,7 @@ echo "=== Apptainer build complete ==="
     /// same absolute path because Lima mounts the host home directory.
     /// The host home is not guessable from inside the guest (one release
     /// machine keeps it on an external volume), so the release driver states
-    /// it explicitly: lima.py exports PEPPY_HOST_HOME into the guest build.
+    /// it explicitly: lima.py exports `PEPPY_HOST_HOME` into the guest build.
     /// A build launched without it gets no cache here and falls through to a
     /// native source build, whose post-build ELF check refuses a wrong-ISA
     /// result before anything is cached or shipped.

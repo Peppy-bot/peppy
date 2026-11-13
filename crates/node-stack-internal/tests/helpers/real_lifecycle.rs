@@ -137,7 +137,7 @@ pub(crate) fn lifecycle_harness() -> LifecycleHarness {
 }
 
 /// Rewrites `config.execution` so that the build path runs the trivial
-/// `archive_dir_to_storage` branch (no apptainer, no user build_cmd) and the
+/// `archive_dir_to_storage` branch (no apptainer, no user `build_cmd`) and the
 /// later spawn runs `run_cmd`. Fixture callers that pass arbitrary configs
 /// are opting into this override.
 pub(crate) fn override_execution_for_fixture(
@@ -173,7 +173,7 @@ pub(crate) async fn build_ready(
 
 /// Pushes `config` into `stack` with its execution fields as they are, then
 /// drives the real `NodeEntity::build` to produce a `Ready` entity. The
-/// config must build without apptainer or a user build_cmd; a test that
+/// config must build without apptainer or a user `build_cmd`; a test that
 /// needs its own `run_cmd` passes it to [`override_execution_for_fixture`].
 ///
 /// Returns the `Ready` entity handle.
@@ -273,7 +273,7 @@ pub(crate) async fn spawn_running_instance(
 /// Waits until `handle`'s entity is in `Building`, driven by the entity's
 /// stage-change broadcast rather than wall-clock polling. Used by lifecycle
 /// tests that drive a real `NodeEntity::build` into `Building` (via a blocking
-/// build_cmd) before exercising the rollback path. `wait_for` inspects the
+/// `build_cmd`) before exercising the rollback path. `wait_for` inspects the
 /// current stage first, so a transition that already happened is still
 /// observed; otherwise it parks until the entity broadcasts its next stage.
 pub(crate) async fn wait_for_building(handle: &EntityHandle) {

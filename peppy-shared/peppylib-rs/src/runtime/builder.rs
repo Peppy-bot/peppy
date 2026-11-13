@@ -23,7 +23,7 @@ use config::node::NodeConfig;
 /// Resolved execution mode for the node runtime
 #[derive(Debug, Clone)]
 pub(crate) enum ExecutionMode {
-    /// Daemon mode - managed by CLI via PEPPY_RUNTIME_CONFIG
+    /// Daemon mode - managed by CLI via `PEPPY_RUNTIME_CONFIG`
     Daemon,
     /// Standalone mode with configuration. Boxed because the config carries a
     /// map per daemon-less seeding kind and the sibling variant carries nothing,
@@ -63,8 +63,8 @@ pub enum PinnedInstance {
 /// Configuration for standalone execution.
 ///
 /// All fields are optional with sensible defaults:
-/// - `messaging_host`: DEFAULT_MESSAGING_HOST ("127.0.0.1")
-/// - `messaging_port`: DEFAULT_MESSAGING_PORT (7448)
+/// - `messaging_host`: `DEFAULT_MESSAGING_HOST` ("127.0.0.1")
+/// - `messaging_port`: `DEFAULT_MESSAGING_PORT` (7448)
 /// - `instance_id`: "standalone"
 /// - `node_name`: from peppy.json5 manifest
 /// - `parameters`: empty (must be provided if node requires them)
@@ -76,9 +76,9 @@ pub struct StandaloneConfig {
     pub node_name: Option<String>,
     /// Instance ID (defaults to "standalone")
     pub instance_id: Option<String>,
-    /// Messaging host (defaults to DEFAULT_MESSAGING_HOST)
+    /// Messaging host (defaults to `DEFAULT_MESSAGING_HOST`)
     pub messaging_host: Option<String>,
-    /// Messaging port (defaults to DEFAULT_MESSAGING_PORT)
+    /// Messaging port (defaults to `DEFAULT_MESSAGING_PORT`)
     pub messaging_port: Option<u16>,
     /// Daemon-less stand-in for a launcher's `framework.clock`: the one clock
     /// this node reads, and its role in that clock's domain. Lands verbatim in
@@ -89,19 +89,19 @@ pub struct StandaloneConfig {
     /// harness is the harness's clock stand-in, driven by the test.
     pub clock: config::runtime::ClockBinding,
     /// Daemon-less pairing pins: the pairs each declared pairing slot (keyed
-    /// by its link_id) holds at boot, standing in for the set the daemon
+    /// by its `link_id`) holds at boot, standing in for the set the daemon
     /// stamps into a spawned node's boot config. A scalar slot holds at most
     /// one.
     pub peer_pins: std::collections::BTreeMap<String, Vec<PeerPin>>,
     /// Daemon-less consumer-slot bindings: the ordered producer set bound
-    /// to each declared `depends_on` slot (keyed by its link_id), standing
+    /// to each declared `depends_on` slot (keyed by its `link_id`), standing
     /// in for the launcher's validated binding map during standalone
     /// development. Each slot's set must satisfy the slot's declared
     /// cardinality at startup, exactly as a daemon launch would have
     /// enforced at plan time.
     pub bound_producers: std::collections::BTreeMap<String, Vec<BoundPin>>,
     /// Daemon-less observer membership: the ordered pairing set each declared
-    /// `pairing_observers` slot observes (keyed by its link_id), standing in
+    /// `pairing_observers` slot observes (keyed by its `link_id`), standing in
     /// for the member set the daemon stamps into a spawned node's boot config.
     /// Each slot's set must satisfy the slot's declared cardinality at
     /// startup, exactly as a daemon launch would have enforced at plan time.
@@ -150,13 +150,13 @@ impl StandaloneConfig {
         self
     }
 
-    /// Set messaging host (defaults to DEFAULT_MESSAGING_HOST)
+    /// Set messaging host (defaults to `DEFAULT_MESSAGING_HOST`)
     pub fn with_messaging_host(mut self, host: impl Into<String>) -> Self {
         self.messaging_host = Some(host.into());
         self
     }
 
-    /// Set messaging port (defaults to DEFAULT_MESSAGING_PORT)
+    /// Set messaging port (defaults to `DEFAULT_MESSAGING_PORT`)
     pub fn with_messaging_port(mut self, port: u16) -> Self {
         self.messaging_port = Some(port);
         self
@@ -393,7 +393,7 @@ impl<Params> NodeBuilder<Params>
 where
     Params: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
-    /// Create a new NodeBuilder
+    /// Create a new `NodeBuilder`
     pub fn new() -> Self {
         Self {
             standalone_config: None,
@@ -549,10 +549,10 @@ impl<Params> NodeContext<Params>
 where
     Params: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
-    /// Create the NodeRunner, connecting to the messaging system.
+    /// Create the `NodeRunner`, connecting to the messaging system.
     ///
     /// If a cancellation token was set via `with_cancellation_token()`, it will be
-    /// used by the NodeRunner. Otherwise, a new token is created.
+    /// used by the `NodeRunner`. Otherwise, a new token is created.
     pub async fn create_node_runner(&self) -> Result<Arc<NodeRunner>> {
         let token = self.cancellation_token.clone().unwrap_or_default();
         let node_runner =
@@ -560,7 +560,7 @@ where
         Ok(Arc::new(node_runner))
     }
 
-    /// Set a cancellation token for the NodeRunner.
+    /// Set a cancellation token for the `NodeRunner`.
     ///
     /// This is useful when using `init()` for manual async execution and you want
     /// to control the cancellation token yourself.

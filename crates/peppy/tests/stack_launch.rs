@@ -506,7 +506,7 @@ async fn stack_launch_fails_when_a_node_never_becomes_healthy_and_clears_the_sta
     );
 }
 
-/// The daemon, the context and the `node init`-scaffolded node_b that the
+/// The daemon, the context and the `node init`-scaffolded `node_b` that the
 /// timeout and build-failure tests launch.
 struct TimeoutTestHarness {
     ctx: Arc<AppContext>,
@@ -521,7 +521,7 @@ struct TimeoutTestHarness {
     _nodes_dir: tempfile::TempDir,
 }
 
-/// Scaffolds node_b with `node init` and writes a launcher that deploys one
+/// Scaffolds `node_b` with `node init` and writes a launcher that deploys one
 /// instance of it, so the caller can `override_*_cmd` before the launch. A
 /// failure reaches the caller through the `Result` of `StackCommand::execute`,
 /// so the setup installs no `LogCapture`.
@@ -578,7 +578,7 @@ async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
 }
 
 impl TimeoutTestHarness {
-    /// Registers node_b in the daemon's node cache. Called by each test
+    /// Registers `node_b` in the daemon's node cache. Called by each test
     /// after its `override_*` edit so the recorded fingerprint matches the
     /// bytes the launch materializes.
     fn register_caches(&self) {
@@ -713,7 +713,7 @@ async fn stack_launch_fails_when_the_max_timeout_is_hit() {
 /// The launcher's `links` entry reaches the consumer's runtime config as a
 /// slot binding stamped with the daemon's core node, and the producer carries
 /// no slot binding. Both runtime configs name the per-boot instance id of the
-/// daemon, which its presence token carries. Each dummy `sh` run_cmd copies the
+/// daemon, which its presence token carries. Each dummy `sh` `run_cmd` copies the
 /// file that `PEPPY_RUNTIME_CONFIG` names to a dump the test parses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_binds_the_consumer_slot_from_launcher_links() {
@@ -871,7 +871,7 @@ async fn stack_launch_binds_the_consumer_slot_from_launcher_links() {
 /// A `one_or_more` slot bound to two producer instances through the real
 /// daemon launch path: the launcher's array binding must reach the
 /// consumer's runtime config as the ordered two-member producer set, each
-/// member stamped with the daemon's core_node. This is the daemon-side
+/// member stamped with the daemon's `core_node`. This is the daemon-side
 /// twin of the validator unit tests: it proves the array shape survives
 /// launcher parse, plan validation, and boot-config serialization.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2160,7 +2160,7 @@ async fn stack_launch_rejects_unbound_slot() {
 /// the earlier-started endpoint boots with its slot covered, the later one
 /// carries the request, and both running instances receive their
 /// `peer_update` pins live. The dummy `sh` nodes expose
-/// ready/health/shutdown/peer_update from the test process.
+/// `ready/health/shutdown/peer_update` from the test process.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_establishes_launcher_pairings() {
     let serve = ServeCommandEmulation::with_zenoh()

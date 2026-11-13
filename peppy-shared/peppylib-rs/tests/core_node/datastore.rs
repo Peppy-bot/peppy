@@ -44,7 +44,7 @@ const OWNER: &str = "owner_inst";
 const OWNER_VALUE: &[u8] = b"held";
 
 /// Spins up a stateful datastore stub serving the five endpoints (store,
-/// store_exclusive, get, list, remove) against a single shared map. Its
+/// `store_exclusive`, get, list, remove) against a single shared map. Its
 /// exclusive store refuses [`OWNED_KEY`], naming [`OWNER`], and stores any
 /// other key. All run for the lifetime of the test (aborted at teardown).
 async fn spawn_datastore_stub(server: MessengerHandle) {

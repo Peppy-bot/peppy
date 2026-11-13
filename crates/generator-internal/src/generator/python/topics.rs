@@ -88,7 +88,7 @@ fn emit_published_message_types(
 }
 
 /// Emits the pure `build_message(...) -> bytes` serializer shared by the
-/// plain and peer publisher modules. Pure (no node_runner, no I/O), so a
+/// plain and peer publisher modules. Pure (no `node_runner`, no I/O), so a
 /// publish loop can build the payload off the asyncio event loop thread
 /// and hand only the finished bytes to the loop, keeping per-message
 /// serialization off the loop's GIL time.

@@ -122,7 +122,7 @@ fn emit_bound_members_accessor_fn(
 }
 
 /// Emits the per-call membership check ahead of a consumed poll /
-/// send_goal call: the caller-selected `target` must be a member of the
+/// `send_goal` call: the caller-selected `target` must be a member of the
 /// slot's own bound set, rejected before anything reaches the wire
 /// otherwise. `LINK_ID` is a module constant every consumed service /
 /// action module defines.

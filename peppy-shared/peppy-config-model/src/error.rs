@@ -156,7 +156,7 @@ impl std::error::Error for ContractCoverageMismatch {}
 /// Tier B (raised where documents resolve): one document-backed entry whose
 /// `refine` block names things the resolved document does not admit, every
 /// problem at once. `document` names the resolved document the way the slot
-/// declares it (`contract `limb_motion:v1``, `pairing `joint_link:v1``).
+/// declares it (``contract `limb_motion:v1` ``, ``pairing `joint_link:v1` ``).
 #[derive(Debug, Clone)]
 pub struct RefinementMismatch {
     pub document: String,

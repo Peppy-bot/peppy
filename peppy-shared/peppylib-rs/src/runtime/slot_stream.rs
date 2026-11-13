@@ -8,7 +8,7 @@
 //!   exists for a pinned consumer);
 //! - a followed pin → exactly one wire subscription, pinned to the producer's
 //!   `(core_node, instance_id)` and, for a pairing or observer slot, its
-//!   producer-side link_id;
+//!   producer-side `link_id`;
 //! - a pin changes (re-pair, or a source-incarnation change) → the old
 //!   subscription is dropped BEFORE the new one is declared (at most one wire
 //!   subscription per followed pin, ever), and a read-time stale filter drops
@@ -17,7 +17,7 @@
 //! Each slot kind differs only in what it follows. A pairing slot follows its
 //! one peer pin, so its set is empty while unpaired and holds one member once
 //! paired. An observer slot follows one pin per member of its set, keyed on
-//! `(source generation, source pin)` so a reused instance_id under an identical
+//! `(source generation, source pin)` so a reused `instance_id` under an identical
 //! wire triple is still told apart. A consumer slot follows one pin per bound
 //! producer. [`FollowedSlot`] captures what each kind follows and how it
 //! subscribes one pin.

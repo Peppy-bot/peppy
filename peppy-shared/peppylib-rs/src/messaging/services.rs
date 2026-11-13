@@ -78,7 +78,7 @@ pub enum ServiceTarget<'a> {
     Any,
     /// Scope to producers hosted by this core node, leaving the instance
     /// slot wildcarded. For callers that know which core node must answer
-    /// but cannot know the producer's per-boot instance_id, e.g.
+    /// but cannot know the producer's per-boot `instance_id`, e.g.
     /// `node_stop`, whose service root (node name + tag) is not unique
     /// across daemons. `poll` still discovers, but only among that core
     /// node's producers.
@@ -348,9 +348,9 @@ impl ServiceEndpoint {
 pub struct ServiceRequestContext {
     message: Message,
     request_id: String,
-    /// Producer-side link_id that received this request: whichever bound
-    /// link_id's queryable yielded the inbound query. Surfaced so action
-    /// goal handlers can scope per-goal feedback under the link_id the
+    /// Producer-side `link_id` that received this request: whichever bound
+    /// `link_id`'s queryable yielded the inbound query. Surfaced so action
+    /// goal handlers can scope per-goal feedback under the `link_id` the
     /// consumer actually targeted.
     link_id: String,
     /// The caller that the check of the endpoint verified; `None` on an
@@ -401,7 +401,7 @@ impl fmt::Debug for ServiceRequestContext {
 
 impl ServiceMessenger {
     /// Listen as a service. The producer declares one queryable under the
-    /// reserved default `_` link_id segment; consumers pin a specific
+    /// reserved default `_` `link_id` segment; consumers pin a specific
     /// producer by the `(core_node, instance_id)` target derived from the
     /// consumer's binding map.
     ///
@@ -424,7 +424,7 @@ impl ServiceMessenger {
         messenger.expose_service(&recv).await
     }
 
-    /// Poll a service. The link_id wire slot is always emitted as `*`;
+    /// Poll a service. The `link_id` wire slot is always emitted as `*`;
     /// producers advertise under the reserved `_` segment and Zenoh's
     /// matcher unifies the two.
     ///

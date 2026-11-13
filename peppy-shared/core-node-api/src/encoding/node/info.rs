@@ -96,9 +96,9 @@ pub struct NodeInstanceInfo {
 /// node that was found in the stack.
 #[derive(Debug, Clone)]
 pub struct NodeInfo {
-    /// Resolved NodeConfig as stored in the node stack.
+    /// Resolved `NodeConfig` as stored in the node stack.
     pub config: NodeConfig,
-    /// SHA256 of the serialized NodeConfig at the time of the response.
+    /// SHA256 of the serialized `NodeConfig` at the time of the response.
     pub config_integrity: String,
     pub stage: NodeStage,
     /// All tracked instances of this entity, including in-flight `Starting`

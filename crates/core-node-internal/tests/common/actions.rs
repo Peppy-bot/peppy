@@ -919,7 +919,7 @@ pub(crate) async fn send_logged_node_build(
     }
 }
 
-/// Helper function to send a node_add goal and wait for the result.
+/// Helper function to send a `node_add` goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.
 pub(crate) async fn send_node_add_and_wait<'a>(
     messenger: &MessengerHandle,
@@ -1084,7 +1084,7 @@ pub(crate) async fn send_node_add_and_wait_with_force<'a>(
     .await
 }
 
-/// Helper function to send a node_run goal and wait for the result.
+/// Helper function to send a `node_run` goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.
 pub(crate) async fn send_node_run_and_wait(
     messenger: &MessengerHandle,

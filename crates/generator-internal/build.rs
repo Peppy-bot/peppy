@@ -641,7 +641,7 @@ mod peppylib_build {
             .collect()
     }
 
-    /// Writes the per-platform build state, using write_if_changed to avoid
+    /// Writes the per-platform build state, using `write_if_changed` to avoid
     /// touching the file (and its mtime) on no-op builds.
     fn write_build_state(so_dir: &Path, state: &BTreeMap<String, (String, String)>) {
         let body: String = state
@@ -656,7 +656,7 @@ mod peppylib_build {
     /// provenance) and therefore must not be embedded — see
     /// [`peppylib_build_policy::should_embed_so`]. In practice these are the
     /// Linux container bindings after a shared-crate change: a debug build
-    /// without PEPPY_CROSS_BUILD rebuilds only the host `.so` and skips the
+    /// without `PEPPY_CROSS_BUILD` rebuilds only the host `.so` and skips the
     /// cross-compile, so the cache keeps Linux bindings from older sources.
     /// The files are left in place
     /// (another checkout at their revision may still embed them; the next
@@ -754,11 +754,11 @@ mod peppylib_build {
         println!("cargo:rustc-env=PEPPYLIB_SO_HASH={}", &hex[..16]);
     }
 
-    /// Emits `embedded_peppylib_so.rs` into OUT_DIR: a `PEPPYLIB_PLATFORM_SO`
+    /// Emits `embedded_peppylib_so.rs` into `OUT_DIR`: a `PEPPYLIB_PLATFORM_SO`
     /// table mapping each platform-suffixed `.so` filename to its bytes via
     /// `include_bytes!`. The scaffolder consumes this table to write the target
     /// platform's native extension. This mirrors [`embed_ruff_binary`]: build
-    /// artifacts are embedded through OUT_DIR rather than a compile-time source
+    /// artifacts are embedded through `OUT_DIR` rather than a compile-time source
     /// path, so the `.so` can live in a peppy-owned cache dir instead of being
     /// written into the shared source checkout.
     ///
@@ -1122,7 +1122,7 @@ mod peppylib_build {
     }
 }
 
-/// Generates `embedded_ruff.rs` in OUT_DIR that embeds the ruff binary via `include_bytes!`.
+/// Generates `embedded_ruff.rs` in `OUT_DIR` that embeds the ruff binary via `include_bytes!`.
 /// This allows the binary to be extracted at runtime on any machine, rather than relying
 /// on a stale compile-time filesystem path.
 fn embed_ruff_binary() {

@@ -165,8 +165,8 @@ const SECTIONS: &[EntrySpec] = &[
 /// A completion result: the rewritten file content plus what was spliced in.
 ///
 /// `added_paths` names each spliced entry as a dot-separated path
-/// ("subscriber_buffers" spelled "zenoh.managed.subscriber_buffers", a nested
-/// field "lifecycle.shutdown_grace_secs"), grouped by the block it was spliced into
+/// ("`subscriber_buffers`" spelled "`zenoh.managed.subscriber_buffers`", a nested
+/// field "`lifecycle.shutdown_grace_secs`"), grouped by the block it was spliced into
 /// (outer blocks first) and in template order within a block. It reflects what
 /// was actually inserted, not merely what was absent.
 ///
@@ -662,7 +662,7 @@ fn scan_layout(content: &str) -> Option<DocumentLayout> {
 }
 
 /// Flattens a serialized config document into dot-separated leaf paths
-/// ("lifecycle.daemon_grace_secs"). Objects recurse; everything else (numbers,
+/// ("`lifecycle.daemon_grace_secs`"). Objects recurse; everything else (numbers,
 /// strings, nulls, arrays) is a leaf, matching what completion can splice as a
 /// single value. Test-only: the schema walk behind the struct/table/template
 /// coverage pins here and the end-to-end upgrade test in `peppy_config`.
@@ -1139,9 +1139,9 @@ mod tests {
         );
     }
 
-    /// JSON5 ends a `//` comment at any LineTerminator (LF, CR, U+2028,
+    /// JSON5 ends a `//` comment at any `LineTerminator` (LF, CR, U+2028,
     /// U+2029). A scanner that only honors LF reads code that hides between a
-    /// lone CR and the next LF differently from serde_json5; two such comments
+    /// lone CR and the next LF differently from `serde_json5`; two such comments
     /// make it rotate brace pairings and splice into the wrong user object.
     #[test]
     fn lone_cr_terminates_line_comments_like_serde() {

@@ -126,7 +126,7 @@ pub enum Payloads {
 
 impl Payloads {
     /// All payload descriptors in a stable, style-defined order
-    /// (request, response / goal, goal_response, feedback, result / message).
+    /// (request, response / goal, `goal_response`, feedback, result / message).
     pub fn descriptors(&self) -> impl Iterator<Item = &PayloadDescriptor> {
         let descriptors = match self {
             Self::Service { request, response } => [Some(request), Some(response), None, None],

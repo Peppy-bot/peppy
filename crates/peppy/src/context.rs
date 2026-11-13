@@ -86,7 +86,7 @@ impl AppContext {
         Ok(self.read_daemon_state()?.core_node_name)
     }
 
-    /// Creates an AppContext over a session that the caller gives in place
+    /// Creates an `AppContext` over a session that the caller gives in place
     /// of a connection to the router. This is useful for testing with a
     /// shared mock messenger. The context signs over it as over its own
     /// session.

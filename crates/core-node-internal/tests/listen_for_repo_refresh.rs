@@ -689,7 +689,7 @@ async fn refresh_excludes_git_repo() {
 }
 
 /// End-to-end coverage of contract discovery: refresh writes
-/// `contracts.json5` with the expected shape (contract_name + tag +
+/// `contracts.json5` with the expected shape (`contract_name` + tag +
 /// sha256), the result reports the contract count, and feedback
 /// includes the discovered contract tagged with kind = Contract.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -760,7 +760,7 @@ async fn refresh_discovers_contracts() {
 }
 
 /// End-to-end coverage of node discovery: refresh writes `nodes.json5`
-/// with the expected shape (node_name + node_tag + sha256), the result
+/// with the expected shape (`node_name` + `node_tag` + sha256), the result
 /// reports the node count, and the feedback holds exactly one discovered
 /// line: the fs node, tagged with kind = Node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -824,7 +824,7 @@ async fn refresh_discovers_nodes() {
 }
 
 /// End-to-end coverage of launcher discovery: refresh writes
-/// `launchers.json5` with the expected shape (launcher_name + sha256),
+/// `launchers.json5` with the expected shape (`launcher_name` + sha256),
 /// the result reports the launcher count, and feedback includes the
 /// discovered launcher tagged with kind = Launcher.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

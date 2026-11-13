@@ -5,7 +5,7 @@
 //! this validator steps over them.
 //!
 //! A pair is one peer to one peer between two complementary slots (slot =
-//! instance × link_id): same pairing `(name, tag)`, opposite roles. A slot
+//! instance × `link_id`): same pairing `(name, tag)`, opposite roles. A slot
 //! holds as many pairs as its `cardinality` admits: a `one` or `zero_or_one`
 //! slot one, a `one_or_more` or `zero_or_more` slot any number, each pair
 //! held once. Declaring a pair on ONE side covers both endpoints' slots;

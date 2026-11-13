@@ -7,7 +7,7 @@ use crate::helpers::config_common::core_node_config;
 use crate::helpers::graph_query;
 
 /// The `brain` node, which consumes the `push_lidar_object` topic of
-/// `lidar:v1` over link_id `lidar`.
+/// `lidar:v1` over `link_id` `lidar`.
 fn brain_consuming_push_lidar_object() -> config::node::NodeConfig {
     serde_json5::from_str(
         r#"{

@@ -5,7 +5,7 @@ use crate::encoding::{decode_message, encode_message, encode_message_non_empty};
 use crate::repo_capnp;
 use crate::{NonEmptyPayload, Payload, Result};
 
-/// Goal message for the RepoRefresh action (empty: refresh all repos).
+/// Goal message for the `RepoRefresh` action (empty: refresh all repos).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoRefreshGoal;
 
@@ -89,7 +89,7 @@ impl std::fmt::Display for RepoItemKind {
     }
 }
 
-/// Feedback message for the RepoRefresh action.
+/// Feedback message for the `RepoRefresh` action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepoRefreshFeedback {
     /// A node, launcher, contract, pairing, or MCP exposure manifest
@@ -105,7 +105,7 @@ pub enum RepoRefreshFeedback {
         /// SHA-256 of the manifest file bytes.
         sha256: String,
     },
-    /// A repository that was skipped (listed in excluded_repositories.json5).
+    /// A repository that was skipped (listed in `excluded_repositories.json5`).
     Excluded {
         source_type: RepoSourceKind,
         /// Repository identity (URL or fs path).

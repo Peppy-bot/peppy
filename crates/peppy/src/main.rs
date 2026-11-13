@@ -81,7 +81,7 @@ enum Commands {
     },
     /// Platform account and project router: sign in, select a project, enroll this machine, show its status
     Platform {
-        /// Override the backend base URL (else the build default / PEPPY_API_URL).
+        /// Override the backend base URL (else the build default / `PEPPY_API_URL`).
         #[arg(long = "api-url", global = true)]
         api_url: Option<String>,
         #[command(subcommand)]

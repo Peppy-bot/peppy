@@ -169,7 +169,7 @@ impl ClientPresenceTokens {
 
 /// 16 hex chars (64 bits) of correlation entropy, salted with `domain` so
 /// IDs from different namespaces (request, goal, ...) cannot collide on a
-/// timestamp + thread_id tie. A process-wide counter is folded in to keep
+/// timestamp + `thread_id` tie. A process-wide counter is folded in to keep
 /// IDs unique even when two calls land on the same thread within a single
 /// clock tick.
 pub(crate) fn generate_short_id(domain: &str) -> String {
@@ -590,7 +590,7 @@ impl MessengerHandle {
             .map_err(Error::PeppyMessagingInterface)
     }
 
-    /// Pre-bind a per-goal action-feedback publisher under the link_id the
+    /// Pre-bind a per-goal action-feedback publisher under the `link_id` the
     /// consumer targeted in the goal request.
     pub(crate) async fn declare_action_feedback_publisher(
         &self,

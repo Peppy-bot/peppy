@@ -25,7 +25,7 @@ use crate::types::Message;
 use config::node::{QoSProfile, TopicRetention};
 use tokio::sync::watch;
 
-/// The consumer slot kind for the shared slot_stream engine: one pin per bound
+/// The consumer slot kind for the shared `slot_stream` engine: one pin per bound
 /// producer, keyed on its wire address.
 struct BoundFollow;
 

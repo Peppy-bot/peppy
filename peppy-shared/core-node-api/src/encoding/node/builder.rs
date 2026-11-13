@@ -1,4 +1,4 @@
-//! Encoding types for the NodeBuild action (streaming version with feedback).
+//! Encoding types for the `NodeBuild` action (streaming version with feedback).
 
 use super::publish::{NodePublishRequest, PlatformPublish};
 use crate::encoding::{
@@ -44,7 +44,7 @@ impl FeedbackStream {
     }
 }
 
-/// Goal message for the NodeBuild action.
+/// Goal message for the `NodeBuild` action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeBuildGoal {
     pub node_name: String,
@@ -189,7 +189,7 @@ impl NodeBuildGoalResponse {
     }
 }
 
-/// Feedback message for the NodeBuild action.
+/// Feedback message for the `NodeBuild` action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeBuildFeedback {
     pub stream: FeedbackStream,

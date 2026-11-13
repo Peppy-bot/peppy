@@ -11,7 +11,7 @@ use reqwest::header::CONTENT_LENGTH;
 use super::lock::{PYPI_FILES_HOST, PypiFile};
 
 /// Requests in flight at once. A large lock pins several hundred files (779
-/// for openarm_ai_brain_vla, which a mirror near the host answers in about
+/// for `openarm_ai_brain_vla`, which a mirror near the host answers in about
 /// ten seconds), while few enough requests stay open that a mirror does not
 /// take the check for abuse.
 const CONCURRENT_REQUESTS: usize = 8;

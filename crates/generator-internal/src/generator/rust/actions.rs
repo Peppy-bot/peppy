@@ -223,7 +223,7 @@ pub(super) fn build_goal_context_struct() -> TokenStream {
 }
 
 /// `GoalContext` methods present for every action: the request, its sender
-/// and goal_id, the cancel signal and its cause, and `fail`.
+/// and `goal_id`, the cancel signal and its cause, and `fail`.
 pub(super) fn build_goal_context_base_methods() -> TokenStream {
     quote! {
         /// The decoded goal request (caller identity and, if any, data).

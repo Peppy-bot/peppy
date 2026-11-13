@@ -1,4 +1,4 @@
-//! Encoding types for the NodeRun action (streaming version with feedback).
+//! Encoding types for the `NodeRun` action (streaming version with feedback).
 
 use std::collections::{BTreeMap, HashSet};
 use std::num::NonZeroU32;
@@ -24,7 +24,7 @@ use crate::graph::InstanceEndpoint;
 /// [`NodeRunGoal::covered_pairs`]: the peer instance and, optionally, the
 /// pinned complementary slot on it. `Display` renders the CLI/launcher
 /// target grammar (`<peer_instance>` or `<peer_instance>/<peer_link_id>`);
-/// instance ids and link_ids are `/`-free names, so the rendering is
+/// instance ids and `link_ids` are `/`-free names, so the rendering is
 /// unambiguous.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairTarget {
@@ -265,7 +265,7 @@ impl<'a> IntoIterator for &'a ObservationTargets {
     }
 }
 
-/// Goal message for the NodeRun action.
+/// Goal message for the `NodeRun` action.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeRunGoal {
     /// What to start, NOT how it is wired into the mesh. See
@@ -290,7 +290,7 @@ pub struct NodeRunGoal {
     pub env_vars: Vec<(String, String)>,
     pub timeout_secs: u64,
     /// Pairing requests from `--link <link_id>@<peer_instance>[/<peer_link_id>]`
-    /// or a launch plan, keyed by the starting node's own slot link_id and
+    /// or a launch plan, keyed by the starting node's own slot `link_id` and
     /// holding every pair that slot takes, in the order the plan lists them:
     /// one for a scalar slot, one per peer for a multi slot.
     /// Commands to the daemon, not resolved config: the daemon validates and
@@ -298,7 +298,7 @@ pub struct NodeRunGoal {
     /// instance commits to Running.
     pub requested_pairs: BTreeMap<String, Vec<PairTarget>>,
     /// Pairing slots deliberately left unpaired, keyed by this instance's
-    /// slot link_id; each value is the reason the deployment wrote down
+    /// slot `link_id`; each value is the reason the deployment wrote down
     /// (`--vacant-link <link_id>=<why>`, or the launcher's
     /// `links: { <link_id>: { vacant: "<why>" } }`) and is never empty.
     /// Together with `requested_pairs` and `covered_pairs` these must cover
@@ -307,14 +307,14 @@ pub struct NodeRunGoal {
     pub vacant_pairs: BTreeMap<String, String>,
     /// Pairing slots of this instance that a LATER-starting instance of the
     /// same `stack launch` will claim through its own `requested_pairs`
-    /// entry, keyed by this instance's slot link_id; each value names that
+    /// entry, keyed by this instance's slot `link_id`; each value names that
     /// future peer. A launch-mechanism marker, not user intent: the slot
     /// boots unpaired and needs no action, unlike a `vacant_pairs` entry
     /// which records a deliberate opt-out. Never set by the CLI.
     pub covered_pairs: BTreeMap<String, Vec<PairTarget>>,
     /// Observer requests from `--link <observer_link>@<source>[/<source_link>]`
     /// or a launch plan, keyed by the starting node's own observer-slot
-    /// link_id and holding that slot's whole ordered member set. Commands to
+    /// `link_id` and holding that slot's whole ordered member set. Commands to
     /// the daemon, not resolved config: the daemon registers each with its
     /// observation coordinator BEFORE the instance commits to Running, so
     /// every member's pin is delivered the moment both are up and re-delivered
@@ -925,8 +925,8 @@ impl NodeRunGoalResponse {
     }
 }
 
-/// Feedback message for the NodeRun action.
-/// Represents a single line of output from the run_cmd process.
+/// Feedback message for the `NodeRun` action.
+/// Represents a single line of output from the `run_cmd` process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRunFeedback {
     pub stream: FeedbackStream,
@@ -1328,7 +1328,7 @@ mod tests {
     }
 
     /// A multi slot's pairs travel as one `PairRequest` per pair, all sharing
-    /// that slot's link_id, and decode back into the slot's list in wire
+    /// that slot's `link_id`, and decode back into the slot's list in wire
     /// order. This is what lets one instance hold several pairs on one slot.
     #[test]
     fn node_run_goal_roundtrip_carries_every_pair_of_a_multi_slot() {

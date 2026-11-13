@@ -276,7 +276,7 @@ const CONFIG_WITH_AN_UNRESOLVED_DEPENDENCY: &str = r#"{
     },
 }"#;
 
-/// Two depends_on.nodes entries sharing the same link_id must be rejected at
+/// Two `depends_on.nodes` entries sharing the same `link_id` must be rejected at
 /// parse time, before any dependency resolution runs.
 const CONFIG_WITH_A_DUPLICATE_LINK_ID: &str = r#"{
     peppy_schema: "node/v1",
@@ -298,8 +298,8 @@ const CONFIG_WITH_A_DUPLICATE_LINK_ID: &str = r#"{
 }"#;
 
 /// A node that consumes a topic of a dependency the stack does not hold. The
-/// add must fail with a missing dependency BEFORE running build_cmd. This
-/// mimics real nodes (e.g. fake_video_reconstruction) where `cargo build`
+/// add must fail with a missing dependency BEFORE running `build_cmd`. This
+/// mimics real nodes (e.g. `fake_video_reconstruction`) where `cargo build`
 /// fails because peppygen interfaces are incomplete when dependencies are
 /// missing.
 const CONFIG_CONSUMING_AN_ABSENT_DEPENDENCY: &str = r#"{

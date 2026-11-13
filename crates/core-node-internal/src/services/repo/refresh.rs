@@ -1038,7 +1038,7 @@ fn merge_published<E: RepoCacheEntry>(
 }
 
 /// Count the number of distinct `(name, tag)` identities. Used to
-/// compute `total_*_found` after process_refresh returns every entry
+/// compute `total_*_found` after `process_refresh` returns every entry
 /// (including same-identity duplicates from lower-priority repos).
 fn count_unique<E: RepoCacheEntry>(entries: &[E]) -> u32 {
     let set: HashSet<(&str, &str)> = entries.iter().map(|e| (e.name(), e.tag())).collect();
@@ -2305,7 +2305,7 @@ mod tests {
         );
     }
 
-    /// Process_refresh discovers launcher files (any `.json5` filename
+    /// `Process_refresh` discovers launcher files (any `.json5` filename
     /// with `peppy_schema: "launcher/v1"`) alongside node files in the
     /// same FS walk, names them by basename, and dedupes across repos.
     #[test]

@@ -603,19 +603,19 @@ pub(crate) fn create_node_dir(base: &Path, name: &str, tag: &str) -> PathBuf {
     dir
 }
 
-/// Writes a repositories.json5 file in the conf_dir of the started core node.
+/// Writes a repositories.json5 file in the `conf_dir` of the started core node.
 pub(crate) fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
     write_repositories_json5_in(&started.peppy_dirs, content);
 }
 
-/// Writes a repositories.json5 file in the conf_dir of `peppy_dirs`.
+/// Writes a repositories.json5 file in the `conf_dir` of `peppy_dirs`.
 pub(crate) fn write_repositories_json5_in(peppy_dirs: &PeppyDirs, content: &str) {
     std::fs::create_dir_all(peppy_dirs.conf_dir()).expect("create conf dir");
     std::fs::write(core_node::repositories_list_path(peppy_dirs), content)
         .expect("write repos file");
 }
 
-/// The content of a repositories.json5 (or excluded_repositories.json5) that
+/// The content of a repositories.json5 (or `excluded_repositories.json5`) that
 /// lists the fs repositories at `paths`, with ids 1, 2, ... in order.
 pub(crate) fn fs_repositories_json(paths: &[&Path]) -> String {
     let entries: Vec<serde_json::Value> = paths
@@ -628,12 +628,12 @@ pub(crate) fn fs_repositories_json(paths: &[&Path]) -> String {
     serde_json::to_string(&entries).expect("serialize fs repository entries")
 }
 
-/// The excluded_repositories.json5 file in the conf_dir of `peppy_dirs`.
+/// The `excluded_repositories.json5` file in the `conf_dir` of `peppy_dirs`.
 pub(crate) fn excluded_repositories_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     peppy_dirs.conf_dir().join("excluded_repositories.json5")
 }
 
-/// Writes an excluded_repositories.json5 file in the conf_dir of the started
+/// Writes an `excluded_repositories.json5` file in the `conf_dir` of the started
 /// core node.
 pub(crate) fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {
     std::fs::create_dir_all(started.peppy_dirs.conf_dir()).expect("create conf dir");
@@ -651,7 +651,7 @@ pub(crate) fn read_json5_array(path: &Path) -> Vec<serde_json::Value> {
         .unwrap_or_else(|e| panic!("failed to parse {} as a JSON5 array: {e}", path.display()))
 }
 
-/// Writes a nodes.json5 cache file in the cache_dir of the started core node.
+/// Writes a nodes.json5 cache file in the `cache_dir` of the started core node.
 pub(crate) fn write_packages_cache(started: &StartedCoreNode, content: &str) {
     let cache_dir = started.peppy_dirs.cache_dir();
     std::fs::create_dir_all(&cache_dir).expect("create cache dir");

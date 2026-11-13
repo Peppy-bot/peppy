@@ -285,7 +285,7 @@ fn an_emitted_topic_named_after_a_rust_keyword_shares_its_production_schema() {
 /// The baked node directory is the one arbitrary user string in the harness.
 /// A path holding a combining character (an NFD name, common on macOS) must
 /// still be a valid Python string literal: Rust's `{:?}` writes it as
-/// `\u{301}`, an escape Python rejects with a SyntaxError.
+/// `\u{301}`, an escape Python rejects with a `SyntaxError`.
 #[test]
 fn a_node_directory_with_a_combining_character_bakes_as_a_python_literal() {
     let mut registry = TestGenRegistry::default();

@@ -100,7 +100,7 @@ pub(crate) struct Serve {
     shutdown_token: Option<CancellationToken>,
     /// The shared token every serve task observes for teardown. The coordinator
     /// cancels it on its way out so each task runs its real graceful teardown
-    /// (close session, stop_router, SIGKILL nodes, unlink the socket) rather than
+    /// (close session, `stop_router`, SIGKILL nodes, unlink the socket) rather than
     /// being aborted. For a generation built by [`ServeCommandBuilder`] this is
     /// the token cloned into the tasks; a bare [`Serve::new`] (tests) creates a
     /// fresh one its tasks do not observe.
@@ -255,7 +255,7 @@ impl Serve {
     /// `teardown_token`, which the caller cancels next so each runs its real
     /// graceful teardown (no force-abort).
     ///
-    /// Every branch is safe to recreate on each iteration: the JoinSet, the
+    /// Every branch is safe to recreate on each iteration: the `JoinSet`, the
     /// cancellation token and the watch channel hold state, and
     /// [`ShutdownSignal::recv`] is cancel-safe, so a signal that raced a task
     /// completion waits for the next iteration.

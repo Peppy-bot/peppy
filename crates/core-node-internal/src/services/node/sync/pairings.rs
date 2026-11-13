@@ -61,13 +61,13 @@ fn resolve_pairing_doc_cached(
 
 /// Validates every pairing slot of a manifest, participant and observer alike,
 /// against its resolved pairing document and returns the resolved docs keyed by
-/// slot link_id (ready for the codegen collection step):
+/// slot `link_id` (ready for the codegen collection step):
 ///
 /// - the declared `role` must be one of the doc's two roles (the error
 ///   names them).
 ///
 /// No tag-collision rule applies here: pairing slots are addressed by
-/// `link_id` everywhere (module paths, wire segments), and link_id
+/// `link_id` everywhere (module paths, wire segments), and `link_id`
 /// uniqueness is enforced at parse time. The tag identifies the resolved
 /// pairing artifact instead: with the name and sha256 pin it forms the
 /// `(name, tag, sha256)` key each slot's document is looked up and cached

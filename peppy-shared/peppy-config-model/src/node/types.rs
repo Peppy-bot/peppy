@@ -1449,7 +1449,7 @@ pub struct ContractDependency {
 /// One bindable contract-implementation claim in `manifest.implements`: this
 /// node satisfies `{name}:{tag}` slots. Produced-interface entries reference
 /// the slot via `link_id`, which shares one flat namespace with
-/// `depends_on.{nodes,contracts,pairings}` link_ids. `sha256` optionally pins
+/// `depends_on.{nodes,contracts,pairings}` `link_ids`. `sha256` optionally pins
 /// the contract document, with the same semantics as
 /// [`ContractDependency::sha256`]. Shape-identical to [`ContractDependency`]
 /// but deliberately a distinct type, because the two point in opposite
@@ -1507,7 +1507,7 @@ pub struct PairingParticipantDependency {
 /// the role being observed rather than one this node plays.
 ///
 /// The `link_id` is a local-only resolution name (never stamped on the wire),
-/// but it stays wire-safe like every other pairing link_id so both slot kinds
+/// but it stays wire-safe like every other pairing `link_id` so both slot kinds
 /// share one parser.
 ///
 /// `cardinality` sizes the slot's observed member set the same way it sizes a
@@ -1710,9 +1710,9 @@ pub struct DependsOn {
 }
 
 impl DependsOn {
-    /// Every slot link_id of every list, in list order: nodes, contracts,
+    /// Every slot `link_id` of every list, in list order: nodes, contracts,
     /// daemon targets, pairings, pairing observers. The lists share one
-    /// link_id namespace with `manifest.implements`.
+    /// `link_id` namespace with `manifest.implements`.
     pub fn link_ids(&self) -> impl Iterator<Item = &str> {
         self.producer_slots()
             .map(|(link_id, _)| link_id)
@@ -1739,8 +1739,8 @@ impl DependsOn {
         nodes.chain(contracts).chain(daemon)
     }
 
-    /// Every pairing slot link_id, participants first then observers. The two
-    /// lists share one link_id namespace with the rest of `depends_on`, so
+    /// Every pairing slot `link_id`, participants first then observers. The two
+    /// lists share one `link_id` namespace with the rest of `depends_on`, so
     /// namespace-wide rules read them together.
     pub fn pairing_link_ids(&self) -> impl Iterator<Item = &str> {
         self.pairings
@@ -2150,7 +2150,7 @@ fn extract_parameter_refs(mount_path: &str) -> Vec<&str> {
 }
 
 impl ContainerConfig {
-    /// Validate mount_paths, rejecting top-level system directories as mount sources.
+    /// Validate `mount_paths`, rejecting top-level system directories as mount sources.
     ///
     /// Mount paths whose source contains `${parameters:...}` are skipped because
     /// the actual host path is not known until runtime.
@@ -2178,7 +2178,7 @@ impl ContainerConfig {
         Ok(())
     }
 
-    /// Validate that `${parameters:...}` references in mount_paths point to existing
+    /// Validate that `${parameters:...}` references in `mount_paths` point to existing
     /// string-typed parameters in the schema.
     ///
     /// Returns `Err((ref_path, reason))` on the first invalid reference found.
@@ -2377,7 +2377,7 @@ impl Interfaces {
 }
 
 /// Puts a value into canonical form so that derived `PartialEq` becomes
-/// order-independent: vecs are sorted by name, IndexMap keys are sorted
+/// order-independent: vecs are sorted by name, `IndexMap` keys are sorted
 /// recursively, and `Some(default)` is collapsed to `None`.
 trait Normalize {
     fn normalize(&mut self);

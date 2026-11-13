@@ -193,7 +193,7 @@ fn args_to_node_arguments(args: &[(String, String)]) -> BTreeMap<String, AnyType
 }
 
 /// Inserts a value at a dot-separated path, given as its parts, into a nested
-/// BTreeMap structure. For example, the parts `["device", "physical"]` with
+/// `BTreeMap` structure. For example, the parts `["device", "physical"]` with
 /// value "foo" create: {"device": {"physical": "foo"}}
 fn insert_at_path(current: &mut BTreeMap<String, AnyType>, path: &[&str], value: AnyType) {
     let Some((key, rest)) = path.split_first() else {
@@ -221,7 +221,7 @@ fn insert_at_path(current: &mut BTreeMap<String, AnyType>, path: &[&str], value:
     }
 }
 
-/// Parses a string value into an AnyType with type inference
+/// Parses a string value into an `AnyType` with type inference
 fn parse_value(value: &str) -> AnyType {
     // Try bool
     if value.eq_ignore_ascii_case("true") {
@@ -961,7 +961,7 @@ async fn validate_links_against_stack(
 /// single entry point shared between `peppy node run` and `peppy node add
 /// --run`: both surfaces must accept `--link` and enforce the same binding
 /// rules, so there is exactly one code path responsible for materializing
-/// the instance_id, running `validate_bindings`, and calling
+/// the `instance_id`, running `validate_bindings`, and calling
 /// [`run_instance_async`].
 ///
 /// `instance_id` is materialized up-front so the synthetic

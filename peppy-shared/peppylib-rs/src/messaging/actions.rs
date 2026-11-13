@@ -100,9 +100,9 @@ pub fn unwrap_goal_payload(wire: &[u8]) -> Result<(&str, &[u8])> {
 /// user-payload offset is derived from the suffix length that
 /// [`unwrap_goal_payload`] returns (a sub-slice of the same buffer), so no
 /// payload copy happens. Shared by both goal-receive paths. The feedback path
-/// (`declare_from_wire`) additionally validates the goal_id with
+/// (`declare_from_wire`) additionally validates the `goal_id` with
 /// [`is_safe_goal_id`] before splicing it into a topic keyexpr; the no-feedback
-/// path does not, because there the goal_id is only a registry key / request
+/// path does not, because there the `goal_id` is only a registry key / request
 /// payload field and never reaches a keyexpr.
 fn split_goal_envelope(wire: &Bytes) -> Result<(String, Bytes)> {
     let (goal_id, user_payload) = unwrap_goal_payload(wire.as_ref())?;
@@ -397,7 +397,7 @@ impl ActionGoalReply {
     }
 }
 
-/// Whether a goal_id is safe to splice into the feedback topic key
+/// Whether a `goal_id` is safe to splice into the feedback topic key
 /// expression. Restricts to a single non-empty segment of ASCII
 /// alphanumerics, `_`, and `-` so wildcard markers (`*`, `**`, `+`, `#`)
 /// and topic separators (`/`) cannot escape the per-goal scope.
@@ -484,15 +484,15 @@ impl ActionFeedbackPublisherFactory {
     }
 
     /// Standard server-side entry point: unwrap the goal envelope, declare
-    /// a feedback publisher on the per-goal topic scoped to the link_id the
+    /// a feedback publisher on the per-goal topic scoped to the `link_id` the
     /// consumer targeted, and return both alongside the user payload so the
     /// caller can dispatch it to the goal handler.
     ///
     /// `link_id` comes from the goal request's parsed keyexpr (surfaced via
     /// [`crate::messaging::ServiceRequestContext::link_id`]). A producer
-    /// bound to multiple link_ids will see different link_ids for different
+    /// bound to multiple `link_ids` will see different `link_ids` for different
     /// goal requests, and each goal's feedback must be addressed back under
-    /// the link_id its consumer subscribed for.
+    /// the `link_id` its consumer subscribed for.
     pub async fn declare_from_wire(&self, link_id: &str, wire: Bytes) -> Result<DeclaredFeedback> {
         let request = split_goal_request(&wire)?;
         let publisher = self.declare_for_goal(link_id, &request.goal_id).await?;
@@ -505,7 +505,7 @@ impl ActionFeedbackPublisherFactory {
     }
 
     /// Declare the feedback publisher of the goal `goal_id`, under the
-    /// link_id its consumer targeted.
+    /// `link_id` its consumer targeted.
     async fn declare_for_goal(
         &self,
         link_id: &str,
@@ -1004,7 +1004,7 @@ pub struct ActionCreation {
 
 impl ActionMessenger {
     /// Expose an action server. The producer declares its queryables under
-    /// the reserved default `_` link_id segment; consumers pin a specific
+    /// the reserved default `_` `link_id` segment; consumers pin a specific
     /// producer by `target_instance_id` derived from the consumer's
     /// binding map. `as_identity` must match what callers pass to
     /// [`Self::send_goal`].
@@ -1658,7 +1658,7 @@ struct PendingWaiter {
 type PendingWaiters = Arc<StdMutex<HashMap<String, Vec<PendingWaiter>>>>;
 
 /// Upper bound on total parked-before-accept responders, guarding against a
-/// flood of polls for never-registered goal_ids amplifying memory. On overflow
+/// flood of polls for never-registered `goal_ids` amplifying memory. On overflow
 /// the responder is dropped (the client falls back to its own timeout).
 const PENDING_WAITERS_CAP: usize = 1024;
 
@@ -1747,11 +1747,11 @@ fn cancel_slot(
 const SWEEP_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Maximum number of evicted-goal tombstones retained. Bounds memory; a poll
-/// for a goal_id that has aged out of this set parks and falls back to its
-/// timeout, exactly as a never-existed goal_id would.
+/// for a `goal_id` that has aged out of this set parks and falls back to its
+/// timeout, exactly as a never-existed `goal_id` would.
 const EXPIRED_TOMBSTONE_CAP: usize = 4096;
 
-/// Bounded, status-only record of goal_ids whose terminal result has been
+/// Bounded, status-only record of `goal_ids` whose terminal result has been
 /// evicted by the retention sweeper. A result poll for one resolves to
 /// [`GoalOutcome::Expired`] (and a cancel to [`CancelState::AlreadyTerminal`])
 /// immediately, rather than parking. Oldest entries fall out once the cap is hit.

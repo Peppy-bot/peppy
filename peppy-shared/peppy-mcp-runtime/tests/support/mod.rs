@@ -341,7 +341,7 @@ pub(crate) fn cancelled_episode() -> Value {
 /// words of a peppylib provider.
 pub(crate) const CANCELLED_BY_ITS_CALLER: &str = "cancelled by its caller";
 
-/// The goal behind both recorder actions: reports `<verb> \`<episode>\``
+/// The goal behind both recorder actions: reports ``<verb> `<episode>` ``
 /// as feedback, parks on cancellation for `wait_for_cancel` and then ends
 /// cancelled with [`cancelled_episode`] for [`CANCELLED_BY_ITS_CALLER`],
 /// completes otherwise.

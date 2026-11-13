@@ -31,7 +31,7 @@ impl PyServiceRequestContext {
         self.inner.request_id()
     }
 
-    /// The producer-side link_id whose queryable received this request.
+    /// The producer-side `link_id` whose queryable received this request.
     #[getter]
     fn link_id(&self) -> &str {
         self.inner.link_id()
@@ -54,7 +54,7 @@ impl PyServiceRequestContext {
 
     /// Returns the underlying message as a `TopicMessage`. Its `link_id` is
     /// empty, unlike this context's: a service request arrives on a query
-    /// keyexpr, whose caller slots encode no producer link_id.
+    /// keyexpr, whose caller slots encode no producer `link_id`.
     #[getter]
     fn message(&self) -> PyTopicMessage {
         PyTopicMessage::from(self.inner.message().clone())
@@ -284,7 +284,7 @@ fn awaited_response_bytes(awaited: PyResult<Py<PyAny>>) -> Result<Vec<u8>, Failu
     }
 }
 
-/// Python wrapper for ServiceMessenger (request-response pattern).
+/// Python wrapper for `ServiceMessenger` (request-response pattern).
 #[pyclass(name = "ServiceMessenger")]
 pub struct PyServiceMessenger;
 

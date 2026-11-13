@@ -167,7 +167,7 @@ pub(crate) const RUST_STUB_EXECUTION: &str = r#"language: "rust",
 /// `depends_on.nodes` slot so the runtime resolves the slot's bound
 /// producers from the boot config's `slot_bindings` (an undeclared slot
 /// would stay silent). `link_id` must match the `DependencyContext`
-/// link_id the test's generator calls use.
+/// `link_id` the test's generator calls use.
 pub(crate) fn consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -> String {
     consumer_stub_node_config_with_execution(
         "nodes",

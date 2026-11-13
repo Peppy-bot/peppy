@@ -70,7 +70,7 @@ fn reset_sensor_consumer_config(
     )
 }
 
-/// A SHUTDOWN_SERVICE responder of one instance whose shutdown the test
+/// A `SHUTDOWN_SERVICE` responder of one instance whose shutdown the test
 /// controls, made by [`serve_gated_shutdown`].
 struct GatedShutdownResponder {
     /// Resolves when the first shutdown request reaches the responder.
@@ -81,7 +81,7 @@ struct GatedShutdownResponder {
     _task: AbortOnDrop<peppylib::PeppyResult<()>>,
 }
 
-/// Serves SHUTDOWN_SERVICE for `instance_id` of `node_name` until the
+/// Serves `SHUTDOWN_SERVICE` for `instance_id` of `node_name` until the
 /// returned responder drops. The first request is reported on `requested`.
 /// Each request then waits until `release` is notified and kills `pid` before
 /// it answers. A real node also exits before its reply, so the daemon's
@@ -913,7 +913,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         "v2 `new_service` must not have leaked through the failed overwrite, got: {exposed:?}"
     );
 }
-/// When a running node instance does not respond to SHUTDOWN_SERVICE (e.g. the
+/// When a running node instance does not respond to `SHUTDOWN_SERVICE` (e.g. the
 /// process is frozen), the overwrite path must behave like the SIGINT teardown:
 /// after the cooperative shutdown times out, `stop_instances` force-kills the
 /// instance's process group, waits for it to die, and the add proceeds. The

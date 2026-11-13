@@ -132,7 +132,7 @@ pub(crate) fn scoped_schema_key(origin: Option<&ContractOrigin>, local: &str) ->
 /// keyed by `link_id` like every other slot-backed category.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerContext {
-    /// The node's own pairing-slot link_id (`depends_on.pairings[].link_id` or
+    /// The node's own pairing-slot `link_id` (`depends_on.pairings[].link_id` or
     /// `depends_on.pairing_observers[].link_id`).
     pub link_id: String,
     pub pairing_name: String,
@@ -674,7 +674,7 @@ pub enum InterfaceVariant {
     },
     /// A pairing topic this node's role emits. The `NativeEmittedTopic`
     /// shape carries the pairing doc's per-topic fields (name, qos,
-    /// message_format); `peer` carries the slot identity.
+    /// `message_format`); `peer` carries the slot identity.
     PeerEmittedTopic {
         topic: NativeEmittedTopic,
         peer: PeerContext,
@@ -689,7 +689,7 @@ pub enum InterfaceVariant {
     /// `paired_topics/<link_id>/<topic>` namespace as peer topics, but the
     /// generated module exposes `source()` instead of `paired()`/`wait_paired()`
     /// and subscribes via `subscribe_observed` rather than `subscribe_peer`.
-    /// `observer` reuses `PeerContext`'s slot-identity fields (link_id, pairing
+    /// `observer` reuses `PeerContext`'s slot-identity fields (`link_id`, pairing
     /// name, pairing tag), which are exactly what an observer module needs.
     ObservedTopic {
         topic: NativeEmittedTopic,

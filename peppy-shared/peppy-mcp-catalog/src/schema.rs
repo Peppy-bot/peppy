@@ -18,7 +18,7 @@
 //! The `$description` of a field becomes the `description` of its schema:
 //! an annotation for the caller, which no value is checked against.
 //!
-//! Public property names keep the DSL's snake_case spelling, not the
+//! Public property names keep the DSL's `snake_case` spelling, not the
 //! lowerCamelCase spelling the wire encoding uses internally. Every emitted
 //! schema closes with `additionalProperties: false`.
 //!

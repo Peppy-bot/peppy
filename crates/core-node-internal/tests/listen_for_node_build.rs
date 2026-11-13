@@ -18,7 +18,7 @@ const BUILD_CMD_MARKER_FILE: &str = "build_cmd_executed.marker";
 const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Helper: stage a node via `send_node_add_and_wait` and assert success.
-/// Returns (node_name, node_tag) for use in subsequent build calls.
+/// Returns (`node_name`, `node_tag`) for use in subsequent build calls.
 async fn stage_node_for_build<'a>(
     started_core_node: &common::StartedCoreNode,
     source: impl Into<NodeAddSource<'a>>,

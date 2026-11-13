@@ -45,7 +45,7 @@ pub struct Processor {
     /// its deployment bound for a scalar one (see [`BoundSlots`]).
     bound_slots: BoundSlots,
     /// One live pairing-slot channel per `depends_on.pairings` entry, keyed
-    /// by the slot's link_id. The map's key set is fixed at startup (slots
+    /// by the slot's `link_id`. The map's key set is fixed at startup (slots
     /// are declared in the manifest); only the channel values move: the
     /// daemon replaces them over the `peer_update` service, and per-slot
     /// `PeerSubscription`s, `PeerSlot`s, `PeerSlotSet`s and `PeerPublisher`s
@@ -56,7 +56,7 @@ pub struct Processor {
     /// generated module calls.
     pairing_slots: PairingSlotChannels,
     /// One live observation-slot channel per `depends_on.pairing_observers`
-    /// entry, keyed by the slot's link_id. Same lifecycle shape as
+    /// entry, keyed by the slot's `link_id`. Same lifecycle shape as
     /// `pairing_slots`: the key set is fixed at startup and the daemon mutates
     /// the channel values over the `observation_update` service, while per-slot
     /// `ObservedTopicSubscription`s / `ObservationSlot`s observe them.
@@ -157,10 +157,10 @@ impl Processor {
     /// Create processor for standalone mode.
     ///
     /// Uses provided configuration or defaults:
-    /// - messaging_host: DEFAULT_MESSAGING_HOST or user-provided
-    /// - messaging_port: DEFAULT_MESSAGING_PORT or user-provided
-    /// - instance_id: "standalone" or user-provided
-    /// - node_name: from peppy.json5 or user-provided
+    /// - `messaging_host`: `DEFAULT_MESSAGING_HOST` or user-provided
+    /// - `messaging_port`: `DEFAULT_MESSAGING_PORT` or user-provided
+    /// - `instance_id`: "standalone" or user-provided
+    /// - `node_name`: from peppy.json5 or user-provided
     ///
     /// Skips fingerprint validation for development flexibility.
     pub fn new_standalone(
@@ -653,7 +653,7 @@ fn declared_endpoint_labels(node_config: &NodeConfig) -> BTreeSet<EndpointLabel>
 }
 
 /// Seed one watch channel per **observer** pairing slot declared in
-/// `depends_on.pairing_observers`, keyed by slot link_id, each initialized
+/// `depends_on.pairing_observers`, keyed by slot `link_id`, each initialized
 /// from the boot config's `observation_seeds` entry for that slot: the
 /// launch-time member set the daemon stamped at spawn, at sequence zero, so
 /// `sources()` answers the plan's membership from the node's first
@@ -670,7 +670,7 @@ fn declared_endpoint_labels(node_config: &NodeConfig) -> BTreeSet<EndpointLabel>
 ///
 /// `cardinalities` is [`build_observer_cardinalities`]'s map, so the slots
 /// seeded here and the cardinalities their accessors read are one set of
-/// link_ids by construction rather than by two walks agreeing.
+/// `link_ids` by construction rather than by two walks agreeing.
 fn build_observation_slots(
     runtime_config: &RuntimeConfig,
     cardinalities: &BTreeMap<String, Cardinality>,
@@ -717,7 +717,7 @@ fn build_observation_slots(
         .map(Arc::new)
 }
 
-/// Each observer slot's declared `cardinality`, keyed by link_id: the link_ids
+/// Each observer slot's declared `cardinality`, keyed by `link_id`: the `link_ids`
 /// [`build_observation_slots`] seeds a channel for, and the ones
 /// [`seed_observations`] accepts a standalone seed on.
 fn build_observer_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Cardinality> {
@@ -887,7 +887,7 @@ fn one_or_more_slot_is_empty(link_id: &str) -> ! {
 
 /// Daemon-less development: `StandaloneConfig::with_bound_producer` seeds a
 /// consumer slot's producer set, standing in for the launcher's validated
-/// binding map. Undeclared link_ids are ignored with a warning (as
+/// binding map. Undeclared `link_ids` are ignored with a warning (as
 /// [`seed_observations`] and [`seed_pairing_slots`] do); a declared slot
 /// whose seeded set violates its cardinality fails [`build_bound_slots`],
 /// exactly like a daemon boot config with a bad binding. Duplicate seeded
@@ -922,7 +922,7 @@ fn seed_slot_bindings(
 
 /// Daemon-less development: `StandaloneConfig::with_observed_source` seeds an
 /// observer slot's member set, standing in for the set the daemon stamps into
-/// a spawned node's boot config. Undeclared link_ids are ignored with a
+/// a spawned node's boot config. Undeclared `link_ids` are ignored with a
 /// warning, on the same terms as [`seed_slot_bindings`]; a declared slot whose
 /// seeded set violates its cardinality, or that repeats a pairing, fails
 /// [`build_observation_slots`], exactly like a daemon boot config with a bad
@@ -964,7 +964,7 @@ fn seed_observations(
 
 /// Daemon-less development: `StandaloneConfig::with_peer_pin` seeds a pairing
 /// slot's pairs, standing in for the set the daemon stamps into a spawned
-/// node's boot config. Undeclared link_ids are ignored with a warning, on the
+/// node's boot config. Undeclared `link_ids` are ignored with a warning, on the
 /// same terms as [`seed_slot_bindings`]; a scalar slot seeded with two pairs
 /// fails [`build_pairing_slots`].
 fn seed_pairing_slots(
@@ -2076,8 +2076,8 @@ mod tests {
     }"#;
 
     /// Manifest fixture with one slot of each cardinality: `main` (one,
-    /// omitted), `wrist_camera` (zero_or_one), `arms` (one_or_more),
-    /// `spare_cameras` (zero_or_more).
+    /// omitted), `wrist_camera` (`zero_or_one`), `arms` (`one_or_more`),
+    /// `spare_cameras` (`zero_or_more`).
     const MULTI_SLOT_PEPPY_CONFIG: &str = r#"{
         peppy_schema: "node/v1",
         manifest: {
@@ -2220,9 +2220,9 @@ mod tests {
     }
 
     /// Daemon processor over [`MULTI_SLOT_PEPPY_CONFIG`] with the standard
-    /// bindings: `main` (one) -> camera_1, `wrist_camera` (zero_or_one) ->
-    /// camera_2, `arms` (one_or_more) -> [right_arm, left_arm],
-    /// `spare_cameras` (zero_or_more) -> [].
+    /// bindings: `main` (one) -> `camera_1`, `wrist_camera` (`zero_or_one`) ->
+    /// `camera_2`, `arms` (`one_or_more`) -> [`right_arm`, `left_arm`],
+    /// `spare_cameras` (`zero_or_more`) -> [].
     fn multi_slot_processor() -> Processor {
         daemon_processor_with_bindings(
             MULTI_SLOT_PEPPY_CONFIG,
@@ -3130,7 +3130,7 @@ mod tests {
         );
     }
 
-    /// An undeclared link_id is a standalone typo, not a manifest violation, so
+    /// An undeclared `link_id` is a standalone typo, not a manifest violation, so
     /// it warns and is dropped rather than failing startup, on the same terms as
     /// `with_bound_producer`.
     #[test]
@@ -3146,7 +3146,7 @@ mod tests {
         assert!(processor.observation_slot_watch("not_a_slot").is_none());
     }
 
-    /// A bound producer seeded on an undeclared link_id is dropped, on the same
+    /// A bound producer seeded on an undeclared `link_id` is dropped, on the same
     /// terms, before any part of the seed is parsed: a copy that is not a name
     /// does not fail startup there, and the declared slots boot from their own
     /// seeds.
@@ -3166,7 +3166,7 @@ mod tests {
         );
     }
 
-    /// A peer pin on an undeclared link_id is dropped on the same terms, where
+    /// A peer pin on an undeclared `link_id` is dropped on the same terms, where
     /// the boot-config parse would refuse a pairing seed naming an undeclared
     /// slot.
     #[test]

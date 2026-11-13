@@ -27,7 +27,7 @@ fn pairing(name: &str, tag: &str) -> SenderTarget {
     SenderTarget::pairing(name, tag).expect("test pairing target should be valid")
 }
 
-/// Test-local shorthand: encoded bytes for a default UserRequest query
+/// Test-local shorthand: encoded bytes for a default `UserRequest` query
 /// attachment. Lets selector-shape tests focus on
 /// keyexpr parsing without restating the attachment payload at every
 /// call site.

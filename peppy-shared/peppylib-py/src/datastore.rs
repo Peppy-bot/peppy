@@ -352,7 +352,7 @@ fn datastore_get<'py>(
 }
 
 /// List the metadata of every key in `node_runner`'s bound core node datastore.
-/// Resolves to a list of `DatastoreEntry` (key, encoding, last_modified_by).
+/// Resolves to a list of `DatastoreEntry` (key, encoding, `last_modified_by`).
 /// The value bytes are not included; fetch them with `datastore::get`.
 ///
 /// Python equivalent of `peppylib::datastore::list`.

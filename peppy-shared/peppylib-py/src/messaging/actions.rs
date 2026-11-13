@@ -83,7 +83,7 @@ pub struct PyActionFeedbackPublisherFactory {
 impl PyActionFeedbackPublisherFactory {
     /// Standard server-side entry point used by the Python codegen. Unwraps
     /// the wire envelope, declares a per-goal publisher scoped to the
-    /// link_id the consumer targeted, and returns
+    /// `link_id` the consumer targeted, and returns
     /// `(publisher, goal_id, user_payload)`.
     fn declare_from_wire<'py>(
         &self,
@@ -367,7 +367,7 @@ impl PyActionCreation {
 // ActionMessenger
 // ---------------------------------------------------------------------------
 
-/// Python wrapper for ActionMessenger (goal / feedback / result / cancel pattern).
+/// Python wrapper for `ActionMessenger` (goal / feedback / result / cancel pattern).
 #[pyclass(name = "ActionMessenger")]
 pub struct PyActionMessenger;
 

@@ -54,7 +54,7 @@ pub(crate) fn collect_all_deployment_interfaces(
     Ok(interfaces)
 }
 
-/// The pairing slot link_ids of a manifest, participants and observers alike.
+/// The pairing slot `link_ids` of a manifest, participants and observers alike.
 /// Entries naming one are resolved by `collect_pairing_interfaces` against the
 /// pairing document and generated under `paired_topics/<link_id>/<topic>`, so
 /// both the consumed collector and the implements resolver must step over
@@ -274,14 +274,14 @@ impl ResolvedDependencies {
     /// document (contract-addressed).
     ///
     /// `Ok(None)` means the entry is not this collector's to report: an
-    /// undeclared link_id, an unresolved node dependency, and a name the
+    /// undeclared `link_id`, an unresolved node dependency, and a name the
     /// producer does not natively offer are all reported by
     /// `validate_dependency_specs` upstream, which sees node dependencies and
     /// would otherwise report each twice.
     ///
     /// A name absent from a *contract* document has no upstream reporter at
     /// all: `validate_dependency_specs` stops at the declaration check for
-    /// `depends_on.contracts` link_ids, and no layer below this one can open a
+    /// `depends_on.contracts` `link_ids`, and no layer below this one can open a
     /// contract document. So it errors here, or nowhere. The same goes for a
     /// `refine` block the member does not admit, which `extract_from_contract`
     /// reports as its `Err`.
@@ -868,7 +868,7 @@ mod implements_tests {
         );
     }
 
-    /// Happy path: a full-coverage manifest yields one DeploymentInterface
+    /// Happy path: a full-coverage manifest yields one `DeploymentInterface`
     /// per contract-backed entry, each carrying the member's shape from the
     /// contract document and a `ContractOrigin` pointing back at the source
     /// contract.
@@ -1560,7 +1560,7 @@ mod implements_tests {
     /// a contract dependency must route each entry to exactly one collector.
     ///
     /// This is the regression this whole design is most exposed to. Admitting
-    /// pairing link_ids into the consumed collector would either drop them
+    /// pairing `link_ids` into the consumed collector would either drop them
     /// (the consumed dependency lookup knows only node and contract kinds) or
     /// land them in the flat `consumed_topics` namespace, splitting a slot's
     /// two directions across unrelated module trees.
@@ -1664,7 +1664,7 @@ mod implements_tests {
 
     /// A consumed entry naming no member of its contract is refused, not
     /// dropped, so a typo cannot produce a missing module and a successful
-    /// sync. Nothing upstream sees contract link_ids, so this is the only
+    /// sync. Nothing upstream sees contract `link_ids`, so this is the only
     /// place it can be reported.
     #[test]
     fn consumed_entry_absent_from_contract_is_rejected() {
@@ -2040,7 +2040,7 @@ mod implements_tests {
 
     /// A consumed action naming no member of its contract is rejected with
     /// the same error shape as topics and services; nothing upstream sees
-    /// contract link_ids, so this is the only place it can be reported.
+    /// contract `link_ids`, so this is the only place it can be reported.
     #[test]
     fn consumed_action_absent_from_contract_is_rejected() {
         let tmp = TempDir::new().unwrap();

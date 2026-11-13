@@ -65,7 +65,7 @@ fn paired_with(sequence: u64, arms: &[&str]) -> PeerSetState {
 }
 
 /// Declares a peer instance's pairing publisher to the consumer: the wire
-/// link_id segment carries the peer's OWN slot link_id, and the key names
+/// `link_id` segment carries the peer's OWN slot `link_id`, and the key names
 /// the consumer's slot.
 async fn declare_peer_publisher(handle: &MessengerHandle, instance_id: &str) -> TopicPublisher {
     common::declare_pinned_publisher(

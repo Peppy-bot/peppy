@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// The peppy output directory relative to node_dir (contains generated libraries).
+/// The peppy output directory relative to `node_dir` (contains generated libraries).
 pub const PEPPY_OUTPUT_DIR: &str = ".peppy";
 pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppylib";
 /// The crate of the codec API in a Rust node that asks for it.
@@ -358,7 +358,7 @@ impl PeppyDirs {
 
     /// Persistent Git checkouts shared across `node add` batches.
     /// Directories are keyed by `<slug>-<hash>` where the hash covers
-    /// repo_url + commit, so one directory holds exactly one tree.
+    /// `repo_url` + commit, so one directory holds exactly one tree.
     pub fn git_checkouts_dir(&self) -> PathBuf {
         self.cache_dir().join("git_checkouts")
     }

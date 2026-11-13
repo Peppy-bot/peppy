@@ -160,8 +160,8 @@ pub fn generate_peppygen_lib(
     Ok(())
 }
 
-/// Collects the node's own NATIVE exposed interfaces from a NodeConfig into
-/// DeploymentInterface instances. Contract-backed entries are skipped here:
+/// Collects the node's own NATIVE exposed interfaces from a `NodeConfig` into
+/// `DeploymentInterface` instances. Contract-backed entries are skipped here:
 /// their shapes live in the contract documents, which the daemon resolves
 /// (with the Tier B coverage check) into the pre-resolved interface vec this
 /// function's output is merged with.

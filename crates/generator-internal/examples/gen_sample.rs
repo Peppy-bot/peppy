@@ -1,5 +1,5 @@
 //! Dev tool: generate a sample peppygen crate (both languages) covering every
-//! interface kind, into /tmp/sample_node, for inspecting the emitted surface,
+//! interface kind, into /`tmp/sample_node`, for inspecting the emitted surface,
 //! including the `mock`/`fixtures` test surfaces.
 //!
 //! ```sh

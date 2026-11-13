@@ -1438,8 +1438,8 @@ fn init_takes_a_non_utf8_runtime_config_as_daemon_mode() {
     );
 }
 
-/// The slot helpers that generated code splices refuse a link_id the manifest
-/// declares no slot for, naming the slot kind and the link_id they were given.
+/// The slot helpers that generated code splices refuse a `link_id` the manifest
+/// declares no slot for, naming the slot kind and the `link_id` they were given.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn slot_helpers_name_an_undeclared_slot() {
     let router = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)

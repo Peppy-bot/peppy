@@ -173,7 +173,7 @@ fn emit_topic() {
 }
 
 /// An emitted topic declared through a `manifest.implements` slot is
-/// contract-addressed: the generated declare_publisher splices
+/// contract-addressed: the generated `declare_publisher` splices
 /// `SenderTarget::contract(contract_name, contract_tag)` instead of the
 /// runtime's own node identity.
 #[test]
@@ -562,7 +562,7 @@ fn emit_topic_with_dynamic_object_array() {
     );
 }
 
-/// A real manifest dep (link_id present) splices the runtime
+/// A real manifest dep (`link_id` present) splices the runtime
 /// consumer-filter lookup into the generated subscribe call: the
 /// resolved filter carries the bound producer's full
 /// `(core_node, instance_id)`, so a pinned topic slot sets both wire
@@ -1064,7 +1064,7 @@ fn compile_lib_with_emitted_and_consumed_topics() {
 /// parameters. Producer identity travels only as the full
 /// `(core_node, instance_id)` resolved at runtime from the bindings map.
 /// This test fails loudly if any generator exposes a `from_*` / `target_*`
-/// core_node or instance_id parameter.
+/// `core_node` or `instance_id` parameter.
 #[test]
 fn no_user_facing_producer_identity_params() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);

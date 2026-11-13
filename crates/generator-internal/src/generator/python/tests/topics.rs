@@ -106,9 +106,9 @@ fn parse_message_format(example: &str) -> MessageFormat {
 }
 
 /// Asserts that a rendered consumer module (topic subscriber, service poller
-/// or action caller) takes no core_node or instance_id string parameter. The
+/// or action caller) takes no `core_node` or `instance_id` string parameter. The
 /// producer travels only as the `peppylib.ProducerRef` resolved from the
-/// slot's bound set, so no `from_*` or `target_*` core_node or instance_id
+/// slot's bound set, so no `from_*` or `target_*` `core_node` or `instance_id`
 /// parameter appears, and no `pinned_target_for` accessor is emitted (the
 /// runtime helpers are the bound-producer accessors).
 pub(super) fn assert_no_producer_identity_params(rendered: &str) {
@@ -1002,7 +1002,7 @@ fn consumed_two_topics_same_node() {
 /// parameters. Producer identity travels only as the full
 /// `(core_node, instance_id)` resolved at runtime from the bindings map.
 /// This test fails loudly if any generator exposes a `from_*` / `target_*`
-/// core_node or instance_id parameter.
+/// `core_node` or `instance_id` parameter.
 #[test]
 fn no_user_facing_producer_identity_params() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);

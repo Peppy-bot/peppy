@@ -313,7 +313,7 @@ pub struct StartContext<'a> {
     /// naming, and the eventual `TrackedNodeInstance::new`.
     pub instance_id: &'a Name,
     /// The runtime config to write to the per-spawn temp file. For container
-    /// nodes, the caller is responsible for any host_gateway rewriting before
+    /// nodes, the caller is responsible for any `host_gateway` rewriting before
     /// calling start (the entity treats this as opaque bytes).
     pub runtime_config_json5: &'a str,
     /// Producers bound to each of this instance's `depends_on` slots,
@@ -689,7 +689,7 @@ impl NodeEntity {
     /// Returns the entity's monotonic generation token. Bumped by every
     /// constructor (`new`, `built_in`, `root`, `from_snapshot`) so the build
     /// path can distinguish "still the entity I started building" from
-    /// "wholesale replaced by a concurrent push_config".
+    /// "wholesale replaced by a concurrent `push_config`".
     pub fn generation(&self) -> u64 {
         self.generation
     }

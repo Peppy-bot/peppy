@@ -156,7 +156,7 @@ impl RepoIdPlacement {
 /// The id must be one a cache entry can be attributed to (below
 /// [`UNOWNED_REPO_ID`]): `repo list` skips any other repository and its
 /// nodes rank as unowned. Above `i64::MAX` the id would also make
-/// `repositories.json5` unreadable, since serde_json5 reads integers as
+/// `repositories.json5` unreadable, since `serde_json5` reads integers as
 /// `i64`, and every later repo, node and launch command would fail on it.
 fn next_repo_id(repos: &[Value], placement: RepoIdPlacement) -> std::result::Result<u64, Failure> {
     let no_room = |reason: &str| failure(PeppyFailureKind::PreconditionFailed, reason);

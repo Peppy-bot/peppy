@@ -605,7 +605,7 @@ fn sensor_config_in_language(language: &str, build_cmd_shell: &str) -> config::n
     serde_json5::from_str::<config::node::NodeConfig>(&json).expect("valid sensor+build_cmd config")
 }
 
-/// Helper that constructs the BuildContext fields shared across tests.
+/// Helper that constructs the `BuildContext` fields shared across tests.
 struct BuildHarness {
     working_dir: tempfile::TempDir,
     /// Owns the directory that `peppy_dirs` points into, so the directory
@@ -1276,7 +1276,7 @@ async fn a_rust_build_and_a_python_build_without_a_mirror_leave_the_lock_alone()
 // Start: prepare_and_spawn / commit_started / abort_started
 // ===========================================================================
 
-/// Returns a sensor config that uses a long-running shell loop as run_cmd.
+/// Returns a sensor config that uses a long-running shell loop as `run_cmd`.
 /// The loop traps SIGTERM so `child.kill()` cleanly terminates it.
 fn long_running_sensor_config() -> config::node::NodeConfig {
     serde_json5::from_str::<config::node::NodeConfig>(
@@ -1314,8 +1314,8 @@ async fn push_built_long_running_sensor(
 }
 
 /// Sets up a start-test harness: a `real_lifecycle::LifecycleHarness` plus a
-/// pre-baked instance id. The lifecycle harness provides peppy_dirs, log,
-/// feedback_tx + drain task, publish_enabled, and output_sinks().
+/// pre-baked instance id. The lifecycle harness provides `peppy_dirs`, log,
+/// `feedback_tx` + drain task, `publish_enabled`, and `output_sinks()`.
 fn start_harness(instance_id_str: &str) -> (Name, real_lifecycle::LifecycleHarness) {
     (
         Name::new(instance_id_str).expect("valid instance id"),

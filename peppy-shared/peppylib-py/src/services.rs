@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 
 use crate::messaging::{PyMessengerHandle, to_py_err};
 
-/// Python wrapper for a running service task (TaskHandle).
+/// Python wrapper for a running service task (`TaskHandle`).
 #[pyclass(name = "ServiceTask")]
 pub struct PyServiceTask {
     inner: Mutex<Option<TaskHandle<PeppyResult<()>>>>,

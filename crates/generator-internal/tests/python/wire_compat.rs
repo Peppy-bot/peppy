@@ -10,7 +10,7 @@
 //! 1. The exposed/emitted `MessageFormat` for the payload under test
 //!    declares its two pointer-typed fields (one `Text` and one
 //!    `List(Float64)`) in an order whose alphabetical sort swaps them.
-//!    Any step that silently re-orders the MessageFormat on one side
+//!    Any step that silently re-orders the `MessageFormat` on one side
 //!    but not the other will land Text where the other side expects
 //!    List, surfacing as a `Schema mismatch: Message contains list
 //!    pointer of non-bytes where text was expected` -class decode

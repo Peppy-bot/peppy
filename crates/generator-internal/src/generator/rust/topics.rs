@@ -22,7 +22,7 @@ pub(super) struct ConsumedTopicSubscriptionSpec<'a> {
 }
 
 /// Specification for building an action-feedback emit-style method
-/// (publish_feedback).
+/// (`publish_feedback`).
 pub(super) struct EmitMethodSpec<'a> {
     pub method_name: &'a Ident,
     pub params: &'a [FunctionParam],

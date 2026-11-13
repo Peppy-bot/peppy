@@ -924,8 +924,8 @@ pub(crate) async fn emulate_pairing_node_services(
 }
 
 /// Emulates a spawned pairing instance's in-process services (ready, health,
-/// shutdown, peer_update) and hands back the pairing slot's set watch. Unlike
-/// [`emulate_pairing_node_services`] its shutdown ends the run_cmd process
+/// shutdown, `peer_update`) and hands back the pairing slot's set watch. Unlike
+/// [`emulate_pairing_node_services`] its shutdown ends the `run_cmd` process
 /// whose pid `pidfile` holds.
 pub(crate) async fn emulate_pairing_instance(
     messenger: &MessengerHandle,

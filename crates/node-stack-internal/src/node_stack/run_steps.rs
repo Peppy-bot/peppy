@@ -27,7 +27,7 @@ use crate::time_source::TimeSource;
 /// Each spawned node instance writes its `runtime_config.json5` to a unique
 /// file under `peppy_dirs.runtime_config_dir()`. Using a shared path can cause
 /// cross-test and cross-instance races where a node reads the wrong config
-/// (instance_id/port), leading to hangs waiting for ready/health responses.
+/// (`instance_id/port`), leading to hangs waiting for ready/health responses.
 static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Writes a runtime config to a unique temp file under

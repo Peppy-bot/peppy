@@ -350,7 +350,7 @@ impl<'de> Deserialize<'de> for BoundProducers {
 pub type SlotBindings = BTreeMap<String, BoundProducers>;
 
 /// One pair a participant pairing slot holds: the peer instance's wire
-/// address, the link_id of the peer's own complementary slot, and the copy
+/// address, the `link_id` of the peer's own complementary slot, and the copy
 /// the peer's instance belongs to (`None` for an instance run outside a
 /// copy). A node holding several pairs from several copies groups them by
 /// `copy`. The boot-config and node-info twin of the wire's `PeerMember`.
@@ -364,7 +364,7 @@ pub struct PairedPeer {
 }
 
 /// The pairs of every participant pairing slot (a `depends_on.pairings`
-/// entry) of a node instance, keyed by slot link_id, each set in
+/// entry) of a node instance, keyed by slot `link_id`, each set in
 /// establishment order. A scalar slot holds zero or one; a multi slot holds
 /// what its cardinality admits. Kept apart from `slot_bindings`, which boots
 /// with the plan's producer sets and is replaced whole over `binding_update`:
@@ -374,7 +374,7 @@ pub struct PairedPeer {
 pub type PairingSlots = BTreeMap<String, Vec<PairedPeer>>;
 
 /// The other end of the pair an observation is pinned to: the peer instance
-/// the observed source publishes to, and the link_id of the peer's slot in
+/// the observed source publishes to, and the `link_id` of the peer's slot in
 /// that pair. An observation the plan names by the peer's end carries one; an
 /// observation named by the source alone observes every pair of the source's
 /// slot and carries none.
@@ -405,7 +405,7 @@ pub struct ObservationSeedMember {
 }
 
 /// Boot-time member sets of every observer slot (a `depends_on.pairing_observers`
-/// entry) of a node instance, keyed by slot link_id, each set in plan order.
+/// entry) of a node instance, keyed by slot `link_id`, each set in plan order.
 ///
 /// Deliberately UNLIKE `pairing_slots` (which boots empty): observer
 /// membership is launch-time configuration the same way `slot_bindings` is,
@@ -417,7 +417,7 @@ pub struct ObservationSeedMember {
 /// deliveries carry strictly larger sequences and replace it wholesale.
 pub type ObservationSeeds = BTreeMap<String, Vec<ObservationSeedMember>>;
 
-/// Represents a node instance at runtime. Used by RuntimeConfig to identify the running node and its configuration
+/// Represents a node instance at runtime. Used by `RuntimeConfig` to identify the running node and its configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeInstanceConfig {
@@ -437,12 +437,12 @@ pub struct NodeInstanceConfig {
     /// with the launching daemon's `core_node`, so the spawned node does
     /// no re-resolution work and always holds a wire-complete producer
     /// address. Empty when the manifest has no `depends_on` entries.
-    /// Read by the generated subscribe / poll / send_goal call sites via
+    /// Read by the generated subscribe / poll / `send_goal` call sites via
     /// the runtime's per-slot bound-producer cache.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_bindings: SlotBindings,
     /// Boot-time pairs of every pairing slot declared in
-    /// `depends_on.pairings`, keyed by slot link_id. Every declared slot boots
+    /// `depends_on.pairings`, keyed by slot `link_id`. Every declared slot boots
     /// empty: pairs requested via `--link` / launcher `links:` are delivered
     /// live over the `peer_update` service after the instance commits to
     /// Running, so there is exactly one delivery mechanism. Empty when the
@@ -1451,7 +1451,7 @@ mod tests {
 
     /// Pin the wire contract of `PairedPeer` (contrast with the plain-array
     /// `slot_bindings` shape pinned above): full `(core_node, instance_id)`
-    /// peer address, the peer's slot link_id, and the peer's copy only when
+    /// peer address, the peer's slot `link_id`, and the peer's copy only when
     /// it has one. This shape travels boot configs and `stack list` output.
     #[test]
     fn paired_peer_serde_contract() {

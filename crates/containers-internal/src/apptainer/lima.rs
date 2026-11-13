@@ -405,17 +405,17 @@ if [ -n "$leader" ]; then
 fi
 exit 0"#;
 
-/// A `limactl` command pointed at peppy's LIMA_HOME. Every `limactl` command
-/// that reaches an instance goes through here: one without LIMA_HOME talks to
+/// A `limactl` command pointed at peppy's `LIMA_HOME`. Every `limactl` command
+/// that reaches an instance goes through here: one without `LIMA_HOME` talks to
 /// the user's default Lima home instead of the peppy instance. The version
-/// check of [`check_lima_version`] reads no instance and needs no LIMA_HOME.
+/// check of [`check_lima_version`] reads no instance and needs no `LIMA_HOME`.
 fn limactl_command(limactl: &Path, lima_home: &Path) -> Command {
     let mut cmd = Command::new(limactl);
     cmd.env("LIMA_HOME", lima_home);
     cmd
 }
 
-/// Build a `limactl shell <instance>` command pre-configured with LIMA_HOME,
+/// Build a `limactl shell <instance>` command pre-configured with `LIMA_HOME`,
 /// stopping before the `--` separator so callers can inject `limactl`-level flags
 /// (e.g. `lima_shell_extra_args`) between the instance and the guest command.
 pub(crate) fn lima_shell_base(limactl: &Path, lima_home: &Path, instance: &str) -> Command {
@@ -424,7 +424,7 @@ pub(crate) fn lima_shell_base(limactl: &Path, lima_home: &Path, instance: &str) 
     cmd
 }
 
-/// Build a `limactl shell <instance> --` command pre-configured with LIMA_HOME.
+/// Build a `limactl shell <instance> --` command pre-configured with `LIMA_HOME`.
 ///
 /// Callers chain additional `.arg()` / `.args()` for the guest-side command.
 pub(crate) fn lima_shell_cmd(limactl: &Path, lima_home: &Path, instance: &str) -> Command {
@@ -985,7 +985,7 @@ pub(crate) fn resolve_lima_dir() -> Result<PathBuf> {
     )
 }
 
-/// Resolve the LIMA_HOME directory for VM instance data.
+/// Resolve the `LIMA_HOME` directory for VM instance data.
 ///
 /// Resolution order:
 /// 1. `{exe_dir}/../lima-data/`: installed layout (`~/.peppy/lima-data/`).
@@ -1392,7 +1392,7 @@ mod tests {
     }
 
     /// Every `limactl` command that reaches an instance carries peppy's
-    /// LIMA_HOME: without it, `limactl` talks to the user's default Lima home
+    /// `LIMA_HOME`: without it, `limactl` talks to the user's default Lima home
     /// instead of the peppy instance.
     #[test]
     fn lima_shell_base_points_limactl_at_the_peppy_lima_home() {

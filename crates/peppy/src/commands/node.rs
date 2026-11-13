@@ -119,7 +119,7 @@ pub struct TimeoutConfig {
     pub flags: bool,
 }
 
-/// Parses a node_name:tag argument string into a tuple
+/// Parses a `node_name:tag` argument string into a tuple
 fn parse_node_ref(s: &str) -> Result<(String, String), String> {
     let (node_name, tag) = s
         .split_once(':')
@@ -346,7 +346,7 @@ pub enum NodeCommands {
         #[arg(short = 'r', long)]
         run: bool,
         /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30).
-        /// These are passed to the node via PEPPY_RUNTIME_CONFIG and only make
+        /// These are passed to the node via `PEPPY_RUNTIME_CONFIG` and only make
         /// sense when `--run` is set; `requires = "run"` so a bare
         /// `peppy node add . frequency=30` errors at parse time instead of
         /// silently ignoring the argument.
@@ -437,7 +437,7 @@ pub enum NodeCommands {
     },
     /// Build a node previously added to the node stack
     Build {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        /// Node reference in the format `node_name:tag` (e.g., `my_node:v1`)
         #[arg(value_parser = parse_node_ref)]
         node_ref: (String, String),
         /// Idle timeout in seconds; resets on build output, bytes written to disk, or CPU time the build burns
@@ -465,7 +465,7 @@ pub enum NodeCommands {
     /// platform whose tag holds this revision already is skipped. It exits
     /// non-zero when a platform of the request was not published.
     Publish {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        /// Node reference in the format `node_name:tag` (e.g., `my_node:v1`)
         #[arg(value_parser = parse_node_ref)]
         node_ref: (String, String),
         /// Platforms to build and push beside the one of the daemon,
@@ -499,7 +499,7 @@ pub enum NodeCommands {
     /// Usage: `peppy node run <node_name>:<tag>` or `peppy node run --node-name <name> --tag <tag>`
     #[command(group(ArgGroup::new("node_source").required(true).args(["node_ref", "node_name"])))]
     Run {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        /// Node reference in the format `node_name:tag` (e.g., `my_node:v1`)
         #[arg(value_parser = parse_node_ref)]
         node_ref: Option<(String, String)>,
         /// Name of the node to spawn
@@ -509,7 +509,7 @@ pub enum NodeCommands {
         #[arg(long, requires = "node_name")]
         tag: Option<String>,
         /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30)
-        /// These are passed to the node via PEPPY_RUNTIME_CONFIG
+        /// These are passed to the node via `PEPPY_RUNTIME_CONFIG`
         #[arg(value_parser = parse_key_value_arg)]
         args: Vec<(String, String)>,
         /// Optional: specify a deterministic instance ID
@@ -597,7 +597,7 @@ pub enum NodeCommands {
     },
     /// Remove a node from the node stack
     Remove {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        /// Node reference in the format `node_name:tag` (e.g., `my_node:v1`)
         #[arg(value_parser = parse_node_ref)]
         node_ref: (String, String),
         /// Stop the node's running instances and clear its restarting, finished and failed ones before removing it. Without this flag the command asks first when the node tracks instances. An instance starting when the removal reaches it, or running a process that reached `running` after the removal began, keeps the node; once none is starting, run the removal again. `peppy node stop <instance-id> --core-node <daemon>` ends a restart's start, and a first start ends on its own
@@ -614,7 +614,7 @@ pub enum NodeCommands {
     /// with an error; inspecting sources on disk is the job of `node add`,
     /// not `node info`.
     Info {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        /// Node reference in the format `node_name:tag` (e.g., `my_node:v1`)
         #[arg(value_parser = parse_node_ref)]
         node_ref: (String, String),
     },

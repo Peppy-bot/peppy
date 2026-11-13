@@ -26,7 +26,7 @@ pub(crate) const MOCK_CORE_NODE: &str = "mock-core";
 /// The mock peer's own slot id: what the node's `PeerInfo.peer_link_id`
 /// reports under the harness.
 pub(crate) const MOCK_PEER_LINK_ID: &str = "mock_peer";
-/// The producer-side link_id mock observed sources publish under.
+/// The producer-side `link_id` mock observed sources publish under.
 pub(crate) const MOCK_SOURCE_LINK_ID: &str = "mock_source";
 /// Wire identity of the fixtures' caller/observer session.
 pub(crate) const FIXTURE_CORE_NODE: &str = "fixture-core";
@@ -87,7 +87,7 @@ pub(crate) fn unreserved_member_name(
 }
 
 /// The member name for a dep-link interface: plain when the interface's own
-/// consumer-side link_id equals the dependency slot's, link-qualified
+/// consumer-side `link_id` equals the dependency slot's, link-qualified
 /// otherwise (a slot can bind several same-name interfaces through distinct
 /// manifest entries). Shared by both backends, so the member-naming rule must
 /// not drift between languages.
@@ -129,9 +129,9 @@ impl TargetSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct DepTopicSpec {
     pub name: String,
-    /// The topic's own consumer-side link_id: the production module nests
+    /// The topic's own consumer-side `link_id`: the production module nests
     /// under it (and the topic schema key derives from it). Usually equal to
-    /// the dependency slot's link_id, but the manifest can bind several
+    /// the dependency slot's `link_id`, but the manifest can bind several
     /// same-producer topics through distinct entries on one slot.
     pub module_link: String,
     pub format: MessageFormat,
@@ -143,7 +143,7 @@ pub(crate) struct DepTopicSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct DepServiceSpec {
     pub name: String,
-    /// The service's own consumer-side link_id (module nesting).
+    /// The service's own consumer-side `link_id` (module nesting).
     pub module_link: String,
     pub request: Option<MessageFormat>,
     pub response: Option<MessageFormat>,
@@ -153,7 +153,7 @@ pub(crate) struct DepServiceSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct DepActionSpec {
     pub name: String,
-    /// The action's own consumer-side link_id (module nesting).
+    /// The action's own consumer-side `link_id` (module nesting).
     pub module_link: String,
     pub messages: ConsumedActionMessage,
 }

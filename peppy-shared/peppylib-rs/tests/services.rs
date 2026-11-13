@@ -398,7 +398,7 @@ async fn service_contract_tag_hyphen_normalized() {
 }
 
 /// Discover-then-pin safety: when a consumer issues a wildcard
-/// `ServiceMessenger::poll` (target_instance_id = None) against two producers
+/// `ServiceMessenger::poll` (`target_instance_id` = None) against two producers
 /// exposing the same `(name, tag)`, only the discovered producer must run its
 /// user handler. The other receives only the discovery probe (filtered
 /// server-side before the handler runs) and stays idle.

@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 pub struct NodeName(String);
 
 impl NodeName {
-    /// Creates a new NodeName after validating the input.
+    /// Creates a new `NodeName` after validating the input.
     pub fn new(name: impl Into<String>) -> Result<Self> {
         let name = name.into();
 

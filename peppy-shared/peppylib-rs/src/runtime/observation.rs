@@ -10,7 +10,7 @@
 //! observer follows `(source generation, source pin)` per member, not the pin
 //! alone: a source's own peer transitions never touch its subscription (the pin
 //! is unchanged), while a source-incarnation change advances that member's
-//! generation and so redeclares, even though a reused instance_id keeps the wire
+//! generation and so redeclares, even though a reused `instance_id` keeps the wire
 //! triple byte-identical, which the keyexpr alone cannot tell apart. This module
 //! supplies only that follow rule; the convergence, the fair merge across
 //! members, and the stale filter live in the engine.
@@ -276,7 +276,7 @@ impl ObservedTopicSubscription {
     /// message is tagged with the [`ObservedSource`] that published it, the
     /// same type [`ObservationSlotSet::sources`] enumerates, so a multi-member
     /// slot's consumer routes on the source identity (wire address plus
-    /// producer-side link_id) even when several members share one instance.
+    /// producer-side `link_id`) even when several members share one instance.
     /// Returns `None` when the runtime is torn down (slot channel closed). A
     /// message buffered under a superseded source generation, or under a
     /// member the slot has since dropped, never surfaces (see

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// One pairing an observer slot observes: the observed instance's full
-/// `(core_node, instance_id)` wire address plus the producer-side link_id of the
+/// `(core_node, instance_id)` wire address plus the producer-side `link_id` of the
 /// observed pairing slot, and the pair's other end when the plan named the
 /// pair by it. Returned by `ObservationSlot.source()` and
 /// `ObservationSlotSet.sources()`, and tagged onto every message an
@@ -54,14 +54,14 @@ impl PyObservedSource {
         PyProducerRef::from(self.inner.producer.clone())
     }
 
-    /// The producer-side link_id of the observed pairing slot.
+    /// The producer-side `link_id` of the observed pairing slot.
     #[getter]
     fn source_link_id(&self) -> &str {
         &self.inner.source_link_id
     }
 
     /// The pair's other end when the plan named the pair by it: the peer the
-    /// source publishes to and the link_id of the peer's slot. `None` when
+    /// source publishes to and the `link_id` of the peer's slot. `None` when
     /// this member observes every pair of the source's slot.
     #[getter]
     fn peer(&self) -> Option<PyPeerInfo> {

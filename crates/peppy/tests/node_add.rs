@@ -971,7 +971,7 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
 }
 
 /// Positive control: `peppy node add -r --link KEY@VALUE` (where KEY is a
-/// declared link_id and VALUE is the producer's instance_id) is the
+/// declared `link_id` and VALUE is the producer's `instance_id`) is the
 /// supported path. The same producer/consumer scaffolding as the
 /// rejection test above, but with the binding supplied; the consumer
 /// must launch cleanly.

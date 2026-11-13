@@ -240,7 +240,7 @@ impl StackTimeouts {
 #[derive(clap::Args, Default)]
 pub struct LaunchJoins {
     /// A copy of OPTION, one of an axis that runs as copies, named NAME in
-    /// the launch, its base on CORE_NODE (the coordinator when no machine is
+    /// the launch, its base on `CORE_NODE` (the coordinator when no machine is
     /// given, which `self` also names): joined onto the launch as `stack
     /// join OPTION:NAME@CORE_NODE` joins one onto the running stack, and
     /// started with it by `stack launch`, its nodes built with it by `stack
@@ -257,7 +257,7 @@ pub struct LaunchJoins {
     pub joins: Vec<CopyReference>,
 }
 
-/// The one spelling for "a copy NAME of OPTION on CORE_NODE": the option
+/// The one spelling for "a copy NAME of OPTION on `CORE_NODE`": the option
 /// before the colon, the copy's name after it, held to a copy name's
 /// grammar, and after `@` the machine of its base. `stack join` takes it as
 /// its positional, and `--join` joins the copy onto a launch.

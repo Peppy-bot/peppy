@@ -494,7 +494,7 @@ fn is_pid_dir_name(name: &std::ffi::OsStr) -> bool {
 /// The pid leads the line. The second field, the command name, sits in
 /// parentheses and may itself contain spaces and parentheses, so the fixed
 /// fields are counted from the last closing parenthesis on the line: state,
-/// ppid, pgrp, session, tty_nr, tpgid, flags, minflt, cminflt, majflt,
+/// ppid, pgrp, session, `tty_nr`, tpgid, flags, minflt, cminflt, majflt,
 /// cmajflt, utime, stime, cutime, cstime, in that order (`proc_pid_stat(5)`).
 /// `None` for a line that does not hold them all, which includes either half
 /// of a line a command name holding a newline split in two. The

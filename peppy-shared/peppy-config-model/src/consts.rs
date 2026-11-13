@@ -1,6 +1,6 @@
 pub const NODE_CONFIG_FILE: &str = "peppy.json5";
 pub const RUNTIME_CONFIG_VAR_NAME: &str = "PEPPY_RUNTIME_CONFIG";
-/// The standard output directory for generated peppygen libraries relative to node_dir.
+/// The standard output directory for generated peppygen libraries relative to `node_dir`.
 pub const PEPPYGEN_OUTPUT_PATH: &str = ".peppy/libs/peppygen";
 
 /// Overrides the peppy data root (the `.peppy` directory itself). Mirrors the
@@ -9,7 +9,7 @@ pub const PEPPYGEN_OUTPUT_PATH: &str = ".peppy/libs/peppygen";
 /// (`PeppyDirs::root`).
 pub const PEPPY_HOME_ENV: &str = "PEPPY_HOME";
 
-/// Overrides the daemon-global config document (peppy_config.json5).
+/// Overrides the daemon-global config document (`peppy_config.json5`).
 /// When set and non-empty, the value is tried as a path to a config file
 /// first; if no file can be read, it is parsed as an inline JSON5 document.
 /// The source is loaded read-only: nothing is created, completed, or
@@ -56,7 +56,7 @@ mod tests {
     use super::*;
 
     /// Ensures that static files in peppylib-py/ that cannot be programmatically
-    /// templated stay in sync with the canonical PYTHON_MIN_VERSION/PYTHON_MAX_VERSION constants.
+    /// templated stay in sync with the canonical `PYTHON_MIN_VERSION/PYTHON_MAX_VERSION` constants.
     #[test]
     fn python_version_consistency_in_static_files() {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

@@ -211,7 +211,7 @@ async fn next_change(follow: &mut GoalHandle) -> FleetChange {
 }
 
 /// The fleet of these tests, written under a new directory: the director, a
-/// lease holder with the daemon target `fleet` of robot_leases:v1 scoped to
+/// lease holder with the daemon target `fleet` of `robot_leases:v1` scoped to
 /// `scope`, outside any copy, and the axis `robot`, whose option `real`
 /// deploys `named_robot` as the instance `arm_inst` of each copy.
 fn fleet_with_a_director(started: &StartedCoreNode, scope: &str) -> (tempfile::TempDir, PathBuf) {
@@ -293,7 +293,7 @@ async fn launched_with_alpha(
 
 /// The daemon holds the record of a launch from its commit point on: while
 /// the launch waits for the start of the copy `alpha`, the director, an
-/// instance of the launch, calls robot_leases:v1 within its scope and takes the
+/// instance of the launch, calls `robot_leases:v1` within its scope and takes the
 /// lease of alpha, and the followers read the join of alpha.
 #[tokio::test]
 async fn an_instance_calls_robot_leases_within_its_scope_while_its_launch_starts() {

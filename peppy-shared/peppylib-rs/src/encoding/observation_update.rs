@@ -158,7 +158,7 @@ mod tests {
         ObservationUpdateRequest::decode(&request.encode().unwrap().into_inner()).unwrap()
     }
 
-    /// A source or a pinned peer the wire cannot address, and a link_id it
+    /// A source or a pinned peer the wire cannot address, and a `link_id` it
     /// cannot carry, refuse the delivery naming the field.
     #[test]
     fn a_member_the_wire_cannot_carry_refuses_the_delivery() {

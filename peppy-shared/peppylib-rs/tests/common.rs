@@ -240,7 +240,7 @@ impl CoreNodeClient {
     }
 }
 
-/// Creates a shared mock messenger and returns a client with a MessengerHandle.
+/// Creates a shared mock messenger and returns a client with a `MessengerHandle`.
 pub(crate) async fn get_client_server() -> (CoreNodeClient, Arc<Mutex<Messenger>>) {
     let shared_messenger = create_mock_messenger().await;
 

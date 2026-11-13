@@ -46,7 +46,7 @@ use super::common::{SlotUpdateClient, SlotUpdateTarget};
 /// incarnation counter and cross-deliver each other's pins.
 ///
 /// Deliberately coarser than the [`ObservedSource`] it is derived from, which
-/// also carries the producer-side link_id: an incarnation counter belongs to
+/// also carries the producer-side `link_id`: an incarnation counter belongs to
 /// the source instance, so an instance observed through two of its own pairing
 /// slots must advance one counter, not two.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -132,7 +132,7 @@ fn slots_of_records(records: &[ObserverRecord]) -> BTreeMap<String, ObservationT
     ObservationTargets::slots_from_plan(members)
 }
 
-/// One observer slot: the instance that declares it and its own link_id. The
+/// One observer slot: the instance that declares it and its own `link_id`. The
 /// unit of delivery, since a slot's update always carries its whole member set.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct SlotKey {

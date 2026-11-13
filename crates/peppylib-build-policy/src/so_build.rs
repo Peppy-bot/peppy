@@ -98,7 +98,7 @@ pub fn should_cross_compile(cross_build: bool, present: bool, stale: bool, force
 /// bindings (see [`should_cross_compile`]), so after a shared-crate change
 /// the cache can hold Linux `.so` from older sources. Embedding one puts the
 /// schema mismatch inside the container image, where it only surfaces as a
-/// baffling parse error when the node starts (e.g. `unknown field \`implements\``).
+/// baffling parse error when the node starts (e.g. ``unknown field `implements` ``).
 /// Excluding it instead makes the container build fail up front with the
 /// scaffolder's explicit "no embedded native extension" error.
 ///

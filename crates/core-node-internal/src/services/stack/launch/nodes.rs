@@ -26,9 +26,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Marker git_hash for an add whose bytes a pin already vouched for: the ones
+/// Marker `git_hash` for an add whose bytes a pin already vouched for: the ones
 /// stack launch issues, and the per-node sub-goals `add_batch` issues for any
-/// pinned add (`peppy node add <name>:<tag>` included). The node_add service
+/// pinned add (`peppy node add <name>:<tag>` included). The `node_add` service
 /// skips git hash and codegen-fingerprint verification for it and generates
 /// fresh peppygen files: those checks belong to `peppy node sync` workflows,
 /// and these adds operate on a tree materialized from an already-verified pin.

@@ -359,7 +359,7 @@ pub struct SerializedInstance {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_bindings: SlotBindings,
     /// Live pairing-slot state for every `depends_on.pairings` entry, keyed
-    /// by the slot's link_id. Overlaid by the daemon from the manifest plus
+    /// by the slot's `link_id`. Overlaid by the daemon from the manifest plus
     /// its pairing registry when serializing the graph: this is the
     /// observability surface behind `peppy stack list`'s pairing rows.
     /// Empty for instances whose manifest declares no pairings, and then

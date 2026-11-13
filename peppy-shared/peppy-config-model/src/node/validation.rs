@@ -15,7 +15,7 @@ use crate::error::{ConsumedInterfaceOnlyContractBacked, MissingInterface, Parsin
 use crate::node::{ImplementsEntry, InterfaceKind, Interfaces, Manifest, NodeConfig};
 
 /// Minimal `(name, tag)` view of a single `depends_on.nodes` entry,
-/// stripped of the link_id noise that callers don't need
+/// stripped of the `link_id` noise that callers don't need
 /// once dependency resolution has already happened. Used by
 /// [`collect_dependency_specs`] so callers can walk the dep set without
 /// re-deriving it from the manifest.
@@ -124,13 +124,13 @@ pub enum MissingDependencyPolicy {
 /// 2. **Interface exposure**: Each consumed/expected interface must reference a valid `link_id`
 ///    declared in `depends_on.nodes`, `depends_on.contracts`, `depends_on.daemon`, or (for
 ///    `topics.consumes` only) `depends_on.pairings` /
-///    `depends_on.pairing_observers`. For node-backed link_ids
+///    `depends_on.pairing_observers`. For node-backed `link_ids`
 ///    the producer must expose the required interface. An unresolved
 ///    dependency's consumed interfaces are skipped, whether its absence was
 ///    reported or admitted; exposure is checked wherever the dependency
 ///    does resolve (node add/sync).
 ///
-/// Contract-, daemon- and pairing-backed link_ids only get the declaration
+/// Contract-, daemon- and pairing-backed `link_ids` only get the declaration
 /// check here. None of their documents is reachable from this crate, so
 /// whether the entry names a real member is checked at node add/sync, where
 /// they resolve.
@@ -219,21 +219,21 @@ pub fn validate_dependency_specs(
 }
 
 /// A `depends_on.nodes` entry whose config resolved, read by the exposure
-/// check of the interfaces consumed through its link_id.
+/// check of the interfaces consumed through its `link_id`.
 struct ResolvedDependency<'a> {
     name: &'a str,
     tag: &'a str,
     config: NodeConfig,
 }
 
-/// The link_ids a manifest declares, grouped by what a consumed item that
+/// The `link_ids` a manifest declares, grouped by what a consumed item that
 /// names one of them is checked against.
 struct DeclaredLinks<'a> {
-    /// The `depends_on.nodes` entries that resolve, by link_id.
+    /// The `depends_on.nodes` entries that resolve, by `link_id`.
     resolved_dependencies: HashMap<&'a str, ResolvedDependency<'a>>,
     /// Every `depends_on.nodes`, `depends_on.contracts` and
-    /// `depends_on.daemon` link_id, so the check can tell "declared but
-    /// unresolved" (a reported MissingDependency, an admitted absence, or a
+    /// `depends_on.daemon` `link_id`, so the check can tell "declared but
+    /// unresolved" (a reported `MissingDependency`, an admitted absence, or a
     /// contract or daemon target whose members resolve at node add/sync)
     /// from "never declared" (typo).
     dependency_link_ids: HashSet<&'a str>,
@@ -358,7 +358,7 @@ enum Exposure<'a> {
 }
 
 /// Scans the produced entries of `kind` for `name`. A matching native entry
-/// wins at once; otherwise the link_id of the last matching contract-backed
+/// wins at once; otherwise the `link_id` of the last matching contract-backed
 /// entry names the implements slot for the dedicated-error payload.
 fn find_exposure<'a>(node: &'a NodeConfig, kind: InterfaceKind, name: &str) -> Exposure<'a> {
     let mut contract_link_id = None;
@@ -462,7 +462,7 @@ mod tests {
     }
 
     /// Wraps an interfaces block in a node holding one `arm_link/v1` pairing
-    /// slot under link_id `controller`, playing the `arm` role.
+    /// slot under `link_id` `controller`, playing the `arm` role.
     fn node_with_pairing(interfaces: &str) -> NodeConfig {
         parse(&format!(
             r#"{{

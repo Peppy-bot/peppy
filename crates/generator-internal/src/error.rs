@@ -99,7 +99,7 @@ sanitize to the module name `{sanitized}`"
     /// Two schema registrations with different message formats resolved to
     /// the same capnp file stem. Schema keys are built to make this
     /// unrepresentable (consumed topics and pairings carry the slot's
-    /// link_id, services and actions the producer name), so this is a hard
+    /// `link_id`, services and actions the producer name), so this is a hard
     /// error naming both keys rather than a silent reuse or overwrite of the
     /// first file.
     #[error(

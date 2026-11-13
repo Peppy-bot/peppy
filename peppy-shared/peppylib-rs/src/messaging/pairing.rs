@@ -9,9 +9,9 @@
 use super::ProducerRef;
 
 /// One peer paired on a slot: the peer instance's full `(core_node,
-/// instance_id)` address plus the link_id of the peer's own complementary
+/// instance_id)` address plus the `link_id` of the peer's own complementary
 /// slot. The triple pins the peer's publishes exactly (core, instance,
-/// producer-side link_id segment), and names the peer a publish is for.
+/// producer-side `link_id` segment), and names the peer a publish is for.
 ///
 /// Returned by `NodeRunner::peer(link_id).paired()` / `wait_paired()` and
 /// listed by `NodeRunner::peer_set(link_id).peers()`, surfaced by the
@@ -27,7 +27,7 @@ use super::ProducerRef;
 pub struct PeerInfo {
     /// The peer instance's full wire address.
     pub producer: ProducerRef,
-    /// The link_id of the peer's complementary pairing slot.
+    /// The `link_id` of the peer's complementary pairing slot.
     pub peer_link_id: String,
 }
 

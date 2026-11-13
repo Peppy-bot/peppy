@@ -514,7 +514,7 @@ mod tests {
     }
 
     /// An instance on a peer starts from no forwarded environment, so the
-    /// env_vars its launcher file declares are the whole environment its run
+    /// `env_vars` its launcher file declares are the whole environment its run
     /// goal carries.
     #[test]
     fn a_peer_instance_carries_only_its_declared_env_vars() {

@@ -712,7 +712,7 @@ struct PreparedChild {
 
 /// Drives a real `prepare_and_spawn` on the entity at `(name, tag)`, which
 /// must already be in `Ready`. Spawns a real child via the entity's existing
-/// `run_cmd`; callers are responsible for ensuring the node config's run_cmd
+/// `run_cmd`; callers are responsible for ensuring the node config's `run_cmd`
 /// is spawnable in the test environment.
 async fn prepare_and_spawn_on_ready_entity(
     started: &StartedCoreNode,

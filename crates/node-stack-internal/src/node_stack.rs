@@ -417,7 +417,7 @@ impl NodeStackInner {
     /// Find the `(node_name, node_tag)` of any entity in the stack that
     /// already tracks an instance with `instance_id`, in any state:
     /// `Starting`, `Running`, etc. Used by the daemon's stack-wide
-    /// instance_id uniqueness guard at spawn time (the validator's
+    /// `instance_id` uniqueness guard at spawn time (the validator's
     /// `rule 7` is the primary check at plan time; this is the
     /// defensive backstop at the trust boundary).
     ///
@@ -1113,7 +1113,7 @@ pub struct PublishSettings {
 }
 
 impl NodeStack {
-    /// Creates a new NodeStack with the given root node configuration.
+    /// Creates a new `NodeStack` with the given root node configuration.
     /// The root node (core node) is the parent of all other nodes in the graph
     /// and cannot be removed from the stack.
     ///
@@ -1293,13 +1293,13 @@ impl NodeStack {
         guard.find(&NodeKey::new(name, tag))
     }
 
-    /// Finds a node instance by its instance_id across all entities in the stack.
+    /// Finds a node instance by its `instance_id` across all entities in the stack.
     pub fn find_by_instance_id(&self, instance_id: &Name) -> Option<TrackedNodeInstance> {
         let guard = self.shared.read();
         guard.find_by_instance_id(instance_id)
     }
 
-    /// Finds a node entity by an instance_id it contains.
+    /// Finds a node entity by an `instance_id` it contains.
     fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
         let guard = self.shared.read();
         guard.find_entity_by_instance_id(instance_id)

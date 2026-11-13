@@ -785,7 +785,7 @@ mod tests {
 
     /// Regression guard: with `tls: None` the TLS feature is inert, and no
     /// `transport` block is emitted.
-    /// (We assert structurally rather than byte-for-byte because serde_json's
+    /// (We assert structurally rather than byte-for-byte because `serde_json`'s
     /// object key order depends on whether the `preserve_order` feature is
     /// unified in by some dependency, which would make an exact-string golden
     /// flaky across builds.)

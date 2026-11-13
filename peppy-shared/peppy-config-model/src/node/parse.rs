@@ -23,9 +23,9 @@ use std::path::Path;
 /// - Rejects two daemon targets of one daemon interface: a call names no
 ///   daemon target, so the daemon reads each call of an interface against
 ///   the one scope of that interface that the instance has.
-/// - Rejects pairing link_ids that are not wire-safe segments. A participant
-///   slot link_id is stamped verbatim into the producer-side link_id segment
-///   of every publish keyexpr, so it must be wire-safe. An observer link_id is
+/// - Rejects pairing `link_ids` that are not wire-safe segments. A participant
+///   slot `link_id` is stamped verbatim into the producer-side `link_id` segment
+///   of every publish keyexpr, so it must be wire-safe. An observer `link_id` is
 ///   a local resolution name only (never stamped on the wire), but it is held
 ///   to the same rule so both pairing forms share one parser.
 /// - Rejects duplicate `(name, tag)` pairs in `manifest.implements`
@@ -126,7 +126,7 @@ fn validate_document_pins(manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
-/// Validates the link_id direction rules and duplicate keys of the
+/// Validates the `link_id` direction rules and duplicate keys of the
 /// produced/consumed interface entries:
 ///
 /// - A `topics.emits` entry's `link_id` must name a `manifest.implements`
@@ -293,7 +293,7 @@ fn depends_list_containing(depends_on: Option<&DependsOn>, link_id: &str) -> Opt
     None
 }
 
-/// The `depends_on.pairings` slot link_ids of a manifest. A participant slot is
+/// The `depends_on.pairings` slot `link_ids` of a manifest. A participant slot is
 /// the one `depends_on` kind a produced topic entry may reference: its role is
 /// a producer of the pairing document's topics. An observer plays no role and
 /// emits nothing, so `depends_on.pairing_observers` is excluded and a
@@ -365,7 +365,7 @@ fn disallowed_produced_link_id(
     }
 }
 
-/// A pairing slot link_id travels the wire as a keyexpr segment, so it must
+/// A pairing slot `link_id` travels the wire as a keyexpr segment, so it must
 /// obey the segment rules from `pmi::wire::Segment` (which this crate cannot
 /// name, because pmi depends on this crate): no `/`, no `@`, and not one of the reserved
 /// sentinels (`*`, `**`, and the default-link_id sentinel `_`). Emptiness and
@@ -2061,7 +2061,7 @@ mod tests {
     }
 
     /// Wraps a pairing slot + interfaces block in a minimal node config. The
-    /// slot is always `arm_link/v1` under link_id `arm`.
+    /// slot is always `arm_link/v1` under `link_id` `arm`.
     fn node_with_pairing(interfaces: &str) -> String {
         format!(
             r#"{{
@@ -2595,7 +2595,7 @@ mod tests {
     }"#;
 
     /// A daemon target parses beside the other slot lists, and the node
-    /// consumes members of its interface through its link_id, as it does
+    /// consumes members of its interface through its `link_id`, as it does
     /// through a contract slot.
     #[test]
     fn a_daemon_target_parses_and_its_members_are_consumed_through_its_link_id() {
@@ -2676,7 +2676,7 @@ mod tests {
         }
     }
 
-    /// The link_id of a daemon target shares the one link_id namespace of
+    /// The `link_id` of a daemon target shares the one `link_id` namespace of
     /// `depends_on` and `implements`.
     #[test]
     fn the_link_id_of_a_daemon_target_clashes_with_every_other_slot() {
@@ -2733,7 +2733,7 @@ mod tests {
 
     /// A daemon target is a slot whose members a node consumes: a produced
     /// entry naming it is refused with the list it is declared in, and an
-    /// undeclared link_id in a consumed entry stays an undeclared link_id.
+    /// undeclared `link_id` in a consumed entry stays an undeclared `link_id`.
     #[test]
     fn a_daemon_target_is_consumed_and_never_produced() {
         let error = parse_error(&daemon_target_node(

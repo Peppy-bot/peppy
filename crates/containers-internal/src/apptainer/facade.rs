@@ -150,7 +150,7 @@ pub(crate) enum Backend {
         apptainer_bin: PathBuf,
         /// Path to the bundled `limactl` binary.
         limactl_path: PathBuf,
-        /// LIMA_HOME directory for VM instance data.
+        /// `LIMA_HOME` directory for VM instance data.
         lima_home: PathBuf,
         /// The VM the commands run in.
         vm: lima::LimaVm,
@@ -368,7 +368,7 @@ fn profile_references_starter(profile: &ApparmorProfileRef) -> bool {
 
 /// Whether the kernel has `profile` loaded. Reads the policy directory
 /// listing, which is world-readable, because
-/// `/sys/kernel/security/apparmor/profiles` requires CAP_MAC_ADMIN.
+/// `/sys/kernel/security/apparmor/profiles` requires `CAP_MAC_ADMIN`.
 #[cfg(target_os = "linux")]
 fn is_profile_loaded(profile: &ApparmorProfileRef) -> bool {
     let kernel_entry_prefix = format!("{}.", profile.name);
@@ -1391,7 +1391,7 @@ impl GuestSignal {
     }
 }
 
-/// The `limactl` binary and the LIMA_HOME of the peppy Lima VM, or `None` when
+/// The `limactl` binary and the `LIMA_HOME` of the peppy Lima VM, or `None` when
 /// no Lima installation resolves or its VM is not running. A VM that is not
 /// running has no guest processes left to signal, and the callers must never
 /// boot one, which a full [`Apptainer::new`] readiness preflight could do.

@@ -346,7 +346,7 @@ struct ListenerCtx<'a> {
     /// `clock` topic publisher.
     clock_source: Arc<dyn ClockSource>,
     /// In-memory key/value store shared by the five datastore endpoints
-    /// (store, store_exclusive, get, list, remove).
+    /// (store, `store_exclusive`, get, list, remove).
     datastore: Arc<datastore::Datastore>,
     /// The daemon's single pairing and observation authorities, shared by every
     /// establishment hook and lifecycle teardown path.

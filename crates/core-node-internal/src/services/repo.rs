@@ -56,15 +56,15 @@ pub(crate) fn repository_noun(count: usize) -> &'static str {
 }
 
 /// Guards read-modify-write cycles on repositories.json5 and
-/// excluded_repositories.json5 to prevent concurrent corruption.
+/// `excluded_repositories.json5` to prevent concurrent corruption.
 pub(crate) fn repos_file_lock() -> &'static parking_lot::Mutex<()> {
     static LOCK: std::sync::OnceLock<parking_lot::Mutex<()>> = std::sync::OnceLock::new();
     LOCK.get_or_init(|| parking_lot::Mutex::new(()))
 }
 
-/// Serializes `process_refresh` + `write_all_caches` so the user-facing repo_refresh
-/// action and the post-remove refresh in repo_remove cannot race on
-/// nodes.json5. The ActionState single-flight inside repo_refresh rejects
+/// Serializes `process_refresh` + `write_all_caches` so the user-facing `repo_refresh`
+/// action and the post-remove refresh in `repo_remove` cannot race on
+/// nodes.json5. The `ActionState` single-flight inside `repo_refresh` rejects
 /// concurrent *user* refreshes with a friendly error; this mutex is the
 /// correctness backstop that also covers the remove-triggered path.
 pub(crate) fn refresh_lock() -> &'static parking_lot::Mutex<()> {
@@ -73,7 +73,7 @@ pub(crate) fn refresh_lock() -> &'static parking_lot::Mutex<()> {
 }
 
 /// Serialize a `RepoSource` with an assigned id into a JSON object for
-/// persisting in repositories.json5 / excluded_repositories.json5.
+/// persisting in repositories.json5 / `excluded_repositories.json5`.
 pub(crate) fn repo_source_to_json(id: u64, source: &RepoSource) -> Value {
     let mut map = serde_json::Map::new();
     map.insert("id".to_string(), Value::Number(id.into()));

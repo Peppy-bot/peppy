@@ -207,7 +207,7 @@ async fn run_consumer_against_exposer(
     }
 }
 
-/// Runs one native move_arm action flow: the consumer fires goals at the
+/// Runs one native `move_arm` action flow: the consumer fires goals at the
 /// exposer of [`EXPOSED_ACTION_EXAMPLE`] through its `brain` slot, bound to
 /// that exposer, over a router of its own. Returns what the two nodes printed;
 /// both exited successfully.
@@ -241,7 +241,7 @@ async fn run_move_arm_flow(
 }
 
 /// E2E capstone for the bimanual field scenario: two instances of the SAME
-/// producer node run on one core_node, and a generated consumer whose
+/// producer node run on one `core_node`, and a generated consumer whose
 /// manifest slot is pinned (via `NodeInstanceConfig.slot_bindings`) to one
 /// of them fires goals repeatedly. The full chain under test is
 /// runtime-config parse (`slot_bindings` producer lists of `ProducerRef`s)
