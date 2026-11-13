@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sys
 
 import pytest
 
@@ -72,3 +73,19 @@ def test_an_absent_media_file_is_a_fault_only_when_the_media_are_present() -> No
 
     assert hyperframes.lint_faults(findings, media_are_present=True) == findings
     assert hyperframes.lint_faults(findings, media_are_present=False) == []
+
+
+def test_hyperframes_gets_the_path_of_the_ffmpeg_of_the_pixi_environment() -> None:
+    environment = hyperframes.environment()
+
+    pixi_programs = Path(sys.executable).parent
+    assert environment["HYPERFRAMES_FFMPEG_PATH"] == str(pixi_programs / "ffmpeg")
+    assert environment["HYPERFRAMES_FFPROBE_PATH"] == str(pixi_programs / "ffprobe")
+    assert environment["HYPERFRAMES_PYTHON"] == sys.executable
+
+
+def test_an_environment_with_no_ffmpeg_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
+
+    with pytest.raises(hyperframes.MissingProgram, match="has no `ffmpeg`"):
+        hyperframes.environment()

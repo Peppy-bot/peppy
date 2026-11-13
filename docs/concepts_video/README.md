@@ -129,6 +129,8 @@ The build gets each tool that changes the result at a pinned version, from its s
 
 The fonts are in `assets/fonts`, each with its licence. The build keeps each file that it gets in `.cache/`, and reads no other file of the machine. HyperFrames sends no usage data.
 
+HyperFrames finds a program by its name only in a folder outside the project, and the pixi environment is inside the project. Thus `tools/hyperframes.py` gives HyperFrames the path of the Python, of the FFmpeg and of the FFprobe of the pixi environment. Without these paths, HyperFrames runs the FFmpeg of the machine.
+
 A new build gives the same video until a person changes a version. To change one, change it in its file, run `pixi run build`, and look at the result.
 
 ## The checks of CI

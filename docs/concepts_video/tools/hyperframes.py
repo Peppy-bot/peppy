@@ -1,7 +1,7 @@
 """Runs the HyperFrames command line of the project.
 
 Each run keeps the caches of HyperFrames inside the project, sends no usage
-data, and makes the voice with the Python of the pixi environment.
+data, and uses the Python and the FFmpeg of the pixi environment.
 """
 
 import json
@@ -22,15 +22,36 @@ class LintFailed(Exception):
     """The lint of HyperFrames found a fault in the compiled project."""
 
 
+class MissingProgram(Exception):
+    """The pixi environment does not have a program that HyperFrames runs."""
+
+
 def environment() -> dict[str, str]:
+    """The environment of a run.
+
+    HyperFrames finds a program by its name only in a folder outside the
+    project, and the pixi environment is inside the project. Thus each program
+    that HyperFrames runs has its path here. Without the path, HyperFrames
+    runs the FFmpeg of the machine, which is not the pinned one.
+    """
     return {
         **os.environ,
         "HYPERFRAMES_CACHE_DIR": str(paths.HYPERFRAMES_CACHE),
         "HYPERFRAMES_PYTHON": sys.executable,
+        "HYPERFRAMES_FFMPEG_PATH": str(pinned_program("ffmpeg")),
+        "HYPERFRAMES_FFPROBE_PATH": str(pinned_program("ffprobe")),
         "HYPERFRAMES_NO_TELEMETRY": "1",
         "HYPERFRAMES_NO_UPDATE_CHECK": "1",
         "DO_NOT_TRACK": "1",
     }
+
+
+def pinned_program(name: str) -> Path:
+    """The program `name` of the pixi environment, which is beside its Python."""
+    program = Path(sys.executable).parent / name
+    if not program.is_file():
+        raise MissingProgram(f"the environment of {sys.executable} has no `{name}`: run the command with `pixi run`")
+    return program
 
 
 def run(arguments: list[str], extra_environment: dict[str, str] | None = None) -> None:
