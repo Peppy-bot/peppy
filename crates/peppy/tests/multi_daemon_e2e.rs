@@ -2,6 +2,7 @@
 
 use std::assert_matches;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::net::Ipv4Addr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -4982,13 +4983,13 @@ async fn station_logs(federation: &Federation, stations: &[Station]) -> String {
         let daemon = station.daemon(federation);
         for instance in [station.commander(), station.arm()] {
             let log = daemon.node_log(&instance).await;
-            dump.push_str(&format!("--- {instance} ---\n{log}\n"));
+            let _ = writeln!(dump, "--- {instance} ---\n{log}");
         }
     }
     for placement in [Placement::Coordinator, Placement::Peer] {
         let gate = placement.gate();
         let log = placement.daemon(federation).node_log(gate).await;
-        dump.push_str(&format!("--- {gate} ---\n{log}\n"));
+        let _ = writeln!(dump, "--- {gate} ---\n{log}");
     }
     dump
 }

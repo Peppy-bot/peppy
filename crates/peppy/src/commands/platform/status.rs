@@ -3,6 +3,7 @@
 //! cloud router, the workspace and the project the commands use, and (when
 //! signed in) what the platform reports about the router and this peer.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use daemon::control::{self as daemon_control, PokeOutcome};
@@ -239,17 +240,19 @@ fn enrollment_section(
     };
     let d = &enrollment.document;
     let mut out = String::from("Enrollment\n");
-    out.push_str(&format!(
-        "  project   : {} (workspace {})\n",
+    let _ = writeln!(
+        out,
+        "  project   : {} (workspace {})",
         d.project_id, d.workspace_id
-    ));
-    out.push_str(&format!("  peer      : {} ({})\n", d.peer_name, d.peer_id));
-    out.push_str(&format!("  router    : {}\n", d.router.locator()));
-    out.push_str(&format!("  zenoh id  : {}\n", d.zenoh_id));
-    out.push_str(&format!(
-        "  cert      : {}\n",
+    );
+    let _ = writeln!(out, "  peer      : {} ({})", d.peer_name, d.peer_id);
+    let _ = writeln!(out, "  router    : {}", d.router.locator());
+    let _ = writeln!(out, "  zenoh id  : {}", d.zenoh_id);
+    let _ = writeln!(
+        out,
+        "  cert      : {}",
         certificate_line(&enrollment.certificate, now)
-    ));
+    );
     let means = RenewalMeans::of(daemon, platform);
     for (index, line) in renewal_lines(&enrollment.certificate, now, means)
         .iter()
@@ -260,13 +263,10 @@ fn enrollment_section(
         } else {
             "           "
         };
-        out.push_str(&format!("  {label} {line}\n"));
+        let _ = writeln!(out, "  {label} {line}");
     }
-    out.push_str(&format!("  backend   : {}\n", d.api_url));
-    out.push_str(&format!(
-        "  files     : {}\n",
-        session.dirs.peer_dir().display()
-    ));
+    let _ = writeln!(out, "  backend   : {}", d.api_url);
+    let _ = writeln!(out, "  files     : {}", session.dirs.peer_dir().display());
     out
 }
 
@@ -284,7 +284,7 @@ fn daemon_section(daemon: &DaemonReport) -> String {
                 "differs; restart the daemon"
             };
             out.push_str("  running   : yes (operator-run router; federation is the operator's)\n");
-            out.push_str(&format!("  namespace : {namespace}\n"));
+            let _ = writeln!(out, "  namespace : {namespace}");
         }
         DaemonReport::Managed {
             identity_matches,
@@ -296,8 +296,8 @@ fn daemon_section(daemon: &DaemonReport) -> String {
                 "differs; the daemon is restarting or needs a restart"
             };
             out.push_str("  running   : yes\n");
-            out.push_str(&format!("  identity  : {identity}\n"));
-            out.push_str(&format!("  link      : {}\n", link_line(link)));
+            let _ = writeln!(out, "  identity  : {identity}");
+            let _ = writeln!(out, "  link      : {}", link_line(link));
         }
     }
     out
@@ -314,19 +314,24 @@ fn selection_section(session: &PlatformSession, enrollment: Option<&Enrollment>)
             return out;
         }
         Err(e) => {
-            out.push_str(&format!("  unavailable: {e}\n"));
+            let _ = writeln!(out, "  unavailable: {e}");
             return out;
         }
     };
     match selection.project_label() {
-        Some(project) => out.push_str(&format!("  {project}\n")),
-        None => out.push_str(&format!(
-            "  {}; no project is selected\n",
-            selection.workspace_label()
-        )),
+        Some(project) => {
+            let _ = writeln!(out, "  {project}");
+        }
+        None => {
+            let _ = writeln!(
+                out,
+                "  {}; no project is selected",
+                selection.workspace_label()
+            );
+        }
     }
     if let Some(note) = enrollment_note(&selection, enrollment.map(|e| &e.document)) {
-        out.push_str(&format!("  {note}\n"));
+        let _ = writeln!(out, "  {note}");
     }
     out
 }
@@ -344,7 +349,7 @@ fn platform_section(platform: &Result<Option<PlatformReport>>) -> String {
             return out;
         }
         Err(e) => {
-            out.push_str(&format!("  unavailable: {e}\n"));
+            let _ = writeln!(out, "  unavailable: {e}");
             return out;
         }
     };
@@ -353,20 +358,21 @@ fn platform_section(platform: &Result<Option<PlatformReport>>) -> String {
         .address
         .as_ref()
         .map_or_default(|address| format!(" at {}:{}", address.host(), address.port()));
-    out.push_str(&format!("  router    : {}{address}\n", report.router.phase));
+    let _ = writeln!(out, "  router    : {}{address}", report.router.phase);
     if report.router.phase == RouterPhase::Stopped {
         out.push_str("              start it with `peppy platform router start`\n");
     }
     for line in pending_change_lines(&report.router) {
-        out.push_str(&format!("  pending   : {line}\n"));
+        let _ = writeln!(out, "  pending   : {line}");
     }
-    out.push_str(&format!(
-        "  this peer : {}\n",
+    let _ = writeln!(
+        out,
+        "  this peer : {}",
         report
             .peer_status
             .as_ref()
             .map_or("not listed (removed?)", peer_status_label)
-    ));
+    );
     out
 }
 

@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 use core_node::{
     CachedDescriptions, IndexedNode, MatchedItem, Participant, PinStatus, SearchQuery,
@@ -179,10 +180,11 @@ fn report_block(
         .iter()
         .any(|item| matches!(item.kind, RepoItemKind::Contract | RepoItemKind::Pairing));
     if sections.is_empty() && usable_by_nodes {
-        out.push_str(&format!(
-            "\nNo indexed node implements, consumes, participates in, or observes `{}:{}`{}\n",
+        let _ = writeln!(
+            out,
+            "\nNo indexed node implements, consumes, participates in, or observes `{}:{}`{}",
             report.name, report.tag, excluded_hint
-        ));
+        );
     }
     out.push_str(&sections);
     for slot in &report.pairing_slots {
@@ -270,7 +272,7 @@ fn description_block(
         RepoItemKind::Pairing => "Topics",
         _ => "Members",
     };
-    out.push_str(&format!("\n    {title}:\n"));
+    let _ = writeln!(out, "\n    {title}:");
     for member in &descriptions.members {
         let line = format!("{} {}: {}", member.kind, member.name, member.description);
         out.push_str(&prose::wrapped(&line, "      ", max_width));
@@ -340,7 +342,7 @@ fn section<T>(
     );
 
     for group in hits.chunk_by(|a, b| node_of(a).repo_id == node_of(b).repo_id) {
-        out.push_str(&format!("  {}:\n", node_of(&group[0]).repo_label));
+        let _ = writeln!(out, "  {}:", node_of(&group[0]).repo_label);
         let rows: Vec<Vec<String>> = group
             .iter()
             .map(|hit| {

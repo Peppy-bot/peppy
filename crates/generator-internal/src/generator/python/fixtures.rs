@@ -29,6 +29,7 @@ use crate::generator::naming::claim_sanitized_name;
 use crate::generator::types::{InterfaceArtifact, InterfaceKind, scoped_schema_key};
 use config::node::Cardinality;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::Path;
 
 /// One `publisher_readiness.append(PublisherReadiness(...))` statement's
@@ -1088,8 +1089,8 @@ async def __aexit__(self, exc_type, exc, tb) -> None:
     let mut kwarg_params = String::new();
     let mut kwarg_args = String::new();
     for kwarg in &parts.slot_kwargs {
-        kwarg_params.push_str(&format!(", {}={}", kwarg.name, kwarg.default));
-        kwarg_args.push_str(&format!(", {}", kwarg.name));
+        let _ = write!(kwarg_params, ", {}={}", kwarg.name, kwarg.default);
+        let _ = write!(kwarg_args, ", {}", kwarg.name);
     }
 
     builder.block(

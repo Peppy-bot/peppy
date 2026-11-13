@@ -29,6 +29,7 @@ use peppy::context::AppContext;
 use peppy::error::CallEnd;
 use peppy::test_support::ServeCommandEmulation;
 use std::assert_matches;
+use std::fmt::Write as _;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::runtime::CopyName;
@@ -1168,11 +1169,12 @@ impl Stack {
         let mut logs = String::new();
         if let Ok(entries) = fs::read_dir(&dir) {
             for entry in entries.flatten() {
-                logs.push_str(&format!(
-                    "--- {} ---\n{}\n",
+                let _ = writeln!(
+                    logs,
+                    "--- {} ---\n{}",
                     entry.path().display(),
                     fs::read_to_string(entry.path()).unwrap_or_default()
-                ));
+                );
             }
         }
         logs

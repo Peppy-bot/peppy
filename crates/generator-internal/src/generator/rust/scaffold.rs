@@ -17,6 +17,7 @@ use crate::{
 use encoding::compile_capnp;
 use rust_embed::Embed;
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::io;
 use std::io::ErrorKind;
 use std::{
@@ -578,9 +579,9 @@ impl TreeWriter for RustTreeWriter<'_> {
         let mut listing = String::new();
         for entry in entries {
             if entry.is_leaf && !entry.raw_name.is_empty() && entry.raw_name != entry.module_name {
-                listing.push_str(&format!("// {}\n", entry.raw_name));
+                let _ = writeln!(listing, "// {}", entry.raw_name);
             }
-            listing.push_str(&format!("pub mod {};\n", entry.module_name));
+            let _ = writeln!(listing, "pub mod {};", entry.module_name);
         }
         let target = if is_root {
             self.category_file.to_path_buf()

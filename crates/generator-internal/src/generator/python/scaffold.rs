@@ -13,6 +13,7 @@ use crate::generator::types::{ContractOrigin, InterfaceKind};
 use core_node_api::encoding::ArtifactPlatform;
 use rust_embed::Embed;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -393,7 +394,7 @@ impl TreeWriter for PythonTreeWriter {
     fn write_index(&mut self, dir: &Path, entries: &[ModuleEntry], _is_root: bool) -> Result<()> {
         let mut init_content = String::new();
         for entry in entries {
-            init_content.push_str(&format!("from . import {}\n", entry.module_name));
+            let _ = writeln!(init_content, "from . import {}", entry.module_name);
         }
         fs::write(dir.join("__init__.py"), init_content)?;
         Ok(())

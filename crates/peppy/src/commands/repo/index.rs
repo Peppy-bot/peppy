@@ -1,6 +1,7 @@
 //! `peppy repo index`: write a repository's index, or verify it and, on
 //! request, the MCP exposures it publishes.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use core_node::{check_repository_exposures, check_repository_index, publish_repository_index};
@@ -71,24 +72,26 @@ pub fn check_index(root: &Path, scope: CheckScope, peppy_dirs: &PeppyDirs) -> Re
     }
     let mut report = String::new();
     if !drifts.is_empty() {
-        report.push_str(&format!(
+        let _ = write!(
+            report,
             "{} does not match the repository:{}\n\nRun `peppy repo index {}` and commit the result.",
             root.join(REPOSITORY_INDEX_FILE).display(),
             daemon_config::format_bulleted(&drifts),
             root.display()
-        ));
+        );
     }
     if !findings.is_empty() {
         if !report.is_empty() {
             report.push_str("\n\n");
         }
-        report.push_str(&format!(
+        let _ = write!(
+            report,
             "{} exposure{} do{} not validate:{}",
             findings.len(),
             if findings.len() == 1 { "" } else { "s" },
             if findings.len() == 1 { "es" } else { "" },
             daemon_config::format_bulleted(&findings)
-        ));
+        );
     }
     Err(Error::ExecutionFailed(report))
 }

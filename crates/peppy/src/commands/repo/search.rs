@@ -6,6 +6,7 @@ use super::identity_label;
 use crate::commands::colors::{COUNT_COLOR, NODE_COLOR, paint};
 use crate::commands::table::render_table;
 use crate::error::{Error, Result};
+use std::fmt::Write as _;
 
 /// `peppy repo search <query>`: every indexed item the query matches,
 /// listed with the summary of its description and where each document is
@@ -67,10 +68,7 @@ fn render_human(
 ) -> String {
     let mut out = format!("{}\n", paint(colorize, NODE_COLOR, query.raw()));
     if outcome.matches.is_empty() {
-        out.push_str(&format!(
-            "  {}\n",
-            no_match_phrase(query, &outcome.excluded_hint)
-        ));
+        let _ = writeln!(out, "  {}", no_match_phrase(query, &outcome.excluded_hint));
     } else {
         out.push_str(&match_table(query, &outcome.matches, colorize, max_width));
     }

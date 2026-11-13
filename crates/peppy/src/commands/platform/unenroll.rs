@@ -6,6 +6,7 @@
 //! router reads its trust anchors at start. The restart is the person's to
 //! request, so the command prints what waits and the command that applies it.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use daemon_config::consts::PeppyDirs;
@@ -98,13 +99,14 @@ pub(crate) fn removal_report(document: &EnrollmentDocument, removal: &PeerRemova
         document.project_id
     );
     for line in pending_change_lines(status) {
-        out.push_str(&format!("  pending: {line}\n"));
+        let _ = writeln!(out, "  pending: {line}");
     }
-    out.push_str(&format!(
+    let _ = writeln!(
+        out,
         "The router refuses this peer, and frees its slot, from its next restart. The restart is \
-         yours to request. {}\n",
+         yours to request. {}",
         how_to_apply(&status.phase, &document.workspace_id, &document.project_id)
-    ));
+    );
     out
 }
 

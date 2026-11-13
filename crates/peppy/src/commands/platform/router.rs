@@ -9,6 +9,7 @@
 //! from the next restart. A restart drops each peer link for a moment; the
 //! peers connect again on their own.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use clap::Subcommand;
@@ -191,16 +192,21 @@ fn describe(label: &str, status: &RouterStatus) -> String {
         .filter(|peer| peer.status == PeerStatus::PendingRestart)
         .count();
     let mut out = format!("Router of {label}\n");
-    out.push_str(&format!("  phase    : {}\n", status.phase));
+    let _ = writeln!(out, "  phase    : {}", status.phase);
     match waiting {
-        0 => out.push_str(&format!("  peers    : {}\n", status.peers.len())),
-        _ => out.push_str(&format!(
-            "  peers    : {} ({waiting} waits for a restart)\n",
-            status.peers.len()
-        )),
+        0 => {
+            let _ = writeln!(out, "  peers    : {}", status.peers.len());
+        }
+        _ => {
+            let _ = writeln!(
+                out,
+                "  peers    : {} ({waiting} waits for a restart)",
+                status.peers.len()
+            );
+        }
     }
     for line in pending_change_lines(status) {
-        out.push_str(&format!("  pending  : {line}\n"));
+        let _ = writeln!(out, "  pending  : {line}");
     }
     out
 }

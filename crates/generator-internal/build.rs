@@ -201,6 +201,7 @@ mod ruff_build {
 
 mod peppylib_build {
     use std::collections::BTreeMap;
+    use std::fmt::Write as _;
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
@@ -805,7 +806,7 @@ mod peppylib_build {
             if excluded_so.iter().any(|ex| ex == name) {
                 continue;
             }
-            entries.push_str(&format!("    ({name:?}, include_bytes!({so:?})),\n"));
+            let _ = writeln!(entries, "    ({name:?}, include_bytes!({so:?})),");
             let platform = name
                 .strip_prefix("_peppylib.abi3.")
                 .and_then(|s| s.strip_suffix(".so"))
@@ -813,10 +814,11 @@ mod peppylib_build {
             let (hash, profile) = state.get(platform).unwrap_or_else(|| {
                 panic!("embedding {name} without a recorded build state in {so_dir:?}")
             });
-            provenance.push_str(&format!(
-                "    {:?},\n",
+            let _ = writeln!(
+                provenance,
+                "    {:?},",
                 format!("{platform}\t{hash}\t{profile}\n")
-            ));
+            );
         }
 
         let marker = so_dir.join(BUILD_STATE_MARKER);
