@@ -15,7 +15,7 @@ use std::fs;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -128,8 +128,8 @@ fn native_facade_with_l4t_manifest(apptainer_dir: &Path, manifest_dir: &Path) ->
 /// Held in a static, so it is never dropped: the shared test root reclaims it
 /// once it is stale.
 fn native_fixture_scratch() -> &'static Path {
-    static SCRATCH: OnceLock<TempDir> = OnceLock::new();
-    SCRATCH.get_or_init(super::scratch_dir).path()
+    static SCRATCH: LazyLock<TempDir> = LazyLock::new(super::scratch_dir);
+    SCRATCH.path()
 }
 
 /// Builds a Lima-backend facade for command-assembly and path-translation

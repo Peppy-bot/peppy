@@ -11,7 +11,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex};
 
 /// Cargo paints its status bar on the last terminal line and leaves the cursor
 /// there with no trailing newline. `\r` returns to the start of that line and
@@ -69,16 +69,14 @@ fn package_name() -> Option<String> {
 /// cargo reads stdout and stderr through, so what goes there reaches the user
 /// live and is never recorded in the build-script output cargo replays.
 fn terminal() -> Option<&'static Mutex<File>> {
-    static TERMINAL: OnceLock<Option<Mutex<File>>> = OnceLock::new();
-    TERMINAL
-        .get_or_init(|| {
-            OpenOptions::new()
-                .write(true)
-                .open("/dev/tty")
-                .ok()
-                .map(Mutex::new)
-        })
-        .as_ref()
+    static TERMINAL: LazyLock<Option<Mutex<File>>> = LazyLock::new(|| {
+        OpenOptions::new()
+            .write(true)
+            .open("/dev/tty")
+            .ok()
+            .map(Mutex::new)
+    });
+    TERMINAL.as_ref()
 }
 
 /// Reports one line of build-script progress, formatted like `println!`.

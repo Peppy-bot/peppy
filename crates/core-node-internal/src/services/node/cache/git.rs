@@ -30,7 +30,7 @@ use daemon_config::repository::GitCommit;
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
@@ -45,25 +45,20 @@ static LOCKS: KeyedLocks = KeyedLocks::new();
 /// doing its job; the dozens after it repeat it, so each checkout is
 /// announced once per population. A checkout removed from the cache and
 /// materialized again is a new population, announced afresh.
-static ANNOUNCED_REUSES: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+static ANNOUNCED_REUSES: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Mutex::default);
 
 /// Whether `dir` has not been announced as reused yet, marking it
 /// announced. Under the checkout's own lock, so the first reuse after each
 /// population is the one that reports.
 fn mark_reuse_announced(dir: &Path) -> bool {
-    ANNOUNCED_REUSES
-        .get_or_init(|| Mutex::new(HashSet::new()))
-        .lock()
-        .insert(dir.to_path_buf())
+    ANNOUNCED_REUSES.lock().insert(dir.to_path_buf())
 }
 
 /// Drops `dir`'s reuse announcement, for a checkout leaving the cache: a
 /// checkout later materialized at the same key is a new population whose
 /// first reuse is worth a line again.
 fn forget_reuse_announced(dir: &Path) {
-    if let Some(announced) = ANNOUNCED_REUSES.get() {
-        announced.lock().remove(dir);
-    }
+    ANNOUNCED_REUSES.lock().remove(dir);
 }
 
 /// How long a checkout that no cache entry names any more is kept.

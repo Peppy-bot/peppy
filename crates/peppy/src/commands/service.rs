@@ -50,9 +50,9 @@ impl Command for ServiceCommand {
                 }
                 .execute(app_ctx)
             }
-            ServiceCommands::Install {} => install::InstallCommand {}.execute(app_ctx),
-            ServiceCommands::Stop {} => install::StopCommand {}.execute(app_ctx),
-            ServiceCommands::Uninstall {} => install::UninstallCommand {}.execute(app_ctx),
+            ServiceCommands::Install {} => install::InstallCommand.execute(app_ctx),
+            ServiceCommands::Stop {} => install::StopCommand.execute(app_ctx),
+            ServiceCommands::Uninstall {} => install::UninstallCommand.execute(app_ctx),
         }
     }
 }

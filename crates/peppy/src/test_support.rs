@@ -245,8 +245,11 @@ const DEFAULT_CORE_NODE_NAME: &str = "test-core-node";
 /// share one router take the calls of the command line of each other, as
 /// the machines of a federation do.
 fn emulated_machines_ca() -> &'static auth::test_support::TestMachineCa {
-    static CA: std::sync::OnceLock<auth::test_support::TestMachineCa> = std::sync::OnceLock::new();
-    CA.get_or_init(|| auth::test_support::TestMachineCa::root("emulated machines CA"))
+    static CA: std::sync::LazyLock<auth::test_support::TestMachineCa> =
+        std::sync::LazyLock::new(|| {
+            auth::test_support::TestMachineCa::root("emulated machines CA")
+        });
+    &CA
 }
 
 /// The machine certificate of the emulated daemon `core_node`, written to

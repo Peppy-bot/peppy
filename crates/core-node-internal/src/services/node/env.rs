@@ -6,7 +6,7 @@
 use crate::{Error, Result};
 use config::node::PeppygenLanguage;
 use core_node_api::FORBIDDEN_ENV_KEYS;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 pub(crate) const PEPPY_APPTAINER_BIN_ENV_VAR: &str = "PEPPY_APPTAINER_BIN";
 pub(crate) const PEPPY_NODE_NAME_ENV_VAR: &str = "PEPPY_NODE_NAME";
@@ -49,23 +49,23 @@ pub(crate) fn validate_goal_env_vars(
     Ok(result)
 }
 
-static SCCACHE_AVAILABLE: OnceLock<bool> = OnceLock::new();
+static SCCACHE_AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
+    let available = std::process::Command::new("sccache")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if available {
+        tracing::debug!("sccache detected, will set RUSTC_WRAPPER=sccache for Rust nodes");
+    }
+    available
+});
 
 /// Checks whether `sccache` is available on the system PATH.
 /// The result is cached for the lifetime of the process.
 pub(crate) fn is_sccache_available() -> bool {
-    *SCCACHE_AVAILABLE.get_or_init(|| {
-        let available = std::process::Command::new("sccache")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
-        if available {
-            tracing::debug!("sccache detected, will set RUSTC_WRAPPER=sccache for Rust nodes");
-        }
-        available
-    })
+    *SCCACHE_AVAILABLE
 }
 
 /// Injects `RUSTC_WRAPPER=sccache` for Rust nodes when sccache is available

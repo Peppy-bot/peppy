@@ -45,7 +45,7 @@ use parking_lot::Mutex;
 use std::any::Any;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock};
 
 // One vocabulary for "where bytes live and which revision they were read
 // at", shared with the launch pins (`daemon_config::repository::pins`) so
@@ -537,8 +537,9 @@ struct ParsedCache {
 }
 
 fn parsed_caches() -> &'static Mutex<HashMap<PathBuf, ParsedCache>> {
-    static PARSED: OnceLock<Mutex<HashMap<PathBuf, ParsedCache>>> = OnceLock::new();
-    PARSED.get_or_init(|| Mutex::new(HashMap::new()))
+    static PARSED: LazyLock<Mutex<HashMap<PathBuf, ParsedCache>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    &PARSED
 }
 
 /// One identity answered more than once by a single repository. Unlike

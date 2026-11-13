@@ -256,17 +256,18 @@ struct MachineCertificates {
 }
 
 fn machine_certificates() -> &'static MachineCertificates {
-    static CERTIFICATES: std::sync::OnceLock<MachineCertificates> = std::sync::OnceLock::new();
-    CERTIFICATES.get_or_init(|| {
-        let directory = tempfile::tempdir().expect("a directory for the machine certificates");
-        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755))
-            .expect("the containers read the machine certificates");
-        MachineCertificates {
-            ca: auth::test_support::TestMachineCa::root("multi-daemon e2e CA"),
-            directory,
-            written: Mutex::default(),
-        }
-    })
+    static CERTIFICATES: std::sync::LazyLock<MachineCertificates> =
+        std::sync::LazyLock::new(|| {
+            let directory = tempfile::tempdir().expect("a directory for the machine certificates");
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755))
+                .expect("the containers read the machine certificates");
+            MachineCertificates {
+                ca: auth::test_support::TestMachineCa::root("multi-daemon e2e CA"),
+                directory,
+                written: Mutex::default(),
+            }
+        });
+    &CERTIFICATES
 }
 
 /// The machine certificate of `core_node`, signed by the CA of the suite,

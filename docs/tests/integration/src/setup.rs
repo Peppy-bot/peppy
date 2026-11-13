@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 /// Path to the workspace root (where the main Cargo.toml is)
 pub fn workspace_root() -> PathBuf {
@@ -18,9 +18,7 @@ pub fn workspace_root() -> PathBuf {
 /// Compiles the peppy binary in release mode and returns the path to the executable.
 /// The compilation only happens once per test run.
 pub fn peppy_binary() -> &'static PathBuf {
-    static BINARY_PATH: OnceLock<PathBuf> = OnceLock::new();
-
-    BINARY_PATH.get_or_init(|| {
+    static BINARY_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
         let workspace = workspace_root();
         let target_dir = cargo_target_dir(&workspace, std::env::var_os("CARGO_TARGET_DIR"));
 
@@ -48,7 +46,9 @@ pub fn peppy_binary() -> &'static PathBuf {
         );
 
         binary_path
-    })
+    });
+
+    &BINARY_PATH
 }
 
 /// The target directory of the peppy build: the `CARGO_TARGET_DIR` of the test

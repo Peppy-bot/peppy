@@ -20,7 +20,7 @@ use std::borrow::Cow;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -85,8 +85,9 @@ pub fn binary_path() -> Result<PathBuf, CompilerError> {
 /// so without this guard they race on the same file and hit `ENOENT` or
 /// `ETXTBSY`.
 fn carried_binary() -> Result<PathBuf, CompilerError> {
-    static RESOLVED: OnceLock<Result<PathBuf, CompilerError>> = OnceLock::new();
-    RESOLVED.get_or_init(extract_carried_binary).clone()
+    static RESOLVED: LazyLock<Result<PathBuf, CompilerError>> =
+        LazyLock::new(extract_carried_binary);
+    RESOLVED.clone()
 }
 
 fn extract_carried_binary() -> Result<PathBuf, CompilerError> {

@@ -26,7 +26,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
@@ -355,18 +355,18 @@ fn build_python_node(main_src: &str) -> PathBuf {
 }
 
 fn driver_node_dir() -> &'static Path {
-    static DIR: OnceLock<PathBuf> = OnceLock::new();
-    DIR.get_or_init(|| build_rust_node(DRIVER_MAIN_RS))
+    static DIR: LazyLock<PathBuf> = LazyLock::new(|| build_rust_node(DRIVER_MAIN_RS));
+    &DIR
 }
 
 fn responder_rust_dir() -> &'static Path {
-    static DIR: OnceLock<PathBuf> = OnceLock::new();
-    DIR.get_or_init(|| build_rust_node(RESPONDER_MAIN_RS))
+    static DIR: LazyLock<PathBuf> = LazyLock::new(|| build_rust_node(RESPONDER_MAIN_RS));
+    &DIR
 }
 
 fn responder_python_dir() -> &'static Path {
-    static DIR: OnceLock<PathBuf> = OnceLock::new();
-    DIR.get_or_init(|| build_python_node(RESPONDER_MAIN_PY))
+    static DIR: LazyLock<PathBuf> = LazyLock::new(|| build_python_node(RESPONDER_MAIN_PY));
+    &DIR
 }
 
 // ---------------------------------------------------------------------------

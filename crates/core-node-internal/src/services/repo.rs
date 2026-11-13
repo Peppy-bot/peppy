@@ -58,8 +58,8 @@ pub(crate) fn repository_noun(count: usize) -> &'static str {
 /// Guards read-modify-write cycles on repositories.json5 and
 /// `excluded_repositories.json5` to prevent concurrent corruption.
 pub(crate) fn repos_file_lock() -> &'static parking_lot::Mutex<()> {
-    static LOCK: std::sync::OnceLock<parking_lot::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| parking_lot::Mutex::new(()))
+    static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    &LOCK
 }
 
 /// Serializes `process_refresh` + `write_all_caches` so the user-facing `repo_refresh`
@@ -68,8 +68,8 @@ pub(crate) fn repos_file_lock() -> &'static parking_lot::Mutex<()> {
 /// concurrent *user* refreshes with a friendly error; this mutex is the
 /// correctness backstop that also covers the remove-triggered path.
 pub(crate) fn refresh_lock() -> &'static parking_lot::Mutex<()> {
-    static LOCK: std::sync::OnceLock<parking_lot::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| parking_lot::Mutex::new(()))
+    static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    &LOCK
 }
 
 /// Serialize a `RepoSource` with an assigned id into a JSON object for
