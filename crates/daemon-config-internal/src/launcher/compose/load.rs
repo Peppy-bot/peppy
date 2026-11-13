@@ -464,9 +464,10 @@ fn check_references(
 }
 
 /// What a refusal over a target offers: the ids in reach, or that there are
-/// none.
+/// none. The ids come from a hash set, so they are listed in order: the
+/// refusal then reads the same on each run.
 fn in_reach<'a>(ids: impl IntoIterator<Item = &'a str>) -> String {
-    let listed = crate::error::format_quoted_list(ids);
+    let listed = crate::error::format_quoted_list(ids.into_iter().collect::<BTreeSet<_>>());
     if listed.is_empty() {
         String::from("no instance runs beside it to target")
     } else {
