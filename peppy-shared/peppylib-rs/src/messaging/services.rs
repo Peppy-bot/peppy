@@ -459,7 +459,10 @@ impl ServiceMessenger {
     ///
     /// `to_target` must match the [`SenderTarget`] the responder used in
     /// [`Self::listen`].
-    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub async fn poll(
         messenger: &MessengerHandle,
         bound_core_node: &str,
@@ -551,7 +554,10 @@ impl ServiceMessenger {
     /// the error otherwise (an unreachable producer or a probe that did not
     /// return within `response_timeout` is not a usable latency sample, and the
     /// caller should drop it rather than record the timeout as latency).
-    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub async fn probe_latency(
         messenger: &MessengerHandle,
         bound_core_node: &str,

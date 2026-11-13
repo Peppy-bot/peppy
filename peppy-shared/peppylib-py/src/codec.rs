@@ -435,7 +435,10 @@ impl PyServiceClient {
     /// it takes with `None`. An error reply raises `FailureError` with its
     /// kind and its message.
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, producer, request, response_timeout_secs=None))]
-    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the parameters of the Python method"
+    )]
     fn call<'py>(
         &self,
         py: Python<'py>,
@@ -519,7 +522,10 @@ impl PyActionClient {
     /// falls behind by more loses the stream, the handle cancels the goal,
     /// and the next read raises `FeedbackOverflowError`.
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, producer, goal, feedback_bound=None, goal_timeout_secs=2.0))]
-    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the parameters of the Python method"
+    )]
     fn send_goal<'py>(
         &self,
         py: Python<'py>,

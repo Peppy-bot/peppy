@@ -8,8 +8,8 @@
 //! through each server's ingest directly.
 //!
 //! Each integration test binary compiles this module separately and uses a
-//! subset of it, so unused-item warnings are suppressed for the module.
-#![allow(dead_code)]
+//! part of it.
+#![allow(dead_code, reason = "each test binary uses a part of this module")]
 
 use peppy_config_model::failure_kind::FailureKindName;
 use peppy_mcp_catalog::ExposureBundle;

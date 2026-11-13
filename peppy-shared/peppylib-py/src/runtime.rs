@@ -635,7 +635,10 @@ fn start_async_setup(
 /// the caller and turned into a stop+join of the already-running loop thread.
 /// Builds the loop teardown, registers the loop-drain shutdown hook, submits the
 /// setup coroutine, and spawns the setup-scoped shutdown monitor.
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments are the distinct inputs of the async setup"
+)]
 fn build_async_setup(
     py: Python<'_>,
     helpers: &Bound<'_, PyModule>,

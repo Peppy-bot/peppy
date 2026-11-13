@@ -1157,7 +1157,10 @@ impl TopicMessage {
 
 /// Dispatches the Messenger calls to the appropriate backend without using the heap
 #[derive(Debug)]
-#[expect(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the adapter dispatches without a heap allocation, so no variant is boxed"
+)]
 pub enum MessengerAdapter {
     #[cfg(feature = "zenoh")]
     Zenoh(ZenohAdapter),

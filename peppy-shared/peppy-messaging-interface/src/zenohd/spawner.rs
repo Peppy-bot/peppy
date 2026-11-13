@@ -103,7 +103,10 @@ fn arm(mut command: Command) -> Command {
     // captures one `u32`, allocates nothing (`from_raw_os_error` and
     // `last_os_error` build the `Os` variant in place) and touches no parent
     // state.
-    #[expect(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "`pre_exec` is the one way to run code in the child between fork and exec"
+    )]
     unsafe {
         command.pre_exec(move || {
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong) != 0 {

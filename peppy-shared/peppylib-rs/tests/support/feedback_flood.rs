@@ -2,7 +2,7 @@
 //! feedback stream, for the tests of a caller that reads its feedback late or
 //! never. Each feedback payload is its index, as text.
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "each test binary uses a part of this module")]
 
 use std::time::Duration;
 

@@ -69,9 +69,10 @@ mod tests {
         assert_eq!(decoded, request);
     }
 
-    // Round-trips a Default-constructed request; `::default()` on this unit
-    // struct is intentional, hence the lint allow.
-    #[expect(clippy::default_constructed_unit_structs)]
+    #[expect(
+        clippy::default_constructed_unit_structs,
+        reason = "the test encodes a request that `Default` makes"
+    )]
     #[test]
     fn request_default_round_trips() {
         let request = StackResetRequest::default();

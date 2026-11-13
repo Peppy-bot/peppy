@@ -1,11 +1,10 @@
 //! Shared helpers for the `tests/*.rs` integration tests.
 //!
 //! Each `tests/*.rs` file is its own test binary, so this module is compiled
-//! into each one separately; `#[allow(dead_code)]` silences warnings for
-//! helpers a given binary doesn't use.
+//! into each one separately, and each one uses a part of it.
 
 #![cfg(feature = "build_zenoh")]
-#![allow(dead_code)]
+#![allow(dead_code, reason = "each test binary uses a part of this module")]
 
 use pmi::{
     IncomingRequest, MessengerBackend, SenderTarget, ServiceQueryable, Subscription, TopicMessage,

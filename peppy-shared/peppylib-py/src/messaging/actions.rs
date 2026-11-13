@@ -436,7 +436,10 @@ impl PyActionMessenger {
     /// raises `peppylib.FeedbackOverflowError`; a caller that never reads
     /// the feedback keeps its goal.
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, target=None, user_payload=vec![], feedback_bound=None, goal_timeout_secs=2.0))]
-    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the parameters of the Python method"
+    )]
     fn send_goal<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,

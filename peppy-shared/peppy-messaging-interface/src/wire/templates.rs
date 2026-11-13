@@ -32,9 +32,10 @@ use super::{SenderTarget, ServiceKind};
 ///   service this is `SenderTarget::node(core_node_name, "core")`).
 /// * `link_id`: the link-id slot literal.
 /// * `service_name`, `kind`: the service / action sub-service.
-// The arguments are the wire's positional identity slots; grouping them into a
-// struct would obscure that one-to-one mapping with the key expression.
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments are the identity slots of the key expression, in its order"
+)]
 pub fn service_channel_address(
     to_core: &str,
     from_core: &str,

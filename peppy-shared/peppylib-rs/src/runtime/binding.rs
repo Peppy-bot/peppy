@@ -159,7 +159,10 @@ pub async fn subscribe_bound_set(
 /// serves embedders and tests that manage binding state themselves. `shutdown`
 /// bounds the wait on an empty set and ends the stream at node stop, and the
 /// stream also ends when `watch_rx`'s sender drops.
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments are the identity of the slot, its watch channel and the options of the stream"
+)]
 pub async fn subscribe_bound_set_with_watch(
     messenger: MessengerHandle,
     as_core_node: String,

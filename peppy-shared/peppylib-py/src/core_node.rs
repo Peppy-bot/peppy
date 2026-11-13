@@ -62,7 +62,10 @@ impl From<InfoResponse> for PyInfoResponse {
 #[pymethods]
 impl PyInfoResponse {
     #[new]
-    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor takes one argument for each field"
+    )]
     fn new(
         uptime_secs: u64,
         core_node_name: String,
@@ -151,7 +154,10 @@ impl PyStackListResponse {
     /// stack, if any.
     #[new]
     #[pyo3(signature = (graph_json, core_node, instance_id, host_name, copies, launch_copies, shutdown_grace_secs, copy_change=None))]
-    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor takes one argument for each field"
+    )]
     fn new(
         graph_json: String,
         core_node: String,

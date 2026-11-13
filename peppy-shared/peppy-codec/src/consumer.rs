@@ -468,7 +468,10 @@ impl ActionClient {
     /// caller that reads the feedback and falls behind by more loses the
     /// stream: the handle cancels the goal, and the next read reports the
     /// loss. A caller that never reads the feedback keeps its goal.
-    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub async fn fire_goal(
         &self,
         messenger: &MessengerHandle,

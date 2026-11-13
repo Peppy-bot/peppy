@@ -152,9 +152,10 @@ mod tests {
         assert_eq!(from_vec.into_inner(), Bytes::from_static(&[1, 2, 3]));
     }
 
-    // The `&`s are the whole point here: this exercises the two by-reference
-    // `PartialEq` impls, so clippy's "drop the reference" suggestion is wrong.
-    #[expect(clippy::op_ref)]
+    #[expect(
+        clippy::op_ref,
+        reason = "the test compares through the two by-reference `PartialEq` impls"
+    )]
     #[test]
     fn partial_eq_by_reference_both_directions() {
         let owned = Payload::from(vec![9u8, 8, 7]);

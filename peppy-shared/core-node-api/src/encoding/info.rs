@@ -49,7 +49,10 @@ pub struct InfoResponse {
 }
 
 impl InfoResponse {
-    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor takes one argument for each field"
+    )]
     pub fn new(
         uptime_secs: u64,
         core_node_name: impl Into<String>,
@@ -129,9 +132,10 @@ mod tests {
         }
     }
 
-    // Deliberately calls `::default()` on the unit struct to assert the Default
-    // impl agrees with `new()`; that's what trips `default_constructed_unit_structs`.
-    #[expect(clippy::default_constructed_unit_structs)]
+    #[expect(
+        clippy::default_constructed_unit_structs,
+        reason = "the test asserts that `Default` agrees with `new()`"
+    )]
     #[test]
     fn info_request_new_equals_default() {
         assert_eq!(InfoRequest::new(), InfoRequest);
