@@ -169,15 +169,15 @@ fn shallow_validate_config(
     repo_ref: Option<&str>,
 ) -> std::result::Result<NodeConfig, ShallowCheckError> {
     let bare_dir = tempfile::tempdir().map_err(|e| {
-        ShallowCheckError::ShallowFetchFailed(format!("Failed to create temp dir: {}", e))
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to create temp dir: {e}"))
     })?;
 
     let bare_repo = git2::Repository::init_bare(bare_dir.path()).map_err(|e| {
-        ShallowCheckError::ShallowFetchFailed(format!("Failed to init bare repo: {}", e))
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to init bare repo: {e}"))
     })?;
 
     let mut remote = bare_repo.remote_anonymous(repo_url).map_err(|e| {
-        ShallowCheckError::ShallowFetchFailed(format!("Failed to create remote: {}", e))
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to create remote: {e}"))
     })?;
 
     // Build refspecs to try, in order of preference.
@@ -209,8 +209,7 @@ fn shallow_validate_config(
                 // Recreate the remote for a clean retry.
                 remote = bare_repo.remote_anonymous(repo_url).map_err(|e2| {
                     ShallowCheckError::ShallowFetchFailed(format!(
-                        "Failed to recreate remote: {}",
-                        e2
+                        "Failed to recreate remote: {e2}"
                     ))
                 })?;
             }
@@ -225,14 +224,14 @@ fn shallow_validate_config(
 
     // Resolve FETCH_HEAD to a commit.
     let fetch_head = bare_repo.find_reference("FETCH_HEAD").map_err(|e| {
-        ShallowCheckError::ShallowFetchFailed(format!("Failed to find FETCH_HEAD: {}", e))
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to find FETCH_HEAD: {e}"))
     })?;
     let commit = fetch_head.peel_to_commit().map_err(|e| {
-        ShallowCheckError::ShallowFetchFailed(format!("Failed to peel to commit: {}", e))
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to peel to commit: {e}"))
     })?;
     let tree = commit
         .tree()
-        .map_err(|e| ShallowCheckError::ShallowFetchFailed(format!("Failed to get tree: {}", e)))?;
+        .map_err(|e| ShallowCheckError::ShallowFetchFailed(format!("Failed to get tree: {e}")))?;
 
     // Navigate the tree to find the config blob.
     let config_tree_path = node_config_path(repo_relative_path);
@@ -246,7 +245,7 @@ fn shallow_validate_config(
     })?;
 
     let blob = bare_repo.find_blob(entry.id()).map_err(|e| {
-        ShallowCheckError::ShallowFetchFailed(format!("Failed to read config blob: {}", e))
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to read config blob: {e}"))
     })?;
 
     let content = std::str::from_utf8(blob.content()).map_err(|_| {
@@ -316,7 +315,7 @@ async fn shallow_probe_config(
         shallow_validate_config(&probe_url, &probe_path, probe_ref.as_deref())
     })
     .await
-    .map_err(|e| format!("Failed to join shallow probe task: {}", e))?;
+    .map_err(|e| format!("Failed to join shallow probe task: {e}"))?;
 
     // The shallow probe is only a preflight hint: if it rejects the config,
     // fail fast; otherwise proceed to the full clone and reparse the config
@@ -327,8 +326,7 @@ async fn shallow_probe_config(
         Err(ShallowCheckError::InvalidConfig(msg)) => Err(msg),
         Err(ShallowCheckError::ShallowFetchFailed(reason)) => {
             announcer.line(format!(
-                "Shallow probe unavailable ({}), proceeding with full clone",
-                reason
+                "Shallow probe unavailable ({reason}), proceeding with full clone"
             ));
             Ok(())
         }
@@ -344,7 +342,7 @@ async fn clone_repo_to_temp(
     announcer: &Announcer,
 ) -> std::result::Result<PathBuf, String> {
     let checkout_dir = tempfile::tempdir()
-        .map_err(|e| format!("Failed to create temporary directory: {}", e))?
+        .map_err(|e| format!("Failed to create temporary directory: {e}"))?
         .keep();
 
     let clone_checkout_dir = checkout_dir.clone();
@@ -363,7 +361,7 @@ async fn clone_repo_to_temp(
         .map(|_| ())
     })
     .await
-    .map_err(|e| format!("Failed to join git clone task: {}", e))?
+    .map_err(|e| format!("Failed to join git clone task: {e}"))?
     {
         std::fs::remove_dir_all(&checkout_dir).ok();
         return Err(err);
@@ -565,8 +563,7 @@ fn download_http_bundle_once(
             // A connection dropped mid-transfer is as transient as one that
             // never opened; the retry restarts from File::create's truncate.
             DownloadAttemptError::Transient(format!(
-                "Failed to read response body from {}: {}",
-                shown_url, e
+                "Failed to read response body from {shown_url}: {e}"
             ))
         })?;
         if read == 0 {
@@ -679,7 +676,7 @@ async fn resolve_http_source_with_feedback(
         resolve_http_source_blocking(url, &peppy_dirs, expected_sha256, Some(&announcer))
     })
     .await
-    .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
+    .map_err(|e| format!("Failed to join HTTP download task: {e}"))?
 }
 
 fn resolve_http_source_download_and_extract(
@@ -692,8 +689,7 @@ fn resolve_http_source_download_and_extract(
         "http" | "https" => {}
         other => {
             return Err(format!(
-                "HTTP source URL must use http or https (got scheme '{}')",
-                other
+                "HTTP source URL must use http or https (got scheme '{other}')"
             ));
         }
     }
@@ -707,20 +703,20 @@ fn resolve_http_source_download_and_extract(
 
     let http_base_dir = peppy_dirs.http_downloads_dir();
     std::fs::create_dir_all(&http_base_dir)
-        .map_err(|e| format!("Failed to create HTTP download directory: {}", e))?;
+        .map_err(|e| format!("Failed to create HTTP download directory: {e}"))?;
 
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
     let operation_dir =
         http_base_dir.join(format!("node_add_{timestamp}_{}", generate_random_id()));
     std::fs::create_dir_all(&operation_dir)
-        .map_err(|e| format!("Failed to create HTTP staging directory: {}", e))?;
+        .map_err(|e| format!("Failed to create HTTP staging directory: {e}"))?;
 
     let mut operation_cleanup = CleanupDir::new(Some(operation_dir.clone()));
 
     let bundle_path = operation_dir.join(bundle_file_name(&url));
     let extract_dir = operation_dir.join("extracted");
     std::fs::create_dir_all(&extract_dir)
-        .map_err(|e| format!("Failed to create bundle extract directory: {}", e))?;
+        .map_err(|e| format!("Failed to create bundle extract directory: {e}"))?;
 
     download_http_bundle(&url, &bundle_path, expected_sha256.as_deref(), announcer)?;
     extract_http_bundle(&bundle_path, &extract_dir, &url)?;
@@ -1006,7 +1002,7 @@ pub(crate) async fn run_node_add(
                         &announcer,
                         Failure::new(
                             PeppyFailureKind::AttemptFailed,
-                            format!("Auto-sync failed: {}", e),
+                            format!("Auto-sync failed: {e}"),
                         ),
                     ));
                 }
@@ -1015,7 +1011,7 @@ pub(crate) async fn run_node_add(
                         &announcer,
                         Failure::new(
                             PeppyFailureKind::AttemptFailed,
-                            format!("Auto-sync task failed: {}", e),
+                            format!("Auto-sync task failed: {e}"),
                         ),
                     ));
                 }
@@ -1435,7 +1431,7 @@ async fn process_node_add_inner(
             .map_err(|e| {
                 AddStepFailure::new(
                     PeppyFailureKind::PreconditionFailed,
-                    format!("Codegen fingerprint verification failed: {}", e),
+                    format!("Codegen fingerprint verification failed: {e}"),
                 )
             })?;
     }
@@ -1446,7 +1442,7 @@ async fn process_node_add_inner(
     // the node is published, the stack entity; the last owner removes it.
     let (working_dir, excluded_dirs) =
         copy_node_to_temp_dir(&source_path, &ctx.action.peppy_dirs.tmp_dir())
-            .map_err(|e| format!("Failed to copy node folder: {}", e))?;
+            .map_err(|e| format!("Failed to copy node folder: {e}"))?;
     let staging = Arc::new(WorkingDirGuard::new(working_dir));
 
     if !excluded_dirs.is_empty() {
@@ -1475,7 +1471,7 @@ async fn process_node_add_inner(
         DepClosure::Direct,
     )
     .await
-    .map_err(|reason| format!("Failed to add node config: {}", reason))?;
+    .map_err(|reason| format!("Failed to add node config: {reason}"))?;
     for entry in &repo_provenance {
         ctx.announcer.line(format!(
             "Resolved dependency `{}:{}` from the repository cache ({})",
@@ -1496,7 +1492,7 @@ async fn process_node_add_inner(
     if let Some(err) = dep_errors.into_iter().next() {
         return Err(AddStepFailure::new(
             PeppyFailureKind::PreconditionFailed,
-            format!("Failed to add node config: {}", err),
+            format!("Failed to add node config: {err}"),
         ));
     }
 
@@ -1543,7 +1539,7 @@ async fn process_node_add_inner(
             None,
             generator::NodeTree::Staged,
         )
-        .map_err(|e| format!("Failed to generate peppygen library: {}", e))
+        .map_err(|e| format!("Failed to generate peppygen library: {e}"))
     })
     .await?;
 
@@ -1590,8 +1586,7 @@ async fn process_node_add_inner(
         .find(&node_name, &node_tag)
         .ok_or_else(|| {
             format!(
-                "internal error: just-pushed entity {}:{} disappeared from the stack",
-                node_name, node_tag
+                "internal error: just-pushed entity {node_name}:{node_tag} disappeared from the stack"
             )
         })?;
 
@@ -1630,7 +1625,7 @@ fn check_dependencies_present(
         None => Ok(()),
         Some(err) => Err(AddStepFailure::new(
             PeppyFailureKind::PreconditionFailed,
-            format!("Failed to add node config: {}", err),
+            format!("Failed to add node config: {err}"),
         )),
     }
 }
@@ -1750,8 +1745,7 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             err.contains("checksum mismatch"),
-            "error should mention checksum mismatch, got: {}",
-            err
+            "error should mention checksum mismatch, got: {err}"
         );
         assert!(
             !dest.exists(),
@@ -1774,7 +1768,7 @@ mod tests {
         let dest = tmp.path().join("bundle.tar.zst");
 
         let result = download_http_bundle(&url, &dest, Some(&correct_hash), None);
-        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
         assert!(
             dest.exists(),
             "bundle file should exist after successful download"
@@ -1795,7 +1789,7 @@ mod tests {
         let dest = tmp.path().join("bundle.tar.zst");
 
         let result = download_http_bundle(&url, &dest, None, None);
-        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
         assert!(dest.exists(), "bundle file should exist");
     }
 

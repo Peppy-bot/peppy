@@ -208,7 +208,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         GOAL_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_add goal: {}", e)))?;
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_add goal: {e}")))?;
 
     let add_result = crate::commands::action_poll::run_action_with_feedback::<
         NodeAddGoalResponse,
@@ -334,7 +334,7 @@ async fn fetch_tracked_instances_for_name_tag(
     let tracked: Vec<_> = super::fetch_tracked_instances(conn, &node_name, &node_tag, timeout)
         .await
         .map_err(|e| {
-            Error::ExecutionFailed(format!("Failed to check node info before adding: {}", e))
+            Error::ExecutionFailed(format!("Failed to check node info before adding: {e}"))
         })?
         .into_iter()
         .filter(|(_, state)| has_or_awaits_process(*state))

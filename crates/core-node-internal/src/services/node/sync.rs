@@ -194,11 +194,10 @@ async fn sync_node(
     .await
     .map_err(|e| {
         attempt_failed(format!(
-            "Failed to generate peppygen (generate task failed): {}",
-            e
+            "Failed to generate peppygen (generate task failed): {e}"
         ))
     })?;
-    generation.map_err(|e| attempt_failed(format!("Failed to generate peppygen: {}", e)))?;
+    generation.map_err(|e| attempt_failed(format!("Failed to generate peppygen: {e}")))?;
 
     Ok(NodeSyncResponse::new(
         resolved_from_stack,
@@ -216,7 +215,7 @@ fn parse_node_config(node_config_path: &Path) -> std::result::Result<NodeConfig,
         ));
     }
     NodeConfigParser::from_path(node_config_path)
-        .map_err(|e| format!("Failed to parse node config: {}", e))
+        .map_err(|e| format!("Failed to parse node config: {e}"))
 }
 
 /// The failure message for the dependencies and consumed interfaces of
@@ -237,7 +236,7 @@ fn describe_unresolved_dependencies(
                 dependency_tag,
                 ..
             } => {
-                missing_dependencies.insert(format!("{}:{}", dependency, dependency_tag));
+                missing_dependencies.insert(format!("{dependency}:{dependency_tag}"));
             }
             ParsingError::MissingInterface(info) => {
                 missing_interfaces.push(format!(
@@ -249,7 +248,7 @@ fn describe_unresolved_dependencies(
                 ));
             }
             ParsingError::UndeclaredLinkId { link_id, .. } => {
-                missing_interfaces.push(format!("references undeclared link_id `{}`", link_id));
+                missing_interfaces.push(format!("references undeclared link_id `{link_id}`"));
             }
             _ => {}
         }
@@ -296,7 +295,7 @@ fn direct_dependencies_in_stack(manifest: &Manifest, node_stack: &NodeStack) -> 
             continue;
         }
         if node_stack.find(&name, &tag).is_some() {
-            in_stack.push(format!("{}:{}", name, tag));
+            in_stack.push(format!("{name}:{tag}"));
         }
     }
     in_stack

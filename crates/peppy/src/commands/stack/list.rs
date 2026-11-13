@@ -1714,20 +1714,18 @@ mod tests {
         let out = format_stack_body(&nodes, &[], false, None);
 
         for header in HEADERS {
-            assert!(out.contains(header), "missing header {}:\n{}", header, out);
+            assert!(out.contains(header), "missing header {header}:\n{out}");
         }
-        assert!(out.contains("sensor:v1"), "missing sensor row:\n{}", out);
-        assert!(out.contains("brain:v1"), "missing brain row:\n{}", out);
+        assert!(out.contains("sensor:v1"), "missing sensor row:\n{out}");
+        assert!(out.contains("brain:v1"), "missing brain row:\n{out}");
         assert!(
             out.contains("1 running"),
-            "instances column missing:\n{}",
-            out
+            "instances column missing:\n{out}"
         );
         // Never prefix table output with [INFO].
         assert!(
             !out.contains("[INFO]"),
-            "output must not contain [INFO]:\n{}",
-            out
+            "output must not contain [INFO]:\n{out}"
         );
     }
 
@@ -1745,8 +1743,7 @@ mod tests {
         let out = format_stack_body(&nodes, &[], false, None);
         assert!(
             out.contains("2 (1 running, 1 starting)"),
-            "mixed breakdown missing:\n{}",
-            out
+            "mixed breakdown missing:\n{out}"
         );
     }
 
@@ -1831,13 +1828,9 @@ mod tests {
     #[test]
     fn empty_stack_renders_empty_marker() {
         let out = format_stack_body(&[], &[], false, None);
-        assert!(out.contains("(empty)"), "empty marker missing:\n{}", out);
-        assert!(
-            out.contains("Dependencies"),
-            "deps heading missing:\n{}",
-            out
-        );
-        assert!(out.contains("(none)"), "deps none marker missing:\n{}", out);
+        assert!(out.contains("(empty)"), "empty marker missing:\n{out}");
+        assert!(out.contains("Dependencies"), "deps heading missing:\n{out}");
+        assert!(out.contains("(none)"), "deps none marker missing:\n{out}");
     }
 
     #[test]
@@ -1852,8 +1845,7 @@ mod tests {
         let out = format_stack_body(&[from, to], &edges, false, None);
         assert!(
             out.contains("brain:v1 ➔ sensor:v1"),
-            "edge line missing:\n{}",
-            out
+            "edge line missing:\n{out}"
         );
     }
 
@@ -1909,8 +1901,7 @@ mod tests {
         let out = format_stack_body(&[consumer, provider], &edges, false, None);
         assert!(
             out.contains("brain:v1 ➔ camera_mock:v1 (via uvc_camera:v1 contract implementation)"),
-            "contract-implementation edge annotation missing:\n{}",
-            out
+            "contract-implementation edge annotation missing:\n{out}"
         );
     }
 

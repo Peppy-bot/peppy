@@ -169,8 +169,7 @@ async fn node_stop_command_succeeds() {
     // Verify the logs contain success message
     let logs = log_capture.logs();
     assert!(
-        logs.contains(&format!("Stopped node instance '{}'", instance_id)),
-        "logs should contain success message for stopping node instance. Logs:\n{}",
-        logs
+        logs.contains(&format!("Stopped node instance '{instance_id}'")),
+        "logs should contain success message for stopping node instance. Logs:\n{logs}"
     );
 }

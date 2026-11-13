@@ -155,19 +155,17 @@ mod container_e2e_tests {
             "instance should be registered in the node stack"
         );
 
-        assert!(log_path.exists(), "log file should exist at {:?}", log_path);
+        assert!(log_path.exists(), "log file should exist at {log_path:?}");
 
         let log_content =
             std::fs::read_to_string(&log_path).expect("should be able to read log file");
         assert!(
             log_content.contains("Executing apptainer run"),
-            "log file should contain apptainer run command, got:\n{}",
-            log_content
+            "log file should contain apptainer run command, got:\n{log_content}"
         );
         assert!(
             !log_content.contains("CodegenFingerprintRead"),
-            "log file should not contain config fingerprint startup errors, got:\n{}",
-            log_content
+            "log file should not contain config fingerprint startup errors, got:\n{log_content}"
         );
     }
 

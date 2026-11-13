@@ -731,7 +731,7 @@ mod tests {
         let json = serde_json5::to_string(&StructuredError::MissingExecutionLanguage).unwrap();
         let err = ParsingError::from(make_err(&json));
         if !matches!(err, ParsingError::MissingExecutionLanguage) {
-            panic!("Expected MissingExecutionLanguage, got {:?}", err);
+            panic!("Expected MissingExecutionLanguage, got {err:?}");
         }
     }
 
@@ -746,7 +746,7 @@ mod tests {
         if let ParsingError::CannotParseConfig(msg) = err {
             assert_eq!(msg, raw_msg);
         } else {
-            panic!("Expected CannotParseConfig, got {:?}", err);
+            panic!("Expected CannotParseConfig, got {err:?}");
         }
 
         let broken_json = "{ invalid json";
@@ -754,7 +754,7 @@ mod tests {
         if let ParsingError::CannotParseConfig(msg) = err {
             assert_eq!(msg, broken_json);
         } else {
-            panic!("Expected CannotParseConfig, got {:?}", err);
+            panic!("Expected CannotParseConfig, got {err:?}");
         }
     }
 }

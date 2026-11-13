@@ -2,8 +2,8 @@
 pub fn assert_contains_all(rendered: &str, patterns: &[&str]) {
     for pattern in patterns {
         if !rendered.contains(pattern) {
-            eprintln!("rendered output:\n{}", rendered);
-            panic!("expected to find: {:?}", pattern);
+            eprintln!("rendered output:\n{rendered}");
+            panic!("expected to find: {pattern:?}");
         }
     }
 }

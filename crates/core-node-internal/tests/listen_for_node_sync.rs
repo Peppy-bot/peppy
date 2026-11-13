@@ -89,13 +89,11 @@ async fn listen_for_node_sync_success() {
     let cargo_toml = fs::read_to_string(&cargo_toml_path).expect("failed to read node Cargo.toml");
     assert!(
         cargo_toml.contains("peppygen"),
-        "Cargo.toml should contain peppygen dependency, got:\n{}",
-        cargo_toml
+        "Cargo.toml should contain peppygen dependency, got:\n{cargo_toml}"
     );
     assert!(
         cargo_toml.contains(PEPPYGEN_OUTPUT_PATH),
-        "Cargo.toml should reference generated peppygen path, got:\n{}",
-        cargo_toml
+        "Cargo.toml should reference generated peppygen path, got:\n{cargo_toml}"
     );
 }
 
@@ -112,8 +110,7 @@ async fn listen_for_node_sync_missing_node_root_dir_fails() {
 
     assert!(
         failure.message().contains("Missing `node_root_dir`"),
-        "error should mention missing node_root_dir, got: {}",
-        failure
+        "error should mention missing node_root_dir, got: {failure}"
     );
 }
 
@@ -138,8 +135,7 @@ async fn listen_for_node_sync_node_root_dir_does_not_exist_fails() {
 
     assert!(
         failure.message().contains("`node_root_dir` does not exist"),
-        "error should mention missing directory, got: {}",
-        failure
+        "error should mention missing directory, got: {failure}"
     );
 }
 
@@ -162,8 +158,7 @@ async fn listen_for_node_sync_node_root_dir_is_not_a_directory_fails() {
         failure
             .message()
             .contains("`node_root_dir` is not a directory"),
-        "error should mention not a directory, got: {}",
-        failure
+        "error should mention not a directory, got: {failure}"
     );
 }
 
@@ -186,8 +181,7 @@ async fn listen_for_node_sync_missing_peppy_json5_fails() {
         failure
             .message()
             .contains("Node config file does not exist"),
-        "error should mention missing node config, got: {}",
-        failure
+        "error should mention missing node config, got: {failure}"
     );
 
     assert!(
@@ -220,8 +214,7 @@ async fn listen_for_node_sync_invalid_peppy_json5_fails() {
 
     assert!(
         failure.message().contains("Failed to parse node config"),
-        "error should mention parse failure, got: {}",
-        failure
+        "error should mention parse failure, got: {failure}"
     );
     assert!(
         !peppygen_dir.exists(),
@@ -296,8 +289,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
         failure.message().contains(
             "`my_robot_brain:v1` depends on `uvc_camera:v1`, but it does not exist in the stack"
         ),
-        "error should mention missing dependency, got: {}",
-        failure
+        "error should mention missing dependency, got: {failure}"
     );
 
     assert!(
@@ -354,30 +346,25 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
     // The error message should contain all three unique missing dependencies
     assert!(
         failure.message().contains("uvc_camera:v1"),
-        "error should mention uvc_camera dependency, got: {}",
-        failure
+        "error should mention uvc_camera dependency, got: {failure}"
     );
     assert!(
         failure.message().contains("lidar_sensor:v1"),
-        "error should mention lidar_sensor dependency, got: {}",
-        failure
+        "error should mention lidar_sensor dependency, got: {failure}"
     );
     assert!(
         failure.message().contains("gps_module:v2"),
-        "error should mention gps_module dependency, got: {}",
-        failure
+        "error should mention gps_module dependency, got: {failure}"
     );
     assert!(
         failure.message().contains("they do not exist"),
-        "error should use plural form for multiple missing dependencies, got: {}",
-        failure
+        "error should use plural form for multiple missing dependencies, got: {failure}"
     );
     // Verify deduplication: uvc_camera should only appear once despite two subscriptions
     assert_eq!(
         failure.message().matches("uvc_camera:v1").count(),
         1,
-        "uvc_camera:v1 should appear exactly once (deduplicated), got: {}",
-        failure
+        "uvc_camera:v1 should appear exactly once (deduplicated), got: {failure}"
     );
 
     assert!(
@@ -517,8 +504,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
         fs::read_to_string(&brain_cargo_toml_path).expect("failed to read Cargo.toml");
     assert!(
         brain_cargo_toml.contains("peppygen"),
-        "Cargo.toml should contain peppygen dependency, got:\n{}",
-        brain_cargo_toml
+        "Cargo.toml should contain peppygen dependency, got:\n{brain_cargo_toml}"
     );
 
     // Verify that the generated Rust code includes the expected modules
@@ -533,13 +519,11 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     // The generated code should include standard peppygen modules
     assert!(
         brain_lib_rs.contains("pub mod consumed_topics"),
-        "lib.rs should contain consumed_topics module, got:\n{}",
-        brain_lib_rs
+        "lib.rs should contain consumed_topics module, got:\n{brain_lib_rs}"
     );
     assert!(
         brain_lib_rs.contains("NodeBuilder"),
-        "lib.rs should re-export NodeBuilder, got:\n{}",
-        brain_lib_rs
+        "lib.rs should re-export NodeBuilder, got:\n{brain_lib_rs}"
     );
 
     let consumed_topic_path = brain_peppygen_dir
@@ -899,25 +883,21 @@ async fn listen_for_node_sync_generates_rust_parameters() {
         fs::read_to_string(&parameters_rs_path).expect("failed to read parameters.rs");
     assert!(
         parameters_rs_content.contains("mod video"),
-        "parameters.rs should contain `mod video`, got:\n{}",
-        parameters_rs_content
+        "parameters.rs should contain `mod video`, got:\n{parameters_rs_content}"
     );
 
     assert!(
         parameters_rs_content.contains("Resolution"),
-        "parameters.rs should contain `Resolution`, got:\n{}",
-        parameters_rs_content
+        "parameters.rs should contain `Resolution`, got:\n{parameters_rs_content}"
     );
 
     assert!(
         parameters_rs_content.contains("Video"),
-        "parameters.rs should contain `Video`, got:\n{}",
-        parameters_rs_content
+        "parameters.rs should contain `Video`, got:\n{parameters_rs_content}"
     );
     assert!(
         parameters_rs_content.contains("frame_rate"),
-        "parameters.rs should contain `frame_rate`, got:\n{}",
-        parameters_rs_content
+        "parameters.rs should contain `frame_rate`, got:\n{parameters_rs_content}"
     );
 }
 
@@ -1051,8 +1031,7 @@ async fn listen_for_node_sync_undeclared_link_id_fails() {
 
     assert!(
         failure.message().contains("undeclared link_id"),
-        "error should mention undeclared link_id, got: {}",
-        failure
+        "error should mention undeclared link_id, got: {failure}"
     );
 
     assert!(
@@ -1193,8 +1172,7 @@ async fn include_repositories_false_does_not_resolve_fs_dep_from_repository() {
     common::assert_failure_kind(&failure, PeppyFailureKind::PreconditionFailed);
     assert!(
         failure.message().contains("does not exist in the stack"),
-        "error should be the missing-from-stack message, got: {}",
-        failure
+        "error should be the missing-from-stack message, got: {failure}"
     );
 }
 
@@ -1561,9 +1539,7 @@ async fn include_repositories_true_walks_transitive_dep() {
     for expected in ["dep_a:v1", "dep_b:v1", "dep_c:v1"] {
         assert!(
             names.iter().any(|n| n == expected),
-            "expected {} in repo provenance, got {:?}",
-            expected,
-            names
+            "expected {expected} in repo provenance, got {names:?}"
         );
     }
 }
@@ -1586,13 +1562,11 @@ async fn include_repositories_true_missing_from_stack_and_repo_fails() {
         failure
             .message()
             .contains("not found in node stack or repository cache"),
-        "error should mention both layers, got: {}",
-        failure
+        "error should mention both layers, got: {failure}"
     );
     assert!(
         failure.message().contains("peppy repo refresh"),
-        "error should suggest repo refresh, got: {}",
-        failure
+        "error should suggest repo refresh, got: {failure}"
     );
 }
 

@@ -124,8 +124,7 @@ mod ruff_build {
 
         if !unpacked {
             println!(
-                "cargo:warning=Failed to download ruff for {} (no pre-built binary available)",
-                target
+                "cargo:warning=Failed to download ruff for {target} (no pre-built binary available)"
             );
             std::fs::remove_dir_all(&temp_dir).ok();
             return false;
@@ -161,7 +160,7 @@ mod ruff_build {
         let cached_ruff_path = cache_dir.join(format!("ruff-{target}"));
 
         let out_dir = env::var("OUT_DIR").unwrap();
-        let ruff_binary_path = format!("{}/ruff", out_dir);
+        let ruff_binary_path = format!("{out_dir}/ruff");
 
         // 1. Check architecture-aware cache
         if cached_ruff_path.exists() {
@@ -419,8 +418,7 @@ mod peppylib_build {
 
         assert!(
             so_path.exists(),
-            "Expected _peppylib.abi3.so at {:?} after pixi run {pixi_task}, but not found",
-            so_path,
+            "Expected _peppylib.abi3.so at {so_path:?} after pixi run {pixi_task}, but not found",
         );
 
         let host_suffix = host_platform_suffix();
@@ -748,7 +746,7 @@ mod peppylib_build {
         let mut hasher = Sha256::new();
         for file in &hashed_files {
             let bytes = std::fs::read(file)
-                .unwrap_or_else(|e| panic!("failed to read {:?} for hashing: {e}", file));
+                .unwrap_or_else(|e| panic!("failed to read {file:?} for hashing: {e}"));
             hasher.update(file.file_name().unwrap().as_encoded_bytes());
             hasher.update(&bytes);
         }
@@ -1042,9 +1040,8 @@ mod peppylib_build {
                 // No cached target yet (e.g. first forced build): nothing to discard.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => panic!(
-                    "failed to clear maturin target dir {:?} for a forced rebuild \
-                     ({REBUILD_ENV_VAR}): {e}",
-                    target_dir
+                    "failed to clear maturin target dir {target_dir:?} for a forced rebuild \
+                     ({REBUILD_ENV_VAR}): {e}"
                 ),
             }
         }

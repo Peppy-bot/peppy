@@ -279,7 +279,7 @@ pub(super) fn render_columns<const N: usize>(headers: [&str; N], rows: &[[String
 }
 
 fn write_border(out: &mut String, widths: &[usize], left: char, sep: char, right: char) {
-    let _ = write!(out, "{}", left);
+    let _ = write!(out, "{left}");
     for (i, w) in widths.iter().enumerate() {
         for _ in 0..(w + 2) {
             let _ = write!(out, "─");

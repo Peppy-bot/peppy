@@ -171,7 +171,7 @@ fn write_node_info(
         )));
     }
     let config_json5 = serde_json5::to_string(&info.config)
-        .map_err(|e| crate::Error::Encoding(format!("failed to serialize config: {}", e)))?;
+        .map_err(|e| crate::Error::Encoding(format!("failed to serialize config: {e}")))?;
     found.set_config_json5(&config_json5);
     found.set_config_sha256(&info.config_integrity);
     found.set_stage(info.stage.as_str());
@@ -199,7 +199,7 @@ fn write_node_info(
 /// Inverse of [`write_node_info`].
 fn read_node_info(found: node_capnp::node_info_response::found::Reader<'_>) -> Result<NodeInfo> {
     let config: NodeConfig = serde_json5::from_str(found.get_config_json5()?.to_str()?)
-        .map_err(|e| crate::Error::Decoding(format!("failed to deserialize config: {}", e)))?;
+        .map_err(|e| crate::Error::Decoding(format!("failed to deserialize config: {e}")))?;
     let config_integrity = found.get_config_sha256()?.to_str()?.to_owned();
     let stage = NodeStage::from_str(found.get_stage()?.to_str()?)
         .map_err(|e| crate::Error::Decoding(e.to_string()))?;

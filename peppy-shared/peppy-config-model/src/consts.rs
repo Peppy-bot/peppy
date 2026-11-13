@@ -66,10 +66,10 @@ mod tests {
         let pyproject_path = peppylib_py_dir.join("pyproject.toml");
         let pyproject_contents = std::fs::read_to_string(&pyproject_path)
             .unwrap_or_else(|e| panic!("Failed to read {}: {}", pyproject_path.display(), e));
-        let min_spec_ok = pyproject_contents.contains(format!(">={}", PYTHON_MIN_VERSION).as_str())
-            || pyproject_contents.contains(format!(">= {}", PYTHON_MIN_VERSION).as_str());
-        let max_spec_ok = pyproject_contents.contains(format!("<{}", PYTHON_MAX_VERSION).as_str())
-            || pyproject_contents.contains(format!("< {}", PYTHON_MAX_VERSION).as_str());
+        let min_spec_ok = pyproject_contents.contains(format!(">={PYTHON_MIN_VERSION}").as_str())
+            || pyproject_contents.contains(format!(">= {PYTHON_MIN_VERSION}").as_str());
+        let max_spec_ok = pyproject_contents.contains(format!("<{PYTHON_MAX_VERSION}").as_str())
+            || pyproject_contents.contains(format!("< {PYTHON_MAX_VERSION}").as_str());
         assert!(
             pyproject_contents.contains("requires-python") && min_spec_ok && max_spec_ok,
             "File {} must declare requires-python with both min and max constraints: \
@@ -80,13 +80,10 @@ mod tests {
         );
 
         let files_and_patterns: &[(&str, String)] = &[
-            ("Readme.md", format!("Python >= {}", PYTHON_MIN_VERSION)),
+            ("Readme.md", format!("Python >= {PYTHON_MIN_VERSION}")),
             (
                 "pixi.toml",
-                format!(
-                    "python = \">={},<{}\"",
-                    PYTHON_MIN_VERSION, PYTHON_MAX_VERSION
-                ),
+                format!("python = \">={PYTHON_MIN_VERSION},<{PYTHON_MAX_VERSION}\""),
             ),
             (
                 "Cargo.toml",

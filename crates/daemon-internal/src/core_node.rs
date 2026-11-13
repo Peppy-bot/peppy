@@ -256,8 +256,7 @@ impl ServeAsyncCommand for CoreNodeRunner {
                 result = &mut core_node_future => {
                     result.map_err(|err| {
                         Error::ExecutionFailed(format!(
-                            "Core node commands listener failed: {}",
-                            err
+                            "Core node commands listener failed: {err}"
                         ))
                     })
                 }

@@ -130,7 +130,7 @@ pub fn print_dependency_summary(deps: &BTreeMap<String, Vec<String>>) {
         deps_sorted.sort();
 
         if deps_sorted.is_empty() {
-            println!("  • `{}` has no dependencies", node);
+            println!("  • `{node}` has no dependencies");
         } else {
             println!("  • `{}` depends on `{}`", node, deps_sorted.join(" and "));
         }

@@ -302,8 +302,7 @@ pub(crate) fn clone_with_progress(
     })?;
 
     if let Some(r) = repo_ref {
-        checkout_repo_ref(&repo, r)
-            .map_err(|e| format!("Failed to checkout ref '{}': {}", r, e))?;
+        checkout_repo_ref(&repo, r).map_err(|e| format!("Failed to checkout ref '{r}': {e}"))?;
     }
     Ok(repo)
 }

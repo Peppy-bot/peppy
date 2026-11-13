@@ -179,7 +179,7 @@ impl Processor {
     ) -> Result<Self> {
         let arguments: BTreeMap<String, AnyType> = match &config.parameters {
             Some(params) => serde_json::from_value(params.clone()).map_err(|e| {
-                ParameterDeserializationError::single(format!("failed to parse parameters: {}", e))
+                ParameterDeserializationError::single(format!("failed to parse parameters: {e}"))
             })?,
             None => BTreeMap::new(),
         };

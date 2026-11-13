@@ -177,8 +177,7 @@ async fn refresh_deduplication() {
     assert_eq!(item_tag, "v1");
     assert!(
         path.contains("repo_a"),
-        "first listed repo should take precedence, path was: {}",
-        path
+        "first listed repo should take precedence, path was: {path}"
     );
 }
 
@@ -513,8 +512,7 @@ async fn refresh_excludes_fs_repo_with_feedback() {
     assert_eq!(*source_type, RepoSourceKind::Fs);
     assert!(
         identity.contains("repo_b"),
-        "excluded feedback identity should reference repo_b, got: {}",
-        identity
+        "excluded feedback identity should reference repo_b, got: {identity}"
     );
 
     assert_eq!(
@@ -575,8 +573,7 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
     assert_eq!(*source_type, RepoSourceKind::Fs);
     assert!(
         identity.contains("secret_node"),
-        "excluded feedback identity should reference secret_node, got: {}",
-        identity
+        "excluded feedback identity should reference secret_node, got: {identity}"
     );
 }
 

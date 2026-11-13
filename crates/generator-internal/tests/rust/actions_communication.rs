@@ -454,16 +454,12 @@ fn main() -> Result<()> {
     for round in 0..GOAL_ROUNDS {
         assert!(
             consumer_stdout.contains(&format!("round {round} completed success=true")),
-            "pinned goal round {round} did not complete.\nstdout:\n{}\nstderr:\n{}",
-            consumer_stdout,
-            consumer_stderr
+            "pinned goal round {round} did not complete.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
         );
     }
     assert!(
         consumer_stdout.contains("consumer finished all pinned goals"),
-        "consumer did not finish all rounds.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "consumer did not finish all rounds.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
     let (left_stdout, _) = assert_exited_successfully("left arm cargo run", &left_output);
@@ -471,16 +467,12 @@ fn main() -> Result<()> {
     assert_eq!(
         left_stdout.matches("server received goal").count(),
         GOAL_ROUNDS,
-        "every goal must run on the bound left arm.\nleft stdout:\n{}\nright stdout:\n{}",
-        left_stdout,
-        right_stdout
+        "every goal must run on the bound left arm.\nleft stdout:\n{left_stdout}\nright stdout:\n{right_stdout}"
     );
     assert_eq!(
         right_stdout.matches("server received goal").count(),
         0,
-        "the unbound right arm must never execute a goal handler.\nleft stdout:\n{}\nright stdout:\n{}",
-        left_stdout,
-        right_stdout
+        "the unbound right arm must never execute a goal handler.\nleft stdout:\n{left_stdout}\nright stdout:\n{right_stdout}"
     );
 }
 
@@ -623,9 +615,7 @@ fn main() -> Result<()> {
             && consumer_stdout.contains("feedback message received new_position=[7, 31, 43]")
             && consumer_stdout
                 .contains("result success=true error=None final_position=[98, 4, 26]"),
-        "consumer did not complete the action flow.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "consumer did not complete the action flow.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
     assert!(
@@ -633,9 +623,7 @@ fn main() -> Result<()> {
             && exposer_stdout.contains("server emitted feedback message [7, 31, 43]")
             && exposer_stdout
                 .contains("server handled result request. Final position sent: [98, 4, 26]"),
-        "exposer did not process the action endpoints as expected.\nstdout:\n{}\nstderr:\n{}",
-        exposer_stdout,
-        exposer_stderr
+        "exposer did not process the action endpoints as expected.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
     );
 }
 
@@ -732,17 +720,13 @@ fn main() -> Result<()> {
     assert!(
         consumer_stdout.contains("goal accepted=true")
             && consumer_stdout.contains("cancel accepted=true error=<none>"),
-        "consumer did not complete the cancel flow.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "consumer did not complete the cancel flow.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
     assert!(
         exposer_stdout.contains("server received goal arm_id=7 desired=[10, 20, 30]")
             && exposer_stdout.contains("server observed cancel for goal"),
-        "exposer did not handle cancel endpoint as expected.\nstdout:\n{}\nstderr:\n{}",
-        exposer_stdout,
-        exposer_stderr
+        "exposer did not handle cancel endpoint as expected.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
     );
 }
 
@@ -892,36 +876,29 @@ fn main() -> Result<()> {
     // the End signal closed the loop, then get_result succeeded.
     assert!(
         consumer_stdout.contains("feedback #1 new_position=[0, 1, 2]"),
-        "consumer missed first feedback message.\nstdout:\n{}",
-        consumer_stdout
+        "consumer missed first feedback message.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("feedback #2 new_position=[1, 2, 3]"),
-        "consumer missed second feedback message.\nstdout:\n{}",
-        consumer_stdout
+        "consumer missed second feedback message.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("feedback #3 new_position=[2, 3, 4]"),
-        "consumer missed third feedback message.\nstdout:\n{}",
-        consumer_stdout
+        "consumer missed third feedback message.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("feedback channel closed after 3 messages"),
-        "consumer feedback loop did not exit via the close signal.\nstdout:\n{}",
-        consumer_stdout
+        "consumer feedback loop did not exit via the close signal.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("result success=true final_position=[99, 99, 99]"),
-        "consumer did not receive final result.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive final result.\nstdout:\n{consumer_stdout}"
     );
 
     assert!(
         exposer_stdout.contains("server emitted feedback #3 position=[2, 3, 4]")
             && exposer_stdout.contains("server handled result request"),
-        "exposer did not complete the action lifecycle.\nstdout:\n{}\nstderr:\n{}",
-        exposer_stdout,
-        exposer_stderr
+        "exposer did not complete the action lifecycle.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
     );
 }
 
@@ -1302,30 +1279,24 @@ fn main() -> Result<()> {
     } = run_move_arm_flow(topology, consumer_main, exposer_main).await;
     assert!(
         consumer_stdout.contains("warmup feedback new_position=[1, 2, 3]"),
-        "consumer did not receive warmup feedback before cancel.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive warmup feedback before cancel.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("cancel accepted=true"),
-        "consumer did not receive accepted cancel response.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive accepted cancel response.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("feedback closed after cancel-accept"),
-        "consumer did not receive close signal after cancel-accept.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive close signal after cancel-accept.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         !consumer_stdout.contains("UNEXPECTED feedback after cancel-accept"),
-        "consumer received unexpected feedback after cancel-accept: close signal must come first.\nstdout:\n{}",
-        consumer_stdout
+        "consumer received unexpected feedback after cancel-accept: close signal must come first.\nstdout:\n{consumer_stdout}"
     );
 
     assert!(
         exposer_stdout.contains("server observed cancel"),
-        "exposer did not reach the cancel-observed path.\nstdout:\n{}\nstderr:\n{}",
-        exposer_stdout,
-        exposer_stderr
+        "exposer did not reach the cancel-observed path.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
     );
 }
 
@@ -1482,28 +1453,23 @@ fn main() -> Result<()> {
     } = run_move_arm_flow(topology, consumer_main, exposer_main).await;
     assert!(
         consumer_stdout.contains("pre_cancel feedback new_position=[1, 1, 1]"),
-        "consumer did not receive pre-cancel feedback.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive pre-cancel feedback.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("cancel accepted=true error=<none>"),
-        "consumer did not see the auto-acked cancel.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not see the auto-acked cancel.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("post_cancel feedback new_position=[2, 2, 2]"),
-        "consumer did not receive post-cancel feedback: a worker that ignores the cancel keeps the stream open.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive post-cancel feedback: a worker that ignores the cancel keeps the stream open.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("result success=true"),
-        "consumer did not receive result.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive result.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("feedback closed after result"),
-        "consumer did not receive close signal after result handler.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive close signal after result handler.\nstdout:\n{consumer_stdout}"
     );
 
     assert!(
@@ -1511,8 +1477,7 @@ fn main() -> Result<()> {
             && exposer_stdout.contains("server observed cancel but keeps going")
             && exposer_stdout.contains("server emitted post-cancel feedback")
             && exposer_stdout.contains("server handled result request"),
-        "exposer did not exercise the cancel-ignored path correctly.\nstdout:\n{}",
-        exposer_stdout
+        "exposer did not exercise the cancel-ignored path correctly.\nstdout:\n{exposer_stdout}"
     );
 }
 
@@ -1745,13 +1710,11 @@ fn main() -> Result<()> {
         assert_exited_successfully("consumer cargo run", &consumer_output);
     assert!(
         consumer_stdout.contains("goal accepted=true"),
-        "consumer goal was not accepted.\nstdout:\n{}",
-        consumer_stdout
+        "consumer goal was not accepted.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("first feedback received"),
-        "consumer never saw live feedback before the kill.\nstdout:\n{}",
-        consumer_stdout
+        "consumer never saw live feedback before the kill.\nstdout:\n{consumer_stdout}"
     );
     // Critical assertion: the drain exited through the typed producer-gone
     // error carrying the dead producer's identity, not a clean close, not a
@@ -1760,20 +1723,15 @@ fn main() -> Result<()> {
         consumer_stdout.contains(
             r#"feedback drain unblocked: producer gone instance=Some("exposer_instance") action=move_arm"#
         ),
-        "consumer drain did not unblock with ActionFeedbackProducerGone.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "consumer drain did not unblock with ActionFeedbackProducerGone.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
     assert!(
         !consumer_stdout.contains("UNEXPECTED"),
-        "consumer hit an unexpected error or outcome.\nstdout:\n{}",
-        consumer_stdout
+        "consumer hit an unexpected error or outcome.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("result outcome=Abandoned"),
-        "get_result did not resolve to Abandoned after producer death.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "get_result did not resolve to Abandoned after producer death.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 }
 
@@ -2127,9 +2085,7 @@ fn main() -> Result<()> {
             )
             && consumer_stdout
                 .contains("failed result kind=unreachable message=no plan to [500, 500, 500]"),
-        "consumer did not complete the contract-addressed action lifecycle.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "consumer did not complete the contract-addressed action lifecycle.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
     assert!(
@@ -2140,9 +2096,7 @@ fn main() -> Result<()> {
             && exposer_stdout.contains("server received goal arm_id=8 desired=[1, 2, 3]")
             && exposer_stdout.contains("server observed cancel for goal")
             && exposer_stdout.contains("server failed goal"),
-        "exposer did not process the contract-addressed action endpoints as expected.\nstdout:\n{}\nstderr:\n{}",
-        exposer_stdout,
-        exposer_stderr
+        "exposer did not process the contract-addressed action endpoints as expected.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
     );
 }
 

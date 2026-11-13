@@ -1275,8 +1275,7 @@ pub async fn send_shutdown(
     .await
     .unwrap_or_else(|err| {
         panic!(
-            "failed to send shutdown to node={} instance={} (project core node={}): {}",
-            to_node_name, target_instance_id, bound_core_node, err
+            "failed to send shutdown to node={to_node_name} instance={target_instance_id} (project core node={bound_core_node}): {err}"
         )
     });
 }

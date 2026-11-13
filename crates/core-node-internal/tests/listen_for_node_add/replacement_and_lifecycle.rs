@@ -335,13 +335,11 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     let exposed = exposed_service_names(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG);
     assert!(
         exposed.iter().any(|name| name == "reset_sensor"),
-        "v1-only service `reset_sensor` should still be exposed; got {:?}",
-        exposed
+        "v1-only service `reset_sensor` should still be exposed; got {exposed:?}"
     );
     assert!(
         !exposed.iter().any(|name| name == "new_service"),
-        "v2-only service `new_service` should NOT be exposed; got {:?}",
-        exposed
+        "v2-only service `new_service` should NOT be exposed; got {exposed:?}"
     );
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -908,13 +906,11 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     let exposed = exposed_service_names(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG);
     assert!(
         exposed.iter().any(|name| name == "reset_sensor"),
-        "v1 `reset_sensor` should still be exposed after failed overwrite, got: {:?}",
-        exposed
+        "v1 `reset_sensor` should still be exposed after failed overwrite, got: {exposed:?}"
     );
     assert!(
         !exposed.iter().any(|name| name == "new_service"),
-        "v2 `new_service` must not have leaked through the failed overwrite, got: {:?}",
-        exposed
+        "v2 `new_service` must not have leaked through the failed overwrite, got: {exposed:?}"
     );
 }
 /// When a running node instance does not respond to SHUTDOWN_SERVICE (e.g. the

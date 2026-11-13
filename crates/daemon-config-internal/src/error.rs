@@ -1136,7 +1136,7 @@ mod tests {
         if let ParsingError::InvalidDeploymentSource(msg) = err {
             assert_eq!(msg, "bad source");
         } else {
-            panic!("Expected InvalidDeploymentSource, got {:?}", err);
+            panic!("Expected InvalidDeploymentSource, got {err:?}");
         }
 
         // DuplicateName
@@ -1146,7 +1146,7 @@ mod tests {
         if let ParsingError::DuplicateName(id) = err {
             assert_eq!(id, "id1");
         } else {
-            panic!("Expected DuplicateName, got {:?}", err);
+            panic!("Expected DuplicateName, got {err:?}");
         }
     }
 
@@ -1157,7 +1157,7 @@ mod tests {
         if let ParsingError::CannotParseConfig(msg) = err {
             assert_eq!(msg, raw_msg);
         } else {
-            panic!("Expected CannotParseConfig, got {:?}", err);
+            panic!("Expected CannotParseConfig, got {err:?}");
         }
 
         let broken_json = "{ invalid json";
@@ -1165,7 +1165,7 @@ mod tests {
         if let ParsingError::CannotParseConfig(msg) = err {
             assert_eq!(msg, broken_json);
         } else {
-            panic!("Expected CannotParseConfig, got {:?}", err);
+            panic!("Expected CannotParseConfig, got {err:?}");
         }
     }
 

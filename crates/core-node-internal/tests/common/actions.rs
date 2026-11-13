@@ -373,7 +373,7 @@ async fn send_node_run_goal_answered(
 ) -> Result<(ActionGoalHandle, Result<NodeRunGoalResponse, Failure>), String> {
     let action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
         .await
-        .map_err(|e| format!("Failed to send goal: {}", e))?;
+        .map_err(|e| format!("Failed to send goal: {e}"))?;
     let answer = goal_answer(&action_handle, NodeRunGoalResponse::decode, "goal response")?;
     Ok((action_handle, answer))
 }
@@ -706,7 +706,7 @@ async fn send_node_add_and_wait_internal<'a>(
 
     let mut action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
         .await
-        .map_err(|e| format!("Failed to send goal: {}", e))?;
+        .map_err(|e| format!("Failed to send goal: {e}"))?;
 
     // A refused goal ends here, as it does for the CLI, which polls no
     // result of a refused goal.
@@ -813,7 +813,7 @@ async fn send_node_build_and_wait_internal(
         .with_force(force);
     let mut action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
         .await
-        .map_err(|e| format!("Failed to send build goal: {}", e))?;
+        .map_err(|e| format!("Failed to send build goal: {e}"))?;
 
     if let Err(refusal) = goal_answer(
         &action_handle,

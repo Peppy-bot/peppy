@@ -81,7 +81,7 @@ pub(crate) async fn materialize_repo_deps(
         // and skip materialization for anything already pushed onto the
         // persistent NodeStack.
         if node_stack.find(&name, &tag).is_some() {
-            found.stack_hits.push(format!("{}:{}", name, tag));
+            found.stack_hits.push(format!("{name}:{tag}"));
             continue;
         }
         if cache.is_none() {

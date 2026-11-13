@@ -354,7 +354,7 @@ impl ServeCommandBuilder {
         };
         let state_path = DaemonState::state_file_in(self.peppy_dirs.root());
         DaemonState::write_to(&state_path, &daemon_state)
-            .map_err(|e| Error::ExecutionFailed(format!("Failed to write daemon state: {}", e)))?;
+            .map_err(|e| Error::ExecutionFailed(format!("Failed to write daemon state: {e}")))?;
         info!(
             "Daemon state written to {} with core_node_name={}",
             state_path.display(),

@@ -293,15 +293,9 @@ if __name__ == "__main__":
     let main_file = user_node_emitter.join("main.py");
     fs::write(main_file, emitter_main).expect("failed to write main.py");
 
-    println!(
-        "User node receiver PEPPY_RUNTIME_CONFIG=\"{}\"",
-        user_node_receiver_config_str
-    );
+    println!("User node receiver PEPPY_RUNTIME_CONFIG=\"{user_node_receiver_config_str}\"");
     println!("User node receiver = {}", user_node_receiver.display());
-    println!(
-        "User node emitter PEPPY_RUNTIME_CONFIG=\"{}\"",
-        user_node_emitter_runtime_config_str
-    );
+    println!("User node emitter PEPPY_RUNTIME_CONFIG=\"{user_node_emitter_runtime_config_str}\"");
     println!("User node emitter = {}", user_node_emitter.display());
 
     init_python_project_venv(&user_node_receiver);
@@ -388,9 +382,7 @@ if __name__ == "__main__":
         receiver_stdout.contains(&format!(
             "got 640x480 frame encoded as rgb8 from {TEST_CORE_NODE}/{EMITTER_INSTANCE_ID}"
         )),
-        "receiver did not receive emitter frame with full producer identity.\nstdout:\n{}\nstderr:\n{}",
-        receiver_stdout,
-        receiver_stderr
+        "receiver did not receive emitter frame with full producer identity.\nstdout:\n{receiver_stdout}\nstderr:\n{receiver_stderr}"
     );
 
     assert_exited_successfully("emitter process", &emitter_output);

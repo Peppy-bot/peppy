@@ -68,8 +68,7 @@ fn check_process_alive(child: &mut Child, log_path: &Path) -> std::result::Resul
         ))),
         Ok(None) => Ok(()),
         Err(e) => Err(Error::BackendError(format!(
-            "Failed to check zenohd status: {}",
-            e
+            "Failed to check zenohd status: {e}"
         ))),
     }
 }
@@ -408,14 +407,14 @@ impl ZenohdFacade {
 
     fn get_endpoint_from_config(zenohd_config_path: impl AsRef<Path>) -> Result<ZenohEndpoint> {
         let config = Config::from_file(zenohd_config_path).map_err(|e| {
-            Error::ConfigurationError(format!("Failed to load zenoh config file: {}", e))
+            Error::ConfigurationError(format!("Failed to load zenoh config file: {e}"))
         })?;
-        let listen_json = config.get_json("listen").map_err(|e| {
-            Error::ConfigurationError(format!("Failed to get listen config: {}", e))
-        })?;
+        let listen_json = config
+            .get_json("listen")
+            .map_err(|e| Error::ConfigurationError(format!("Failed to get listen config: {e}")))?;
 
         let listen: serde_json::Value = serde_json::from_str(&listen_json).map_err(|e| {
-            Error::ConfigurationError(format!("Failed to parse listen config: {}", e))
+            Error::ConfigurationError(format!("Failed to parse listen config: {e}"))
         })?;
 
         let endpoint_str = router_endpoints(&listen).first().copied().ok_or_else(|| {
@@ -584,7 +583,7 @@ impl ZenohdFacade {
         })?;
         let stderr_file = log_file
             .try_clone()
-            .map_err(|e| Error::BackendError(format!("Failed to set up zenohd log file: {}", e)))?;
+            .map_err(|e| Error::BackendError(format!("Failed to set up zenohd log file: {e}")))?;
         let zenohd_log_level =
             env::var("PEPPY_ZENOHD_LOG").unwrap_or_else(|_| "zenoh=warn".to_string());
 
@@ -650,9 +649,7 @@ impl ZenohdFacade {
         };
         tokio::task::spawn_blocking(move || Self::terminate_router_process(child))
             .await
-            .map_err(|e| {
-                Error::BackendError(format!("zenohd process-reaper task failed: {}", e))
-            })?;
+            .map_err(|e| Error::BackendError(format!("zenohd process-reaper task failed: {e}")))?;
         Ok(())
     }
 

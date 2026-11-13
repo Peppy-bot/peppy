@@ -620,8 +620,7 @@ pub(crate) fn ensure_lima_instance(
 
             check_output(&start, |stderr| {
                 Error::LimaInstanceError(format!(
-                    "failed to restart zombie Lima {} instance: {stderr}",
-                    instance
+                    "failed to restart zombie Lima {instance} instance: {stderr}"
                 ))
             })
         }
@@ -633,8 +632,7 @@ pub(crate) fn ensure_lima_instance(
 
             check_output(&start, |stderr| {
                 Error::LimaInstanceError(format!(
-                    "failed to start Lima {} instance: {stderr}",
-                    instance
+                    "failed to start Lima {instance} instance: {stderr}"
                 ))
             })
         }
@@ -650,8 +648,7 @@ pub(crate) fn ensure_lima_instance(
 
             check_output(&create, |stderr| {
                 Error::LimaInstanceError(format!(
-                    "failed to create Lima {} instance: {stderr}",
-                    instance
+                    "failed to create Lima {instance} instance: {stderr}"
                 ))
             })
         }
@@ -1072,8 +1069,7 @@ where
 
             check_output(&output, |stderr| {
                 Error::LimaInstanceError(format!(
-                    "failed to stop Lima {} instance: {stderr}",
-                    instance
+                    "failed to stop Lima {instance} instance: {stderr}"
                 ))
             })
         }

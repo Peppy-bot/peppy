@@ -461,9 +461,9 @@ pub(super) async fn build_container_command(
     // macOS). Run it on a blocking pool so the tokio runtime isn't stalled.
     let mut apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)
         .await
-        .map_err(|e| std::io::Error::other(format!("Apptainer init task failed: {}", e)))?
+        .map_err(|e| std::io::Error::other(format!("Apptainer init task failed: {e}")))?
         .map_err(|e| {
-            std::io::Error::other(format!("Failed to initialize Apptainer runtime: {}", e))
+            std::io::Error::other(format!("Failed to initialize Apptainer runtime: {e}"))
         })?;
 
     let runtime_config_path = write_runtime_config_temp(peppy_dirs, runtime_config_json5)?;
@@ -528,8 +528,8 @@ pub(super) async fn build_container_command(
         apptainer.ensure_host_mounts(&refs).map(|()| apptainer)
     })
     .await
-    .map_err(|e| std::io::Error::other(format!("Host mount registration task failed: {}", e)))?
-    .map_err(|e| std::io::Error::other(format!("Failed to ensure host mounts: {}", e)))?;
+    .map_err(|e| std::io::Error::other(format!("Host mount registration task failed: {e}")))?
+    .map_err(|e| std::io::Error::other(format!("Failed to ensure host mounts: {e}")))?;
 
     // Build apptainer run command. Environment variables are passed into the
     // container via --env flags (not host-side process env) so they are
@@ -600,7 +600,7 @@ pub(super) async fn build_container_command(
     // then convert to tokio::process::Command for async stdio piping.
     let std_cmd = apptainer_cmd
         .into_std_command()
-        .map_err(|e| std::io::Error::other(format!("Failed to build apptainer command: {}", e)))?;
+        .map_err(|e| std::io::Error::other(format!("Failed to build apptainer command: {e}")))?;
 
     // The facade set the standard input: the null device, or under Lima
     // the pipe that carries the environment of the node to the guest.

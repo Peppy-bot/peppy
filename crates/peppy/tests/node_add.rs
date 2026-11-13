@@ -59,9 +59,8 @@ fn node_add_command_succeeds() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains(&format!("Added node {}:", node_name)),
-        "logs should contain success message for adding node. Logs:\n{}",
-        logs
+        logs.contains(&format!("Added node {node_name}:")),
+        "logs should contain success message for adding node. Logs:\n{logs}"
     );
 
     // A first-time `node add` runs a `NodeInfoRequest` preflight to look for
@@ -70,8 +69,7 @@ fn node_add_command_succeeds() {
     // service-handler error log.
     assert!(
         !logs.contains("service handler returned error"),
-        "first-time node add should not emit a service-handler error log. Logs:\n{}",
-        logs
+        "first-time node add should not emit a service-handler error log. Logs:\n{logs}"
     );
 
     let messenger_handle = node_ctx
@@ -164,14 +162,12 @@ fn node_add_command_with_run_arg_succeeds() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains(&format!("Added node {}:", node_name)),
-        "logs should contain success message for adding node. Logs:\n{}",
-        logs
+        logs.contains(&format!("Added node {node_name}:")),
+        "logs should contain success message for adding node. Logs:\n{logs}"
     );
     assert!(
         logs.contains("Started node instance"),
-        "logs should contain success message for starting node instance. Logs:\n{}",
-        logs
+        "logs should contain success message for starting node instance. Logs:\n{logs}"
     );
 
     let messenger_handle = node_ctx
@@ -238,8 +234,7 @@ fn node_add_after_failed_sync_succeeds() {
     assert!(
         error_message.contains("(precondition_failed)")
             && error_message.contains("git hash mismatch"),
-        "error should be a precondition_failed git hash mismatch, got: {}",
-        error_message
+        "error should be a precondition_failed git hash mismatch, got: {error_message}"
     );
 
     // 4. Run `node sync` on that node to update the `.peppy/git.hash` of the node
@@ -262,9 +257,8 @@ fn node_add_after_failed_sync_succeeds() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains(&format!("Added node {}:", node_name)),
-        "logs should contain success message for adding node. Logs:\n{}",
-        logs
+        logs.contains(&format!("Added node {node_name}:")),
+        "logs should contain success message for adding node. Logs:\n{logs}"
     );
 
     let messenger_handle = node_ctx
@@ -440,9 +434,8 @@ fn node_add_same_node_shutdown_existing_instances() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains(&format!("Added node {}:", node_name)),
-        "logs should contain success message for adding node. Logs:\n{}",
-        logs
+        logs.contains(&format!("Added node {node_name}:")),
+        "logs should contain success message for adding node. Logs:\n{logs}"
     );
 }
 #[test]
@@ -734,15 +727,13 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
     //    current peppy.json5 (i.e. --sync really ran a sync)
     let logs = log_capture.logs();
     assert!(
-        logs.contains(&format!("Added node {}:", node_name)),
-        "logs should contain success message. Logs:\n{}",
-        logs
+        logs.contains(&format!("Added node {node_name}:")),
+        "logs should contain success message. Logs:\n{logs}"
     );
     // The sync log line should also appear, proving --sync fired
     assert!(
         logs.contains("Synced node interfaces at"),
-        "logs should show sync ran. Logs:\n{}",
-        logs
+        "logs should show sync ran. Logs:\n{logs}"
     );
 
     let fingerprint_path = node_path
@@ -808,8 +799,7 @@ fn node_add_with_sync_flag_rejects_remote_source() {
     .to_string();
     assert!(
         err.contains("--sync is only valid for local node sources"),
-        "error should mention local-source restriction, got: {}",
-        err
+        "error should mention local-source restriction, got: {err}"
     );
 }
 

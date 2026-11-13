@@ -152,14 +152,14 @@ pub fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
             let repo_relative_path = segments[repo_index + 1..].join("/");
 
             let mut repo_url = parsed.clone();
-            repo_url.set_path(&format!("/{}", repo_path_segments));
+            repo_url.set_path(&format!("/{repo_path_segments}"));
             (repo_url.to_string(), repo_relative_path)
         } else {
             (parsed.to_string(), String::new())
         };
 
         let repo_url = GitUrl::try_from(repo_url_str.as_str()).map_err(|e| {
-            Error::ExecutionFailed(format!("Invalid git URL '{}': {}", repo_url_str, e))
+            Error::ExecutionFailed(format!("Invalid git URL '{repo_url_str}': {e}"))
         })?;
         return Ok((repo_url, repo_path));
     }
@@ -170,9 +170,8 @@ pub fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
         (source.to_string(), String::new())
     };
 
-    let repo_url = GitUrl::try_from(repo_url_str.as_str()).map_err(|e| {
-        Error::ExecutionFailed(format!("Invalid git URL '{}': {}", repo_url_str, e))
-    })?;
+    let repo_url = GitUrl::try_from(repo_url_str.as_str())
+        .map_err(|e| Error::ExecutionFailed(format!("Invalid git URL '{repo_url_str}': {e}")))?;
     Ok((repo_url, repo_path))
 }
 
@@ -242,7 +241,7 @@ mod tests {
     fn parse_node_source_recognizes_name_tag() {
         let src = parse_node_source("some_node:v123", None).unwrap();
         let NodeSource::ResolveRef { name, tag } = &src else {
-            panic!("expected ResolveRef, got {:?}", src);
+            panic!("expected ResolveRef, got {src:?}");
         };
         assert_eq!(name, "some_node");
         assert_eq!(tag, "v123");

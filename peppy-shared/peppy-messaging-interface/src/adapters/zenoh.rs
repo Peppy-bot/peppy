@@ -759,7 +759,7 @@ impl MessengerBackend for ZenohAdapter {
 
         let session = zenoh::open(config)
             .await
-            .map_err(|e| Error::BackendError(format!("Failed to create Zenoh session: {}", e)))?;
+            .map_err(|e| Error::BackendError(format!("Failed to create Zenoh session: {e}")))?;
 
         let mode = if self.client_config.gossip {
             "peer"

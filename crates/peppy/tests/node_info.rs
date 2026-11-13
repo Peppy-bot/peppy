@@ -123,10 +123,9 @@ fn fetch_info(
         .expect("node_info request should succeed");
     match response {
         NodeInfoResponse::Found(info) => *info,
-        NodeInfoResponse::NotInStack => panic!(
-            "node_info unexpectedly reported `{}:{}` as not in the stack",
-            node_name, node_tag
-        ),
+        NodeInfoResponse::NotInStack => {
+            panic!("node_info unexpectedly reported `{node_name}:{node_tag}` as not in the stack")
+        }
     }
 }
 
@@ -398,7 +397,6 @@ fn node_info_returns_not_in_stack_when_node_not_in_stack() {
     let logs = log_capture.logs();
     assert!(
         !logs.contains("service handler returned error"),
-        "negative node_info lookup must not emit a service-handler error log. Logs:\n{}",
-        logs
+        "negative node_info lookup must not emit a service-handler error log. Logs:\n{logs}"
     );
 }

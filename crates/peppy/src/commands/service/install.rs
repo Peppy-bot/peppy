@@ -415,10 +415,10 @@ fn render_launchd_plist(ctx: &ServiceInstallCtx) -> String {
     // Wrap in a login shell to source the user's profile and get full environment
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
     let inner_cmd = command_parts(ctx).join(" ");
-    lines.push(format!("      <string>{}</string>", shell));
+    lines.push(format!("      <string>{shell}</string>"));
     lines.push("      <string>-l</string>".to_string());
     lines.push("      <string>-c</string>".to_string());
-    lines.push(format!("      <string>{}</string>", inner_cmd));
+    lines.push(format!("      <string>{inner_cmd}</string>"));
 
     lines.push("    </array>".to_string());
 
@@ -460,7 +460,7 @@ fn build_exec_command(ctx: &ServiceInstallCtx) -> String {
     // Wrap in a login shell to source the user's profile and get full environment
     // (PATH, custom env vars, etc.) even when started by systemd
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    format!("{} -l -c '{}'", shell, inner_cmd)
+    format!("{shell} -l -c '{inner_cmd}'")
 }
 
 fn command_parts(ctx: &ServiceInstallCtx) -> Vec<String> {

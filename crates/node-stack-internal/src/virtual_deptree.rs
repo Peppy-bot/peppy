@@ -278,7 +278,7 @@ mod tests {
             VirtualDeptree::build(vec![(tmp.path().join("a"), a), (tmp.path().join("b"), b)]);
         match result {
             Err(Error::VirtualDeptreeCycle { .. }) => {}
-            other => panic!("expected VirtualDeptreeCycle, got {:?}", other),
+            other => panic!("expected VirtualDeptreeCycle, got {other:?}"),
         }
     }
 
@@ -316,7 +316,7 @@ mod tests {
                 assert_eq!(first, first_dir);
                 assert_eq!(second, second_dir);
             }
-            other => panic!("expected DuplicateLocalNode, got {:?}", other),
+            other => panic!("expected DuplicateLocalNode, got {other:?}"),
         }
     }
 
@@ -335,7 +335,7 @@ mod tests {
 
         match VirtualDeptree::build(vec![(PathBuf::from("a"), a), (PathBuf::from("b"), b)]) {
             Err(Error::ServiceActionContractCycle { kind, .. }) => assert_eq!(kind, "service"),
-            other => panic!("expected ServiceActionContractCycle, got {:?}", other),
+            other => panic!("expected ServiceActionContractCycle, got {other:?}"),
         }
     }
 
@@ -354,7 +354,7 @@ mod tests {
 
         match VirtualDeptree::build(vec![(PathBuf::from("a"), a), (PathBuf::from("b"), b)]) {
             Err(Error::ServiceActionContractCycle { kind, .. }) => assert_eq!(kind, "action"),
-            other => panic!("expected ServiceActionContractCycle, got {:?}", other),
+            other => panic!("expected ServiceActionContractCycle, got {other:?}"),
         }
     }
 
@@ -413,7 +413,7 @@ mod tests {
             (PathBuf::from("c"), c),
         ]) {
             Err(Error::ServiceActionContractCycle { nodes, .. }) => assert_eq!(nodes.len(), 3),
-            other => panic!("expected ServiceActionContractCycle, got {:?}", other),
+            other => panic!("expected ServiceActionContractCycle, got {other:?}"),
         }
     }
 }

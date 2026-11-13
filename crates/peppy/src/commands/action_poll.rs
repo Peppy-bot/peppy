@@ -312,7 +312,7 @@ where
     Res: ActionResultLike,
 {
     let goal_response = Resp::decode_payload(accepted_goal(action_handle, doing)?.as_ref())
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {e}")))?;
 
     info!("Log file: {}", goal_response.log_path().display());
 

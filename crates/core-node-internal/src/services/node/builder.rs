@@ -206,7 +206,7 @@ pub(crate) async fn run_node_build_for_entity(
             return Err(WorkStop::Failed(record_build_failure(
                 &log,
                 PeppyFailureKind::Rejected,
-                format!("node `{}:{}` is not in the node stack", node_name, node_tag),
+                format!("node `{node_name}:{node_tag}` is not in the node stack"),
             )));
         }
     };
@@ -215,14 +215,12 @@ pub(crate) async fn run_node_build_for_entity(
         Ok(buildable) => buildable,
         Err(unbuildable) => {
             let msg = match unbuildable {
-                Unbuildable::Stage(stage) => format!(
-                    "node `{}:{}` is in stage `{}`; cannot build",
-                    node_name, node_tag, stage
-                ),
-                Unbuildable::NoWorkingDir => format!(
-                    "node `{}:{}` has no staged working directory",
-                    node_name, node_tag
-                ),
+                Unbuildable::Stage(stage) => {
+                    format!("node `{node_name}:{node_tag}` is in stage `{stage}`; cannot build")
+                }
+                Unbuildable::NoWorkingDir => {
+                    format!("node `{node_name}:{node_tag}` has no staged working directory")
+                }
             };
             return Err(WorkStop::Failed(record_build_failure(
                 &log,
@@ -649,9 +647,8 @@ async fn run_node_build(run: NodeBuildRun) -> std::result::Result<NodeBuildResul
                         &log,
                         PeppyFailureKind::PreconditionFailed,
                         format!(
-                            "node `{}:{}` was replaced by a concurrent push \
-                             (generation {} -> {}); aborting build",
-                            node_name, node_tag, captured_generation, current_gen
+                            "node `{node_name}:{node_tag}` was replaced by a concurrent push \
+                             (generation {captured_generation} -> {current_gen}); aborting build"
                         ),
                     )));
                 }
@@ -738,7 +735,7 @@ async fn run_node_build(run: NodeBuildRun) -> std::result::Result<NodeBuildResul
                 Err(WorkStop::Failed(record_build_failure(
                     &log,
                     PeppyFailureKind::AttemptFailed,
-                    format!("Failed to build node: {}", e),
+                    format!("Failed to build node: {e}"),
                 )))
             }
         }

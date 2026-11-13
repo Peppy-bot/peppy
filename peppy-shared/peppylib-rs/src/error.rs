@@ -22,11 +22,11 @@ impl fmt::Display for ParameterDeserializationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0.as_slice() {
             [] => write!(f, "parameter deserialization error: unknown error"),
-            [single] => write!(f, "parameter deserialization error: {}", single),
+            [single] => write!(f, "parameter deserialization error: {single}"),
             multiple => {
                 write!(f, "missing required parameters:")?;
                 for msg in multiple {
-                    write!(f, "\n  - {}", msg)?;
+                    write!(f, "\n  - {msg}")?;
                 }
                 Ok(())
             }

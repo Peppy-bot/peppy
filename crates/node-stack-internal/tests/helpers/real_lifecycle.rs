@@ -31,7 +31,7 @@ static FIXTURE_INSTANCE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// when a caller doesn't supply an explicit instance id.
 pub fn fixture_instance_name() -> Name {
     let n = FIXTURE_INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    Name::new(format!("fixture-inst-{}", n)).expect("fixture instance name")
+    Name::new(format!("fixture-inst-{n}")).expect("fixture instance name")
 }
 
 struct NoOpHooks;

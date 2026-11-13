@@ -1370,8 +1370,7 @@ async fn process_node_run(
         let guard = entity_handle.read();
         if guard.artifact_path().is_none() {
             let msg = format!(
-                "Node '{}:{}' is added but not built, run `peppy node build {}:{}` first.",
-                node_name, tag, node_name, tag
+                "Node '{node_name}:{tag}' is added but not built, run `peppy node build {node_name}:{tag}` first."
             );
             drop(guard);
             return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
@@ -1691,7 +1690,7 @@ async fn process_node_run(
     let runtime_config_json5 = match serde_json5::to_string(&launch_config) {
         Ok(json) => json,
         Err(e) => {
-            let msg = format!("Failed to serialize runtime config: {}", e);
+            let msg = format!("Failed to serialize runtime config: {e}");
             return refuse(&ctx, PeppyFailureKind::AttemptFailed, msg);
         }
     };
@@ -2085,7 +2084,7 @@ async fn process_node_run(
             }
         }
         Err(e) => {
-            let msg = format!("Failed to register instance: {}", e);
+            let msg = format!("Failed to register instance: {e}");
             ctx.action
                 .relationships
                 .pairing()

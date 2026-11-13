@@ -467,7 +467,7 @@ fn serialize_response(response: Response) -> crate::Result<peppylib::Payload> {
         let mut buffer = Vec::new();
         capnp::serialize::write_message(&mut buffer, &capnp_msg)
             .map_err(|source| {
-                let context = format!("handle_request_payload {}", SERVICE_NAME);
+                let context = format!("handle_request_payload {SERVICE_NAME}");
                 crate::Error::Serialization(format!("{}: {}", context, source))
             })?;
         peppylib::Payload::from(buffer)
@@ -936,7 +936,7 @@ fn serialize_response(response: Response) -> crate::Result<peppylib::Payload> {
         let mut buffer = Vec::new();
         capnp::serialize::write_message(&mut buffer, &capnp_msg)
             .map_err(|source| {
-                let context = format!("handle_request_payload {}", SERVICE_NAME);
+                let context = format!("handle_request_payload {SERVICE_NAME}");
                 crate::Error::Serialization(format!("{}: {}", context, source))
             })?;
         peppylib::Payload::from(buffer)
@@ -1346,7 +1346,7 @@ fn serialize_response(response: Response) -> crate::Result<peppylib::Payload> {
         let mut buffer = Vec::new();
         capnp::serialize::write_message(&mut buffer, &capnp_msg)
             .map_err(|source| {
-                let context = format!("handle_request_payload {}", SERVICE_NAME);
+                let context = format!("handle_request_payload {SERVICE_NAME}");
                 crate::Error::Serialization(format!("{}: {}", context, source))
             })?;
         peppylib::Payload::from(buffer)
@@ -13930,7 +13930,7 @@ fn serialize_response(response: Response) -> crate::Result<peppylib::Payload> {
         let mut buffer = Vec::new();
         capnp::serialize::write_message(&mut buffer, &capnp_msg)
             .map_err(|source| {
-                let context = format!("handle_request_payload {}", SERVICE_NAME);
+                let context = format!("handle_request_payload {SERVICE_NAME}");
                 crate::Error::Serialization(format!("{}: {}", context, source))
             })?;
         peppylib::Payload::from(buffer)

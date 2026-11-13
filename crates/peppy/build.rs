@@ -20,7 +20,7 @@ fn embed_git_hash() {
     let git_common_dir = run_git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]);
 
     let git_hash = run_git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
-    println!("cargo:rustc-env=PEPPY_GIT_HASH={}", git_hash);
+    println!("cargo:rustc-env=PEPPY_GIT_HASH={git_hash}");
 
     if let Some(dir) = git_dir {
         let head = PathBuf::from(&dir).join("HEAD");

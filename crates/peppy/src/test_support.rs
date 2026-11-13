@@ -80,7 +80,7 @@ impl InstanceLifetime {
         let argv = keep_alive_argv(&self.sentinel());
         let quoted = argv
             .iter()
-            .map(|a| format!("{:?}", a))
+            .map(|a| format!("{a:?}"))
             .collect::<Vec<_>>()
             .join(", ");
         format!("[{quoted}]")

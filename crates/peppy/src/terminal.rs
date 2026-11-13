@@ -161,7 +161,7 @@ impl ScrollingOutput {
         // Without escapes the region cannot be redrawn, so each line is
         // printed once, when it arrives.
         if let Some(line) = self.lines.back() {
-            println!("{}", line);
+            println!("{line}");
         }
     }
 
@@ -233,7 +233,7 @@ fn draw_frame(
         // move up of the next frame does not count, and the region drifts
         // down one row.
         let truncated = ScrollingOutput::truncate_to_width(line, max_width);
-        let _ = write!(out, "{}", truncated);
+        let _ = write!(out, "{truncated}");
 
         let _ = out.queue(SetAttribute(Attribute::Reset));
         let _ = writeln!(out);

@@ -255,19 +255,14 @@ if __name__ == "__main__":
     // location if the captured-output flow ever regresses.
     assert!(
         consumer_stdout.contains(&expected_consumer_log),
-        "consumer did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
-        expected_consumer_log,
-        consumer_stdout,
-        consumer_stderr
+        "consumer did not receive expected service response (expected log: {expected_consumer_log}).\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
     let expected_request_log =
         format!("received enable_camera request from {SOLE_CONSUMER_INSTANCE_ID}: enable = True");
     assert!(
         exposer_stdout.contains(&expected_request_log),
-        "exposer did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
-        exposer_stdout,
-        exposer_stderr
+        "exposer did not process the enable_camera request.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
     );
 }
 
@@ -584,19 +579,14 @@ if __name__ == "__main__":
     // location if the captured-output flow ever regresses.
     assert!(
         consumer_stdout.contains(&expected_consumer_log),
-        "consumer did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
-        expected_consumer_log,
-        consumer_stdout,
-        consumer_stderr
+        "consumer did not receive expected service response (expected log: {expected_consumer_log}).\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
     let expected_request_log =
         format!("received get_system_status request from {SOLE_CONSUMER_INSTANCE_ID}");
     assert!(
         exposer_stdout.contains(&expected_request_log),
-        "exposer did not process the get_system_status request.\nstdout:\n{}\nstderr:\n{}",
-        exposer_stdout,
-        exposer_stderr
+        "exposer did not process the get_system_status request.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
     );
 }
 
@@ -883,31 +873,23 @@ if __name__ == "__main__":
     // race, no wildcard fallback). Identify the responder by the response
     // marker the consumer printed (exposer1 emits `error=handled`,
     // exposer2 emits `error=handled_by_exposer2`).
-    let expected_request_log = format!(
-        "received enable_camera request for {}: True",
-        consumer_instance_id
-    );
+    let expected_request_log =
+        format!("received enable_camera request for {consumer_instance_id}: True");
     let consumer_saw_exposer2 = consumer_stdout.contains("error=handled_by_exposer2");
     let consumer_saw_exposer1 = consumer_stdout
         .lines()
         .any(|line| line.trim_end() == "enable_camera result: enabled=True error=handled");
     assert!(
         consumer_saw_exposer1 && !consumer_saw_exposer2,
-        "consumer must have received its response from the bound exposer1 only.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "consumer must have received its response from the bound exposer1 only.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
     assert!(
         exposer1_stdout.contains(&expected_request_log),
-        "exposer1 is the bound producer but did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
-        exposer1_stdout,
-        exposer1_stderr
+        "exposer1 is the bound producer but did not process the enable_camera request.\nstdout:\n{exposer1_stdout}\nstderr:\n{exposer1_stderr}"
     );
     assert!(
         !exposer2_stdout.contains(&expected_request_log),
-        "exposer2 must NOT process the enable_camera request: the slot is bound to exposer1 and there is no wildcard fallback.\nstdout:\n{}\nstderr:\n{}",
-        exposer2_stdout,
-        exposer2_stderr
+        "exposer2 must NOT process the enable_camera request: the slot is bound to exposer1 and there is no wildcard fallback.\nstdout:\n{exposer2_stdout}\nstderr:\n{exposer2_stderr}"
     );
 }

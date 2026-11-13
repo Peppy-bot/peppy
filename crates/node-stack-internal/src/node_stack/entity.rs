@@ -1334,7 +1334,7 @@ impl NodeEntity {
             Error::StartFailed {
                 node_name: node_name.clone(),
                 node_tag: node_tag.clone(),
-                reason: format!("failed to build spawn command: {}", e),
+                reason: format!("failed to build spawn command: {e}"),
             }
         })?;
 
@@ -1376,7 +1376,7 @@ impl NodeEntity {
                     .map_err(|e| Error::StartFailed {
                         node_name: node_name.clone(),
                         node_tag: node_tag.clone(),
-                        reason: format!("failed to spawn `{}`: {}", spawn_description, e),
+                        reason: format!("failed to spawn `{spawn_description}`: {e}"),
                     })
             }
         };

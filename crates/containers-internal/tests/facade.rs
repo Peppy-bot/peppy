@@ -119,8 +119,7 @@ fn build_and_run_container() {
         .expect("should be able to wait on run child process");
     assert!(
         status.success(),
-        "apptainer run should succeed (exit status: {})",
-        status
+        "apptainer run should succeed (exit status: {status})"
     );
 }
 
@@ -146,8 +145,7 @@ fn build_and_exec_in_container() {
         .expect("should be able to wait on exec child process");
     assert!(
         status.success(),
-        "apptainer exec should succeed (exit status: {})",
-        status
+        "apptainer exec should succeed (exit status: {status})"
     );
 }
 

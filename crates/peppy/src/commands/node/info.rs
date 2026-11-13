@@ -41,7 +41,7 @@ pub async fn node_info_rendered(
         REQUEST_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to get node info: {}", e)))?;
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to get node info: {e}")))?;
 
     // "Not in stack" is a successful outcome of the lookup, not a daemon-side
     // error. Surface it to the user as a clean failure message without the
@@ -49,8 +49,7 @@ pub async fn node_info_rendered(
     let info = match response {
         NodeInfoResponse::NotInStack => {
             return Err(Error::ExecutionFailed(format!(
-                "Node '{}:{}' is not in the node stack",
-                node_name, node_tag
+                "Node '{node_name}:{node_tag}' is not in the node stack"
             )));
         }
         NodeInfoResponse::Found(info) => info,
@@ -246,7 +245,7 @@ fn write_dependencies(out: &mut String, interfaces: &Interfaces) {
     }
     write_section_heading(out, "Dependencies");
     for dep in &dependencies {
-        let _ = writeln!(out, "  - {}", dep);
+        let _ = writeln!(out, "  - {dep}");
     }
 }
 
@@ -388,7 +387,7 @@ fn write_parameter_spec(out: &mut String, key: &str, spec: &ParameterSpec, inden
                     );
                 }
                 None => {
-                    let _ = writeln!(out, "{}{}: {}", pad, key, type_name);
+                    let _ = writeln!(out, "{pad}{key}: {type_name}");
                 }
             }
         }
@@ -396,15 +395,15 @@ fn write_parameter_spec(out: &mut String, key: &str, spec: &ParameterSpec, inden
             let item_type = describe_parameter_spec_inline(items);
             match length {
                 Some(l) => {
-                    let _ = writeln!(out, "{}{}: array[{}; {}]", pad, key, item_type, l);
+                    let _ = writeln!(out, "{pad}{key}: array[{item_type}; {l}]");
                 }
                 None => {
-                    let _ = writeln!(out, "{}{}: array[{}]", pad, key, item_type);
+                    let _ = writeln!(out, "{pad}{key}: array[{item_type}]");
                 }
             }
         }
         ParameterSpec::Group(map) => {
-            let _ = writeln!(out, "{}{}:", pad, key);
+            let _ = writeln!(out, "{pad}{key}:");
             for (child_key, child_spec) in map {
                 write_parameter_spec(out, child_key, child_spec, indent + 1);
             }

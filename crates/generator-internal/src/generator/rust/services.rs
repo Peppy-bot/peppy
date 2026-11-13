@@ -295,7 +295,7 @@ pub fn build_response_serialization_code(
         });
     };
 
-    let error_context = quote!(format!("handle_request_payload {}", SERVICE_NAME));
+    let error_context = quote!(format!("handle_request_payload {SERVICE_NAME}"));
     let uses_response_data = !spec.format.0.is_empty();
     let response_ident = if uses_response_data {
         Ident::new("response", Span::call_site())

@@ -2567,8 +2567,7 @@ mod tests {
             .collect();
         assert!(
             progress_messages.iter().any(|m| m.starts_with("Reading ")),
-            "expected a 'Reading …' progress feedback, got: {:?}",
-            feedbacks
+            "expected a 'Reading …' progress feedback, got: {feedbacks:?}"
         );
 
         let discovered_names: Vec<&str> = feedbacks

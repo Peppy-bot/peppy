@@ -248,10 +248,7 @@ fn print_table(rows: &[Row]) {
         ]);
     }
 
-    println!(
-        "\nRoundtrip latency (two real peppy nodes, {} samples/scenario)",
-        DEFAULT_SAMPLES
-    );
+    println!("\nRoundtrip latency (two real peppy nodes, {DEFAULT_SAMPLES} samples/scenario)");
     println!("{}", format::render_table(&headers, &cells));
     println!(
         "\nΔp50 = median vs the previous run on this machine (+ = slower, - = faster). \

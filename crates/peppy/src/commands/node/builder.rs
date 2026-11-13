@@ -109,7 +109,7 @@ pub(crate) async fn build_node_on(
         GOAL_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_build goal: {}", e)))?;
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_build goal: {e}")))?;
 
     let build_result = crate::commands::action_poll::run_action_with_feedback::<
         NodeBuildGoalResponse,

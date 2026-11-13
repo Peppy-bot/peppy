@@ -230,8 +230,7 @@ mod tests {
         ] {
             assert!(
                 is_excluded_dir(std::ffi::OsStr::new(name)),
-                "expected {:?} to be excluded",
-                name
+                "expected {name:?} to be excluded"
             );
         }
     }
@@ -241,8 +240,7 @@ mod tests {
         for name in ["src", "lib", "data", "scripts", "peppy", "my_module"] {
             assert!(
                 !is_excluded_dir(std::ffi::OsStr::new(name)),
-                "expected {:?} to be allowed",
-                name
+                "expected {name:?} to be allowed"
             );
         }
     }

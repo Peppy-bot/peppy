@@ -1116,7 +1116,7 @@ fn dependency_fails_when_node_name_mismatches() {
         ..
     }))) = result
     else {
-        panic!("expected MissingDependency error, got {:?}", result);
+        panic!("expected MissingDependency error, got {result:?}");
     };
     assert_eq!(dependency, "uvc_camera");
     assert_eq!(dependency_tag, "v1");
@@ -1188,7 +1188,7 @@ fn dependency_fails_when_node_tag_mismatches() {
         ..
     }))) = result
     else {
-        panic!("expected MissingDependency error, got {:?}", result);
+        panic!("expected MissingDependency error, got {result:?}");
     };
     assert_eq!(dependency, "lidar");
     assert_eq!(dependency_tag, "v1");
@@ -1370,10 +1370,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
         node_tag,
     }) = result
     else {
-        panic!(
-            "expected CannotOverwriteNodeWithDependents error, got {:?}",
-            result
-        );
+        panic!("expected CannotOverwriteNodeWithDependents error, got {result:?}");
     };
     assert_eq!(node_name, "lidar");
     assert_eq!(node_tag, "v1");

@@ -137,7 +137,7 @@ async fn handle_node_stop_request_inner(
         Err(e) => {
             return Err(failure(
                 PeppyFailureKind::Rejected,
-                format!("Invalid instance_id: {}", e),
+                format!("Invalid instance_id: {e}"),
             ));
         }
     };

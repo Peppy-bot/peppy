@@ -332,12 +332,11 @@ fn reject_parameters_with_invalid_field_names() {
         Error::InvalidParameterFieldName { name, allowed } => {
             assert!(
                 name.chars().any(|c| !ALLOWED_CONFIG_CHARS.contains(c)),
-                "Expected field name with invalid characters, got: {}",
-                name
+                "Expected field name with invalid characters, got: {name}"
             );
             assert_eq!(allowed, ALLOWED_CONFIG_CHARS);
         }
-        _ => panic!("Expected InvalidParameterFieldName error, got: {:?}", err),
+        _ => panic!("Expected InvalidParameterFieldName error, got: {err:?}"),
     }
 }
 

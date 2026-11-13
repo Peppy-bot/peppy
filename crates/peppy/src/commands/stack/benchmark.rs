@@ -91,7 +91,7 @@ async fn benchmark_async(
         GOAL_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to send benchmark goal: {}", e)))?;
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send benchmark goal: {e}")))?;
 
     crate::commands::action_poll::accepted_goal(&action_handle, "Benchmark")?;
 

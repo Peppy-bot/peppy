@@ -206,7 +206,7 @@ mod tests {
                 assert!(repo_url.contains("github.com/org/repo"));
                 assert_eq!(repo_ref, GitRepoRef::Named("main".to_string()));
             }
-            other => panic!("expected Git variant, got {:?}", other),
+            other => panic!("expected Git variant, got {other:?}"),
         }
     }
 

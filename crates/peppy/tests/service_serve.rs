@@ -73,8 +73,7 @@ fn serve_command() {
     let logs = log_capture.logs();
     assert!(
         logs.contains(SERVE_INITIALIZED),
-        "serve command should log initialization message. Logs:\n{}",
-        logs
+        "serve command should log initialization message. Logs:\n{logs}"
     );
     // This test drives shutdown via the injected external cancellation token
     // (not an OS signal), so the coordinator takes the external-shutdown arm.
@@ -83,7 +82,6 @@ fn serve_command() {
     // asserts the external arm.
     assert!(
         logs.contains("External shutdown requested"),
-        "serve command should log external shutdown reception. Logs:\n{}",
-        logs
+        "serve command should log external shutdown reception. Logs:\n{logs}"
     );
 }

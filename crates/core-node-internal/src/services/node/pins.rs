@@ -305,7 +305,7 @@ pub(crate) async fn resolve_pinned_closure(
         missing.sort();
         let list = missing
             .iter()
-            .map(|(n, t)| format!("{}:{}", n, t))
+            .map(|(n, t)| format!("{n}:{t}"))
             .collect::<Vec<_>>()
             .join(", ");
         problems.push(format!(

@@ -204,7 +204,7 @@ pub(crate) fn encode_response_or_err(
 ) -> peppylib::PeppyResult<peppylib::types::Payload> {
     result.map_err(|e| peppylib::PeppyError::InternalEncodingError {
         identifier: identifier.to_string(),
-        reason: format!("Failed to encode response: {}", e),
+        reason: format!("Failed to encode response: {e}"),
     })
 }
 
@@ -217,5 +217,5 @@ pub(crate) fn generate_random_id() -> String {
 
 /// Lowercase hexadecimal of `bytes`, two digits per byte.
 pub(crate) fn encode_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

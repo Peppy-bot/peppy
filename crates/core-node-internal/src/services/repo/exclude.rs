@@ -189,7 +189,7 @@ fn exclude_repository(
     if has_entry_with_identity(&repos, new_identity) {
         return Err(failure(
             PeppyFailureKind::PreconditionFailed,
-            format!("repository '{}' already exists", new_identity),
+            format!("repository '{new_identity}' already exists"),
         ));
     }
 

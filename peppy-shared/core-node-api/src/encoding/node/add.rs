@@ -73,7 +73,7 @@ impl NodeSource {
 
     pub fn decode_git(repo_url_str: &str, repo_path: &str, repo_ref: &str) -> Result<Self> {
         let repo_url = GitUrl::try_from(repo_url_str)
-            .map_err(|e| crate::Error::Decoding(format!("invalid git URL: {}", e)))?;
+            .map_err(|e| crate::Error::Decoding(format!("invalid git URL: {e}")))?;
         Ok(Self::Git {
             repo_url,
             repo_path: repo_path.to_owned(),
@@ -90,7 +90,7 @@ impl NodeSource {
 
     pub fn decode_http(url_str: &str, sha256: Option<&str>) -> Result<Self> {
         let url = url::Url::parse(url_str)
-            .map_err(|e| crate::Error::Decoding(format!("invalid HTTP URL: {}", e)))?;
+            .map_err(|e| crate::Error::Decoding(format!("invalid HTTP URL: {e}")))?;
         match url.scheme() {
             "http" | "https" => {}
             scheme => {

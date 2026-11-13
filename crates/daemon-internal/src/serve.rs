@@ -238,8 +238,7 @@ impl Serve {
                 }
                 Some(Ok(Err(e))) => e,
                 Some(Err(join_err)) => Error::ExecutionFailed(format!(
-                    "Serve handler panicked before signaling readiness: {}",
-                    join_err
+                    "Serve handler panicked before signaling readiness: {join_err}"
                 )),
                 None => Error::ExecutionFailed(
                     "Serve handler dropped before signaling readiness".into(),

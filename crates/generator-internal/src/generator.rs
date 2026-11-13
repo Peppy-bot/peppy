@@ -233,7 +233,7 @@ fn ensure_node_cargo_toml(
         contents.parse().map_err(|e| {
             Error::Io(std::io::Error::new(
                 ErrorKind::InvalidData,
-                format!("failed to parse Cargo.toml: {}", e),
+                format!("failed to parse Cargo.toml: {e}"),
             ))
         })?
     } else {

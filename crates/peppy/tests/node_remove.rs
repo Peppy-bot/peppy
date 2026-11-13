@@ -79,8 +79,7 @@ fn node_remove_command_succeeds() {
     let logs = log_capture.logs();
     assert!(
         logs.contains(&format!("Removed node '{node_name}:{node_tag}'")),
-        "logs should contain success message for removing node. Logs:\n{}",
-        logs
+        "logs should contain success message for removing node. Logs:\n{logs}"
     );
 
     let messenger_handle = node_ctx
@@ -251,8 +250,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     let logs = removal.logs;
     assert!(
         logs.contains(&format!("Removed node '{node_name}:{node_tag}'")),
-        "logs should contain success message for removing node. Logs:\n{}",
-        logs
+        "logs should contain success message for removing node. Logs:\n{logs}"
     );
     // The emulated node answers its shutdown request and keeps running, so
     // the removal force-kills it and the CLI says so.

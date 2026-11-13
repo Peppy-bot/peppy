@@ -72,7 +72,7 @@ where
         if let Some(module_name) = capnp_path
             .file_stem()
             .and_then(|stem| stem.to_str())
-            .map(|name| format!("pub mod {}_capnp;", name))
+            .map(|name| format!("pub mod {name}_capnp;"))
         {
             module_exports.push(module_name);
         }
@@ -589,8 +589,7 @@ mod tests {
 
         assert!(
             schema_path.exists(),
-            "Schema file should exist at {:?}",
-            schema_path
+            "Schema file should exist at {schema_path:?}"
         );
 
         compile_capnp(&[schema_path], output_dir).expect("capnp compilation succeeds");
@@ -598,8 +597,7 @@ mod tests {
         let expected_output = output_dir.join("capnp").join("frame_capnp.rs");
         assert!(
             expected_output.exists(),
-            "Compiled output file should exist at {:?}",
-            expected_output
+            "Compiled output file should exist at {expected_output:?}"
         );
 
         let generated_content =
@@ -614,8 +612,7 @@ mod tests {
         let capnp_module_file = output_dir.join("capnp.rs");
         assert!(
             capnp_module_file.exists(),
-            "capnp.rs module file should exist at {:?}",
-            capnp_module_file
+            "capnp.rs module file should exist at {capnp_module_file:?}"
         );
 
         let capnp_module_content =

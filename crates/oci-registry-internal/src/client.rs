@@ -410,7 +410,7 @@ impl RegistryClient {
             // A body in parts has no length of its own: the header keeps the
             // chunk out of a chunked transfer encoding.
             headers.insert(header::CONTENT_LENGTH, header_value(&length.to_string()));
-            let request = format!("PATCH blobs/uploads ({} bytes at {sent})", length);
+            let request = format!("PATCH blobs/uploads ({length} bytes at {sent})");
             let (taken_tx, mut taken_rx) = tokio::sync::mpsc::unbounded_channel();
             let answer = report_taken_while(
                 self.send_body(

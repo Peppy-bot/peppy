@@ -368,8 +368,7 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
             .lines()
             .any(|line| line.contains(TARGET_INSTANCE_ID) && line.contains("failed")),
         "a reset teardown must never be recorded as a crash, got:
-{}",
-        log_content
+{log_content}"
     );
 }
 

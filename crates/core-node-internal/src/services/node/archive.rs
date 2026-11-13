@@ -71,8 +71,7 @@ pub(crate) fn locate_node_root_dir(extracted_dir: &Path) -> std::result::Result<
     }
 
     Err(format!(
-        "Bundle does not contain {} at the root (or exactly one top-level folder)",
-        NODE_CONFIG_FILE
+        "Bundle does not contain {NODE_CONFIG_FILE} at the root (or exactly one top-level folder)"
     ))
 }
 
@@ -80,7 +79,7 @@ pub(crate) fn resolve_local_archive_source(
     archive_path: &Path,
 ) -> std::result::Result<ResolvedLocalArchiveSource, String> {
     let temp_dir =
-        tempfile::tempdir().map_err(|e| format!("Failed to create temporary directory: {}", e))?;
+        tempfile::tempdir().map_err(|e| format!("Failed to create temporary directory: {e}"))?;
 
     extract_tar_zst(archive_path, temp_dir.path())?;
     let source_path = locate_node_root_dir(temp_dir.path())?;

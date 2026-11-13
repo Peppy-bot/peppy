@@ -126,8 +126,7 @@ async fn node_sync_rust_command_succeeds() {
     let logs = log_capture.logs();
     assert!(
         logs.contains("Synced node interfaces at"),
-        "logs should contain sync success message. Logs:\n{}",
-        logs
+        "logs should contain sync success message. Logs:\n{logs}"
     );
 
     // Verify that the `goodbye_world` topic code was generated
@@ -252,8 +251,7 @@ async fn node_sync_python_command_succeeds() {
     let logs = log_capture.logs();
     assert!(
         logs.contains("Synced node interfaces at"),
-        "logs should contain sync success message. Logs:\n{}",
-        logs
+        "logs should contain sync success message. Logs:\n{logs}"
     );
 
     // Verify that the `goodbye_world` topic Python code was generated
@@ -364,8 +362,7 @@ async fn node_sync_with_path_succeeds() {
     let logs = log_capture.logs();
     assert!(
         logs.contains("Synced node interfaces at"),
-        "logs should contain sync success message. Logs:\n{}",
-        logs
+        "logs should contain sync success message. Logs:\n{logs}"
     );
 
     // Verify that the `goodbye_world` topic code was generated
@@ -464,13 +461,11 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     let logs = log_capture.logs();
     assert!(
         logs.contains("Synchronized from repositories:"),
-        "verbose output should announce the repo section. Logs:\n{}",
-        logs
+        "verbose output should announce the repo section. Logs:\n{logs}"
     );
     assert!(
         logs.contains("uvc_camera:v1 (fs)"),
-        "verbose output should list the repo-resolved dep with its source kind. Logs:\n{}",
-        logs
+        "verbose output should list the repo-resolved dep with its source kind. Logs:\n{logs}"
     );
 }
 

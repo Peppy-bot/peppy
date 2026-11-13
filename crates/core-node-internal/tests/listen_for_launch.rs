@@ -1679,7 +1679,7 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     );
     assert_eq!(
         result.node_logs.node_add_logs[0].node_label,
-        format!("{}:{}", NODE_NAME, NODE_TAG)
+        format!("{NODE_NAME}:{NODE_TAG}")
     );
 
     // The node was successfully built before the start failed, so we expect one build log entry.
@@ -1694,7 +1694,7 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     );
     assert_eq!(
         result.node_logs.node_build_logs[0].node_label,
-        format!("{}:{}", NODE_NAME, NODE_TAG)
+        format!("{NODE_NAME}:{NODE_TAG}")
     );
 
     // The failed start should produce one start log entry marked as failed.
@@ -1710,7 +1710,7 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     assert_eq!(result.node_logs.node_run_logs[0].instance_id, INSTANCE_ID);
     assert_eq!(
         result.node_logs.node_run_logs[0].node_label,
-        format!("{}:{}", NODE_NAME, NODE_TAG)
+        format!("{NODE_NAME}:{NODE_TAG}")
     );
     assert!(
         !result.node_logs.node_run_logs[0]

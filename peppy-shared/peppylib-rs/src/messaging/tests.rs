@@ -941,8 +941,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     assert_eq!(
         received_ids.len(),
         message_count,
-        "should receive exactly {} messages",
-        message_count
+        "should receive exactly {message_count} messages"
     );
 
     let mut expected_sorted = message_ids.clone();
@@ -1443,10 +1442,7 @@ async fn assert_poll_to_absent_producer_is_unreachable(
         service_name: err_service_name,
     } = &err
     else {
-        panic!(
-            "expected ServiceUnreachable error, received unexpected error: {:?}",
-            err
-        );
+        panic!("expected ServiceUnreachable error, received unexpected error: {err:?}");
     };
 
     // The pinned target's instance_id travels in the error
@@ -1629,10 +1625,7 @@ async fn service_communication_fails_service_not_started() {
         service_name: err_service_name,
     } = err
     else {
-        panic!(
-            "expected ServiceUnreachable error, received unexpected error: {:?}",
-            err
-        );
+        panic!("expected ServiceUnreachable error, received unexpected error: {err:?}");
     };
 
     assert_eq!(err_instance_id, None);
@@ -1889,10 +1882,7 @@ async fn service_communication_fails_service_timeouts() {
         service_name: err_service_name,
     } = &err
     else {
-        panic!(
-            "expected ServiceTimeout error for timeout, received: {:?}",
-            err
-        );
+        panic!("expected ServiceTimeout error for timeout, received: {err:?}");
     };
 
     assert_eq!(
@@ -2756,10 +2746,7 @@ async fn action_communication_goal_cancelled() {
             break;
         }
         if now.duration_since(start) >= overall_timeout {
-            panic!(
-                "feedback did not stop within {:?} after cancellation",
-                overall_timeout
-            );
+            panic!("feedback did not stop within {overall_timeout:?} after cancellation");
         }
 
         let remaining = quiet_deadline

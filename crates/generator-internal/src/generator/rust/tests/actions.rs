@@ -1313,27 +1313,23 @@ fn compile_lib_with_exposed_and_consumed_actions() {
     let expose_move_arm_path = output_dir.join("src/exposed_actions/move_arm.rs");
     assert!(
         expose_move_arm_path.exists(),
-        "Expected generated move_arm action module at {:?}",
-        expose_move_arm_path
+        "Expected generated move_arm action module at {expose_move_arm_path:?}"
     );
     let expose_rotate_path = output_dir.join("src/exposed_actions/rotate_servo_clockwise.rs");
     assert!(
         expose_rotate_path.exists(),
-        "Expected generated rotate_servo_clockwise action module at {:?}",
-        expose_rotate_path
+        "Expected generated rotate_servo_clockwise action module at {expose_rotate_path:?}"
     );
     let subscribed_brain_path = output_dir.join("src/consumed_actions/brain/move_arm.rs");
     assert!(
         subscribed_brain_path.exists(),
-        "Expected brain/move_arm consumed action module at {:?}",
-        subscribed_brain_path
+        "Expected brain/move_arm consumed action module at {subscribed_brain_path:?}"
     );
     let subscribed_controller_path =
         output_dir.join("src/consumed_actions/controller/rotate_servo_clockwise.rs");
     assert!(
         subscribed_controller_path.exists(),
-        "Expected controller/rotate_servo_clockwise consumed action module at {:?}",
-        subscribed_controller_path
+        "Expected controller/rotate_servo_clockwise consumed action module at {subscribed_controller_path:?}"
     );
 }
 

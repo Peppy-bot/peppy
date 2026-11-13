@@ -324,10 +324,7 @@ fn cargo_install_binary_with(
 
     let built_binary = install_root.join("bin").join(name);
     if !built_binary.exists() {
-        println!(
-            "cargo:warning=cargo install succeeded but binary not found at {:?}",
-            built_binary
-        );
+        println!("cargo:warning=cargo install succeeded but binary not found at {built_binary:?}");
         return None;
     }
 

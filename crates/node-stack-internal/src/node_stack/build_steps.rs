@@ -174,7 +174,7 @@ pub(super) async fn build_container_image(
     // make `output_path` escape `working_dir` and apptainer would happily
     // write the image outside the build sandbox. Nothing downstream checks
     // the tag again.
-    validate_node_tag(inputs.node_tag).map_err(|e| format!("invalid node tag: {}", e))?;
+    validate_node_tag(inputs.node_tag).map_err(|e| format!("invalid node tag: {e}"))?;
 
     let platform = inputs.platform;
     if platform != HOST_ARTIFACT_PLATFORM {
@@ -202,13 +202,8 @@ pub(super) async fn build_container_image(
     let mut apptainer =
         tokio::task::spawn_blocking(move || containers::Apptainer::for_platform(platform))
             .await
-            .map_err(|e| format!("Apptainer initialization task failed: {}", e))?
-            .map_err(|e| {
-                format!(
-                    "Failed to initialize Apptainer runtime for {platform}: {}",
-                    e
-                )
-            })?;
+            .map_err(|e| format!("Apptainer initialization task failed: {e}"))?
+            .map_err(|e| format!("Failed to initialize Apptainer runtime for {platform}: {e}"))?;
 
     // The build's working dir (def file, `%files` sources, output .sif) lives
     // under the peppy data root. When that root is outside `$HOME` (a
@@ -228,8 +223,8 @@ pub(super) async fn build_container_image(
             .map(|()| apptainer)
     })
     .await
-    .map_err(|e| format!("Host mount registration task failed: {}", e))?
-    .map_err(|e| format!("Failed to ensure peppy root is mounted in the VM: {}", e))?;
+    .map_err(|e| format!("Host mount registration task failed: {e}"))?
+    .map_err(|e| format!("Failed to ensure peppy root is mounted in the VM: {e}"))?;
     drop(preparing_vm);
 
     let sif_name = format!("{}_{}.sif", inputs.node_name, inputs.node_tag);
@@ -258,7 +253,7 @@ pub(super) async fn build_container_image(
             container_build_cache::prepare(&peppy_dirs, &node, language, &def_contents, &extra_args)
         })
         .await
-        .map_err(|e| format!("Build cache preparation task failed: {}", e))?
+        .map_err(|e| format!("Build cache preparation task failed: {e}"))?
     };
     if let Some(cache) = &build_cache {
         inputs.announcer.line(cache.summary.clone());
@@ -322,9 +317,9 @@ pub(super) async fn build_container_image(
 
         let std_cmd = cmd_builder
             .into_std_command()
-            .map_err(|e| format!("Failed to build apptainer command: {}", e))?;
+            .map_err(|e| format!("Failed to build apptainer command: {e}"))?;
         let child =
-            spawn_piped(std_cmd).map_err(|e| format!("Failed to spawn apptainer build: {}", e))?;
+            spawn_piped(std_cmd).map_err(|e| format!("Failed to spawn apptainer build: {e}"))?;
 
         // Activity progress: apptainer suppresses per-blob download progress
         // off-TTY, so a slow base-image pull (and the silent "Creating SIF file..."
@@ -387,7 +382,7 @@ pub(super) async fn build_container_image(
             continue;
         }
 
-        let mut msg = format!("apptainer build failed with status {}", status);
+        let mut msg = format!("apptainer build failed with status {status}");
         if !stderr_tail.is_empty() {
             msg.push_str(STDERR_TAIL_HEADER);
             msg.push_str(&stderr_tail.join("\n"));
@@ -736,8 +731,7 @@ pub(super) async fn run_build_cmd(
 
     if !status.success() {
         return Err(format!(
-            "build_cmd `{}` failed with status {}",
-            full_cmd_display, status
+            "build_cmd `{full_cmd_display}` failed with status {status}"
         ));
     }
 
@@ -784,8 +778,7 @@ mod tests {
         for tag in ["v1", "v123", "latest", "v2-rc1", "abc_def", "A1", "donut"] {
             assert!(
                 validate_node_tag(tag).is_ok(),
-                "expected {:?} to be accepted",
-                tag
+                "expected {tag:?} to be accepted"
             );
         }
     }
@@ -819,8 +812,7 @@ mod tests {
         .expect_err("unsafe tag must be rejected");
         assert!(
             err.starts_with("invalid node tag"),
-            "expected up-front validation rejection, got: {}",
-            err
+            "expected up-front validation rejection, got: {err}"
         );
     }
 
@@ -832,8 +824,7 @@ mod tests {
         ] {
             assert!(
                 validate_node_tag(tag).is_err(),
-                "expected {:?} to be rejected",
-                tag
+                "expected {tag:?} to be rejected"
             );
         }
     }

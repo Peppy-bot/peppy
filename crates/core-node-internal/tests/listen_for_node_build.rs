@@ -347,13 +347,11 @@ fn read_build_log(
         .expect("should have log filename");
     assert!(
         log_filename.starts_with(&format!("{node_name}_{node_tag}_")),
-        "log filename should start with '<node_name>_<tag>_', got: {}",
-        log_filename
+        "log filename should start with '<node_name>_<tag>_', got: {log_filename}"
     );
     assert!(
         log_filename.ends_with(".log"),
-        "log filename should end with '.log', got: {}",
-        log_filename
+        "log filename should end with '.log', got: {log_filename}"
     );
 
     std::fs::read_to_string(log_path).expect("should be able to read log file")
@@ -652,16 +650,14 @@ async fn listen_for_node_build_writes_log_file() {
     );
 
     assert!(
-        log_content.contains(&format!("[stdout] {}", STDOUT_MARKER)),
+        log_content.contains(&format!("[stdout] {STDOUT_MARKER}")),
         "log file should contain stdout marker with [stdout] prefix, got:
-{}",
-        log_content
+{log_content}"
     );
     assert!(
-        log_content.contains(&format!("[stderr] {}", STDERR_MARKER)),
+        log_content.contains(&format!("[stderr] {STDERR_MARKER}")),
         "log file should contain stderr marker with [stderr] prefix, got:
-{}",
-        log_content
+{log_content}"
     );
 }
 
@@ -930,8 +926,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     assert!(
         log_content.contains("[stdout]") || log_content.contains("[stderr]"),
         "log file should contain streamed build output with [stdout]/[stderr] prefixes, got:
-{}",
-        log_content
+{log_content}"
     );
 }
 
@@ -1095,8 +1090,7 @@ From: nowhere
     assert!(
         log_content.contains("[stdout]") || log_content.contains("[stderr]"),
         "log file should contain streamed build output, got:
-{}",
-        log_content
+{log_content}"
     );
 
     let mut feedback = Vec::new();
@@ -1160,20 +1154,17 @@ async fn listen_for_node_build_logs_error_on_spawn_failure() {
     assert!(
         log_content.contains("[error]"),
         "log file should contain an [error] entry, got:
-{}",
-        log_content
+{log_content}"
     );
     assert!(
         log_content.contains("build_cmd failed"),
         "log file should contain the failure message, got:
-{}",
-        log_content
+{log_content}"
     );
     assert!(
         log_content.contains("nonexistent_binary_peppy_test_xyz"),
         "log file should contain the command that failed, got:
-{}",
-        log_content
+{log_content}"
     );
 }
 

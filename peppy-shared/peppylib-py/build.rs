@@ -75,7 +75,7 @@ fn configure_python_from_pixi() {
     let pixi_toml = manifest_dir.join("pixi.toml");
 
     if !pixi_toml.exists() {
-        panic!("pixi.toml not found at {:?}", pixi_toml);
+        panic!("pixi.toml not found at {pixi_toml:?}");
     }
 
     // Serialize concurrent pixi invocations to avoid "Text file busy" races
@@ -93,8 +93,7 @@ fn configure_python_from_pixi() {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         panic!(
-            "Failed to get Python path from pixi. Make sure to run 'pixi install' first.\n{}",
-            stderr
+            "Failed to get Python path from pixi. Make sure to run 'pixi install' first.\n{stderr}"
         );
     }
 

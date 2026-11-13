@@ -128,7 +128,7 @@ fn service_dependency_fails_when_dependency_is_missing() {
         ..
     }))) = result
     else {
-        panic!("expected MissingDependency error, got {:?}", result);
+        panic!("expected MissingDependency error, got {result:?}");
     };
     assert_eq!(dependency, "lidar");
     assert_eq!(dependency_tag, "v1");
@@ -192,7 +192,7 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
     let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::MissingInterface(info)))) =
         result
     else {
-        panic!("expected MissingInterface error, got {:?}", result);
+        panic!("expected MissingInterface error, got {result:?}");
     };
     assert_eq!(info.dependency, "lidar");
     assert_eq!(info.dependency_tag, "v1");
@@ -244,7 +244,7 @@ fn service_dependency_fails_when_link_id_is_undeclared() {
         ..
     }))) = result
     else {
-        panic!("expected UndeclaredLinkId error, got {:?}", result);
+        panic!("expected UndeclaredLinkId error, got {result:?}");
     };
     assert_eq!(link_id, "nonexistent");
     assert_eq!(stack.len(), 1, "stack should only have core node");

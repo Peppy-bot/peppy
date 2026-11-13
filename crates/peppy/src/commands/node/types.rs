@@ -22,8 +22,7 @@ impl NodeName {
 
         if !first.is_ascii_alphabetic() {
             return Err(Error::InvalidNodeName(format!(
-                "Node name '{}' must start with a letter",
-                name
+                "Node name '{name}' must start with a letter"
             )));
         }
 
@@ -32,8 +31,7 @@ impl NodeName {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         {
             return Err(Error::InvalidNodeName(format!(
-                "Node name '{}' contains invalid characters",
-                name
+                "Node name '{name}' contains invalid characters"
             )));
         }
 

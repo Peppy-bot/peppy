@@ -113,7 +113,7 @@ fn check_unsigned_range(
         return Err(TypeMismatch {
             path: path.to_string(),
             expected: format!("{} in [0, {}]", type_token_name(token), max),
-            actual: format!("{}", v),
+            actual: format!("{v}"),
         });
     }
     Ok(())
@@ -141,7 +141,7 @@ fn check_signed_range(
         return Err(TypeMismatch {
             path: path.to_string(),
             expected: format!("{} in [{}, {}]", type_token_name(token), min, max),
-            actual: format!("{}", v),
+            actual: format!("{v}"),
         });
     }
     Ok(())
@@ -1930,7 +1930,7 @@ mod tests {
             actual: "string".to_string(),
         };
         assert_eq!(
-            format!("{}", err),
+            format!("{err}"),
             "type mismatch at `config.timeout`: expected `u32`, got `string`"
         );
     }

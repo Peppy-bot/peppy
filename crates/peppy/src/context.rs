@@ -76,8 +76,7 @@ impl AppContext {
         }
         .map_err(|e| {
             Error::ExecutionFailed(format!(
-                "Failed to read daemon state. Is the peppy daemon running? Error: {}",
-                e
+                "Failed to read daemon state. Is the peppy daemon running? Error: {e}"
             ))
         })?;
         Ok(state)

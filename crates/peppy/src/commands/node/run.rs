@@ -103,8 +103,7 @@ fn classify_stage(stage: NodeStage, node_name: &str, tag: &str) -> Result<BuildD
         NodeStage::Added => Ok(BuildDecision::Build),
         NodeStage::Building => Ok(BuildDecision::Wait),
         NodeStage::Root => Err(Error::ExecutionFailed(format!(
-            "Node '{}:{}' is a root node and cannot be built or run via `node run`",
-            node_name, tag
+            "Node '{node_name}:{tag}' is a root node and cannot be built or run via `node run`"
         ))),
     }
 }
@@ -142,16 +141,14 @@ async fn wait_for_build_to_finish(
         .await
         .map_err(|e| {
             Error::ExecutionFailed(format!(
-                "Failed to poll node info while waiting for build: {}",
-                e
+                "Failed to poll node info while waiting for build: {e}"
             ))
         })?;
 
         match response {
             NodeInfoResponse::NotInStack => {
                 return Err(Error::ExecutionFailed(format!(
-                    "Node '{}:{}' disappeared from the stack while waiting for build to finish",
-                    node_name, tag
+                    "Node '{node_name}:{tag}' disappeared from the stack while waiting for build to finish"
                 )));
             }
             NodeInfoResponse::Found(info) => match info.stage {
@@ -159,8 +156,7 @@ async fn wait_for_build_to_finish(
                 NodeStage::Building => { /* still in flight; keep polling */ }
                 other => {
                     return Err(Error::ExecutionFailed(format!(
-                        "Node '{}:{}' transitioned to unexpected stage '{}' while waiting for build to finish",
-                        node_name, tag, other
+                        "Node '{node_name}:{tag}' transitioned to unexpected stage '{other}' while waiting for build to finish"
                     )));
                 }
             },
@@ -168,8 +164,7 @@ async fn wait_for_build_to_finish(
 
         if Instant::now() >= deadline {
             return Err(Error::ExecutionFailed(format!(
-                "Timed out waiting for node '{}:{}' build to finish",
-                node_name, tag
+                "Timed out waiting for node '{node_name}:{tag}' build to finish"
             )));
         }
 
@@ -1099,7 +1094,7 @@ pub async fn run_instance_async(
         GOAL_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_run goal: {}", e)))?;
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_run goal: {e}")))?;
 
     let start_result = crate::commands::action_poll::run_action_with_feedback::<
         NodeRunGoalResponse,
@@ -1187,14 +1182,13 @@ async fn run_node_async(ctx: &Arc<AppContext>, params: RunNodeParams) -> Result<
         )
         .await
         .map_err(|e| {
-            Error::ExecutionFailed(format!("Failed to check node info before run: {}", e))
+            Error::ExecutionFailed(format!("Failed to check node info before run: {e}"))
         })?;
 
         let info = match response {
             NodeInfoResponse::NotInStack => {
                 return Err(Error::ExecutionFailed(format!(
-                    "Node '{}:{}' is not in the node stack",
-                    node_name, tag
+                    "Node '{node_name}:{tag}' is not in the node stack"
                 )));
             }
             NodeInfoResponse::Found(info) => info,

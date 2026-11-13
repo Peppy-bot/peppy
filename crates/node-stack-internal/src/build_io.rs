@@ -110,7 +110,7 @@ pub fn format_bytes(bytes: u64) -> String {
     } else if b >= KB {
         format!("{:.0} KB", b / KB)
     } else {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     }
 }
 
@@ -293,7 +293,7 @@ pub(crate) async fn stream_child_output(
     let status = tokio::select! {
         biased;
         wait_result = guard.child.wait() => {
-            wait_result.map_err(|e| format!("failed to wait for process: {}", e))?
+            wait_result.map_err(|e| format!("failed to wait for process: {e}"))?
         }
         _ = cancel_token.cancelled() => {
             // SIGKILL the whole process group, then *await* the child so it is
@@ -317,8 +317,8 @@ pub(crate) async fn stream_child_output(
     for handle in reader_handles {
         let outcome = match handle.await {
             Ok(Ok(())) => None,
-            Ok(Err(e)) => Some(format!("output reader I/O error: {}", e)),
-            Err(e) => Some(format!("output reader task join error: {}", e)),
+            Ok(Err(e)) => Some(format!("output reader I/O error: {e}")),
+            Err(e) => Some(format!("output reader task join error: {e}")),
         };
         if reader_error.is_none() {
             reader_error = outcome;
