@@ -14,13 +14,26 @@ use peppylib::encoding::convert_time;
 use serde_json::Value;
 use std::path::PathBuf;
 
-mod everything_capnp {
-    include!(concat!(env!("OUT_DIR"), "/everything_capnp.rs"));
-}
+/// The typed readers and builders that capnpc generates for the fixtures.
+mod generated {
+    #![allow(
+        warnings,
+        clippy::all,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::restriction,
+        reason = "capnpc writes the code of these modules"
+    )]
 
-mod frame_capnp {
-    include!(concat!(env!("OUT_DIR"), "/frame_capnp.rs"));
+    pub(crate) mod everything_capnp {
+        include!(concat!(env!("OUT_DIR"), "/everything_capnp.rs"));
+    }
+
+    pub(crate) mod frame_capnp {
+        include!(concat!(env!("OUT_DIR"), "/frame_capnp.rs"));
+    }
 }
+use generated::{everything_capnp, frame_capnp};
 
 fn fixture(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

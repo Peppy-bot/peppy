@@ -6,7 +6,14 @@
 //! relative paths. The generated code refers to its sibling types via absolute
 //! `crate::<name>_capnp::...` paths, so the modules must be reachable there.
 
-#![allow(clippy::all)]
+#![allow(
+    warnings,
+    clippy::all,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::restriction,
+    reason = "capnpc writes the code of these modules"
+)]
 
 pub(crate) mod health_capnp {
     include!(concat!(env!("OUT_DIR"), "/health_capnp.rs"));

@@ -1739,7 +1739,7 @@ mod tests {
         // Break it, and refresh much later.
         write_node_json5(&repo.join("vanished"), "vanished", "v1");
         stale_index(&repo, "vanished/peppy.json5");
-        let later = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(99_000);
+        let later = SystemTime::UNIX_EPOCH + std::time::Duration::from_mins(1650);
         let failed = refresh_publishing(&peppy_dirs, &[], later, &mut |_| {}).unwrap();
 
         let status = &failed.statuses[0];

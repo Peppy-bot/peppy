@@ -939,12 +939,17 @@ mod tests {
     /// A vendored crate takes its `rust-version` from this workspace, and the
     /// sealed `peppy-shared` workspace cannot inherit a table of this one, so
     /// the two manifests repeat the compiler they need and the lints they
-    /// hold their members to.
+    /// hold their members to. The clippy configuration of the two is the same
+    /// file twice, for the same reason.
     #[test]
     fn the_sealed_workspace_declares_the_rust_version_and_the_lints_of_this_one() {
         let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let own = repository.join("Cargo.toml");
         let sealed = repository.join("peppy-shared/Cargo.toml");
+        assert_eq!(
+            fs::read_to_string(repository.join("peppy-shared/clippy.toml")).unwrap(),
+            fs::read_to_string(repository.join("clippy.toml")).unwrap()
+        );
 
         let sealed_manifest: DocumentMut = fs::read_to_string(&sealed).unwrap().parse().unwrap();
         assert_eq!(

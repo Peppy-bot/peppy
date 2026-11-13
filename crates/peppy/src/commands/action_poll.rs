@@ -347,7 +347,7 @@ pub(crate) const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 
 /// How far ahead a deadline lies when its budget is too large for the clock to
 /// hold.
-const UNREACHABLE_DEADLINE_DISTANCE: Duration = Duration::from_secs(86_400 * 365 * 30);
+const UNREACHABLE_DEADLINE_DISTANCE: Duration = Duration::from_hours(262800);
 
 /// The instant `budget` after `start`. A budget the clock cannot represent (a
 /// `--max-timeout` near `u64::MAX` seconds) gives an instant no command
@@ -758,7 +758,7 @@ mod tests {
 
         assert!(
             deadline_after(start, Duration::from_secs(u64::MAX))
-                > start + Duration::from_secs(86_400 * 365)
+                > start + Duration::from_hours(8760)
         );
         assert_eq!(
             deadline_after(start, Duration::from_secs(5)),

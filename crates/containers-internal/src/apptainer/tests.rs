@@ -2862,7 +2862,7 @@ impl BuildWithEscapedBusyProcess {
         let escaped = fs::read_to_string(format!("/proc/{escaped_pid}/stat"))
             .ok()
             .and_then(|stat| super::activity::parse_process_stat(&stat, TICKS_PER_SECOND));
-        if !escaped.is_some_and(|escaped| escaped.process_group != build.leader_pid()) {
+        if escaped.is_none_or(|escaped| escaped.process_group == build.leader_pid()) {
             build.stop();
             panic!("the spinning shell must run outside the leader's group, got {escaped:?}");
         }
