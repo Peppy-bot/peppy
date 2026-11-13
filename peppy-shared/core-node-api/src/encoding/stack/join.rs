@@ -173,14 +173,14 @@ impl StackJoinGoal {
         let mut selections = goal
             .reborrow()
             .init_selections(capnp_list_len(self.selections.len(), "selections")?);
-        for (index, word) in self.selections.iter().enumerate() {
-            write_selection_word(selections.reborrow().get(index as u32), word);
+        for (index, word) in (0_u32..).zip(self.selections.iter()) {
+            write_selection_word(selections.reborrow().get(index), word);
         }
         let mut arguments = goal
             .reborrow()
             .init_arguments(capnp_list_len(self.arguments.len(), "arguments")?);
-        for (index, argument) in self.arguments.iter().enumerate() {
-            let mut wire = arguments.reborrow().get(index as u32);
+        for (index, argument) in (0_u32..).zip(self.arguments.iter()) {
+            let mut wire = arguments.reborrow().get(index);
             wire.set_instance_id(argument.instance_id().as_str());
             wire.set_argument(argument.argument().as_str());
             wire.set_value(

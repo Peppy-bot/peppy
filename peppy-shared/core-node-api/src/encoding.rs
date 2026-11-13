@@ -198,8 +198,8 @@ where
         values.len(),
         "a text list is sized for exactly the values written into it"
     );
-    for (index, value) in values.enumerate() {
-        list.set(index as u32, value.as_ref());
+    for (index, value) in (0_u32..).zip(values) {
+        list.set(index, value.as_ref());
     }
 }
 

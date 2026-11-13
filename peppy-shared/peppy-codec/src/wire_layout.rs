@@ -163,9 +163,9 @@ fn layout_struct(
     }
 
     let mut laid_out = Vec::with_capacity(fields.len());
-    for (index, (name, schema)) in fields.iter().enumerate() {
+    for (index, (name, schema)) in (0_u32..).zip(fields.iter()) {
         let field_path = join_path(path, name);
-        let compiled_field = compiled_fields.get(index as u32);
+        let compiled_field = compiled_fields.get(index);
         let compiled_name = compiled_field
             .get_name()?
             .to_str()

@@ -62,15 +62,15 @@ pub fn wrap_goal_payload(goal_id: &str, user_payload: &[u8]) -> Result<Payload> 
     if goal_id.is_empty() {
         return Err(envelope_error("goal_id must be non-empty"));
     }
-    if goal_id.len() > u8::MAX as usize {
+    let Ok(goal_id_len) = u8::try_from(goal_id.len()) else {
         return Err(envelope_error(format!(
             "goal_id length {} exceeds wire limit {}",
             goal_id.len(),
             u8::MAX
         )));
-    }
+    };
     let mut buf = BytesMut::with_capacity(1 + goal_id.len() + user_payload.len());
-    buf.put_u8(goal_id.len() as u8);
+    buf.put_u8(goal_id_len);
     buf.extend_from_slice(goal_id.as_bytes());
     buf.extend_from_slice(user_payload);
     Ok(Payload::from(buf.freeze()))
@@ -122,15 +122,18 @@ pub fn wrap_goal_request(
     sender_generation: &str,
     user_payload: &[u8],
 ) -> Result<Payload> {
-    if sender_generation.is_empty() || sender_generation.len() > u8::MAX as usize {
-        return Err(envelope_error(format!(
-            "sender generation length {} is outside 1..={}",
-            sender_generation.len(),
-            u8::MAX
-        )));
-    }
+    let generation_len = match u8::try_from(sender_generation.len()) {
+        Ok(len) if len > 0 => len,
+        _ => {
+            return Err(envelope_error(format!(
+                "sender generation length {} is outside 1..={}",
+                sender_generation.len(),
+                u8::MAX
+            )));
+        }
+    };
     let mut body = BytesMut::with_capacity(1 + sender_generation.len() + user_payload.len());
-    body.put_u8(sender_generation.len() as u8);
+    body.put_u8(generation_len);
     body.extend_from_slice(sender_generation.as_bytes());
     body.extend_from_slice(user_payload);
     wrap_goal_payload(goal_id, &body)
@@ -255,6 +258,10 @@ pub fn wrap_result_outcome(outcome: &GoalOutcome) -> Payload {
     match outcome {
         GoalOutcome::Completed(result) => buf.extend_from_slice(result.as_ref()),
         GoalOutcome::Cancelled { reason, result } => {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a reason that one message carries is far shorter than `u32::MAX` bytes"
+            )]
             buf.put_u32(reason.len() as u32);
             buf.extend_from_slice(reason.as_bytes());
             buf.extend_from_slice(result.as_ref());
@@ -571,7 +578,7 @@ const LIVELINESS_RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Consecutive token-absent probes required before the producer is declared
 /// gone. Two spaced probes ride out a transient routing flap without adding
 /// meaningful latency to real-death detection.
-const PRODUCER_GONE_CONFIRM_PROBES: usize = 2;
+const PRODUCER_GONE_CONFIRM_PROBES: u32 = 2;
 
 /// `true` once a liveliness token is confirmed absent: every confirmation
 /// probe found no token. Any probe that sees the token (or errors, e.g.
@@ -3503,9 +3510,8 @@ mod engine_tests {
 
     /// How long the engine takes to confirm that a token it watched is gone:
     /// the confirmation probes, spaced by their delay.
-    const CONFIRM_GONE: Duration = Duration::from_millis(
-        PRODUCER_GONE_CONFIRM_DELAY.as_millis() as u64 * PRODUCER_GONE_CONFIRM_PROBES as u64,
-    );
+    const CONFIRM_GONE: Duration =
+        PRODUCER_GONE_CONFIRM_DELAY.saturating_mul(PRODUCER_GONE_CONFIRM_PROBES);
 
     /// A margin far below every delay the engine waits for, so that "just
     /// before" and "after" a deadline are distinct instants of the paused

@@ -205,8 +205,8 @@ impl ParticipantSliceBeginRequest {
             );
             let count = capnp_list_len(self.lifecycle_watchers.len(), "lifecycle_watchers")?;
             let mut entries = request.init_lifecycle_watchers(count);
-            for (index, (instance, watchers)) in self.lifecycle_watchers.iter().enumerate() {
-                let mut entry = entries.reborrow().get(index as u32);
+            for (index, (instance, watchers)) in (0_u32..).zip(self.lifecycle_watchers.iter()) {
+                let mut entry = entries.reborrow().get(index);
                 entry.set_instance_id(instance.as_str());
                 write_text_list(
                     entry.init_core_nodes(capnp_list_len(watchers.len(), "core_nodes")?),
@@ -416,8 +416,8 @@ impl ParticipantSetsUpdateRequest {
                 .init_root::<federation_capnp::participant_sets_update_request::Builder<'_>>();
             request.set_launch_id(&self.launch_id);
             let mut sets = request.init_sets(capnp_list_len(self.sets.len(), "sets")?);
-            for (index, set) in self.sets.iter().enumerate() {
-                write_slot_set(sets.reborrow().get(index as u32), set)?;
+            for (index, set) in (0_u32..).zip(self.sets.iter()) {
+                write_slot_set(sets.reborrow().get(index), set)?;
             }
         }
         encode_message(&builder)
@@ -451,14 +451,14 @@ fn write_slot_set(mut wire: federation_capnp::slot_set::Builder<'_>, set: &SlotS
     match &set.members {
         SlotMembers::Producers(producers) => {
             let mut list = members.init_producers(capnp_list_len(producers.len(), "producers")?);
-            for (member_index, member) in producers.iter().enumerate() {
-                write_bound_member(list.reborrow().get(member_index as u32), member);
+            for (member_index, member) in (0_u32..).zip(producers.iter()) {
+                write_bound_member(list.reborrow().get(member_index), member);
             }
         }
         SlotMembers::Observed(targets) => {
             let mut list = members.init_observed(capnp_list_len(targets.len(), "observed")?);
-            for (member_index, target) in targets.iter().enumerate() {
-                write_observation_member(list.reborrow().get(member_index as u32), target);
+            for (member_index, target) in (0_u32..).zip(targets.iter()) {
+                write_observation_member(list.reborrow().get(member_index), target);
             }
         }
     }
@@ -1232,9 +1232,10 @@ mod tests {
             let mut request = message
                 .init_root::<federation_capnp::participant_slice_begin_request::Builder<'_>>();
             request.set_launch_id("launch-abc123");
-            let mut watchers = request.init_lifecycle_watchers(instances.len() as u32);
-            for (index, instance) in instances.iter().enumerate() {
-                let mut entry = watchers.reborrow().get(index as u32);
+            let mut watchers =
+                request.init_lifecycle_watchers(u32::try_from(instances.len()).unwrap());
+            for (index, instance) in (0_u32..).zip(instances.iter()) {
+                let mut entry = watchers.reborrow().get(index);
                 entry.set_instance_id(instance);
                 entry.init_core_nodes(1).set(0, host);
             }
@@ -1276,9 +1277,9 @@ mod tests {
                 .init_root::<federation_capnp::participant_instances_remove_request::Builder<'_>>(
             );
             request.set_launch_id(launch);
-            let mut ids = request.init_instance_ids(names.len() as u32);
-            for (index, name) in names.iter().enumerate() {
-                ids.set(index as u32, name);
+            let mut ids = request.init_instance_ids(u32::try_from(names.len()).unwrap());
+            for (index, name) in (0_u32..).zip(names.iter()) {
+                ids.set(index, name);
             }
             assert!(
                 ParticipantInstancesRemoveRequest::decode(&encode_message(&message).unwrap())

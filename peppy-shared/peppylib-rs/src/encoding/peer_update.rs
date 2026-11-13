@@ -25,9 +25,10 @@ impl PeerUpdateRequest {
                 builder.init_root::<peer_update_capnp::peer_update_request::Builder<'_>>();
             root.set_link_id(&self.link_id);
             root.set_sequence(self.sequence);
-            let mut members = root.init_members(self.members.len() as u32);
-            for (idx, member) in self.members.iter().enumerate() {
-                let mut wire = members.reborrow().get(idx as u32);
+            let member_count = super::capnp_list_len(self.members.len(), "members")?;
+            let mut members = root.init_members(member_count);
+            for (idx, member) in (0_u32..).zip(self.members.iter()) {
+                let mut wire = members.reborrow().get(idx);
                 wire.set_peer_core_node(&member.info.producer.core_node);
                 wire.set_peer_instance_id(&member.info.producer.instance_id);
                 wire.set_peer_link_id(&member.info.peer_link_id);

@@ -299,8 +299,8 @@ impl NodeBuildResult {
             }
             let count = capnp_list_len(self.published.len(), "NodeBuildResult.published")?;
             let mut published = result.reborrow().init_published(count);
-            for (index, platform) in self.published.iter().enumerate() {
-                platform.write(published.reborrow().get(index as u32));
+            for (index, platform) in (0_u32..).zip(self.published.iter()) {
+                platform.write(published.reborrow().get(index));
             }
         }
         encode_message(&builder)

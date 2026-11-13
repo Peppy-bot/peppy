@@ -102,7 +102,7 @@ fn check_unsigned_range(
 ) -> Result<(), TypeMismatch> {
     let v: u64 = match value {
         AnyType::UInt(u) => *u,
-        AnyType::Int(i) if *i >= 0 => *i as u64,
+        AnyType::Int(i) if *i >= 0 => i.unsigned_abs(),
         other => {
             return Err(TypeMismatch {
                 path: path.to_string(),
@@ -130,7 +130,7 @@ fn check_signed_range(
 ) -> Result<(), TypeMismatch> {
     let v: i64 = match value {
         AnyType::Int(i) => *i,
-        AnyType::UInt(u) if i64::try_from(*u).is_ok() => *u as i64,
+        AnyType::UInt(u) if i64::try_from(*u).is_ok() => u.cast_signed(),
         other => {
             return Err(TypeMismatch {
                 path: path.to_string(),
@@ -503,7 +503,7 @@ fn parse_array_spec(map: BTreeMap<String, AnyType>, path: &str) -> Result<Parame
 fn parse_array_length(value: AnyType, path: &str) -> Result<usize, String> {
     let length: u64 = match value {
         AnyType::UInt(u) => u,
-        AnyType::Int(i) if i >= 0 => i as u64,
+        AnyType::Int(i) if i >= 0 => i.unsigned_abs(),
         other => {
             return Err(format!(
                 "at `{}`: `$length` must be a non-negative integer, got {}",
@@ -640,7 +640,15 @@ fn parse_default_value(kind: &TypeToken, raw: AnyType, path: &str) -> Result<Def
         },
         TypeToken::F64 => match raw {
             AnyType::Float(f) => Ok(DefaultValue::Float(f)),
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "an integer default of an `f64` field takes the nearest `f64`"
+            )]
             AnyType::Int(i) => Ok(DefaultValue::Float(i as f64)),
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "an integer default of an `f64` field takes the nearest `f64`"
+            )]
             AnyType::UInt(u) => Ok(DefaultValue::Float(u as f64)),
             other => Err(format!(
                 "at `{display}`: `$default` for type `f64` must be numeric, got {}",
@@ -658,7 +666,7 @@ fn bounded_uint_default(
 ) -> Result<DefaultValue, String> {
     let v: u64 = match raw {
         AnyType::UInt(u) => u,
-        AnyType::Int(i) if i >= 0 => i as u64,
+        AnyType::Int(i) if i >= 0 => i.unsigned_abs(),
         AnyType::Int(i) => {
             return Err(format!(
                 "at `{display}`: `$default` for unsigned type `{name}` must be non-negative, got {i}"
@@ -688,7 +696,7 @@ fn bounded_int_default(
 ) -> Result<DefaultValue, String> {
     let v: i64 = match raw {
         AnyType::Int(i) => i,
-        AnyType::UInt(u) if i64::try_from(u).is_ok() => u as i64,
+        AnyType::UInt(u) if i64::try_from(u).is_ok() => u.cast_signed(),
         AnyType::UInt(u) => {
             return Err(format!(
                 "at `{display}`: `$default` value {u} is outside the range of `{name}` [{min}, {max}]"
@@ -725,6 +733,10 @@ enum F32Check {
     IntPrecisionLoss,
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "an integer within `F32_LOSSLESS_INT_LIMIT` is exact as an `f64`"
+)]
 fn check_f32(value: &AnyType) -> F32Check {
     match value {
         AnyType::Float(f) if !f.is_finite() => F32Check::NonFinite,

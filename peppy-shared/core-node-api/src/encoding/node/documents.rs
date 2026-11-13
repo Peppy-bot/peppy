@@ -168,8 +168,8 @@ fn write_documents(
     mut list: capnp::struct_list::Builder<'_, node_capnp::pinned_document::Owned>,
     documents: &[PinnedDocument],
 ) {
-    for (index, document) in documents.iter().enumerate() {
-        document.write(list.reborrow().get(index as u32));
+    for (index, document) in (0_u32..).zip(documents.iter()) {
+        document.write(list.reborrow().get(index));
     }
 }
 

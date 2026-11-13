@@ -308,8 +308,8 @@ impl DatastoreListResponse {
                 builder.init_root::<datastore_capnp::datastore_list_response::Builder<'_>>();
             let entry_count = capnp_list_len(self.entries.len(), "DatastoreListResponse.entries")?;
             let mut entries = response.reborrow().init_entries(entry_count);
-            for (i, entry) in self.entries.iter().enumerate() {
-                let mut e = entries.reborrow().get(i as u32);
+            for (i, entry) in (0_u32..).zip(self.entries.iter()) {
+                let mut e = entries.reborrow().get(i);
                 e.set_key(&entry.key);
                 e.set_encoding(&entry.encoding);
                 e.set_last_modified_by(&entry.last_modified_by);

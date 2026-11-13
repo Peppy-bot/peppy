@@ -386,8 +386,8 @@ impl StackBenchmarkResult {
                 builder.init_root::<benchmark_capnp::stack_benchmark_result::Builder<'_>>();
             let row_count = capnp_list_len(self.rows.len(), "StackBenchmarkResult.rows")?;
             let mut rows = result.reborrow().init_rows(row_count);
-            for (i, row) in self.rows.iter().enumerate() {
-                let mut r = rows.reborrow().get(i as u32);
+            for (i, row) in (0_u32..).zip(self.rows.iter()) {
+                let mut r = rows.reborrow().get(i);
                 r.set_from_node(&row.from_node);
                 r.set_from_tag(&row.from_tag);
                 r.set_to_node(&row.to_node);
@@ -410,8 +410,8 @@ impl StackBenchmarkResult {
                 let sample_count =
                     capnp_list_len(row.samples_ns.len(), "InterfaceLatency.samples_ns")?;
                 let mut samples = r.reborrow().init_samples_ns(sample_count);
-                for (j, &sample) in row.samples_ns.iter().enumerate() {
-                    samples.set(j as u32, sample);
+                for (j, &sample) in (0_u32..).zip(row.samples_ns.iter()) {
+                    samples.set(j, sample);
                 }
             }
         }

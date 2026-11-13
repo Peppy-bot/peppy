@@ -26,9 +26,10 @@ impl ObservationUpdateRequest {
                 .init_root::<observation_update_capnp::observation_update_request::Builder<'_>>();
             root.set_link_id(&self.link_id);
             root.set_sequence(self.sequence);
-            let mut members = root.init_members(self.members.len() as u32);
-            for (idx, member) in self.members.iter().enumerate() {
-                let mut wire = members.reborrow().get(idx as u32);
+            let member_count = super::capnp_list_len(self.members.len(), "members")?;
+            let mut members = root.init_members(member_count);
+            for (idx, member) in (0_u32..).zip(self.members.iter()) {
+                let mut wire = members.reborrow().get(idx);
                 wire.set_source_core_node(&member.source.producer.core_node);
                 wire.set_source_instance_id(&member.source.producer.instance_id);
                 wire.set_source_link_id(&member.source.source_link_id);

@@ -41,7 +41,7 @@ fn measure(rounds: usize, mut run: impl FnMut()) -> Duration {
 }
 
 fn rgb8_frame(width: usize, height: usize) -> Vec<u8> {
-    (0..width * height * 3).map(|i| (i % 251) as u8).collect()
+    (0..251).cycle().take(width * height * 3).collect()
 }
 
 fn frame_value(pixels: &[u8], width: u16, height: u16) -> Value {

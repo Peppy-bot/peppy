@@ -516,7 +516,7 @@ impl NodeRunGoal {
             fill_observation_requests(
                 goal.reborrow().init_planned_observations(observation_count),
                 &self.planned_observations,
-            );
+            )?;
             write_restart_request(goal.reborrow().init_restart(), self.restart);
         }
         encode_message(&builder)
@@ -649,8 +649,8 @@ fn fill_pair_requests(
     let flattened = pairs
         .iter()
         .flat_map(|(link_id, targets)| targets.iter().map(move |target| (link_id, target)));
-    for (idx, (link_id, target)) in flattened.enumerate() {
-        let mut pair = list.reborrow().get(idx as u32);
+    for (idx, (link_id, target)) in (0_u32..).zip(flattened) {
+        let mut pair = list.reborrow().get(idx);
         pair.set_link_id(link_id);
         pair.set_peer_link_id(target.peer_link_id.as_deref().unwrap_or(""));
         if let Some(remote) = &target.remote_peer {
@@ -736,8 +736,8 @@ fn fill_vacant_pairs(
     mut list: capnp::struct_list::Builder<'_, node_capnp::vacant_pair::Owned>,
     vacant: &BTreeMap<String, String>,
 ) {
-    for (idx, (link_id, reason)) in vacant.iter().enumerate() {
-        let mut pair = list.reborrow().get(idx as u32);
+    for (idx, (link_id, reason)) in (0_u32..).zip(vacant.iter()) {
+        let mut pair = list.reborrow().get(idx);
         pair.set_link_id(link_id);
         pair.set_reason(reason);
     }
@@ -804,15 +804,17 @@ fn read_instance_address(
 fn fill_observation_requests(
     mut list: capnp::struct_list::Builder<'_, node_capnp::observation_request::Owned>,
     observations: &BTreeMap<String, ObservationTargets>,
-) {
-    for (idx, (observer_link_id, targets)) in observations.iter().enumerate() {
-        let mut observation = list.reborrow().get(idx as u32);
+) -> Result<()> {
+    for (idx, (observer_link_id, targets)) in (0_u32..).zip(observations.iter()) {
+        let mut observation = list.reborrow().get(idx);
         observation.set_observer_link_id(observer_link_id);
-        let mut members = observation.init_targets(targets.len() as u32);
-        for (member_idx, target) in targets.iter().enumerate() {
-            write_observation_member(members.reborrow().get(member_idx as u32), target);
+        let target_count = capnp_list_len(targets.len(), "ObservationRequest.targets")?;
+        let mut members = observation.init_targets(target_count);
+        for (member_idx, target) in (0_u32..).zip(targets.iter()) {
+            write_observation_member(members.reborrow().get(member_idx), target);
         }
     }
+    Ok(())
 }
 
 /// Writes one observed pairing into an initialized `ObservationMember`
@@ -1590,8 +1592,8 @@ mod tests {
     fn node_run_goal_decode_rejects_two_requests_for_one_slot() {
         let encoded = goal_with_raw_observations(
             |mut list| {
-                for (idx, instance) in ["follower_1", "follower_2"].into_iter().enumerate() {
-                    let mut request = list.reborrow().get(idx as u32);
+                for (idx, instance) in (0_u32..).zip(["follower_1", "follower_2"]) {
+                    let mut request = list.reborrow().get(idx);
                     request.set_observer_link_id("observed_joints");
                     let mut member = request.init_targets(1).get(0);
                     member.set_source_link_id("joint");

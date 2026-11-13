@@ -45,7 +45,10 @@ impl Failure {
     /// ends with it.
     pub fn encode_into(&self, buf: &mut BytesMut) {
         let kind = self.kind.as_str();
-        // `FailureKindName` holds at most 64 bytes, so the length fits a u8.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "`FailureKindName` holds at most 64 bytes"
+        )]
         buf.put_u8(kind.len() as u8);
         buf.extend_from_slice(kind.as_bytes());
         buf.extend_from_slice(self.message.as_bytes());

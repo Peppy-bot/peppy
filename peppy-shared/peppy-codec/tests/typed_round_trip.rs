@@ -72,6 +72,10 @@ fn set_timestamp(
 
 /// Builds the `everything` message from `value` with the typed accessors,
 /// in the order the generated serializer assigns fields.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "each fixture value fits the type of its field"
+)]
 fn typed_everything(value: &Value) -> Vec<u8> {
     use everything_capnp::message;
 
@@ -117,57 +121,57 @@ fn typed_everything(value: &Value) -> Vec<u8> {
         {
             let gains = field("gains").as_array().unwrap();
             let mut list = root.reborrow().init_gains(3);
-            for (index, gain) in gains.iter().enumerate() {
-                list.set(index as u32, gain.as_f64().unwrap() as f32);
+            for (index, gain) in (0_u32..).zip(gains.iter()) {
+                list.set(index, gain.as_f64().unwrap() as f32);
             }
         }
         {
             let offsets = field("offsets").as_array().unwrap();
             let mut list = root.reborrow().init_offsets(2);
-            for (index, offset) in offsets.iter().enumerate() {
-                list.set(index as u32, offset.as_i64().unwrap() as i16);
+            for (index, offset) in (0_u32..).zip(offsets.iter()) {
+                list.set(index, offset.as_i64().unwrap() as i16);
             }
         }
         {
             let flags = field("flags").as_array().unwrap();
             let mut list = root.reborrow().init_flags(flags.len() as u32);
-            for (index, flag) in flags.iter().enumerate() {
-                list.set(index as u32, flag.as_bool().unwrap());
+            for (index, flag) in (0_u32..).zip(flags.iter()) {
+                list.set(index, flag.as_bool().unwrap());
             }
         }
         {
             let counters = strings("counters");
             let mut list = root.reborrow().init_counters(counters.len() as u32);
-            for (index, counter) in counters.iter().enumerate() {
-                list.set(index as u32, counter.parse::<u64>().unwrap());
+            for (index, counter) in (0_u32..).zip(counters.iter()) {
+                list.set(index, counter.parse::<u64>().unwrap());
             }
         }
         {
             let deltas = strings("deltas");
             let mut list = root.reborrow().init_deltas(deltas.len() as u32);
-            for (index, delta) in deltas.iter().enumerate() {
-                list.set(index as u32, delta.parse::<i64>().unwrap());
+            for (index, delta) in (0_u32..).zip(deltas.iter()) {
+                list.set(index, delta.parse::<i64>().unwrap());
             }
         }
         {
             let weights = field("weights").as_array().unwrap();
             let mut list = root.reborrow().init_weights(weights.len() as u32);
-            for (index, weight) in weights.iter().enumerate() {
-                list.set(index as u32, weight.as_f64().unwrap());
+            for (index, weight) in (0_u32..).zip(weights.iter()) {
+                list.set(index, weight.as_f64().unwrap());
             }
         }
         {
             let tags = strings("tags");
             let mut list = root.reborrow().init_tags(tags.len() as u32);
-            for (index, tag) in tags.iter().enumerate() {
-                list.set(index as u32, *tag);
+            for (index, tag) in (0_u32..).zip(tags.iter()) {
+                list.set(index, *tag);
             }
         }
         {
             let chunks = field("chunks").as_array().unwrap();
             let mut list = root.reborrow().init_chunks(chunks.len() as u32);
-            for (index, chunk) in chunks.iter().enumerate() {
-                list.set(index as u32, &base64(chunk));
+            for (index, chunk) in (0_u32..).zip(chunks.iter()) {
+                list.set(index, &base64(chunk));
             }
         }
         {
@@ -188,8 +192,8 @@ fn typed_everything(value: &Value) -> Vec<u8> {
         {
             let samples = field("samples").as_array().unwrap();
             let mut list = root.reborrow().init_samples(samples.len() as u32);
-            for (index, sample) in samples.iter().enumerate() {
-                let mut element = list.reborrow().get(index as u32);
+            for (index, sample) in (0_u32..).zip(samples.iter()) {
+                let mut element = list.reborrow().get(index);
                 element.set_offset(sample["offset"].as_i64().unwrap() as i16);
                 element.set_value(sample["value"].as_f64().unwrap());
                 element.set_label(sample["label"].as_str().unwrap());
@@ -199,8 +203,8 @@ fn typed_everything(value: &Value) -> Vec<u8> {
                 );
                 let history = sample["history"].as_array().unwrap();
                 let mut history_list = element.reborrow().init_history(history.len() as u32);
-                for (index, entry) in history.iter().enumerate() {
-                    history_list.set(index as u32, entry.as_u64().unwrap() as u32);
+                for (index, entry) in (0_u32..).zip(history.iter()) {
+                    history_list.set(index, entry.as_u64().unwrap() as u32);
                 }
             }
         }
@@ -216,8 +220,8 @@ fn typed_everything(value: &Value) -> Vec<u8> {
                 .map(|tag| tag.as_str().unwrap())
                 .collect();
             let mut list = root.reborrow().init_maybe_tags(tags.len() as u32);
-            for (index, tag) in tags.iter().enumerate() {
-                list.set(index as u32, *tag);
+            for (index, tag) in (0_u32..).zip(tags.iter()) {
+                list.set(index, *tag);
             }
         }
     }
@@ -263,11 +267,11 @@ fn assert_everything_round_trips(value: &Value) {
         samples.len() as usize,
         value["samples"].as_array().unwrap().len()
     );
-    for (index, sample) in value["samples"].as_array().unwrap().iter().enumerate() {
-        let element = samples.get(index as u32);
+    for (index, sample) in (0_u32..).zip(value["samples"].as_array().unwrap().iter()) {
+        let element = samples.get(index);
         assert_eq!(
             element.get_offset(),
-            sample["offset"].as_i64().unwrap() as i16
+            i16::try_from(sample["offset"].as_i64().unwrap()).unwrap()
         );
         assert_eq!(
             element.get_label().unwrap().to_str().unwrap(),
@@ -299,7 +303,10 @@ fn a_camera_frame_matches_the_typed_builder() {
     use frame_capnp::message;
 
     let (width, height) = (640u16, 480u16);
-    let pixels: Vec<u8> = Vec::from_fn(width as usize * height as usize * 3, |i| (i % 251) as u8);
+    let pixels: Vec<u8> = (0..251)
+        .cycle()
+        .take(usize::from(width) * usize::from(height) * 3)
+        .collect();
     let value = serde_json::json!({
         "frame": bytes_to_base64(&pixels),
         "encoding": "rgb8",

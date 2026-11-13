@@ -327,8 +327,8 @@ fn write_copies(
     mut list: capnp::struct_list::Builder<'_, node_capnp::copy_info::Owned>,
     copies: &[CopyInfo],
 ) -> Result<()> {
-    for (index, copy) in copies.iter().enumerate() {
-        let mut wire = list.reborrow().get(index as u32);
+    for (index, copy) in (0_u32..).zip(copies.iter()) {
+        let mut wire = list.reborrow().get(index);
         wire.set_name(copy.name.as_str());
         wire.set_option(&copy.option);
         wire.set_core_node(copy.core_node.as_str());
@@ -340,13 +340,13 @@ fn write_copies(
         let mut selections = wire
             .reborrow()
             .init_selections(capnp_list_len(copy.selections.len(), "selections")?);
-        for (selection_index, selection) in copy.selections.iter().enumerate() {
-            write_axis_selection(selections.reborrow().get(selection_index as u32), selection);
+        for (selection_index, selection) in (0_u32..).zip(copy.selections.iter()) {
+            write_axis_selection(selections.reborrow().get(selection_index), selection);
         }
         let mut set_members =
             wire.init_set_members(capnp_list_len(copy.set_members.len(), "set_members")?);
-        for (entry_index, set_member) in copy.set_members.iter().enumerate() {
-            let mut entry = set_members.reborrow().get(entry_index as u32);
+        for (entry_index, set_member) in (0_u32..).zip(copy.set_members.iter()) {
+            let mut entry = set_members.reborrow().get(entry_index);
             entry.set_instance_id(set_member.instance_id.as_str());
             entry.set_link_id(&set_member.link_id);
             entry.set_target(&set_member.target);

@@ -99,6 +99,11 @@ impl Drop for WaitingReader<'_> {
 
 impl ResourceState {
     pub(crate) fn new(entry: ResourceEntry) -> Self {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the interval of a positive rate is a positive count of nanoseconds, and the cast saturates"
+        )]
         let min_interval_nanos =
             (1_000_000_000f64 / entry.policies.update.max_hz.get()).round() as u64;
         Self {

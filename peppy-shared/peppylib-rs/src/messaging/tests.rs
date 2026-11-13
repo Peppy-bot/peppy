@@ -859,7 +859,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     .expect("Should subscribe to the topic");
 
     let message_count = 5000;
-    let mut message_ids: Vec<u32> = (0..message_count as u32).collect();
+    let mut message_ids: Vec<u32> = (0..u32::try_from(message_count).unwrap()).collect();
     // Fixed seed so a failure reproduces the same id ordering run to run, while
     // still exercising out-of-order payload contents.
     let mut rng = rand::rngs::StdRng::seed_from_u64(0x00C0_FFEE);

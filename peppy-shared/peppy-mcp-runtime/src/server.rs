@@ -1234,8 +1234,13 @@ impl ProgressReporter {
 impl FeedbackSink for ProgressReporter {
     async fn report(&mut self, message: String) {
         self.reported += 1;
-        let notification = ProgressNotificationParam::new(self.token.clone(), self.reported as f64)
-            .with_message(message);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "the count of the reports of one call is far below 2^53"
+        )]
+        let progress = self.reported as f64;
+        let notification =
+            ProgressNotificationParam::new(self.token.clone(), progress).with_message(message);
         if let Err(error) = self.peer.notify_progress(notification).await {
             // The call's stream is the only route to the client; once it
             // is gone the call is closed and feedback has no reader.
@@ -4151,7 +4156,7 @@ mod tests {
     /// An 8x8 `rgb8` frame, as the bridge hands a camera message over.
     fn rgb8_frame() -> Value {
         use base64::Engine as _;
-        let pixels: Vec<u8> = Vec::from_fn(8 * 8 * 3, |index| (index % 251) as u8);
+        let pixels: Vec<u8> = (0..251).cycle().take(8 * 8 * 3).collect();
         json!({
             "header": { "frame_id": 7 },
             "frame": base64::engine::general_purpose::STANDARD.encode(&pixels),
@@ -4706,6 +4711,10 @@ mod tests {
     #[tokio::test]
     async fn an_oversize_service_picture_is_downscaled_and_a_bad_frame_is_a_tool_error() {
         use base64::Engine as _;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "each value is a remainder below 256"
+        )]
         let bytes: Vec<u8> = Vec::from_fn(64usize * 64 * 3, |index| {
             ((index * 97 + index / 3 * 31) % 256) as u8
         });

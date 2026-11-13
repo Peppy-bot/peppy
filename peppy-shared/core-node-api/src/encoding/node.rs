@@ -19,8 +19,8 @@ fn write_env_vars(
     mut list: capnp::struct_list::Builder<'_, node_capnp::env_var::Owned>,
     env_vars: &[(String, String)],
 ) {
-    for (idx, (key, value)) in env_vars.iter().enumerate() {
-        let mut env_var = list.reborrow().get(idx as u32);
+    for (idx, (key, value)) in (0_u32..).zip(env_vars.iter()) {
+        let mut env_var = list.reborrow().get(idx);
         env_var.set_key(key);
         env_var.set_value(value);
     }

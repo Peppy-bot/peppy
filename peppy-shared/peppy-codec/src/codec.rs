@@ -203,6 +203,10 @@ fn value_f32(value: &Value, name: &str) -> Result<f32, ConversionError> {
             "`{name}` is outside the range of a 32-bit float"
         )));
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is in the range of `f32`, and a 32-bit field takes the nearest `f32`"
+    )]
     Ok(wide as f32)
 }
 
@@ -298,22 +302,22 @@ fn encode_list(
         }),
         ListItems::Text => {
             let mut list = text_list::Builder::init_pointer(pointer, count);
-            for (index, item) in elements.iter().enumerate() {
-                list.set(index as u32, value::value_str(item, name)?);
+            for (index, item) in (0_u32..).zip(elements.iter()) {
+                list.set(index, value::value_str(item, name)?);
             }
             Ok(())
         }
         ListItems::Bytes => {
             let mut list = data_list::Builder::init_pointer(pointer, count);
-            for (index, item) in elements.iter().enumerate() {
-                list.set(index as u32, &value::value_bytes(item, name)?);
+            for (index, item) in (0_u32..).zip(elements.iter()) {
+                list.set(index, &value::value_bytes(item, name)?);
             }
             Ok(())
         }
         ListItems::Struct(layout) => {
             let mut list = init_struct_list(pointer, count, layout.shape)?;
-            for (index, item) in elements.iter().enumerate() {
-                let element = list.reborrow().get(index as u32).0;
+            for (index, item) in (0_u32..).zip(elements.iter()) {
+                let element = list.reborrow().get(index).0;
                 encode_struct(element, layout, item)?;
             }
             Ok(())
@@ -332,8 +336,8 @@ where
     ConversionError: From<E>,
 {
     let mut list = primitive_list::Builder::<T>::init_pointer(pointer, count);
-    for (index, item) in elements.iter().enumerate() {
-        list.set(index as u32, convert(item)?);
+    for (index, item) in (0_u32..).zip(elements.iter()) {
+        list.set(index, convert(item)?);
     }
     Ok(())
 }

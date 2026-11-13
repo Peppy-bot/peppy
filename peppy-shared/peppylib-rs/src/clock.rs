@@ -511,9 +511,16 @@ fn compute_sync(t0: u64, t1: u64, t2: u64, t3: u64) -> (i64, u64) {
     let offset = i128::midpoint(t1 - t0, t2 - t3);
     let delay = (t3 - t0) - (t2 - t1);
 
-    // Each clamp bounds its value to the range of the target type, so the
-    // casts that follow are lossless.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the clamp bounds the value to the range of `i64`"
+    )]
     let offset = offset.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the clamp bounds the value to the range of `u64`"
+    )]
     let delay = delay.clamp(0, i128::from(u64::MAX)) as u64;
     (offset, delay)
 }

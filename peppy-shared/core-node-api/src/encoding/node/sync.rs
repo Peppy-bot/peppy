@@ -106,8 +106,8 @@ impl NodeSyncResponse {
                 "NodeSyncResponse.resolved_from_repositories",
             )?;
             let mut repo_list = response.init_resolved_from_repositories(repo_count);
-            for (i, entry) in self.resolved_from_repositories.iter().enumerate() {
-                let mut item = repo_list.reborrow().get(i as u32);
+            for (i, entry) in (0_u32..).zip(self.resolved_from_repositories.iter()) {
+                let mut item = repo_list.reborrow().get(i);
                 item.set_name(&entry.name);
                 item.set_tag(&entry.tag);
                 item.set_source_kind(entry.source_kind.as_str());

@@ -30,9 +30,10 @@ impl NodeEndpointsResponse {
         let mut builder = ::capnp::message::Builder::new_default();
         {
             let root = builder.init_root::<endpoints_capnp::node_endpoints_response::Builder<'_>>();
-            let mut wire_endpoints = root.init_endpoints(self.endpoints.len() as u32);
-            for (idx, endpoint) in self.endpoints.iter().enumerate() {
-                let mut wire = wire_endpoints.reborrow().get(idx as u32);
+            let endpoint_count = super::capnp_list_len(self.endpoints.len(), "endpoints")?;
+            let mut wire_endpoints = root.init_endpoints(endpoint_count);
+            for (idx, endpoint) in (0_u32..).zip(self.endpoints.iter()) {
+                let mut wire = wire_endpoints.reborrow().get(idx);
                 wire.set_label(&endpoint.label);
                 wire.set_scheme(&endpoint.binding.scheme);
                 wire.set_host(endpoint.binding.address.ip().to_string());

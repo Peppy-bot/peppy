@@ -473,6 +473,10 @@ fn depth_as_gray8(samples: &Luma16Image, range: DepthRange) -> GrayImage {
 /// The shade one `z16` reading shows under `range`: white at `near` or
 /// nearer, black at `far` or farther, linear between, and black for 0, a
 /// pixel with no reading. Integer arithmetic, rounded to the nearest shade.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the distance to `far` is at most the span, so the shade is at most 255"
+)]
 fn z16_shade(reading: u16, range: DepthRange) -> u8 {
     if reading == 0 {
         return 0;
@@ -569,6 +573,10 @@ fn set_field(value: &mut Value, name: &str, new_value: Value) {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the test frames take the low bits of a counter"
+)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -760,10 +768,10 @@ mod tests {
             );
             let decoded = decoded_png16(&content);
             assert_eq!((decoded.width(), decoded.height()), (8, 4));
-            for (index, pixel) in decoded.pixels().enumerate() {
+            for (index, pixel) in (0_u32..).zip(decoded.pixels()) {
                 assert_eq!(
                     pixel.0[0],
-                    (index as u32 * 7919) as u16,
+                    (index * 7919) as u16,
                     "{encoding} pixel {index}"
                 );
             }

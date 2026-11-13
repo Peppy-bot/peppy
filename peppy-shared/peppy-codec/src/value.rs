@@ -16,6 +16,7 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::Value;
+use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The field when present; `None` when absent. Canonical JSON omits
@@ -144,6 +145,10 @@ pub fn time_to_rfc3339(time: SystemTime) -> String {
     let since_epoch = time.duration_since(UNIX_EPOCH).unwrap_or_default();
     let seconds = since_epoch.as_secs();
     let nanos = since_epoch.subsec_nanos();
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "`u64::MAX / SECONDS_PER_DAY` is less than `i64::MAX`"
+    )]
     let (year, month, day) = civil_from_days((seconds / SECONDS_PER_DAY) as i64);
     let seconds_of_day = seconds % SECONDS_PER_DAY;
     format!(
@@ -170,8 +175,8 @@ fn parse_rfc3339_utc(text: &str) -> Option<SystemTime> {
 
     let mut date_parts = date.split('-');
     let year: i64 = parse_fixed_digits(date_parts.next()?, 4)?;
-    let month: u32 = parse_fixed_digits(date_parts.next()?, 2)? as u32;
-    let day: u32 = parse_fixed_digits(date_parts.next()?, 2)? as u32;
+    let month: u32 = parse_fixed_digits(date_parts.next()?, 2)?;
+    let day: u32 = parse_fixed_digits(date_parts.next()?, 2)?;
     if date_parts.next().is_some() || !(1..=12).contains(&month) {
         return None;
     }
@@ -184,9 +189,9 @@ fn parse_rfc3339_utc(text: &str) -> Option<SystemTime> {
         None => (time, None),
     };
     let mut clock_parts = clock.split(':');
-    let hour: u64 = parse_fixed_digits(clock_parts.next()?, 2)? as u64;
-    let minute: u64 = parse_fixed_digits(clock_parts.next()?, 2)? as u64;
-    let second: u64 = parse_fixed_digits(clock_parts.next()?, 2)? as u64;
+    let hour: u64 = parse_fixed_digits(clock_parts.next()?, 2)?;
+    let minute: u64 = parse_fixed_digits(clock_parts.next()?, 2)?;
+    let second: u64 = parse_fixed_digits(clock_parts.next()?, 2)?;
     if clock_parts.next().is_some() || hour > 23 || minute > 59 || second > 59 {
         return None;
     }
@@ -205,15 +210,12 @@ fn parse_rfc3339_utc(text: &str) -> Option<SystemTime> {
         }
     };
 
-    let days = days_from_civil(year, month, day);
-    if days < 0 {
-        return None;
-    }
-    let seconds = days as u64 * SECONDS_PER_DAY + hour * 3600 + minute * 60 + second;
+    let days = u64::try_from(days_from_civil(year, month, day)).ok()?;
+    let seconds = days * SECONDS_PER_DAY + hour * 3600 + minute * 60 + second;
     Some(UNIX_EPOCH + Duration::new(seconds, nanos))
 }
 
-fn parse_fixed_digits(text: &str, digits: usize) -> Option<i64> {
+fn parse_fixed_digits<T: FromStr>(text: &str, digits: usize) -> Option<T> {
     if text.len() != digits || !text.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
@@ -250,6 +252,11 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
 }
 
 /// The inverse of [`days_from_civil`].
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the algorithm gives a day from 1 to 31 and a month from 1 to 12"
+)]
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let shifted = days + 719_468;
     let era = shifted.div_euclid(146_097);

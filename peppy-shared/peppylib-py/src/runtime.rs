@@ -43,7 +43,7 @@ struct AsyncSetup {
 /// with the daemon (via `config`) so its force-kill deadline always allows for
 /// this join; see [`config::peppy_config::EVENT_LOOP_JOIN_BUDGET_SECS`].
 fn event_loop_join_timeout_secs() -> f64 {
-    config::peppy_config::EVENT_LOOP_JOIN_BUDGET_SECS as f64
+    std::time::Duration::from_secs(config::peppy_config::EVENT_LOOP_JOIN_BUDGET_SECS).as_secs_f64()
 }
 
 /// Teardown handles for the persistent asyncio event-loop thread.

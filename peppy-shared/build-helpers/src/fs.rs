@@ -395,7 +395,7 @@ mod tests {
     /// A payload of `size` bytes whose bytes are not all equal, so a
     /// comparison that skips or repeats a block sees a difference.
     fn multi_block_payload(size: usize) -> Vec<u8> {
-        (0..size).map(|index| (index % 251) as u8).collect()
+        (0..251).cycle().take(size).collect()
     }
 
     /// The skip check at the edges of the block comparison: an empty file, a

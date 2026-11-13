@@ -98,15 +98,15 @@ fn arm(mut command: Command) -> Command {
     use std::os::unix::process::CommandExt;
 
     let parent = std::process::id();
+    #[expect(
+        unsafe_code,
+        reason = "`pre_exec` is the one way to run code in the child between fork and exec"
+    )]
     // SAFETY: the closure runs in the forked child before exec. `prctl` and
     // `getppid` are thin syscall wrappers that take no locks; the closure
     // captures one `u32`, allocates nothing (`from_raw_os_error` and
     // `last_os_error` build the `Os` variant in place) and touches no parent
     // state.
-    #[expect(
-        unsafe_code,
-        reason = "`pre_exec` is the one way to run code in the child between fork and exec"
-    )]
     unsafe {
         command.pre_exec(move || {
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong) != 0 {
@@ -114,7 +114,7 @@ fn arm(mut command: Command) -> Command {
             }
             // A parent that died between fork and `prctl` sends no signal;
             // `getppid` then names its reaper.
-            if libc::getppid() as u32 != parent {
+            if libc::getppid().cast_unsigned() != parent {
                 return Err(io::Error::from_raw_os_error(libc::ESRCH));
             }
             Ok(())

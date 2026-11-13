@@ -632,7 +632,7 @@ pub(crate) fn confirmation_accept(task_id: &str) -> UpdateTaskParams {
 
 /// A tiny valid rgb8 frame in the shape the JPEG representation expects.
 pub(crate) fn sample_rgb8_frame() -> Value {
-    let pixels: Vec<u8> = Vec::from_fn(8 * 8 * 3, |index| (index % 251) as u8);
+    let pixels: Vec<u8> = (0..251).cycle().take(8 * 8 * 3).collect();
     let pixels_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &pixels);
     json!({
         "frame": pixels_b64,

@@ -27,9 +27,10 @@ impl BindingUpdateRequest {
             root.set_link_id(&self.link_id);
             root.set_sequence(self.sequence);
             let members = self.producers.as_slice();
-            let mut wire = root.init_producers(members.len() as u32);
-            for (idx, member) in members.iter().enumerate() {
-                let mut entry = wire.reborrow().get(idx as u32);
+            let member_count = super::capnp_list_len(members.len(), "producers")?;
+            let mut wire = root.init_producers(member_count);
+            for (idx, member) in (0_u32..).zip(members.iter()) {
+                let mut entry = wire.reborrow().get(idx);
                 entry.set_core_node(&member.producer.core_node);
                 entry.set_instance_id(&member.producer.instance_id);
                 let (copy, instance_id_in_copy) = CopyTag::to_wire(member.copy.as_ref());
@@ -166,8 +167,8 @@ mod tests {
                 root.set_link_id("cameras");
                 root.set_sequence(1);
                 let mut wire = root.init_producers(2);
-                for (idx, (copy, instance_id_in_copy)) in tags.into_iter().enumerate() {
-                    let mut entry = wire.reborrow().get(idx as u32);
+                for (idx, (copy, instance_id_in_copy)) in (0_u32..).zip(tags) {
+                    let mut entry = wire.reborrow().get(idx);
                     entry.set_core_node("core_a");
                     entry.set_instance_id("front");
                     entry.set_copy(copy);

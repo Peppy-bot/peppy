@@ -22,8 +22,8 @@ macro_rules! endpoint_list_codec {
                 endpoints.len(),
                 "an endpoint list is sized for exactly the endpoints written into it"
             );
-            for (index, endpoint) in endpoints.iter().enumerate() {
-                let mut wire = list.reborrow().get(index as u32);
+            for (index, endpoint) in (0_u32..).zip(endpoints.iter()) {
+                let mut wire = list.reborrow().get(index);
                 wire.set_label(&endpoint.label);
                 wire.set_kind(match endpoint.kind {
                     EndpointKind::Page => crate::$capnp::EndpointKind::Page,

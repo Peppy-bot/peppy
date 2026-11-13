@@ -1235,7 +1235,7 @@ async fn daemon_sigint_runs_hooks_and_exits() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     // SAFETY: plain kill(2) targeting our own pid with a handled signal.
     unsafe {
-        libc::kill(std::process::id() as i32, libc::SIGINT);
+        libc::kill(std::process::id().cast_signed(), libc::SIGINT);
     }
 
     tokio::time::timeout(Duration::from_secs(10), &mut runner_task)

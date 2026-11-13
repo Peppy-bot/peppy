@@ -299,8 +299,8 @@ impl ClockListResponse {
             {
                 let count = capnp_list_len(self.domains.len(), "domains")?;
                 let mut domains = response.reborrow().init_domains(count);
-                for (index, info) in self.domains.iter().enumerate() {
-                    let mut entry = domains.reborrow().get(index as u32);
+                for (index, info) in (0_u32..).zip(self.domains.iter()) {
+                    let mut entry = domains.reborrow().get(index);
                     entry.set_name(info.domain.name.as_str());
                     entry.set_core_node(info.domain.core_node.as_str());
                     entry.set_incarnation(info.domain.incarnation.get());
@@ -320,8 +320,8 @@ impl ClockListResponse {
             }
             let count = capnp_list_len(self.consumers.len(), "consumers")?;
             let mut consumers = response.init_consumers(count);
-            for (index, info) in self.consumers.iter().enumerate() {
-                let mut entry = consumers.reborrow().get(index as u32);
+            for (index, info) in (0_u32..).zip(self.consumers.iter()) {
+                let mut entry = consumers.reborrow().get(index);
                 entry.set_instance_id(&info.instance_id);
                 entry.set_domain_name(info.domain.name.as_str());
                 entry.set_domain_core_node(info.domain.core_node.as_str());

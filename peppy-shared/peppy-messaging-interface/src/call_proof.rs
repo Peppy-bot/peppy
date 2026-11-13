@@ -403,6 +403,10 @@ impl CallProof {
         out.extend_from_slice(&self.nonce);
         out.extend_from_slice(&self.signature);
         let machine_proof = self.machine_proof.as_deref().unwrap_or_default();
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a machine proof is a credential of one machine, far shorter than `u32::MAX` bytes"
+        )]
         out.extend_from_slice(&(machine_proof.len() as u32).to_be_bytes());
         out.extend_from_slice(machine_proof);
     }

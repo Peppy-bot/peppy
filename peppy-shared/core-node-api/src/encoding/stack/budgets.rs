@@ -87,8 +87,8 @@ impl StackBudgets {
         &self,
         mut list: capnp::struct_list::Builder<'_, launch_capnp::env_var::Owned>,
     ) {
-        for (index, (key, value)) in self.env_vars.iter().enumerate() {
-            let mut entry = list.reborrow().get(index as u32);
+        for (index, (key, value)) in (0_u32..).zip(self.env_vars.iter()) {
+            let mut entry = list.reborrow().get(index);
             entry.set_key(key);
             entry.set_value(value);
         }
@@ -117,9 +117,9 @@ mod tests {
         let mut message = Builder::new_default();
         {
             let goal = message.init_root::<launch_capnp::launch_goal::Builder<'_>>();
-            let mut wire = goal.init_env_vars(env_vars.len() as u32);
-            for (index, (key, value)) in env_vars.iter().enumerate() {
-                let mut entry = wire.reborrow().get(index as u32);
+            let mut wire = goal.init_env_vars(u32::try_from(env_vars.len()).unwrap());
+            for (index, (key, value)) in (0_u32..).zip(env_vars.iter()) {
+                let mut entry = wire.reborrow().get(index);
                 entry.set_key(key);
                 entry.set_value(value);
             }

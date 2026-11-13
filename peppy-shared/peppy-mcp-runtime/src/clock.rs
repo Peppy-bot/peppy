@@ -28,10 +28,10 @@ impl Clock {
     /// The host wall clock, as nanoseconds since the Unix epoch.
     pub fn wall() -> Self {
         Self::from_nanos_fn(|| {
-            SystemTime::now()
+            let since_epoch = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64
+                .unwrap_or_default();
+            u64::try_from(since_epoch.as_nanos()).unwrap_or(u64::MAX)
         })
     }
 

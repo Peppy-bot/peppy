@@ -133,8 +133,8 @@ impl RepoListResponse {
             let mut response = builder.init_root::<repo_capnp::repo_list_response::Builder<'_>>();
             let node_count = capnp_list_len(self.nodes.len(), "RepoListResponse.nodes")?;
             let mut nodes_builder = response.reborrow().init_nodes(node_count);
-            for (i, node) in self.nodes.iter().enumerate() {
-                let mut entry = nodes_builder.reborrow().get(i as u32);
+            for (i, node) in (0_u32..).zip(self.nodes.iter()) {
+                let mut entry = nodes_builder.reborrow().get(i);
                 entry.set_node_name(&node.node_name);
                 entry.set_node_tag(&node.node_tag);
                 entry.set_source_type(node.source_type.as_str());
@@ -145,8 +145,8 @@ impl RepoListResponse {
             }
             let repo_count = capnp_list_len(self.repos.len(), "RepoListResponse.repos")?;
             let mut repos_builder = response.init_repos(repo_count);
-            for (i, repo) in self.repos.iter().enumerate() {
-                let mut entry = repos_builder.reborrow().get(i as u32);
+            for (i, repo) in (0_u32..).zip(self.repos.iter()) {
+                let mut entry = repos_builder.reborrow().get(i);
                 entry.set_id(repo.id);
                 entry.set_label(&repo.label);
                 entry.set_source_type(repo.source_type.as_str());

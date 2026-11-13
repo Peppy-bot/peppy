@@ -176,8 +176,8 @@ fn write_node_info(
     found.set_reported_at_ms(info.reported_at_ms);
     let instance_count = capnp_list_len(info.instances.len(), "NodeInfo.instances")?;
     let mut instances = found.reborrow().init_instances(instance_count);
-    for (index, instance) in info.instances.iter().enumerate() {
-        write_node_instance(instances.reborrow().get(index as u32), instance)?;
+    for (index, instance) in (0_u32..).zip(info.instances.iter()) {
+        write_node_instance(instances.reborrow().get(index), instance)?;
     }
     // Only set the field when present; leaving it unset writes capnp's
     // empty-text default, which `optional_text` decodes back to `None`.

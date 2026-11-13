@@ -262,8 +262,8 @@ impl LaunchGoal {
                 PlacementSpec::Places(places) => {
                     let link_count = capnp_list_len(places.len(), "LaunchGoal.placement.places")?;
                     let mut links = goal.reborrow().init_placement().init_places(link_count);
-                    for (idx, (link_id, core_node)) in places.iter().enumerate() {
-                        let mut link = links.reborrow().get(idx as u32);
+                    for (idx, (link_id, core_node)) in (0_u32..).zip(places.iter()) {
+                        let mut link = links.reborrow().get(idx);
                         link.set_link_id(link_id.as_str());
                         write_core_node_target(link.init_core_node(), core_node);
                     }
@@ -283,16 +283,16 @@ impl LaunchGoal {
 
             let selection_count = capnp_list_len(self.selections.len(), "LaunchGoal.selections")?;
             let mut selections = goal.reborrow().init_selections(selection_count);
-            for (idx, word) in self.selections.iter().enumerate() {
-                write_launch_word(selections.reborrow().get(idx as u32), word);
+            for (idx, word) in (0_u32..).zip(self.selections.iter()) {
+                write_launch_word(selections.reborrow().get(idx), word);
             }
 
             goal.reborrow().set_rebuild(self.rebuild);
 
             let join_count = capnp_list_len(self.joins.len(), "LaunchGoal.joins")?;
             let mut joins = goal.reborrow().init_joins(join_count);
-            for (idx, join) in self.joins.iter().enumerate() {
-                write_copy_reference(joins.reborrow().get(idx as u32), join);
+            for (idx, join) in (0_u32..).zip(self.joins.iter()) {
+                write_copy_reference(joins.reborrow().get(idx), join);
             }
 
             goal.reborrow().set_prebuild(self.prebuild);
@@ -303,8 +303,8 @@ impl LaunchGoal {
                     "LaunchGoal.publish_platforms",
                 )?;
                 let mut platforms = goal.reborrow().init_publish_platforms(count);
-                for (index, platform) in publish.extra_platforms.iter().enumerate() {
-                    platforms.set(index as u32, platform.as_str());
+                for (index, platform) in (0_u32..).zip(publish.extra_platforms.iter()) {
+                    platforms.set(index, platform.as_str());
                 }
             }
         }
@@ -667,8 +667,8 @@ impl NodeLogs {
     fn write(&self, mut wire: launch_capnp::node_logs::Builder<'_>) -> Result<()> {
         let add_log_count = capnp_list_len(self.node_add_logs.len(), "NodeLogs.node_add_logs")?;
         let mut add_logs = wire.reborrow().init_node_add_logs(add_log_count);
-        for (i, entry) in self.node_add_logs.iter().enumerate() {
-            let mut e = add_logs.reborrow().get(i as u32);
+        for (i, entry) in (0_u32..).zip(self.node_add_logs.iter()) {
+            let mut e = add_logs.reborrow().get(i);
             e.set_node_label(&entry.node_label);
             e.set_log_path(entry.log_path.to_string_lossy().as_ref());
             e.set_failed(entry.failed);
@@ -678,8 +678,8 @@ impl NodeLogs {
         let build_log_count =
             capnp_list_len(self.node_build_logs.len(), "NodeLogs.node_build_logs")?;
         let mut build_logs = wire.reborrow().init_node_build_logs(build_log_count);
-        for (i, entry) in self.node_build_logs.iter().enumerate() {
-            let mut e = build_logs.reborrow().get(i as u32);
+        for (i, entry) in (0_u32..).zip(self.node_build_logs.iter()) {
+            let mut e = build_logs.reborrow().get(i);
             e.set_node_label(&entry.node_label);
             e.set_log_path(entry.log_path.to_string_lossy().as_ref());
             e.set_failed(entry.failed);
@@ -688,8 +688,8 @@ impl NodeLogs {
 
         let run_log_count = capnp_list_len(self.node_run_logs.len(), "NodeLogs.node_run_logs")?;
         let mut run_logs = wire.reborrow().init_node_run_logs(run_log_count);
-        for (i, entry) in self.node_run_logs.iter().enumerate() {
-            let mut e = run_logs.reborrow().get(i as u32);
+        for (i, entry) in (0_u32..).zip(self.node_run_logs.iter()) {
+            let mut e = run_logs.reborrow().get(i);
             e.set_instance_id(&entry.instance_id);
             e.set_node_label(&entry.node_label);
             e.set_log_path(entry.log_path.to_string_lossy().as_ref());
@@ -826,8 +826,8 @@ impl LaunchResult {
                 "LaunchResult.instance_endpoints",
             )?;
             let mut instances = result.reborrow().init_instance_endpoints(instance_count);
-            for (i, entry) in self.instance_endpoints.iter().enumerate() {
-                let mut e = instances.reborrow().get(i as u32);
+            for (i, entry) in (0_u32..).zip(self.instance_endpoints.iter()) {
+                let mut e = instances.reborrow().get(i);
                 e.set_instance_id(&entry.instance_id);
                 e.set_node_label(&entry.node_label);
                 e.set_core_node(&entry.core_node);
@@ -837,8 +837,8 @@ impl LaunchResult {
             }
             let published_count = capnp_list_len(self.published.len(), "LaunchResult.published")?;
             let mut published = result.reborrow().init_published(published_count);
-            for (index, line) in self.published.iter().enumerate() {
-                line.write(published.reborrow().get(index as u32));
+            for (index, line) in (0_u32..).zip(self.published.iter()) {
+                line.write(published.reborrow().get(index));
             }
         }
         encode_message(&builder)
@@ -1426,8 +1426,8 @@ mod tests {
         let mut builder = Builder::new_default();
         {
             let mut places = launch_wire(&mut builder).init_placement().init_places(2);
-            for (index, core_node) in ["cn-a", "cn-b"].into_iter().enumerate() {
-                let mut link = places.reborrow().get(index as u32);
+            for (index, core_node) in (0_u32..).zip(["cn-a", "cn-b"]) {
+                let mut link = places.reborrow().get(index);
                 link.set_link_id("robot_onboard");
                 link.init_core_node().set_named(core_node);
             }

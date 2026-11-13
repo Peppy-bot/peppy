@@ -230,11 +230,12 @@ fn max_value_bytes(schema: &SchemaType) -> Option<u64> {
         SchemaType::Primitive(primitive) => max_primitive_bytes(&primitive.kind),
         SchemaType::Object(object) => max_fields_bytes(object.fields.iter()),
         SchemaType::Array(array) => {
-            let length = array.length? as u64;
+            let length = array.length?;
             if array.items.as_ref().as_type_token() == Some(&TypeToken::U8) {
                 // Quotes around the base64 text.
-                return Some(2 + base64_encoded_len(length as usize) as u64);
+                return Some(2 + base64_encoded_len(length) as u64);
             }
+            let length = length as u64;
             let item = max_value_bytes(array.items.as_ref())?;
             // Brackets, items, and the commas between them.
             Some(
