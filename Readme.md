@@ -90,7 +90,7 @@ That list mirrors `APPTAINER_BUILD_DEPS` in [`crates/containers-internal/build.r
 
 Then the toolchains, each from its own project's recommended installer:
 
-- **Rust, with clippy** ([rustup](https://rustup.rs)). Track current stable: the dependency graph moves with it. clippy is a test dependency rather than a lint here, because the generator suites run `cargo clippy --all-targets -- -D warnings` over the crates they generate.
+- **Rust, with clippy** ([rustup](https://rustup.rs)). Track current stable: the dependency graph moves with it. The oldest release that builds the code is the `rust-version` of the two workspace manifests, [`Cargo.toml`](./Cargo.toml) and [`peppy-shared/Cargo.toml`](./peppy-shared/Cargo.toml). clippy is a test dependency rather than a lint here, because the generator suites run `cargo clippy --all-targets -- -D warnings` over the crates they generate.
 - **Go** ([go.dev](https://go.dev/dl/)). `containers-internal` compiles apptainer with the `go` it finds on PATH, and apptainer's `mconfig` enforces a minimum of its own that Ubuntu's `golang-go` does not meet.
 - **pixi** ([pixi.sh](https://pixi.sh)), at or above the `requires-pixi` in [`scripts/pixi.toml`](./scripts/pixi.toml). `generator-internal`'s build script builds the embedded peppylib `.so` through a bare `pixi run`.
 - **uv** ([astral.sh/uv](https://astral.sh/uv)). The Python generator tests and the release scripts exec a bare `uv`.

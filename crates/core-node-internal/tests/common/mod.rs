@@ -1,4 +1,4 @@
-#![allow(dead_code)] // Each test binary uses only a subset of these shared helpers.
+#![allow(dead_code, unused_imports)] // Each test binary uses only a subset of these shared helpers.
 
 mod actions;
 mod daemon;
@@ -9,17 +9,11 @@ mod services;
 
 // Flat re-exports, so a test calls `common::foo()` whichever group defines
 // it; each test binary uses a different subset of the groups.
-#[allow(unused_imports)]
 pub use actions::*;
-#[allow(unused_imports)]
 pub use daemon::*;
-#[allow(unused_imports)]
 pub use fixtures::*;
-#[allow(unused_imports)]
 pub use lifecycle::*;
-#[allow(unused_imports)]
 pub use poll::*;
-#[allow(unused_imports)]
 pub use services::*;
 
 use core_node_api::names;

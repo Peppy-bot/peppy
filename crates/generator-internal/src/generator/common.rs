@@ -360,6 +360,7 @@ pub enum NodeTree {
 pub(crate) struct WorkspacePackageMetadata {
     pub version: &'static str,
     pub edition: &'static str,
+    pub rust_version: &'static str,
 }
 
 impl WorkspacePackageMetadata {
@@ -367,6 +368,7 @@ impl WorkspacePackageMetadata {
         Self {
             version: env!("CARGO_PKG_VERSION"),
             edition: "2024",
+            rust_version: env!("CARGO_PKG_RUST_VERSION"),
         }
     }
 }

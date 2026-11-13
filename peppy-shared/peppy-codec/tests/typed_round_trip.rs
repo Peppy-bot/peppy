@@ -14,12 +14,10 @@ use peppylib::encoding::convert_time;
 use serde_json::Value;
 use std::path::PathBuf;
 
-#[allow(clippy::all, dead_code)]
 mod everything_capnp {
     include!(concat!(env!("OUT_DIR"), "/everything_capnp.rs"));
 }
 
-#[allow(clippy::all, dead_code)]
 mod frame_capnp {
     include!(concat!(env!("OUT_DIR"), "/frame_capnp.rs"));
 }

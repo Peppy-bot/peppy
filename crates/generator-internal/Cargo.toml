@@ -3,6 +3,10 @@ name = "generator"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [features]
 # In a debug build, rust-embed does not embed: each `#[folder]` is read from

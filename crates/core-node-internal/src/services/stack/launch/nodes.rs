@@ -939,7 +939,7 @@ mod tests {
             std::slice::from_ref(&node),
             "here",
             2,
-            |_| async { (failed("cargo failed"), None) },
+            |_| std::future::ready((failed("cargo failed"), None)),
             &mut outcome,
         )
         .await;
@@ -1013,7 +1013,7 @@ mod tests {
             &nodes,
             "here",
             2,
-            |_| async { (cancelled(), None) },
+            |_| std::future::ready((cancelled(), None)),
             &mut outcome,
         )
         .await;

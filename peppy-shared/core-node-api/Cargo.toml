@@ -3,6 +3,10 @@ name = "core-node-api"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 # This is the only crate that is allowed to be imported to avoid future circular dependencies

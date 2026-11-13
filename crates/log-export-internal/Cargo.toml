@@ -3,10 +3,14 @@ name = "log-export"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # Export of the daemon's log lines as OpenTelemetry log records: the record
 # model, the handle log writers hand their lines to, the queue behind it, and
 # the worker that posts the queue to an OTLP/HTTP endpoint.
+[lints]
+workspace = true
+
 [dependencies]
 # `Severity` and `OtlpEndpoint`, the types of the export settings, and the
 # owner-only file mode of the headers file.

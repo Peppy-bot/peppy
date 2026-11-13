@@ -3,6 +3,10 @@ name = "build-helpers"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 sha2 = "0.11"

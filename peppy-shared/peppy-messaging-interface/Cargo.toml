@@ -3,6 +3,10 @@ name = "pmi"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 config = { package = "peppy-config-model", path = "../peppy-config-model" }

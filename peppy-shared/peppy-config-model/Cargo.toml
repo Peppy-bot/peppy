@@ -3,6 +3,10 @@ name = "peppy-config-model"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

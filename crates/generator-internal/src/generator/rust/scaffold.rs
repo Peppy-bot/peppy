@@ -133,9 +133,9 @@ fn symlink_dir(original: &Path, link: &Path) -> io::Result<()> {
 
 /// Normalizes a vendored crate's `Cargo.toml` for the flat `.peppy/libs` layout:
 /// replaces workspace-inherited fields (`version.workspace = true`, etc.) with
-/// concrete values, renames the `peppylib-rs` source package back to `peppylib`
-/// (the name every generated node depends on), and flattens inter-crate `path`
-/// dependencies to flat siblings.
+/// concrete values, drops the lint table, renames the `peppylib-rs` source
+/// package back to `peppylib` (the name every generated node depends on), and
+/// flattens inter-crate `path` dependencies to flat siblings.
 fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetadata) -> Result<()> {
     if !cargo_toml_path.exists() {
         return Ok(());
@@ -155,6 +155,10 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
             package.insert("edition", value(metadata.edition));
         }
 
+        if inherits_from_workspace(package, "rust-version") {
+            package.insert("rust-version", value(metadata.rust_version));
+        }
+
         if inherits_from_workspace(package, "authors") {
             package.remove("authors");
         }
@@ -167,6 +171,11 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
             package.insert("name", value(PEPPYLIB_VENDORED_NAME));
         }
     }
+
+    // The lint levels are those of the workspace the crate comes from. A
+    // vendored crate is a dependency of the node and has no workspace to
+    // take them from.
+    doc.remove("lints");
 
     // Vendored crates never run their own tests, and their dev-dependencies
     // can break resolution in the flat layout (peppylib-rs's cyclic
@@ -822,6 +831,7 @@ mod tests {
     const TEST_METADATA: WorkspacePackageMetadata = WorkspacePackageMetadata {
         version: "1.2.3",
         edition: "2024",
+        rust_version: "1.90",
     };
 
     /// Writes `manifest` to a temporary `Cargo.toml`, localizes it with
@@ -849,11 +859,13 @@ mod tests {
              name = \"core-node-api\"\n\
              version.workspace = true\n\
              authors.workspace = true\n\
-             edition.workspace = true\n",
+             edition.workspace = true\n\
+             rust-version.workspace = true\n",
         );
 
         assert_eq!(package["version"].as_str(), Some("1.2.3"));
         assert_eq!(package["edition"].as_str(), Some("2024"));
+        assert_eq!(package["rust-version"].as_str(), Some("1.90"));
         assert!(package.get("authors").is_none());
     }
 
@@ -864,11 +876,13 @@ mod tests {
              name = \"core-node-api\"\n\
              version = { workspace = true }\n\
              authors = { workspace = true }\n\
-             edition = { workspace = true }\n",
+             edition = { workspace = true }\n\
+             rust-version = { workspace = true }\n",
         );
 
         assert_eq!(package["version"].as_str(), Some("1.2.3"));
         assert_eq!(package["edition"].as_str(), Some("2024"));
+        assert_eq!(package["rust-version"].as_str(), Some("1.90"));
         assert!(package.get("authors").is_none());
     }
 
@@ -879,16 +893,64 @@ mod tests {
              name = \"core-node-api\"\n\
              version = \"0.1.0\"\n\
              authors = [\"Peppy\"]\n\
-             edition = \"2021\"\n",
+             edition = \"2021\"\n\
+             rust-version = \"1.85\"\n",
         );
 
         assert_eq!(package["version"].as_str(), Some("0.1.0"));
         assert_eq!(package["edition"].as_str(), Some("2021"));
+        assert_eq!(package["rust-version"].as_str(), Some("1.85"));
         assert_eq!(
             package["authors"]
                 .as_array()
                 .and_then(|authors| authors.get(0)?.as_str()),
             Some("Peppy")
+        );
+    }
+
+    #[test]
+    fn localize_cargo_toml_drops_the_lint_table() {
+        for lints in [
+            "[lints]\nworkspace = true\n",
+            "[lints.rust]\nunsafe_code = \"forbid\"\n",
+        ] {
+            let doc = localized_manifest(&format!(
+                "[package]\nname = \"core-node-api\"\nversion = \"0.1.0\"\n\n{lints}"
+            ));
+
+            assert!(doc.get("lints").is_none(), "{lints}");
+            assert_eq!(doc["package"]["name"].as_str(), Some("core-node-api"));
+        }
+    }
+
+    /// The table `name` of the `[workspace]` table of the manifest at
+    /// `manifest_path`, as text.
+    fn workspace_table(manifest_path: &Path, name: &str) -> String {
+        let manifest: DocumentMut = fs::read_to_string(manifest_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", manifest_path.display()))
+            .parse()
+            .unwrap_or_else(|error| panic!("parse {}: {error}", manifest_path.display()));
+        manifest["workspace"][name].to_string()
+    }
+
+    /// A vendored crate takes its `rust-version` from this workspace, and the
+    /// sealed `peppy-shared` workspace cannot inherit a table of this one, so
+    /// the two manifests repeat the compiler they need and the lints they
+    /// hold their members to.
+    #[test]
+    fn the_sealed_workspace_declares_the_rust_version_and_the_lints_of_this_one() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let own = repository.join("Cargo.toml");
+        let sealed = repository.join("peppy-shared/Cargo.toml");
+
+        let sealed_manifest: DocumentMut = fs::read_to_string(&sealed).unwrap().parse().unwrap();
+        assert_eq!(
+            sealed_manifest["workspace"]["package"]["rust-version"].as_str(),
+            Some(WorkspacePackageMetadata::embedded().rust_version)
+        );
+        assert_eq!(
+            workspace_table(&sealed, "lints"),
+            workspace_table(&own, "lints")
         );
     }
 

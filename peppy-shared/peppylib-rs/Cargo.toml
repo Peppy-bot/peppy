@@ -2,6 +2,7 @@
 name = "peppylib-rs"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 homepage = "https://dev.peppy.bot"
 description = "The Peppy control library"
 license = "MIT OR Apache-2.0"
@@ -11,6 +12,9 @@ readme = "Readme.md"
 # peppy-shared workspace), but the library target stays `peppylib` so this
 # crate's own tests/doctests and every consumer keep `use peppylib::...`.
 # Consumers depend on it as `peppylib = { package = "peppylib-rs", path = ... }`.
+[lints]
+workspace = true
+
 [lib]
 name = "peppylib"
 

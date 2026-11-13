@@ -34,9 +34,7 @@ pub async fn listen_for_health(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(move |context| async move {
-                handle_health_request(context, start_time).await
-            })
+            .handle_requests(move |context| handle_health_request(context, start_time))
             .await
             .map_err(Into::into)
     });

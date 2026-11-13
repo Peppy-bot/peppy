@@ -41,22 +41,18 @@ pub mod testing;
 
 pub use types::{Message, Payload};
 
-#[allow(clippy::all)]
 mod health_capnp {
     include!(concat!(env!("OUT_DIR"), "/health_capnp.rs"));
 }
 
-#[allow(clippy::all)]
 mod action_cancel_capnp {
     include!(concat!(env!("OUT_DIR"), "/action_cancel_capnp.rs"));
 }
 
-#[allow(clippy::all)]
 mod binding_update_capnp {
     include!(concat!(env!("OUT_DIR"), "/binding_update_capnp.rs"));
 }
 
-#[allow(clippy::all)]
 mod peer_update_capnp {
     include!(concat!(env!("OUT_DIR"), "/peer_update_capnp.rs"));
 }
@@ -65,12 +61,10 @@ mod observation_update_capnp {
     include!(concat!(env!("OUT_DIR"), "/observation_update_capnp.rs"));
 }
 
-#[allow(clippy::all)]
 mod slot_update_capnp {
     include!(concat!(env!("OUT_DIR"), "/slot_update_capnp.rs"));
 }
 
-#[allow(clippy::all)]
 mod endpoints_capnp {
     include!(concat!(env!("OUT_DIR"), "/endpoints_capnp.rs"));
 }

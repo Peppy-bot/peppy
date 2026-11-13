@@ -30,9 +30,36 @@ resolver = "3"
 version = "0.1.0"
 authors = ["Tuatini Godard <tuatini@peppy.bot>"]
 edition = "2024"
+# The oldest compiler that builds the workspace. The code uses the language
+# and the standard library of this release.
+rust-version = "1.100"
 
 [workspace.dependencies]
 parking_lot = "0.13"
+
+# The Rust idioms that the code keeps to. Every member inherits these tables.
+[workspace.lints.rust]
+# The idiom lints of the 2018 edition, which include
+# `elided_lifetimes_in_paths`: a type that borrows shows its lifetime.
+rust_2018_idioms = { level = "warn", priority = -1 }
+# A closure whose body is one async block is an async closure.
+closure_returning_async_block = "warn"
+# An `impl Trait` in return position captures every lifetime in scope.
+impl_trait_redundant_captures = "warn"
+# The prelude and a glob import bring a name in once.
+redundant_imports = "warn"
+
+[workspace.lints.clippy]
+# A lint is expected, so an attribute that silences nothing is reported. An
+# inner `#![allow]` stays for code that a tool writes and for the helpers that
+# test binaries share.
+allow_attributes = "warn"
+elidable_lifetime_names = "warn"
+manual_is_variant_and = "warn"
+manual_let_else = "warn"
+manual_midpoint = "warn"
+uninlined_format_args = "warn"
+unnested_or_patterns = "warn"
 
 [profile.release]
 lto = "thin"

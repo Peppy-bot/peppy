@@ -3,6 +3,10 @@ name = "oci-registry"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 # Reads the Docker style auth file apptainer reads, with the same sanitisation,

@@ -3,6 +3,10 @@ name = "daemon"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 auth = { workspace = true }
