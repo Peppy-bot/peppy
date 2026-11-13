@@ -19,7 +19,7 @@ fn service_label(kind: ServiceManagerKind) -> &'static str {
     }
 }
 
-pub struct InstallCommand {}
+pub struct InstallCommand;
 
 impl Command for InstallCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
@@ -27,7 +27,7 @@ impl Command for InstallCommand {
     }
 }
 
-pub struct StopCommand {}
+pub struct StopCommand;
 
 impl Command for StopCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
@@ -35,7 +35,7 @@ impl Command for StopCommand {
     }
 }
 
-pub struct UninstallCommand {}
+pub struct UninstallCommand;
 
 impl Command for UninstallCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {

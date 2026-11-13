@@ -290,7 +290,7 @@ fn datastore_store<'py>(
     encoding: String,
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = std::sync::Arc::clone(&node_runner.inner);
     let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     // `future_into_py_unit` resolves to Python `None`: a store that succeeds
     // has nothing to return (see the helper for why a bare `Ok(())` would not).
@@ -319,7 +319,7 @@ fn datastore_store_exclusive<'py>(
     encoding: String,
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = std::sync::Arc::clone(&node_runner.inner);
     let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let answer = peppylib::datastore::store_exclusive(&runner, key, value, encoding, timeout)
@@ -341,7 +341,7 @@ fn datastore_get<'py>(
     key: String,
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = std::sync::Arc::clone(&node_runner.inner);
     let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let value = peppylib::datastore::get(&runner, key, timeout)
@@ -363,7 +363,7 @@ fn datastore_list<'py>(
     node_runner: &PyNodeRunner,
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = std::sync::Arc::clone(&node_runner.inner);
     let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let entries = peppylib::datastore::list(&runner, timeout)
@@ -389,7 +389,7 @@ fn datastore_remove<'py>(
     key: String,
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = std::sync::Arc::clone(&node_runner.inner);
     let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let removed = peppylib::datastore::remove(&runner, key, timeout)

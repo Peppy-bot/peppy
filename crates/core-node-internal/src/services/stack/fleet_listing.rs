@@ -85,7 +85,7 @@ fn robot_entry(active: &ActiveLaunch, copy: &super::state::StackCopy) -> FleetRo
                 every_simulated = false;
                 clocks.insert("wall".to_owned());
             }
-            binding => {
+            binding @ ClockBinding::Sim { .. } => {
                 if let Some(domain) = binding.domain() {
                     clocks.insert(domain.to_string());
                 }

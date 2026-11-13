@@ -547,9 +547,9 @@ mod tests {
         round_trip(
             &codec,
             json!({
-                "flag": true, "tiny": 255, "small": 65535, "medium": 4294967295u32,
+                "flag": true, "tiny": 255, "small": 65535, "medium": 4_294_967_295_u32,
                 "big": "18446744073709551615",
-                "tiny_signed": -128, "small_signed": -32768, "medium_signed": -2147483648i32,
+                "tiny_signed": -128, "small_signed": -32768, "medium_signed": -2_147_483_648_i32,
                 "big_signed": "-9223372036854775808",
                 "ratio": 1.5, "precise": -2.25,
             }),

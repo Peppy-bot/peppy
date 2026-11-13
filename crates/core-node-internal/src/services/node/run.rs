@@ -1585,7 +1585,7 @@ async fn process_node_run(
         // by the nodes already running.
         let mount_paths = resolved_mount_paths.clone();
         let peppy_dirs = ctx.action.peppy_dirs.clone();
-        let node_stack = ctx.action.node_stack.clone();
+        let node_stack = Arc::clone(&ctx.action.node_stack);
         let starting_instance_id = instance_id_str.to_owned();
         let setup = tokio::task::spawn_blocking(move || {
             let apptainer = match containers::Apptainer::new() {

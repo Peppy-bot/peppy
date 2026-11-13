@@ -48,7 +48,7 @@ static CARRIED_FILE: OnceLock<PathBuf> = OnceLock::new();
 /// a call after the first compile of the process changes nothing either.
 /// The `peppy` binary names the `bin` directory of its data root.
 pub fn extract_into(dir: impl Into<PathBuf>) {
-    EXTRACTION_DIR.set(dir.into()).ok();
+    let _ = EXTRACTION_DIR.set(dir.into());
 }
 
 /// Names the file that holds the compiler that the process carries, for a
@@ -57,7 +57,7 @@ pub fn extract_into(dir: impl Into<PathBuf>) {
 /// bytes into the extraction directory, as it does with an embedded
 /// compiler. The first call wins, as with [`extract_into`].
 pub fn carry_from_file(path: impl Into<PathBuf>) {
-    CARRIED_FILE.set(path.into()).ok();
+    let _ = CARRIED_FILE.set(path.into());
 }
 
 /// The compiler of the process (see the module documentation).

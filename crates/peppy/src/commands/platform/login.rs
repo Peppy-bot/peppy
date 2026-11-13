@@ -189,7 +189,7 @@ fn sign_in(session: &PlatformSession, no_browser: bool) -> Result<PlatformApi> {
         Ok(principal) => {
             // Cache display identity against the stored session.
             if let Some(session) = creds.session.as_mut() {
-                session.subject = principal.sub.clone();
+                session.subject.clone_from(&principal.sub);
                 session.username = principal.display_name().to_string();
                 storage::save(creds_path, &creds)?;
             }

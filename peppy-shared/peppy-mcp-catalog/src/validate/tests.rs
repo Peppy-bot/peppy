@@ -1395,7 +1395,7 @@ fn a_pictured_service_publishes_the_schema_of_its_document_and_the_bundle_carrie
         look.representation.as_ref().map(|r| r.image),
         Some(ImageCodec::Jpeg)
     );
-    assert_eq!(look.max_result_bytes.map(NonZeroU64::get), Some(524288));
+    assert_eq!(look.max_result_bytes.map(NonZeroU64::get), Some(524_288));
     assert_eq!(look.on_oversize, Some(OversizePolicy::Downscale));
     assert_eq!(
         look.output_schema["properties"]

@@ -208,7 +208,7 @@ fn synchronize_clock<'py>(
     node_runner: &PyNodeRunner,
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = Arc::clone(&node_runner.inner);
     let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let sync = synchronize(&runner, timeout).await.map_err(to_py_err)?;
@@ -261,7 +261,7 @@ fn subscribe_clock_py<'py>(
     node_runner: &PyNodeRunner,
     buffer: PyTopicBuffer,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = Arc::clone(&node_runner.inner);
     crate::py_future::future_into_py(py, async move {
         let sub = subscribe(&runner, buffer.into())
             .await
@@ -303,7 +303,7 @@ fn clock_for_node_py<'py>(
     py: Python<'py>,
     node_runner: &PyNodeRunner,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = Arc::clone(&node_runner.inner);
     crate::py_future::future_into_py(py, async move {
         let clock = for_node(&runner).await.map_err(to_py_err)?;
         Ok(PyPeppyClock { inner: clock })
@@ -404,7 +404,7 @@ impl PyClockPublisher {
     /// may or may not be a source branches on this one call.
     #[staticmethod]
     fn for_node<'py>(py: Python<'py>, node_runner: &PyNodeRunner) -> PyResult<Bound<'py, PyAny>> {
-        let runner = node_runner.inner.clone();
+        let runner = Arc::clone(&node_runner.inner);
         crate::py_future::future_into_py(py, async move {
             let publisher = ClockPublisher::for_node(&runner).await.map_err(to_py_err)?;
             Ok(publisher.map(|publisher| Self {

@@ -226,7 +226,7 @@ async fn reconcile(
     pinned: bool,
 ) -> FederationOutcome {
     // The read is file-backed; keep it off the async worker.
-    let reader = deps.enrollment.clone();
+    let reader = Arc::clone(&deps.enrollment);
     let enrollment = match run_blocking(move || reader()).await {
         Ok(enrollment) => enrollment,
         Err(BlockingCallFailure::Refused(error)) => {
@@ -320,7 +320,7 @@ mod tests {
     /// A prober returning a fixed result and counting its calls.
     fn counting_prober(result: Result<(), String>) -> (Prober, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
-        let counter = calls.clone();
+        let counter = Arc::clone(&calls);
         let prober: Prober = Arc::new(move |_host, _port, _tls, _timeout| -> ProbeFuture {
             counter.fetch_add(1, Ordering::SeqCst);
             let result = result.clone();
@@ -376,7 +376,7 @@ mod tests {
     async fn the_probe_receives_the_enrollments_identity_and_bound() {
         let seen: Arc<Mutex<Option<(String, u16, pmi::TlsConfig)>>> = Arc::new(Mutex::new(None));
         let timeout_millis = Arc::new(AtomicU64::new(0));
-        let (record, millis) = (seen.clone(), timeout_millis.clone());
+        let (record, millis) = (Arc::clone(&seen), Arc::clone(&timeout_millis));
         let prober: Prober = Arc::new(move |host, port, tls, timeout| -> ProbeFuture {
             *record.lock().unwrap() = Some((host, port, tls));
             millis.store(timeout.as_millis() as u64, Ordering::SeqCst);

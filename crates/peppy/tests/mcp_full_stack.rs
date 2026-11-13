@@ -1414,7 +1414,7 @@ async fn start_confirmed_record_clip(
     assert_eq!(created.task.status, TaskStatus::Working);
     assert_eq!(
         created.task.ttl_ms,
-        Some(600000 + 1000),
+        Some(600_000 + 1000),
         "the advertised TTL is the whole-goal deadline plus the runtime's grace"
     );
     let task_id = created.task.task_id;
@@ -1996,7 +1996,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
     // the record is that cancel; the provider serves one goal at a time, so
     // the next clip runs once it ended.
     let parked =
-        open_record_clip_until_progress(port, "/camera_and_recording/v1/mcp", 100000).await;
+        open_record_clip_until_progress(port, "/camera_and_recording/v1/mcp", 100_000).await;
     drop(parked);
     let ended = ended_call(
         &both_client,
@@ -2084,7 +2084,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
     assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
     other.cancel().await.expect("client disconnects");
 
-    let task_id = start_confirmed_record_clip(&tasks, 100000, "cancellation").await;
+    let task_id = start_confirmed_record_clip(&tasks, 100_000, "cancellation").await;
     poll_task_until(&tasks, WAIT, &task_id, "feedback-driven progress", |task| {
         task.task
             .status_message
@@ -2102,7 +2102,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
     .await;
     assert_record_clip_ended_cancelled(&cancelled);
 
-    let task_id = start_confirmed_record_clip(&tasks, 100000, "reconnection").await;
+    let task_id = start_confirmed_record_clip(&tasks, 100_000, "reconnection").await;
     poll_task_until(&tasks, WAIT, &task_id, "feedback-driven progress", |task| {
         task.task.status_message.is_some()
     })
@@ -2156,7 +2156,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
     // down: the endpoints close, the task with them, and a relaunch
     // restores the endpoints.
     let parking = connect_with_tasks(&v1).await;
-    let parked = start_confirmed_record_clip(&parking, 100000, "parked before reset").await;
+    let parked = start_confirmed_record_clip(&parking, 100_000, "parked before reset").await;
     poll_task_until(&parking, WAIT, &parked, "progress", |task| {
         task.task.status_message.is_some()
     })

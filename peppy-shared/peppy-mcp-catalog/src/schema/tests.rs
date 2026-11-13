@@ -93,11 +93,11 @@ fn golden_schemas_judge_canonical_instances() {
         "stamp": "2026-08-11T12:34:56.123456789Z",
         "tiny": 255,
         "small": 65535,
-        "medium": 4294967295u64,
+        "medium": 4_294_967_295_u64,
         "big": "18446744073709551615",
         "tiny_signed": -128,
         "small_signed": -32768,
-        "medium_signed": -2147483648i64,
+        "medium_signed": -2_147_483_648_i64,
         "big_signed": "-9223372036854775808",
         "ratio": 1.5,
         "precise": -2.5,
@@ -107,7 +107,10 @@ fn golden_schemas_judge_canonical_instances() {
         "the canonical full instance validates"
     );
     for (case, mutate) in [
-        ("u64 as a JSON number", json!(18446744073709551615u64)),
+        (
+            "u64 as a JSON number",
+            json!(18_446_744_073_709_551_615_u64),
+        ),
         ("u64 with leading zeros", json!("007")),
         ("u64 negative", json!("-1")),
     ] {
@@ -131,7 +134,7 @@ fn golden_schemas_judge_canonical_instances() {
         "u8 range is enforced"
     );
     let mut wide = full.clone();
-    wide["medium_signed"] = json!(2147483648i64);
+    wide["medium_signed"] = json!(2_147_483_648_i64);
     assert!(!all_primitives.is_valid(&wide), "i32 range is enforced");
     let mut missing = full.as_object().expect("object").clone();
     missing.remove("flag");
@@ -289,7 +292,7 @@ fn max_size_is_exact_for_bounded_formats() {
         max_serialized_json_bytes(&format),
         MaxSerializedSize::Bounded(44)
     );
-    let worst = json!({"id": 4294967295u64, "pair": {"x": -128, "y": -128}});
+    let worst = json!({"id": 4_294_967_295_u64, "pair": {"x": -128, "y": -128}});
     assert_eq!(serde_json::to_string(&worst).expect("serializes").len(), 44);
 
     let format = parse_format(r#"{ crc: { $type: "array", $items: "u8", $length: 5 } }"#);

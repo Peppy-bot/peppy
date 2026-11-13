@@ -922,7 +922,7 @@ pub(super) fn against_running(
                     None => return None,
                 },
                 AppliedChange::Clock { old, .. } => {
-                    *old = running.framework.clock.clone();
+                    old.clone_from(&running.framework.clock);
                 }
                 AppliedChange::DaemonScope {
                     daemon_target, old, ..

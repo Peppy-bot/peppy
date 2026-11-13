@@ -332,26 +332,23 @@ impl Challenge {
             if name.is_empty() {
                 break;
             }
-            let mut value = String::new();
-            if chars.peek() == Some(&'"') {
-                chars.next();
+            let value = if chars.next_if_eq(&'"').is_some() {
+                let mut quoted = String::new();
                 while let Some(c) = chars.next() {
                     match c {
-                        '\\' => value.extend(chars.next()),
+                        '\\' => quoted.extend(chars.next()),
                         '"' => break,
-                        _ => value.push(c),
+                        _ => quoted.push(c),
                     }
                 }
+                quoted
             } else {
-                while let Some(c) = chars.peek() {
-                    if *c == ',' {
-                        break;
-                    }
-                    value.push(*c);
-                    chars.next();
+                let mut token = String::new();
+                while let Some(c) = chars.next_if(|c| *c != ',') {
+                    token.push(c);
                 }
-                value = value.trim().to_owned();
-            }
+                token.trim().to_owned()
+            };
             params.insert(name, value);
         }
         params

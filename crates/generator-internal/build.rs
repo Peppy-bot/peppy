@@ -109,7 +109,7 @@ mod ruff_build {
         build_helpers::progress!("Downloading ruff {} for {}...", super::RUFF_VERSION, target);
 
         let temp_dir = dest.parent().unwrap().join("ruff-download-tmp");
-        std::fs::create_dir_all(&temp_dir).ok();
+        let _ = std::fs::create_dir_all(&temp_dir);
         let archive = temp_dir.join("ruff.tar.gz");
 
         let unpacked = build_helpers::download_file(&url, &archive, "the ruff archive")
@@ -126,7 +126,7 @@ mod ruff_build {
             println!(
                 "cargo:warning=Failed to download ruff for {target} (no pre-built binary available)"
             );
-            std::fs::remove_dir_all(&temp_dir).ok();
+            let _ = std::fs::remove_dir_all(&temp_dir);
             return false;
         }
 
@@ -134,15 +134,15 @@ mod ruff_build {
         if ruff_bin.exists() {
             if let Err(e) = std::fs::copy(&ruff_bin, dest) {
                 println!("cargo:warning=Failed to copy downloaded ruff binary: {e}");
-                std::fs::remove_dir_all(&temp_dir).ok();
+                let _ = std::fs::remove_dir_all(&temp_dir);
                 return false;
             }
-            std::fs::remove_dir_all(&temp_dir).ok();
+            let _ = std::fs::remove_dir_all(&temp_dir);
             return true;
         }
 
         println!("cargo:warning=Downloaded ruff archive did not contain ruff binary");
-        std::fs::remove_dir_all(&temp_dir).ok();
+        let _ = std::fs::remove_dir_all(&temp_dir);
         false
     }
 
@@ -708,7 +708,7 @@ mod peppylib_build {
             if let Some(suffix) = suffix
                 && !current_platforms.contains(&suffix)
             {
-                std::fs::remove_file(entry.path()).ok();
+                let _ = std::fs::remove_file(entry.path());
             }
         }
         state.retain(|platform, _| current_platforms.contains(platform));
@@ -1099,7 +1099,7 @@ mod peppylib_build {
         // Guard against `maturin develop` leaving its unsuffixed .so behind in the
         // checkout; the build artifact now lives in `so_dir`.
         if so_path.exists() {
-            std::fs::remove_file(&so_path).ok();
+            let _ = std::fs::remove_file(&so_path);
         }
 
         // Cached bindings this build chose not to rebuild (the Linux

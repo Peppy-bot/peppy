@@ -201,7 +201,7 @@ pub fn run_command_with_timeout(command: &mut Command, timeout: Duration) -> Com
             // Read raw bytes (not read_to_string) so non-UTF-8 output is still
             // fully drained and captured lossily instead of being discarded.
             let mut bytes = Vec::new();
-            pipe.read_to_end(&mut bytes).ok();
+            let _ = pipe.read_to_end(&mut bytes);
             String::from_utf8_lossy_owned(bytes)
         })
     }
@@ -213,14 +213,14 @@ pub fn run_command_with_timeout(command: &mut Command, timeout: Duration) -> Com
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) if Instant::now() >= deadline => {
-                child.kill().ok();
-                child.wait().ok();
+                let _ = child.kill();
+                let _ = child.wait();
                 break None;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(_) => {
-                child.kill().ok();
-                child.wait().ok();
+                let _ = child.kill();
+                let _ = child.wait();
                 break None;
             }
         }

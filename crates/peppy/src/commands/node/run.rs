@@ -732,8 +732,8 @@ async fn validate_links_against_stack(
         // Harvest the target's manifest/interfaces from its snapshot
         // entry so we don't need a second `node_info` call below.
         if node.name == target_name && node.tag == target_tag {
-            target_depends_on = info.config.manifest.depends_on.clone();
-            target_implements = info.config.manifest.implements.clone();
+            target_depends_on.clone_from(&info.config.manifest.depends_on);
+            target_implements.clone_from(&info.config.manifest.implements);
             target_seen_in_stack = true;
         }
         // The validator reads `instance_id` and `bindings` for inert items

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use auth::FederationIdentity;
 use daemon_config::consts::PeppyDirs;
 use serde::{Deserialize, Serialize};
-use std::fs::{self};
+use std::fs;
 use std::io;
 
 const DAEMON_STATE_FILENAME: &str = "daemon_state.json5";

@@ -1051,7 +1051,7 @@ mod tests {
 
         let declared = match &shared.lock().await.adapter {
             MessengerAdapter::Mock(adapter) => adapter.queryable_declarations(),
-            _ => unreachable!("the session is a mock"),
+            MessengerAdapter::Zenoh(_) => unreachable!("the session is a mock"),
         };
         let services: Vec<&str> = declared
             .iter()

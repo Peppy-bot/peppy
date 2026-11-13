@@ -227,8 +227,8 @@ impl FleetBook {
     /// The fleet listing now.
     pub(crate) fn listing(&self) -> FleetListing {
         let mut listing = self.launch.clone();
-        listing.version = self.version.clone();
-        listing.core_node = self.core_node.clone();
+        listing.version.clone_from(&self.version);
+        listing.core_node.clone_from(&self.core_node);
         listing.halted = self.halt.is_some();
         listing.halted_by = self.halt.clone().unwrap_or_default();
         listing.leases = self.lease_listing();

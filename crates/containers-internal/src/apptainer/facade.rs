@@ -299,8 +299,8 @@ pub(crate) fn apparmor_profile_ref(apptainer_dir: &Path) -> ApparmorProfileRef {
 /// not a security boundary).
 #[cfg(target_os = "linux")]
 fn fnv1a_64(bytes: &[u8]) -> u64 {
-    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
     bytes.iter().fold(FNV_OFFSET_BASIS, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
     })

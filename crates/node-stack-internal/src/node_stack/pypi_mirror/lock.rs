@@ -283,7 +283,7 @@ wheels = [
         assert_eq!(
             lock.pypi_files(),
             [
-                file(IDNA_SDIST, Some(190490)),
+                file(IDNA_SDIST, Some(190_490)),
                 file(IDNA_WHEEL, Some(70442))
             ]
         );

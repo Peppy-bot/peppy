@@ -301,9 +301,9 @@ fn cargo_install_binary_with(
     let cargo_target_dir = cache_dir.join(format!("cargo-build-{name}"));
 
     // Clean up any previous partial install
-    std::fs::remove_dir_all(&install_root).ok();
-    std::fs::create_dir_all(&install_root).ok();
-    std::fs::create_dir_all(&cargo_target_dir).ok();
+    let _ = std::fs::remove_dir_all(&install_root);
+    let _ = std::fs::create_dir_all(&install_root);
+    let _ = std::fs::create_dir_all(&cargo_target_dir);
 
     // Guards ensure temp directories are cleaned up on all exit paths.
     let _install_guard = CleanupDir(install_root.clone());
@@ -335,7 +335,7 @@ fn cargo_install_binary_with(
     let published = std::fs::copy(&built_binary, &staged)
         .and_then(|_| std::fs::rename(&staged, &cached_binary));
     if let Err(e) = published {
-        std::fs::remove_file(&staged).ok();
+        let _ = std::fs::remove_file(&staged);
         println!("cargo:warning=Failed to cache compiled {name} binary: {e}");
         return None;
     }

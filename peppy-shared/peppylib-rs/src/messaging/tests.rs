@@ -862,7 +862,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     let mut message_ids: Vec<u32> = (0..message_count as u32).collect();
     // Fixed seed so a failure reproduces the same id ordering run to run, while
     // still exercising out-of-order payload contents.
-    let mut rng = rand::rngs::StdRng::seed_from_u64(0xC0FFEE);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0x00C0_FFEE);
     message_ids.shuffle(&mut rng);
 
     // Deterministically wait for the subscriber before the publish loop so the
@@ -2113,7 +2113,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
         // Fixed seed so a failure reproduces the same request order run to
         // run.
-        let mut rng = rand::rngs::StdRng::seed_from_u64(0xC0FFEE);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x00C0_FFEE);
         caller_requests.shuffle(&mut rng);
 
         let mut handles = Vec::with_capacity(caller_count);
@@ -2948,7 +2948,7 @@ async fn single_action_communication_multiple_polls() {
     let total_clients = cases.len();
     let mut shuffled_cases = cases.as_ref().clone();
     // Fixed seed so a failure reproduces the same client order run to run.
-    let mut rng = rand::rngs::StdRng::seed_from_u64(0xC0FFEE);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0x00C0_FFEE);
     shuffled_cases.shuffle(&mut rng);
 
     let mut client_handles = Vec::with_capacity(total_clients);

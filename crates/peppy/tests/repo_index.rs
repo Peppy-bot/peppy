@@ -761,7 +761,7 @@ mod exposures {
                 },
             })
         );
-        assert_eq!(join["progress_timeout_ms"], 660000);
+        assert_eq!(join["progress_timeout_ms"], 660_000);
     }
 
     #[test]

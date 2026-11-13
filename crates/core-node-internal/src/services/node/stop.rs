@@ -63,7 +63,7 @@ pub(crate) async fn listen_for_node_stop(
                     core_instance_id.clone(),
                     Arc::clone(&node_stack),
                     relationships.clone(),
-                    ownership.clone(),
+                    Arc::clone(&ownership),
                 )
             }))
             .await

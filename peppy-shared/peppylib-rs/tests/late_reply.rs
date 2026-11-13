@@ -85,9 +85,9 @@ struct EventFields {
 impl Visit for EventFields {
     fn record_str(&mut self, field: &Field, value: &str) {
         match field.name() {
-            "message" => self.message = value.to_owned(),
-            "service_name" => self.service_name = value.to_owned(),
-            "key_expr" => self.key_expr = value.to_owned(),
+            "message" => value.clone_into(&mut self.message),
+            "service_name" => value.clone_into(&mut self.service_name),
+            "key_expr" => value.clone_into(&mut self.key_expr),
             _ => {}
         }
     }

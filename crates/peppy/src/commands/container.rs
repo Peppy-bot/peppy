@@ -130,10 +130,10 @@ fn setup() -> Result<()> {
     if std::io::stdin().is_terminal() {
         print!("Apply these fixes now? (requires sudo) [Y/n] ");
         use std::io::Write;
-        std::io::stdout().flush().ok();
+        let _ = std::io::stdout().flush();
 
         let mut reply = String::new();
-        std::io::stdin().read_line(&mut reply).ok();
+        let _ = std::io::stdin().read_line(&mut reply);
         let reply = reply.trim();
         if reply.eq_ignore_ascii_case("n") || reply.eq_ignore_ascii_case("no") {
             println!();

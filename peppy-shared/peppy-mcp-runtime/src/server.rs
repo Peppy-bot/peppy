@@ -2034,7 +2034,7 @@ mod tests {
                 "operation": "long_running",
                 "safety_sensitive": true,
                 "confirmation_required": true,
-                "deadline_ms": 900000,
+                "deadline_ms": 900_000,
                 "input_schema": {
                     "type": "object",
                     "properties": { "episode_name": { "type": "string" } },
@@ -4087,7 +4087,7 @@ mod tests {
                         "image": "jpeg",
                         "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
                     },
-                    "max_result_bytes": 524288,
+                    "max_result_bytes": 524_288,
                     "on_oversize": "downscale"
                 },
                 "schema": { "type": "object" }

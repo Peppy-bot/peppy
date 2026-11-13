@@ -453,7 +453,7 @@ impl NodeStackInner {
                 .instances()
                 .iter()
                 .any(|inst| is_running_instance(inst, instance_id))
-                .then(|| handle.clone())
+                .then(|| Arc::clone(handle))
         })
     }
 
@@ -478,7 +478,7 @@ impl NodeStackInner {
 
     /// The entity tracking an instance with `instance_id` in any state.
     fn find_entity_any_state(&self, instance_id: &str) -> Option<EntityHandle> {
-        self.tracked(instance_id, |tracked| tracked.handle.clone())
+        self.tracked(instance_id, |tracked| Arc::clone(tracked.handle))
     }
 
     /// The state of the instance with `instance_id`, in any state.
@@ -492,7 +492,7 @@ impl NodeStackInner {
         instance_id: &Name,
     ) -> Option<(TrackedNodeInstance, EntityHandle)> {
         self.tracked(instance_id.as_str(), |tracked| {
-            (tracked.instance.clone(), tracked.handle.clone())
+            (tracked.instance.clone(), Arc::clone(tracked.handle))
         })
     }
 
@@ -685,7 +685,7 @@ impl NodeStackInner {
         }
 
         let &index = self.key_to_index.get(key)?;
-        let current = self.graph.node_weight(index)?.clone();
+        let current = Arc::clone(self.graph.node_weight(index)?);
 
         if !Arc::ptr_eq(&current, expected_handle) {
             return None;

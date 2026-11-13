@@ -1365,7 +1365,7 @@ mod tests {
         assert_eq!(
             record.bound,
             GoalBound::WholeGoal {
-                deadline_ms: NonZeroU64::new(900000).expect("nonzero")
+                deadline_ms: NonZeroU64::new(900_000).expect("nonzero")
             }
         );
     }
@@ -2277,7 +2277,7 @@ mod tests {
             Some(JpegQuality::new(80).expect("valid"))
         );
         assert_eq!(representation.fields.data, "frame");
-        assert_eq!(info.max_result_bytes.map(NonZeroU64::get), Some(524288));
+        assert_eq!(info.max_result_bytes.map(NonZeroU64::get), Some(524_288));
         assert_eq!(info.on_oversize, Some(OversizePolicy::Downscale));
         assert_eq!(
             info.content_policies(),

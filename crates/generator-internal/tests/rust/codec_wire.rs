@@ -585,7 +585,7 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
     );
 
     let mut handle = fire(json!({
-        "steps": 100000,
+        "steps": 100_000,
         "label": "long",
         "options": { "uppercase": false },
     }))

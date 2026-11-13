@@ -114,8 +114,8 @@ impl ServeAsyncCommand for MessagingRouter {
                 info!("Messaging session initialized");
             }
 
-            messaging_ready.send(true).ok();
-            ready_tx.send(()).ok();
+            let _ = messaging_ready.send(true);
+            let _ = ready_tx.send(());
 
             // Router watchdog: probe the router's liveness and respawn managed
             // zenohd if it wedges. An adopted router is observed but never

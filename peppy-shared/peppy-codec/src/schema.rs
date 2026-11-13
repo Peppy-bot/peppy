@@ -260,8 +260,8 @@ fn to_pascal_case(input: &str) -> String {
 /// The FNV-1a hash of the schema name and the shape of the format, which
 /// seeds the file id of the schema.
 fn schema_id(schema_name: &str, fields: &IndexMap<String, SchemaType>) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
 
     fn update(mut hash: u64, bytes: &[u8]) -> u64 {
         for byte in bytes {

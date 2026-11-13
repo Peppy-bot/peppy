@@ -114,7 +114,7 @@ async fn keep_certificate_valid(deps: &RenewalDeps) {
 /// One check: read the enrollment and the clock, and renew the certificate
 /// when the renewal is due.
 async fn check_and_renew(deps: &RenewalDeps) -> Step {
-    let reader = deps.enrollment.clone();
+    let reader = Arc::clone(&deps.enrollment);
     let enrollment = match run_blocking(move || reader()).await {
         Ok(Some(enrollment)) => enrollment,
         Ok(None) => {
@@ -133,7 +133,7 @@ async fn check_and_renew(deps: &RenewalDeps) -> Step {
         return Step::Wait(time_until(certificate.renewal_due_at(), now).min(CHECK_INTERVAL));
     }
 
-    let renewer = deps.renewer.clone();
+    let renewer = Arc::clone(&deps.renewer);
     let renewed = run_blocking(move || renewer()).await;
     step_after_renewal(&enrollment, renewed)
 }
@@ -287,15 +287,15 @@ mod tests {
         }
 
         fn deps(&self) -> RenewalDeps {
-            let on_disk = self.on_disk.clone();
+            let on_disk = Arc::clone(&self.on_disk);
             let (disk, script, renewals) = (
-                self.on_disk.clone(),
-                self.script.clone(),
-                self.renewals.clone(),
+                Arc::clone(&self.on_disk),
+                Arc::clone(&self.script),
+                Arc::clone(&self.renewals),
             );
-            let clock = self.now.clone();
-            let renewal_clock = self.now.clone();
-            let (slept_clock, sleeps) = (self.now.clone(), self.sleeps.clone());
+            let clock = Arc::clone(&self.now);
+            let renewal_clock = Arc::clone(&self.now);
+            let (slept_clock, sleeps) = (Arc::clone(&self.now), Arc::clone(&self.sleeps));
             RenewalDeps {
                 enrollment: Arc::new(move || match &*on_disk.lock().unwrap() {
                     Ok(enrollment) => Ok(enrollment.clone()),

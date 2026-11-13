@@ -415,7 +415,7 @@ impl StackState {
     /// Takes the stack for one change, refusing while a change or a node
     /// goal holds it.
     pub fn try_begin_change(&self) -> Result<StackHold, StackBusy> {
-        let write = self.mutation.clone().try_write_owned().map_err(|_| {
+        let write = Arc::clone(&self.mutation).try_write_owned().map_err(|_| {
             // Node goals share the stack, so a read admitted now says they
             // hold it; another change holds it alone.
             if self.mutation.try_read().is_ok() {
@@ -441,21 +441,20 @@ impl StackState {
     pub(crate) fn try_admit_node_goal(
         &self,
     ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, StackBusy> {
-        self.mutation
-            .clone()
+        Arc::clone(&self.mutation)
             .try_read_owned()
             .map_err(|_| StackBusy::Change)
     }
 
     /// Admits one node goal once the change holding the stack ends.
     pub(crate) async fn admit_node_goal_waiting(&self) -> tokio::sync::OwnedRwLockReadGuard<()> {
-        self.mutation.clone().read_owned().await
+        Arc::clone(&self.mutation).read_owned().await
     }
 
     /// Cancels admitted work and drains its guards before the stack is cleared.
     pub(crate) async fn begin_reset(&self) -> tokio::sync::OwnedRwLockWriteGuard<()> {
         self.cancellation.lock().cancel();
-        let guard = self.mutation.clone().write_owned().await;
+        let guard = Arc::clone(&self.mutation).write_owned().await;
         *self.cancellation.lock() = CancellationToken::new();
         guard
     }
@@ -638,7 +637,7 @@ mod tests {
                     let _ = released.await;
                 })
             };
-            let reset_state = state.clone();
+            let reset_state = Arc::clone(&state);
             let reset = tokio::spawn(async move { reset_state.begin_reset().await });
             cancellation.cancelled().await;
             assert!(!reset.is_finished(), "reset must drain the admitted worker");
@@ -710,7 +709,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let work_cancel = cancellation.clone();
         let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let worker_cleaned = cleaned.clone();
+        let worker_cleaned = Arc::clone(&cleaned);
         let work = async move {
             work_cancel.cancelled().await;
             worker_cleaned.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -733,7 +732,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let work_cancel = cancellation.clone();
         let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let worker_cleaned = cleaned.clone();
+        let worker_cleaned = Arc::clone(&cleaned);
         let work = async move {
             work_cancel.cancelled().await;
             tokio::time::sleep(stop).await;

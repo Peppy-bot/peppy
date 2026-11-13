@@ -355,7 +355,7 @@ fn write_consumed_interfaces(out: &mut String, interfaces: &Interfaces) {
 pub(super) fn retention_note(retention: TopicRetention) -> String {
     match retention {
         TopicRetention::LiveOnly => String::new(),
-        retaining => format!(", retention: {retaining}"),
+        retaining @ TopicRetention::Latest { .. } => format!(", retention: {retaining}"),
     }
 }
 

@@ -134,7 +134,7 @@ static APP_ENV: OnceLock<AppEnv> = OnceLock::new();
 /// should construct [`PeppyDirs::new`] directly rather than rely on this
 /// global; that keeps it independent of call ordering across threads.
 pub fn set_app_env(env: AppEnv) {
-    APP_ENV.set(env).ok();
+    let _ = APP_ENV.set(env);
 }
 
 /// Returns the process-wide application environment, defaulting to

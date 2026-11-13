@@ -38,10 +38,8 @@ pub fn report_progress(message: &str) {
     };
     // One `write_all` per line keeps a line intact when concurrent build
     // scripts write to the same terminal.
-    terminal
-        .write_all(progress_line(package_name().as_deref(), message).as_bytes())
-        .ok();
-    terminal.flush().ok();
+    let _ = terminal.write_all(progress_line(package_name().as_deref(), message).as_bytes());
+    let _ = terminal.flush();
 }
 
 /// The line written to the terminal for `message`.

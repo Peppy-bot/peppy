@@ -375,7 +375,7 @@ mod tests {
             LauncherOrigin::Fs(resolved) => {
                 assert_eq!(resolved, p.canonicalize().unwrap());
             }
-            other => panic!("expected Fs, got {other:?}"),
+            other @ LauncherOrigin::Repository { .. } => panic!("expected Fs, got {other:?}"),
         }
     }
 
@@ -403,7 +403,7 @@ mod tests {
             infer_launcher_origin(PathBuf::from("openarm_v2")).expect("bare name should not error");
         match origin {
             LauncherOrigin::Repository { name } => assert_eq!(name, "openarm_v2"),
-            other => panic!("expected Repository, got {other:?}"),
+            other @ LauncherOrigin::Fs(_) => panic!("expected Repository, got {other:?}"),
         }
     }
 

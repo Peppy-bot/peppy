@@ -530,7 +530,7 @@ mod apptainer_build {
         {
             return true;
         }
-        std::fs::remove_file(dest).ok();
+        let _ = std::fs::remove_file(dest);
         false
     }
 
@@ -539,7 +539,7 @@ mod apptainer_build {
     /// Lima archives contain paths like `bin/limactl`, `share/lima/templates/`, etc.
     fn extract_lima_archive(archive: &Path, dest_dir: &Path) -> bool {
         if dest_dir.exists() {
-            std::fs::remove_dir_all(dest_dir).ok();
+            let _ = std::fs::remove_dir_all(dest_dir);
         }
         std::fs::create_dir_all(dest_dir).expect("Failed to create lima extraction directory");
 
@@ -598,7 +598,7 @@ mod apptainer_build {
             return None;
         }
 
-        std::fs::remove_file(&archive_path).ok();
+        let _ = std::fs::remove_file(&archive_path);
 
         if !cached_limactl.exists() {
             println!(
@@ -661,7 +661,7 @@ mod apptainer_build {
                 return false;
             }
             let extracted = extract_lima_archive(&archive_path, &extract_dir);
-            std::fs::remove_file(&archive_path).ok();
+            let _ = std::fs::remove_file(&archive_path);
             if !extracted {
                 return false;
             }
@@ -1060,7 +1060,7 @@ mod apptainer_build {
         }
 
         // Clean up the archive; only useful for the one-shot install.
-        std::fs::remove_file(&archive_path).ok();
+        let _ = std::fs::remove_file(&archive_path);
 
         if !gocryptfs_bin.exists() {
             println!("cargo:warning=gocryptfs extracted but binary missing at {gocryptfs_bin:?}");
@@ -1197,7 +1197,7 @@ mod apptainer_build {
         let source_dir = source_cache.join(format!("squashfuse-{SQUASHFUSE_VERSION}"));
 
         if source_dir.exists() {
-            std::fs::remove_dir_all(&source_dir).ok();
+            let _ = std::fs::remove_dir_all(&source_dir);
         }
 
         if !download_squashfuse_archive(&tarball_path) {
@@ -1214,7 +1214,7 @@ mod apptainer_build {
         ) {
             return false;
         }
-        std::fs::remove_file(&tarball_path).ok();
+        let _ = std::fs::remove_file(&tarball_path);
 
         // No `autogen.sh`: the release tarball ships a generated `configure`
         // (see [`squashfuse_source_url`]). `FLAGS=-std=c99` and
@@ -1228,7 +1228,7 @@ mod apptainer_build {
         ];
         for (program, args) in steps {
             if !run_squashfuse_step(&source_dir, program, args) {
-                std::fs::remove_dir_all(&source_dir).ok();
+                let _ = std::fs::remove_dir_all(&source_dir);
                 return false;
             }
         }
@@ -1236,12 +1236,12 @@ mod apptainer_build {
         let built = source_dir.join("squashfuse_ll");
         if !built.exists() {
             println!("cargo:warning=squashfuse build reported success but {built:?} is missing");
-            std::fs::remove_dir_all(&source_dir).ok();
+            let _ = std::fs::remove_dir_all(&source_dir);
             return false;
         }
 
         let installed = install_squashfuse_binary(&built, &dest);
-        std::fs::remove_dir_all(&source_dir).ok();
+        let _ = std::fs::remove_dir_all(&source_dir);
         installed
     }
 
@@ -1498,7 +1498,7 @@ mod apptainer_build {
         let source_dir = source_cache.join(format!("apptainer-{version}"));
 
         if source_dir.exists() {
-            std::fs::remove_dir_all(&source_dir).ok();
+            let _ = std::fs::remove_dir_all(&source_dir);
         }
 
         // Verified before anything reads the contents.
@@ -1522,7 +1522,7 @@ mod apptainer_build {
             return false;
         }
 
-        std::fs::remove_file(&tarball_path).ok();
+        let _ = std::fs::remove_file(&tarball_path);
 
         // The GitHub auto-generated tarball does not include a VERSION file,
         // but apptainer's mconfig requires either .git or VERSION to determine
@@ -1548,7 +1548,7 @@ mod apptainer_build {
                 .arg(format!("--prefix={}", install_dir.display())),
             "configure apptainer build",
         ) {
-            std::fs::remove_dir_all(&source_dir).ok();
+            let _ = std::fs::remove_dir_all(&source_dir);
             return false;
         }
 
@@ -1560,7 +1560,7 @@ mod apptainer_build {
         )
         .success
         {
-            std::fs::remove_dir_all(&source_dir).ok();
+            let _ = std::fs::remove_dir_all(&source_dir);
             return false;
         }
 
@@ -1570,7 +1570,7 @@ mod apptainer_build {
                 .args(["-C", "builddir", "install"]),
             "install apptainer",
         ) {
-            std::fs::remove_dir_all(&source_dir).ok();
+            let _ = std::fs::remove_dir_all(&source_dir);
             return false;
         }
 
@@ -1578,7 +1578,7 @@ mod apptainer_build {
             return false;
         }
 
-        std::fs::remove_dir_all(&source_dir).ok();
+        let _ = std::fs::remove_dir_all(&source_dir);
 
         // Ship the libseccomp the binaries were just linked against, so they
         // never resolve a version-skewed one from the runtime host.
@@ -2121,11 +2121,11 @@ echo "=== Apptainer build complete ==="
             return;
         }
         if dest.exists() {
-            std::fs::remove_dir_all(dest).ok();
+            let _ = std::fs::remove_dir_all(dest);
         }
         copy_dir_recursive(source, dest)
             .unwrap_or_else(|e| panic!("Failed to copy {what} to OUT_DIR: {e}"));
-        std::fs::write(&stamp_path, stamp).ok();
+        let _ = std::fs::write(&stamp_path, stamp);
     }
 
     /// Pre-build apptainer for all target architectures via Lima VMs.

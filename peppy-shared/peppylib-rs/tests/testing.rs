@@ -51,7 +51,7 @@ fn write_peppy_config(dir: &TempDir) -> PathBuf {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct EmptyParameters {}
+struct EmptyParameters;
 
 /// Scripted responses are served automatically in FIFO order; unscripted
 /// requests park for `next_request`; every request lands in the capture

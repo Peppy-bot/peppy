@@ -333,7 +333,7 @@ mod tests {
         assert!(excluded.contains(&".venv".to_string()));
 
         // Clean up the kept tempdir
-        fs::remove_dir_all(&working_dir).ok();
+        let _ = fs::remove_dir_all(&working_dir);
     }
 
     #[test]

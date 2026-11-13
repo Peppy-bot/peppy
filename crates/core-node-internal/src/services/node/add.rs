@@ -133,7 +133,7 @@ impl CleanupDir {
 impl Drop for CleanupDir {
     fn drop(&mut self) {
         if let Some(dir) = self.0.take() {
-            std::fs::remove_dir_all(dir).ok();
+            let _ = std::fs::remove_dir_all(dir);
         }
     }
 }
@@ -363,7 +363,7 @@ async fn clone_repo_to_temp(
     .await
     .map_err(|e| format!("Failed to join git clone task: {e}"))?
     {
-        std::fs::remove_dir_all(&checkout_dir).ok();
+        let _ = std::fs::remove_dir_all(&checkout_dir);
         return Err(err);
     }
 
@@ -406,7 +406,7 @@ fn parse_config_from_checkout(
     let node_config = match parse_node_config_file(&config_path) {
         Ok(cfg) => cfg,
         Err(msg) => {
-            std::fs::remove_dir_all(&checkout_dir).ok();
+            let _ = std::fs::remove_dir_all(&checkout_dir);
             return Err(msg);
         }
     };
@@ -597,7 +597,7 @@ fn download_http_bundle_once(
     if let Some((hasher, expected)) = hasher.zip(expected_bytes) {
         let computed = hasher.finalize();
         if computed.as_slice() != expected.as_slice() {
-            std::fs::remove_file(destination).ok();
+            let _ = std::fs::remove_file(destination);
             return Err(DownloadAttemptError::Fatal(format!(
                 "SHA256 checksum mismatch for {}: expected {}, computed {}",
                 shown_url,
@@ -719,7 +719,7 @@ fn resolve_http_source_download_and_extract(
 
     download_http_bundle(&url, &bundle_path, expected_sha256.as_deref(), announcer)?;
     extract_http_bundle(&bundle_path, &extract_dir, &url)?;
-    std::fs::remove_file(&bundle_path).ok();
+    let _ = std::fs::remove_file(&bundle_path);
 
     let node_root_dir = locate_node_root_dir(&extract_dir)?;
 
@@ -973,7 +973,7 @@ pub(crate) async fn run_node_add(
             let sync_manifest = node_config.manifest.clone();
             let sync_interfaces = node_config.interfaces.clone();
             let sync_git_hash = goal.git_hash.clone();
-            let sync_node_stack = action_context.node_stack.clone();
+            let sync_node_stack = Arc::clone(&action_context.node_stack);
             let sync_peppy_dirs = action_context.peppy_dirs.clone();
             let sync_announcer = announcer.clone();
 

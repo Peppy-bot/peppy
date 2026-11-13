@@ -1318,7 +1318,7 @@ mod tests {
             parsed,
             ParameterSpec::Primitive {
                 kind: TypeToken::F32,
-                default: Some(DefaultValue::Float(16777216.0))
+                default: Some(DefaultValue::Float(16_777_216.0))
             }
         );
     }
@@ -1370,7 +1370,7 @@ mod tests {
     #[test]
     fn runtime_f32_rejects_int_above_lossless_range() {
         let s = schema(r#"{ gain: "f32" }"#);
-        let raw = BTreeMap::from([("gain".to_string(), AnyType::Int(16777217))]);
+        let raw = BTreeMap::from([("gain".to_string(), AnyType::Int(16_777_217))]);
         let err = validate_node_arguments(raw, &s).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("f32"), "got: {msg}");
@@ -1402,9 +1402,9 @@ mod tests {
             AnyType::Float(0.0),
             AnyType::Float(1.5),
             AnyType::Float(-1.5),
-            AnyType::Int(16777216),
-            AnyType::Int(-16777216),
-            AnyType::UInt(16777216),
+            AnyType::Int(16_777_216),
+            AnyType::Int(-16_777_216),
+            AnyType::UInt(16_777_216),
             AnyType::UInt(0),
         ] {
             let raw = BTreeMap::from([("gain".to_string(), value.clone())]);

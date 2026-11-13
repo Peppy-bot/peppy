@@ -71,7 +71,7 @@ impl<'a> InterfaceClient<'a> {
         instance_id: &str,
     ) -> RobotLeasesClient<'a> {
         let mut client = Self::sending_as(started, instance_id).await;
-        client.identity.core_node = core_node.to_owned();
+        core_node.clone_into(&mut client.identity.core_node);
         client
     }
 

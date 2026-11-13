@@ -144,7 +144,7 @@ async fn a_failure_answer_reaches_the_caller_with_its_kind_and_message() {
 async fn queryable_declarations(session: &Mutex<Messenger>) -> Vec<String> {
     match &session.lock().await.adapter {
         MessengerAdapter::Mock(adapter) => adapter.queryable_declarations(),
-        _ => unreachable!("the session is a mock"),
+        MessengerAdapter::Zenoh(_) => unreachable!("the session is a mock"),
     }
 }
 
