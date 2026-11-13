@@ -720,7 +720,7 @@ class RepositoryFacts(unittest.TestCase):
             "types: [opened, edited, synchronize, reopened]",
             "permissions: {}",
             "pr-title:",
-            "- uses: Peppy-bot/peppy/.github/actions/pr-title@dev",
+            "- uses: $/.github/actions/pr-title",
             "plane-api-key: ${{ secrets.PLANE_API_KEY }}",
         ):
             with self.subTest(line=line):

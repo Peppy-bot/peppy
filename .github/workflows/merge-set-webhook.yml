@@ -36,7 +36,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           sparse-checkout: .github
           persist-credentials: false
@@ -44,7 +44,7 @@ jobs:
       - name: Package the function
         run: python3 .github/merge-set/webhook.py package webhook.zip
 
-      - uses: aws-actions/configure-aws-credentials@v6
+      - uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
           role-to-assume: ${{ vars.MERGE_SET_WEBHOOK_ROLE_ARN }}
           aws-region: us-east-1

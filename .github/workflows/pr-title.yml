@@ -16,6 +16,6 @@ jobs:
     runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:
-      - uses: Peppy-bot/peppy/.github/actions/pr-title@dev
+      - uses: $/.github/actions/pr-title
         with:
           plane-api-key: ${{ secrets.PLANE_API_KEY }}

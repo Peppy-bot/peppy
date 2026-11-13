@@ -49,7 +49,7 @@ runs:
     # infraops), after which the first run starts empty and pays one cold
     # build, and the steps below, which drop the peppylib-py targets of
     # earlier versions and empty a disk restored more than half full.
-    - uses: runs-on/action@v2
+    - uses: runs-on/action@v2.7.0
       with:
         sticky_cache: |
           cargo
@@ -58,7 +58,7 @@ runs:
     # Writes what the disk holds and what grew in it to the job summary at the
     # end of the job. Its post step runs before the one of runs-on/action
     # above, which unmounts the disk.
-    - uses: ./.github/actions/sticky-disk-report
+    - uses: $/.github/actions/sticky-disk-report
 
     # The generator's build script builds peppylib-py in
     # ~/.peppy/tmp/peppylib-py/target-<hash>, a whole cargo target directory

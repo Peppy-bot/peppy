@@ -102,7 +102,7 @@ jobs:
       peppy_shared_peppylib_py: ${{ steps.changes.outputs.peppy_shared_peppylib_py }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           # The detection diffs the branch against its base, so both sides of
           # the history must be present.
@@ -113,7 +113,7 @@ jobs:
 
       # The detection queries cargo metadata, and the action is what puts the
       # image's cargo on PATH.
-      - uses: ./.github/actions/rust-build-env
+      - uses: $/.github/actions/rust-build-env
 
       # What this job decides is which suites run at all, so the decision is
       # tested before it is trusted. The cases read this repository's real
@@ -176,7 +176,7 @@ jobs:
 
       - name: Detect changed test inputs
         id: changes
-        uses: ./.github/actions/changed-test-inputs
+        uses: $/.github/actions/changed-test-inputs
         with:
           base: ${{ github.event.pull_request.base.sha || github.event.before }}
 
@@ -190,20 +190,20 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
       # Puts the image's toolchain on PATH and prepares the host state
       # apptainer needs. Must precede every cargo step.
-      - uses: ./.github/actions/rust-build-env
+      - uses: $/.github/actions/rust-build-env
 
-      - uses: ./.github/actions/cargo-cache
+      - uses: $/.github/actions/cargo-cache
         with:
           suite: workspace-tests
 
-      - uses: ./.github/actions/cargo-suite
+      - uses: $/.github/actions/cargo-suite
         with:
           command: cargo test --locked
 
@@ -215,18 +215,18 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: ./.github/actions/rust-build-env
+      - uses: $/.github/actions/rust-build-env
 
-      - uses: ./.github/actions/cargo-cache
+      - uses: $/.github/actions/cargo-cache
         with:
           suite: container-e2e
 
-      - uses: ./.github/actions/cargo-suite
+      - uses: $/.github/actions/cargo-suite
         with:
           command: cargo test --locked -p core-node --features container_e2e --test container_e2e
 
@@ -249,14 +249,14 @@ jobs:
       DISTRIBUTION_SHA256: 40df2224d410f72ae425c3371873b078bbdbda3b8b612be9571f0e6751f3acc8
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: ./.github/actions/rust-build-env
+      - uses: $/.github/actions/rust-build-env
 
-      - uses: ./.github/actions/cargo-cache
+      - uses: $/.github/actions/cargo-cache
         with:
           suite: registry-e2e
 
@@ -271,11 +271,11 @@ jobs:
           tar -xzf "$archive" -C "$dir" registry
           echo "PEPPY_TEST_REGISTRY_BIN=$dir/registry" >> "$GITHUB_ENV"
 
-      - uses: ./.github/actions/cargo-suite
+      - uses: $/.github/actions/cargo-suite
         with:
           command: cargo test --locked -p oci-registry --features registry_e2e --test registry_e2e
 
-      - uses: ./.github/actions/cargo-suite
+      - uses: $/.github/actions/cargo-suite
         with:
           command: cargo test --locked -p core-node --features registry_e2e --test registry_e2e
 
@@ -291,14 +291,14 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: ./.github/actions/rust-build-env
+      - uses: $/.github/actions/rust-build-env
 
-      - uses: ./.github/actions/cargo-cache
+      - uses: $/.github/actions/cargo-cache
         with:
           suite: multi-daemon-e2e
 
@@ -306,7 +306,7 @@ jobs:
       # build_e2e_daemon_image), which resolves the default builder of the
       # runner's own Docker daemon. The runner starts with an empty layer
       # cache, so every run builds the apt and uv-python layers.
-      - uses: ./.github/actions/cargo-suite
+      - uses: $/.github/actions/cargo-suite
         with:
           command: cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
 
@@ -318,14 +318,14 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: ./.github/actions/rust-build-env
+      - uses: $/.github/actions/rust-build-env
 
-      - uses: ./.github/actions/cargo-cache
+      - uses: $/.github/actions/cargo-cache
         with:
           suite: docs-integration
 
@@ -340,7 +340,7 @@ jobs:
       - name: Fetch every crate in the lockfile for the offline snippet builds
         run: cargo fetch --locked
 
-      - uses: ./.github/actions/cargo-suite
+      - uses: $/.github/actions/cargo-suite
         with:
           command: cargo test --locked -p docs-integration-tests
 
@@ -359,13 +359,13 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
       # Provides the pixi the suite runs under.
-      - uses: ./.github/actions/rust-build-env
+      - uses: $/.github/actions/rust-build-env
 
       - name: Run the mocked release scripts tests
         run: ./scripts/run_tests.sh -m 'not install'
@@ -426,13 +426,13 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/rust-build-env
+      - uses: $/.github/actions/rust-build-env
 
-      - uses: ./.github/actions/cargo-cache
+      - uses: $/.github/actions/cargo-cache
         with:
           suite: install-archive
 
@@ -451,7 +451,7 @@ jobs:
       # policy, every hub pull request without a peppy branch of its name
       # takes the dev build of the head of dev, and dev can go more than 14
       # days without a push.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: peppy-dev-x86_64-unknown-linux-gnu
           path: dist/peppy-x86_64-unknown-linux-gnu.tgz
@@ -472,11 +472,11 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/install-test
+      - uses: $/.github/actions/install-test
         with:
           archive: peppy-dev-x86_64-unknown-linux-gnu
 
@@ -495,13 +495,13 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/rust-build-env
+      - uses: $/.github/actions/rust-build-env
 
-      - uses: ./.github/actions/cargo-cache
+      - uses: $/.github/actions/cargo-cache
         with:
           suite: install-archive-aarch64
 
@@ -513,7 +513,7 @@ jobs:
       # The installing job runs on ubuntu-24.04-arm, so this runner must
       # build the aarch64 archive; a runner of another architecture fails
       # here, by name. Only the job after this one reads it.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: peppy-dev-aarch64-unknown-linux-gnu
           path: dist/peppy-aarch64-unknown-linux-gnu.tgz
@@ -533,11 +533,11 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/install-test
+      - uses: $/.github/actions/install-test
         with:
           archive: peppy-dev-aarch64-unknown-linux-gnu
 
@@ -569,7 +569,7 @@ jobs:
     steps:
       # The workspace checkout, whole: it carries the composite actions below.
       # Nothing of the tree under test is built from here.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
@@ -582,7 +582,7 @@ jobs:
       # not: the actions are used from the workspace checkout above, and
       # leaving it out keeps this checkout to the tree and the one file it
       # needs.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           path: sealed
           persist-credentials: false
@@ -595,9 +595,9 @@ jobs:
       # peppylib-py's build script and suite reach for. The workspace is pure
       # Rust plus the peppylib extension: nothing in it builds apptainer or
       # runs a container, so that is the whole environment.
-      - uses: ./.github/actions/rust-build-env
+      - uses: $/.github/actions/rust-build-env
 
-      - uses: ./.github/actions/cargo-cache
+      - uses: $/.github/actions/cargo-cache
         with:
           suite: peppy-shared
           target-dir: sealed/peppy-shared/target
@@ -606,7 +606,7 @@ jobs:
       # tests/python_tests.rs only wrap `pixi run test`, which the step below
       # runs directly. The lockfile is workspace-global, so `--locked` still
       # validates it against every member's manifest, peppylib-py included.
-      - uses: ./.github/actions/cargo-suite
+      - uses: $/.github/actions/cargo-suite
         if: needs.changes.outputs.peppy_shared_packages != ''
         with:
           working-directory: sealed/peppy-shared
@@ -654,11 +654,11 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/rust-build-env
+      - uses: $/.github/actions/rust-build-env
 
       # The aarch64 target and the cross gcc come from the CI image's
       # provisioning, as the rest of what this job builds with does, and this
@@ -686,7 +686,7 @@ jobs:
             exit 1
           fi
 
-      - uses: ./.github/actions/cargo-cache
+      - uses: $/.github/actions/cargo-cache
         with:
           suite: cross-check
 
@@ -701,6 +701,38 @@ jobs:
           PEPPY_SKIP_APPTAINER_PROVISION: "1"
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo check --locked --target aarch64-unknown-linux-gnu -p peppy
+
+  # The lockfile, .github/workflows/actions.lock, holds the commit of each
+  # action that the workflows of this repository use, and GitHub Actions runs
+  # that commit only. This job fails when the lockfile does not agree with
+  # the `uses:` lines of the workflows and of the actions they use, or when a
+  # commit of the lockfile is not in the history of its tag or branch.
+  # `gh actions-lock` writes the lockfile.
+  lockfile:
+    name: Verify the lockfile of the actions
+    # The smallest RunsOn runner: the job asks the GitHub API about each
+    # commit of the lockfile and builds nothing.
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          # Nothing here pushes, so the job has no use for a writable
+          # credential sitting in .git/config for every later step to inherit.
+          persist-credentials: false
+
+      # The release of the extension is pinned, so every run verifies with
+      # the same program.
+      - name: Install the gh actions-lock extension
+        run: gh extension install github/gh-actions-lock --pin v0.4.1
+
+      - name: Verify the lockfile
+        run: gh actions-lock --verify
 
   # The one status check the branch rulesets on dev and main require. It is
   # green only when every job above succeeded or was gated off, so a red
@@ -721,6 +753,7 @@ jobs:
       - install-script-aarch64
       - peppy-shared
       - cross-check
+      - lockfile
     # Runs whatever happened above: on the default condition a failed or
     # cancelled suite would leave this check unreported instead of red.
     if: always()
