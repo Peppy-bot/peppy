@@ -55,7 +55,7 @@ pub(super) fn teardown_budget_for(shutdown_grace_secs: u64) -> Duration {
         + Duration::from_secs(1)
 }
 
-pub struct MessagingRouter {
+pub(crate) struct MessagingRouter {
     messenger: Arc<Mutex<Messenger>>,
     messaging_ready: watch::Sender<bool>,
     /// Signaled (`true`) by the core node once its teardown has finished. The
@@ -73,7 +73,7 @@ pub struct MessagingRouter {
 }
 
 impl MessagingRouter {
-    pub fn new(
+    pub(crate) fn new(
         messenger: Arc<Mutex<Messenger>>,
         messaging_ready: watch::Sender<bool>,
         core_node_done: watch::Receiver<bool>,

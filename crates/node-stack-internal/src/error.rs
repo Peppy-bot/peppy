@@ -4,7 +4,7 @@ use config::{ConfigError, ParsingError};
 use core_node_api::{InstanceState, duplicate_instance_id_message};
 use thiserror::Error;
 
-pub type Result<T> = core::result::Result<T, Error>;
+pub(crate) type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {

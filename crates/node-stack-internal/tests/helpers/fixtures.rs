@@ -20,7 +20,7 @@ use crate::helpers::real_lifecycle::{
 /// config are overridden by the fixture (see
 /// [`real_lifecycle::override_execution_for_fixture`]) so tests must not
 /// assert on `run_cmd`/`container`/`build_cmd` after this call.
-pub async fn push_built(
+pub(crate) async fn push_built(
     stack: &NodeStack,
     harness: &LifecycleHarness,
     config: NodeConfig,
@@ -31,7 +31,7 @@ pub async fn push_built(
 
 /// Pushes a config, builds, and spawns one `Running` instance. Returns the
 /// guard; drop it to clean up the child process.
-pub async fn push_started(
+pub(crate) async fn push_started(
     stack: &NodeStack,
     harness: &LifecycleHarness,
     config: NodeConfig,
@@ -44,7 +44,7 @@ pub async fn push_started(
 
 /// Spawns a real `Running` instance on the existing entity at `(name, tag)`.
 /// Caller must hold the returned guard for the test lifetime.
-pub async fn start_instance_in_stack(
+pub(crate) async fn start_instance_in_stack(
     stack: &NodeStack,
     harness: &LifecycleHarness,
     name: &str,
@@ -62,7 +62,7 @@ pub async fn start_instance_in_stack(
 /// instance was actually removed. Idempotent with the guard's Drop cleanup:
 /// a subsequent drop will just re-call `stop_instance` (returning `false`)
 /// and send SIGTERM to the already-stopped child.
-pub fn stop_instance_in_stack(
+pub(crate) fn stop_instance_in_stack(
     stack: &NodeStack,
     name: &str,
     tag: &str,

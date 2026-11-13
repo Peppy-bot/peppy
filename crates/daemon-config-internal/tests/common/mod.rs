@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Writes `content` at `path`, creating the directories above it.
-pub fn write(path: &Path, content: &str) -> PathBuf {
+pub(crate) fn write(path: &Path, content: &str) -> PathBuf {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).unwrap();
     }
@@ -19,33 +19,33 @@ pub fn write(path: &Path, content: &str) -> PathBuf {
 }
 
 /// A `launcher_fragment/v1` document around `body`.
-pub fn fragment_file(body: &str) -> String {
+pub(crate) fn fragment_file(body: &str) -> String {
     format!("{{ peppy_schema: \"launcher_fragment/v1\", {body} }}")
 }
 
 /// `document` held ready to compose, read as the launcher at `fleet.json5`.
-pub fn load(document: &str) -> PreparedLauncher {
+pub(crate) fn load(document: &str) -> PreparedLauncher {
     let parsed = PeppyLauncherParser::from_content(document).unwrap();
     PreparedLauncher::load(&parsed, Path::new("fleet.json5")).unwrap()
 }
 
 /// The `--with` words of one launch, as the composer takes them.
-pub fn words(entries: &[&str]) -> Vec<LaunchWord> {
+pub(crate) fn words(entries: &[&str]) -> Vec<LaunchWord> {
     entries.iter().map(|entry| entry.parse().unwrap()).collect()
 }
 
 /// The `--with` words of one join, as the composer takes them.
-pub fn join_words(entries: &[&str]) -> Vec<SelectionWord> {
+pub(crate) fn join_words(entries: &[&str]) -> Vec<SelectionWord> {
     entries.iter().map(|entry| entry.parse().unwrap()).collect()
 }
 
 /// `value` as a validated name.
-pub fn name(value: &str) -> Name {
+pub(crate) fn name(value: &str) -> Name {
     Name::new(value).expect("a name")
 }
 
 /// `value` as a validated copy name.
-pub fn copy_name(value: &str) -> CopyName {
+pub(crate) fn copy_name(value: &str) -> CopyName {
     CopyName::new(value).expect("a copy name")
 }
 
@@ -53,7 +53,7 @@ pub fn copy_name(value: &str) -> CopyName {
 /// exposures these binaries deploy: `framework_controls` and
 /// `copies_controls` serve one `robot_membership` daemon target each,
 /// `stack` and `copies`, and `camera` links `front_camera`.
-pub fn exposure_targets(exposures: &[ExposureRef]) -> DeploymentTargets {
+pub(crate) fn exposure_targets(exposures: &[ExposureRef]) -> DeploymentTargets {
     let mut targets = DeploymentTargets::default();
     for exposure in exposures {
         match exposure.name.as_str() {

@@ -11,11 +11,15 @@ use core_node_api::InstanceState;
 use core_node_api::encoding::NodeRunResult;
 
 /// A probe answerer that stops answering when dropped.
-pub type Mock = AbortOnDrop<peppylib::PeppyResult<()>>;
+pub(crate) type Mock = AbortOnDrop<peppylib::PeppyResult<()>>;
 
 /// The ready and health mocks of `instance_id`, which answer for every
 /// process started under the id, settled before the run they answer.
-pub async fn mocks(started: &StartedCoreNode, name: &str, instance_id: &str) -> (Mock, Mock) {
+pub(crate) async fn mocks(
+    started: &StartedCoreNode,
+    name: &str,
+    instance_id: &str,
+) -> (Mock, Mock) {
     let ready = answer_ready_probe(started, name, instance_id).await;
     let health = answer_health_probes(started, name, instance_id).await;
     settle().await;
@@ -24,7 +28,7 @@ pub async fn mocks(started: &StartedCoreNode, name: &str, instance_id: &str) -> 
 
 /// Runs the instance `plan` names of `name` with `restart`, returning how
 /// the run ended; a completed run carries the pid.
-pub async fn run_plan(
+pub(crate) async fn run_plan(
     started: &StartedCoreNode,
     name: &str,
     plan: NodeInstancePlan,
@@ -34,7 +38,7 @@ pub async fn run_plan(
 }
 
 /// [`run_plan`] with `env_vars` on the goal.
-pub async fn run_plan_with_env(
+pub(crate) async fn run_plan_with_env(
     started: &StartedCoreNode,
     name: &str,
     plan: NodeInstancePlan,
@@ -54,7 +58,7 @@ pub async fn run_plan_with_env(
 }
 
 /// Runs `instance_id` of `name` and returns its pid.
-pub async fn run(
+pub(crate) async fn run(
     started: &StartedCoreNode,
     name: &str,
     instance_id: &str,
@@ -70,23 +74,27 @@ pub async fn run(
 }
 
 /// `instance_id` as a [`Name`].
-pub fn name(instance_id: &str) -> Name {
+pub(crate) fn name(instance_id: &str) -> Name {
     Name::new(instance_id).expect("valid instance id")
 }
 
 /// The daemon's stack log, empty before its first line.
-pub fn stack_log(started: &StartedCoreNode) -> String {
+pub(crate) fn stack_log(started: &StartedCoreNode) -> String {
     std::fs::read_to_string(started.peppy_dirs.stack_log_path()).unwrap_or_default()
 }
 
 /// The state of `instance_id`, or `None` for an id the stack does not track.
-pub fn state_of(started: &StartedCoreNode, instance_id: &str) -> Option<InstanceState> {
+pub(crate) fn state_of(started: &StartedCoreNode, instance_id: &str) -> Option<InstanceState> {
     started.node_stack.instance_state(instance_id)
 }
 
 /// Waits until `instance_id` is in `state`, reporting the last state and the
 /// stack log when it never gets there.
-pub async fn wait_for_state(started: &StartedCoreNode, instance_id: &str, state: InstanceState) {
+pub(crate) async fn wait_for_state(
+    started: &StartedCoreNode,
+    instance_id: &str,
+    state: InstanceState,
+) {
     poll_until_explained(
         WAIT,
         || {
@@ -104,7 +112,7 @@ pub async fn wait_for_state(started: &StartedCoreNode, instance_id: &str, state:
 /// Waits until no background task of `instance_id` is live: its exit
 /// watcher, the wait of its restart and its health monitor have ended, so
 /// nothing but a request acts on the instance any more.
-pub async fn wait_for_supervision_end(started: &StartedCoreNode, instance_id: &str) {
+pub(crate) async fn wait_for_supervision_end(started: &StartedCoreNode, instance_id: &str) {
     let tasks = started.node_stack.instance_tasks();
     tokio::time::timeout(WAIT, tasks.ended(&name(instance_id)))
         .await

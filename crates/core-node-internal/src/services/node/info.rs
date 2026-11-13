@@ -14,7 +14,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-pub async fn listen_for_node_info(
+pub(crate) async fn listen_for_node_info(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,

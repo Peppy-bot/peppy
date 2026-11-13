@@ -115,7 +115,7 @@ impl PeppylibPlatform {
     }
 }
 
-pub fn add_peppylib_dependencies(
+pub(super) fn add_peppylib_dependencies(
     to_path: &Path,
     peppy_dirs: &daemon_config::consts::PeppyDirs,
     platform: PeppylibPlatform,
@@ -299,7 +299,10 @@ fn write_peppylib_package(
 /// can run over the tree of an earlier one, so the earlier directory is
 /// removed first: the package keeps no schema of an interface the node no
 /// longer has.
-pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path) -> Result<()> {
+pub(super) fn add_capnp_schemas(
+    schemas: &HashMap<String, CapnpSchema>,
+    to_path: &Path,
+) -> Result<()> {
     let capnp_dir = to_path.join("peppygen").join("capnp");
     if capnp_dir.exists() {
         fs::remove_dir_all(&capnp_dir)?;
@@ -317,7 +320,10 @@ pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path)
     Ok(())
 }
 
-pub fn add_parameters_to_lib(parameters: &config::ParameterSchema, to_path: &Path) -> Result<()> {
+pub(super) fn add_parameters_to_lib(
+    parameters: &config::ParameterSchema,
+    to_path: &Path,
+) -> Result<()> {
     let parameters_code = super::parameters::generate_python_parameters(parameters)?;
     let peppygen_dir = to_path.join("peppygen");
     fs::create_dir_all(&peppygen_dir)?;
@@ -326,7 +332,10 @@ pub fn add_parameters_to_lib(parameters: &config::ParameterSchema, to_path: &Pat
     Ok(())
 }
 
-pub fn add_artifacts_to_lib(to_path: &Path, artifacts: Vec<InterfaceArtifact>) -> Result<()> {
+pub(super) fn add_artifacts_to_lib(
+    to_path: &Path,
+    artifacts: Vec<InterfaceArtifact>,
+) -> Result<()> {
     let peppygen_dir = to_path.join("peppygen");
 
     let mut grouped = group_artifacts_by_category(artifacts);

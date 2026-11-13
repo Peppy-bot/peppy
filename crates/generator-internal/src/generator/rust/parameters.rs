@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 ///
 /// Returns an error if any field name contains characters outside
 /// [`config::consts::ALLOWED_CONFIG_CHARS`], or if a parameter is an array.
-pub fn generate_parameters_struct(parameters: &config::ParameterSchema) -> Result<String> {
+pub(crate) fn generate_parameters_struct(parameters: &config::ParameterSchema) -> Result<String> {
     validate_parameter_schema(parameters)?;
 
     let mut main_fields = Vec::new();
@@ -68,7 +68,7 @@ pub fn generate_parameters_struct(parameters: &config::ParameterSchema) -> Resul
 /// at any depth, uses only [`config::consts::ALLOWED_CONFIG_CHARS`], and no
 /// parameter is an array ([`Error::UnsupportedArrayParameter`], with its
 /// dotted path). Shared with the Python generator.
-pub fn validate_parameter_schema(parameters: &config::ParameterSchema) -> Result<()> {
+pub(crate) fn validate_parameter_schema(parameters: &config::ParameterSchema) -> Result<()> {
     use config::consts::ALLOWED_CONFIG_CHARS;
 
     fn is_valid_field_name(name: &str, allowed: &str) -> bool {

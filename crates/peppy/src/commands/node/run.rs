@@ -969,7 +969,7 @@ async fn validate_links_against_stack(
 /// the same id; mismatching them would point validator errors at a
 /// different instance than the one that ends up running.
 #[expect(clippy::too_many_arguments)]
-pub async fn validate_and_run_instance(
+pub(super) async fn validate_and_run_instance(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_name: &str,
@@ -1122,7 +1122,7 @@ pub async fn run_instance_async(
 }
 
 /// The flags of `peppy node run`, as `run_node` receives them.
-pub struct RunNodeParams {
+pub(super) struct RunNodeParams {
     pub node_name: String,
     pub tag: String,
     pub args: Vec<(String, String)>,
@@ -1134,7 +1134,7 @@ pub struct RunNodeParams {
     pub build: bool,
 }
 
-pub fn run_node(ctx: &Arc<AppContext>, params: RunNodeParams) -> Result<()> {
+pub(super) fn run_node(ctx: &Arc<AppContext>, params: RunNodeParams) -> Result<()> {
     crate::commands::block_on(run_node_async(ctx, params))
 }
 

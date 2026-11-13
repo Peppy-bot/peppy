@@ -1,14 +1,14 @@
 //! Cap'n Proto encoding utilities for node messages.
-pub mod add;
-pub mod builder;
-pub mod documents;
-pub mod info;
-pub mod init;
-pub mod publish;
-pub mod remove;
-pub mod run;
-pub mod stop;
-pub mod sync;
+pub(super) mod add;
+pub(super) mod builder;
+pub(super) mod documents;
+pub(super) mod info;
+pub(super) mod init;
+pub(super) mod publish;
+pub(super) mod remove;
+pub(super) mod run;
+pub(super) mod stop;
+pub(super) mod sync;
 
 use crate::Result;
 use crate::node_capnp;

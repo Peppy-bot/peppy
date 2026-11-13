@@ -22,7 +22,7 @@ use peppylib::core_node::transport::poll;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub fn reset_stack(ctx: &Arc<AppContext>, federated: bool) -> Result<()> {
+pub(super) fn reset_stack(ctx: &Arc<AppContext>, federated: bool) -> Result<()> {
     crate::commands::block_on(reset_async(ctx, federated))
 }
 

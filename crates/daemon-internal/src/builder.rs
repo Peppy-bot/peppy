@@ -27,7 +27,7 @@ use tracing::{info, warn};
 
 const DEFAULT_NODE_STARTUP_TIMEOUT: Duration = Duration::from_mins(10);
 
-pub struct ServeCommandBuilder {
+pub(crate) struct ServeCommandBuilder {
     composite_command: CompositeCommand,
     /// Set by [`with_messaging_router`](Self::with_messaging_router) and
     /// handed to the core node runner in [`Self::build`].
@@ -99,7 +99,7 @@ struct ManagedRouter {
 }
 
 impl ServeCommandBuilder {
-    pub fn new(
+    pub(crate) fn new(
         root_dir: impl Into<PathBuf>,
         git_hash: impl Into<String>,
         peppy_dirs: PeppyDirs,
@@ -126,12 +126,12 @@ impl ServeCommandBuilder {
     /// read once at startup. Must be called before
     /// [`with_messaging_router`](Self::with_messaging_router) so the daemon's own
     /// session is built in the configured mode.
-    pub fn with_peppy_config(mut self, peppy_config: PeppyConfig) -> Self {
+    pub(crate) fn with_peppy_config(mut self, peppy_config: PeppyConfig) -> Self {
         self.peppy_config = peppy_config;
         self
     }
 
-    pub fn with_shutdown_token(mut self, token: CancellationToken) -> Self {
+    pub(crate) fn with_shutdown_token(mut self, token: CancellationToken) -> Self {
         self.shutdown_token = Some(token);
         self
     }
@@ -146,7 +146,7 @@ impl ServeCommandBuilder {
     /// engine also falls back to with a warning) and adds the messaging router
     /// task, which carries the messages between the nodes and between the
     /// nodes and the daemon.
-    pub fn with_messaging_router(mut self, engine: &str) -> Result<Self> {
+    pub(crate) fn with_messaging_router(mut self, engine: &str) -> Result<Self> {
         let adapter = match engine.to_lowercase().as_str() {
             "zenoh" => MessengerAdapter::Zenoh(self.build_zenoh_adapter()?),
             "mock" => MessengerAdapter::Mock(MockAdapter::default()),
@@ -280,7 +280,7 @@ impl ServeCommandBuilder {
         self
     }
 
-    pub fn build(mut self) -> Result<Serve> {
+    pub(crate) fn build(mut self) -> Result<Serve> {
         let Some(messaging) = self.messaging else {
             warn!("Commands listener requires a messaging router");
             return Err(Error::MissingMessagingRouter);

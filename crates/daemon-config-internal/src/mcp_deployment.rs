@@ -48,7 +48,7 @@ pub const SPEC_ENV_VAR: &str = "PEPPY_MCP_SERVE_SPEC";
 /// The link id of the daemon slot of `robot_leases:v1` that the server adds
 /// when no exposure names `robot_leases:v1`: the server asks `check_move` and
 /// follows `changes` through it.
-pub const FLEET_SLOT: &str = "fleet";
+pub(crate) const FLEET_SLOT: &str = "fleet";
 
 /// The members of `robot_leases:v1` that the server calls through its fleet
 /// slot, whatever its exposures give.

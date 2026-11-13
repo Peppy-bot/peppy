@@ -25,7 +25,7 @@ fn remove_request_timeout(shutdown_grace_secs: u64) -> Duration {
     )))
 }
 
-pub fn remove_node(
+pub(super) fn remove_node(
     ctx: &Arc<AppContext>,
     node_name: String,
     tag: String,

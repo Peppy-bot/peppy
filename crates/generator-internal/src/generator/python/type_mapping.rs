@@ -6,20 +6,20 @@ use config::node::{PeppygenLanguage, QoSProfile, SchemaType, TopicRetention, Typ
 use indexmap::IndexMap;
 
 /// A field in a Python dataclass.
-pub struct PythonField {
+pub(super) struct PythonField {
     pub name: String,
     pub type_str: String,
     pub is_optional: bool,
 }
 
 /// A nested dataclass definition collected during type mapping.
-pub struct NestedDataclass {
+pub(super) struct NestedDataclass {
     pub name: String,
     pub fields: Vec<PythonField>,
 }
 
 /// Maps a `TypeToken` to its Python type string.
-pub fn primitive_type_str(token: &TypeToken) -> &'static str {
+pub(super) fn primitive_type_str(token: &TypeToken) -> &'static str {
     match token {
         TypeToken::Bool => "bool",
         TypeToken::String => "str",
@@ -39,7 +39,7 @@ pub fn primitive_type_str(token: &TypeToken) -> &'static str {
 
 /// Converts a `SchemaType` into a Python type string, collecting any nested
 /// dataclass definitions that need to be emitted before use.
-pub fn schema_type_to_python(
+pub(super) fn schema_type_to_python(
     schema: &SchemaType,
     struct_prefix: &str,
     field_name: &str,
@@ -94,7 +94,7 @@ fn wrap_optional(schema: &SchemaType, type_str: String) -> String {
 }
 
 /// Collects typed fields from a `MessageFormat`, populating nested dataclass definitions.
-pub fn collect_fields_from_format(
+pub(super) fn collect_fields_from_format(
     format: &config::node::MessageFormat,
     struct_prefix: &str,
     nested_classes: &mut Vec<NestedDataclass>,
@@ -137,7 +137,7 @@ where
 }
 
 /// Returns `true` if any field (direct or nested) uses `Optional[...]`.
-pub fn uses_optional(fields: &[PythonField], nested_classes: &[NestedDataclass]) -> bool {
+pub(super) fn uses_optional(fields: &[PythonField], nested_classes: &[NestedDataclass]) -> bool {
     fields.iter().any(|f| f.is_optional)
         || nested_classes
             .iter()
@@ -145,7 +145,7 @@ pub fn uses_optional(fields: &[PythonField], nested_classes: &[NestedDataclass])
 }
 
 /// Returns the Python expression for a topic's retention.
-pub fn retention_python(retention: TopicRetention) -> String {
+pub(super) fn retention_python(retention: TopicRetention) -> String {
     match retention {
         TopicRetention::LiveOnly => "peppylib.TopicRetention.live_only()".to_string(),
         TopicRetention::Latest { depth } => {
@@ -155,7 +155,7 @@ pub fn retention_python(retention: TopicRetention) -> String {
 }
 
 /// Returns the Python string for a QoS profile variant.
-pub fn qos_profile_python(profile: &QoSProfile) -> &'static str {
+pub(super) fn qos_profile_python(profile: &QoSProfile) -> &'static str {
     match profile {
         QoSProfile::SensorData => "peppylib.QoSProfile.SensorData",
         QoSProfile::Standard => "peppylib.QoSProfile.Standard",

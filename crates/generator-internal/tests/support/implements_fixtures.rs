@@ -12,7 +12,7 @@ use indexmap::IndexMap;
 
 /// Minimal `video_stream`-shaped topic with one distinguishing field per
 /// interface tag so we can tell the generated files apart at a glance.
-pub fn make_video_stream_topic(distinguishing_field: &str) -> NativeEmittedTopic {
+pub(crate) fn make_video_stream_topic(distinguishing_field: &str) -> NativeEmittedTopic {
     let mut fields: IndexMap<String, SchemaType> = IndexMap::new();
     fields.insert(
         distinguishing_field.to_string(),
@@ -29,7 +29,7 @@ pub fn make_video_stream_topic(distinguishing_field: &str) -> NativeEmittedTopic
 
 /// A `control` service whose request carries `marker` and whose response
 /// carries `{marker}_ack`.
-pub fn make_control_service(marker: &str) -> NativeExposedService {
+pub(crate) fn make_control_service(marker: &str) -> NativeExposedService {
     let mut request_fields: IndexMap<String, SchemaType> = IndexMap::new();
     request_fields.insert(marker.to_string(), SchemaType::Type(TypeToken::Bool));
     let mut response_fields: IndexMap<String, SchemaType> = IndexMap::new();
@@ -44,7 +44,7 @@ pub fn make_control_service(marker: &str) -> NativeExposedService {
 
 /// A `move_arm` action whose goal request carries `marker` and whose goal
 /// response carries `{marker}_ack`.
-pub fn make_move_arm_action(marker: &str) -> NativeExposedAction {
+pub(crate) fn make_move_arm_action(marker: &str) -> NativeExposedAction {
     let mut request_fields: IndexMap<String, SchemaType> = IndexMap::new();
     request_fields.insert(marker.to_string(), SchemaType::Type(TypeToken::I32));
     let mut response_fields: IndexMap<String, SchemaType> = IndexMap::new();
@@ -71,7 +71,7 @@ fn contract_origin(link_id: &str, name: &str, tag: &str) -> Option<ContractOrigi
 }
 
 /// `topic` emitted through the `link_id` slot of contract `name:tag`.
-pub fn contract_backed_topic(
+pub(crate) fn contract_backed_topic(
     link_id: &str,
     name: &str,
     tag: &str,
@@ -84,7 +84,7 @@ pub fn contract_backed_topic(
 }
 
 /// `service` exposed through the `link_id` slot of contract `name:tag`.
-pub fn contract_backed_service(
+pub(crate) fn contract_backed_service(
     link_id: &str,
     name: &str,
     tag: &str,
@@ -97,7 +97,7 @@ pub fn contract_backed_service(
 }
 
 /// `action` exposed through the `link_id` slot of contract `name:tag`.
-pub fn contract_backed_action(
+pub(crate) fn contract_backed_action(
     link_id: &str,
     name: &str,
     tag: &str,

@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 /// `node sync`, and the launch-time auto-sync so the "what feeds peppygen"
 /// sequence lives in one place. Error strings name the failing step; callers
 /// only add their transport wrapper.
-pub fn collect_all_deployment_interfaces(
+pub(crate) fn collect_all_deployment_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
     resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
@@ -727,7 +727,7 @@ fn member_kind(doc: &peppy_codec::contract::PeppyContract, name: &str) -> Option
 ///
 /// Use this for callers that resolve against the stack alone, such as
 /// `auto_sync_if_missing`.
-pub fn stack_resolver(
+pub(crate) fn stack_resolver(
     node_stack: &NodeStack,
 ) -> impl Fn(&str, &str) -> Option<config::node::NodeConfig> + '_ {
     move |name, tag| {

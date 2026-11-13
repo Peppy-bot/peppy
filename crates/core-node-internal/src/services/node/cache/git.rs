@@ -193,7 +193,7 @@ pub fn materialized_checkout(
 ///
 /// Blocking; callers inside tokio should run this via
 /// [`tokio::task::spawn_blocking`].
-pub fn ensure_checkout_at_commit(
+pub(crate) fn ensure_checkout_at_commit(
     peppy_dirs: &PeppyDirs,
     repo_url: &str,
     read_ref: Option<&str>,
@@ -248,7 +248,12 @@ pub fn ensure_checkout_at_commit(
 ///
 /// Best-effort, and infallible from the caller's side: whatever goes wrong,
 /// the cache is left as it was and the checkout is cloned again on demand.
-pub fn adopt_checkout(peppy_dirs: &PeppyDirs, repo_url: &str, commit: &GitCommit, dir: PathBuf) {
+pub(crate) fn adopt_checkout(
+    peppy_dirs: &PeppyDirs,
+    repo_url: &str,
+    commit: &GitCommit,
+    dir: PathBuf,
+) {
     let shown_url = SourceUrl::new(repo_url);
     let dst = checkout_dir_for(peppy_dirs, repo_url, commit);
     let lock = LOCKS.lock_for(&dst.to_string_lossy());
@@ -298,7 +303,7 @@ fn discard(dir: &Path) {
 /// `live` names the pairs the caches still point at. Returns how many
 /// checkouts were removed; a checkout that cannot be removed is reported
 /// and skipped, because it costs disk rather than correctness.
-pub fn prune_checkouts<'a>(
+pub(crate) fn prune_checkouts<'a>(
     peppy_dirs: &PeppyDirs,
     live: impl IntoIterator<Item = (&'a str, &'a GitCommit)>,
 ) -> usize {

@@ -3,8 +3,8 @@ mod deps;
 mod interfaces;
 mod pairings;
 
-pub use self::codegen::{AutoSyncParams, auto_sync_if_missing};
-pub use self::interfaces::{collect_all_deployment_interfaces, stack_resolver};
+pub(super) use self::codegen::{AutoSyncParams, auto_sync_if_missing};
+pub(super) use self::interfaces::{collect_all_deployment_interfaces, stack_resolver};
 pub(crate) use self::interfaces::{resolve_contract_doc, stack_then_repo_resolver};
 
 use self::codegen::remove_previous_peppy_dir;
@@ -32,7 +32,7 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-pub async fn listen_for_node_sync(
+pub(crate) async fn listen_for_node_sync(
     messenger: &MessengerHandle,
     core_node_node: &str,
     instance_id: &str,

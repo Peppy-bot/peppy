@@ -172,7 +172,7 @@ fn contract_kinds<S: Serializer>(
 
 impl Member {
     /// Whether the member has the mark `moves_robot` in its contract.
-    pub fn moves_robot(&self) -> bool {
+    pub(super) fn moves_robot(&self) -> bool {
         match self {
             Member::Topic(_) => false,
             Member::Service(service) => service.marks.moves_robot(),
@@ -180,7 +180,7 @@ impl Member {
         }
     }
 
-    pub fn name(&self) -> &str {
+    pub(super) fn name(&self) -> &str {
         match self {
             Member::Topic(topic) => &topic.name,
             Member::Service(service) => &service.service.name,
@@ -190,7 +190,7 @@ impl Member {
 
     /// What the member does, as its contract, its pairing or its node
     /// says.
-    pub fn description(&self) -> &config::description::Description {
+    pub(super) fn description(&self) -> &config::description::Description {
         match self {
             Member::Topic(topic) => &topic.description,
             Member::Service(service) => &service.service.description,
@@ -198,7 +198,7 @@ impl Member {
         }
     }
 
-    pub fn kind(&self) -> InterfaceKind {
+    pub(super) fn kind(&self) -> InterfaceKind {
         match self {
             Member::Topic(_) => InterfaceKind::Topic,
             Member::Service(_) => InterfaceKind::Service,
@@ -236,7 +236,7 @@ impl SelectedMember<'_> {
     /// The label of the codecs of the member, which seeds the file id of
     /// the schema of each side: its full name, with `_` in place of each
     /// character that is not ASCII alphanumeric.
-    pub fn codec_label(&self) -> String {
+    pub(super) fn codec_label(&self) -> String {
         self.full_name
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
@@ -245,7 +245,7 @@ impl SelectedMember<'_> {
 
     /// The error of a codec of the member that does not lay out from the
     /// format of the pinned manifest.
-    pub fn codec_error(&self, error: CodecError) -> Error {
+    pub(super) fn codec_error(&self, error: CodecError) -> Error {
         Error::ExecutionFailed(format!("`{}`: {error}", self.full_name))
     }
 }
@@ -314,7 +314,7 @@ pub(crate) enum DocumentsError {
 impl InstanceInterfaces {
     /// The interfaces of the instance whose pinned documents are
     /// `documents`.
-    pub fn from_documents(documents: &InstanceDocuments) -> Result<Self, DocumentsError> {
+    pub(super) fn from_documents(documents: &InstanceDocuments) -> Result<Self, DocumentsError> {
         let instance = documents.instance_id.as_str();
         let config = NodeConfigParser::from_content(documents.manifest.content()).map_err(|e| {
             DocumentsError::Manifest {
@@ -358,7 +358,7 @@ impl InstanceInterfaces {
     /// alone it is. A name that selects no member, or several, is refused
     /// with the full names that it could mean. A service and an action can
     /// have one full name: `kinds` then tells them apart.
-    pub fn select(
+    pub(super) fn select(
         &self,
         name: &str,
         kinds: &[InterfaceKind],

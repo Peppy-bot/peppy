@@ -14,7 +14,7 @@ use std::collections::hash_map::Entry;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InterfaceKind {
+pub(crate) enum InterfaceKind {
     EmittedTopic,
     ExposedService,
     ExposedAction,
@@ -106,7 +106,7 @@ impl ContractOrigin {
 /// of peppy and, for a member of a contract (`origin` is `Some`), the kinds
 /// of that contract that the member lists. A native member gives the kinds
 /// of peppy only.
-pub fn member_failure_kinds(
+pub(crate) fn member_failure_kinds(
     origin: Option<&ContractOrigin>,
     section: MemberSection,
     name: &str,
@@ -119,7 +119,7 @@ pub fn member_failure_kinds(
 
 /// Builds a schema key scoped to `origin` when `Some`, falling back to the
 /// raw `local` key when the artifact is the node's own (native) declaration.
-pub fn scoped_schema_key(origin: Option<&ContractOrigin>, local: &str) -> String {
+pub(crate) fn scoped_schema_key(origin: Option<&ContractOrigin>, local: &str) -> String {
     match origin {
         Some(o) => o.scoped_schema_key(local),
         None => local.to_string(),
@@ -155,7 +155,7 @@ impl PeerContext {
 /// and artifact classification, so the discriminant lives here rather than once
 /// per generator.
 #[derive(Clone, Copy)]
-pub enum PairTopicConsumerKind {
+pub(crate) enum PairTopicConsumerKind {
     Peer,
     /// An observer slot, carrying the cardinality that types its generated
     /// source accessor. A participant slot has none: a pairing is 1:1.
@@ -169,7 +169,7 @@ pub enum PairTopicConsumerKind {
 /// generated code binds it to, is the same fact in both languages, so it lives
 /// here; each generator renders only the type name in its own syntax.
 #[derive(Clone, Copy)]
-pub enum SubscriptionTag {
+pub(crate) enum SubscriptionTag {
     /// `(ProducerRef, message)`: bound-set consumer modules.
     Producer,
     /// `(PeerInfo, message)`: peer pairing modules.
@@ -180,7 +180,7 @@ pub enum SubscriptionTag {
 
 impl SubscriptionTag {
     /// The name the generated `next()` binds the tag to.
-    pub fn binding(self) -> &'static str {
+    pub(crate) fn binding(self) -> &'static str {
         match self {
             Self::Producer => "producer",
             Self::Peer => "peer",
@@ -193,7 +193,7 @@ impl SubscriptionTag {
 /// two peer artifacts must never land on the same `paired_topics/<link_id>/<topic>`
 /// module path. Shared by the Rust and Python generators so the invariant
 /// cannot drift between them.
-pub fn ensure_no_peer_collision(
+pub(crate) fn ensure_no_peer_collision(
     sections: &[InterfaceArtifact],
     module_path: &[String],
     peer: &PeerContext,
@@ -440,14 +440,14 @@ impl DependencyContext {
 
 /// The sentence a subscription's doc carries on a set slot, whose members a
 /// join grows and a removal shrinks; a scalar slot's subscription has none.
-pub fn follows_the_set_doc(cardinality: Cardinality) -> Option<&'static str> {
+pub(crate) fn follows_the_set_doc(cardinality: Cardinality) -> Option<&'static str> {
     (!cardinality.is_scalar())
         .then_some("The subscription follows the set as a join grows it or a removal shrinks it.")
 }
 
 /// The sentence a topic's generated publisher and subscription docs carry
 /// when the topic retains; a live-only topic's docs have none.
-pub fn retention_doc(retention: TopicRetention) -> Option<String> {
+pub(crate) fn retention_doc(retention: TopicRetention) -> Option<String> {
     let TopicRetention::Latest { depth } = retention else {
         return None;
     };
@@ -480,7 +480,7 @@ pub fn retention_doc(retention: TopicRetention) -> Option<String> {
 /// rather than from the shared body. Taking the language here, at construction,
 /// is what keeps a floored accessor from being emitted with the sentence
 /// unfinished.
-pub fn observed_sources_doc(cardinality: Cardinality, language: DocLanguage) -> AccessorDoc {
+pub(crate) fn observed_sources_doc(cardinality: Cardinality, language: DocLanguage) -> AccessorDoc {
     match cardinality {
         Cardinality::One => AccessorDoc {
             summary: "The pairing this module's observer slot observes.",
@@ -546,7 +546,7 @@ const PEER_SET_CLOSING_NOTE: &[&str] = &[
 /// The doc of a multi pairing slot's `peers()` accessor, shared by both
 /// generators; `None` for a scalar slot, which exposes `paired()` and
 /// `wait_paired()`.
-pub fn peer_set_doc(cardinality: Cardinality) -> Option<AccessorDoc> {
+pub(crate) fn peer_set_doc(cardinality: Cardinality) -> Option<AccessorDoc> {
     match cardinality {
         Cardinality::One | Cardinality::ZeroOrOne => None,
         Cardinality::OneOrMore => Some(AccessorDoc {
@@ -802,7 +802,7 @@ impl DeploymentInterface {
 }
 
 #[derive(Clone)]
-pub struct InterfaceArtifact {
+pub(crate) struct InterfaceArtifact {
     /// Module path under the category dir, leaf-last. Native artifacts have a
     /// single segment (the topic/service/action name); slot-backed artifacts
     /// have two segments (`[link_id, leaf_name]`) so they nest as
@@ -816,7 +816,7 @@ impl InterfaceArtifact {
     /// Builds an artifact for `leaf_name`, nesting under `{link_id}/{leaf_name}`
     /// when contract-backed, or a single-segment `[leaf_name]` for the node's
     /// own (native) declarations.
-    pub fn for_leaf(
+    pub(crate) fn for_leaf(
         origin: Option<&ContractOrigin>,
         leaf_name: &str,
         kind: InterfaceKind,
@@ -836,7 +836,7 @@ impl InterfaceArtifact {
     /// Returns the leaf segment (the topic/service/action name). Panics on an
     /// empty `module_path`, which would be a generator bug.
     #[cfg(test)]
-    pub fn leaf_name(&self) -> &str {
+    pub(crate) fn leaf_name(&self) -> &str {
         self.module_path
             .last()
             .map(String::as_str)
@@ -975,7 +975,7 @@ impl DeploymentInterface {
 }
 
 /// Filters out empty `MessageFormat`s, returning `None` for formats with no fields.
-pub fn non_empty_message_format(format: Option<&MessageFormat>) -> Option<&MessageFormat> {
+pub(crate) fn non_empty_message_format(format: Option<&MessageFormat>) -> Option<&MessageFormat> {
     format.filter(|format| !format.0.is_empty())
 }
 
@@ -984,7 +984,10 @@ pub fn non_empty_message_format(format: Option<&MessageFormat>) -> Option<&Messa
 /// nested types that get the same generated name. Both generators run these
 /// rules, in this order, on every format they map; `context` names the
 /// format in a reserved-name error.
-pub fn validate_generatable_message_format(format: &MessageFormat, context: &str) -> Result<()> {
+pub(crate) fn validate_generatable_message_format(
+    format: &MessageFormat,
+    context: &str,
+) -> Result<()> {
     validate_message_format_field_names(format, context)?;
     validate_fixed_length_array_items(format)?;
     validate_generated_type_name_collisions(format, "Message")
@@ -1155,7 +1158,7 @@ fn validate_sibling_type_name_collisions(
 /// consumer and the mock of one slot sharing a file, anything else is a
 /// naming collision that must fail loudly.
 #[derive(Clone)]
-pub struct CapnpSchema {
+pub(crate) struct CapnpSchema {
     schema_key: String,
     file_stem: String,
     struct_module: String,
@@ -1164,7 +1167,7 @@ pub struct CapnpSchema {
 }
 
 impl CapnpSchema {
-    pub fn new(
+    pub(crate) fn new(
         schema_key: String,
         file_stem: String,
         struct_module: String,
@@ -1181,25 +1184,25 @@ impl CapnpSchema {
     }
 
     /// The raw schema key the first registration used for this file.
-    pub fn schema_key(&self) -> &str {
+    pub(crate) fn schema_key(&self) -> &str {
         &self.schema_key
     }
 
-    pub fn file_stem(&self) -> &str {
+    pub(crate) fn file_stem(&self) -> &str {
         &self.file_stem
     }
 
-    pub fn struct_module(&self) -> &str {
+    pub(crate) fn struct_module(&self) -> &str {
         &self.struct_module
     }
 
     /// The mapper's schema text before the root-struct rename.
-    pub fn source(&self) -> &str {
+    pub(crate) fn source(&self) -> &str {
         &self.source
     }
 
     /// The schema text written to disk.
-    pub fn schema(&self) -> &str {
+    pub(crate) fn schema(&self) -> &str {
         &self.schema
     }
 }
@@ -1224,7 +1227,7 @@ pub(crate) enum ModuleCategory {
 }
 
 impl ModuleCategory {
-    pub const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::EmittedTopics,
         Self::ConsumedTopics,
         Self::ExposedServices,
@@ -1236,7 +1239,7 @@ impl ModuleCategory {
         Self::Fixtures,
     ];
 
-    pub fn from_kind(kind: InterfaceKind) -> Self {
+    pub(crate) fn from_kind(kind: InterfaceKind) -> Self {
         match kind {
             InterfaceKind::EmittedTopic => Self::EmittedTopics,
             InterfaceKind::ConsumedTopic => Self::ConsumedTopics,
@@ -1252,7 +1255,7 @@ impl ModuleCategory {
         }
     }
 
-    pub fn dir_name(self) -> &'static str {
+    pub(crate) fn dir_name(self) -> &'static str {
         match self {
             Self::EmittedTopics => "emitted_topics",
             Self::ConsumedTopics => "consumed_topics",

@@ -16,7 +16,7 @@ mod topics;
 pub(crate) mod type_mapping;
 
 pub(crate) use parameters::join_parameter_path;
-pub use parameters::{generate_parameters_struct, validate_parameter_schema};
+pub(crate) use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
     CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,

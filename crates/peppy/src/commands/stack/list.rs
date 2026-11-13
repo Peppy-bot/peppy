@@ -54,7 +54,7 @@ pub struct StackListReport {
     pub failed_names: Vec<String>,
 }
 
-pub fn list_nodes(ctx: &Arc<AppContext>, json: bool) -> Result<()> {
+pub(super) fn list_nodes(ctx: &Arc<AppContext>, json: bool) -> Result<()> {
     let report = if json {
         crate::commands::block_on(list_nodes_json_collecting(ctx))?
     } else {

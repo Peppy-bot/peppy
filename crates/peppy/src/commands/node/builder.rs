@@ -23,14 +23,14 @@ pub struct BuildOptions {
     pub rebuild: bool,
 }
 
-pub struct BuildNodeParams {
+pub(super) struct BuildNodeParams {
     pub node_name: String,
     pub node_tag: String,
     pub timeouts: TimeoutConfig,
     pub options: BuildOptions,
 }
 
-pub fn build_node(ctx: &Arc<AppContext>, params: BuildNodeParams) -> Result<()> {
+pub(super) fn build_node(ctx: &Arc<AppContext>, params: BuildNodeParams) -> Result<()> {
     crate::commands::block_on(build_node_async_with_connect(ctx, params))
 }
 

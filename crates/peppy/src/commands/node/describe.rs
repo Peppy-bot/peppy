@@ -22,7 +22,7 @@ pub struct DescribeParams {
     pub json: bool,
 }
 
-pub fn describe(ctx: &Arc<AppContext>, params: DescribeParams) -> Result<()> {
+pub(super) fn describe(ctx: &Arc<AppContext>, params: DescribeParams) -> Result<()> {
     let text = crate::commands::block_on(describe_rendered(ctx, params))?;
     write_text(&mut std::io::stdout(), &text)
 }

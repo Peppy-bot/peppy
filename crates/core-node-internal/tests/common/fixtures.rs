@@ -13,7 +13,7 @@ use super::daemon::StartedCoreNode;
 /// Publishes `root`'s `peppy_repository.json5`, which is what a repository
 /// offers a daemon. Call it once the repository holds every item the test
 /// expects to be found.
-pub fn publish_repo_index(root: &Path) {
+pub(crate) fn publish_repo_index(root: &Path) {
     core_node::publish_repository_index(root)
         .expect("a well-formed test repository can be published");
 }
@@ -23,7 +23,7 @@ pub fn publish_repo_index(root: &Path) {
 ///
 /// A git repository is read from a clone, so what it publishes has to be
 /// committed, not merely written.
-pub fn publish_and_commit_repo_index(root: &Path) -> String {
+pub(crate) fn publish_and_commit_repo_index(root: &Path) -> String {
     publish_repo_index(root);
     commit_work_tree(root)
 }
@@ -31,7 +31,7 @@ pub fn publish_and_commit_repo_index(root: &Path) -> String {
 /// Stages everything in the work tree of the repository at `root` and commits
 /// it on HEAD, on top of the current commit if there is one. Returns the
 /// branch HEAD is on.
-pub fn commit_work_tree(root: &Path) -> String {
+pub(crate) fn commit_work_tree(root: &Path) -> String {
     let repo = git2::Repository::open(root).expect("open git repository");
     let mut index = repo.index().expect("open index");
     index
@@ -64,7 +64,7 @@ pub fn commit_work_tree(root: &Path) -> String {
 /// Stages the work-tree file at `path` (relative to the repository root) and
 /// commits the index on HEAD with `parents`, returning the new commit so a
 /// fixture can tag it or build on it.
-pub fn commit_path<'repo>(
+pub(crate) fn commit_path<'repo>(
     repo: &'repo git2::Repository,
     signature: &git2::Signature<'_>,
     path: &Path,
@@ -83,7 +83,7 @@ pub fn commit_path<'repo>(
 }
 
 /// Writes a node config file and the corresponding fingerprint file expected by `node_add`.
-pub fn write_peppy_json5(dir: &Path, content: &str) {
+pub(crate) fn write_peppy_json5(dir: &Path, content: &str) {
     let config_path = dir.join(NODE_CONFIG_FILE);
     std::fs::write(&config_path, content).expect("failed to write peppy.json5");
     config::fingerprint::create_codegen_fingerprint(&config_path, Path::new(PEPPYGEN_OUTPUT_PATH));
@@ -91,7 +91,7 @@ pub fn write_peppy_json5(dir: &Path, content: &str) {
 
 /// Writes the executable script `name` with `contents` into `dir`, for a test
 /// that puts a command of its own on the `PATH` a node runs with.
-pub fn write_executable_script(dir: &Path, name: &str, contents: &str) {
+pub(crate) fn write_executable_script(dir: &Path, name: &str, contents: &str) {
     let script_path = dir.join(name);
     std::fs::write(&script_path, contents)
         .unwrap_or_else(|e| panic!("failed to write script {}: {e}", script_path.display()));
@@ -105,7 +105,7 @@ pub fn write_executable_script(dir: &Path, name: &str, contents: &str) {
 
 /// The `PATH` override that puts `dir` ahead of the `PATH` of the test
 /// process, as a caller whose `PATH` gained `dir` sends it to the daemon.
-pub fn path_env_with_dir_first(dir: &Path) -> (String, String) {
+pub(crate) fn path_env_with_dir_first(dir: &Path) -> (String, String) {
     let current_path = std::env::var("PATH").unwrap_or_default();
     (
         "PATH".to_string(),
@@ -113,7 +113,11 @@ pub fn path_env_with_dir_first(dir: &Path) -> (String, String) {
     )
 }
 
-pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_root_name: &str) {
+pub(crate) fn create_tar_zst_from_dir(
+    source_dir: &Path,
+    archive_path: &Path,
+    archive_root_name: &str,
+) {
     let bundle_file = std::fs::File::create(archive_path).expect("failed to create bundle file");
     let encoder =
         zstd::stream::write::Encoder::new(bundle_file, 0).expect("failed to create zstd encoder");
@@ -130,7 +134,11 @@ pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_r
 
 /// The `artifact_path` of the built entity at `(name, tag)`. Panics if the
 /// entity is missing or not built.
-pub fn entity_artifact_path(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> PathBuf {
+pub(crate) fn entity_artifact_path(
+    node_stack: &node_stack::NodeStack,
+    name: &str,
+    tag: &str,
+) -> PathBuf {
     node_stack
         .find(name, tag)
         .expect("entity should exist")
@@ -141,7 +149,7 @@ pub fn entity_artifact_path(node_stack: &node_stack::NodeStack, name: &str, tag:
 }
 
 /// Returns true if the given tar.zst archive contains an entry matching `entry_name`.
-pub fn archive_contains_entry(archive_path: &Path, entry_name: &str) -> bool {
+pub(crate) fn archive_contains_entry(archive_path: &Path, entry_name: &str) -> bool {
     let file = std::fs::File::open(archive_path).expect("failed to open archive");
     let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
     let mut archive = tar::Archive::new(decoder);
@@ -158,7 +166,7 @@ pub fn archive_contains_entry(archive_path: &Path, entry_name: &str) -> bool {
 }
 
 /// Reads a file from a tar.zst archive and returns its contents as a String.
-pub fn read_file_from_archive(archive_path: &Path, entry_name: &str) -> String {
+pub(crate) fn read_file_from_archive(archive_path: &Path, entry_name: &str) -> String {
     use std::io::Read;
     let file = std::fs::File::open(archive_path).expect("failed to open archive");
     let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
@@ -190,7 +198,7 @@ pub fn read_file_from_archive(archive_path: &Path, entry_name: &str) -> String {
 /// [`TestPackagesCache::write`] to serialize the files under
 /// `peppy_dirs.cache_dir()`.
 #[derive(Default)]
-pub struct TestPackagesCache {
+pub(crate) struct TestPackagesCache {
     entries: Vec<serde_json::Value>,
     launchers: Vec<serde_json::Value>,
     contracts: Vec<serde_json::Value>,
@@ -201,11 +209,11 @@ pub struct TestPackagesCache {
 }
 
 /// The version an oci fixture names its artifacts with.
-pub const TEST_ARTIFACT_VERSION: &str = "v0.0.0-test";
+pub(crate) const TEST_ARTIFACT_VERSION: &str = "v0.0.0-test";
 
 /// The digest of the `.sif` of the artifact of `name:tag` for `platform` in
 /// an oci fixture, which names no real image.
-pub fn test_sif_digest(
+pub(crate) fn test_sif_digest(
     name: &str,
     tag: &str,
     platform: core_node_api::encoding::ArtifactPlatform,
@@ -219,7 +227,7 @@ pub fn test_sif_digest(
 /// The `origin` object of a cache entry read from the oci repository `url`,
 /// with an artifact for each of `platforms`, in the shape `repo refresh`
 /// writes it.
-pub fn oci_origin(
+pub(crate) fn oci_origin(
     url: &str,
     name: &str,
     tag: &str,
@@ -253,7 +261,7 @@ pub fn oci_origin(
 
 /// A distinct, valid fingerprint per `seed`, for entries whose bytes the
 /// test never reads back.
-pub fn seeded_sha(seed: &str) -> String {
+pub(crate) fn seeded_sha(seed: &str) -> String {
     config::fingerprint::fingerprint_for_bytes(seed.as_bytes())
 }
 
@@ -275,14 +283,14 @@ fn fingerprint_or_seeded(path: &Path, seed: &str) -> String {
 
 /// The descriptions of the document `label` as a refresh records them: one
 /// paragraph that names it, and no member.
-pub fn test_descriptions(label: &str) -> serde_json::Value {
+pub(crate) fn test_descriptions(label: &str) -> serde_json::Value {
     serde_json::json!({ "description": [format!("The {label}.")] })
 }
 
 /// The `links` object of a node cache entry that declares no contract or
 /// pairing link, serialized from the type `repo refresh` writes so a change
 /// to its shape reaches every hand-written fixture.
-pub fn empty_links() -> serde_json::Value {
+pub(crate) fn empty_links() -> serde_json::Value {
     serde_json::to_value(core_node::DeclaredLinks::default()).expect("serialize empty links")
 }
 
@@ -290,7 +298,7 @@ pub fn empty_links() -> serde_json::Value {
 /// shape `repo refresh` writes it. The one spelling of that shape for every
 /// test binary, so a change to it is a change here rather than in each
 /// hand-written fixture.
-pub fn fs_origin(path: &Path) -> serde_json::Value {
+pub(crate) fn fs_origin(path: &Path) -> serde_json::Value {
     serde_json::json!({
         "source_type": "fs",
         "path": path.to_string_lossy(),
@@ -319,7 +327,12 @@ fn head_commit_of(repo_url: &str, repo_ref: &str, seed: &str) -> String {
 /// The `origin` object of a cache entry for an item held by a remote, in
 /// the shape `repo refresh` writes it. `path` is repository-relative and
 /// points at the file that declares the item.
-pub fn git_origin(repo_url: &str, repo_ref: &str, path: &str, seed: &str) -> serde_json::Value {
+pub(crate) fn git_origin(
+    repo_url: &str,
+    repo_ref: &str,
+    path: &str,
+    seed: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "source_type": "git",
         "repo_url": repo_url,
@@ -331,7 +344,7 @@ pub fn git_origin(repo_url: &str, repo_ref: &str, path: &str, seed: &str) -> ser
 }
 
 impl TestPackagesCache {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -341,7 +354,12 @@ impl TestPackagesCache {
     ///
     /// The fingerprint follows [`fingerprint_or_seeded`]: the file's bytes
     /// when it exists, a seeded value otherwise.
-    pub fn fs_entry(mut self, name: &str, tag: &str, absolute_path: impl AsRef<Path>) -> Self {
+    pub(crate) fn fs_entry(
+        mut self,
+        name: &str,
+        tag: &str,
+        absolute_path: impl AsRef<Path>,
+    ) -> Self {
         let manifest_path = absolute_path.as_ref().join(NODE_CONFIG_FILE);
         let sha256 = fingerprint_or_seeded(&manifest_path, &format!("{name}:{tag}"));
         self.entries.push(serde_json::json!({
@@ -362,7 +380,7 @@ impl TestPackagesCache {
     /// The fingerprint follows [`fingerprint_or_seeded`], read from the
     /// repository's worktree copy of the manifest when `repo_url` is a path on
     /// this machine; a remote or lookup-only fixture gets a seeded value.
-    pub fn git_entry(
+    pub(crate) fn git_entry(
         mut self,
         name: &str,
         tag: &str,
@@ -394,7 +412,7 @@ impl TestPackagesCache {
 
     /// Adds a node read from the oci repository `url`, whose `peppy.json5`
     /// is `manifest` and which has an artifact for each of `platforms`.
-    pub fn oci_entry(
+    pub(crate) fn oci_entry(
         mut self,
         name: &str,
         tag: &str,
@@ -419,7 +437,7 @@ impl TestPackagesCache {
     /// fingerprint follows [`fingerprint_or_seeded`]; launcher resolution
     /// materializes the origin's path without a drift check, so a seeded
     /// value is harmless for a file written later.
-    pub fn launcher_fs_entry(mut self, name: &str, absolute_path: impl AsRef<Path>) -> Self {
+    pub(crate) fn launcher_fs_entry(mut self, name: &str, absolute_path: impl AsRef<Path>) -> Self {
         let path = absolute_path.as_ref();
         let sha256 = fingerprint_or_seeded(path, name);
         self.launchers.push(serde_json::json!({
@@ -435,7 +453,7 @@ impl TestPackagesCache {
     /// is the on-disk contract JSON5 (assumed already committed at
     /// `path_in_repo` inside `repo_url`); its sha256 is computed here so
     /// the cache fingerprint matches what `ensure_checkout` will read.
-    pub fn contract_git_entry(
+    pub(crate) fn contract_git_entry(
         mut self,
         name: &str,
         tag: &str,
@@ -458,7 +476,7 @@ impl TestPackagesCache {
     /// `body` is the on-disk contract JSON5 (assumed already written at
     /// `absolute_path`); its sha256 is computed here so the cache
     /// fingerprint matches what `resolve_contract_doc` reads back.
-    pub fn contract_fs_entry(
+    pub(crate) fn contract_fs_entry(
         mut self,
         name: &str,
         tag: &str,
@@ -479,7 +497,7 @@ impl TestPackagesCache {
     /// `body` is the on-disk pairing JSON5 (assumed already written at
     /// `absolute_path`); its sha256 is computed here so the cache
     /// fingerprint matches what the pairing resolver reads back.
-    pub fn pairing_fs_entry(
+    pub(crate) fn pairing_fs_entry(
         mut self,
         name: &str,
         tag: &str,
@@ -496,7 +514,7 @@ impl TestPackagesCache {
         self
     }
 
-    pub fn write(self, peppy_dirs: &PeppyDirs) {
+    pub(crate) fn write(self, peppy_dirs: &PeppyDirs) {
         let cache_dir = peppy_dirs.cache_dir();
         std::fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
         for manifest in &self.oci_node_manifests {
@@ -551,13 +569,13 @@ fn write_or_clear(path: &Path, entries: &[serde_json::Value], label: &str) {
 /// Convenience helper: writes `peppy.json5` under `dir` but skips the
 /// fingerprint generation (useful for packages-cache FS fixtures that
 /// aren't going through the fingerprint verification path).
-pub fn write_plain_peppy_json5(dir: &Path, content: &str) {
+pub(crate) fn write_plain_peppy_json5(dir: &Path, content: &str) {
     std::fs::create_dir_all(dir).expect("failed to create dir");
     std::fs::write(dir.join(NODE_CONFIG_FILE), content).expect("failed to write peppy.json5");
 }
 
 /// Minimal valid peppy.json5 content for a node with the given name and tag.
-pub fn minimal_peppy_json5(name: &str, tag: &str) -> String {
+pub(crate) fn minimal_peppy_json5(name: &str, tag: &str) -> String {
     format!(
         r#"{{
   peppy_schema: "node/v1",
@@ -577,7 +595,7 @@ pub fn minimal_peppy_json5(name: &str, tag: &str) -> String {
 }
 
 /// Creates `{name}_{tag}` under `base` with a [`minimal_peppy_json5`] inside it.
-pub fn create_node_dir(base: &Path, name: &str, tag: &str) -> PathBuf {
+pub(crate) fn create_node_dir(base: &Path, name: &str, tag: &str) -> PathBuf {
     let dir = base.join(format!("{name}_{tag}"));
     std::fs::create_dir_all(&dir).expect("create node dir");
     std::fs::write(dir.join(NODE_CONFIG_FILE), minimal_peppy_json5(name, tag))
@@ -586,12 +604,12 @@ pub fn create_node_dir(base: &Path, name: &str, tag: &str) -> PathBuf {
 }
 
 /// Writes a repositories.json5 file in the conf_dir of the started core node.
-pub fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
+pub(crate) fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
     write_repositories_json5_in(&started.peppy_dirs, content);
 }
 
 /// Writes a repositories.json5 file in the conf_dir of `peppy_dirs`.
-pub fn write_repositories_json5_in(peppy_dirs: &PeppyDirs, content: &str) {
+pub(crate) fn write_repositories_json5_in(peppy_dirs: &PeppyDirs, content: &str) {
     std::fs::create_dir_all(peppy_dirs.conf_dir()).expect("create conf dir");
     std::fs::write(core_node::repositories_list_path(peppy_dirs), content)
         .expect("write repos file");
@@ -599,7 +617,7 @@ pub fn write_repositories_json5_in(peppy_dirs: &PeppyDirs, content: &str) {
 
 /// The content of a repositories.json5 (or excluded_repositories.json5) that
 /// lists the fs repositories at `paths`, with ids 1, 2, ... in order.
-pub fn fs_repositories_json(paths: &[&Path]) -> String {
+pub(crate) fn fs_repositories_json(paths: &[&Path]) -> String {
     let entries: Vec<serde_json::Value> = paths
         .iter()
         .zip(1u64..)
@@ -611,13 +629,13 @@ pub fn fs_repositories_json(paths: &[&Path]) -> String {
 }
 
 /// The excluded_repositories.json5 file in the conf_dir of `peppy_dirs`.
-pub fn excluded_repositories_path(peppy_dirs: &PeppyDirs) -> PathBuf {
+pub(crate) fn excluded_repositories_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     peppy_dirs.conf_dir().join("excluded_repositories.json5")
 }
 
 /// Writes an excluded_repositories.json5 file in the conf_dir of the started
 /// core node.
-pub fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {
+pub(crate) fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {
     std::fs::create_dir_all(started.peppy_dirs.conf_dir()).expect("create conf dir");
     std::fs::write(excluded_repositories_path(&started.peppy_dirs), content)
         .expect("write excluded repos file");
@@ -626,7 +644,7 @@ pub fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &st
 /// Reads the JSON5 array at `path`, the shape of the repository lists and the
 /// repository caches the daemon writes. Panics when the file cannot be read or
 /// does not hold an array.
-pub fn read_json5_array(path: &Path) -> Vec<serde_json::Value> {
+pub(crate) fn read_json5_array(path: &Path) -> Vec<serde_json::Value> {
     let content = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
     serde_json5::from_str(&content)
@@ -634,7 +652,7 @@ pub fn read_json5_array(path: &Path) -> Vec<serde_json::Value> {
 }
 
 /// Writes a nodes.json5 cache file in the cache_dir of the started core node.
-pub fn write_packages_cache(started: &StartedCoreNode, content: &str) {
+pub(crate) fn write_packages_cache(started: &StartedCoreNode, content: &str) {
     let cache_dir = started.peppy_dirs.cache_dir();
     std::fs::create_dir_all(&cache_dir).expect("create cache dir");
     std::fs::write(nodes_repo_cache_path(&started.peppy_dirs), content).expect("write cache file");
@@ -648,7 +666,7 @@ pub fn write_packages_cache(started: &StartedCoreNode, content: &str) {
 /// multi-GB cargo `target/`, when it drops, so test runs never accumulate
 /// build artifacts. Bind it for as long as the node is needed (e.g. for the
 /// whole test body) and let it drop at scope end.
-pub fn create_test_node_with_name(node_name: &str, node_tag: &str) -> TempDir {
+pub(crate) fn create_test_node_with_name(node_name: &str, node_tag: &str) -> TempDir {
     // Build under the shared test-tmp root (see `config_test_support::test_tmp_root`) and keep the
     // `TempDir` guard rather than `.keep()`-ing it, so the directory and its
     // ~2 GB cargo build are reclaimed when the returned guard drops.

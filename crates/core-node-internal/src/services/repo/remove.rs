@@ -15,7 +15,7 @@ use peppylib::{MessengerHandle, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-pub async fn listen_for_repo_remove(
+pub(crate) async fn listen_for_repo_remove(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,

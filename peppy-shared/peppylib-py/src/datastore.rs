@@ -225,7 +225,7 @@ impl PyStoredValue {
 /// owner's `instance_id` in `current.last_modified_by`.
 #[pyclass(name = "ExclusiveStore", eq, frozen, skip_from_py_object)]
 #[derive(Clone, PartialEq)]
-pub enum PyExclusiveStore {
+pub(crate) enum PyExclusiveStore {
     Stored(),
     Refused { current: PyStoredValue },
 }

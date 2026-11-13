@@ -22,7 +22,7 @@ fn stop_request_timeout(shutdown_grace_secs: u64) -> Duration {
     )))
 }
 
-pub fn stop_node(ctx: &Arc<AppContext>, instance_id: String) -> Result<()> {
+pub(super) fn stop_node(ctx: &Arc<AppContext>, instance_id: String) -> Result<()> {
     crate::commands::block_on(stop_node_async(ctx, instance_id))
 }
 

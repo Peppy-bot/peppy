@@ -17,7 +17,7 @@ use peppylib::{MessengerHandle, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::warn;
 
-pub async fn listen_for_repo_list(
+pub(crate) async fn listen_for_repo_list(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,

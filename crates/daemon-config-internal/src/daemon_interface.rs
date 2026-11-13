@@ -9,7 +9,7 @@
 //! launcher gives a target that names it, the narrowing of its published
 //! schema by a scope, and the checks a launch runs on a scope.
 
-pub mod robot_leases;
+pub(crate) mod robot_leases;
 mod robot_membership;
 
 use crate::internal::launcher::{Joinable, PreparedLauncher, UnitSelection, VacantReason};

@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 
 /// Portable long-running start command used by fixture spawns. Traps SIGTERM
 /// so `stop_instance` + `kill -TERM` cleanly shuts it down.
-pub const LONG_RUNNING_START_CMD: &[&str] = &[
+pub(crate) const LONG_RUNNING_START_CMD: &[&str] = &[
     "sh",
     "-c",
     "trap 'exit 0' TERM; while true; do sleep 0.1; done",
@@ -29,7 +29,7 @@ static FIXTURE_INSTANCE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Returns a process-wide unique fixture instance name. Used as the default
 /// when a caller doesn't supply an explicit instance id.
-pub fn fixture_instance_name() -> Name {
+pub(crate) fn fixture_instance_name() -> Name {
     let n = FIXTURE_INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
     Name::new(format!("fixture-inst-{n}")).expect("fixture instance name")
 }
@@ -39,7 +39,7 @@ impl OutputReaderHooks for NoOpHooks {}
 
 /// The spawn of a new fixture instance under the default policy, from a
 /// goal of its own.
-pub fn new_spawn(instance_id: &Name) -> node_stack::SpawnTarget {
+pub(crate) fn new_spawn(instance_id: &Name) -> node_stack::SpawnTarget {
     node_stack::SpawnTarget::New(node_stack::FirstStart::fixture(
         instance_id,
         "fixture",
@@ -50,7 +50,7 @@ pub fn new_spawn(instance_id: &Name) -> node_stack::SpawnTarget {
 /// Tempdir-backed plumbing for real-lifecycle fixture calls. Callers keep
 /// this alive for the duration of the test; dropping it cleans up the
 /// tempdirs and aborts the feedback-drain task.
-pub struct LifecycleHarness {
+pub(crate) struct LifecycleHarness {
     pub peppy_root: tempfile::TempDir,
     pub peppy_dirs: PeppyDirs,
     pub working_dir: tempfile::TempDir,
@@ -73,7 +73,7 @@ impl Drop for LifecycleHarness {
 }
 
 impl LifecycleHarness {
-    pub fn output_sinks(&self) -> OutputSinks {
+    pub(crate) fn output_sinks(&self) -> OutputSinks {
         OutputSinks {
             announcer: Announcer::new(self.log.clone(), self.feedback_tx.clone()),
             publish_enabled: Arc::clone(&self.publish_enabled),
@@ -85,7 +85,7 @@ impl LifecycleHarness {
     /// runtime config, the key file of the harness, no slot bindings, the
     /// wall clock, no launch identity or copy, and no extra env vars or
     /// mounts.
-    pub fn start_context<'a>(&'a self, instance_id: &'a Name) -> StartContext<'a> {
+    pub(crate) fn start_context<'a>(&'a self, instance_id: &'a Name) -> StartContext<'a> {
         StartContext {
             core_node: "cn-a",
             run_log_path: std::path::Path::new("run.log"),
@@ -107,7 +107,7 @@ impl LifecycleHarness {
 
 /// Constructs a fresh [`LifecycleHarness`] with isolated tempdirs and a
 /// background feedback-drain task so the internal channel does not fill up.
-pub fn lifecycle_harness() -> LifecycleHarness {
+pub(crate) fn lifecycle_harness() -> LifecycleHarness {
     let peppy_root = tempfile::tempdir().expect("peppy_root tempdir");
     let peppy_dirs = PeppyDirs::new(peppy_root.path().to_path_buf());
     let working_dir = tempfile::tempdir().expect("working_dir tempdir");
@@ -140,7 +140,10 @@ pub fn lifecycle_harness() -> LifecycleHarness {
 /// `archive_dir_to_storage` branch (no apptainer, no user build_cmd) and the
 /// later spawn runs `run_cmd`. Fixture callers that pass arbitrary configs
 /// are opting into this override.
-pub fn override_execution_for_fixture(mut config: NodeConfig, run_cmd: &[&str]) -> NodeConfig {
+pub(crate) fn override_execution_for_fixture(
+    mut config: NodeConfig,
+    run_cmd: &[&str],
+) -> NodeConfig {
     config.execution.container = None;
     config.execution.build_cmd = None;
     config.execution.run_cmd = Some(run_cmd.iter().map(|s| s.to_string()).collect());
@@ -153,7 +156,7 @@ pub fn override_execution_for_fixture(mut config: NodeConfig, run_cmd: &[&str]) 
 /// spawns run the portable long-running shell loop.
 ///
 /// Returns the `Ready` entity handle.
-pub async fn build_ready(
+pub(crate) async fn build_ready(
     stack: &NodeStack,
     harness: &LifecycleHarness,
     config: NodeConfig,
@@ -174,7 +177,7 @@ pub async fn build_ready(
 /// needs its own `run_cmd` passes it to [`override_execution_for_fixture`].
 ///
 /// Returns the `Ready` entity handle.
-pub async fn build_ready_as_is(
+pub(crate) async fn build_ready_as_is(
     stack: &NodeStack,
     harness: &LifecycleHarness,
     config: NodeConfig,
@@ -214,7 +217,7 @@ pub async fn build_ready_as_is(
 /// Tests that want to observe `stop_instance` side-effects (e.g. that it
 /// returns `true` on the first call and `false` afterwards) can drop the
 /// guard mid-test.
-pub struct RunningInstanceGuard {
+pub(crate) struct RunningInstanceGuard {
     pub handle: EntityHandle,
     pub instance_id: Name,
     pub pid: u32,
@@ -238,7 +241,7 @@ impl Drop for RunningInstanceGuard {
 ///
 /// The entity must be in `Ready` (typically produced by [`build_ready`]) and
 /// its `run_cmd` must be spawnable; [`build_ready`] sets this up for you.
-pub async fn spawn_running_instance(
+pub(crate) async fn spawn_running_instance(
     handle: EntityHandle,
     harness: &LifecycleHarness,
     instance_id: Name,
@@ -273,7 +276,7 @@ pub async fn spawn_running_instance(
 /// build_cmd) before exercising the rollback path. `wait_for` inspects the
 /// current stage first, so a transition that already happened is still
 /// observed; otherwise it parks until the entity broadcasts its next stage.
-pub async fn wait_for_building(handle: &EntityHandle) {
+pub(crate) async fn wait_for_building(handle: &EntityHandle) {
     let mut stages = handle.read().subscribe_stage();
     stages
         .wait_for(|stage| matches!(stage, SerializedNodeStage::Building))

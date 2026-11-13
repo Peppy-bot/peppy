@@ -131,7 +131,7 @@ fn read_field_value(
 ///         ...field reads...
 ///         return Message(field1=var1, ...)
 /// ```
-pub fn build_deserialize_fn(
+pub(super) fn build_deserialize_fn(
     builder: &mut PythonCodeBuilder,
     schema_info: &PythonSchemaInfo,
     format: &MessageFormat,

@@ -19,7 +19,7 @@ use serde_json::Value;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-pub async fn listen_for_repo_add(
+pub(crate) async fn listen_for_repo_add(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,

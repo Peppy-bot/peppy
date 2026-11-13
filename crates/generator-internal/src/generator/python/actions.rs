@@ -24,7 +24,7 @@ use config::node::{ConsumedAction, NativeExposedAction};
 /// `handle_goal_next_request` receives a goal, runs the user decider, and
 /// accepts/refuses it, returning a per-goal `GoalContext` on accept. All
 /// routing/cancel/result/feedback behavior lives in the shared Rust engine.
-pub fn build_exposed_action(
+pub(super) fn build_exposed_action(
     action: &NativeExposedAction,
     goal_request_schema_info: Option<&PythonSchemaInfo>,
     goal_response_schema_info: Option<&PythonSchemaInfo>,
@@ -483,7 +483,7 @@ fn method_params(leading: &[&str], fields: &[PythonField]) -> String {
 // Subscribed actions
 // ---------------------------------------------------------------------------
 
-pub struct ConsumedActionSchemaInfo<'a> {
+pub(super) struct ConsumedActionSchemaInfo<'a> {
     pub goal_request: Option<&'a PythonSchemaInfo>,
     pub goal_response: Option<&'a PythonSchemaInfo>,
     pub feedback: Option<&'a PythonSchemaInfo>,
@@ -491,7 +491,7 @@ pub struct ConsumedActionSchemaInfo<'a> {
 }
 
 /// Generates Python code for a subscribed (client-side) action.
-pub fn build_consumed_action(
+pub(super) fn build_consumed_action(
     action: &ConsumedAction,
     messages: &ConsumedActionMessage,
     schema_info: ConsumedActionSchemaInfo<'_>,

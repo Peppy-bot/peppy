@@ -40,7 +40,7 @@ use tracing::{debug, warn};
 
 use super::common::{SlotUpdateClient, unanswered};
 
-pub struct PairingCoordinator {
+pub(crate) struct PairingCoordinator {
     updates: SlotUpdateClient,
     /// Serializes every pairing operation end-to-end (registry commit AND
     /// delivery), so a revert finds the registry as its own reservation left
@@ -54,7 +54,7 @@ pub struct PairingCoordinator {
 }
 
 impl PairingCoordinator {
-    pub fn new(
+    pub(crate) fn new(
         node_stack: Arc<NodeStack>,
         messenger: MessengerHandle,
         core_node_name: impl Into<String>,
@@ -76,7 +76,7 @@ impl PairingCoordinator {
     /// `Starting`, and pins are only delivered once it commits to Running).
     /// All of `pair_slots`' validation applies: existence, liveness,
     /// same-pairing, complementary roles, sha pins, exclusivity.
-    pub async fn reserve(&self, pair: &PlannedPair) -> Result<(), String> {
+    pub(crate) async fn reserve(&self, pair: &PlannedPair) -> Result<(), String> {
         let _guard = self.op_lock.lock().await;
         // A same-daemon pair validates both halves against local manifests. A
         // cross-daemon one validates the half this daemon owns and takes the
@@ -106,7 +106,7 @@ impl PairingCoordinator {
     /// best-effort Unpaired to whichever side already acked) and an error
     /// naming the pair is returned; pairs already delivered in this call are
     /// left standing (the caller decides whether to dissolve everything).
-    pub async fn deliver_pairs_for_instance(
+    pub(crate) async fn deliver_pairs_for_instance(
         &self,
         instance_id: &str,
         planned: &[PlannedPair],
@@ -177,7 +177,7 @@ impl PairingCoordinator {
     /// request's wait at once and stops them; either way the outcome of the
     /// request in flight is neither applied nor handed on, and every pair
     /// stays held as it was, for the next process to ask for again.
-    pub async fn pair_again_best_effort(
+    pub(crate) async fn pair_again_best_effort(
         &self,
         held: &[PlannedPair],
         pid: u32,
@@ -310,7 +310,7 @@ impl PairingCoordinator {
     /// stop paths, the process-exit watcher, and the `node_run` unwind
     /// branches (death auto-clears; a restart asks again for the pairs the
     /// instance held, and any other pair is made by a link).
-    pub async fn dissolve_for_instance(&self, instance_id: &str) {
+    pub(crate) async fn dissolve_for_instance(&self, instance_id: &str) {
         let _guard = self.op_lock.lock().await;
         for pairing in self
             .updates
@@ -339,7 +339,10 @@ impl PairingCoordinator {
     /// so it reads the registry as recorded ([`NodeStack::with_pairs`]) rather
     /// than through a liveness-pruning view, which would delete the pair before
     /// [`Self::dissolve_for_instance`] could notify its survivor.
-    pub fn remote_peer_core_nodes(&self, instance_id: &str) -> std::collections::BTreeSet<String> {
+    pub(crate) fn remote_peer_core_nodes(
+        &self,
+        instance_id: &str,
+    ) -> std::collections::BTreeSet<String> {
         let local = self.updates.core_node_name();
         self.updates
             .node_stack()
@@ -538,7 +541,10 @@ impl PairingCoordinator {
     /// - `precondition_failed` otherwise: a restart's request for a pair the
     ///   local endpoint no longer keeps, whatever that endpoint's state, or
     ///   any other refusal of the stack.
-    pub async fn commit_pair_from_peer(&self, request: &PairCommitRequest) -> Result<(), Failure> {
+    pub(crate) async fn commit_pair_from_peer(
+        &self,
+        request: &PairCommitRequest,
+    ) -> Result<(), Failure> {
         let _guard = self.op_lock.lock().await;
         let (local, remote, remote_meta) =
             Self::slots_from_commit_request(request, self.updates.core_node_name())
@@ -623,7 +629,11 @@ impl PairingCoordinator {
     /// duplicate notification dissolves nothing further, and a lost one leaves
     /// this side holding a pair to an instance that is gone, which the local
     /// node's own staleness handling covers.
-    pub async fn dissolve_pairs_with_remote_instance(&self, core_node: &str, instance_id: &str) {
+    pub(crate) async fn dissolve_pairs_with_remote_instance(
+        &self,
+        core_node: &str,
+        instance_id: &str,
+    ) {
         let _guard = self.op_lock.lock().await;
         for pairing in self
             .updates
@@ -895,7 +905,7 @@ fn find_missing_planned_pair<'a>(
 
 /// The new instance's side of a plan-phase pairing check: its identity plus
 /// the `node_run` goal's pairing arguments.
-pub struct PairingRequest<'a> {
+pub(crate) struct PairingRequest<'a> {
     pub node_name: &'a str,
     pub node_tag: &'a str,
     pub instance_id: &'a str,
@@ -955,7 +965,7 @@ fn flatten_pairs(
 /// launch applies to its own. It judges the local pairs: a pair whose peer
 /// lives on another machine was judged by the coordinator that planned it,
 /// which is the only party holding both sides' clocks.
-pub fn plan_requested_pairs(
+pub(crate) fn plan_requested_pairs(
     snapshot: &[PairingNodeSnapshot],
     live_pairs: &[Pairing],
     request: &PairingRequest<'_>,

@@ -50,7 +50,7 @@ const RESERVED_COMPONENT_NAMES: [&str; 8] = [
 
 /// Argument overrides an option entry or one of its copies writes, keyed by
 /// the instance id written in the option's fragment and then by argument.
-pub type ArgumentOverrides = BTreeMap<String, BTreeMap<String, AnyType>>;
+pub(super) type ArgumentOverrides = BTreeMap<String, BTreeMap<String, AnyType>>;
 
 /// How many selections of an axis a document allows. `one` and
 /// `zero_or_one` are filled once, by a `deployments` entry or `--with`, and
@@ -899,7 +899,7 @@ impl std::fmt::Display for ConditionOptions {
 }
 
 /// All named axes must match; each axis accepts one or several option names.
-pub type SelectionCondition = BTreeMap<String, ConditionOptions>;
+pub(super) type SelectionCondition = BTreeMap<String, ConditionOptions>;
 
 /// One rule about which selections a document refuses to be: `when` a
 /// guard holds, the selection must also satisfy at least one `requires`

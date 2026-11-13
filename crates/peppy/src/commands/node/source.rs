@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 /// The refusal of a `--ref` given with a source that is not a git repository.
 const REF_NEEDS_A_GIT_SOURCE: &str = "`--ref` is only supported for git sources";
 
-pub fn is_probably_remote_source(source: &str) -> bool {
+pub(crate) fn is_probably_remote_source(source: &str) -> bool {
     source.contains("://") || source.starts_with("git@")
 }
 
@@ -53,7 +53,7 @@ fn looks_like_repo_node_ref(source: &str) -> bool {
     true
 }
 
-pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSource> {
+pub(crate) fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSource> {
     if is_probably_remote_source(source) {
         if let Ok(url) = url::Url::parse(source)
             && matches!(url.scheme(), "http" | "https")
@@ -126,7 +126,7 @@ fn is_supported_http_archive(url: &url::Url) -> bool {
 
 /// Returns `true` when the source string looks like a git repository URL
 /// (contains `.git` or uses `git@` / `ssh://` scheme).
-pub fn looks_like_git_url(source: &str) -> bool {
+pub(crate) fn looks_like_git_url(source: &str) -> bool {
     source.ends_with(".git")
         || source.contains(".git/")
         || source.starts_with("git@")
@@ -134,7 +134,7 @@ pub fn looks_like_git_url(source: &str) -> bool {
         || source.starts_with("git://")
 }
 
-pub fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
+pub(crate) fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
     if let Ok(mut parsed) = url::Url::parse(source) {
         parsed.set_query(None);
         parsed.set_fragment(None);
@@ -176,7 +176,7 @@ pub fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
 
 /// Resolves the root node directory from a candidate path. The directory must
 /// contain a parseable `peppy.json5`.
-pub fn resolve_node_root_dir(dir: &Path) -> Result<PathBuf> {
+pub(crate) fn resolve_node_root_dir(dir: &Path) -> Result<PathBuf> {
     let config_path = dir.join(NODE_CONFIG_FILE);
     NodeConfigParser::from_path(&config_path).map_err(|e| {
         Error::ExecutionFailed(format!(

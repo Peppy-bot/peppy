@@ -1,6 +1,6 @@
-pub mod activity;
+pub(crate) mod activity;
 pub(crate) mod atomic_file;
-pub mod facade;
+pub(crate) mod facade;
 pub(crate) mod l4t_manifest;
 pub(crate) mod lima;
 pub(crate) mod registry_auth;

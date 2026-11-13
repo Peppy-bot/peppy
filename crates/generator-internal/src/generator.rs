@@ -1,4 +1,4 @@
-pub mod common;
+pub(crate) mod common;
 #[cfg(test)]
 mod golden_support;
 pub(crate) mod naming;
@@ -6,10 +6,10 @@ pub(crate) mod scaffold_tree;
 #[cfg(test)]
 #[macro_use]
 mod test_helpers;
-pub mod python;
-pub mod rust;
+pub(crate) mod python;
+pub(crate) mod rust;
 pub(crate) mod testgen;
-pub mod types;
+pub(crate) mod types;
 
 use crate::error::{Error, Result};
 use config::{

@@ -75,7 +75,7 @@ impl Drop for MockUndeclare {
 /// Shared map of active subscriptions, keyed by pattern. Each pattern maps to
 /// the sinks that should receive a fanout when an intersecting topic is
 /// published.
-pub type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<MockSubscription>>>>;
+pub(crate) type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<MockSubscription>>>>;
 
 /// The messages one retaining mock topic keeps: its newest `depth`, oldest
 /// first.

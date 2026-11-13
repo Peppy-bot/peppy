@@ -24,7 +24,7 @@ use tracing::debug;
 /// Zenoh's `(payload, encoding)` value model so any value type round-trips
 /// faithfully.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredValue {
+pub(super) struct StoredValue {
     pub value: Vec<u8>,
     pub encoding: String,
     /// `instance_id` of the node that last wrote this key.
@@ -101,7 +101,7 @@ impl InstanceLiveness for NodeStack {
 /// request carries its sender's instance id only, so a request still in flight
 /// when its sender's process ends acts for whichever process then runs under
 /// the id.
-pub struct Datastore {
+pub(super) struct Datastore {
     entries: Mutex<BTreeMap<String, Entry>>,
     liveness: Arc<dyn InstanceLiveness>,
     /// The core node this datastore lives on, named in a refusal's remedy.
@@ -126,7 +126,7 @@ impl Datastore {
     /// Upserts `key` → `(value, encoding)`, recording `writer` as its last
     /// writer. The owner's store of its own key keeps it owned. Fails on a key
     /// another instance owns.
-    pub fn store(
+    pub(super) fn store(
         &self,
         key: String,
         value: Vec<u8>,
@@ -154,7 +154,7 @@ impl Datastore {
     /// `writer`'s; when another instance owns the key, answers with the key as
     /// its owner wrote it. Fails when the key exists with no owner, and when
     /// the core node runs no process under `writer`.
-    pub fn store_exclusive(
+    pub(super) fn store_exclusive(
         &self,
         key: String,
         value: Vec<u8>,
@@ -188,7 +188,7 @@ impl Datastore {
     }
 
     /// Returns the stored value for `key`, or `None` if absent.
-    pub fn get(&self, key: &str) -> Option<StoredValue> {
+    pub(super) fn get(&self, key: &str) -> Option<StoredValue> {
         self.with_live_key(key, |entries| {
             entries.get(key).map(|entry| entry.stored.clone())
         })
@@ -198,7 +198,7 @@ impl Datastore {
     /// in key order. Values are deliberately omitted to keep the list cheap.
     /// The owners are looked up with the entries unlocked, and a key is
     /// dropped only while the owner found dead still owns it.
-    pub fn list(&self) -> Vec<DatastoreListEntry> {
+    pub(super) fn list(&self) -> Vec<DatastoreListEntry> {
         let owned: Vec<(String, Owner)> = self
             .entries
             .lock()
@@ -227,7 +227,7 @@ impl Datastore {
 
     /// Removes `key` for `remover`. Returns `true` if it existed, `false` if
     /// already absent. Fails on a key another instance owns.
-    pub fn remove(&self, key: &str, remover: &str) -> Result<bool> {
+    pub(super) fn remove(&self, key: &str, remover: &str) -> Result<bool> {
         self.with_live_key(key, |entries| {
             let Some(entry) = entries.get(key) else {
                 return Ok(false);
@@ -287,7 +287,7 @@ impl Datastore {
 /// a service response are identical for all of them.
 macro_rules! datastore_endpoint {
     ($listen:ident, $service:expr, $handler:ident) => {
-        pub async fn $listen(
+        pub(super) async fn $listen(
             messenger: &MessengerHandle,
             core_node_name: &str,
             instance_id: &str,

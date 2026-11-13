@@ -8,12 +8,12 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub const TEST_NODE_TAG: &str = "v1";
+pub(crate) const TEST_NODE_TAG: &str = "v1";
 
 /// Asserts that the CLI error `err` names the failure `kind` that the daemon
 /// gave, as "({kind})", and that it contains `text`.
 #[track_caller]
-pub fn assert_daemon_failure(
+pub(crate) fn assert_daemon_failure(
     err: &impl std::fmt::Display,
     kind: config::failure_kind::PeppyFailureKind,
     text: &str,
@@ -31,16 +31,16 @@ pub fn assert_daemon_failure(
 
 /// The caller a test names itself in a request to the daemon: the command
 /// line, whose key [`ServeCommandEmulation::command_line_handle`] signs with.
-pub const CALLER_INSTANCE_ID: &str = core_node_api::names::COMMAND_LINE_INSTANCE_ID;
+pub(crate) const CALLER_INSTANCE_ID: &str = core_node_api::names::COMMAND_LINE_INSTANCE_ID;
 
 /// How long a `stack list` request may take before a test gives up on it.
 const STACK_LIST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long a daemon gets to boot: write its state file, start its router.
-pub const DAEMON_BOOT: Duration = Duration::from_secs(60);
+pub(crate) const DAEMON_BOOT: Duration = Duration::from_secs(60);
 
 /// SIGKILLs the daemon on drop so a failing/panicking test never leaks it.
-pub struct DaemonGuard(pub Child);
+pub(crate) struct DaemonGuard(pub Child);
 
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
@@ -50,7 +50,7 @@ impl Drop for DaemonGuard {
 }
 
 /// The messaging engine a spawned daemon runs.
-pub enum MessagingEngine {
+pub(crate) enum MessagingEngine {
     Mock,
     /// A managed zenohd listening on this port. Only the Linux e2e in
     /// `daemon_lifecycle_e2e` boots one.
@@ -62,7 +62,7 @@ pub enum MessagingEngine {
 
 /// Spawn `peppy service serve` in an isolated home, capturing stdout and
 /// stderr so tests can inspect the daemon's output.
-pub fn spawn_daemon(
+pub(crate) fn spawn_daemon(
     home: &std::path::Path,
     engine: MessagingEngine,
 ) -> (DaemonGuard, Arc<Mutex<String>>) {
@@ -70,7 +70,7 @@ pub fn spawn_daemon(
 }
 
 /// [`spawn_daemon`] with `envs` added to the daemon's environment.
-pub fn spawn_daemon_with_env(
+pub(crate) fn spawn_daemon_with_env(
     home: &std::path::Path,
     engine: MessagingEngine,
     envs: &[(&str, &str)],
@@ -144,7 +144,7 @@ fn the_drain_reads_past_a_line_that_is_not_utf8() {
 }
 
 /// The line a daemon prints once its serve loop is up.
-pub const SERVE_INITIALIZED: &str = "Serve command initialized!";
+pub(crate) const SERVE_INITIALIZED: &str = "Serve command initialized!";
 /// The daemon's refusal of a taken zenoh port, and zenohd's own bind failure
 /// quoted from its log. The zenoh boot helpers below serve the Linux e2e in
 /// `daemon_lifecycle_e2e` and every `log_export_e2e` test.
@@ -153,11 +153,11 @@ const PORT_IN_USE: [&str; 2] = ["Zenoh router port already in use", "Address alr
 /// How many times a test boots a zenoh daemon again on a new port. The port
 /// comes from the ephemeral range other tests' zenoh sessions draw from.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub const PORT_ATTEMPTS: usize = 3;
+pub(crate) const PORT_ATTEMPTS: usize = 3;
 
 /// A port that was free a moment ago.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub fn free_port() -> u16 {
+pub(crate) fn free_port() -> u16 {
     std::net::TcpListener::bind("0.0.0.0:0")
         .expect("bind an ephemeral port")
         .local_addr()
@@ -167,7 +167,7 @@ pub fn free_port() -> u16 {
 
 /// How the boot of a zenoh daemon went.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub enum Boot {
+pub(crate) enum Boot {
     Ready,
     /// Another process took the zenoh port first.
     PortCollision,
@@ -175,7 +175,11 @@ pub enum Boot {
 
 /// Waits for `ready` in the daemon's logs, or a port collision.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub fn wait_for_boot(daemon: &mut DaemonGuard, logs: &Arc<Mutex<String>>, ready: &str) -> Boot {
+pub(crate) fn wait_for_boot(
+    daemon: &mut DaemonGuard,
+    logs: &Arc<Mutex<String>>,
+    ready: &str,
+) -> Boot {
     wait_for_daemon(daemon, logs, DAEMON_BOOT, ready, |snapshot| {
         if PORT_IN_USE.iter().any(|needle| snapshot.contains(needle)) {
             return Some(Boot::PortCollision);
@@ -189,7 +193,7 @@ pub fn wait_for_boot(daemon: &mut DaemonGuard, logs: &Arc<Mutex<String>>, ready:
 /// Linux only: the managed zenohd is what lets a second process reach the
 /// daemon.
 #[cfg(target_os = "linux")]
-pub struct ZenohDaemon {
+pub(crate) struct ZenohDaemon {
     pub home: tempfile::TempDir,
     pub port: u16,
     pub guard: DaemonGuard,
@@ -203,7 +207,7 @@ impl ZenohDaemon {
     /// writes the other files of its home before the boot. A port that
     /// another process takes first gets a new home and port, up to
     /// [`PORT_ATTEMPTS`] times.
-    pub fn boot(
+    pub(crate) fn boot(
         core_node_name: &str,
         config_fields: &str,
         envs: &[(&str, &str)],
@@ -235,12 +239,12 @@ impl ZenohDaemon {
         panic!("{PORT_ATTEMPTS} attempts in a row hit a port collision");
     }
 
-    pub fn dirs(&self) -> daemon_config::consts::PeppyDirs {
+    pub(crate) fn dirs(&self) -> daemon_config::consts::PeppyDirs {
         daemon_config::consts::PeppyDirs::new(self.home.path())
     }
 
     /// The command `peppy` with `args` against this daemon, not started yet.
-    pub fn peppy_command(&self, args: &[&str]) -> Command {
+    pub(crate) fn peppy_command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_peppy"));
         command
             .args(args)
@@ -256,7 +260,7 @@ impl ZenohDaemon {
 
     /// Runs `peppy` with `args` against this daemon. Returns whether it
     /// succeeded and what it printed.
-    pub fn peppy_outcome(&self, args: &[&str]) -> (bool, String) {
+    pub(crate) fn peppy_outcome(&self, args: &[&str]) -> (bool, String) {
         let output = self.peppy_command(args).output().expect("run peppy");
         let printed = format!(
             "{}{}",
@@ -268,7 +272,7 @@ impl ZenohDaemon {
 
     /// Runs `peppy` with `args` against this daemon, which succeeds. Returns
     /// what it printed.
-    pub fn peppy(&self, args: &[&str]) -> String {
+    pub(crate) fn peppy(&self, args: &[&str]) -> String {
         let (success, printed) = self.peppy_outcome(args);
         assert!(
             success,
@@ -282,7 +286,7 @@ impl ZenohDaemon {
     /// Stages `manifest` as the node `name` in a new nodes directory. Returns
     /// the nodes directory, which the caller holds for as long as the daemon
     /// may read the node, and the node directory.
-    pub fn install_node(
+    pub(crate) fn install_node(
         &self,
         name: &str,
         manifest: &str,
@@ -297,7 +301,7 @@ impl ZenohDaemon {
 
     /// Stops the daemon with SIGTERM and waits for it to exit. Returns its
     /// home and what it printed.
-    pub fn stop(mut self, exit_bound: Duration) -> (tempfile::TempDir, String) {
+    pub(crate) fn stop(mut self, exit_bound: Duration) -> (tempfile::TempDir, String) {
         let pid = rustix::process::Pid::from_child(&self.guard.0);
         rustix::process::kill_process(pid, rustix::process::Signal::TERM)
             .expect("signal the daemon");
@@ -309,7 +313,7 @@ impl ZenohDaemon {
 }
 
 /// Polls `probe` until it yields a value, or panics after `bound` naming `what`.
-pub fn poll_for<T>(bound: Duration, what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
+pub(crate) fn poll_for<T>(bound: Duration, what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
     let deadline = Instant::now() + bound;
     loop {
         if let Some(value) = probe() {
@@ -326,7 +330,7 @@ pub fn poll_for<T>(bound: Duration, what: &str, mut probe: impl FnMut() -> Optio
 /// Polls `probe` over the daemon's log snapshot until it yields a value. A
 /// daemon that exits first, or yields nothing within `bound`, fails the test
 /// with its logs.
-pub fn wait_for_daemon<T>(
+pub(crate) fn wait_for_daemon<T>(
     daemon: &mut DaemonGuard,
     logs: &Arc<Mutex<String>>,
     bound: Duration,
@@ -351,7 +355,7 @@ pub fn wait_for_daemon<T>(
 }
 
 /// Wait for the child to exit, returning its status, or panic after `timeout`.
-pub fn wait_for_exit(child: &mut Child, timeout: Duration) -> std::process::ExitStatus {
+pub(crate) fn wait_for_exit(child: &mut Child, timeout: Duration) -> std::process::ExitStatus {
     poll_for(timeout, "the daemon's exit", || {
         child.try_wait().expect("try_wait")
     })
@@ -359,7 +363,7 @@ pub fn wait_for_exit(child: &mut Child, timeout: Duration) -> std::process::Exit
 
 /// The node graph `stack list` reports for `core_node_name`, as the caller
 /// every test asks with.
-pub async fn stack_graph(
+pub(crate) async fn stack_graph(
     messenger: &MessengerHandle,
     core_node_name: &str,
 ) -> core_node_api::SerializedNodeGraph {
@@ -370,7 +374,7 @@ pub async fn stack_graph(
 /// Asserts that `stack list` shows `expected` instances of `node_name` at the
 /// standard test tag. `moment` names the point of the test ("before run",
 /// "after stop") in the failure.
-pub async fn assert_instance_count(
+pub(crate) async fn assert_instance_count(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_name: &str,
@@ -417,17 +421,17 @@ async fn stack_list(
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
 /// invalid names; tests use known-good values only.
-pub fn test_node_target(name: &str) -> SenderTarget {
+pub(crate) fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
 }
 
 /// Parses a `--core-node` target. Panics on an invalid name; tests use
 /// known-good values only.
-pub fn test_core_node_name(name: &str) -> config::runtime::CoreNodeName {
+pub(crate) fn test_core_node_name(name: &str) -> config::runtime::CoreNodeName {
     config::runtime::CoreNodeName::parse(name).expect("test core node name")
 }
 
-pub fn read_daemon_git_hash(daemon_state_path: &std::path::Path) -> String {
+pub(crate) fn read_daemon_git_hash(daemon_state_path: &std::path::Path) -> String {
     let state = daemon::state::DaemonState::read_from(daemon_state_path)
         .expect("daemon state should read and parse");
     assert!(
@@ -441,7 +445,7 @@ pub fn read_daemon_git_hash(daemon_state_path: &std::path::Path) -> String {
 /// manifest, its codegen fingerprint, and the `git.hash` under the peppy output
 /// dir. Every staging helper builds on this and differs only in how it
 /// produces `manifest`.
-pub fn install_node_manifest(
+pub(crate) fn install_node_manifest(
     nodes_directory: &std::path::Path,
     node_name: &str,
     git_hash: &str,
@@ -464,7 +468,7 @@ pub fn install_node_manifest(
 }
 
 /// The `run_cmd` array body of a manifest, one JSON5 string per argument.
-pub fn run_cmd_json5(run_cmd: &[impl AsRef<str>]) -> String {
+pub(crate) fn run_cmd_json5(run_cmd: &[impl AsRef<str>]) -> String {
     run_cmd
         .iter()
         .map(|arg| serde_json::to_string(arg.as_ref()).expect("run_cmd arg should serialize"))
@@ -475,7 +479,7 @@ pub fn run_cmd_json5(run_cmd: &[impl AsRef<str>]) -> String {
 /// Writes the smallest manifest a test node runs from: a name, a tag and an
 /// explicit `run_cmd` (so the daemon's build phase is skipped), the
 /// [`write_node_config_for_helper`] manifest without any optional block.
-pub fn write_minimal_node_config(
+pub(crate) fn write_minimal_node_config(
     nodes_directory: &std::path::Path,
     node_name: &str,
     node_tag: &str,
@@ -499,7 +503,7 @@ pub fn write_minimal_node_config(
 /// blocks, and an optional top-level `interfaces` block, staged via
 /// [`install_node_manifest`].
 #[expect(clippy::too_many_arguments)]
-pub fn write_node_config_for_helper(
+pub(crate) fn write_node_config_for_helper(
     nodes_directory: &std::path::Path,
     node_name: &str,
     node_tag: &str,
@@ -534,7 +538,7 @@ pub fn write_node_config_for_helper(
 
 /// Writes `dir/peppy.json5`, the smallest node manifest a repository indexes:
 /// no interfaces, and `true` as its build and run commands.
-pub fn write_indexable_node(dir: &std::path::Path, name: &str, tag: &str) {
+pub(crate) fn write_indexable_node(dir: &std::path::Path, name: &str, tag: &str) {
     std::fs::create_dir_all(dir).expect("create node dir");
     std::fs::write(
         dir.join(config::consts::NODE_CONFIG_FILE),
@@ -557,7 +561,7 @@ pub fn write_indexable_node(dir: &std::path::Path, name: &str, tag: &str) {
 /// Call this AFTER the node configs' final bytes are on disk (a pinned add
 /// verifies the manifest bytes against the entry's fingerprint) and after any
 /// `repo refresh` in the test, which rewrites the cache file.
-pub fn register_repo_caches(
+pub(crate) fn register_repo_caches(
     peppy_root: impl AsRef<std::path::Path>,
     nodes: &[(&str, &str, &std::path::Path)],
 ) {
@@ -597,7 +601,7 @@ pub fn register_repo_caches(
 /// A `build_cmd` that appends one line to `counter` per run. The counter
 /// lives outside the node directory so it never enters the staged tree, which
 /// is what lets a test build the same sources twice and count the builds.
-pub fn counting_build_cmd(counter: &std::path::Path) -> Vec<String> {
+pub(crate) fn counting_build_cmd(counter: &std::path::Path) -> Vec<String> {
     vec![
         "sh".to_string(),
         "-c".to_string(),
@@ -606,7 +610,7 @@ pub fn counting_build_cmd(counter: &std::path::Path) -> Vec<String> {
 }
 
 /// How many times [`counting_build_cmd`] ran.
-pub fn build_count(counter: &std::path::Path) -> usize {
+pub(crate) fn build_count(counter: &std::path::Path) -> usize {
     std::fs::read_to_string(counter)
         .map(|contents| contents.lines().count())
         .unwrap_or(0)
@@ -615,7 +619,7 @@ pub fn build_count(counter: &std::path::Path) -> usize {
 /// The build logs the daemon rooted at `peppy_root` wrote for `name:tag`,
 /// oldest first: their file names carry a millisecond timestamp, so name order
 /// is creation order.
-pub fn build_logs_for(peppy_root: &std::path::Path, name: &str, tag: &str) -> Vec<String> {
+pub(crate) fn build_logs_for(peppy_root: &std::path::Path, name: &str, tag: &str) -> Vec<String> {
     let log_dir = daemon_config::consts::PeppyDirs::new(peppy_root).logs_dir_build();
     let prefix = format!("{name}_{tag}_");
     let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&log_dir)
@@ -635,7 +639,7 @@ pub fn build_logs_for(peppy_root: &std::path::Path, name: &str, tag: &str) -> Ve
 }
 
 /// The artifacts stored for `name:tag` under `peppy_root`, in name order.
-pub fn built_artifacts_for(
+pub(crate) fn built_artifacts_for(
     peppy_root: &std::path::Path,
     name: &str,
     tag: &str,
@@ -652,7 +656,7 @@ pub fn built_artifacts_for(
 /// The standard local-path `node add` (no sync, build, no run), for tests
 /// that assert on the outcome themselves; [`add_built_node`] wraps it for the
 /// expect-success case.
-pub fn node_add_command(source: &std::path::Path) -> peppy::commands::node::NodeCommand {
+pub(crate) fn node_add_command(source: &std::path::Path) -> peppy::commands::node::NodeCommand {
     peppy::commands::node::NodeCommand {
         command: peppy::commands::node::NodeCommands::Add {
             clock: None,
@@ -676,7 +680,7 @@ pub fn node_add_command(source: &std::path::Path) -> peppy::commands::node::Node
 }
 
 /// Writes a node config and adds/builds it without running an instance.
-pub fn add_built_node(ctx: &Arc<AppContext>, dir: &std::path::Path, config: &str) {
+pub(crate) fn add_built_node(ctx: &Arc<AppContext>, dir: &std::path::Path, config: &str) {
     use peppy::commands::Command;
     std::fs::write(dir.join(config::consts::NODE_CONFIG_FILE), config).expect("write node config");
     node_add_command(dir)
@@ -685,7 +689,7 @@ pub fn add_built_node(ctx: &Arc<AppContext>, dir: &std::path::Path, config: &str
 }
 
 /// Builds the standard `node run` command used by pairing/observer e2e tests.
-pub fn node_run_command(
+pub(crate) fn node_run_command(
     instance_id: &str,
     node: &str,
     links: Vec<(String, String)>,
@@ -720,7 +724,7 @@ pub fn node_run_command(
 }
 
 /// Starts the ready and health services every emulated test instance exposes.
-pub async fn emulate_startup_services(
+pub(crate) async fn emulate_startup_services(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_name: &str,
@@ -750,7 +754,7 @@ pub async fn emulate_startup_services(
 /// service that answers the daemon's cooperative stop request without ending
 /// the process. The services run until the test ends: their task handles
 /// detach on drop.
-pub async fn emulate_node_services(
+pub(crate) async fn emulate_node_services(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_name: &str,
@@ -780,7 +784,7 @@ pub async fn emulate_node_services(
 /// run that failed before the CLI could log a pid. A node whose instances run
 /// sequentially (the usual emulated shape) therefore always kills the right
 /// one; the file is rewritten by each spawn.
-pub async fn emulate_cooperative_shutdown(
+pub(crate) async fn emulate_cooperative_shutdown(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_name: &str,
@@ -817,7 +821,7 @@ pub async fn emulate_cooperative_shutdown(
 /// as long as `instances`: the pairing tests drive long
 /// establish/stop/repair/remove sequences and every step needs its instances
 /// still in the stack.
-pub fn pairing_node_config(
+pub(crate) fn pairing_node_config(
     name: &str,
     role: &str,
     link_id: &str,
@@ -839,7 +843,7 @@ pub fn pairing_node_config(
 /// instances share one manifest can key the file on the instance: the
 /// working directory's name is the instance id, so
 /// `'<dir>/'$(basename \"$PWD\")'.pid'` names one file per instance.
-pub fn pairing_node_config_writing_pid_to(
+pub(crate) fn pairing_node_config_writing_pid_to(
     name: &str,
     role: &str,
     link_id: &str,
@@ -881,7 +885,7 @@ pub fn pairing_node_config_writing_pid_to(
 
 /// The `(emitted, consumed)` topic names of [`ARM_LINK_PAIRING`] for a role,
 /// so a manifest's entries stay in step with the document.
-pub fn arm_link_topics(role: &str) -> (&'static str, &'static str) {
+pub(crate) fn arm_link_topics(role: &str) -> (&'static str, &'static str) {
     match role {
         "controller" => ("joint_commands", "joint_states"),
         "arm" => ("joint_states", "joint_commands"),
@@ -893,7 +897,7 @@ pub fn arm_link_topics(role: &str) -> (&'static str, &'static str) {
 /// health, shutdown) plus its `peer_update` endpoint, and hands back the
 /// pairing slot's set watch. For tests that drive several pairing instances
 /// through one launch and read the set each one is delivered.
-pub async fn emulate_pairing_node_services(
+pub(crate) async fn emulate_pairing_node_services(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_name: &str,
@@ -918,7 +922,7 @@ pub async fn emulate_pairing_node_services(
 /// shutdown, peer_update) and hands back the pairing slot's set watch. Unlike
 /// [`emulate_pairing_node_services`] its shutdown ends the run_cmd process
 /// whose pid `pidfile` holds.
-pub async fn emulate_pairing_instance(
+pub(crate) async fn emulate_pairing_instance(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_name: &str,
@@ -950,15 +954,16 @@ pub async fn emulate_pairing_instance(
 
 /// The channels a node's processor hands a slot-update service, one per
 /// declared slot.
-pub type SlotChannels<S> =
+pub(crate) type SlotChannels<S> =
     Arc<std::collections::BTreeMap<String, peppylib::services::slot_update::SlotChannel<S>>>;
 
 /// The watches that read those channels, keyed by the slot's link id.
-pub type SlotWatches<S> = std::collections::BTreeMap<String, tokio::sync::watch::Receiver<S>>;
+pub(crate) type SlotWatches<S> =
+    std::collections::BTreeMap<String, tokio::sync::watch::Receiver<S>>;
 
 /// Serves `peer_update` for one pairing slot of the given cardinality and
 /// hands back the watch that reads what the daemon delivers to it.
-pub async fn serve_peer_update(
+pub(crate) async fn serve_peer_update(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_name: &str,
@@ -981,7 +986,7 @@ pub async fn serve_peer_update(
 
 /// One pairing slot's channel, declared `cardinality` as a node's processor
 /// seeds it from the manifest, and the watch that reads it.
-pub fn pairing_slot_channel(
+pub(crate) fn pairing_slot_channel(
     link_id: &str,
     cardinality: config::node::Cardinality,
 ) -> (
@@ -998,7 +1003,7 @@ pub fn pairing_slot_channel(
 
 /// One `zero_or_more` observer slot channel per link id, as a node's
 /// processor seeds them, and the watches that read them, keyed by link id.
-pub fn observer_slot_channels(
+pub(crate) fn observer_slot_channels(
     link_ids: &[&str],
 ) -> (
     SlotChannels<peppylib::messaging::ObservationState>,
@@ -1023,7 +1028,7 @@ pub fn observer_slot_channels(
 
 /// A minimal two-role pairing document, shared by the pairing e2e tests
 /// (`node_pair`, `node_observe`, `repo_refresh`, `node_sync`).
-pub const ARM_LINK_PAIRING: &str = r#"{
+pub(crate) const ARM_LINK_PAIRING: &str = r#"{
     peppy_schema: "pairing/v1",
     manifest: { name: "arm_link", tag: "v1", description: ["A test pairing."] },
     roles: ["controller", "arm"],
@@ -1048,7 +1053,7 @@ pub const ARM_LINK_PAIRING: &str = r#"{
 /// Publishes `root`'s `peppy_repository.json5`, which is what a repository
 /// offers a daemon. Call it once the repository holds every item the test
 /// expects refresh to find.
-pub fn publish_repo_index(root: &std::path::Path) {
+pub(crate) fn publish_repo_index(root: &std::path::Path) {
     core_node::publish_repository_index(root)
         .expect("a well-formed test repository can be published");
 }
@@ -1056,7 +1061,7 @@ pub fn publish_repo_index(root: &std::path::Path) {
 /// Seeds the daemon's `repositories.json5` with one fs repo containing the
 /// `arm_link` pairing doc and refreshes, so the doc lands in the daemon's
 /// pairing cache.
-pub fn seed_pairing_repo(
+pub(crate) fn seed_pairing_repo(
     serve: &ServeCommandEmulation,
     ctx: &Arc<AppContext>,
     repo_dir: &std::path::Path,
@@ -1066,7 +1071,7 @@ pub fn seed_pairing_repo(
 }
 
 /// `repo add SOURCE [--ref REF]` at the default priority and id.
-pub fn add_repo(
+pub(crate) fn add_repo(
     ctx: &Arc<AppContext>,
     source: &str,
     git_ref: Option<&str>,
@@ -1087,7 +1092,7 @@ pub fn add_repo(
 /// Points the emulated daemon at `repo_dirs` as its fs repositories, with ids
 /// from 1 in the given order: the `repositories.json5` that `repo refresh`
 /// reads.
-pub fn write_fs_repositories(serve: &ServeCommandEmulation, repo_dirs: &[&std::path::Path]) {
+pub(crate) fn write_fs_repositories(serve: &ServeCommandEmulation, repo_dirs: &[&std::path::Path]) {
     let conf_dir = daemon_config::consts::PeppyDirs::new(serve.temp_dir()).conf_dir();
     std::fs::create_dir_all(&conf_dir).expect("create conf dir");
     let entries: Vec<serde_json::Value> = repo_dirs
@@ -1104,7 +1109,7 @@ pub fn write_fs_repositories(serve: &ServeCommandEmulation, repo_dirs: &[&std::p
 /// The general form of [`seed_pairing_repo`]: publishes whatever documents
 /// the caller already wrote into `repo_dir`, points the daemon at it as its
 /// single fs repo, and refreshes so every doc lands in the daemon's caches.
-pub fn seed_docs_repo(
+pub(crate) fn seed_docs_repo(
     serve: &ServeCommandEmulation,
     ctx: &Arc<AppContext>,
     repo_dir: &std::path::Path,
@@ -1122,7 +1127,7 @@ pub fn seed_docs_repo(
 
 /// A CLI context rooted at `root_dir` and wired to the emulated daemon: its
 /// messenger and its state file.
-pub fn serve_app_context(
+pub(crate) fn serve_app_context(
     serve: &ServeCommandEmulation,
     root_dir: impl AsRef<std::path::Path>,
 ) -> Arc<AppContext> {
@@ -1132,7 +1137,7 @@ pub fn serve_app_context(
     )
 }
 
-pub fn setup() -> (
+pub(crate) fn setup() -> (
     tokio::runtime::Runtime,
     ServeCommandEmulation,
     Arc<AppContext>,
@@ -1150,7 +1155,7 @@ pub fn setup() -> (
 /// The budgets these tests launch and build under: idle windows generous
 /// enough that a slow machine never trips one, and a deadline where the test
 /// wants the whole command bounded.
-pub fn timeouts(max_timeout_secs: Option<u64>) -> StackTimeouts {
+pub(crate) fn timeouts(max_timeout_secs: Option<u64>) -> StackTimeouts {
     StackTimeouts {
         node_add_idle_timeout_secs: 60,
         node_build_idle_timeout_secs: 60,
@@ -1162,7 +1167,7 @@ pub fn timeouts(max_timeout_secs: Option<u64>) -> StackTimeouts {
 /// What a `stack launch` or `stack build` of `launcher_config_path` takes
 /// here: one machine, the options the launcher defaults to, and a cached
 /// build wherever one fits.
-pub fn launcher_args(
+pub(crate) fn launcher_args(
     launcher_config_path: std::path::PathBuf,
     max_timeout_secs: Option<u64>,
 ) -> LauncherArgs {

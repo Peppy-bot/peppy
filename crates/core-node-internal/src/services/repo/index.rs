@@ -517,7 +517,7 @@ impl std::fmt::Display for IndexDrift {
 }
 
 /// Walks `root` and produces the index it should contain.
-pub fn generate_repository_index(root: &Path) -> Result<RepositoryIndex, IndexError> {
+pub(crate) fn generate_repository_index(root: &Path) -> Result<RepositoryIndex, IndexError> {
     let walked = walk_directory(root);
     if !walked.conflicts.is_empty() {
         return Err(IndexError::ContestedIdentity(walked.conflicts));
@@ -559,7 +559,10 @@ pub fn publish_repository_index(root: &Path) -> Result<RepositoryIndex, IndexErr
 }
 
 /// Writes `index` to `root`, replacing any existing one.
-pub fn write_repository_index(root: &Path, index: &RepositoryIndex) -> Result<(), IndexError> {
+pub(crate) fn write_repository_index(
+    root: &Path,
+    index: &RepositoryIndex,
+) -> Result<(), IndexError> {
     let path = root.join(daemon_config::consts::REPOSITORY_INDEX_FILE);
     let content = json5_pretty::to_string_pretty(index)
         .map_err(|e| IndexError::Unreadable(format!("failed to serialize the index: {e}")))?;
@@ -572,7 +575,7 @@ pub fn write_repository_index(root: &Path, index: &RepositoryIndex) -> Result<()
 }
 
 /// Reads the index committed at `root`.
-pub fn read_repository_index(root: &Path) -> Result<RepositoryIndex, IndexError> {
+pub(crate) fn read_repository_index(root: &Path) -> Result<RepositoryIndex, IndexError> {
     let path = root.join(daemon_config::consts::REPOSITORY_INDEX_FILE);
     PeppyRepositoryIndexParser::from_path(&path).map_err(|e| IndexError::Unreadable(e.to_string()))
 }

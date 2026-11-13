@@ -15,7 +15,7 @@ struct EmbeddedTemplates;
 /// Template for Rust Cargo.toml file
 #[derive(Template)]
 #[template(path = "node_init/rust/Cargo.toml.j2")]
-pub struct RustCargoToml<'a> {
+pub(super) struct RustCargoToml<'a> {
     pub node_name: &'a str,
     pub peppygen_path: &'a str,
     pub peppylib_path: &'a str,
@@ -24,7 +24,7 @@ pub struct RustCargoToml<'a> {
 /// Template for Python pyproject.toml file
 #[derive(Template)]
 #[template(path = "node_init/python/pyproject.toml.j2")]
-pub struct PythonPyprojectToml<'a> {
+pub(super) struct PythonPyprojectToml<'a> {
     pub node_name: &'a str,
     pub peppygen_path: &'a str,
     pub peppylib_path: &'a str,
@@ -36,7 +36,7 @@ pub struct PythonPyprojectToml<'a> {
 /// crate's `setup`, which is what makes the node importable by its tests.
 #[derive(Template)]
 #[template(path = "node_init/rust/src/main.rs.j2")]
-pub struct RustMainRs<'a> {
+pub(super) struct RustMainRs<'a> {
     pub crate_ident: &'a str,
 }
 
@@ -44,14 +44,14 @@ pub struct RustMainRs<'a> {
 /// generated test harness.
 #[derive(Template)]
 #[template(path = "node_init/rust/tests/smoke.rs.j2")]
-pub struct RustSmokeTest<'a> {
+pub(super) struct RustSmokeTest<'a> {
     pub crate_ident: &'a str,
 }
 
 /// Template for Rust peppy.json5 file
 #[derive(Template)]
 #[template(path = "node_init/rust/peppy.json5.j2", escape = "none")]
-pub struct RustPeppyJson5<'a> {
+pub(super) struct RustPeppyJson5<'a> {
     pub node_name: &'a str,
     /// The description, as a JSON5 string literal ([`string_literal`]).
     pub description: &'a str,
@@ -61,7 +61,7 @@ pub struct RustPeppyJson5<'a> {
 /// Template for Python peppy.json5 file
 #[derive(Template)]
 #[template(path = "node_init/python/peppy.json5.j2", escape = "none")]
-pub struct PythonPeppyJson5<'a> {
+pub(super) struct PythonPeppyJson5<'a> {
     pub node_name: &'a str,
     /// The description, as a JSON5 string literal ([`string_literal`]).
     pub description: &'a str,
@@ -80,13 +80,13 @@ fn string_literal(text: &Description) -> String {
 /// generated test harness.
 #[derive(Template)]
 #[template(path = "node_init/python/tests/test_smoke.py.j2")]
-pub struct PythonSmokeTest<'a> {
+pub(super) struct PythonSmokeTest<'a> {
     pub node_name: &'a str,
 }
 
 #[derive(Template)]
 #[template(path = "node_init/rust/apptainer.def.j2")]
-pub struct ApptainerRustDef<'a> {
+pub(super) struct ApptainerRustDef<'a> {
     pub node_name: &'a str,
     pub tag: &'a str,
     pub base_image: &'a str,
@@ -94,7 +94,7 @@ pub struct ApptainerRustDef<'a> {
 
 #[derive(Template)]
 #[template(path = "node_init/python/apptainer.def.j2")]
-pub struct ApptainerPythonDef<'a> {
+pub(super) struct ApptainerPythonDef<'a> {
     pub node_name: &'a str,
     pub tag: &'a str,
     pub base_image: &'a str,
@@ -132,7 +132,7 @@ fn copy_embedded_static_files(prefix: &str, dest_dir: &Path) -> Result<()> {
 }
 
 /// Applies templates and copies static files for Rust node initialization
-pub fn apply_rust_templates(
+pub(super) fn apply_rust_templates(
     node_name: &str,
     description: &Description,
     node_dir: &Path,
@@ -189,7 +189,7 @@ pub fn apply_rust_templates(
 }
 
 /// Applies templates and copies static files for Python node initialization
-pub fn apply_python_templates(
+pub(super) fn apply_python_templates(
     node_name: &str,
     description: &Description,
     node_dir: &Path,

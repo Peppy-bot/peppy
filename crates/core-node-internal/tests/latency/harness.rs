@@ -61,13 +61,13 @@ const ECHO_SERVICE: &str = "echo";
 const CONTROL_TIMEOUT: Duration = Duration::from_mins(3);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Lang {
+pub(crate) enum Lang {
     Rust,
     Python,
 }
 
 impl Lang {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Lang::Rust => "rust",
             Lang::Python => "python",
@@ -76,13 +76,13 @@ impl Lang {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Transport {
+pub(crate) enum Transport {
     Topic,
     Service,
 }
 
 impl Transport {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Transport::Topic => "topic",
             Transport::Service => "service",
@@ -101,8 +101,8 @@ impl Transport {
 /// Larger warmup absorbs cold-start (route propagation, CPU ramp); 1000 samples
 /// keep the reported percentiles steady. The guard asserts the median, which is
 /// stable well below this count.
-pub const DEFAULT_WARMUP: u64 = 100;
-pub const DEFAULT_SAMPLES: u64 = 1000;
+pub(crate) const DEFAULT_WARMUP: u64 = 100;
+pub(crate) const DEFAULT_SAMPLES: u64 = 1000;
 
 /// Worker-thread cap for every spawned node's tokio runtime, set via the
 /// `TOKIO_WORKER_THREADS` env var (honored by `Runtime::new()`). Without it each
@@ -113,7 +113,7 @@ pub const DEFAULT_SAMPLES: u64 = 1000;
 const NODE_WORKER_THREADS: &str = "2";
 
 /// All (lang, transport) scenarios, in display order.
-pub const ALL_SCENARIOS: &[(Lang, Transport)] = &[
+pub(crate) const ALL_SCENARIOS: &[(Lang, Transport)] = &[
     (Lang::Rust, Transport::Topic),
     (Lang::Rust, Transport::Service),
     (Lang::Python, Transport::Topic),
@@ -130,7 +130,7 @@ pub const ALL_SCENARIOS: &[(Lang, Transport)] = &[
 /// blowup) trips it while ordinary jitter does not. Overridable via
 /// `PEPPY_LATENCY_MAX_MS_<LANG>_<TRANSPORT>` so a slower runner can retune
 /// without a code change.
-pub fn ceiling_ms(lang: Lang, transport: Transport) -> u64 {
+pub(crate) fn ceiling_ms(lang: Lang, transport: Transport) -> u64 {
     let key = format!(
         "PEPPY_LATENCY_MAX_MS_{}_{}",
         lang.as_str().to_uppercase(),
@@ -152,7 +152,7 @@ pub fn ceiling_ms(lang: Lang, transport: Transport) -> u64 {
 /// Latency distribution reported by the driver for one `bench_control` run.
 /// All durations are in nanoseconds.
 #[derive(Clone, Copy, Debug)]
-pub struct LatencyStats {
+pub(crate) struct LatencyStats {
     p50_ns: u64,
     p90_ns: u64,
     mean_ns: u64,
@@ -173,16 +173,16 @@ impl LatencyStats {
         }
     }
 
-    pub fn p50(&self) -> Duration {
+    pub(crate) fn p50(&self) -> Duration {
         Duration::from_nanos(self.p50_ns)
     }
-    pub fn p90(&self) -> Duration {
+    pub(crate) fn p90(&self) -> Duration {
         Duration::from_nanos(self.p90_ns)
     }
-    pub fn mean(&self) -> Duration {
+    pub(crate) fn mean(&self) -> Duration {
         Duration::from_nanos(self.mean_ns)
     }
-    pub fn count(&self) -> u64 {
+    pub(crate) fn count(&self) -> u64 {
         self.count
     }
 }
@@ -398,7 +398,7 @@ fn write_runtime_config(
 /// A running scenario: an ephemeral router plus a spawned driver + responder,
 /// kept alive so `run` can drive many `bench_control` invocations. One scenario
 /// per responder language; both transports run against it.
-pub struct Scenario {
+pub(crate) struct Scenario {
     _router: pmi::ZenohdInstance,
     control: MessengerHandle,
     driver_child: std::process::Child,
@@ -408,7 +408,7 @@ pub struct Scenario {
     _cfg_dir: TempDir,
 }
 
-pub async fn start_scenario(lang: Lang) -> Scenario {
+pub(crate) async fn start_scenario(lang: Lang) -> Scenario {
     let router = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("start ephemeral router");
@@ -512,7 +512,7 @@ pub async fn start_scenario(lang: Lang) -> Scenario {
 impl Scenario {
     /// Ask the driver to run `warmup` (discarded) + `iters` (measured)
     /// roundtrips of `transport` and return the reported distribution.
-    pub async fn run(&self, transport: Transport, warmup: u64, iters: u64) -> LatencyStats {
+    pub(crate) async fn run(&self, transport: Transport, warmup: u64, iters: u64) -> LatencyStats {
         let mut request = Vec::with_capacity(17);
         request.push(transport.wire_tag());
         request.extend_from_slice(&warmup.to_le_bytes());
@@ -544,7 +544,7 @@ impl Scenario {
         stats
     }
 
-    pub async fn shutdown(mut self) {
+    pub(crate) async fn shutdown(mut self) {
         helpers::try_send_shutdown(
             &self.control,
             CORE,

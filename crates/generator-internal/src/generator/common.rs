@@ -19,7 +19,7 @@ struct PeppyConfigTemplate<'a> {
 }
 
 impl PeppyConfigTemplate<'_> {
-    pub const TEMPLATE_PATH: &'static str = "peppygen/rust/Cargo.toml.j2";
+    pub(crate) const TEMPLATE_PATH: &'static str = "peppygen/rust/Cargo.toml.j2";
 }
 
 #[derive(Template)]
@@ -31,7 +31,7 @@ struct PeppyPythonConfigTemplate<'a> {
 }
 
 impl PeppyPythonConfigTemplate<'_> {
-    pub const TEMPLATE_PATH: &'static str = "peppygen/python/pyproject.toml.j2";
+    pub(crate) const TEMPLATE_PATH: &'static str = "peppygen/python/pyproject.toml.j2";
 }
 
 /// Version of the deployed peppylib Python distribution.
@@ -364,7 +364,7 @@ pub(crate) struct WorkspacePackageMetadata {
 }
 
 impl WorkspacePackageMetadata {
-    pub const fn embedded() -> Self {
+    pub(crate) const fn embedded() -> Self {
         Self {
             version: env!("CARGO_PKG_VERSION"),
             edition: "2024",

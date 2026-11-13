@@ -31,19 +31,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-pub const STATUS_URI: &str = "peppy://resource/front_camera.status";
-pub const FRAME_URI: &str = "peppy://resource/front_camera.latest_frame";
+pub(crate) const STATUS_URI: &str = "peppy://resource/front_camera.status";
+pub(crate) const FRAME_URI: &str = "peppy://resource/front_camera.latest_frame";
 
 /// Guard for waits that are already response-driven; generous on purpose so
 /// it only fires when something is genuinely broken.
-pub const GUARD: Duration = Duration::from_secs(30);
+pub(crate) const GUARD: Duration = Duration::from_secs(30);
 
-pub type Client = RunningService<RoleClient, ClientConfig>;
+pub(crate) type Client = RunningService<RoleClient, ClientConfig>;
 
 /// What a test expects one endpoint of the fixture set to advertise and
 /// answer, so a suite can run the same assertions against each endpoint.
 #[derive(Debug, Clone)]
-pub struct Expected {
+pub(crate) struct Expected {
     pub tag: &'static str,
     pub title: &'static str,
     pub instructions: &'static str,
@@ -52,7 +52,7 @@ pub struct Expected {
 }
 
 /// The two exposures of the fixture set.
-pub fn fixture_exposures() -> [Expected; 2] {
+pub(crate) fn fixture_exposures() -> [Expected; 2] {
     [
         Expected {
             tag: "v1",
@@ -71,7 +71,7 @@ pub fn fixture_exposures() -> [Expected; 2] {
 
 /// The bundle of one fixture exposure: the same selection under each tag,
 /// with the tag's own identity and prose.
-pub fn fixture_bundle(expected: &Expected) -> ExposureBundle {
+pub(crate) fn fixture_bundle(expected: &Expected) -> ExposureBundle {
     let json = BUNDLE_TEMPLATE
         .replace("{tag}", expected.tag)
         .replace("{title}", expected.title)
@@ -253,12 +253,12 @@ const BUNDLE_TEMPLATE: &str = r#"{
 /// message. The fixture clock stands still, so the interval gate admits
 /// the first message alone; every later one is admitted for a waiting
 /// reader.
-pub struct Streaming {
+pub(crate) struct Streaming {
     publisher: tokio::task::JoinHandle<()>,
 }
 
 impl Streaming {
-    pub fn of(ingest: ResourceIngest, value: Value) -> Self {
+    pub(crate) fn of(ingest: ResourceIngest, value: Value) -> Self {
         let publisher = tokio::spawn(async move {
             loop {
                 if let Some(token) = ingest.admit() {
@@ -271,7 +271,7 @@ impl Streaming {
     }
 
     /// Ends the stream; no message is published once this returns.
-    pub async fn stop(self) {
+    pub(crate) async fn stop(self) {
         self.publisher.abort();
         let _ = self.publisher.await;
     }
@@ -279,7 +279,7 @@ impl Streaming {
 
 /// One served endpoint of the fixture set, with the in-process handle its
 /// snapshots are fed through and the manual clock its policies run on.
-pub struct Endpoint {
+pub(crate) struct Endpoint {
     pub url: String,
     pub expected: Expected,
     pub server: ExposureServer,
@@ -288,13 +288,13 @@ pub struct Endpoint {
 
 impl Endpoint {
     /// The path the endpoint is served at on the shared listener.
-    pub fn path(&self) -> String {
+    pub(crate) fn path(&self) -> String {
         self.server.endpoint_path()
     }
 }
 
 /// The fixture set as served: every endpoint plus the listener they share.
-pub struct ServedSet {
+pub(crate) struct ServedSet {
     pub base_url: String,
     pub endpoints: Vec<Endpoint>,
     pub shutdown: tokio_util::sync::CancellationToken,
@@ -305,7 +305,7 @@ impl ServedSet {
     /// Cancels the listener and settles the serve task. Ending a test this
     /// way is what turns a serve failure into a named failure here, rather
     /// than into whatever timed out downstream of it.
-    pub async fn stop(self) {
+    pub(crate) async fn stop(self) {
         self.shutdown.cancel();
         tokio::time::timeout(GUARD, self.served)
             .await
@@ -315,7 +315,7 @@ impl ServedSet {
     }
 
     /// The URL of a path on the shared listener.
-    pub fn url(&self, path: &str) -> String {
+    pub(crate) fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base_url)
     }
 }
@@ -323,7 +323,7 @@ impl ServedSet {
 /// A server for one fixture exposure over `bundle` on its own manual
 /// clock, with the camera tool handlers registered and the task handler
 /// left to the caller.
-pub fn fixture_server(
+pub(crate) fn fixture_server(
     expected: &Expected,
     bundle: ExposureBundle,
 ) -> (ExposureServerBuilder, Arc<AtomicU64>) {
@@ -333,13 +333,13 @@ pub fn fixture_server(
 }
 
 /// The result a recorder goal cancelled before its first frame ends with.
-pub fn cancelled_episode() -> Value {
+pub(crate) fn cancelled_episode() -> Value {
     json!({ "frames": 0 })
 }
 
 /// The reason a recorder goal that its client cancelled ends with: the
 /// words of a peppylib provider.
-pub const CANCELLED_BY_ITS_CALLER: &str = "cancelled by its caller";
+pub(crate) const CANCELLED_BY_ITS_CALLER: &str = "cancelled by its caller";
 
 /// The goal behind both recorder actions: reports `<verb> \`<episode>\``
 /// as feedback, parks on cancellation for `wait_for_cancel` and then ends
@@ -368,7 +368,7 @@ async fn episode_goal(
 /// Asserts that `task` ended as a task does when its goal ends cancelled:
 /// `cancelled`, its status message saying so with the reason and
 /// [`cancelled_episode`].
-pub fn assert_ended_cancelled(task: &DetailedTask) {
+pub(crate) fn assert_ended_cancelled(task: &DetailedTask) {
     assert_eq!(task.status(), TaskStatus::Cancelled, "{:?}", task.payload);
     assert_eq!(
         task.task.status_message,
@@ -381,19 +381,25 @@ pub fn assert_ended_cancelled(task: &DetailedTask) {
 
 /// The `recorder.record_episode` handler, behind the confirmation-gated
 /// action.
-pub async fn record_episode(call: ToolCall, context: ActionContext) -> Result<Value, ActionExit> {
+pub(crate) async fn record_episode(
+    call: ToolCall,
+    context: ActionContext,
+) -> Result<Value, ActionExit> {
     episode_goal("recording", call.input, context).await
 }
 
 /// The `recorder.replay_episode` handler, behind the action with no
 /// confirmation gate.
-pub async fn replay_episode(call: ToolCall, context: ActionContext) -> Result<Value, ActionExit> {
+pub(crate) async fn replay_episode(
+    call: ToolCall,
+    context: ActionContext,
+) -> Result<Value, ActionExit> {
     episode_goal("replaying", call.input, context).await
 }
 
 /// Serves the full fixture set: both exposures with their tool handlers and
 /// both recorder task handlers.
-pub async fn start_set() -> ServedSet {
+pub(crate) async fn start_set() -> ServedSet {
     start_set_with(|builder| {
         builder
             .with_task("recorder.record_episode", record_episode)
@@ -404,7 +410,7 @@ pub async fn start_set() -> ServedSet {
 
 /// Serves the fixture set with its tool handlers and the task handlers
 /// `register_tasks` adds to the builder of each endpoint, in set order.
-pub async fn start_set_with(
+pub(crate) async fn start_set_with(
     mut register_tasks: impl FnMut(ExposureServerBuilder) -> ExposureServerBuilder,
 ) -> ServedSet {
     let mut servers = Vec::new();
@@ -420,7 +426,7 @@ pub async fn start_set_with(
 
 /// Serves the fixture set stripped of its tasks, so no endpoint advertises
 /// the tasks extension.
-pub async fn start_task_less_set() -> ServedSet {
+pub(crate) async fn start_task_less_set() -> ServedSet {
     let mut servers = Vec::new();
     for expected in fixture_exposures() {
         let mut bundle = fixture_bundle(&expected);
@@ -459,7 +465,7 @@ fn with_camera_tools(builder: ExposureServerBuilder, expected: &Expected) -> Exp
 
 /// The error reply of `front_camera.set_brightness` for the value 13: a
 /// kind of the camera's contract and its message.
-pub fn reserved_value() -> ProviderFailure {
+pub(crate) fn reserved_value() -> ProviderFailure {
     ProviderFailure::new(
         FailureKindName::parse("reserved_value").expect("a valid failure kind name"),
         "13 is reserved",
@@ -467,7 +473,9 @@ pub fn reserved_value() -> ProviderFailure {
 }
 
 /// Binds an OS-assigned loopback port and serves the servers as one set.
-pub async fn serve_set(servers: Vec<(Expected, ExposureServer, Arc<AtomicU64>)>) -> ServedSet {
+pub(crate) async fn serve_set(
+    servers: Vec<(Expected, ExposureServer, Arc<AtomicU64>)>,
+) -> ServedSet {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("an OS-assigned loopback port binds");
@@ -502,13 +510,13 @@ pub async fn serve_set(servers: Vec<(Expected, ExposureServer, Arc<AtomicU64>)>)
     }
 }
 
-pub async fn connect(url: &str) -> Client {
+pub(crate) async fn connect(url: &str) -> Client {
     connect_as(url, ClientConfig::default()).await
 }
 
 /// Connects a client that names itself `name` at `version`, the identity
 /// the call record keeps.
-pub async fn connect_named(url: &str, name: &str, version: &str) -> Client {
+pub(crate) async fn connect_named(url: &str, name: &str, version: &str) -> Client {
     let mut info = ClientConfig::default();
     info.client_info = rmcp::model::Implementation::new(name, version);
     connect_as(url, info).await
@@ -516,7 +524,7 @@ pub async fn connect_named(url: &str, name: &str, version: &str) -> Client {
 
 /// Connects a client that declares the SEP-2663 tasks extension capability;
 /// in discover mode the SDK attaches it to every request's `_meta`.
-pub async fn connect_with_tasks(url: &str) -> Client {
+pub(crate) async fn connect_with_tasks(url: &str) -> Client {
     let mut info = ClientConfig::default();
     info.capabilities = ClientCapabilities::builder().enable_tasks().build();
     connect_as(url, info).await
@@ -525,7 +533,7 @@ pub async fn connect_with_tasks(url: &str) -> Client {
 /// A client without the tasks extension that keeps every progress
 /// notification the server sends it, in arrival order.
 #[derive(Clone)]
-pub struct ProgressLog {
+pub(crate) struct ProgressLog {
     progress: mpsc::UnboundedSender<ProgressNotificationParam>,
 }
 
@@ -546,7 +554,7 @@ impl ClientHandler for ProgressLog {
 }
 
 /// Connects a [`ProgressLog`] client; the receiver yields what it logged.
-pub async fn connect_logging_progress(
+pub(crate) async fn connect_logging_progress(
     url: &str,
 ) -> (
     RunningService<RoleClient, ProgressLog>,
@@ -572,7 +580,7 @@ async fn connect_as<H: ClientHandler>(url: &str, handler: H) -> RunningService<R
         .expect("client negotiates 2026-07-28 over loopback")
 }
 
-pub fn protocol_error(error: ServiceError) -> rmcp::ErrorData {
+pub(crate) fn protocol_error(error: ServiceError) -> rmcp::ErrorData {
     match error {
         ServiceError::McpError(data) => data,
         other => panic!("expected a protocol error, got {other:?}"),
@@ -581,7 +589,7 @@ pub fn protocol_error(error: ServiceError) -> rmcp::ErrorData {
 
 /// Polls `tasks/get` until the task satisfies `accept`; the wait is bounded
 /// by [`GUARD`] and driven by server responses, not by elapsed host time.
-pub async fn poll_task_until(
+pub(crate) async fn poll_task_until(
     client: &Client,
     task_id: &str,
     description: &str,
@@ -605,7 +613,7 @@ pub async fn poll_task_until(
 
 /// The next notification `subscription` receives, bounded by [`GUARD`]
 /// and driven by the server's publish, not by elapsed host time.
-pub async fn next_notification(subscription: &mut Subscription) -> ServerNotification {
+pub(crate) async fn next_notification(subscription: &mut Subscription) -> ServerNotification {
     tokio::time::timeout(GUARD, subscription.next())
         .await
         .expect("a notification arrives")
@@ -613,7 +621,7 @@ pub async fn next_notification(subscription: &mut Subscription) -> ServerNotific
         .expect("the stream did not end")
 }
 
-pub fn confirmation_accept(task_id: &str) -> UpdateTaskParams {
+pub(crate) fn confirmation_accept(task_id: &str) -> UpdateTaskParams {
     UpdateTaskParams::new(
         task_id,
         [("confirmation".to_string(), json!({ "action": "accept" }))]
@@ -623,7 +631,7 @@ pub fn confirmation_accept(task_id: &str) -> UpdateTaskParams {
 }
 
 /// A tiny valid rgb8 frame in the shape the JPEG representation expects.
-pub fn sample_rgb8_frame() -> Value {
+pub(crate) fn sample_rgb8_frame() -> Value {
     let pixels: Vec<u8> = Vec::from_fn(8 * 8 * 3, |index| (index % 251) as u8);
     let pixels_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &pixels);
     json!({

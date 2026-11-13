@@ -49,7 +49,7 @@ const CLI_IDLE_TIMEOUT: Duration = Duration::from_mins(5);
 /// Absolute ceiling so the command can never wedge forever.
 const CLI_MAX_TIMEOUT: Duration = Duration::from_hours(1);
 
-pub fn benchmark(
+pub(super) fn benchmark(
     ctx: &Arc<AppContext>,
     samples: u32,
     warmup: u32,

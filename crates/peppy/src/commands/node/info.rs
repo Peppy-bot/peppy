@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 use peppylib::core_node::transport::poll;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn node_info(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
+pub(super) fn node_info(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
     crate::commands::block_on(node_info_async(ctx, node_name, node_tag))
 }
 

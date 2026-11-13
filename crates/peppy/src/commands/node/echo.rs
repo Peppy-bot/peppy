@@ -30,7 +30,7 @@ pub struct EchoParams {
     pub topic: String,
 }
 
-pub fn echo(ctx: &Arc<AppContext>, params: EchoParams) -> Result<()> {
+pub(super) fn echo(ctx: &Arc<AppContext>, params: EchoParams) -> Result<()> {
     crate::commands::block_on(echo_async(ctx, params))
 }
 
@@ -98,7 +98,7 @@ impl TopicEcho {
     /// The echo of `selected`, its codec laid out from the format of the
     /// pinned manifest. A topic with no format carries no field, and each
     /// of its messages prints as an empty object.
-    pub fn new(selected: &SelectedMember<'_>) -> Result<Self> {
+    pub(super) fn new(selected: &SelectedMember<'_>) -> Result<Self> {
         let name = selected.full_name.clone();
         let Member::Topic(topic) = selected.member else {
             return Err(Error::ExecutionFailed(format!(
@@ -118,7 +118,7 @@ impl TopicEcho {
     }
 
     /// Subscribes to the topic as `caller`.
-    pub async fn subscribe(
+    pub(super) async fn subscribe(
         &self,
         messenger: &MessengerHandle,
         caller: &ConsumerIdentity,
@@ -164,7 +164,7 @@ impl TopicEcho {
     /// Writes each message `consumer` receives to `out` as a JSON line until
     /// the first Ctrl-C, or until the reader of `out` closes it. A message
     /// that does not convert is a warning.
-    pub async fn print(
+    pub(super) async fn print(
         &self,
         consumer: &mut TopicConsumer,
         interrupts: &mut impl Interrupts,

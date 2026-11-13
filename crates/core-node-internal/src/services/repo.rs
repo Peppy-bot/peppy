@@ -12,15 +12,15 @@ mod remove;
 mod search;
 pub(crate) mod status;
 
-pub use add::listen_for_repo_add;
-pub use exclude::listen_for_repo_exclude;
+pub(crate) use add::listen_for_repo_add;
+pub(crate) use exclude::listen_for_repo_exclude;
 pub use init::{InitOutcome, ensure_default_repos};
-pub use list::listen_for_repo_list;
-pub use refresh::listen_for_repo_refresh;
+pub(crate) use list::listen_for_repo_list;
+pub(crate) use refresh::listen_for_repo_refresh;
 pub(crate) use refresh::{
     VersionRefresh, failure_report, refresh_release_repositories_for_this_version,
 };
-pub use remove::listen_for_repo_remove;
+pub(crate) use remove::listen_for_repo_remove;
 pub use search::{
     Consumer, Implementer, IndexedNode, MatchedItem, Observer, Participant, PinStatus,
     PublishedDoc, SearchOutcome, SearchQuery, SearchReport, ShowOutcome, SlotPeers,

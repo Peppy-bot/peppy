@@ -184,7 +184,7 @@ mod zenoh_build {
         println!("cargo:rustc-env=ZENOHD_BINARY_PATH={zenoh_binary_path}");
     }
 
-    pub fn run() {
+    pub(crate) fn run() {
         build_zenoh(&get_zenoh_version());
     }
 }

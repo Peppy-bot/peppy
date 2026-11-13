@@ -209,7 +209,7 @@ return result
 }
 
 /// Generates Python code for an emitted (publishing) topic.
-pub fn build_emitted_topic(
+pub(super) fn build_emitted_topic(
     topic: &NativeEmittedTopic,
     schema_info: Option<&PythonSchemaInfo>,
     origin: Option<&crate::generator::types::ContractOrigin>,
@@ -345,7 +345,7 @@ fn emit_peer_module_header(
 /// `build_message` plus a slot-scoped `declare_publisher`. A scalar slot's
 /// answers a `peppylib.TopicPublisher` driven with `publish`, a multi slot's
 /// a `peppylib.PeerPublisher` driven with `publish_to`.
-pub fn build_peer_emitted_topic(
+pub(super) fn build_peer_emitted_topic(
     topic: &NativeEmittedTopic,
     schema_info: Option<&PythonSchemaInfo>,
     peer: &crate::generator::types::PeerContext,
@@ -476,7 +476,7 @@ fn emit_observer_module_header(
 /// gets a `subscribe_observed`-backed one that follows each observed source
 /// instance's lifecycle and yields `(source, message)`. An observer plays no
 /// role, so it has no publisher.
-pub fn build_pair_topic_consumer(
+pub(super) fn build_pair_topic_consumer(
     topic: &NativeEmittedTopic,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
@@ -538,7 +538,7 @@ pub fn build_pair_topic_consumer(
 }
 
 /// Generates Python code for a consumed (receiving) topic.
-pub fn build_consumed_topic(
+pub(super) fn build_consumed_topic(
     topic: &ConsumedTopic,
     arguments: &MessageFormat,
     retention: TopicRetention,

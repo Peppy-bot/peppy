@@ -15,7 +15,7 @@ use quote::quote;
 /// The generated `ActionHandle` wraps the peppylib concurrent-action engine,
 /// which owns the goal/cancel/result services and routes cancel/result requests
 /// to the right in-flight goal by `goal_id`.
-pub fn build_action_handle_struct() -> TokenStream {
+pub(super) fn build_action_handle_struct() -> TokenStream {
     quote! {
         pub struct ActionHandle {
             inner: peppylib::messaging::ConcurrentAction,
@@ -23,7 +23,7 @@ pub fn build_action_handle_struct() -> TokenStream {
     }
 }
 
-pub fn build_action_expose_method(
+pub(super) fn build_action_expose_method(
     has_feedback: bool,
     origin: Option<&crate::generator::types::ContractOrigin>,
 ) -> TokenStream {
@@ -58,7 +58,7 @@ pub fn build_action_expose_method(
 /// goal-ack envelope, so it stays independent of the declared `GoalResponse`
 /// fields: an accept carries the declared response when one exists, and a
 /// refusal carries a failure of a kind the member declares, and no response.
-pub fn build_goal_decision_enum(has_response: bool) -> TokenStream {
+pub(super) fn build_goal_decision_enum(has_response: bool) -> TokenStream {
     let (accept_variant, accept_fn) = if has_response {
         (
             quote!(Accept(GoalResponse),),
@@ -118,7 +118,7 @@ pub fn build_goal_decision_enum(has_response: bool) -> TokenStream {
 ///
 /// `response_serialization`, when present, serializes a local `response`
 /// (`GoalResponse`) into a `peppylib::Payload`.
-pub fn build_handle_goal_next_request(
+pub(super) fn build_handle_goal_next_request(
     has_request_data: bool,
     response_serialization: Option<TokenStream>,
 ) -> TokenStream {
@@ -212,7 +212,7 @@ pub fn build_handle_goal_next_request(
 /// The per-goal `GoalContext` handed to user code. Owns the decoded request and
 /// the peppylib context (per-goal feedback publisher, cancel signal, result
 /// delivery).
-pub fn build_goal_context_struct() -> TokenStream {
+pub(super) fn build_goal_context_struct() -> TokenStream {
     quote! {
         pub struct GoalContext {
             inner: peppylib::messaging::GoalContext,
@@ -223,7 +223,7 @@ pub fn build_goal_context_struct() -> TokenStream {
 
 /// `GoalContext` methods present for every action: the request, its sender
 /// and goal_id, the cancel signal and its cause, and `fail`.
-pub fn build_goal_context_base_methods() -> TokenStream {
+pub(super) fn build_goal_context_base_methods() -> TokenStream {
     quote! {
         /// The decoded goal request (caller identity and, if any, data).
         pub fn request(&self) -> &GoalRequest {
@@ -276,7 +276,7 @@ pub fn build_goal_context_base_methods() -> TokenStream {
 
 /// `publish_feedback(fields…)` on `GoalContext`, serializing the feedback
 /// message and publishing it on this goal's per-goal stream.
-pub fn build_goal_context_publish_feedback(
+pub(super) fn build_goal_context_publish_feedback(
     params: &[FunctionParam],
     encoding: &MessageEncodingSpec,
     label: &str,
@@ -303,7 +303,7 @@ pub fn build_goal_context_publish_feedback(
 
 /// Which terminal result method of `GoalContext` to build.
 #[derive(Clone, Copy)]
-pub enum ResultDelivery {
+pub(super) enum ResultDelivery {
     /// `complete(fields…)`: the goal is a success.
     Completed,
     /// `complete_cancelled(reason, fields…)`: the goal ends cancelled, for
@@ -315,7 +315,7 @@ pub enum ResultDelivery {
 /// `GoalContext`, serializing the result response and delivering it. Handles
 /// an action that declares no result (or an empty one) by sending an empty
 /// payload.
-pub fn build_goal_context_complete(
+pub(super) fn build_goal_context_complete(
     delivery: ResultDelivery,
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
@@ -389,7 +389,7 @@ pub fn build_goal_context_complete(
 /// `struct_prefix` is the prefix the request's nested message structs are
 /// defined with, so the deserializer constructs the types the module
 /// declares.
-pub fn build_action_request_deserializer(
+pub(super) fn build_action_request_deserializer(
     deserializer_fn_name: &Ident,
     request_spec: &MessageEncodingSpec,
     request_format: &MessageFormat,

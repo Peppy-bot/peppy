@@ -16,7 +16,7 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 use peppylib::core_node::transport::send_goal;
 
-pub struct PublishNodeParams {
+pub(super) struct PublishNodeParams {
     pub node_name: String,
     pub node_tag: String,
     /// The platforms to build and push beside the one of the daemon.
@@ -26,7 +26,7 @@ pub struct PublishNodeParams {
     pub force: bool,
 }
 
-pub fn publish_node(ctx: &Arc<AppContext>, params: PublishNodeParams) -> Result<()> {
+pub(super) fn publish_node(ctx: &Arc<AppContext>, params: PublishNodeParams) -> Result<()> {
     crate::commands::block_on(publish_node_async(ctx, params))
 }
 

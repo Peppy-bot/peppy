@@ -61,7 +61,7 @@ pub(crate) struct PinnedClosure {
 impl PinnedClosure {
     /// The dependency-node pins, i.e. everything except the root, for
     /// `NodeAddGoal.pins_json5` and `DeploymentPins.closure`.
-    pub fn dep_pins(&self) -> Vec<PinnedItem> {
+    pub(crate) fn dep_pins(&self) -> Vec<PinnedItem> {
         self.nodes
             .iter()
             .filter(|node| !node.is_root)
@@ -70,7 +70,7 @@ impl PinnedClosure {
     }
 
     /// Every manifest in the closure, root first, for doc-pin minting.
-    pub fn manifests(&self) -> Vec<Manifest> {
+    pub(crate) fn manifests(&self) -> Vec<Manifest> {
         self.nodes
             .iter()
             .map(|node| node.config.manifest.clone())
@@ -349,7 +349,7 @@ impl ManifestDocuments {
     ///
     /// Blocking: a pin whose local copy is gone or drifted is fetched from
     /// its origin. Use [`Self::read_async`] inside Tokio.
-    pub fn read(
+    pub(crate) fn read(
         peppy_dirs: &PeppyDirs,
         pins: &[PinnedItem],
         manifest: &Manifest,
@@ -386,7 +386,7 @@ impl ManifestDocuments {
 
     /// [`Self::read`] on a blocking thread, with the feedback sink every
     /// async caller already holds.
-    pub async fn read_async(
+    pub(crate) async fn read_async(
         peppy_dirs: &PeppyDirs,
         pins: Vec<PinnedItem>,
         manifest: Manifest,
@@ -401,7 +401,7 @@ impl ManifestDocuments {
     }
 
     /// The document of one reference of the manifest, parsed by `parse`.
-    pub fn parse<T>(
+    pub(crate) fn parse<T>(
         &self,
         reference: DocumentReference<'_>,
         parse: impl FnOnce(&str) -> Result<T, String>,
@@ -412,7 +412,7 @@ impl ManifestDocuments {
     }
 
     /// The documents, each once, in manifest order.
-    pub fn into_documents(self) -> Vec<PinnedDocument> {
+    pub(crate) fn into_documents(self) -> Vec<PinnedDocument> {
         self.documents
     }
 }

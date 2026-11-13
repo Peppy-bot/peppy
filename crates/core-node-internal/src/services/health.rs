@@ -16,7 +16,7 @@ use tracing::debug;
 /// federated zenoh link). A well-formed reply is the liveness signal; the
 /// returned uptime is informational. Registered under the same identity as every
 /// other core-node service so callers address it as `(core_node_name, core)`.
-pub async fn listen_for_health(
+pub(super) async fn listen_for_health(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,

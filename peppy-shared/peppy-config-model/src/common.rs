@@ -1004,7 +1004,7 @@ pub fn apply_parameter_defaults(
 /// returning the leaf [`ParameterSpec`] if found.
 ///
 /// Descends into [`ParameterSpec::Group`] values at each segment boundary.
-pub fn resolve_parameter_path<'a>(
+pub(crate) fn resolve_parameter_path<'a>(
     parameters: &'a ParameterSchema,
     dot_path: &str,
 ) -> Option<&'a ParameterSpec> {

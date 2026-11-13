@@ -16,7 +16,10 @@ use std::time::Duration;
 
 /// Sends a `NODE_INFO` poll request and unwraps the `Found` body; a node the
 /// daemon answers `NotInStack` for is a test's setup gone wrong.
-pub async fn poll_node_info(started: &StartedCoreNode, request: &NodeInfoRequest) -> NodeInfo {
+pub(crate) async fn poll_node_info(
+    started: &StartedCoreNode,
+    request: &NodeInfoRequest,
+) -> NodeInfo {
     match poll_core_node(started, request).await {
         NodeInfoResponse::Found(info) => *info,
         NodeInfoResponse::NotInStack => panic!(
@@ -28,7 +31,7 @@ pub async fn poll_node_info(started: &StartedCoreNode, request: &NodeInfoRequest
 
 /// [`poll_core_node_with_timeout`] with [`WAIT`], the bound of a request
 /// that the daemon answers without long work.
-pub async fn poll_core_node<R: ServiceRequest>(
+pub(crate) async fn poll_core_node<R: ServiceRequest>(
     started: &StartedCoreNode,
     request: &R,
 ) -> R::Response {
@@ -37,7 +40,7 @@ pub async fn poll_core_node<R: ServiceRequest>(
 
 /// How long a test waits for the answer to a `node_stop` that stops an
 /// instance: the bound of the daemon on the stop, then [`WAIT`].
-pub fn node_stop_timeout(started: &StartedCoreNode) -> Duration {
+pub(crate) fn node_stop_timeout(started: &StartedCoreNode) -> Duration {
     core_node::node_stop_bound(started.node_stack.shutdown_grace()) + WAIT
 }
 
@@ -45,7 +48,7 @@ pub fn node_stop_timeout(started: &StartedCoreNode) -> Duration {
 /// node, with the shared test caller identity, and returns the decoded
 /// response. Panics on any failure, the daemon's refusal of the request
 /// included, and when no response arrives within `timeout`.
-pub async fn poll_core_node_with_timeout<R: ServiceRequest>(
+pub(crate) async fn poll_core_node_with_timeout<R: ServiceRequest>(
     started: &StartedCoreNode,
     request: &R,
     timeout: Duration,
@@ -58,7 +61,7 @@ pub async fn poll_core_node_with_timeout<R: ServiceRequest>(
 /// Polls the core-node service that `request` belongs to on the started core
 /// node as the instance `caller_instance_id`, returning the daemon's answer
 /// or its refusal of the request.
-pub async fn poll_core_node_as<R: ServiceRequest>(
+pub(crate) async fn poll_core_node_as<R: ServiceRequest>(
     started: &StartedCoreNode,
     caller_instance_id: &str,
     request: &R,
@@ -78,7 +81,7 @@ pub async fn poll_core_node_as<R: ServiceRequest>(
 /// The failure of the error reply that `error` carries. Panics when the
 /// request failed without an error reply.
 #[track_caller]
-pub fn error_reply(error: &peppylib::PeppyError) -> Failure {
+pub(crate) fn error_reply(error: &peppylib::PeppyError) -> Failure {
     error
         .failure()
         .cloned()
@@ -88,7 +91,7 @@ pub fn error_reply(error: &peppylib::PeppyError) -> Failure {
 /// Polls the core-node service that `request` belongs to and returns the
 /// failure of the daemon's error reply. Panics when the daemon answers the
 /// request, and when the poll fails without an error reply.
-pub async fn poll_core_node_failure<R: ServiceRequest>(
+pub(crate) async fn poll_core_node_failure<R: ServiceRequest>(
     started: &StartedCoreNode,
     request: &R,
 ) -> Failure
@@ -108,7 +111,7 @@ where
 
 /// Sends a `datastore_store_exclusive` request for `key` as the instance
 /// `writer`, returning the daemon's answer or its refusal of the request.
-pub async fn datastore_store_exclusive_as(
+pub(crate) async fn datastore_store_exclusive_as(
     started: &StartedCoreNode,
     writer: &str,
     key: &str,
@@ -121,7 +124,12 @@ pub async fn datastore_store_exclusive_as(
 
 /// Sends a `datastore_store` request to the started core node. Panics on any
 /// failure, the refusal of a key another instance owns included.
-pub async fn datastore_store(started: &StartedCoreNode, key: &str, value: &[u8], encoding: &str) {
+pub(crate) async fn datastore_store(
+    started: &StartedCoreNode,
+    key: &str,
+    value: &[u8],
+    encoding: &str,
+) {
     let request = DatastoreStoreRequest::new(key, value.to_vec(), encoding)
         .expect("test key should be a valid datastore key");
     poll_core_node(started, &request).await;
@@ -129,21 +137,21 @@ pub async fn datastore_store(started: &StartedCoreNode, key: &str, value: &[u8],
 
 /// Sends a `datastore_get` request to the started core node and returns the
 /// decoded response. Panics on any transport or decode failure.
-pub async fn datastore_get(started: &StartedCoreNode, key: &str) -> DatastoreGetResponse {
+pub(crate) async fn datastore_get(started: &StartedCoreNode, key: &str) -> DatastoreGetResponse {
     let request = DatastoreGetRequest::new(key).expect("test key should be a valid datastore key");
     poll_core_node(started, &request).await
 }
 
 /// Sends a `datastore_list` request to the started core node and returns the
 /// decoded response. Panics on any transport or decode failure.
-pub async fn datastore_list(started: &StartedCoreNode) -> DatastoreListResponse {
+pub(crate) async fn datastore_list(started: &StartedCoreNode) -> DatastoreListResponse {
     poll_core_node(started, &DatastoreListRequest::new()).await
 }
 
 /// Sends a `datastore_remove` request to the started core node and returns
 /// whether the key existed. Panics on any failure, the refusal of a key
 /// another instance owns included.
-pub async fn datastore_remove(started: &StartedCoreNode, key: &str) -> bool {
+pub(crate) async fn datastore_remove(started: &StartedCoreNode, key: &str) -> bool {
     let request =
         DatastoreRemoveRequest::new(key).expect("test key should be a valid datastore key");
     poll_core_node(started, &request).await.removed
@@ -152,7 +160,7 @@ pub async fn datastore_remove(started: &StartedCoreNode, key: &str) -> bool {
 /// Stores an arbitrary binary value, reads it back, and asserts the value and
 /// encoding survive the round trip. The real-zenoh datastore tests use it to
 /// exercise real cross-process serialization of the Cap'n Proto `Data` field.
-pub async fn assert_datastore_binary_round_trip(started: &StartedCoreNode) {
+pub(crate) async fn assert_datastore_binary_round_trip(started: &StartedCoreNode) {
     let key = "binary_key_1";
     let value = vec![0u8, 255, 0x80, 0xFE, 0x00, 0x42];
     let encoding = "application/octet-stream";
@@ -176,7 +184,7 @@ pub async fn assert_datastore_binary_round_trip(started: &StartedCoreNode) {
 /// asserts the wire contract: server echoes `t0` unchanged, and the causal
 /// chain `t0 ≤ t1 ≤ t2 ≤ t3` holds. Shared between the mock-messenger and
 /// real-zenoh round-trip tests.
-pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
+pub(crate) async fn assert_clock_round_trip(started: &StartedCoreNode) {
     let t0 = wall_now_ns().expect("system clock should be available");
     let clock_response = poll_core_node(started, &ClockRequest::new(t0)).await;
     let t3 = wall_now_ns().expect("system clock should be available");
@@ -202,7 +210,7 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
 /// Subscribes to the `clock` topic, collects three consecutive `ClockTick`s,
 /// and asserts they are strictly monotonic. Shared between the mock-messenger
 /// and real-zenoh publish tests.
-pub async fn assert_clock_topic_emits_monotonic_ticks(
+pub(crate) async fn assert_clock_topic_emits_monotonic_ticks(
     started: &StartedCoreNode,
     tick_timeout: Duration,
 ) {

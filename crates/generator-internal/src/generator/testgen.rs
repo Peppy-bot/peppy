@@ -109,7 +109,7 @@ pub(crate) enum TargetSpec {
 }
 
 impl TargetSpec {
-    pub fn from_dependency(dependency: &DependencyContext) -> Self {
+    pub(crate) fn from_dependency(dependency: &DependencyContext) -> Self {
         match &dependency.origin {
             Some(origin) => Self::Contract {
                 name: origin.contract_name.clone(),
@@ -295,7 +295,7 @@ fn non_empty_action_messages(messages: &ConsumedActionMessage) -> ConsumedAction
 }
 
 impl TestGenRegistry {
-    pub fn record_node_identity(&mut self, name: impl Into<String>, tag: impl Into<String>) {
+    pub(crate) fn record_node_identity(&mut self, name: impl Into<String>, tag: impl Into<String>) {
         self.node_identity = Some((name.into(), tag.into()));
     }
 
@@ -324,7 +324,7 @@ impl TestGenRegistry {
             })
     }
 
-    pub fn record_consumed_topic(
+    pub(crate) fn record_consumed_topic(
         &mut self,
         topic: &ConsumedTopic,
         format: &MessageFormat,
@@ -339,7 +339,7 @@ impl TestGenRegistry {
         });
     }
 
-    pub fn record_consumed_service(
+    pub(crate) fn record_consumed_service(
         &mut self,
         service: &ConsumedService,
         request: &MessageFormat,
@@ -354,7 +354,7 @@ impl TestGenRegistry {
         });
     }
 
-    pub fn record_consumed_action(
+    pub(crate) fn record_consumed_action(
         &mut self,
         action: &ConsumedAction,
         messages: &ConsumedActionMessage,
@@ -367,19 +367,27 @@ impl TestGenRegistry {
         });
     }
 
-    pub fn record_peer_emitted_topic(&mut self, topic: &NativeEmittedTopic, peer: &PeerContext) {
+    pub(crate) fn record_peer_emitted_topic(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        peer: &PeerContext,
+    ) {
         self.pairing_entry(peer)
             .node_emits
             .push(PairTopicSpec::from_topic(topic));
     }
 
-    pub fn record_peer_consumed_topic(&mut self, topic: &NativeEmittedTopic, peer: &PeerContext) {
+    pub(crate) fn record_peer_consumed_topic(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        peer: &PeerContext,
+    ) {
         self.pairing_entry(peer)
             .node_consumes
             .push(PairTopicSpec::from_topic(topic));
     }
 
-    pub fn record_observed_topic(
+    pub(crate) fn record_observed_topic(
         &mut self,
         topic: &NativeEmittedTopic,
         observer: &PeerContext,
@@ -397,7 +405,7 @@ impl TestGenRegistry {
             .push(PairTopicSpec::from_topic(topic));
     }
 
-    pub fn record_emitted_topic(
+    pub(crate) fn record_emitted_topic(
         &mut self,
         topic: &NativeEmittedTopic,
         origin: Option<&ContractOrigin>,
@@ -411,7 +419,7 @@ impl TestGenRegistry {
         });
     }
 
-    pub fn record_exposed_service(
+    pub(crate) fn record_exposed_service(
         &mut self,
         service: &NativeExposedService,
         origin: Option<&ContractOrigin>,
@@ -424,7 +432,7 @@ impl TestGenRegistry {
         });
     }
 
-    pub fn record_exposed_action(
+    pub(crate) fn record_exposed_action(
         &mut self,
         action: &NativeExposedAction,
         origin: Option<&ContractOrigin>,

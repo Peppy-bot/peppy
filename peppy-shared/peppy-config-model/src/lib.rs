@@ -28,19 +28,19 @@ mod parsing;
 #[path = "."]
 mod internal {
     #[cfg(feature = "atomic_write")]
-    pub mod atomic_write;
-    pub mod consts;
-    pub mod contract_member;
-    pub mod description;
-    pub mod failure_kind;
-    pub mod fingerprint;
-    pub mod mark;
-    pub mod namespace;
-    pub mod node;
-    pub mod peppy_config;
-    pub mod repo_node_id;
-    pub mod runtime;
-    pub mod schema;
+    pub(crate) mod atomic_write;
+    pub(crate) mod consts;
+    pub(crate) mod contract_member;
+    pub(crate) mod description;
+    pub(crate) mod failure_kind;
+    pub(crate) mod fingerprint;
+    pub(crate) mod mark;
+    pub(crate) mod namespace;
+    pub(crate) mod node;
+    pub(crate) mod peppy_config;
+    pub(crate) mod repo_node_id;
+    pub(crate) mod runtime;
+    pub(crate) mod schema;
     pub(crate) mod word_name;
 }
 

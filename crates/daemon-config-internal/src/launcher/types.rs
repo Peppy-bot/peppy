@@ -23,7 +23,7 @@ pub use crate::internal::source::DeploymentSource;
 
 /// The rule a slot's link targets keep, whatever kind of slot names them:
 /// every surface that refuses a repeated target ends its message with it.
-pub const EACH_TARGET_ONCE: &str = "a slot lists each target once";
+pub(super) const EACH_TARGET_ONCE: &str = "a slot lists each target once";
 
 #[derive(Debug, Clone)]
 pub struct PeppyLauncher {
@@ -742,7 +742,7 @@ impl std::error::Error for EmptyVacantReason {}
 /// shape-only and vocabulary-free: the caller turns it into the error variant
 /// its own slot kind speaks (producer binding or observation).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CardinalityShapeViolation {
+pub(super) enum CardinalityShapeViolation {
     /// A launch-file array value on a scalar slot, of any length.
     ArrayOnScalarSlot {
         cardinality: config::node::Cardinality,
@@ -776,7 +776,7 @@ pub enum CardinalityShapeViolation {
 ///
 /// The one shape rule, shared by producer-binding slots and observer slots so a
 /// deployment writes `["a", "b"]` for the same reason on both.
-pub fn check_cardinality_shape(
+pub(super) fn check_cardinality_shape(
     cardinality: config::node::Cardinality,
     selection: &Selection,
 ) -> Result<(), CardinalityShapeViolation> {

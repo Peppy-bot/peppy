@@ -131,7 +131,7 @@ pub(crate) fn emit_target_membership_check(builder: &mut PythonCodeBuilder) {
 }
 
 /// Generates Python code for an exposed (handler) service.
-pub fn build_exposed_service(
+pub(super) fn build_exposed_service(
     service: &NativeExposedService,
     request_schema_info: Option<&PythonSchemaInfo>,
     response_schema_info: Option<&PythonSchemaInfo>,
@@ -311,7 +311,7 @@ if isinstance(response, peppylib.FailureError):
 }
 
 /// Generates Python code for a subscribed (polling) service.
-pub fn build_consumed_service(
+pub(super) fn build_consumed_service(
     service: &ConsumedService,
     request_arguments: &MessageFormat,
     response_arguments: &MessageFormat,

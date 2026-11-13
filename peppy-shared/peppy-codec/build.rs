@@ -38,7 +38,7 @@ fn embed_compiler(out_dir: &Path) {
     fs::write(
         out_dir.join("embedded_capnp.rs"),
         format!(
-            "pub const CAPNP_BINARY: &[u8] = include_bytes!({:?});\n",
+            "pub(crate) const CAPNP_BINARY: &[u8] = include_bytes!({:?});\n",
             binary_path.display().to_string()
         ),
     )

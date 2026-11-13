@@ -74,11 +74,11 @@ impl PlannedObservation {
 /// establishes, recorded from both ends, and every pair the running stack
 /// already holds. Keyed by `(instance_id, link_id)`, valued by the peer slots
 /// that end holds.
-pub type ObservablePairs = BTreeMap<(String, String), Vec<(String, String)>>;
+pub(super) type ObservablePairs = BTreeMap<(String, String), Vec<(String, String)>>;
 
 /// Folds the plan's pairs into the already-held ones, so an observation can
 /// name a pair established in the same plan or one a running instance holds.
-pub fn observable_pairs(
+pub(super) fn observable_pairs(
     planned: &[PlannedPairing],
     already_paired: &AlreadyPairedSlots,
 ) -> ObservablePairs {
@@ -98,7 +98,7 @@ pub fn observable_pairs(
 /// resolved observation plan. The caller must check `errors.is_empty()` before
 /// consuming `planned`.
 #[derive(Debug, Default)]
-pub struct ValidatedObservations {
+pub(super) struct ValidatedObservations {
     pub errors: Vec<ParsingError>,
     pub planned: Vec<PlannedObservation>,
 }
@@ -137,7 +137,7 @@ pub struct ValidatedObservations {
 /// Rules 2-5 are all-or-nothing per slot: a slot with any failing member
 /// contributes no observation at all, so a partially-resolved member set can
 /// never reach the plan.
-pub fn validate_observations(
+pub(super) fn validate_observations(
     items: &[PairingValidationItem<'_>],
     placements: &Placements,
     pairs: &ObservablePairs,

@@ -27,7 +27,7 @@ use std::{
 use syn::{Attribute, File, Item, parse_file, parse_quote};
 use toml_edit::{DocumentMut, value};
 
-pub fn add_peppylib_dependencies(
+pub(super) fn add_peppylib_dependencies(
     to_path: impl AsRef<Path>,
     peppy_dirs: &daemon_config::consts::PeppyDirs,
     deploy_mode: CrateDeployMode,
@@ -47,7 +47,7 @@ pub fn add_peppylib_dependencies(
     Ok(())
 }
 
-pub fn add_artifacts_to_lib(
+pub(super) fn add_artifacts_to_lib(
     lib_path: impl AsRef<Path>,
     artifacts: Vec<InterfaceArtifact>,
 ) -> Result<()> {
@@ -76,7 +76,7 @@ pub fn add_artifacts_to_lib(
 ///
 /// This function takes the node's parameters configuration and generates a Rust struct
 /// that can be used to deserialize parameter values at runtime.
-pub fn add_parameters_to_lib(
+pub(super) fn add_parameters_to_lib(
     lib_path: impl AsRef<Path>,
     parameters: &config::ParameterSchema,
 ) -> Result<()> {
@@ -96,7 +96,10 @@ pub fn add_parameters_to_lib(
 /// earlier one, so the earlier `src/capnp` directory is removed first and
 /// `src/capnp.rs` is always written: the crate keeps no schema of an interface
 /// the node no longer has.
-pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, crate_root: &Path) -> Result<()> {
+pub(super) fn add_capnp_schemas(
+    schemas: &HashMap<String, CapnpSchema>,
+    crate_root: &Path,
+) -> Result<()> {
     let src_dir = crate_root.join("src");
     let capnp_dir = src_dir.join("capnp");
     if capnp_dir.exists() {

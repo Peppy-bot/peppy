@@ -99,7 +99,7 @@ const DAEMON_HEARTBEAT_INTERVAL: Duration =
 /// over.
 const ROUTER_LINKS_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub struct CoreNodeRunner {
+pub(crate) struct CoreNodeRunner {
     core_node: CoreNode,
     /// The daemon's shared messenger, retained (alongside the clone moved into
     /// `core_node`) to build the router-links probe: the bounded wait for the
@@ -128,7 +128,7 @@ pub struct CoreNodeRunner {
 
 impl CoreNodeRunner {
     #[expect(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         messenger: Arc<Mutex<Messenger>>,
         core_node_name: Option<String>,
         node_startup_timeout: Duration,
@@ -191,7 +191,7 @@ impl CoreNodeRunner {
         }
     }
 
-    pub fn node_name(&self) -> &str {
+    pub(crate) fn node_name(&self) -> &str {
         self.core_node.node_name()
     }
 }

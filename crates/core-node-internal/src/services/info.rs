@@ -16,7 +16,7 @@ use std::time::Instant;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-pub async fn listen_for_info(
+pub(super) async fn listen_for_info(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,

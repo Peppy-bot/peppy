@@ -352,7 +352,7 @@ pub(crate) fn consumed_action_schema_keys(
 /// topics. Two slots of the same pairing each get their own schema entry so
 /// the nested `paired_topics.<link_id>.<topic>` namespace stays unambiguous;
 /// the duplicated few hundred bytes of schema are accepted.
-pub fn peer_schema_key(link_id: &str, topic_name: &str) -> String {
+pub(crate) fn peer_schema_key(link_id: &str, topic_name: &str) -> String {
     format!("peer_{link_id}_{topic_name}")
 }
 

@@ -60,7 +60,7 @@ const PREVIEW_CORE_NODE: &str = "cn-preview";
 /// of the checkout the caches materialized for it; when one is not readable
 /// locally the check is skipped and says so, because a partial item list
 /// would misreport rules that need both endpoints.
-pub fn resolve(
+pub(super) fn resolve(
     launcher_config_path: PathBuf,
     words: Vec<LaunchWord>,
     joins: Vec<CopyReference>,

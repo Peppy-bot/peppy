@@ -13,7 +13,7 @@ use crate::error::Result;
 use peppylib::core_node::transport::poll;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn sync_node(
+pub(super) fn sync_node(
     ctx: &Arc<AppContext>,
     path: Option<PathBuf>,
     include_repositories: bool,

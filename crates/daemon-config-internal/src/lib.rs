@@ -31,19 +31,19 @@ mod parsing;
 /// preserved.
 #[path = "."]
 mod internal {
-    pub mod consts;
-    pub mod daemon_interface;
-    pub mod env;
-    pub mod fs_perms;
-    pub mod launcher;
-    pub mod local_host;
-    pub mod mcp_deployment;
-    pub mod mcp_exposure;
-    pub mod pairing;
-    pub mod peppy_config;
-    pub mod per_boot_root;
-    pub mod repository;
-    pub mod source;
+    pub(crate) mod consts;
+    pub(crate) mod daemon_interface;
+    pub(crate) mod env;
+    pub(crate) mod fs_perms;
+    pub(crate) mod launcher;
+    pub(crate) mod local_host;
+    pub(crate) mod mcp_deployment;
+    pub(crate) mod mcp_exposure;
+    pub(crate) mod pairing;
+    pub(crate) mod peppy_config;
+    pub(crate) mod per_boot_root;
+    pub(crate) mod repository;
+    pub(crate) mod source;
 }
 
 // -- error --

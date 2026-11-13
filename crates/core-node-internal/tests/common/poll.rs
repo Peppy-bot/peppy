@@ -10,10 +10,10 @@ use std::time::Duration;
 /// long work. A test that waits for a request with a bound of the daemon
 /// waits that bound, then this. No event of these tests comes near it on a
 /// host of any speed: a test runs into it only when the daemon does not act.
-pub const WAIT: Duration = Duration::from_secs(15);
+pub(crate) const WAIT: Duration = Duration::from_secs(15);
 
 /// A wrapper around `TaskHandle` that aborts the task when dropped.
-pub struct AbortOnDrop<T>(pub TaskHandle<T>);
+pub(crate) struct AbortOnDrop<T>(pub TaskHandle<T>);
 
 impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
@@ -26,7 +26,7 @@ impl<T> Drop for AbortOnDrop<T> {
 /// with `timeout_message`. Polls every 20 ms. `predicate` is synchronous on
 /// purpose: the current callers only touch the filesystem, the node stack, and
 /// child processes, none of which await.
-pub async fn poll_until<T>(
+pub(crate) async fn poll_until<T>(
     timeout: Duration,
     timeout_message: &str,
     predicate: impl FnMut() -> Option<T>,
@@ -36,7 +36,7 @@ pub async fn poll_until<T>(
 
 /// [`poll_until`] whose timeout message is built when `timeout` elapses, so
 /// it reports the state at that moment.
-pub async fn poll_until_explained<T>(
+pub(crate) async fn poll_until_explained<T>(
     timeout: Duration,
     timeout_message: impl FnOnce() -> String,
     mut predicate: impl FnMut() -> Option<T>,
@@ -65,7 +65,7 @@ fn process_table() -> sysinfo::System {
 /// liveness definition (sysinfo, status != Zombie), so tests agree with what
 /// `node_stop`/teardown consider "gone". A libc `kill(pid, 0)` check would
 /// report a reaped-but-unwaited zombie as still running.
-pub fn is_process_running(pid: u32) -> bool {
+pub(crate) fn is_process_running(pid: u32) -> bool {
     let system = process_table();
     match system.process(sysinfo::Pid::from_u32(pid)) {
         Some(process) => process.status() != sysinfo::ProcessStatus::Zombie,
@@ -76,7 +76,7 @@ pub fn is_process_running(pid: u32) -> bool {
 /// Polls until the process `pid` has exited (absent or a zombie, as
 /// [`is_process_running`] defines it). If `timeout` elapses first, panics with
 /// `timeout_message`.
-pub async fn wait_until_process_exits(pid: u32, timeout: Duration, timeout_message: &str) {
+pub(crate) async fn wait_until_process_exits(pid: u32, timeout: Duration, timeout_message: &str) {
     poll_until(timeout, timeout_message, || {
         (!is_process_running(pid)).then_some(())
     })
@@ -84,7 +84,7 @@ pub async fn wait_until_process_exits(pid: u32, timeout: Duration, timeout_messa
 }
 
 /// PIDs of live children of `parent_pid`, via sysinfo's parent links.
-pub fn children_of(parent_pid: u32) -> Vec<u32> {
+pub(crate) fn children_of(parent_pid: u32) -> Vec<u32> {
     let system = process_table();
     let parent = sysinfo::Pid::from_u32(parent_pid);
     system
@@ -98,7 +98,7 @@ pub fn children_of(parent_pid: u32) -> Vec<u32> {
 /// Polls until the node process `node_pid` has the two children that a node
 /// from [`add_and_build_forking_node`](super::add_and_build_forking_node)
 /// forks, and returns their pids.
-pub async fn wait_for_forked_grandchildren(node_pid: u32) -> Vec<u32> {
+pub(crate) async fn wait_for_forked_grandchildren(node_pid: u32) -> Vec<u32> {
     poll_until(WAIT, "expected the node to fork two grandchildren", || {
         let children = children_of(node_pid);
         (children.len() >= 2).then_some(children)
@@ -109,7 +109,7 @@ pub async fn wait_for_forked_grandchildren(node_pid: u32) -> Vec<u32> {
 /// Polls until every process in `grandchildren` has exited, each within
 /// [`WAIT`]. `killed_by` names the action whose group kill must have reaped
 /// them, for the timeout message.
-pub async fn wait_until_grandchildren_exit(grandchildren: &[u32], killed_by: &str) {
+pub(crate) async fn wait_until_grandchildren_exit(grandchildren: &[u32], killed_by: &str) {
     for &grandchild in grandchildren {
         wait_until_process_exits(
             grandchild,
@@ -124,7 +124,7 @@ pub async fn wait_until_grandchildren_exit(grandchildren: &[u32], killed_by: &st
 /// [`WAIT`] expires. It is the broker-propagation barrier for tests that
 /// spawn a `handle_requests` task and then need to be sure callers can route
 /// to it.
-pub async fn wait_until_service_reachable(
+pub(crate) async fn wait_until_service_reachable(
     messenger: &MessengerHandle,
     bound_core_node: &str,
     to_node_name: &str,

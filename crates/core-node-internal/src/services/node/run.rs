@@ -202,7 +202,7 @@ fn is_host_local_router(host: &str) -> bool {
 /// [`apply_daemon_defaults`], so the next daemon-global knob touches this
 /// struct and that function, not every context in between.
 #[derive(Clone)]
-pub struct DaemonDefaults {
+pub(crate) struct DaemonDefaults {
     /// Whether local-node gossip is enabled, injected into every spawned node.
     pub gossip: bool,
     /// Daemon-global subscriber buffer sizes, injected into every spawned node.
@@ -255,7 +255,7 @@ impl DaemonDefaults {
 }
 
 #[derive(Clone)]
-pub struct NodeRunServiceConfig {
+pub(crate) struct NodeRunServiceConfig {
     pub node_startup_timeout: Duration,
     /// The setup budget of an instance whose node declares none.
     pub default_setup_timeout: SetupTimeout,
@@ -323,7 +323,7 @@ struct ProcessNodeRunContext {
     sender_instance_id: String,
 }
 
-pub async fn listen_for_node_run(
+pub(crate) async fn listen_for_node_run(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,

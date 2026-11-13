@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 /// topic it is about to publish on. Peer-mode discovery is not instantaneous,
 /// so a publish sent before routing completes can be dropped. The arguments
 /// mirror the subsequent publish. Panics if no subscriber routes within 2s.
-pub async fn wait_for_topic_subscriber(
+pub(crate) async fn wait_for_topic_subscriber(
     publisher: &MessengerHandle,
     core_node: &str,
     instance_id: &str,
@@ -42,7 +42,7 @@ pub async fn wait_for_topic_subscriber(
 /// Inverse of [`wait_for_topic_subscriber`]: waits until `publisher`'s session
 /// no longer sees a subscriber for the topic, the sync point for a consumer
 /// dropping its wire subscription. Panics if one still routes after 2s.
-pub async fn wait_for_topic_subscriber_gone(
+pub(crate) async fn wait_for_topic_subscriber_gone(
     publisher: &MessengerHandle,
     core_node: &str,
     instance_id: &str,
@@ -71,7 +71,7 @@ pub async fn wait_for_topic_subscriber_gone(
 /// Declares a pairing publisher from the producer's OWN slot `link_id` to
 /// `peer`: the wire shape a pinned consumer (the paired peer, or an observer
 /// of that slot) subscribes against.
-pub async fn declare_pinned_publisher(
+pub(crate) async fn declare_pinned_publisher(
     handle: &MessengerHandle,
     core_node: &str,
     instance_id: &str,
@@ -99,7 +99,7 @@ pub async fn declare_pinned_publisher(
 /// slot kinds declare their wire subs from the forwarding task, asynchronously
 /// after a slot update, so a test must synchronize on the declaration before
 /// publishing. Panics if it does not appear within 2s.
-pub async fn wait_for_pinned_wire_sub(
+pub(crate) async fn wait_for_pinned_wire_sub(
     handle: &MessengerHandle,
     core_node: &str,
     producer_instance: &str,
@@ -133,7 +133,7 @@ pub async fn wait_for_pinned_wire_sub(
 /// `false` means every poll inside it saw no matching subscriber, i.e. the drop
 /// has landed; while the sub still exists the probe returns `true` immediately
 /// and we retry until the deadline.
-pub async fn wait_for_pinned_wire_sub_gone(
+pub(crate) async fn wait_for_pinned_wire_sub_gone(
     handle: &MessengerHandle,
     core_node: &str,
     producer_instance: &str,
@@ -166,23 +166,23 @@ pub async fn wait_for_pinned_wire_sub_gone(
     }
 }
 
-pub const CALLER_INSTANCE_ID: &str = "caller_instance";
+pub(crate) const CALLER_INSTANCE_ID: &str = "caller_instance";
 
-pub const TEST_CORE_NODE_NAME: &str = "test_core_node";
-pub const TEST_NODE_NAME: &str = "test_node";
-pub const TEST_INSTANCE_ID: &str = "test_instance";
-pub const TEST_NODE_TAG: &str = "v1";
+pub(crate) const TEST_CORE_NODE_NAME: &str = "test_core_node";
+pub(crate) const TEST_NODE_NAME: &str = "test_node";
+pub(crate) const TEST_INSTANCE_ID: &str = "test_instance";
+pub(crate) const TEST_NODE_TAG: &str = "v1";
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
 /// invalid names: tests use known-good values only.
-pub fn test_node_target(name: &str) -> SenderTarget {
+pub(crate) fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
 }
 
 /// Declares a publisher and publishes a single payload. The publisher is the
 /// only topic-publish path, so a test that publishes once just declares then
 /// publishes; the arguments mirror the publisher declaration, then the payload.
-pub async fn publish_once(
+pub(crate) async fn publish_once(
     messenger: &MessengerHandle,
     core_node: &str,
     instance_id: &str,
@@ -206,7 +206,7 @@ pub async fn publish_once(
 }
 
 /// Client for sending requests to a test node.
-pub struct CoreNodeClient {
+pub(crate) struct CoreNodeClient {
     pub caller_handle: MessengerHandle,
     pub core_node_name: String,
     pub instance_id: String,
@@ -214,13 +214,13 @@ pub struct CoreNodeClient {
 
 impl CoreNodeClient {
     /// The test node's instance, as the producer a pinned call addresses.
-    pub fn producer(&self) -> ProducerRef {
+    pub(crate) fn producer(&self) -> ProducerRef {
         ProducerRef::new(self.core_node_name.as_str(), self.instance_id.as_str())
     }
 
     /// Calls `service` of the test node as `CALLER_INSTANCE_ID`, addressed
     /// through `target`, with a 2 s budget.
-    pub async fn poll_test_node(
+    pub(crate) async fn poll_test_node(
         &self,
         service: &str,
         target: ServiceTarget<'_>,
@@ -241,7 +241,7 @@ impl CoreNodeClient {
 }
 
 /// Creates a shared mock messenger and returns a client with a MessengerHandle.
-pub async fn get_client_server() -> (CoreNodeClient, Arc<Mutex<Messenger>>) {
+pub(crate) async fn get_client_server() -> (CoreNodeClient, Arc<Mutex<Messenger>>) {
     let shared_messenger = create_mock_messenger().await;
 
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));

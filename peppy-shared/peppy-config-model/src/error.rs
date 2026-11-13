@@ -1,7 +1,7 @@
 use crate::internal::node::DocumentKind;
 use thiserror::Error;
 
-pub type Result<T> = core::result::Result<T, Error>;
+pub(crate) type Result<T> = core::result::Result<T, Error>;
 
 /// Deserializes JSON5 content with field-path tracking and an embedded
 /// structured-error bridge, generic over the caller's error types.
@@ -56,7 +56,7 @@ where
 /// On error, prepends the JSON path (e.g. `execution.run_cmd`) to standard
 /// serde error messages. `StructuredError`s (custom validation) are propagated
 /// unchanged since they already contain descriptive messages.
-pub fn deserialize_json5_with_path<'de, T>(content: &'de str) -> Result<T>
+pub(crate) fn deserialize_json5_with_path<'de, T>(content: &'de str) -> Result<T>
 where
     T: serde::de::Deserialize<'de>,
 {

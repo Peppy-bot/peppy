@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 #[expect(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
-pub async fn listen_for_node_build(
+pub(crate) async fn listen_for_node_build(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,

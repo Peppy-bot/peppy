@@ -22,7 +22,7 @@ use config::node::{Cardinality, MessageFormat};
 /// reaches the generator as an empty `MessageFormat`: the daemon defaults the
 /// absent side rather than passing an `Option`. A parsed format is never
 /// empty, so the empty case is built the way the daemon builds it.
-pub fn empty_message_format() -> MessageFormat {
+pub(super) fn empty_message_format() -> MessageFormat {
     MessageFormat::default()
 }
 
@@ -30,13 +30,17 @@ pub fn empty_message_format() -> MessageFormat {
 /// for tests where cardinality is irrelevant to what is being verified.
 /// Cardinality-specific tests spell out [`DependencyContext::native`]
 /// with an explicit fourth argument instead.
-pub fn native_dep(node_name: &str, node_tag: &str, link_id: &str) -> DependencyContext {
+pub(super) fn native_dep(node_name: &str, node_tag: &str, link_id: &str) -> DependencyContext {
     DependencyContext::native(node_name, node_tag, link_id, Cardinality::One)
 }
 
 /// Contract twin of [`native_dep`]: a `depends_on.contracts` slot at the
 /// default `one` cardinality, whose contract declares no failure kinds.
-pub fn contract_dep(contract_name: &str, contract_tag: &str, link_id: &str) -> DependencyContext {
+pub(super) fn contract_dep(
+    contract_name: &str,
+    contract_tag: &str,
+    link_id: &str,
+) -> DependencyContext {
     DependencyContext::contract(
         contract_name,
         contract_tag,
@@ -46,7 +50,7 @@ pub fn contract_dep(contract_name: &str, contract_tag: &str, link_id: &str) -> D
     )
 }
 
-pub const STUB_NODE_CONFIG: &str = r#"{
+pub(super) const STUB_NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
   manifest: {
     name: "generated_node",
@@ -60,7 +64,7 @@ pub const STUB_NODE_CONFIG: &str = r#"{
 }
 "#;
 
-pub fn prepare_directories(temp_dir: &TempDir) -> (PathBuf, PathBuf, PathBuf) {
+pub(super) fn prepare_directories(temp_dir: &TempDir) -> (PathBuf, PathBuf, PathBuf) {
     let user_node = temp_dir.path().join("user_node");
     let output_dir = user_node.join(PEPPYGEN_OUTPUT_PATH);
     let peppy_node_config = user_node.join(NODE_CONFIG_FILE);
@@ -70,12 +74,12 @@ pub fn prepare_directories(temp_dir: &TempDir) -> (PathBuf, PathBuf, PathBuf) {
     (output_dir, user_node, peppy_node_config)
 }
 
-pub fn init_test_env<G: Default>(temp_dir: &TempDir) -> (G, PathBuf, PathBuf, PathBuf) {
+pub(super) fn init_test_env<G: Default>(temp_dir: &TempDir) -> (G, PathBuf, PathBuf, PathBuf) {
     let (output_dir, user_node, peppy_node_config_path) = prepare_directories(temp_dir);
     (G::default(), output_dir, user_node, peppy_node_config_path)
 }
 
-pub fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> PathBuf {
+pub(super) fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> PathBuf {
     let source = user_node.join(NODE_CONFIG_FILE);
     let destination = output_dir.join(NODE_CONFIG_FILE);
     fs::copy(&source, &destination).unwrap();
@@ -83,14 +87,14 @@ pub fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> PathBuf {
 }
 
 /// Converts artifacts into a vector of generated code strings.
-pub fn render_artifacts(artifacts: Vec<InterfaceArtifact>) -> Vec<String> {
+pub(super) fn render_artifacts(artifacts: Vec<InterfaceArtifact>) -> Vec<String> {
     artifacts
         .into_iter()
         .map(|artifact| artifact.code_output)
         .collect()
 }
 
-pub use config_test_support::assert_contains_all;
+pub(super) use config_test_support::assert_contains_all;
 
 /// Returns a stable, shared target directory for test compilations so that
 /// dependencies are compiled once and reused across all clippy/build tests.
@@ -161,7 +165,7 @@ fn rename_peppygen_package(peppygen_dir: &Path) {
 /// Lints with every feature enabled, so the `testing`-gated `mock` and
 /// `fixtures` modules every node compiles into its test builds face the same
 /// `-D warnings` gate as the production surface.
-pub fn run_clippy(output_dir: &Path) {
+pub(super) fn run_clippy(output_dir: &Path) {
     run_cargo_on_generated_crate(
         output_dir,
         "clippy",
@@ -178,7 +182,7 @@ pub fn run_clippy(output_dir: &Path) {
 }
 
 /// Runs `cargo build` on a generated crate.
-pub fn run_cargo_build(output_dir: &Path) {
+pub(super) fn run_cargo_build(output_dir: &Path) {
     run_cargo_on_generated_crate(output_dir, "build", &[]);
 }
 
@@ -223,7 +227,7 @@ fn run_cargo_on_generated_crate(output_dir: &Path, subcommand: &str, extra_args:
 }
 
 /// Asserts that at least one artifact contains the given pattern.
-pub fn assert_artifact_contains(artifacts: &[String], pattern: &str) {
+pub(super) fn assert_artifact_contains(artifacts: &[String], pattern: &str) {
     let rendered = artifacts.join("\n");
     assert_rendered!(
         artifacts.iter().any(|artifact| artifact.contains(pattern)),

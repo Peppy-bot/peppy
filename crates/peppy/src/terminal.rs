@@ -90,7 +90,7 @@ pub(crate) fn while_spinning<T>(message: &'static str, work: impl FnOnce() -> T)
 /// This struct manages displaying a fixed number of lines in the terminal,
 /// with new lines pushing old ones up. The text is displayed in a dimmed/greyed
 /// style to visually distinguish it from normal output.
-pub struct ScrollingOutput {
+pub(crate) struct ScrollingOutput {
     /// The lines currently being displayed.
     lines: VecDeque<String>,
     /// Maximum number of lines to display.
@@ -105,7 +105,7 @@ pub struct ScrollingOutput {
 
 impl ScrollingOutput {
     /// Creates a new `ScrollingOutput` that displays at most `max_lines` lines.
-    pub fn new(max_lines: usize) -> Self {
+    pub(crate) fn new(max_lines: usize) -> Self {
         let stdout = std::io::stdout();
         let is_terminal = colors_enabled();
 
@@ -121,7 +121,7 @@ impl ScrollingOutput {
     /// Adds a line to the output and refreshes the display.
     ///
     /// If the buffer is full, the oldest line is removed.
-    pub fn add_line(&mut self, line: &str) {
+    pub(crate) fn add_line(&mut self, line: &str) {
         let line = line.trim_end().to_string();
 
         if self.lines.len() >= self.max_lines {
@@ -183,7 +183,7 @@ impl ScrollingOutput {
     ///
     /// Call this when you're done with the scrolling output to clean up
     /// the display area.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         if !self.is_terminal || self.rendered_lines == 0 {
             return;
         }

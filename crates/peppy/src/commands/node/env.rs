@@ -24,7 +24,7 @@ fn should_forward_env(key: &str, value: &str) -> bool {
 /// What is collected here reaches the daemon this process talks to and no
 /// further: these values describe this machine, so a launch that places an
 /// instance on a peer daemon dispatches its goals without them.
-pub fn caller_env_overrides() -> Vec<(String, String)> {
+pub(crate) fn caller_env_overrides() -> Vec<(String, String)> {
     std::env::vars()
         .filter(|(key, value)| should_forward_env(key, value))
         .collect()

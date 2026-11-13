@@ -16,7 +16,7 @@ use thiserror::Error;
 /// quote it back.
 const WALL_CLOCK_LITERAL: &str = crate::internal::launcher::WALL_CLOCK;
 
-pub type Result<T> = core::result::Result<T, Error>;
+pub(crate) type Result<T> = core::result::Result<T, Error>;
 
 /// Formats `items` as a `\n  - `-prefixed bulleted list (no leading or
 /// trailing newline outside the bullets themselves). Used to render
@@ -50,7 +50,7 @@ where
 /// On error, prepends the JSON path (e.g. `execution.run_cmd`) to standard
 /// serde error messages. `StructuredError`s (custom validation) are propagated
 /// unchanged since they already contain descriptive messages.
-pub fn deserialize_json5_with_path<'de, T>(content: &'de str) -> Result<T>
+pub(crate) fn deserialize_json5_with_path<'de, T>(content: &'de str) -> Result<T>
 where
     T: serde::de::Deserialize<'de>,
 {

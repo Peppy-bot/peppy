@@ -6,7 +6,7 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(Clone, Copy)]
-pub enum LogStyle {
+pub(crate) enum LogStyle {
     Verbose,
     Compact,
 }
@@ -143,7 +143,7 @@ where
 
 /// Where the log lines of a command go.
 #[derive(Clone, Copy)]
-pub enum LogSink {
+pub(crate) enum LogSink {
     /// Standard output, beside the output of the command.
     Stdout,
     /// Standard error, for a command whose standard output carries data that
@@ -151,7 +151,7 @@ pub enum LogSink {
     Stderr,
 }
 
-pub fn init_tracing(style: LogStyle, sink: LogSink) {
+pub(crate) fn init_tracing(style: LogStyle, sink: LogSink) {
     let filter = env_filter(style);
     match sink {
         LogSink::Stdout => subscriber(style, filter, peppy::colors_enabled(), std::io::stdout),

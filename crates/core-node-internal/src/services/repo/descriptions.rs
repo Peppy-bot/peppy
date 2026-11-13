@@ -154,14 +154,14 @@ fn field_descriptions<'a>(
 mod interface_kind_name {
     use super::*;
 
-    pub fn serialize<S: Serializer>(
+    pub(super) fn serialize<S: Serializer>(
         kind: &InterfaceKind,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         serializer.collect_str(kind)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<InterfaceKind, D::Error> {
         let name = String::deserialize(deserializer)?;
@@ -173,11 +173,14 @@ mod interface_kind_name {
 mod message_side_name {
     use super::*;
 
-    pub fn serialize<S: Serializer>(side: &MessageSide, serializer: S) -> Result<S::Ok, S::Error> {
+    pub(super) fn serialize<S: Serializer>(
+        side: &MessageSide,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(side.as_str())
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<MessageSide, D::Error> {
         let name = String::deserialize(deserializer)?;

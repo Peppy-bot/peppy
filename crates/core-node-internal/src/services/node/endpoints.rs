@@ -23,14 +23,14 @@ pub type HostAddressSource = Option<Vec<IpAddr>>;
 
 /// The addresses `source` expands against, reading the system's interfaces
 /// when it names none.
-pub fn host_addresses(source: &HostAddressSource) -> Vec<IpAddr> {
+pub(crate) fn host_addresses(source: &HostAddressSource) -> Vec<IpAddr> {
     source.clone().unwrap_or_else(read_host_addresses)
 }
 
 /// Reads the addresses of this machine's interfaces that are up, skipping
 /// IPv6 link-local addresses, loopback first, deduplicated. The one function
 /// here that touches the system.
-pub fn read_host_addresses() -> Vec<IpAddr> {
+pub(crate) fn read_host_addresses() -> Vec<IpAddr> {
     let interfaces = match nix::ifaddrs::getifaddrs() {
         Ok(interfaces) => interfaces,
         Err(error) => {
@@ -102,7 +102,7 @@ fn order_host_addresses(addresses: Vec<IpAddr>) -> Vec<IpAddr> {
 /// addresses. An unspecified IPv4 address expands to every IPv4 address of
 /// the host, an unspecified IPv6 address to every address; any other
 /// address yields the one URL for that literal.
-pub fn expand_binding(binding: &EndpointBinding, host: &[IpAddr]) -> Vec<String> {
+pub(crate) fn expand_binding(binding: &EndpointBinding, host: &[IpAddr]) -> Vec<String> {
     let bound = binding.address.ip();
     let reachable: Vec<IpAddr> = match bound {
         IpAddr::V4(v4) if v4.is_unspecified() => {
@@ -128,7 +128,7 @@ fn render_url(scheme: &str, ip: IpAddr, port: u16, path: &str) -> String {
 /// reports: every announced label must be declared and every declared label
 /// announced, and each binding is expanded against `host`. The result is in
 /// label order, each endpoint carrying the kind its declaration gives it.
-pub fn expand_announcements(
+pub(crate) fn expand_announcements(
     instance_id: &str,
     declared: &EndpointDeclarations,
     announced: Vec<AnnouncedEndpoint>,

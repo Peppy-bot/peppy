@@ -117,7 +117,7 @@ fn needs_sync(node_root_dir: &std::path::Path) -> bool {
 }
 
 /// Parameters for [`auto_sync_if_missing`].
-pub struct AutoSyncParams<'a> {
+pub(crate) struct AutoSyncParams<'a> {
     pub node_dir: &'a std::path::Path,
     pub execution_language: config::node::PeppygenLanguage,
     pub manifest: &'a config::node::Manifest,
@@ -136,7 +136,7 @@ pub struct AutoSyncParams<'a> {
 /// Directories whose `.peppy` already exists and contains all required files
 /// are skipped (no-op). If `.peppy` exists but is incomplete (e.g. missing
 /// `git.hash` or the peppygen fingerprint), it is removed and regenerated.
-pub fn auto_sync_if_missing(
+pub(crate) fn auto_sync_if_missing(
     params: AutoSyncParams<'_>,
     node_stack: &NodeStack,
     peppy_dirs: &PeppyDirs,

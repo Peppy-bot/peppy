@@ -93,7 +93,7 @@ fn kinds_to_call(kind: Option<CallKind>) -> &'static [InterfaceKind] {
     }
 }
 
-pub fn call(ctx: &Arc<AppContext>, params: CallParams) -> Result<()> {
+pub(super) fn call(ctx: &Arc<AppContext>, params: CallParams) -> Result<()> {
     crate::commands::block_on(call_writing(ctx, params, &mut std::io::stdout()))
 }
 
@@ -152,7 +152,7 @@ enum CallClient {
 impl MemberCall {
     /// The call of `selected` with the message `arguments` give, its codecs
     /// laid out from the formats of the pinned manifest.
-    pub fn new(selected: &SelectedMember<'_>, arguments: &MessageArguments) -> Result<Self> {
+    pub(super) fn new(selected: &SelectedMember<'_>, arguments: &MessageArguments) -> Result<Self> {
         let name = selected.full_name.clone();
         let MemberAddress::Interface { target } = &selected.address else {
             return Err(topic_is_not_called(&name));
@@ -201,7 +201,7 @@ impl MemberCall {
     /// Sends the call as `caller` and follows it to its end, writing its
     /// lines to `out`; `interrupts` gives the Ctrl-C presses. `rules` are the
     /// fleet rules that a call of a member that moves a robot keeps.
-    pub async fn run(
+    pub(super) async fn run(
         &self,
         messenger: &MessengerHandle,
         caller: &ConsumerIdentity,

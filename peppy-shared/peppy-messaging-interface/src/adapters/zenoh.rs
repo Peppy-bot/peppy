@@ -164,7 +164,7 @@ use zenoh_ext::{
 /// Resolved config for a node/daemon peer session, plus the inputs needed to
 /// rebuild it (the reconnecting session is re-derived on every
 /// [`start_session`](MessengerBackend::start_session)).
-pub struct ZenohClientConfig {
+pub(crate) struct ZenohClientConfig {
     zenoh_config: zenoh::config::Config,
     host: String,
     port: u16,

@@ -149,7 +149,7 @@ pub fn check_env_var(name: &str, value: &str) -> Result<(), InvalidEnvVar> {
 
 /// Checks the name of one explicitly declared environment variable: a shell
 /// identifier, and not a forbidden key.
-pub fn check_env_name(name: &str) -> Result<(), InvalidEnvVar> {
+pub(crate) fn check_env_name(name: &str) -> Result<(), InvalidEnvVar> {
     if !is_valid_env_name(name) {
         return Err(InvalidEnvVar::Name {
             name: name.to_string(),

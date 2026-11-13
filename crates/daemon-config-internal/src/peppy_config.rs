@@ -59,7 +59,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 
 /// File name of the global daemon config under `~/.peppy/conf`.
-pub const PEPPY_CONFIG_FILE: &str = "peppy_config.json5";
+pub(crate) const PEPPY_CONFIG_FILE: &str = "peppy_config.json5";
 
 /// The backend resource-server URL for this build: the dev backend in debug
 /// builds, the prod backend in release builds. The single source of truth
@@ -74,7 +74,7 @@ pub const DEFAULT_API_URL: &str = "https://api.peppy.bot";
 /// Minimum accepted grace period, in seconds. Must comfortably exceed the
 /// heartbeat interval and the router-watchdog restart window so a brief daemon
 /// blip never trips a node's watchdog.
-pub const MIN_DAEMON_GRACE_SECS: u64 = 30;
+pub(crate) const MIN_DAEMON_GRACE_SECS: u64 = 30;
 /// Cadence, in seconds, of the daemon-liveness heartbeat each spawned node's
 /// watchdog listens for (published by the daemon; see
 /// `core_node::services::clock::publish_daemon_heartbeat`). Defined next to
@@ -89,7 +89,7 @@ const _: () = assert!(MIN_DAEMON_GRACE_SECS >= 3 * DAEMON_HEARTBEAT_INTERVAL_SEC
 /// the cooperative shutdown signal is actually given a chance to land before the
 /// force-kill (a 0 would cancel the in-flight send and amount to an immediate
 /// SIGKILL).
-pub const MIN_SHUTDOWN_GRACE_SECS: u64 = 1;
+pub(crate) const MIN_SHUTDOWN_GRACE_SECS: u64 = 1;
 
 // The bundled default config, written verbatim on first create so its comments
 // survive. Kept inline (not `include_str!` from an asset file) so the template
@@ -410,7 +410,7 @@ const RESERVED_LOCATOR_DELIMITERS: [char; 3] = ['#', ';', '='];
 
 /// Parsed, syntax-checked `<scheme>/<host>:<port>` endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ParsedEndpoint<'a> {
+pub(crate) struct ParsedEndpoint<'a> {
     /// Host without IPv6 brackets.
     pub host: &'a str,
     pub port: u16,
@@ -420,7 +420,7 @@ pub struct ParsedEndpoint<'a> {
 /// endpoint, in the caller-supplied transport scheme. Wildcard hosts are
 /// rejected because they are only valid for listening, which Peppy never
 /// configures here. This is syntax-only: hostnames are never resolved.
-pub fn parse_endpoint<'a>(
+pub(crate) fn parse_endpoint<'a>(
     endpoint: &'a str,
     expected_scheme: &str,
 ) -> std::result::Result<ParsedEndpoint<'a>, String> {

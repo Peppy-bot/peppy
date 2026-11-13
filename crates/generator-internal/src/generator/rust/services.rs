@@ -12,14 +12,14 @@ use encoding::FunctionParam;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 
-pub struct ServiceResponseSpec<'a> {
+pub(super) struct ServiceResponseSpec<'a> {
     pub format: &'a MessageFormat,
     pub struct_ident: Ident,
     pub builder_type: TokenStream,
 }
 
 #[derive(Clone, Copy)]
-pub struct ExposedServiceMethodSpec<'a> {
+pub(super) struct ExposedServiceMethodSpec<'a> {
     /// The request's fields in wire order, which are also the fields of the
     /// request data struct.
     pub params: &'a [FunctionParam],
@@ -37,7 +37,7 @@ pub struct ExposedServiceMethodSpec<'a> {
     pub origin: Option<&'a ContractOrigin>,
 }
 
-pub fn build_exposed_service_method(
+pub(super) fn build_exposed_service_method(
     spec: &ExposedServiceMethodSpec<'_>,
 ) -> Result<(TokenStream, Vec<TokenStream>)> {
     let ExposedServiceMethodSpec {
@@ -203,7 +203,7 @@ pub fn build_exposed_service_method(
     Ok((method, helper_tokens))
 }
 
-pub fn build_request_struct(
+pub(super) fn build_request_struct(
     struct_name: &str,
     params: &[FunctionParam],
 ) -> Option<(Ident, TokenStream)> {
@@ -233,7 +233,7 @@ pub fn build_request_struct(
 }
 
 #[derive(Clone, Copy)]
-pub struct RequestDeserializerSpec<'a> {
+pub(super) struct RequestDeserializerSpec<'a> {
     pub deserializer_fn_name: &'a Ident,
     pub request_spec: &'a MessageEncodingSpec,
     pub request_format: &'a MessageFormat,
@@ -244,7 +244,9 @@ pub struct RequestDeserializerSpec<'a> {
     pub request_struct: Option<&'a Ident>,
 }
 
-pub fn build_request_deserializer(spec: &RequestDeserializerSpec<'_>) -> Result<TokenStream> {
+pub(super) fn build_request_deserializer(
+    spec: &RequestDeserializerSpec<'_>,
+) -> Result<TokenStream> {
     let RequestDeserializerSpec {
         deserializer_fn_name,
         request_spec,
@@ -276,12 +278,12 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec<'_>) -> Result<
 /// call the handler and give `Result<peppylib::Payload, Failure>`, and the
 /// `serialize_response` helper they use when the service declares a
 /// response.
-pub struct ResponseSerialization {
+pub(super) struct ResponseSerialization {
     pub answer: TokenStream,
     pub serializer: Option<TokenStream>,
 }
 
-pub fn build_response_serialization_code(
+pub(super) fn build_response_serialization_code(
     response_spec: Option<&ServiceResponseSpec<'_>>,
     callback_call: &TokenStream,
 ) -> Result<ResponseSerialization> {
@@ -323,7 +325,7 @@ pub fn build_response_serialization_code(
     })
 }
 
-pub fn build_return_type_from_params(
+pub(super) fn build_return_type_from_params(
     params: &[FunctionParam],
     request_struct: Option<&Ident>,
 ) -> TokenStream {
@@ -340,7 +342,7 @@ pub fn build_return_type_from_params(
     }
 }
 
-pub fn deserialize_fields_from_format(
+pub(super) fn deserialize_fields_from_format(
     request_format: &MessageFormat,
     params: &[FunctionParam],
     struct_prefix: &str,
@@ -370,7 +372,7 @@ pub fn deserialize_fields_from_format(
     Ok((field_statements, value_idents))
 }
 
-pub fn build_result_expr_from_values(
+pub(super) fn build_result_expr_from_values(
     params: &[FunctionParam],
     value_idents: &[Ident],
     request_struct: Option<&Ident>,
@@ -395,7 +397,7 @@ pub fn build_result_expr_from_values(
     }
 }
 
-pub fn build_response_payload_tokens(
+pub(super) fn build_response_payload_tokens(
     spec: &ServiceResponseSpec<'_>,
     response_ident: &Ident,
     error_context: &TokenStream,

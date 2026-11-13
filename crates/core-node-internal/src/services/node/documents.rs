@@ -21,7 +21,7 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-pub async fn listen_for_instance_documents(
+pub(crate) async fn listen_for_instance_documents(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,

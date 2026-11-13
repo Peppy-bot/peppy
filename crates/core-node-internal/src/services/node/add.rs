@@ -55,7 +55,7 @@ use ureq::Error as HttpError;
 use super::{FeedbackLine, interface_step_sink};
 
 #[expect(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
-pub async fn listen_for_node_add(
+pub(crate) async fn listen_for_node_add(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,

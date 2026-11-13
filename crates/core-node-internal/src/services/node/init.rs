@@ -16,7 +16,7 @@ use peppylib::{MessengerHandle, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-pub async fn listen_for_node_init(
+pub(crate) async fn listen_for_node_init(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,

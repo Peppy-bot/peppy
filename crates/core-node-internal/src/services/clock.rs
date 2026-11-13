@@ -9,7 +9,7 @@ use core_node_api::{ServiceId, TopicId};
 // `peppylib::clock`, shared with the test harness's clock stand-in
 // (`peppylib::testing::MockClock`) so both serve identical semantics.
 use peppylib::clock::handle_clock_request;
-pub use peppylib::clock::{ClockSource, WallClockSource};
+pub(super) use peppylib::clock::{ClockSource, WallClockSource};
 use peppylib::messaging::{SenderTarget, TopicPublisher};
 use peppylib::{MessengerHandle, ServiceMessenger, TopicMessenger};
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-pub async fn listen_for_clock(
+pub(super) async fn listen_for_clock(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
@@ -56,7 +56,7 @@ pub async fn listen_for_clock(
 ///
 /// `cancel` stops the loop on daemon shutdown so it does not spin against a
 /// closed session, logging a failed publish on every tick.
-pub async fn publish_clock(
+pub(super) async fn publish_clock(
     messenger: MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
@@ -161,7 +161,7 @@ async fn run_clock_publisher(
 ///
 /// `SensorData` QoS (best-effort, newest-wins, no back-pressure) is correct for
 /// a beacon: a missed beat is harmless as long as the next arrives inside grace.
-pub async fn publish_daemon_heartbeat(
+pub(super) async fn publish_daemon_heartbeat(
     messenger: MessengerHandle,
     core_node_name: &str,
     instance_id: &str,

@@ -8,7 +8,7 @@ use std::time::Duration;
 /// and extracted to a temp file at runtime, making the result fully portable across
 /// machines.
 #[derive(Debug)]
-pub struct RuffFacade {
+pub(crate) struct RuffFacade {
     ruff_path: PathBuf,
 }
 
@@ -21,13 +21,13 @@ const COMMON_ARGS: [&str; 2] = ["--quiet", "--no-cache"];
 
 impl RuffFacade {
     /// Creates a new `RuffFacade`, extracting the embedded ruff binary if needed.
-    pub fn new() -> std::io::Result<Self> {
+    pub(crate) fn new() -> std::io::Result<Self> {
         let ruff_path = Self::resolve_ruff_binary()?;
         Ok(Self { ruff_path })
     }
 
     /// Formats Python files at the given path using `ruff format`.
-    pub fn format(&self, path: &Path) -> std::io::Result<()> {
+    pub(crate) fn format(&self, path: &Path) -> std::io::Result<()> {
         let output = self.run(&["format"], path)?;
 
         if !output.status.success() {
@@ -41,7 +41,7 @@ impl RuffFacade {
     }
 
     /// Lints and auto-fixes Python files at the given path using `ruff check --fix`.
-    pub fn check_and_fix(&self, path: &Path) -> std::io::Result<()> {
+    pub(crate) fn check_and_fix(&self, path: &Path) -> std::io::Result<()> {
         let output = self.run(&["check", "--fix"], path)?;
 
         if !output.status.success() {

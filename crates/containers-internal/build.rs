@@ -2311,7 +2311,7 @@ echo "=== Apptainer build complete ==="
         cache_dir
     }
 
-    pub fn run() {
+    pub(crate) fn run() {
         emit_rerun_directives();
         emit_constant_env_vars();
 

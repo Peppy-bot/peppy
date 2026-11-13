@@ -8,7 +8,7 @@ use encoding::{CapnpSchemaArtifacts, FunctionParam};
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
 
-pub struct ConsumedTopicSubscriptionSpec<'a> {
+pub(super) struct ConsumedTopicSubscriptionSpec<'a> {
     pub helper_fn_ident: &'a Ident,
     pub args_struct_ident: &'a Ident,
     pub params: &'a [FunctionParam],
@@ -23,7 +23,7 @@ pub struct ConsumedTopicSubscriptionSpec<'a> {
 
 /// Specification for building an action-feedback emit-style method
 /// (publish_feedback).
-pub struct EmitMethodSpec<'a> {
+pub(super) struct EmitMethodSpec<'a> {
     pub method_name: &'a Ident,
     pub params: &'a [FunctionParam],
     pub encoding: &'a MessageEncodingSpec,
@@ -40,7 +40,7 @@ pub struct EmitMethodSpec<'a> {
 /// The encoding is not optional: an endpoint built through this path always
 /// declares a message format, which the config parser guarantees is present
 /// and non-empty.
-pub fn build_emit_method(spec: EmitMethodSpec<'_>) -> TokenStream {
+pub(super) fn build_emit_method(spec: EmitMethodSpec<'_>) -> TokenStream {
     let EmitMethodSpec {
         method_name,
         params,
@@ -91,7 +91,7 @@ pub fn build_emit_method(spec: EmitMethodSpec<'_>) -> TokenStream {
 /// publisher once and then calls `publisher.publish(build_message(...)?)`, so
 /// per-message serialization never re-takes the messenger lock. This is the
 /// only topic-publish path.
-pub fn build_topic_publisher(
+pub(super) fn build_topic_publisher(
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
     topic: &NativeEmittedTopic,
@@ -208,7 +208,7 @@ fn build_topic_build_message(
 /// `zero_or_one`) exposes `paired()`/`wait_paired()`; a multi slot exposes
 /// `peers()` answering every pair it holds as a `Vec<PeerMember>`, whose doc
 /// states the floor its cardinality declares.
-pub fn build_peer_module_header(
+pub(super) fn build_peer_module_header(
     topic_name: &str,
     peer: &crate::generator::types::PeerContext,
 ) -> TokenStream {
@@ -269,7 +269,7 @@ pub fn build_peer_module_header(
 /// `first()` needs no unwrap, and `zero_or_more` gets `sources()` answering a
 /// plain, possibly empty `Vec` in plan order. The empty branch exists only where
 /// the cardinality can produce one, so it is never dead code.
-pub fn build_observed_module_header(
+pub(super) fn build_observed_module_header(
     topic_name: &str,
     observer: &crate::generator::types::PeerContext,
     cardinality: Cardinality,
@@ -333,7 +333,7 @@ pub fn build_observed_module_header(
 /// instance's lifecycle (fully pinned to the source triple, held across the
 /// source's peer transitions, drop-before-redeclare on a source-generation
 /// change). There is no publisher: an observer only reads.
-pub fn build_observed_topic_subscription(
+pub(super) fn build_observed_topic_subscription(
     spec: PeerTopicSubscriptionSpec<'_>,
     cardinality: Cardinality,
 ) -> Result<TokenStream> {
@@ -346,7 +346,7 @@ pub fn build_observed_topic_subscription(
 /// paired peer; a multi slot's answers a `PeerPublisher`, which keeps one
 /// wire publisher per pair the slot holds and is driven with `publish_to`,
 /// naming one of the slot's peers.
-pub fn build_peer_topic_publisher(
+pub(super) fn build_peer_topic_publisher(
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
     qos_profile: &QoSProfile,
@@ -407,7 +407,7 @@ pub fn build_peer_topic_publisher(
 
 /// Inputs of a pairing-topic subscription module, shared by the peer and
 /// observer consume sides.
-pub struct PeerTopicSubscriptionSpec<'a> {
+pub(super) struct PeerTopicSubscriptionSpec<'a> {
     pub helper_fn_ident: &'a Ident,
     pub args_struct_ident: &'a Ident,
     pub params: &'a [FunctionParam],
@@ -421,7 +421,9 @@ pub struct PeerTopicSubscriptionSpec<'a> {
 /// `peppylib::runtime::subscribe_peer`, which follows the slot's live pin
 /// (silent while unpaired, triple wire pin while paired, drop-before-redeclare
 /// on re-pin). The binding-slot consumer filters are never involved.
-pub fn build_peer_topic_subscription(spec: PeerTopicSubscriptionSpec<'_>) -> Result<TokenStream> {
+pub(super) fn build_peer_topic_subscription(
+    spec: PeerTopicSubscriptionSpec<'_>,
+) -> Result<TokenStream> {
     build_pair_topic_subscription(spec, PairTopicSubscriptionKind::Peer)
 }
 
@@ -616,7 +618,7 @@ fn build_subscription_struct(
 /// Otherwise emit as `SenderTarget::node(node_name, node_tag)` using the
 /// runtime's own identity. Both forms are fallible because segment validation
 /// runs at construction.
-pub fn sender_target_expression(
+pub(super) fn sender_target_expression(
     origin: Option<&crate::generator::types::ContractOrigin>,
 ) -> TokenStream {
     match origin {
@@ -632,7 +634,7 @@ pub fn sender_target_expression(
     }
 }
 
-pub fn build_consumed_topic_subscription(
+pub(super) fn build_consumed_topic_subscription(
     spec: ConsumedTopicSubscriptionSpec<'_>,
 ) -> Result<TokenStream> {
     let ConsumedTopicSubscriptionSpec {
@@ -754,7 +756,7 @@ pub fn build_consumed_topic_subscription(
 /// state the same guarantees, in Rust's API terms.
 ///
 /// [`DependencyContext::bound_producers_doc`]: crate::generator::types::DependencyContext::bound_producers_doc
-pub fn build_bound_producer_accessor_fn(
+pub(super) fn build_bound_producer_accessor_fn(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     let link_id_literal = Literal::string(&dependency.link_id);
@@ -851,7 +853,7 @@ fn build_bound_members_accessor_fn(
 /// `ActionMessenger::send_goal` call. When the dependency emits via
 /// a contract, the consumer matches on `Contract(name, tag)`; otherwise
 /// on `Node(node_name, node_tag)`.
-pub fn consumed_to_target_expression(
+pub(super) fn consumed_to_target_expression(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     match &dependency.origin {
@@ -901,7 +903,7 @@ fn build_topic_deserialize_helper(
 
 /// The `peppylib::config::QoSProfile` value generated code states for a
 /// topic's QoS profile.
-pub fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
+pub(super) fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
     match profile {
         QoSProfile::Standard => quote!(peppylib::config::QoSProfile::Standard),
         QoSProfile::Reliable => quote!(peppylib::config::QoSProfile::Reliable),
@@ -918,7 +920,7 @@ fn retention_doc_lines(retention: TopicRetention) -> Vec<String> {
 
 /// The `TopicRetention` value generated code states for a topic. A retaining
 /// topic's depth is checked when the generated crate compiles.
-pub fn retention_tokens(retention: TopicRetention) -> TokenStream {
+pub(super) fn retention_tokens(retention: TopicRetention) -> TokenStream {
     let TopicRetention::Latest { depth } = retention else {
         return quote!(peppylib::config::TopicRetention::LiveOnly);
     };

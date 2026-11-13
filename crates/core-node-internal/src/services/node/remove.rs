@@ -26,7 +26,7 @@ use super::common::unanswered;
 use super::stop::{DoomedInstance, StopOutcome, await_exit_then_force_kill};
 
 #[expect(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
-pub async fn listen_for_node_remove(
+pub(crate) async fn listen_for_node_remove(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
