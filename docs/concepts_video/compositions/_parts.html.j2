@@ -1,0 +1,89 @@
+{# The parts that the compositions share. Each part takes its texts from the
+   transcript, and the words of its frame from `labels`. #}
+
+{# The number and the chapter title of the segment, at the top left. #}
+{% macro chapter(number, title) %}
+<div class="chapter">
+  <span class="chapter-number">{{ "%02d" | format(number) }}</span>
+  <span>{{ title }}</span>
+</div>
+{% endmacro %}
+
+{# A term card: a term, its definition in plain words, and its equivalent in
+   general software when it has one. #}
+{% macro term_card(id, card) %}
+<div id="{{ id }}" class="card term-card">
+  <div class="card-kind">{{ labels.term }}</div>
+  <div class="card-term">{{ card.term | rich }}</div>
+  <div class="card-definition">{{ card.definition | rich }}</div>
+  {% if "equivalent" in card %}
+  <div class="card-equivalent">
+    <span class="card-equivalent-label">{{ labels.equivalent }}</span>
+    {{ card.equivalent | rich }}
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{# A comparison card: what ROS 2 does, then what Peppy does. #}
+{% macro comparison_card(id, comparison) %}
+<div id="{{ id }}" class="card comparison-card">
+  <div class="card-kind">{{ labels.comparison }}</div>
+  {% if "about_ros2" in comparison %}
+  <div class="card-about">{{ comparison.about_ros2 | rich }}</div>
+  {% endif %}
+  <div class="comparison-side">
+    <span class="side-name is-ros2">{{ labels.ros2 }}</span>
+    <span>{{ comparison.ros2 | rich }}</span>
+  </div>
+  <div class="comparison-side">
+    <span class="side-name is-peppy">{{ labels.peppy }}</span>
+    <span>{{ comparison.peppy | rich }}</span>
+  </div>
+</div>
+{% endmacro %}
+
+{# One side of a comparison of steps. Each step has the id `<id>-<side>-<n>`. #}
+{% macro steps_side(id, side, name, comparison) %}
+<div class="steps-side is-{{ side }}">
+  <span class="steps-side-name">{{ name }}</span>
+  {% if side + "_summary" in comparison %}
+  <div class="steps-summary">{{ comparison[side + "_summary"] | rich }}</div>
+  {% endif %}
+  <ol class="steps-list">
+    {% for step in comparison[side] %}
+    <li class="step" id="{{ id }}-{{ side }}-{{ loop.index }}"><span>{{ step | rich }}</span></li>
+    {% endfor %}
+  </ol>
+</div>
+{% endmacro %}
+
+{# A comparison of steps: ROS 2 on the left and Peppy on the right. #}
+{% macro steps_comparison(id, comparison) %}
+<div id="{{ id }}" class="steps">
+  <div class="card-kind" style="color: var(--ros2)">{{ labels.comparison }}</div>
+  <div class="steps-title">{{ comparison.title | rich }}</div>
+  {% if "about_ros2" in comparison %}
+  <div class="steps-about">{{ comparison.about_ros2 | rich }}</div>
+  {% endif %}
+  <div class="steps-columns">
+    {{ steps_side(id, "ros2", labels.ros2, comparison) }}
+    {{ steps_side(id, "peppy", labels.peppy, comparison) }}
+  </div>
+  {% if "note" in comparison %}
+  <div class="steps-note">{{ comparison.note | rich }}</div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{# Code on the screen. Each line has the id `<id>-l<n>`, from 1. #}
+{% macro code_window(id, block, title=none) %}
+<div id="{{ id }}" class="code-window">
+  {% if title %}
+  <div class="code-title">{{ title | rich }}</div>
+  {% endif %}
+  {% for line in block.lines %}
+  <div class="code-line" id="{{ id }}-l{{ loop.index }}">{{ line | code(block.language) }}</div>
+  {% endfor %}
+</div>
+{% endmacro %}

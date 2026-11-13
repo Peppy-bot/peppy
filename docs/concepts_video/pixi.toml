@@ -1,0 +1,40 @@
+[workspace]
+name = "peppy-concepts-video"
+version = "0.0.1"
+description = "The concepts video of the Peppy documentation"
+channels = ["conda-forge"]
+# The video is one result of one platform: the Chrome that draws the frames
+# and the model that makes the voice give other bytes on another platform.
+platforms = ["linux-64"]
+# pixi.lock uses format v7, which pixi < 0.68 cannot parse and would silently
+# re-resolve and rewrite. 0.72 is the oldest version the workspaces of this
+# repository are tested with.
+requires-pixi = ">=0.72"
+
+# The tools that change the result have an exact version here, and pixi.lock
+# holds the build and the hash of each package. HyperFrames and GSAP are in
+# package.json and package-lock.json. The Chrome that renders and the model of
+# the voice are in pins.toml.
+[dependencies]
+nodejs = "==24.22.3"
+ffmpeg = "==8.0.1"
+python = "3.13.*"
+boto3 = "*"
+jinja2 = "*"
+pytest = "*"
+
+[pypi-dependencies]
+kokoro-onnx = "==0.6.1"
+soundfile = "==0.14.0"
+
+# The commands and the tests import the `tools` package of this directory.
+[activation.env]
+PYTHONPATH = "$PIXI_PROJECT_ROOT"
+
+[tasks]
+# The two commands of the project.
+build = "python -m tools.build"
+add-footage = "python -m tools.add_footage"
+# What CI runs: the transcript test and the lint of the compositions.
+test = "pytest tests -v"
+lint = "python -m tools.lint"

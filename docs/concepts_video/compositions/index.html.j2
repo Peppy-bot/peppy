@@ -1,0 +1,51 @@
+<!doctype html>
+{# The root composition: it mounts the composition of each segment at its
+   time, and plays the voice. #}
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="lib/gsap.min.js"></script>
+    <script src="lib/motion.js"></script>
+    <script src="lib/robot_view.js"></script>
+    <link rel="stylesheet" href="styles/video.css" />
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="{{ duration }}"
+      data-fps="{{ frames_per_second }}"
+      data-width="1920"
+      data-height="1080"
+    >
+      {% for slot in segments %}
+      <div
+        id="{{ slot.id }}"
+        data-composition-id="{{ slot.id }}"
+        data-composition-src="compositions/{{ slot.id }}.html"
+        data-start="{{ slot.start }}"
+        data-duration="{{ slot.duration }}"
+        data-track-index="1"
+        data-track-kind="graphics"
+        data-width="1920"
+        data-height="1080"
+      ></div>
+      {% endfor %}
+      {# The voice of Kokoro is at -19 LUFS. The volume 1.3 brings it to
+         -17 LUFS, with its peaks below -1.5 dBFS. #}
+      <audio
+        id="voice"
+        src="assets/voice.wav"
+        data-start="0"
+        data-duration="{{ duration }}"
+        data-track-index="2"
+        data-volume="1.3"
+      ></audio>
+    </div>
+    <script>
+      window.__timelines["main"] = gsap.timeline({ paused: true });
+    </script>
+  </body>
+</html>

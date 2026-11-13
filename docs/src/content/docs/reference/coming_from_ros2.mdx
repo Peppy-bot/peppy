@@ -1,0 +1,165 @@
+---
+title: Coming from ROS 2
+description: How the terms, the tools and the steps of ROS 2 map to those of Peppy
+sidebar:
+  order: 4
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+[ROS 2](https://docs.ros.org/en/lyrical/About-ROS.html) is an open-source set of tools and libraries for robot applications. This page is for a developer who knows ROS 2. It gives the nearest Peppy term for each ROS 2 term. Then it compares ROS 2 and Peppy on eleven subjects, each in its own section.
+
+Each section says what ROS 2 does and what Peppy does, with links to the documentation that supports each statement. The ROS 2 links go to the documentation of the Lyrical Luth distribution.
+
+## ROS 2 terms and Peppy terms
+
+| ROS 2 | Peppy |
+| --- | --- |
+| [Node](https://docs.ros.org/en/lyrical/ROS-Framework/About-Nodes.html) | [Node](/reference/concepts/#node). One run of a node is a [node instance](/reference/concepts/#node-instance) |
+| [Topic](https://docs.ros.org/en/lyrical/ROS-Framework/interfaces/About-Topics.html) | [Topic](/advanced_guides/topics/) |
+| [Service](https://docs.ros.org/en/lyrical/ROS-Framework/interfaces/About-Services.html) | [Service](/advanced_guides/services/) |
+| [Action](https://docs.ros.org/en/lyrical/ROS-Framework/interfaces/About-Actions.html) | [Action](/advanced_guides/actions/) |
+| [Interface file](https://docs.ros.org/en/lyrical/ROS-Framework/interfaces/Working-with-interfaces/Interface-specifications.html) (`.msg`, `.srv`, `.action`) | The [message format](/reference/message_format/) of a topic, a service or an action, in `peppy.json5` or in a [contract](/advanced_guides/contract_implementation/) |
+| [Quality of Service settings](https://docs.ros.org/en/lyrical/ROS-Framework/interfaces/topics/About-Quality-of-Service-Settings.html) | The [`qos_profile`](/advanced_guides/topics/#emitting-a-topic) of a topic |
+| [Parameter](https://docs.ros.org/en/lyrical/ROS-Framework/About-Parameters.html) | [Parameter](/guides/parameters/) |
+| [Package](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Creating-Your-First-ROS2-Package.html#what-is-a-ros-2-package), with its `package.xml` | The directory of a [node](/guides/first_node/#project-structure), with its `peppy.json5` |
+| [Workspace](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Creating-A-Workspace/Creating-A-Workspace.html#background): a directory that contains packages | [Repository](/advanced_guides/repositories/): a directory or a git repository where Peppy finds nodes, launchers and contracts |
+| [Launch file](https://docs.ros.org/en/lyrical/Developer-Tools/About-Launch.html) | [Launcher](/guides/launch_files/) |
+| [ROS graph](https://docs.ros.org/en/lyrical/ROS-Framework/How-ROS-Works.html#the-ros-graph) | [Node stack](/reference/concepts/#node-stack) |
+| [`ros2` command](https://docs.ros.org/en/lyrical/Developer-Tools/Introspection-and-analysis/About-Command-Line-Tools.html) | `peppy` command |
+| `ros2 run` | [`peppy node run`](/guides/node_stack/#starting-your-node) |
+| `ros2 launch` | [`peppy stack launch`](/guides/launch_files/#launching-from-a-repository) |
+| `ros2 node list` | [`peppy stack list`](/guides/node_stack/#checking-node-status) |
+| `ros2 node info` | [`peppy node info`](/guides/node_stack/#inspecting-a-node-with-peppy-node-info) |
+| `ros2 topic echo` | [`peppy node echo`](/guides/node_stack/#calling-a-running-instance) |
+| `colcon build` | [`peppy node build`](/guides/node_stack/#building-hello_world), which runs the build command of the node |
+
+## The graph
+
+**ROS 2.** The ROS graph is the network of the nodes of a system and of the connections between them (see [Nodes](https://docs.ros.org/en/lyrical/ROS-Framework/About-Nodes.html#about-nodes)). A node makes its publishers and its subscriptions in its code: in the tutorial [Writing a simple publisher and subscriber (Python)](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Writing-A-Simple-Py-Publisher-And-Subscriber.html#write-the-publisher-node), the call `create_publisher` gives the message type and the name of the topic. ROS 2 makes the connections when the nodes run. A node advertises its presence when it starts, and [discovery](https://docs.ros.org/en/lyrical/ROS-Framework/About-Nodes.html#discovery) connects it to the other nodes. To see the graph, a developer examines the system while it runs, for example with `ros2 node list` or with `rqt_graph` (see [Learning about topics](https://docs.ros.org/en/lyrical/ROS-Framework/interfaces/topics/Understanding-ROS2-Topics/Understanding-ROS2-Topics.html)). ROS 2 has a daemon for its command-line tools: it keeps the graph information that discovery gives, so that a command such as `ros2 node list` answers faster (see [ROS 2 Daemon](https://docs.ros.org/en/lyrical/Developer-Tools/Introspection-and-analysis/About-Command-Line-Tools.html#ros-2-daemon-background-discovery-service)).
+
+**Peppy.** The daemon of each machine holds its [node stack](/reference/concepts/#node-stack). The node stack is a directed acyclic graph: each vertex is a node, and each edge is a dependency of one node on another node. A node declares its dependencies in `depends_on.nodes` of its `peppy.json5`. Thus the graph comes from declarations, and not from the code of the nodes. The daemon adds the edges when a node is added to the node stack, before an instance of the node starts. `peppy stack list` shows the graph of each daemon as tables: the nodes, the instances with their bindings, and the dependencies (see [Checking node status](/guides/node_stack/#checking-node-status)). With `--json`, the same command prints the nodes and the edges of each graph as one JSON document. A dependency on a [contract](#contracts) adds no edge to the graph: `peppy stack list` shows it as a binding between two instances.
+
+## Interfaces and errors before the start
+
+**ROS 2.** The interface definitions of ROS 2 are `.msg`, `.srv` and `.action` files (see [Interface specifications](https://docs.ros.org/en/lyrical/ROS-Framework/interfaces/Working-with-interfaces/Interface-specifications.html)). The files are in a package, and the `package.xml` and the `CMakeLists.txt` of that package make the build generate their code (see [Creating custom msg and srv files](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Custom-ROS2-Interfaces.html)). An interface file defines a type. It does not hold the name of a topic: the code of a node gives that name as a string when it makes a publisher or a subscription. The tutorial [Writing a simple publisher and subscriber (Python)](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Writing-A-Simple-Py-Publisher-And-Subscriber.html#write-the-subscriber-node) says that "the topic name and message type used by the publisher and subscriber must match to allow them to communicate". A topic can have zero publishers (see [Topics](https://docs.ros.org/en/lyrical/ROS-Framework/interfaces/About-Topics.html#publish-subscribe)), and ROS 2 makes the connections when the nodes run. Thus a wrong topic name shows at run time: the subscription is on a different topic, and it receives no message.
+
+**Peppy.** `peppy.json5` is the single source of truth of a node. It holds the identity of the node, its interfaces, its parameters, and its build and run commands (see [Exploring the `peppy.json5` file](/guides/first_node/#exploring-the-peppyjson5-file) and [Node](/reference/concepts/#node)). `peppy node sync` generates the Rust or Python code of these interfaces from `peppy.json5`, with a type for each message (see [Publishing messages](/advanced_guides/topics/#publishing-messages)). The code of the node uses the generated module of each interface, so it holds no topic name as a string. A node that consumes an interface names the source of the interface, a node or a contract, in `depends_on` of its own `peppy.json5`. When a node is added to the node stack, the node stack checks that each dependency exists and that it exposes the interfaces that its dependents consume (see [How dependencies work](/reference/concepts/#how-dependencies-work)). The node stack does this check before an instance of the node starts.
+
+## Running and testing one node alone
+
+**ROS 2.** `ros2 run` starts one executable, and an executable holds one or more nodes (see [Node management](https://docs.ros.org/en/lyrical/ROS-Framework/About-Nodes.html#node-management)). To debug a node, the documentation starts it under GDB with `ros2 run --prefix 'gdb -ex run --args' <pkg> <node>` (see [Getting Backtraces in ROS 2](https://docs.ros.org/en/lyrical/Developer-Tools/Debugging/Getting-Backtraces-in-ROS-2.html)). To test a node together with other nodes, the documentation uses the `launch_testing` package (see [Writing Basic Integration Tests with launch_testing](https://docs.ros.org/en/lyrical/Developer-Tools/Debugging/Testing/Integration.html)). A test launch file starts the nodes under test and, when the test needs them, "additional nodes that perform mocking". The tutorial writes the publisher of its test by hand, and it uses the `WaitForTopics` utility to subscribe to a topic and to wait for its messages. The documentation describes no tool that generates a mock of a node, so the developer writes each mock.
+
+**Peppy.** In standalone mode, a node runs as a regular Rust or Python program outside the node stack, and it communicates with the nodes of the node stack. The developer starts it with `cargo run` or `uv run <node>`, and can start it under a debugger (see [Debugging a node](/guides/standalone_node/#debugging-a-node)).
+
+For tests, `peppy node sync` generates a test surface beside the code of the interfaces: a typed mock of each dependency, and a test harness that starts the node in the process of the test (see [What sync generates](/advanced_guides/testing/#what-sync-generates)). `peppy node sync` reads the interfaces of each dependency from the node stack. With `-r`, it reads them from the repositories when the node stack does not hold the dependency (see [Syncing against repositories](/advanced_guides/repositories/#syncing-against-repositories)).
+
+One test then gives the node the messages of all its dependencies, through the mocks. The test runs with no daemon, no node stack, no dependency binary and no sleep: each step of the start waits for a readiness signal, and not for a timer (see [A first test](/advanced_guides/testing/#a-first-test)).
+
+## Build tools
+
+**ROS 2.** ROS 2 has a build system of its own, `ament`, with its build tool, `colcon`. The tutorial [Creating a package](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Creating-Your-First-ROS2-Package.html#what-is-a-ros-2-package) says: "Package creation in ROS 2 uses ament as its build system and colcon as its build tool." In a package, CMake usually builds C++ code and setuptools usually builds Python code, with the helper functions of `ament`. `colcon` builds the packages of a workspace in the order of their dependencies (see [The build system](https://docs.ros.org/en/lyrical/Developer-Tools/Build/About-Build-System.html)). The developer puts each package in a workspace and builds it with `colcon build` (see [Using colcon to build packages](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Colcon-Tutorial.html#build-the-workspace)). To run a node, the developer runs `source` on a setup file of the workspace, then `ros2 run` (see [Source the setup file](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Creating-Your-First-ROS2-Package.html#source-the-setup-file)).
+
+**Peppy.** Peppy has no build system of its own. A node is a regular project of its language: a `cargo` project in Rust, a `uv` project in Python (see [Project structure](/guides/first_node/#project-structure)). `peppy.json5` names the build command and the run command of the node, as `build_cmd` and `run_cmd` (see [Execution](/reference/concepts/#execution)). `peppy node build` runs the build command and keeps the result as an artifact, and `peppy node run` starts an instance with the run command (see [Building `hello_world`](/guides/node_stack/#building-hello_world)). Thus another tool also works, such as pip, poetry or pixi: the developer adds the generated `peppygen` and `peppylib` libraries as dependencies in the configuration of that tool, and writes the commands of that tool in `build_cmd` and `run_cmd`. A [container node](/advanced_guides/containers/) is different: its build goes through its container image, and it does not use `build_cmd`.
+
+## Several machines
+
+**ROS 2.** The nodes of several machines communicate: with the default middleware, discovery finds the nodes on the same network that have the same ROS domain ID (see [Discovery](https://docs.ros.org/en/lyrical/ROS-Framework/About-Nodes.html#discovery)). `ros2 launch` runs a launch file and starts the nodes that the file lists (see [Launching multiple nodes](https://docs.ros.org/en/lyrical/ROS-Framework/nodes/Working-with-nodes/Launching-Multiple-Nodes/Launching-Multiple-Nodes.html)). A ROS 1 launch file can name another machine for a node with the `machine` tag. For ROS 2 launch files, the guide [Migrating Launch Files](https://docs.ros.org/en/lyrical/Migration-and-Upgrades/Migrating-from-ROS1/Migrating-Launch-Files.html#machine) says of this tag: "It is not supported at the moment." The ROS 2 documentation describes no command that starts one launch file on several machines. In the tutorial [Ensuring security across machines](https://docs.ros.org/en/lyrical/Developer-Tools/Launch/Security/Security-on-Two.html#launch-the-nodes), the developer starts the nodes on each machine.
+
+**Peppy.** A launcher does not name machines. It declares core node links, and each instance says which link it runs on (see [Core node links](/advanced_guides/federation/#core-node-links)). A core node is the daemon of one machine. `peppy platform login` signs the developer in and enrolls the machine in a project (see [Signing in](/advanced_guides/platform/#signing-in)). The developer runs it one time on each machine. The machines that are enrolled in one project can address each other (see [Running one stack across your project's machines](/advanced_guides/platform/#running-one-stack-across-your-projects-machines)). Then one command starts the launcher on all the machines: `peppy stack launch --place <link>@<core node> <launcher>`. Each `--place` gives one link the name of a core node, and the instances of the link run on that machine.
+
+```sh
+peppy stack launch --place robot_onboard@self \
+                   --place cloud_inference@cn-atlas-h100 \
+                   split_compute_manipulation
+```
+
+`--local` runs the same launcher on one workstation, with no change to the file (see [Developing without a second machine](/advanced_guides/federation/#developing-without-a-second-machine)). Machines can also connect without the Peppy platform, through a router that the operator runs (see [Federation outside the Peppy platform](/advanced_guides/platform/#federation-outside-the-peppy-platform)).
+
+## Contracts
+
+**ROS 2.** A publisher and a subscription communicate when they have the same topic name and the same message type (see [Writing a simple publisher and subscriber (Python)](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Writing-A-Simple-Py-Publisher-And-Subscriber.html#write-the-subscriber-node)). The message type is in an interface file, and the topic name is in the code of each node. Topics are anonymous: a subscription does not need to know which node publishes, so a developer can replace a publisher with another one on the same topic (see [Topics](https://docs.ros.org/en/lyrical/ROS-Framework/interfaces/About-Topics.html#anonymous)). The interface files define the types of the messages. They do not hold the names of the topics, the services and the actions that a node uses (see [Interface specifications](https://docs.ros.org/en/lyrical/ROS-Framework/interfaces/Working-with-interfaces/Interface-specifications.html)).
+
+**Peppy.** A contract is a standalone document that declares a set of topics, services and actions under a name and a tag (see [The contract document](/advanced_guides/contract_implementation/#1-the-contract-document)). A node declares the contracts that it implements in `manifest.implements`, and it implements each member of them (see [A producer that implements the contract](/advanced_guides/contract_implementation/#2-a-producer-that-implements-the-contract)). A consumer depends on the contract in `depends_on.contracts`, and not on a node (see [A consumer that depends on the contract](/advanced_guides/contract_implementation/#3-a-consumer-that-depends-on-the-contract)). The launch binds a producer: a `links` entry of the launcher names an instance whose node implements the contract, and the launch refuses an instance whose node does not (see [Binding an implementing producer](/advanced_guides/contract_implementation/#binding-an-implementing-producer)). A consumer can also depend on one node by its name, in `depends_on.nodes`.
+
+## Simulation and real hardware with one launcher
+
+**ROS 2.** The ROS 2 documentation says that simulation makes it possible "to use the same ROS software in virtual environments", with community packages such as Gazebo (see [Simulation](https://docs.ros.org/en/lyrical/Capabilities/About-Simulation.html)). The nearest mechanism of a launch file is a launch argument with a condition (see [Using substitutions](https://docs.ros.org/en/lyrical/Developer-Tools/Launch/Using-Substitutions.html)). A launch file declares an argument, with `DeclareLaunchArgument` in Python or the `arg` tag in XML. The developer gives its value to `ros2 launch` as `name:=value`. A condition, `IfCondition` in Python or the `if` attribute in XML, starts an action when its expression is true. The author of a launch file can use an argument and conditions to start the nodes of a simulation or the nodes of the hardware.
+
+**Peppy.** A launcher declares component axes. Each axis has options that fill the same place in the node stack, for example a real robot or a simulation (see [Swapping parts at launch time](/guides/launch_files/#swapping-parts-at-launch-time)). The `deployments` of the launcher say which option of each axis starts, and `--with <option>` selects an option of an axis at launch time. An axis lists in `provides` the instance ids that each of its options defines, so a link to one of these instances is valid for each option. For example, the [Quickstart](/quickstart/#step-2-launch-the-simulated-robot) selects the MuJoCo simulation of a launcher with `peppy stack launch openarm_simulation --with mujoco`.
+
+## MCP
+
+**ROS 2.** MCP is the [Model Context Protocol](https://modelcontextprotocol.io). The ROS 2 documentation describes no MCP server. The sub-commands that the page [Introspection with command line tools](https://docs.ros.org/en/lyrical/Developer-Tools/Introspection-and-analysis/About-Command-Line-Tools.html#usage) lists for `ros2` include no MCP command, and the page [Related projects](https://docs.ros.org/en/lyrical/Integrations-and-related/Related-Projects.html) names no MCP server. Separate projects give MCP servers for ROS 2.
+
+**Peppy.** The MCP server is built into the `peppy` binary. An exposure document is an allowlist: it selects the members of contracts to publish, and gives each one a public name, a description and policies (see [MCP exposure](/advanced_guides/mcp/)). The server publishes a topic as a resource, a service as a tool, and an action as an action-backed tool that a client runs inside the call or as an MCP task (see [What an exposure publishes](/advanced_guides/mcp/#what-an-exposure-publishes)). A launcher names the exposures to serve, and the daemon runs the server for them (see [Deploy it](/advanced_guides/mcp/#deploy-it)). A member that the exposure does not name is not reachable through the endpoint.
+
+## The first run of a robot stack that another team made
+
+**ROS 2: 7 steps with 4 tools (`git`, `rosdep`, `colcon` and `ros2`).** The steps are for a stack that comes as a source repository. Step 1 gives the prerequisites of the tutorial [Creating a workspace](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Creating-A-Workspace/Creating-A-Workspace.html#tasks), and steps 2 to 6 are its tasks 1 to 6. Step 7 starts the launch file of the stack, as [Launching multiple nodes](https://docs.ros.org/en/lyrical/ROS-Framework/nodes/Working-with-nodes/Launching-Multiple-Nodes/Launching-Multiple-Nodes.html) does.
+
+<Steps>
+1. Install ROS 2, with `colcon`, `git` and `rosdep` (see [Installation](https://docs.ros.org/en/lyrical/Get-Started/Installation.html)).
+2. Set up the ROS 2 environment of the terminal: `source /opt/ros/<distro>/setup.bash`.
+3. Make a workspace and get the sources: `mkdir -p ~/ros2_ws/src`, then `git clone <repository>` in that directory.
+4. In the root of the workspace, install the dependencies of the packages: `rosdep install -i --from-path src --rosdistro <distro> -y`.
+5. Build the workspace: `colcon build`.
+6. In a new terminal, set up the ROS 2 environment again, then run `source install/local_setup.bash` in the root of the workspace.
+7. Start the stack: `ros2 launch <package> <launch file>`.
+</Steps>
+
+**Peppy: 2 steps with 1 tool (`peppy`).** The steps are for a launcher of the repositories that come with Peppy (see [Quickstart](/quickstart/)).
+
+<Steps>
+1. Install Peppy: `curl -fsSL https://peppy.bot/install.sh | sh`. The installer also installs the background service and indexes the repositories that come with Peppy (see [Installation](/guides/installation/)).
+2. Start the launcher by its name: `peppy stack launch <launcher>` (see [Launching from a repository](/guides/launch_files/#launching-from-a-repository)). The command adds, builds and starts each node of the launcher, in the order of the dependencies (see [Launch the simulated robot](/quickstart/#step-2-launch-the-simulated-robot)).
+</Steps>
+
+A launcher of another repository adds two commands before the launch: `peppy repo add <repository>` and `peppy repo refresh` (see [Add a repository](/advanced_guides/repositories/#add-a-repository)). The repository is a git repository that holds its index, a `peppy_repository.json5` file.
+
+A node that is not a container node builds with the tool that its build command names, such as `uv` or `cargo`. That tool must be on the machine (see [Building `hello_world`](/guides/node_stack/#building-hello_world)).
+
+## A new message between two nodes
+
+**ROS 2: 5 steps.** The steps are those of the tutorial [Creating custom msg and srv files](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Custom-ROS2-Interfaces.html#tasks).
+
+<Steps>
+1. Write a `.msg` file in the `msg` directory of an interface package. An interface package can only be an `ament_cmake` package.
+2. Add `find_package(rosidl_default_generators REQUIRED)` and a `rosidl_generate_interfaces` call that names the file to its `CMakeLists.txt`.
+3. Add three lines to its `package.xml`: `<buildtool_depend>rosidl_default_generators</buildtool_depend>`, `<exec_depend>rosidl_default_runtime</exec_depend>` and `<member_of_group>rosidl_interface_packages</member_of_group>`.
+4. Build the workspace: `colcon build`. The tutorial adds `--packages-select` to build the interface package alone.
+5. In a new terminal, run `source install/setup.bash` in the root of the workspace.
+</Steps>
+
+Each package that uses the new message then adds a dependency on the interface package to its own `package.xml`, and the developer builds it again (see [Test the new interfaces](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Custom-ROS2-Interfaces.html#test-the-new-interfaces)).
+
+**Peppy: 2 steps.** The steps are for the node that emits the message (see [Writing your first node](/guides/first_node/#writing-your-first-node)).
+
+<Steps>
+1. Add the topic to the `peppy.json5` of the node, under `interfaces.topics.emits`, with its `message_format`.
+2. Run `peppy node sync` in the directory of the node. The command generates the code of the topic.
+</Steps>
+
+The node that receives the message does the same two steps in its own directory. Its `peppy.json5` names the emitting node in `depends_on.nodes` and the topic in `interfaces.topics.consumes` (see [Consuming a topic](/advanced_guides/topics/#consuming-a-topic)). `peppy node sync` then reads the topic from the emitting node, which is in the node stack or, with `-r`, in a repository.
+
+In ROS 2 and in Peppy, the developer then writes the code that publishes the message and the code that receives it.
+
+## The tools that build, run and test one node in Python
+
+**ROS 2: `ament` and `colcon`.** A Python package needs a `package.xml`, a `setup.py`, a `setup.cfg`, a marker file in the `resource` directory, and a directory with the name of the package that holds an `__init__.py` file (see [What makes up a ROS 2 package?](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Creating-Your-First-ROS2-Package.html#what-makes-up-a-ros-2-package)). The package is in a workspace.
+
+<Steps>
+1. Build: `colcon build`, in the root of the workspace (see [Build a package](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Creating-Your-First-ROS2-Package.html#build-a-package)).
+2. Run: in a new terminal that has the ROS 2 environment, `source install/local_setup.bash`, then `ros2 run <package> <node>`, where `<node>` is the name of the executable of the node (see [Use the package](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Creating-Your-First-ROS2-Package.html#use-the-package)).
+3. Test: `colcon test`, which runs the pytest tests of the package (see [Run tests](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/Working-with-Client-Libraries/Colcon-Tutorial.html#run-tests) and [Writing Basic Tests with Python](https://docs.ros.org/en/lyrical/Developer-Tools/Debugging/Testing/Python.html)).
+</Steps>
+
+**Peppy: the usual tools of Python.** The node is a `uv` project with a `peppy.json5`. `peppy node init --toolchain uv` makes the project, and `peppy node sync` writes the generated libraries that the project depends on (see [Project structure](/guides/first_node/#project-structure)). The developer runs each command in the directory of the node.
+
+<Steps>
+1. Build: `uv sync --no-editable`. This is the build command that `peppy.json5` names (see [Writing your first node](/guides/first_node/#writing-your-first-node)).
+2. Run: `uv run <node>`, where `<node>` is the name of the node. The node runs in standalone mode (see [Debugging a node](/guides/standalone_node/#debugging-a-node)).
+3. Test: `uv run --group dev pytest` (see [A first test](/advanced_guides/testing/#a-first-test)).
+</Steps>
+
+The same node in Rust uses `cargo build --release`, `cargo run` and `cargo test`. In the node stack, `peppy node build` runs the build command of `peppy.json5`, and `peppy node run` starts an instance with its run command.

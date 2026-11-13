@@ -1,0 +1,526 @@
+/* The look that all the compositions of the video share.
+
+   One visual language in all segments: a node is a box with its interfaces,
+   the stack is a graph that grows, a contract is a socket that several nodes
+   fit, and a machine is a frame around a part of the graph. A term card and a
+   comparison card with ROS 2 have two different looks. */
+
+@font-face {
+  font-family: "Peppy Sans";
+  src: url("../assets/fonts/SpaceGrotesk-Regular.woff2") format("woff2");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "Peppy Sans";
+  src: url("../assets/fonts/SpaceGrotesk-Medium.woff2") format("woff2");
+  font-weight: 500;
+}
+@font-face {
+  font-family: "Peppy Sans";
+  src: url("../assets/fonts/SpaceGrotesk-Bold.woff2") format("woff2");
+  font-weight: 700;
+}
+@font-face {
+  font-family: "Peppy Mono";
+  src: url("../assets/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "Peppy Mono";
+  src: url("../assets/fonts/JetBrainsMono-Medium.woff2") format("woff2");
+  font-weight: 500;
+}
+@font-face {
+  font-family: "Peppy Mono";
+  src: url("../assets/fonts/JetBrainsMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+}
+
+:root {
+  /* The dark palette of the Peppy docs site. */
+  --ground: #070b14;
+  --panel: #0e1626;
+  --panel-raised: #141d33;
+  --line: rgba(148, 170, 220, 0.28);
+  --line-strong: rgba(148, 170, 220, 0.5);
+  --ink: #e9eefc;
+  --ink-dim: #a3b0c9;
+  /* One meaning for each colour, in all segments. */
+  --peppy: #c8f542;
+  --peppy-ink: #141a05;
+  --data: #5fd4f0;
+  --ros2: #ffb347;
+  --contract: #b48cff;
+  --fault: #ff6b81;
+  --ok: #4ade80;
+  --sans: "Peppy Sans", sans-serif;
+  --mono: "Peppy Mono", monospace;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--sans);
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--peppy);
+}
+
+/* The stage of a composition: the full frame, on a faint blueprint grid. */
+.stage {
+  position: absolute;
+  inset: 0;
+  background-color: var(--ground);
+  background-image:
+    linear-gradient(rgba(148, 170, 220, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 170, 220, 0.045) 1px, transparent 1px);
+  background-size: 60px 60px;
+}
+
+/* The chapter of the segment, at the top left of each composition. */
+.chapter {
+  position: absolute;
+  left: 96px;
+  top: 58px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  font-size: 30px;
+  font-weight: 500;
+  color: var(--ink-dim);
+}
+.chapter-number {
+  min-width: 52px;
+  padding: 4px 12px;
+  border-radius: 8px;
+  background: var(--peppy);
+  color: var(--peppy-ink);
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 28px;
+  text-align: center;
+}
+
+/* A placed part of a diagram. The composition gives its position. */
+.placed {
+  position: absolute;
+}
+
+/* A node: a box with its name. */
+.node {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 220px;
+  height: 92px;
+  padding: 0 28px;
+  border: 3px solid var(--peppy);
+  border-radius: 16px;
+  background: var(--panel);
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 32px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.node.is-daemon {
+  border-color: var(--data);
+}
+.node.is-quiet {
+  border-color: var(--line-strong);
+}
+
+/* A label of a diagram. */
+.label {
+  position: absolute;
+  font-size: 28px;
+  font-weight: 500;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+.label.is-strong {
+  color: var(--ink);
+}
+.label.is-data {
+  color: var(--data);
+}
+.label.is-peppy {
+  color: var(--peppy);
+}
+.label.is-fault {
+  color: var(--fault);
+}
+
+/* A large line of text on the stage. */
+.headline {
+  position: absolute;
+  font-size: 64px;
+  font-weight: 700;
+  line-height: 1.12;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+/* A command in its general form. */
+.command {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 18px;
+  padding: 18px 28px;
+  border: 2px solid var(--line-strong);
+  border-radius: 12px;
+  background: #05080f;
+  font-family: var(--mono);
+  font-size: 34px;
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.command::before {
+  content: "$";
+  color: var(--peppy);
+}
+.command code {
+  font-size: 1em;
+  color: var(--ink);
+}
+
+/* The lines of the diagrams, which are SVG paths. */
+.wires {
+  position: absolute;
+  inset: 0;
+  width: 1920px;
+  height: 1080px;
+  overflow: visible;
+  pointer-events: none;
+}
+.wire {
+  fill: none;
+  stroke: var(--data);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.wire.is-quiet {
+  stroke: var(--line-strong);
+}
+.wire.is-peppy {
+  stroke: var(--peppy);
+}
+.wire.is-contract {
+  stroke: var(--contract);
+}
+.wire.is-fault {
+  stroke: var(--fault);
+}
+.wire.is-dashed {
+  stroke-dasharray: 10 12;
+}
+.wire-head {
+  fill: var(--data);
+}
+
+/* The robot: its 3D model on a light panel, as a studio picture. */
+.robot-panel {
+  position: absolute;
+  border-radius: 32px;
+  background: radial-gradient(120% 90% at 50% 38%, #f4f7fd 0%, #d5dcec 62%, #b9c3d9 100%);
+  overflow: hidden;
+}
+.robot-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.label.is-part {
+  padding: 4px 16px;
+  border-radius: 10px;
+  background: var(--ground);
+  border: 2px solid var(--line-strong);
+  color: var(--ink);
+}
+
+/* A machine: a frame around a part of the graph. */
+.machine {
+  position: absolute;
+  border: 3px dashed var(--line-strong);
+  border-radius: 28px;
+  background: rgba(14, 22, 38, 0.55);
+}
+.machine-name {
+  position: absolute;
+  left: 28px;
+  top: -22px;
+  padding: 4px 16px;
+  border-radius: 10px;
+  background: var(--ground);
+  border: 2px solid var(--line-strong);
+  font-size: 28px;
+  font-weight: 500;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+
+/* A card. The term card and the comparison card share only their place. */
+.card {
+  position: absolute;
+  right: 96px;
+  width: 680px;
+  padding: 28px 34px 32px;
+  border-radius: 20px;
+}
+.card-kind {
+  margin-bottom: 12px;
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* A term card: a term, its definition in plain words, and its equivalent in
+   general software. A solid panel with a lime bar on its left side. */
+.term-card {
+  bottom: 70px;
+  background: var(--panel-raised);
+  border-left: 10px solid var(--peppy);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+.term-card .card-kind {
+  color: var(--peppy);
+}
+.term-card .card-term {
+  margin-bottom: 12px;
+  font-size: 46px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+.term-card .card-definition {
+  font-size: 32px;
+  line-height: 1.32;
+  color: var(--ink);
+}
+.term-card .card-equivalent {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 2px solid var(--line);
+  font-size: 30px;
+  line-height: 1.32;
+  color: var(--data);
+}
+.term-card .card-equivalent-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 28px;
+  font-weight: 500;
+  color: var(--ink-dim);
+}
+
+/* A comparison card: what ROS 2 does and what Peppy does. An outline with an
+   amber dashed border, so a viewer does not read it as a definition. */
+.comparison-card {
+  top: 150px;
+  background: rgba(7, 11, 20, 0.92);
+  border: 3px dashed var(--ros2);
+}
+.comparison-card .card-kind {
+  color: var(--ros2);
+}
+.comparison-card .card-about {
+  margin-bottom: 18px;
+  font-size: 28px;
+  line-height: 1.3;
+  color: var(--ink-dim);
+}
+.comparison-side {
+  display: grid;
+  grid-template-columns: 116px 1fr;
+  gap: 18px;
+  align-items: start;
+  font-size: 30px;
+  line-height: 1.32;
+}
+.comparison-side + .comparison-side {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 2px solid var(--line);
+}
+.side-name {
+  padding: 3px 0;
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 700;
+  text-align: center;
+}
+.side-name.is-ros2 {
+  background: rgba(255, 179, 71, 0.16);
+  color: var(--ros2);
+}
+.side-name.is-peppy {
+  background: rgba(200, 245, 66, 0.16);
+  color: var(--peppy);
+}
+.comparison-card code {
+  color: var(--ink);
+}
+
+/* A comparison of steps: ROS 2 on the left and Peppy on the right. */
+.steps {
+  position: absolute;
+  left: 96px;
+  right: 96px;
+  top: 140px;
+  bottom: 60px;
+  padding: 34px 44px;
+  border: 3px dashed var(--ros2);
+  border-radius: 24px;
+  background: rgba(7, 11, 20, 0.96);
+}
+.steps-title {
+  margin-bottom: 6px;
+  font-size: 40px;
+  font-weight: 700;
+}
+.steps-about {
+  font-size: 28px;
+  color: var(--ink-dim);
+}
+.steps-columns {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr;
+  gap: 44px;
+  margin-top: 26px;
+}
+.steps-side-name {
+  display: inline-block;
+  padding: 4px 18px;
+  border-radius: 10px;
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 700;
+}
+.steps-side.is-ros2 .steps-side-name {
+  background: rgba(255, 179, 71, 0.16);
+  color: var(--ros2);
+}
+.steps-side.is-peppy .steps-side-name {
+  background: rgba(200, 245, 66, 0.16);
+  color: var(--peppy);
+}
+.steps-summary {
+  margin: 14px 0 16px;
+  font-size: 30px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.steps-list {
+  list-style: none;
+  counter-reset: step;
+}
+.step {
+  counter-increment: step;
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 14px;
+  align-items: baseline;
+  padding: 7px 0;
+  font-size: 28px;
+  line-height: 1.3;
+  color: var(--ink);
+}
+.step::before {
+  content: counter(step);
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 28px;
+  color: var(--ink-dim);
+}
+.steps-side.is-ros2 .step::before {
+  color: var(--ros2);
+}
+.steps-side.is-peppy .step::before {
+  color: var(--peppy);
+}
+.steps code {
+  color: var(--ink);
+}
+.steps-note {
+  position: absolute;
+  left: 44px;
+  right: 44px;
+  bottom: 26px;
+  font-size: 28px;
+  line-height: 1.3;
+  color: var(--ink-dim);
+}
+.steps-row-name {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+/* Code on the screen: a window with one element for each line. */
+.code-window {
+  position: absolute;
+  padding: 26px 30px 28px;
+  border: 2px solid var(--line-strong);
+  border-radius: 16px;
+  background: #05080f;
+  font-family: var(--mono);
+  font-size: 28px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.code-title {
+  margin-bottom: 14px;
+  font-size: 28px;
+  font-weight: 500;
+  color: var(--ink-dim);
+}
+.code-line {
+  white-space: pre;
+  min-height: 1.5em;
+  border-radius: 6px;
+}
+.code-keyword {
+  color: var(--contract);
+}
+.code-string {
+  color: var(--peppy);
+}
+.code-key {
+  color: var(--data);
+}
+.code-number {
+  color: var(--ros2);
+}
+
+/* A short note below a diagram or a code window. */
+.note {
+  position: absolute;
+  font-size: 28px;
+  line-height: 1.35;
+  color: var(--ink-dim);
+}
+.note.is-strong {
+  color: var(--ink);
+  font-weight: 500;
+}

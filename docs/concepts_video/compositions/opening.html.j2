@@ -1,0 +1,225 @@
+{# Segment 1. A robot is many programs, and a robotics framework connects
+   them, starts them and monitors them. Peppy is such a framework. #}
+{% from "_parts.html.j2" import chapter, term_card %}
+{% set id = segment.id %}
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    .{{ id }}-leader {
+      fill: none;
+      stroke: var(--ink-dim);
+      stroke-width: 2;
+    }
+    .{{ id }}-frame {
+      position: absolute;
+      left: 770px;
+      top: 190px;
+      width: 400px;
+      height: 604px;
+      border: 3px dashed var(--line-strong);
+      border-radius: 28px;
+    }
+    .{{ id }}-frame-name {
+      position: absolute;
+      left: 26px;
+      top: -24px;
+      padding: 4px 16px;
+      border-radius: 10px;
+      background: var(--ground);
+      font-size: 28px;
+      font-weight: 500;
+      color: var(--ink);
+      white-space: nowrap;
+    }
+    .{{ id }}-need {
+      position: absolute;
+      left: 1250px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      font-size: 36px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .{{ id }}-need::before {
+      content: "";
+      width: 14px;
+      height: 14px;
+      border-radius: 4px;
+      background: var(--data);
+    }
+    .{{ id }}-status {
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--ok);
+    }
+    .{{ id }}-dot {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 16px;
+      height: 16px;
+      margin: -8px 0 0 -8px;
+      border-radius: 50%;
+      background: var(--data);
+    }
+    .{{ id }}-priority {
+      position: absolute;
+      left: 1250px;
+      padding: 10px 26px;
+      border: 2px solid var(--peppy);
+      border-radius: 14px;
+      font-size: 40px;
+      font-weight: 500;
+      color: var(--peppy);
+      white-space: nowrap;
+    }
+  </style>
+  <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
+    <div id="{{ id }}-stage" class="stage">
+      {{ chapter(number, segment.chapter) }}
+      <div id="{{ id }}-content">
+
+      <div class="robot-panel" style="left: 96px; top: 170px; width: 620px; height: 840px">
+        <canvas id="{{ id }}-robot" class="robot-canvas"></canvas>
+      </div>
+
+      <svg class="wires" viewBox="0 0 1920 1080">
+        <path id="{{ id }}-leader-camera" class="{{ id }}-leader" pathLength="1" />
+        <path id="{{ id }}-leader-motor" class="{{ id }}-leader" pathLength="1" />
+
+        <path id="{{ id }}-wire-camera" class="wire" pathLength="1" />
+        <path id="{{ id }}-wire-to-brain" class="wire" pathLength="1" d="M 970 334 V 436" />
+        <path id="{{ id }}-wire-from-brain" class="wire" pathLength="1" d="M 970 539 V 641" />
+        <path id="{{ id }}-wire-motor" class="wire" pathLength="1" />
+        <polygon id="{{ id }}-head-camera" class="wire-head" points="804,276 820,286 804,296" />
+        <polygon id="{{ id }}-head-to-brain" class="wire-head" points="960,432 980,432 970,446" />
+        <polygon id="{{ id }}-head-from-brain" class="wire-head" points="960,637 980,637 970,651" />
+        <polygon id="{{ id }}-head-motor" class="wire-head" />
+      </svg>
+
+      <div id="{{ id }}-label-camera" class="label is-part">{{ screen.parts.camera }}</div>
+      <div id="{{ id }}-label-motor" class="label is-part">{{ screen.parts.motor }}</div>
+
+      <div id="{{ id }}-frame" class="{{ id }}-frame">
+        <span class="{{ id }}-frame-name">{{ screen.framework }}</span>
+      </div>
+
+      <div id="{{ id }}-node-camera" class="node" style="left: 820px; top: 240px; width: 300px">{{ screen.programs.camera_driver }}</div>
+      <div id="{{ id }}-node-brain" class="node" style="left: 820px; top: 445px; width: 300px">{{ screen.programs.brain }}</div>
+      <div id="{{ id }}-node-motor" class="node" style="left: 820px; top: 650px; width: 300px">{{ screen.programs.motor_driver }}</div>
+      <div class="{{ id }}-status" style="left: 1092px; top: 252px"></div>
+      <div class="{{ id }}-status" style="left: 1092px; top: 457px"></div>
+      <div class="{{ id }}-status" style="left: 1092px; top: 662px"></div>
+      <div id="{{ id }}-dot-to-brain" class="{{ id }}-dot"></div>
+      <div id="{{ id }}-dot-from-brain" class="{{ id }}-dot"></div>
+
+      {% for need in screen.needs %}
+      <div id="{{ id }}-need-{{ loop.index }}" class="{{ id }}-need" style="top: {{ 232 + (loop.index - 1) * 70 }}px">{{ need }}</div>
+      {% endfor %}
+
+      <div id="{{ id }}-peppy">
+        <div class="placed" style="left: 1244px; top: 206px; width: 132px; height: 132px; border-radius: 30px; background: #dfe6f7"></div>
+        <img class="placed" src="assets/pictures/peppy-logo.webp" alt="" style="left: 1252px; top: 214px; width: 116px; height: 116px" />
+        <div class="headline" style="left: 1396px; top: 214px; font-size: 104px; color: var(--peppy)">{{ screen.peppy }}</div>
+      </div>
+      {% for priority in screen.priorities %}
+      <div id="{{ id }}-priority-{{ loop.index }}" class="{{ id }}-priority" style="top: {{ 386 + (loop.index - 1) * 92 }}px">{{ priority }}</div>
+      {% endfor %}
+
+      {{ term_card(id + "-card-brain", screen.cards.robot_brain) }}
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const ID = "#{{ id }}";
+      const at = {{ at | tojson }};
+      const DURATION = {{ duration }};
+      const tl = gsap.timeline({ paused: true });
+      const lasts = (sentence) => sentence.end - sentence.start;
+
+      Motion.endSegment(tl, ID + "-content", DURATION);
+
+      // The robot turns to the viewer, then labels point to its parts.
+      const robot = RobotView.mount({
+        canvas: document.querySelector(ID + "-robot"),
+        segmentStart: {{ start }},
+        turns: [[0.2, -55], [at.many_programs.start, 0]],
+      });
+      robot.ready.then(function (view) {
+        const camera = view.pointOnPage("camera", 0);
+        const motor = view.pointOnPage("left_wrist", 0);
+        const place = (selector, x, y) => gsap.set(selector, { left: x, top: y });
+        const path = (selector, d) => document.querySelector(selector).setAttribute("d", d);
+        place(ID + "-label-camera", camera.x + 64, camera.y - 104);
+        path(ID + "-leader-camera", `M ${camera.x + 84} ${camera.y - 58} L ${camera.x + 12} ${camera.y - 10}`);
+        place(ID + "-label-motor", motor.x - 70, motor.y - 196);
+        path(ID + "-leader-motor", `M ${motor.x - 12} ${motor.y - 150} L ${motor.x - 4} ${motor.y - 30}`);
+        path(ID + "-wire-camera", `M ${camera.x + 16} ${camera.y} C ${camera.x + 240} ${camera.y}, 640 286, 806 286`);
+        path(ID + "-wire-motor", `M 818 696 C 740 696, 730 ${motor.y + 8}, ${motor.x + 52} ${motor.y + 8}`);
+        const tip = { x: motor.x + 38, y: motor.y + 8 };
+        document
+          .querySelector(ID + "-head-motor")
+          .setAttribute("points", `${tip.x + 16},${tip.y - 10} ${tip.x},${tip.y} ${tip.x + 16},${tip.y + 10}`);
+      });
+      const labels = [
+        ["camera", at.many_programs.start + 0.3],
+        ["motor", at.many_programs.start + 1.1],
+      ];
+      labels.forEach(function ([part, time]) {
+        Motion.draw(tl, ID + "-leader-" + part, time, 0.4);
+        Motion.show(tl, ID + "-label-" + part, time + 0.1);
+      });
+
+      // Each part has a program.
+      Motion.draw(tl, ID + "-wire-camera", at.drivers.start + 0.2, 0.8);
+      Motion.show(tl, ID + "-head-camera", at.drivers.start + 0.9, { from: { opacity: 0 }, duration: 0.2 });
+      Motion.show(tl, ID + "-node-camera", at.drivers.start + 0.7);
+      const motorTime = at.drivers.start + lasts(at.drivers) * 0.55;
+      Motion.show(tl, ID + "-node-motor", motorTime);
+      Motion.draw(tl, ID + "-wire-motor", motorTime + 0.3, 0.8);
+      Motion.show(tl, ID + "-head-motor", motorTime + 1.0, { from: { opacity: 0 }, duration: 0.2 });
+
+      // The brain is between the two drivers.
+      Motion.show(tl, ID + "-node-brain", at.brain.start + 0.2);
+      Motion.draw(tl, ID + "-wire-to-brain", at.brain.start + 0.6, 0.4);
+      Motion.show(tl, ID + "-head-to-brain", at.brain.start + 0.9, { from: { opacity: 0 }, duration: 0.2 });
+      Motion.draw(tl, ID + "-wire-from-brain", at.brain.start + 1.0, 0.4);
+      Motion.show(tl, ID + "-head-from-brain", at.brain.start + 1.3, { from: { opacity: 0 }, duration: 0.2 });
+      Motion.card(tl, ID + "-card-brain", at.brain.start + 0.4, at.needs.end);
+
+      // What the programs need, one need for each part of the sentence.
+      const needShares = [0.14, 0.36, 0.55, 0.8];
+      needShares.forEach(function (share, index) {
+        Motion.show(tl, ID + "-need-" + (index + 1), at.needs.start + lasts(at.needs) * share);
+      });
+      const dataTime = at.needs.start + lasts(at.needs) * needShares[1];
+      Motion.travel(tl, ID + "-dot-to-brain", { x: 970, y: 340 }, { x: 970, y: 430 }, dataTime, 0.6, 4);
+      Motion.travel(tl, ID + "-dot-from-brain", { x: 970, y: 545 }, { x: 970, y: 635 }, dataTime + 0.3, 0.6, 4);
+      const orderTime = at.needs.start + lasts(at.needs) * needShares[2];
+      ["camera", "brain", "motor"].forEach(function (node, index) {
+        Motion.pulse(tl, ID + "-node-" + node, orderTime + index * 0.3);
+      });
+      const operationTime = at.needs.start + lasts(at.needs) * needShares[3];
+      Motion.show(tl, "." + "{{ id }}-status", operationTime, { from: { opacity: 0, scale: 0.2 }, stagger: 0.15 });
+
+      // A robotics framework does this work, and Peppy is one.
+      Motion.show(tl, ID + "-frame", at.framework.start + 0.2, { from: { opacity: 0, scale: 0.96 } });
+      Motion.hide(tl, "." + "{{ id }}-need", at.peppy.start);
+      Motion.show(tl, ID + "-peppy", at.peppy.start + 0.1);
+      tl.to(ID + "-frame", { borderColor: "#c8f542", duration: 0.5 }, at.peppy.start + 0.1);
+      const priorityShares = [0.5, 0.72];
+      priorityShares.forEach(function (share, index) {
+        Motion.show(tl, ID + "-priority-" + (index + 1), at.peppy.start + lasts(at.peppy) * share);
+      });
+
+      window.__timelines["{{ id }}"] = tl;
+    })();
+  </script>
+</template>
