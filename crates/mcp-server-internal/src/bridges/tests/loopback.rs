@@ -390,7 +390,7 @@ async fn a_refused_and_a_failed_goal_reach_the_client_and_the_record_with_their_
     let (mesh, mut provider) = mesh(true).await;
     let endpoint = Endpoint::serve(&mesh).await;
 
-    let refused = move_gripper_ending(&endpoint, &mut provider, |pending| async {
+    let refused = move_gripper_ending(&endpoint, &mut provider, async |pending| {
         pending
             .refuse(unreachable_width())
             .await
@@ -408,7 +408,7 @@ async fn a_refused_and_a_failed_goal_reach_the_client_and_the_record_with_their_
     );
     ending.assert_recorded(&endpoint.ended_entry(TOOL).await);
 
-    let failed = move_gripper_ending(&endpoint, &mut provider, |pending| async {
+    let failed = move_gripper_ending(&endpoint, &mut provider, async |pending| {
         let context = pending
             .accept(Payload::new())
             .await

@@ -377,7 +377,7 @@ async fn release_participants(
     launch_id: &str,
     participants: &[String],
 ) {
-    join_all(participants.iter().map(|core_node| async move {
+    join_all(participants.iter().map(async |core_node| {
         let result = poll(
             &ParticipantReleaseRequest::new(launch_id),
             messenger,

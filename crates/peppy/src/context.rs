@@ -106,7 +106,7 @@ impl AppContext {
     ) -> crate::error::Result<&MessengerHandle> {
         let messenger = self
             .messenger_handle
-            .get_or_try_init(|| async {
+            .get_or_try_init(async || {
                 let signer = ClientCredential::read(&daemon_state.command_line_key)
                     .map_err(|error| {
                         Error::ExecutionFailed(format!(

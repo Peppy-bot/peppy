@@ -427,7 +427,7 @@ fn e2e_dockerfile(ubuntu_release: &str) -> String {
 async fn e2e_image() -> String {
     static IMAGE: OnceCell<String> = OnceCell::const_new();
     IMAGE
-        .get_or_init(|| async {
+        .get_or_init(async || {
             if let Ok(image) = std::env::var(IMAGE_OVERRIDE_ENV)
                 && !image.trim().is_empty()
             {

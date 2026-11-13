@@ -666,7 +666,7 @@ pub(in crate::services::stack) async fn clear_participant_slices(
     )
     .await;
 
-    let failures = futures::future::join_all(participants.iter().map(|core_node| async move {
+    let failures = futures::future::join_all(participants.iter().map(async |core_node| {
         let outcome = poll(
             &core_node_api::encoding::StackResetRequest::new(),
             &ctx.messenger,

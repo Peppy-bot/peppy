@@ -46,7 +46,7 @@ async fn spawn_node_stop_stub_listener(
 
     tokio::spawn(async move {
         endpoint
-            .handle_next_request(|request| async move {
+            .handle_next_request(async |request| {
                 let payload = request.message().payload();
                 let _inbound =
                     NodeStopRequest::decode(payload.as_ref()).expect("decode NodeStopRequest");

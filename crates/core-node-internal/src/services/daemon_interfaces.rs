@@ -228,7 +228,7 @@ async fn serve_service(
             let ctx = ctx.clone();
             let member = member.clone();
             let handled = endpoint
-                .spawn_next_request_handler(move |request| async move {
+                .spawn_next_request_handler(async move |request| {
                     answer_service(&ctx, interface, &member, &request).await
                 })
                 .await?;

@@ -107,7 +107,7 @@ pub fn serve() -> Result<(), ServeError> {
     let prepared = bridges::prepare(validated)?;
     NodeBuilder::<ServeArguments>::new()
         .with_manifest(manifest)
-        .run(move |arguments, node_runner| async move {
+        .run(async move |arguments, node_runner| {
             run(arguments, node_runner, prepared, targets.daemon, fleet_slot)
                 .await
                 .map_err(|error| peppylib::PeppyError::Io(std::io::Error::other(error.to_string())))

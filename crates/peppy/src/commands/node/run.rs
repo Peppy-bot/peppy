@@ -673,7 +673,7 @@ async fn validate_links_against_stack(
         .filter(|n| !matches!(n.stage, NodeStage::Root))
         .collect();
 
-    let info_futures = stack_nodes.iter().map(|node| async move {
+    let info_futures = stack_nodes.iter().map(async |node| {
         let info = poll(
             &NodeInfoRequest::new(node.name.clone(), node.tag.clone()),
             messenger,

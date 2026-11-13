@@ -2180,7 +2180,7 @@ async fn refusing_shutdown(started: &StartedCoreNode, name: &str, instance_id: &
         name,
         instance_id,
         peppylib::messaging::SHUTDOWN_SERVICE,
-        |_context| async move {
+        async |_context| {
             Err(Failure::new(
                 PeppyFailureKind::Rejected,
                 "this instance refuses to shut down",

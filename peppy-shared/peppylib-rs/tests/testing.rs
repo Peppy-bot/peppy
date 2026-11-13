@@ -447,7 +447,7 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
         standalone_config,
         &readiness,
         &service_readiness,
-        move |_params, node_runner| async move {
+        async move |_params, node_runner| {
             let processor = node_runner.processor();
             let publisher = TopicMessenger::declare_publisher(
                 node_runner.messenger(),
@@ -519,7 +519,7 @@ async fn harness_core_node_reads_the_setup_budget_of_its_manifest() {
             .with_instance_id("setup_budget_instance"),
         &[],
         &[],
-        |_params, _node_runner| async move { Ok(()) },
+        async |_params, _node_runner| Ok(()),
     )
     .await
     .expect("harness should start");
@@ -544,18 +544,15 @@ async fn harness_core_shutdown_propagates_setup_error() {
         .with_messaging(router.host(), router.port())
         .with_instance_id("failing_setup_instance");
 
-    let harness =
-        HarnessCore::start::<EmptyParameters, _, _>(
-            peppy_config_path,
-            standalone_config,
-            &[],
-            &[],
-            |_params, _node_runner| async move {
-                Err(PeppyError::Io(std::io::Error::other("setup boom")))
-            },
-        )
-        .await
-        .expect("harness start itself should succeed");
+    let harness = HarnessCore::start::<EmptyParameters, _, _>(
+        peppy_config_path,
+        standalone_config,
+        &[],
+        &[],
+        async |_params, _node_runner| Err(PeppyError::Io(std::io::Error::other("setup boom"))),
+    )
+    .await
+    .expect("harness start itself should succeed");
 
     let err = harness
         .shutdown()

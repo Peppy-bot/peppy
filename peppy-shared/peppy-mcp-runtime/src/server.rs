@@ -2407,7 +2407,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_cancelled_goal_inside_a_call_is_a_tool_error_with_its_reason_and_the_result() {
-        let server = server_with_resume(|_call: ToolCall, _context: ActionContext| async move {
+        let server = server_with_resume(async |_call: ToolCall, _context: ActionContext| {
             Err(ActionExit::Cancelled(CancelledGoal {
                 result: cancelled_resume(),
                 reason: "replaced by a newer goal".to_owned(),
@@ -2466,7 +2466,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_goal_inside_an_open_call_is_not_asked_to_cancel() {
-        let server = server_with_resume(|_call: ToolCall, context: ActionContext| async move {
+        let server = server_with_resume(async |_call: ToolCall, context: ActionContext| {
             assert!(!context.is_cancel_requested());
             let cancel = context.cancel_requested();
             tokio::pin!(cancel);
@@ -2499,7 +2499,7 @@ mod tests {
     #[tokio::test]
     async fn feedback_inside_a_call_is_relayed_in_order_before_the_result() {
         let (relayed, mut received) = mpsc::unbounded_channel();
-        let server = server_with_resume(|_call: ToolCall, context: ActionContext| async move {
+        let server = server_with_resume(async |_call: ToolCall, context: ActionContext| {
             context.report_feedback("frame 1").await;
             context.report_feedback("frame 2").await;
             Ok(json!({ "resumed": true }))
@@ -2632,17 +2632,16 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn closing_the_call_reaches_the_goal_while_a_message_waits_for_the_client() {
-        let server =
-            server_with_progress_goal(|_call: ToolCall, context: ActionContext| async move {
-                context.report_feedback("frame 1").await;
-                context.cancel_requested().await;
-                // The relay stopped at the close: a report returns at once.
-                context.report_feedback("frame 2").await;
-                Err(ActionExit::Cancelled(CancelledGoal {
-                    result: cancelled_resume(),
-                    reason: "cancelled by its caller".to_owned(),
-                }))
-            });
+        let server = server_with_progress_goal(async |_call: ToolCall, context: ActionContext| {
+            context.report_feedback("frame 1").await;
+            context.cancel_requested().await;
+            // The relay stopped at the close: a report returns at once.
+            context.report_feedback("frame 2").await;
+            Err(ActionExit::Cancelled(CancelledGoal {
+                result: cancelled_resume(),
+                reason: "cancelled by its caller".to_owned(),
+            }))
+        });
         // The client never takes frame 1.
         let (client, held) = HeldClient::new();
         let closed = CancellationToken::new();
@@ -2701,7 +2700,7 @@ mod tests {
     #[tokio::test]
     async fn feedback_reports_as_the_status_message_and_a_cancelled_goal_cancels_the_task_saying_why()
      {
-        let server = server_with_resume(|_call: ToolCall, context: ActionContext| async move {
+        let server = server_with_resume(async |_call: ToolCall, context: ActionContext| {
             context.report_feedback("resuming at frame 42").await;
             context.cancel_requested().await;
             Err(ActionExit::Cancelled(CancelledGoal {
@@ -3205,13 +3204,13 @@ mod tests {
             let source = Arc::clone(&fleet);
             let server = ExposureServer::builder(bundle)
                 .with_fleet(move || source.lock().unwrap().clone())
-                .with_tool("robot.get_identity", |call: ToolCall| async move {
+                .with_tool("robot.get_identity", async |call: ToolCall| {
                     let Recipient::Member(member) = call.recipient else {
                         panic!("a per-robot call names its member");
                     };
                     Ok(json!({ "robot": member.instance_id, "input": call.input }))
                 })
-                .with_tool("camera.set_brightness", |call: ToolCall| async move {
+                .with_tool("camera.set_brightness", async |call: ToolCall| {
                     let Recipient::Member(member) = call.recipient else {
                         panic!("a per-robot call names its member");
                     };
@@ -3304,7 +3303,7 @@ mod tests {
         #[tokio::test]
         async fn refusals_name_the_robots_and_members_present() {
             let (server, fleet) = served();
-            let refused = |arguments: Value| async {
+            let refused = async |arguments: Value| {
                 server
                     .execute_tool("camera.set_brightness", object(arguments), None)
                     .await
@@ -3421,7 +3420,7 @@ mod tests {
             ];
             let server = ExposureServer::builder(bundle())
                 .with_fleet(move || fleet.clone())
-                .with_tool("robot.get_identity", |call: ToolCall| async move {
+                .with_tool("robot.get_identity", async |call: ToolCall| {
                     let Recipient::Member(member) = call.recipient else {
                         panic!("a per-robot call names its member");
                     };
@@ -3941,7 +3940,7 @@ mod tests {
     #[tokio::test]
     async fn a_bridge_failure_is_a_readable_tool_error() {
         let server = ExposureServer::builder(test_bundle())
-            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
+            .with_tool("front_camera.set_brightness", async |_call: ToolCall| {
                 Err(ToolCallError::Unavailable("no producer bound".to_string()))
             })
             .build()
@@ -3965,7 +3964,7 @@ mod tests {
     #[tokio::test]
     async fn an_oversize_result_is_a_tool_error() {
         let server = ExposureServer::builder(test_bundle())
-            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
+            .with_tool("front_camera.set_brightness", async |_call: ToolCall| {
                 Ok(json!({ "applied": "y".repeat(128) }))
             })
             .build()
@@ -3989,7 +3988,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_handler_slower_than_the_deadline_is_a_tool_error() {
         let server = ExposureServer::builder(test_bundle())
-            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
+            .with_tool("front_camera.set_brightness", async |_call: ToolCall| {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
                 Ok(json!({ "applied": true }))
             })
@@ -4742,7 +4741,7 @@ mod tests {
     fn record_builder_of(bundle: ExposureBundle) -> ExposureServerBuilder {
         ExposureServer::builder(bundle)
             .with_tool("front_camera.set_brightness", brightness_handler)
-            .with_tool("front_camera.get_brightness", |_call: ToolCall| async {
+            .with_tool("front_camera.get_brightness", async |_call: ToolCall| {
                 Ok(json!({ "value": 3 }))
             })
             .with_task("recorder.record_episode", record_handler)
@@ -4877,7 +4876,7 @@ mod tests {
     async fn an_error_reply_is_a_tool_error_with_its_failure_and_is_recorded_as_failed() {
         let (builder, _) = record_builder();
         let server = builder
-            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
+            .with_tool("front_camera.set_brightness", async |_call: ToolCall| {
                 Err(ToolCallError::Failed(failure(
                     "sensor_saturated",
                     "the sensor is saturated at this gain",
@@ -4914,7 +4913,7 @@ mod tests {
     async fn a_failed_call_with_no_kind_is_a_readable_tool_error_recorded_without_a_kind() {
         let (builder, _) = record_builder();
         let server = builder
-            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
+            .with_tool("front_camera.set_brightness", async |_call: ToolCall| {
                 Err(ToolCallError::Error(
                     "the provider of `set_brightness` gave the failure kind `melted`, which \
                      is neither a kind of peppy nor a kind of its contract that the member lists"
@@ -4978,7 +4977,7 @@ mod tests {
         // A provider that cannot be reached is a refusal too.
         let (builder, _) = record_builder();
         let server = builder
-            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
+            .with_tool("front_camera.set_brightness", async |_call: ToolCall| {
                 Err(ToolCallError::Unavailable("no producer bound".to_string()))
             })
             .build()
@@ -5080,7 +5079,7 @@ mod tests {
         let server = builder
             .with_task(
                 "recorder.resume_session",
-                |_call: ToolCall, context: ActionContext| async move {
+                async |_call: ToolCall, context: ActionContext| {
                     context.cancel_requested().await;
                     Err(ActionExit::Cancelled(CancelledGoal {
                         result: cancelled_resume(),

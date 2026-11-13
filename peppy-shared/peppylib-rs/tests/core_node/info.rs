@@ -16,7 +16,7 @@ async fn spawn_stub_listener(server: MessengerHandle, response: InfoResponse) {
 
     tokio::spawn(async move {
         endpoint
-            .handle_next_request(|request| async move {
+            .handle_next_request(async |request| {
                 let payload = request.message().payload();
                 let _inbound = InfoRequest::decode(payload.as_ref()).expect("decode InfoRequest");
                 Ok(response.encode().expect("encode InfoResponse"))

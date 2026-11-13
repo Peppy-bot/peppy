@@ -217,7 +217,7 @@ impl PyServiceEndpoint {
             let handler = &handler;
             let mut endpoint = inner.lock().await;
             endpoint
-                .handle_requests(|context| async move {
+                .handle_requests(async |context| {
                     let answer = python_answer(handler, context)
                         .await
                         .unwrap_or_else(|| Err(shutting_down()))?;

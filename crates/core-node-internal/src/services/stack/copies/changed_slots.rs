@@ -393,7 +393,7 @@ pub(super) async fn deliver_sets(
             .or_default()
             .push(set);
     }
-    let failures: Vec<String> = join_all(by_host.into_iter().map(|(host, sets)| async move {
+    let failures: Vec<String> = join_all(by_host.into_iter().map(async |(host, sets)| {
         let failures = if host == ctx.bound_core_node {
             ctx.relationships.replace_sets(sets).await
         } else {

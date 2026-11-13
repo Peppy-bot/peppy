@@ -527,30 +527,27 @@ async fn force_stop_instances(
     let _ = node_stack
         .time()
         .timeout(deadline, async {
-            let sends = doomed
-                .iter()
-                .filter(|d| d.pid.is_some())
-                .map(|d| async move {
-                    let result = send_shutdown_signal(
-                        messenger,
-                        core_node_node,
-                        core_instance_id,
-                        &d.node_name,
-                        &d.node_tag,
-                        &d.instance_id,
-                        node_stack,
-                    )
-                    .await;
-                    if let Err(e) = &result {
-                        debug!(
-                            "Cooperative shutdown of node instance '{}' failed; \
+            let sends = doomed.iter().filter(|d| d.pid.is_some()).map(async |d| {
+                let result = send_shutdown_signal(
+                    messenger,
+                    core_node_node,
+                    core_instance_id,
+                    &d.node_name,
+                    &d.node_tag,
+                    &d.instance_id,
+                    node_stack,
+                )
+                .await;
+                if let Err(e) = &result {
+                    debug!(
+                        "Cooperative shutdown of node instance '{}' failed; \
                          trying container signal fallback before force-kill: {}",
-                            d.instance_id.as_str(),
-                            e
-                        );
-                    }
-                    (d, result)
-                });
+                        d.instance_id.as_str(),
+                        e
+                    );
+                }
+                (d, result)
+            });
             let no_shutdown: Vec<&DoomedInstance> = futures::future::join_all(sends)
                 .await
                 .into_iter()

@@ -1180,7 +1180,7 @@ async fn service_communication_poll_specific_instance_id() {
 
             let outcome = tokio::time::timeout(
                 service_wait_timeout,
-                service.handle_next_request(|_request| async {
+                service.handle_next_request(async |_request| {
                     Ok(Payload::from_static(b"unexpected response"))
                 }),
             )
@@ -1542,7 +1542,7 @@ async fn service_communication_poll_core_node_scoped() {
 
         tokio::spawn(async move {
             service
-                .handle_requests(|_request| async move { Ok(Payload::from_static(b"scoped")) })
+                .handle_requests(async |_request| Ok(Payload::from_static(b"scoped")))
                 .await
         })
     };
@@ -1778,7 +1778,7 @@ async fn service_communication_fails_service_timeouts() {
                 let call_count = Arc::clone(&call_count);
                 let handled = tokio::time::timeout(
                     service_op_timeout,
-                    service.handle_next_request(move |request| async move {
+                    service.handle_next_request(async move |request| {
                         assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                         assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                         call_count.fetch_add(1, Ordering::SeqCst);
@@ -1801,7 +1801,7 @@ async fn service_communication_fails_service_timeouts() {
                 let call_count = Arc::clone(&call_count);
                 let handled = tokio::time::timeout(
                     service_op_timeout,
-                    service.handle_next_request(move |request| async move {
+                    service.handle_next_request(async move |request| {
                         assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                         assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                         call_count.fetch_add(1, Ordering::SeqCst);
@@ -2066,7 +2066,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                 let call_count = Arc::clone(&call_count);
 
                 let handle = service
-                    .spawn_next_request_handler(move |request| async move {
+                    .spawn_next_request_handler(async move |request| {
                         assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                         call_count.fetch_add(1, Ordering::SeqCst);
                         Ok(request.message().payload())
@@ -2477,16 +2477,15 @@ async fn action_communication_with_instance_id_target() {
             let call_count_for_closure = Arc::clone(&call_count);
 
             // Create the goal handler future first (this sets up the subscription)
-            let goal_handler =
-                action
-                    .goal_service
-                    .handle_next_request(move |_request| async move {
-                        // This should never be reached
-                        call_count_for_closure.fetch_add(1, Ordering::SeqCst);
-                        Ok(super::actions::wrap_goal_accepted(
-                            expected_goal_response_payload.as_ref(),
-                        ))
-                    });
+            let goal_handler = action
+                .goal_service
+                .handle_next_request(async move |_request| {
+                    // This should never be reached
+                    call_count_for_closure.fetch_add(1, Ordering::SeqCst);
+                    Ok(super::actions::wrap_goal_accepted(
+                        expected_goal_response_payload.as_ref(),
+                    ))
+                });
 
             let handled_goal = tokio::time::timeout(Duration::from_secs(5), goal_handler).await;
 
@@ -2910,7 +2909,7 @@ async fn single_action_communication_multiple_polls() {
             let mut result_handlers = Vec::with_capacity(client_total);
             for _ in 0..client_total {
                 let handler = result_service
-                    .spawn_next_request_handler(move |request| async move {
+                    .spawn_next_request_handler(async move |request| {
                         // A result request carries the goal_id envelope with an empty body.
                         let request_payload = request.message().payload();
                         let (goal_id, body) = super::unwrap_goal_payload(request_payload.as_ref())
@@ -4175,8 +4174,8 @@ async fn pinned_calls_issue_zero_probes() {
             .await
             .expect("control service should start");
 
-            let handler = service
-                .handle_next_request(|_request| async move { Ok(Payload::from_static(b"ack")) });
+            let handler =
+                service.handle_next_request(async |_request| Ok(Payload::from_static(b"ack")));
 
             ctrl_ready_tx.send(()).unwrap();
             let handled = tokio::time::timeout(Duration::from_secs(10), handler)

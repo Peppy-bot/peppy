@@ -25,7 +25,7 @@ async fn spawn_clock_stub_listener(server: MessengerHandle, response: ClockRespo
 
     tokio::spawn(async move {
         endpoint
-            .handle_next_request(|request| async move {
+            .handle_next_request(async |request| {
                 let payload = request.message().payload();
                 let _inbound = core_node_api::encoding::ClockRequest::decode(payload.as_ref())
                     .expect("decode ClockRequest");

@@ -222,7 +222,7 @@ fn drive_paused(mesh: &Mesh, task: PreparedTask, surface: Arc<ScriptedSurface>) 
     PausedRuntime::spawn(
         mesh.bridge_messenger.clone(),
         bridge_module,
-        move || async move {
+        async move || {
             drive_goal(
                 &task,
                 &messenger,

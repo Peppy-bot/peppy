@@ -20,7 +20,7 @@ use tokio::task::JoinHandle;
 fn answer_next_request(mut endpoint: ServiceEndpoint, response: Payload) -> JoinHandle<()> {
     tokio::spawn(async move {
         endpoint
-            .handle_next_request(|_request| async move { Ok(response) })
+            .handle_next_request(async |_request| Ok(response))
             .await
             .expect("the endpoint answers its request");
     })
@@ -97,11 +97,11 @@ async fn a_failure_answer_reaches_the_caller_with_its_kind_and_message() {
     let answer = expected.clone();
     let handler = tokio::spawn(async move {
         service
-            .handle_next_request(|_request| async move { Err(answer) })
+            .handle_next_request(async |_request| Err(answer))
             .await
             .expect("the endpoint answers its first request");
         service
-            .handle_next_request(|request| async move { Ok(request.message().payload()) })
+            .handle_next_request(async |request| Ok(request.message().payload()))
             .await
             .expect("the endpoint answers its second request");
     });
@@ -175,7 +175,7 @@ async fn an_endpoint_that_handles_its_requests_answers_calls_with_no_deadline_ba
     .expect("listen should succeed");
     let serving = tokio::spawn(async move {
         endpoint
-            .handle_requests(|request| async move { Ok(request.message().payload()) })
+            .handle_requests(async |request| Ok(request.message().payload()))
             .await
     });
     let producer = ProducerRef::new(core_node, instance_id);

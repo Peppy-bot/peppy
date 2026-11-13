@@ -265,7 +265,7 @@ async fn daemon_runner_succeed() {
 
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<f64>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|parameters: Parameters, _node_runner| async move {
+        NodeBuilder::new().run(async |parameters: Parameters, _node_runner| {
             let _ = setup_tx.send(parameters.frequency_hz);
             Ok(())
         })
@@ -379,7 +379,7 @@ async fn standalone_runner_announces_declared_endpoints_during_setup_only() {
         NodeBuilder::new()
             .with_config_path(&peppy_config_path)
             .standalone(standalone_config)
-            .run(|_parameters: Parameters, node_runner| async move {
+            .run(async |_parameters: Parameters, node_runner| {
                 node_runner
                     .announce_endpoint("panel", binding("http", "0.0.0.0:8765", ""))
                     .expect("a declared label is accepted");
@@ -468,7 +468,7 @@ async fn standalone_runner_fails_when_a_declared_endpoint_is_not_announced() {
         NodeBuilder::new()
             .with_config_path(&peppy_config_path)
             .standalone(standalone_config)
-            .run(|_parameters: Parameters, node_runner| async move {
+            .run(async |_parameters: Parameters, node_runner| {
                 node_runner
                     .announce_endpoint("panel", binding("http", "0.0.0.0:8765", ""))
                     .expect("a declared label is accepted");
@@ -528,7 +528,7 @@ async fn daemon_runner_offers_node_endpoints_for_a_manifest_that_declares_them()
     let stack = start_daemon_stack(ENDPOINTS_PEPPY_CONFIG, None).await;
 
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             node_runner
                 .announce_endpoint("panel", binding("http", "0.0.0.0:8765", ""))
                 .expect("declared");
@@ -607,7 +607,7 @@ async fn daemon_runner_offers_no_node_endpoints_for_a_manifest_without_them() {
     let stack = start_daemon_stack(TEST_NODE_PEPPY_CONFIG, None).await;
 
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, _node_runner| async move { Ok(()) })
+        NodeBuilder::new().run(async |_parameters: Parameters, _node_runner| Ok(()))
     });
 
     let messenger = stack.connect_control_messenger().await;
@@ -672,7 +672,7 @@ async fn standalone_runner_succeed() {
         NodeBuilder::new()
             .with_config_path(&peppy_config_path)
             .standalone(standalone_config)
-            .run(|parameters: Parameters, node_runner| async move {
+            .run(async |parameters: Parameters, node_runner| {
                 assert_eq!(parameters.frequency_hz, TEST_FREQUENCY_HZ);
                 let _ = setup_tx.send(node_runner.cancellation_token().clone());
                 Ok(())
@@ -742,7 +742,7 @@ async fn node_ready_but_not_healthy() {
     let (setup_started_tx, setup_started_rx) = tokio::sync::oneshot::channel::<()>();
     let (setup_continue_tx, setup_continue_rx) = tokio::sync::oneshot::channel::<()>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, _node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, _node_runner| {
             let _ = setup_started_tx.send(());
             let _ = setup_continue_rx.await;
             Ok(())
@@ -854,7 +854,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
 
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<CancellationToken>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             let _ = setup_tx.send(node_runner.cancellation_token().clone());
             Ok(())
         })
@@ -912,7 +912,7 @@ async fn daemon_shutdown_during_setup_cancels_token_and_exits() {
 
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<CancellationToken>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             let _ = setup_tx.send(node_runner.cancellation_token().clone());
             // Block setup forever: the shutdown must interrupt it, not wait
             // for it to complete.
@@ -1001,7 +1001,7 @@ async fn node_runner_exposes_messenger_and_metadata() {
         NodeBuilder::new()
             .with_config_path(&peppy_config_path)
             .standalone(standalone_config)
-            .run(|_parameters: Parameters, node_runner| async move {
+            .run(async |_parameters: Parameters, node_runner| {
                 let _ = setup_tx.send(RunnerMetadata {
                     bound_core_node: node_runner.processor().bound_core_node().to_string(),
                     bound_instance_id: node_runner.processor().bound_instance_id().to_string(),
@@ -1073,7 +1073,7 @@ async fn daemon_shutdown_awaits_hooks_lifo_before_exit() {
     let order_second = std::sync::Arc::clone(&order);
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<()>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             node_runner.on_shutdown(async move {
                 order_first.lock().expect("order lock").push("first".into());
             });
@@ -1122,7 +1122,7 @@ async fn daemon_shutdown_during_setup_runs_registered_hooks() {
     let (hook_tx, hook_rx) = tokio::sync::oneshot::channel::<()>();
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<()>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             node_runner.on_shutdown(async move {
                 let _ = hook_tx.send(());
             });
@@ -1165,7 +1165,7 @@ async fn daemon_shutdown_hooks_are_bounded_by_grace_window() {
     let order_stuck = std::sync::Arc::clone(&order);
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<()>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             // LIFO: registered first, so it only runs after the stuck hook
             // below, which the grace window never lets finish.
             node_runner.on_shutdown(async move {
@@ -1218,7 +1218,7 @@ async fn daemon_sigint_runs_hooks_and_exits() {
     let (hook_tx, hook_rx) = tokio::sync::oneshot::channel::<()>();
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<()>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             node_runner.on_shutdown(async move {
                 let _ = hook_tx.send(());
             });
@@ -1278,7 +1278,7 @@ async fn standalone_cancel_awaits_hooks_before_exit() {
         NodeBuilder::new()
             .with_config_path(&peppy_config_path)
             .standalone(standalone_config)
-            .run(|_parameters: Parameters, node_runner| async move {
+            .run(async |_parameters: Parameters, node_runner| {
                 node_runner.on_shutdown(async move {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     let _ = hook_tx.send(());
@@ -1517,7 +1517,7 @@ async fn daemon_node_reads_the_setup_budget_of_its_launch_config() {
 
     let (budget_tx, budget_rx) = tokio::sync::oneshot::channel::<Duration>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             let _ = budget_tx.send(node_runner.setup_timeout());
             Ok(())
         })
@@ -1549,7 +1549,7 @@ async fn a_node_that_answers_ready_answers_the_shutdown_request() {
 
     let (hook_tx, hook_rx) = tokio::sync::oneshot::channel::<()>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             node_runner.on_shutdown(async move {
                 let _ = hook_tx.send(());
             });

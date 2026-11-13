@@ -451,7 +451,7 @@ fn with_camera_tools(
             let info = info.clone();
             async move { Ok(info) }
         })
-        .with_tool("front_camera.set_brightness", |call: ToolCall| async move {
+        .with_tool("front_camera.set_brightness", async |call: ToolCall| {
             let value = call.input["value"].as_i64().expect("validated integer");
             if value == 13 {
                 return Err(peppy_mcp_runtime::ToolCallError::Failed(reserved_value()));

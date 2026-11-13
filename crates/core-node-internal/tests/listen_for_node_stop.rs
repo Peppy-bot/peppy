@@ -625,7 +625,7 @@ async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
         .expect("local node_stop listener should start");
         AbortOnDrop(peppylib::runtime::spawn(async move {
             endpoint
-                .handle_requests(|_context| async move {
+                .handle_requests(async |_context| {
                     Ok(NodeStopResponse::graceful()
                         .encode()
                         .expect("a node_stop response encodes"))

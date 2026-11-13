@@ -25,7 +25,7 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
 
     tokio::spawn(async move {
         endpoint
-            .handle_next_request(|request| async move {
+            .handle_next_request(async |request| {
                 let payload = request.message().payload();
                 let inbound =
                     StackListRequest::decode(payload.as_ref()).expect("decode StackListRequest");

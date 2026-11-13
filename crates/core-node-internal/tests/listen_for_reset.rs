@@ -406,7 +406,7 @@ fn setup_budget_test_node() {
     .expect("the test node's manifest parses");
     peppylib::runtime::NodeBuilder::<serde_json::Value>::new()
         .with_manifest(manifest)
-        .run(move |_parameters, node_runner| async move {
+        .run(async move |_parameters, node_runner| {
             node_runner.on_shutdown(async move {
                 std::fs::write(&marker, SHUTDOWN_HOOK_MARK).expect("write the marker");
             });

@@ -1037,7 +1037,7 @@ mod tests {
                     .await
                     .expect("the first pin declares");
             let attempts = || *declarations.attempts.lock().unwrap();
-            let settle = || async {
+            let settle = async || {
                 for _ in 0..16 {
                     tokio::task::yield_now().await;
                 }

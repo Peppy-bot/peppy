@@ -1511,7 +1511,7 @@ mod unread_feedback {
                 .expect("the service listens");
         let echo_task = tokio::spawn(async move {
             while let Ok(true) = echo
-                .handle_next_request(|request| async move { Ok(request.message().payload()) })
+                .handle_next_request(async |request| Ok(request.message().payload()))
                 .await
             {}
         });
