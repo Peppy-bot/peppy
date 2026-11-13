@@ -513,7 +513,7 @@ pub struct GoalHandle {
 }
 
 /// How a goal ended, as reported by the producer's result service.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoalOutcome {
     /// The goal ran to completion, a success; the value is the decoded
     /// result body, an empty object for an action without a result format.

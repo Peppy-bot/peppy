@@ -870,7 +870,7 @@ async fn a_changed_tree_rebuilds_and_prunes_the_previous_artifact() {
     assert_eq!(build_count(&counter), 2);
     assert_eq!(
         h.sensor_artifacts(),
-        vec![second.clone()],
+        vec![second],
         "storage keeps one artifact per node identity"
     );
 }

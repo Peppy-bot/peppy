@@ -756,7 +756,7 @@ mod tests {
             variable: variable("PLANNER_KEY"),
             list_origin: None,
         };
-        assert!(VariablesGivenTwoValues::refuse(Vec::new()).is_ok());
+        VariablesGivenTwoValues::refuse(Vec::new()).unwrap();
         assert_eq!(
             VariablesGivenTwoValues::refuse(vec![one.clone()])
                 .expect_err("one")
@@ -851,7 +851,7 @@ mod tests {
              that launches. A value must not be empty, and must hold letters, digits and \
              `_ - . / : , = @ + %` only"
         );
-        assert!(needs.check(VariableChange::Launch, |_| true).is_ok());
+        needs.check(VariableChange::Launch, |_| true).unwrap();
     }
 
     /// The refusal of several variables lists each one, with its own

@@ -540,7 +540,7 @@ mod tests {
             error.to_string(),
             format!("Launch was cancelled by a stack reset. Log file: {LOG_PATH}")
         );
-        assert!(end_of(StackGoalOutcome::Completed(Default::default()), false).is_ok());
+        end_of(StackGoalOutcome::Completed(Default::default()), false).unwrap();
     }
 
     /// A command that fell behind the output of its stack goal says that it

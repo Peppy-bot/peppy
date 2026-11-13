@@ -21,7 +21,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// The field when present; `None` when absent. Canonical JSON omits
 /// optional fields instead of writing `null`.
 pub fn optional<'a>(input: &'a Value, name: &str) -> Option<&'a Value> {
-    input.as_object().and_then(|object| object.get(name))
+    let object = input.as_object()?;
+    object.get(name)
 }
 
 /// The field, or an error naming it.
@@ -366,16 +367,16 @@ mod tests {
             value_bytes(&json!(rendered), "data").expect("decodes"),
             bytes
         );
-        assert!(value_bytes(&json!("not base64!"), "data").is_err());
+        value_bytes(&json!("not base64!"), "data").unwrap_err();
     }
 
     #[test]
     fn ranged_integer_accessors_enforce_their_ranges() {
         assert_eq!(value_u8(&json!(255), "n").expect("fits"), 255);
-        assert!(value_u8(&json!(256), "n").is_err());
+        value_u8(&json!(256), "n").unwrap_err();
         assert_eq!(value_i8(&json!(-128), "n").expect("fits"), -128);
-        assert!(value_i8(&json!(-129), "n").is_err());
-        assert!(value_u16(&json!(-1), "n").is_err());
+        value_i8(&json!(-129), "n").unwrap_err();
+        value_u16(&json!(-1), "n").unwrap_err();
     }
 
     #[test]
@@ -393,8 +394,8 @@ mod tests {
     #[test]
     fn non_finite_floats_have_no_json_rendering() {
         assert_eq!(float_to_json(1.5).expect("finite"), json!(1.5));
-        assert!(float_to_json(f64::NAN).is_err());
-        assert!(float_to_json(f64::INFINITY).is_err());
+        float_to_json(f64::NAN).unwrap_err();
+        float_to_json(f64::INFINITY).unwrap_err();
     }
 
     #[test]

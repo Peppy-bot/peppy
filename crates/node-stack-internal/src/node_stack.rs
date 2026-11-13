@@ -860,10 +860,10 @@ impl NodeStackInner {
             return Err(Error::PairingMismatch {
                 a: a.to_string(),
                 name_a: dep_a.name.clone(),
-                tag_a: dep_a.tag.clone(),
+                tag_a: dep_a.tag,
                 b: b.to_string(),
                 name_b: dep_b.name.clone(),
-                tag_b: dep_b.tag.clone(),
+                tag_b: dep_b.tag,
             });
         }
         if dep_a.role == dep_b.role {
@@ -872,7 +872,7 @@ impl NodeStackInner {
                 b: b.to_string(),
                 role: dep_a.role.clone(),
                 name: dep_a.name.clone(),
-                tag: dep_a.tag.clone(),
+                tag: dep_a.tag,
             });
         }
         if let (Some(sha_a), Some(sha_b)) = (&dep_a.sha256, &dep_b.sha256)
@@ -918,12 +918,12 @@ impl NodeStackInner {
             a: PairEndpoint {
                 slot: a.clone(),
                 role: dep_a.role.clone(),
-                copy: dep_a.copy.clone(),
+                copy: dep_a.copy,
             },
             b: PairEndpoint {
                 slot: b.clone(),
                 role: dep_b.role.clone(),
-                copy: dep_b.copy.clone(),
+                copy: dep_b.copy,
             },
         };
         self.pairing_registry.insert(pairing.clone());

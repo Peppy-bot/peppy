@@ -707,7 +707,7 @@ mod tests {
                   commit: "{}", path: "camera/peppy.json5" }}"#,
             "d".repeat(40)
         ));
-        assert!(validate_deployment_pins(&[raw]).is_ok());
+        validate_deployment_pins(&[raw]).unwrap();
     }
 
     /// A pin that arrived over the wire carrying a filesystem origin names a
@@ -735,7 +735,7 @@ mod tests {
                       origin: {{ source_type: "git", repo_url: "https://example.com/hub",
                       commit: "{commit}", path: "contracts/rgb_camera.json5" }} }}] }}"#
         );
-        assert!(validate_deployment_pins(&[raw]).is_ok());
+        validate_deployment_pins(&[raw]).unwrap();
     }
 
     /// The structural rules fire at decode: a traversal path is refused

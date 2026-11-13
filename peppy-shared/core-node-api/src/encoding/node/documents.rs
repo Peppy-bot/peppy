@@ -257,6 +257,6 @@ mod tests {
     #[test]
     fn a_request_with_no_instance_id_is_refused() {
         let payload = InstanceDocumentsRequest::new("").encode().unwrap();
-        assert!(InstanceDocumentsRequest::decode(payload.as_ref()).is_err());
+        InstanceDocumentsRequest::decode(payload.as_ref()).unwrap_err();
     }
 }

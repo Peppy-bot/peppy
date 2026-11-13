@@ -980,7 +980,7 @@ mod tests {
             PokeOutcome::Pinned,
             PokeOutcome::DaemonNotRunning,
         ] {
-            assert!(report_enroll(outcome).is_ok());
+            report_enroll(outcome).unwrap();
         }
     }
 

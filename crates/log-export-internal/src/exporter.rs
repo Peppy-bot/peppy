@@ -158,8 +158,10 @@ impl Queue {
         let cost = cost(&record);
         // A stack record takes its room of the reserve once the queue is full.
         let reserve = matches!(record.identity.kind, LogKind::Stack).then_some(&self.stack);
-        let reservation = Budget::reserve(&self.lines, cost)
-            .or_else(|| reserve.and_then(|reserve| Budget::reserve(reserve, cost)));
+        let reservation = Budget::reserve(&self.lines, cost).or_else(|| {
+            let reserve = reserve?;
+            Budget::reserve(reserve, cost)
+        });
         let Some(reservation) = reservation else {
             self.discarded.fetch_add(1, Ordering::Relaxed);
             return;

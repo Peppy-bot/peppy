@@ -152,14 +152,8 @@ mod tests {
             "*/daemoncore/*/daemoninst/topic/node/daemoncore/core/_/clock",
         );
 
-        let sender = TopicWireSender::new(
-            "daemoncore",
-            "daemoninst",
-            target.clone(),
-            Some("_"),
-            "clock",
-        )
-        .unwrap();
+        let sender =
+            TopicWireSender::new("daemoncore", "daemoninst", target, Some("_"), "clock").unwrap();
         assert_eq!(rendered, ZenohWireFormat::topic_publish(&sender));
     }
 
@@ -182,8 +176,7 @@ mod tests {
         );
 
         let receiver =
-            ActionWireReceiver::new("daemoncore", "daemoninst", target.clone(), "stack_launch")
-                .unwrap();
+            ActionWireReceiver::new("daemoncore", "daemoninst", target, "stack_launch").unwrap();
         assert_eq!(
             rendered,
             ZenohWireFormat::action_feedback_publish(&receiver, "_", "goal-123"),

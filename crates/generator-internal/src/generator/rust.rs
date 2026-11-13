@@ -579,7 +579,7 @@ impl RustGenerator {
             &format_artifacts,
             &params,
         )?;
-        let reader_type = encoding.reader_type.clone();
+        let reader_type = encoding.reader_type;
 
         let helper_fn_ident = Ident::new("deserialize_feedback_payload", Span::call_site());
 
@@ -1004,7 +1004,7 @@ impl LanguageGenerator for RustGenerator {
 
         let mut module_label = service.name.trim().to_string();
         if sanitize_component(&module_label).is_empty() {
-            module_label = fn_name_str.clone();
+            module_label = fn_name_str;
         }
 
         let tokens: TokenStream = quote! {

@@ -343,7 +343,7 @@ mod tests {
         fs::create_dir_all(&peppy_dir).unwrap();
         fs::write(peppy_dir.join("git.hash"), "abc123\n").unwrap();
 
-        assert!(verify_git_hash(dir.path(), "abc123").is_ok());
+        verify_git_hash(dir.path(), "abc123").unwrap();
     }
 
     #[test]

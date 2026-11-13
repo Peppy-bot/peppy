@@ -834,6 +834,6 @@ mod tests {
     #[test]
     fn decoding_refuses_bytes_that_are_not_a_framed_message() {
         let codec = codec(r#"{ count: "u32" }"#);
-        assert!(codec.decode(&[1, 2, 3]).is_err());
+        codec.decode(&[1, 2, 3]).unwrap_err();
     }
 }

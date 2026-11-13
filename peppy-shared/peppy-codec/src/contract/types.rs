@@ -313,7 +313,7 @@ impl From<PeppyContract> for ContractDocument {
 /// manifest: `depends_on` is rejected because a contract is passive. The
 /// description says what the document is for; `labels` are allowed as
 /// descriptive metadata to help discovery and filtering.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub name: Name,
@@ -750,7 +750,7 @@ mod tests {
             interfaces: {},
             execution: { language: "rust" }
         }"#;
-        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
+        serde_json5::from_str::<PeppyContract>(json5).unwrap_err();
     }
 
     #[test]
@@ -760,7 +760,7 @@ mod tests {
             manifest: { name: "x", tag: "v1", description: ["A test contract."] },
             interfaces: { mystery: [] }
         }"#;
-        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
+        serde_json5::from_str::<PeppyContract>(json5).unwrap_err();
     }
 
     /// Contract manifests intentionally drop `depends_on`: a contract
@@ -777,7 +777,7 @@ mod tests {
             },
             interfaces: {}
         }"#;
-        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
+        serde_json5::from_str::<PeppyContract>(json5).unwrap_err();
     }
 
     /// `labels` are descriptive metadata on the manifest, accepted so
@@ -810,7 +810,7 @@ mod tests {
             manifest: { name: "bad/name", tag: "v1", description: ["A test contract."] },
             interfaces: {}
         }"#;
-        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
+        serde_json5::from_str::<PeppyContract>(json5).unwrap_err();
     }
 
     /// The manifest tag must satisfy the same repo-ID rules as node

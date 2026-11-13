@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn info_request_decode_rejects_malformed() {
-        assert!(InfoRequest::decode(b"not a capnp message").is_err());
+        InfoRequest::decode(b"not a capnp message").unwrap_err();
     }
 
     #[test]
@@ -244,6 +244,6 @@ mod tests {
 
     #[test]
     fn info_response_decode_rejects_malformed() {
-        assert!(InfoResponse::decode(b"not a capnp message").is_err());
+        InfoResponse::decode(b"not a capnp message").unwrap_err();
     }
 }

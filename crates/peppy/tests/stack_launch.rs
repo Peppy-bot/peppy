@@ -3534,7 +3534,7 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
 
     let msg = launch_with(
         vec!["mujoco".to_owned(), "robot=real".to_owned()],
-        composed_launcher.clone(),
+        composed_launcher,
     )
     .expect_err("two options on one axis must be refused")
     .to_string();

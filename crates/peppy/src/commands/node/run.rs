@@ -1526,7 +1526,7 @@ mod tests {
         );
 
         // Past budget: same error path.
-        assert!(remaining_max_secs(30, 45, "run").is_err());
+        remaining_max_secs(30, 45, "run").unwrap_err();
     }
 
     fn clock_domain(name: &str, core_node: &str, incarnation: u64) -> ClockDomainId {
@@ -1592,7 +1592,7 @@ mod tests {
                 .as_str(),
             "robot_sim"
         );
-        assert!(parse_clock_domain_name("").is_err());
+        parse_clock_domain_name("").unwrap_err();
     }
 
     /// `wall` binds without asking any daemon, and qualifying it by a machine

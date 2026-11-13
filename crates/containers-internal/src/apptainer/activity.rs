@@ -270,9 +270,8 @@ impl GuestActivityProbe {
 pub(super) fn parse_guest_activity(output: &str) -> BuildActivity {
     let mut lines = output.lines();
     let mut next_number = || {
-        lines
-            .next()
-            .and_then(|line| line.trim().parse::<u64>().ok())
+        let line = lines.next()?;
+        line.trim().parse::<u64>().ok()
     };
     let bytes_on_disk = next_number().unwrap_or(0);
     let ticks_per_second = next_number()

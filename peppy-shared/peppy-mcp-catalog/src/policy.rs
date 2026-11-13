@@ -65,7 +65,7 @@ pub enum OversizePolicy {
 /// under, the cap on the size of the content, and what is done when the
 /// cap is exceeded. A topic's snapshot and a service's answer take them
 /// alike, and the rules the three follow together are checked here once.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContentPolicies<'a> {
     pub representation: Option<&'a ImageRepresentation>,
     pub max_result_bytes: Option<NonZeroU64>,
@@ -103,7 +103,7 @@ impl ContentPolicies<'_> {
 /// the greyscale picture its `depth_range` spans; a `png16` representation
 /// keeps 16-bit single-channel frames losslessly; `raw` publishes the frame
 /// bytes untouched.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(try_from = "RawImageRepresentation")]
 pub struct ImageRepresentation {
     pub image: ImageCodec,

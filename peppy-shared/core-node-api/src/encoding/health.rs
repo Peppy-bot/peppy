@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn health_request_decode_rejects_malformed() {
-        assert!(HealthRequest::decode(b"not a capnp message").is_err());
+        HealthRequest::decode(b"not a capnp message").unwrap_err();
     }
 
     #[test]
@@ -128,6 +128,6 @@ mod tests {
 
     #[test]
     fn health_response_decode_rejects_malformed() {
-        assert!(HealthResponse::decode(b"not a capnp message").is_err());
+        HealthResponse::decode(b"not a capnp message").unwrap_err();
     }
 }

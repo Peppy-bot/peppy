@@ -1432,7 +1432,6 @@ fn node_add_build_force_supersedes_inflight_build() {
     // `peppy node build` uses.
     let first_build = {
         let messenger = serve.command_line_handle();
-        let core_node_name = core_node_name.clone();
         let node_name = node_name.to_string();
         rt.spawn(async move {
             peppy::commands::node::build_node_async(

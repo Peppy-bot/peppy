@@ -590,7 +590,7 @@ mod tests {
             pairing_name: daemon_config::repository::ItemName::parse(name).unwrap(),
             tag: daemon_config::repository::ItemTag::parse(tag).unwrap(),
             sha256: daemon_config::repository::ManifestFingerprint::of_bytes(body.as_bytes()),
-            origin: repo_cache::EntryOrigin::Fs { path: path.clone() },
+            origin: repo_cache::EntryOrigin::Fs { path },
             repo_id: 0,
             descriptions: crate::services::repo::cache::test_support::descriptions("test pairing"),
         }

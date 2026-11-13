@@ -391,8 +391,8 @@ mod tests {
 
     #[test]
     fn a_name_holds_at_most_64_bytes() {
-        assert!(FailureKindName::parse(&"k".repeat(64)).is_ok());
-        assert!(FailureKindName::parse(&"k".repeat(65)).is_err());
+        FailureKindName::parse(&"k".repeat(64)).unwrap();
+        FailureKindName::parse(&"k".repeat(65)).unwrap_err();
     }
 
     #[test]

@@ -1025,7 +1025,7 @@ mod tests {
                 run_cmd: ["./bin"],
             },
         }"#;
-        assert!(NodeConfigParser::from_content(json5).is_err());
+        NodeConfigParser::from_content(json5).unwrap_err();
     }
 
     #[test]
@@ -1049,7 +1049,7 @@ mod tests {
                 run_cmd: ["./bin"],
             },
         }"#;
-        assert!(NodeConfigParser::from_content(json5).is_err());
+        NodeConfigParser::from_content(json5).unwrap_err();
     }
 
     #[test]

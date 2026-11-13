@@ -206,9 +206,8 @@ pub(crate) fn selected_project_in<'a>(
     selection: Option<&'a PlatformSelection>,
     workspace: &Workspace,
 ) -> Option<&'a Named> {
-    selection
-        .filter(|selection| selection.workspace.id == workspace.id)
-        .and_then(|selection| selection.project.as_ref())
+    let selection = selection.filter(|selection| selection.workspace.id == workspace.id)?;
+    selection.project.as_ref()
 }
 
 /// What named the project of a [`Target`].
@@ -541,7 +540,7 @@ mod tests {
         );
         let workspace_only = PlatformSelection {
             project: None,
-            ..selection.clone()
+            ..selection
         };
         assert_eq!(
             decide_target(None, None, Some(&workspace_only), Some(&document)),

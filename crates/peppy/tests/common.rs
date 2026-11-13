@@ -227,7 +227,10 @@ impl ZenohDaemon {
             let port = free_port();
             let (mut guard, logs) =
                 spawn_daemon_with_env(home.path(), MessagingEngine::Zenoh { port }, envs);
-            if let Boot::Ready = wait_for_boot(&mut guard, &logs, SERVE_INITIALIZED) {
+            if matches!(
+                wait_for_boot(&mut guard, &logs, SERVE_INITIALIZED),
+                Boot::Ready
+            ) {
                 return Self {
                     home,
                     port,

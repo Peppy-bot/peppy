@@ -642,7 +642,7 @@ fn flat_launchers_keep_their_selection_errors() {
     let prepared = load(
         r#"{peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: []}"#,
     );
-    assert!(prepared.launch(&[], &[]).is_ok());
+    prepared.launch(&[], &[]).unwrap();
     assert_matches!(
         prepared.launch(&words(&["unknown"]), &[]),
         Err(CompositionError::WithOnFlatLauncher)

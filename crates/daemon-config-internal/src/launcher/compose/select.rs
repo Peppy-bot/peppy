@@ -469,7 +469,7 @@ impl Chosen {
         }
         self.by_axis
             .entry(axis.to_owned())
-            .or_insert((option.to_owned(), word));
+            .or_insert_with(|| (option.to_owned(), word));
         Ok(())
     }
 

@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn parse_accepts_uuid_and_local() {
         assert!(Namespace::parse(UUID).is_ok(), "hyphenated UUID must parse");
-        assert!(Namespace::parse(LOCAL_NAMESPACE).is_ok());
+        Namespace::parse(LOCAL_NAMESPACE).unwrap();
     }
 
     #[test]

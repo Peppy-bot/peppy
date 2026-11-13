@@ -366,8 +366,8 @@ async fn published_node(
                 .to_owned(),
         ));
     }
-    let name = ItemName::parse(&node.node_name).map_err(|e| refuse(e.clone()))?;
-    let tag = ItemTag::parse(&node.node_tag).map_err(|e| refuse(e.clone()))?;
+    let name = ItemName::parse(&node.node_name).map_err(&refuse)?;
+    let tag = ItemTag::parse(&node.node_tag).map_err(refuse)?;
     Ok(PublishedItem {
         name,
         tag: Some(tag),

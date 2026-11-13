@@ -1364,8 +1364,8 @@ mod tests {
             ("arm".to_string(), vacant_reason("set a=b upstream"))
         );
         // SLOT must be a wire segment.
-        assert!(parse_vacant_link("_=why").is_err());
-        assert!(parse_vacant_link("a/b=why").is_err());
+        parse_vacant_link("_=why").unwrap_err();
+        parse_vacant_link("a/b=why").unwrap_err();
         // A vacancy without a reason says only "not this one".
         assert!(
             parse_vacant_link("arm=")

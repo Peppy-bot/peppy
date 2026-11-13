@@ -260,7 +260,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
         std::fs::write(&path, r"{ session: null }").expect("write the file");
 
-        assert!(load(&path).is_err());
+        load(&path).unwrap_err();
     }
 
     #[cfg(unix)]

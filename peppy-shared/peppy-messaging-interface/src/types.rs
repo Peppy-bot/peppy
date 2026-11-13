@@ -1492,7 +1492,7 @@ mod tests {
 
         assert_matches!(payload.as_bytes(), Cow::Borrowed(_));
         assert_eq!(buffer_address(&payload), wire_address);
-        assert_eq!(buffer_address(&payload.clone()), wire_address);
+        assert_eq!(buffer_address(&payload), wire_address);
         // On this arm the owned accessor clones the `Bytes` handle, so it is a
         // refcount bump too. That is why the mock adapter hides the cost the
         // zenoh arm pays, which
@@ -1511,7 +1511,7 @@ mod tests {
         let wire_address = buffer_address(&payload);
 
         assert_matches!(payload.as_bytes(), Cow::Borrowed(_));
-        assert_eq!(buffer_address(&payload.clone()), wire_address);
+        assert_eq!(buffer_address(&payload), wire_address);
         assert_ne!(payload.to_bytes().as_ptr(), wire_address);
         assert_eq!(payload.to_bytes().as_ref(), payload.as_bytes().as_ref());
     }
@@ -1557,7 +1557,7 @@ mod tests {
             Payload::from_bytes(source),
         );
 
-        let cloned = message.clone();
+        let cloned = message;
         assert_eq!(buffer_address(cloned.payload()), wire_address);
     }
 

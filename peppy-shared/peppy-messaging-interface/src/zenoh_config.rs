@@ -1097,7 +1097,7 @@ mod tests {
             reconnect: false,
             gossip: true,
             tls: None,
-            namespace: Some(ns.clone()),
+            namespace: Some(ns),
             id: Some(test_router_id()),
         });
         assert!(

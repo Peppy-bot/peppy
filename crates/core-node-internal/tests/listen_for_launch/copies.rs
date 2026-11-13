@@ -395,9 +395,8 @@ async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
     let join = robot_goal("alpha", "simulated");
     let (result, ()) = tokio::join!(execute(&started, &join), async {
         let pid = poll_until(GOAL_TIMEOUT, "join build records its process", || {
-            fs::read_to_string(&pid_file)
-                .ok()
-                .and_then(|value| value.trim().parse::<u32>().ok())
+            let value = fs::read_to_string(&pid_file).ok()?;
+            value.trim().parse::<u32>().ok()
         })
         .await;
         let list = participant_request(&started, &StackListRequest::new()).await;
@@ -482,9 +481,8 @@ async fn a_cancelled_join_is_undone_and_ends_cancelled() {
 
     let handle = send_accepted_stack_goal(&started, &robot_goal("alpha", "simulated")).await;
     let pid = poll_until(GOAL_TIMEOUT, "join build records its process", || {
-        fs::read_to_string(&pid_file)
-            .ok()
-            .and_then(|value| value.trim().parse::<u32>().ok())
+        let value = fs::read_to_string(&pid_file).ok()?;
+        value.trim().parse::<u32>().ok()
     })
     .await;
     let end = cancel_and_follow_to_end(&started, handle, async {}).await;

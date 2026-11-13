@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn add_request_decode_rejects_malformed() {
-        assert!(RepoAddRequest::decode(b"not capnp").is_err());
+        RepoAddRequest::decode(b"not capnp").unwrap_err();
     }
 
     #[test]
@@ -507,6 +507,6 @@ mod tests {
 
     #[test]
     fn add_response_decode_rejects_malformed() {
-        assert!(RepoAddResponse::decode(b"not capnp").is_err());
+        RepoAddResponse::decode(b"not capnp").unwrap_err();
     }
 }

@@ -427,9 +427,9 @@ mod tests {
 
     #[test]
     fn sanitize_repo_path_rejects_empty_input() {
-        assert!(sanitize_repo_path("").is_err());
-        assert!(sanitize_repo_path("   ").is_err());
-        assert!(sanitize_repo_path("///").is_err());
+        sanitize_repo_path("").unwrap_err();
+        sanitize_repo_path("   ").unwrap_err();
+        sanitize_repo_path("///").unwrap_err();
     }
 
     #[rstest::rstest]

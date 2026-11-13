@@ -139,7 +139,7 @@ fn golden_schemas_judge_canonical_instances() {
         !all_primitives.is_valid(&Value::Object(missing)),
         "every non-optional field is required"
     );
-    let mut extra = full.clone();
+    let mut extra = full;
     extra["surprise"] = json!(1);
     assert!(!all_primitives.is_valid(&extra), "objects are closed");
 
@@ -223,7 +223,7 @@ fn golden_schemas_judge_canonical_instances() {
         !arrays.is_valid(&wrong_len),
         "a fixed byte length pins the exact base64 text length"
     );
-    let mut bad_pose = good.clone();
+    let mut bad_pose = good;
     bad_pose["poses"] = json!([{"joint_name": "elbow"}]);
     assert!(
         !arrays.is_valid(&bad_pose),

@@ -364,7 +364,7 @@ impl fmt::Display for RestartOrigin {
 
 /// The launcher's or the flag's say on an instance's policy; the daemon
 /// resolves it against the node's `peppy.json5`.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RestartRequest {
     #[default]
     Unset,
@@ -394,7 +394,7 @@ impl RestartRequest {
 }
 
 /// An instance's policy once every level has been consulted.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ResolvedRestart {
     pub declaration: RestartDeclaration,
     pub origin: RestartOrigin,
@@ -520,8 +520,8 @@ mod tests {
             ),
             "{err}"
         );
-        assert!(RestartDeclaration::new(RestartPolicy::Never, NonZeroU32::new(2)).is_err());
-        assert!(RestartDeclaration::new(RestartPolicy::Never, None).is_ok());
+        RestartDeclaration::new(RestartPolicy::Never, NonZeroU32::new(2)).unwrap_err();
+        RestartDeclaration::new(RestartPolicy::Never, None).unwrap();
     }
 
     #[test]
@@ -553,7 +553,7 @@ mod tests {
                 format!("\"{}\"", origin.as_str())
             );
         }
-        assert!("elsewhere".parse::<RestartOrigin>().is_err());
+        "elsewhere".parse::<RestartOrigin>().unwrap_err();
         assert_eq!(RestartOrigin::Node.describe(), "peppy.json5");
     }
 

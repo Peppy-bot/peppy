@@ -518,8 +518,10 @@ mod tests {
             Ok(json!({})),
             "an empty format carries no payload either"
         );
-        assert!(arguments(&["name=a"], &[]).build(None).is_err());
-        assert!(arguments(&[], &["blob=@/dev/null"]).build(None).is_err());
+        arguments(&["name=a"], &[]).build(None).unwrap_err();
+        arguments(&[], &["blob=@/dev/null"])
+            .build(None)
+            .unwrap_err();
     }
 
     /// An `--args` file that gives a field to a member with no message is
@@ -625,16 +627,16 @@ mod tests {
 
     #[test]
     fn the_flags_parse_their_syntax() {
-        assert!("name".parse::<FieldSetting>().is_err());
-        assert!("=x".parse::<FieldSetting>().is_err());
-        assert!("a..b=x".parse::<FieldSetting>().is_err());
+        "name".parse::<FieldSetting>().unwrap_err();
+        "=x".parse::<FieldSetting>().unwrap_err();
+        "a..b=x".parse::<FieldSetting>().unwrap_err();
         assert_eq!(
             "text=a=b".parse::<FieldSetting>().unwrap().value,
             "a=b",
             "the value runs from the first `=`"
         );
-        assert!("blob=/tmp/x".parse::<FieldFile>().is_err());
-        assert!("blob=@".parse::<FieldFile>().is_err());
+        "blob=/tmp/x".parse::<FieldFile>().unwrap_err();
+        "blob=@".parse::<FieldFile>().unwrap_err();
         assert_eq!(
             "blob=@/tmp/x".parse::<FieldFile>().unwrap().path,
             PathBuf::from("/tmp/x")

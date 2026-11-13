@@ -326,7 +326,7 @@ Pairing arm_link:v1 through slot `controller`, role `arm` (sha256: {pairing})
     /// reader closed the output once it had what it needed.
     #[test]
     fn an_output_that_its_reader_closes_ends_the_command_as_a_success() {
-        assert!(write_text(&mut ClosedPipe, "Instance arm_inst\n").is_ok());
+        write_text(&mut ClosedPipe, "Instance arm_inst\n").unwrap();
 
         let mut out = Vec::new();
         write_text(&mut out, "Instance arm_inst\n").expect("the text is written");

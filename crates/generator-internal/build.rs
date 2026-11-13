@@ -1061,7 +1061,7 @@ mod peppylib_build {
                 profile.tag(),
                 &target_dir,
             );
-            state.insert(host.clone(), host_state);
+            state.insert(host, host_state);
         } else {
             build_helpers::progress!("Skipping peppylib-py host native build (sources unchanged).");
         }

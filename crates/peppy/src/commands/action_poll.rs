@@ -771,16 +771,14 @@ mod tests {
         let base = tokio::time::Instant::now();
         let deadline = base + Duration::from_secs(100);
         let now = base + Duration::from_secs(1);
-        assert!(
-            check_timeouts(
-                now,
-                base,
-                Duration::from_secs(5),
-                deadline,
-                &timeouts(5, 100)
-            )
-            .is_ok()
-        );
+        check_timeouts(
+            now,
+            base,
+            Duration::from_secs(5),
+            deadline,
+            &timeouts(5, 100),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -788,16 +786,14 @@ mod tests {
         let base = tokio::time::Instant::now();
         let deadline = base + Duration::from_secs(100);
         let now = base + Duration::from_millis(4_999);
-        assert!(
-            check_timeouts(
-                now,
-                base,
-                Duration::from_secs(5),
-                deadline,
-                &timeouts(5, 100)
-            )
-            .is_ok()
-        );
+        check_timeouts(
+            now,
+            base,
+            Duration::from_secs(5),
+            deadline,
+            &timeouts(5, 100),
+        )
+        .unwrap();
     }
 
     #[test]

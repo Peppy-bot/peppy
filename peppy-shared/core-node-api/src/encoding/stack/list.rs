@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn request_decode_rejects_malformed() {
-        assert!(StackListRequest::decode(b"not capnp").is_err());
+        StackListRequest::decode(b"not capnp").unwrap_err();
     }
 
     #[test]
@@ -824,7 +824,7 @@ mod tests {
 
     #[test]
     fn response_decode_rejects_malformed() {
-        assert!(StackListResponse::decode(b"not capnp").is_err());
+        StackListResponse::decode(b"not capnp").unwrap_err();
     }
 
     #[test]

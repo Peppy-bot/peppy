@@ -288,10 +288,9 @@ fn derive_core_node_name() -> Name {
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| {
-            hostname::get().ok().and_then(|h| {
-                let s = h.to_string_lossy().into_owned();
-                if s.is_empty() { None } else { Some(s) }
-            })
+            let h = hostname::get().ok()?;
+            let s = h.to_string_lossy().into_owned();
+            if s.is_empty() { None } else { Some(s) }
         });
 
     if let Some(src) = seed_source {
@@ -1109,7 +1108,7 @@ impl CoreNode {
             core_node_name,
             clock_source,
             datastore: Arc::new(datastore::Datastore::new(
-                Arc::clone(&self.node_stack) as _,
+                Arc::clone(&self.node_stack) as Arc<dyn datastore::InstanceLiveness>,
                 core_node_name,
             )),
             relationships,

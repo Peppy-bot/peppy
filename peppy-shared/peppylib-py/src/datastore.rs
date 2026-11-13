@@ -190,7 +190,7 @@ impl PyDatastoreRemoveResponse {
 /// tags means an arbitrary value may come back); it compares equal to the
 /// `peppylib.datastore.Encoding` members.
 #[pyclass(name = "StoredValue", from_py_object)]
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PyStoredValue {
     inner: StoredValue,
 }

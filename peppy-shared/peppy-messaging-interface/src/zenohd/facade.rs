@@ -983,10 +983,10 @@ mod tests {
             ZenohdFacade::managed(config_file.path()).expect("Failed to create facade");
 
         // First stop should succeed (no process to stop)
-        assert!(facade.stop_router().is_ok());
+        facade.stop_router().unwrap();
 
         // Second stop should also succeed (idempotent)
-        assert!(facade.stop_router().is_ok());
+        facade.stop_router().unwrap();
 
         // Process should remain None
         assert!(facade.router_process.is_none());
@@ -1075,8 +1075,8 @@ mod tests {
         facade.adopt_external_router();
 
         assert!(facade.is_adopted());
-        assert!(facade.stop_router().is_ok());
-        assert!(facade.stop_router().is_ok());
+        facade.stop_router().unwrap();
+        facade.stop_router().unwrap();
         assert!(facade.router_process.is_none());
     }
 

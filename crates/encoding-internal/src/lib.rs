@@ -413,7 +413,7 @@ mod tests {
         )
         .expect("valid format");
 
-        let format_mapper = MessageFormatMapper::new("test_image", msg_format.clone());
+        let format_mapper = MessageFormatMapper::new("test_image", msg_format);
         let artifacts = format_mapper
             .map_message_format_to_capnpn()
             .expect("artifacts generation succeeds");

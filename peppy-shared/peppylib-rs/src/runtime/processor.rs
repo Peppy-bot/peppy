@@ -2423,7 +2423,7 @@ mod tests {
             )
         };
 
-        assert!(deliver(1, vec![camera_3.clone()]).is_ok());
+        deliver(1, vec![camera_3.clone()]).unwrap();
         assert_eq!(
             instance_ids(&processor.bound_producers("spare_cameras")),
             ["camera_3"]
@@ -2432,7 +2432,7 @@ mod tests {
             .ensure_target_bound("spare_cameras", &camera_3)
             .expect("a delivered member passes the membership check");
 
-        assert!(deliver(2, Vec::new()).is_ok());
+        deliver(2, Vec::new()).unwrap();
         assert!(processor.bound_producers("spare_cameras").is_empty());
         assert!(
             processor

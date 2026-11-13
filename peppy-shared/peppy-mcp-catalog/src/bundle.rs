@@ -67,7 +67,7 @@ pub struct ExposureBundle {
 
 /// The tool that answers the last calls of every tool of the bundle that is
 /// not read-only, newest first. It reaches no provider.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CallRecordEntry {
     pub name: String,
@@ -468,7 +468,7 @@ impl ResourcePolicies {
 /// Under a representation the tool answers with a picture: the frame of the
 /// response as an image block, the rest of the response as the document,
 /// which the output schema describes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolEntry {
     pub name: String,
@@ -505,7 +505,7 @@ impl ToolEntry {
 /// resource with a `jpeg` representation, the blob as an image and the
 /// document beside it. It completes within the call and reaches no
 /// provider.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PictureEntry {
     pub name: String,
@@ -524,7 +524,7 @@ pub struct PictureEntry {
 }
 
 /// One exposed action: an MCP tool backed by the MCP Tasks extension.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "RawTaskEntry", into = "RawTaskEntry")]
 pub struct TaskEntry {
     pub name: String,

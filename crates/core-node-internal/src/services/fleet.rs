@@ -217,7 +217,7 @@ mod tests {
         );
 
         let cleared = Fleet::default();
-        cleared.keep_halt_in(path.clone());
+        cleared.keep_halt_in(path);
         assert_eq!(
             cleared.with(|book| book.halted_by().map(str::to_owned)),
             None

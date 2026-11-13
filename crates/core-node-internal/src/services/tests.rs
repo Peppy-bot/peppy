@@ -253,7 +253,7 @@ fn derived_name_has_compact_two_word_shape() {
             .any(|segment| { segment.chars().all(|c| c.is_ascii_digit()) })
     );
 
-    assert!(Name::new(name.to_string()).is_ok());
+    Name::new(name.to_string()).unwrap();
 }
 
 /// A second `start_with_ready` on the same instance is rejected rather than

@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn request_decode_rejects_malformed() {
-        assert!(StackResetRequest::decode(b"not capnp").is_err());
+        StackResetRequest::decode(b"not capnp").unwrap_err();
     }
 
     #[test]
@@ -93,6 +93,6 @@ mod tests {
 
     #[test]
     fn response_decode_rejects_malformed() {
-        assert!(StackResetResponse::decode(b"not capnp").is_err());
+        StackResetResponse::decode(b"not capnp").unwrap_err();
     }
 }

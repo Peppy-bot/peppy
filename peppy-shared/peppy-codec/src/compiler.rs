@@ -444,7 +444,7 @@ mod tests {
             .write(true)
             .open(&path)
             .expect("hold executable open for writing");
-        let verify_path = path.clone();
+        let verify_path = path;
 
         let verifier = std::thread::spawn(move || verify_runs(&verify_path));
         std::thread::sleep(Duration::from_millis(100));

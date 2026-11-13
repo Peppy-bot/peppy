@@ -75,7 +75,7 @@ async fn action_messenger_communication() {
             .handle_next_request(move |req_ctx| {
                 let resp = goal_resp.clone();
                 let factory = factory.clone();
-                let publisher_tx = publisher_tx.clone();
+                let publisher_tx = publisher_tx;
                 async move {
                     let wire = req_ctx.message().payload().into_inner();
                     let declared = factory
@@ -202,7 +202,7 @@ async fn setup_goal_handshake(
             .goal_service
             .handle_next_request(move |req_ctx| {
                 let factory = factory.clone();
-                let publisher_tx = publisher_tx.clone();
+                let publisher_tx = publisher_tx;
                 async move {
                     let wire = req_ctx.message().payload().into_inner();
                     let declared = factory
@@ -1510,10 +1510,11 @@ mod unread_feedback {
                 .await
                 .expect("the service listens");
         let echo_task = tokio::spawn(async move {
-            while let Ok(true) = echo
-                .handle_next_request(async |request| Ok(request.message().payload()))
-                .await
-            {}
+            while matches!(
+                echo.handle_next_request(async |request| Ok(request.message().payload()))
+                    .await,
+                Ok(true)
+            ) {}
         });
         let mut news = TopicMessenger::subscribe(
             &caller,

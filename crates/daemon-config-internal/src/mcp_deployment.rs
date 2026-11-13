@@ -433,7 +433,7 @@ pub fn plan_deployment(
                             first_exposure: slot.exposure.clone(),
                             first_argument: slot.argument.clone(),
                             second_exposure: label.clone(),
-                            second_argument: argument.clone(),
+                            second_argument: argument,
                         },
                     )));
                 }

@@ -98,10 +98,10 @@ fn format_of(
                 .iter()
                 .find(|action| action.name == member)?;
             match side {
-                Side::Goal => action
-                    .goal_service
-                    .as_ref()
-                    .and_then(|goal| goal.request_message_format.as_ref()),
+                Side::Goal => {
+                    let goal = action.goal_service.as_ref()?;
+                    goal.request_message_format.as_ref()
+                }
                 _ => action
                     .feedback_topic
                     .as_ref()

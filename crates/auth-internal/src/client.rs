@@ -756,10 +756,8 @@ mod tests {
         let ok: RouterPeerEnrolled =
             serde_json::from_str(&enrolled_json("7f3a9c1e", "rtr.example")).expect("parses");
         assert_eq!(ok.zenoh_id.as_str(), "7f3a9c1e");
-        assert!(
-            serde_json::from_str::<RouterPeerEnrolled>(&enrolled_json("0abc", "rtr.example"))
-                .is_err()
-        );
+        serde_json::from_str::<RouterPeerEnrolled>(&enrolled_json("0abc", "rtr.example"))
+            .unwrap_err();
     }
 
     #[test]

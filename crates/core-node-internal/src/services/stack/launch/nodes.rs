@@ -913,7 +913,7 @@ mod tests {
         let drive = async {
             assert_eq!(started.recv().await.unwrap(), "waldo");
             tokio::task::yield_now().await;
-            assert!(started.try_recv().is_err());
+            started.try_recv().unwrap_err();
             finish(&mut enders, "waldo", built());
             assert_eq!(started.recv().await.unwrap(), "backbone");
             finish(&mut enders, "backbone", built());
@@ -1211,7 +1211,7 @@ mod tests {
 
         let plain = remote_build_goal(
             &PhaseGoal {
-                launch_id: launch.launch_id.clone(),
+                launch_id: launch.launch_id,
                 rebuild: false,
                 environment: ForwardedEnv::default(),
                 publish: None,

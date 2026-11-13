@@ -690,32 +690,32 @@ mod tests {
     /// from tripping over it later with a worse message.
     #[test]
     fn decode_pinned_rejects_empty_pin() {
-        assert!(NodeSource::decode_pinned("").is_err());
-        assert!(NodeSource::decode_pinned("   ").is_err());
-        assert!(NodeSource::decode_exposures(vec![]).is_err());
-        assert!(NodeSource::decode_exposures(vec!["   ".to_owned()]).is_err());
+        NodeSource::decode_pinned("").unwrap_err();
+        NodeSource::decode_pinned("   ").unwrap_err();
+        NodeSource::decode_exposures(vec![]).unwrap_err();
+        NodeSource::decode_exposures(vec!["   ".to_owned()]).unwrap_err();
     }
 
     #[test]
     fn resolve_ref_rejects_invalid_name() {
-        assert!(NodeSource::resolve_ref("../etc", "1.0").is_err());
-        assert!(NodeSource::resolve_ref("bad name", "1.0").is_err());
+        NodeSource::resolve_ref("../etc", "1.0").unwrap_err();
+        NodeSource::resolve_ref("bad name", "1.0").unwrap_err();
     }
 
     #[test]
     fn resolve_ref_rejects_invalid_tag() {
-        assert!(NodeSource::resolve_ref("node", "").is_err());
-        assert!(NodeSource::resolve_ref("node", "..").is_err());
+        NodeSource::resolve_ref("node", "").unwrap_err();
+        NodeSource::resolve_ref("node", "..").unwrap_err();
     }
 
     #[test]
     fn decode_resolve_ref_rejects_empty_name() {
-        assert!(NodeSource::decode_resolve_ref("", "v1").is_err());
+        NodeSource::decode_resolve_ref("", "v1").unwrap_err();
     }
 
     #[test]
     fn decode_resolve_ref_rejects_empty_tag() {
-        assert!(NodeSource::decode_resolve_ref("node", "").is_err());
+        NodeSource::decode_resolve_ref("node", "").unwrap_err();
     }
 
     #[test]
@@ -802,7 +802,7 @@ mod tests {
 
     #[test]
     fn node_add_goal_response_decode_rejects_malformed_bytes() {
-        assert!(NodeAddGoalResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeAddGoalResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     // --- NodeAddFeedback ---
@@ -837,7 +837,7 @@ mod tests {
 
     #[test]
     fn node_add_feedback_decode_rejects_malformed_bytes() {
-        assert!(NodeAddFeedback::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeAddFeedback::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     // --- NodeAddResult ---
@@ -862,6 +862,6 @@ mod tests {
 
     #[test]
     fn node_add_result_decode_rejects_malformed_bytes() {
-        assert!(NodeAddResult::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeAddResult::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 }

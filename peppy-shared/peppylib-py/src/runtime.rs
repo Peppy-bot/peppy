@@ -81,7 +81,7 @@ impl EventLoopShutdown {
             thread.call_method1("join", (join_timeout,))?;
             thread.call_method0("is_alive")?.is_truthy()
         });
-        if let Some(Ok(true)) = still_alive {
+        if matches!(still_alive, Some(Ok(true))) {
             eprintln!(
                 "peppy: asyncio event-loop thread did not stop within {join_timeout:.0}s; \
                  proceeding with shutdown (a background task may be ignoring cancellation)"
@@ -865,7 +865,8 @@ fn store_python_error(error_slot: &SharedPyError, err: PyErr) {
 }
 
 fn take_python_error(error_slot: &SharedPyError) -> Option<PyErr> {
-    error_slot.lock().ok().and_then(|mut guard| guard.take())
+    let mut guard = error_slot.lock().ok()?;
+    guard.take()
 }
 
 /// Held while an async setup runs. A stop that arrives during the setup (the

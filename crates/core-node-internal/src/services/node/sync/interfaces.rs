@@ -790,7 +790,7 @@ mod implements_tests {
                 .expect("test name is valid"),
             tag: daemon_config::repository::ItemTag::parse(tag).expect("test tag is valid"),
             sha256: daemon_config::repository::ManifestFingerprint::of_bytes(body.as_bytes()),
-            origin: repo_cache::EntryOrigin::Fs { path: path.clone() },
+            origin: repo_cache::EntryOrigin::Fs { path },
             repo_id: 0,
             descriptions: crate::services::repo::cache::test_support::descriptions("test contract"),
         }
@@ -1589,9 +1589,7 @@ mod implements_tests {
             sha256: daemon_config::repository::ManifestFingerprint::of_bytes(
                 ARM_LINK_BODY.as_bytes(),
             ),
-            origin: repo_cache::EntryOrigin::Fs {
-                path: pairing_path.clone(),
-            },
+            origin: repo_cache::EntryOrigin::Fs { path: pairing_path },
             repo_id: 0,
             descriptions: crate::services::repo::cache::test_support::descriptions("test pairing"),
         };

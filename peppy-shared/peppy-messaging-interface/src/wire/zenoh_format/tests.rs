@@ -310,7 +310,7 @@ fn a_pairing_emission_checks_its_target_then_each_segment_in_order() {
         build("core_a", pairing("arm_link", "v1"), "*"),
         Err(Error::InvalidSegment(SegmentError::ReservedSentinel(_)))
     );
-    assert!(build("core_a", pairing("arm_link", "v1"), "controller").is_ok());
+    build("core_a", pairing("arm_link", "v1"), "controller").unwrap();
 }
 
 #[test]

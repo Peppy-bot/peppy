@@ -55,7 +55,7 @@ impl std::fmt::Display for SlotAddr {
 
 /// One pair as a start requests it: this instance's slot and the concrete
 /// peer slot it is paired with, ready for the pairing coordinator's reserve.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedPair {
     pub own: SlotAddr,
     pub peer: SlotAddr,

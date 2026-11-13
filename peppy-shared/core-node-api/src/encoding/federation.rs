@@ -1456,11 +1456,11 @@ mod tests {
 
     #[test]
     fn decode_rejects_malformed_bytes() {
-        assert!(ParticipantReserveRequest::decode(b"not capnp").is_err());
-        assert!(ParticipantReserveResponse::decode(b"not capnp").is_err());
-        assert!(ParticipantReleaseRequest::decode(b"not capnp").is_err());
-        assert!(FederationAck::decode(b"not capnp").is_err());
-        assert!(RelationshipNotification::decode(b"not capnp").is_err());
-        assert!(RelationshipNotificationAck::decode(b"not capnp").is_err());
+        ParticipantReserveRequest::decode(b"not capnp").unwrap_err();
+        ParticipantReserveResponse::decode(b"not capnp").unwrap_err();
+        ParticipantReleaseRequest::decode(b"not capnp").unwrap_err();
+        FederationAck::decode(b"not capnp").unwrap_err();
+        RelationshipNotification::decode(b"not capnp").unwrap_err();
+        RelationshipNotificationAck::decode(b"not capnp").unwrap_err();
     }
 }

@@ -223,12 +223,7 @@ mod tests {
         let b = write_node(&b_dir, "b", &[("a", "v1")]);
         let c = write_node(&c_dir, "c", &[("b", "v1")]);
 
-        let tree = VirtualDeptree::build(vec![
-            (c_dir.clone(), c),
-            (a_dir.clone(), a),
-            (b_dir.clone(), b),
-        ])
-        .unwrap();
+        let tree = VirtualDeptree::build(vec![(c_dir, c), (a_dir, a), (b_dir, b)]).unwrap();
         let order: Vec<String> = tree
             .topological_order()
             .iter()

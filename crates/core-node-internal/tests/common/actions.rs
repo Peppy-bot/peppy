@@ -530,15 +530,17 @@ pub(crate) async fn send_node_run_then_cancel(
         .map_err(|err| format!("Failed to cancel the goal: {err}"))?;
     let absolute_deadline = tokio::time::Instant::now() + timeouts.result;
     let mut collected = Vec::new();
-    if let FeedbackDrainOutcome::TimedOut = drain_node_run_feedback(
-        &mut action_handle,
-        None,
-        &mut collected,
-        absolute_deadline,
-        |_| false,
-    )
-    .await
-    {
+    if matches!(
+        drain_node_run_feedback(
+            &mut action_handle,
+            None,
+            &mut collected,
+            absolute_deadline,
+            |_| false,
+        )
+        .await,
+        FeedbackDrainOutcome::TimedOut
+    ) {
         return Err("Timeout waiting for node_run result".to_string());
     }
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());

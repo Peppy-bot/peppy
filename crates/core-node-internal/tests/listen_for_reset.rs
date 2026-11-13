@@ -431,13 +431,12 @@ fn test_node_run_cmd() -> Vec<String> {
 
 /// The pid of the one instance of `name:tag`, once the daemon spawned it.
 fn starting_pid(node_stack: &NodeStack, name: &str, tag: &str) -> Option<u32> {
-    node_stack.find(name, tag).and_then(|handle| {
-        handle
-            .read()
-            .instances()
-            .first()
-            .and_then(node_stack::TrackedNodeInstance::pid)
-    })
+    let handle = node_stack.find(name, tag)?;
+    handle
+        .read()
+        .instances()
+        .first()
+        .and_then(node_stack::TrackedNodeInstance::pid)
 }
 
 /// A stack reset that cancels a start after the instance answered ready

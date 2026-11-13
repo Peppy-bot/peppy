@@ -250,7 +250,7 @@ mod tests {
         // No fingerprint was ever generated, so the read must fail rather than
         // silently returning an empty/garbage digest.
         let rel_output = Path::new(crate::consts::PEPPYGEN_OUTPUT_PATH);
-        assert!(read_codegen_fingerprint(&config_path, rel_output).is_err());
+        read_codegen_fingerprint(&config_path, rel_output).unwrap_err();
     }
 
     fn prepare_generated_crate(tmp: &TempDir) -> std::path::PathBuf {

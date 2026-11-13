@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn node_build_goal_decode_rejects_malformed_bytes() {
-        assert!(NodeBuildGoal::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeBuildGoal::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     // --- NodeBuildGoalResponse ---
@@ -530,7 +530,7 @@ mod tests {
 
     #[test]
     fn node_build_goal_response_decode_rejects_malformed_bytes() {
-        assert!(NodeBuildGoalResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeBuildGoalResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     // --- NodeBuildFeedback ---
@@ -565,7 +565,7 @@ mod tests {
 
     #[test]
     fn node_build_feedback_decode_rejects_malformed_bytes() {
-        assert!(NodeBuildFeedback::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeBuildFeedback::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     // --- NodeBuildResult ---
@@ -584,6 +584,6 @@ mod tests {
 
     #[test]
     fn node_build_result_decode_rejects_malformed_bytes() {
-        assert!(NodeBuildResult::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeBuildResult::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 }

@@ -595,7 +595,7 @@ mod tests {
     #[test]
     fn a_missing_root_fails_the_fingerprint() {
         let missing = Path::new("/nonexistent-peppy-fingerprint-root");
-        assert!(fingerprint_tree_for(missing, ArtifactKind::Process, VERSION, OS, ARCH).is_err());
+        fingerprint_tree_for(missing, ArtifactKind::Process, VERSION, OS, ARCH).unwrap_err();
     }
 
     #[test]
@@ -833,15 +833,13 @@ mod tests {
                 "b".repeat(64)
             ))
         );
-        assert!(
-            pulled_artifact_path(
-                &peppy_dirs,
-                "waldo",
-                "../x",
-                &digest,
-                ArtifactPlatform::LinuxArm64
-            )
-            .is_err()
-        );
+        pulled_artifact_path(
+            &peppy_dirs,
+            "waldo",
+            "../x",
+            &digest,
+            ArtifactPlatform::LinuxArm64,
+        )
+        .unwrap_err();
     }
 }

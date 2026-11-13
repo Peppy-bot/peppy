@@ -21,7 +21,7 @@ pub fn restart_request_of(
         .framework
         .restart
         .map(RestartRequest::Instance)
-        .or(root.map(RestartRequest::LauncherRoot))
+        .or_else(|| root.map(RestartRequest::LauncherRoot))
         .unwrap_or_default()
 }
 
@@ -48,7 +48,7 @@ pub fn resolve_restart(
     });
     instance_restart(request)
         .or(node)
-        .or(request.written())
+        .or_else(|| request.written())
         .unwrap_or_default()
 }
 

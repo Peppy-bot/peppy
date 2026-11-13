@@ -648,7 +648,7 @@ mod tests {
     #[test]
     fn a_matching_version_passes() {
         let response = ParticipantReserveResponse::new("v0.20.0", "gen_1");
-        assert!(check_version("cn-atlas", &response, "v0.20.0").is_ok());
+        check_version("cn-atlas", &response, "v0.20.0").unwrap();
     }
 
     fn slice(core_node: &str) -> ParticipantSlice {

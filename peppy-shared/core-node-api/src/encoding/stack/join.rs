@@ -514,13 +514,11 @@ mod tests {
             );
             assert!(error.to_string().contains("non-finite"), "{error}");
         }
-        assert!(
-            ArgumentOverride::new(
-                Name::new("arm").unwrap(),
-                Name::new("gain").unwrap(),
-                AnyType::Float(f64::NAN)
-            )
-            .is_err()
-        );
+        ArgumentOverride::new(
+            Name::new("arm").unwrap(),
+            Name::new("gain").unwrap(),
+            AnyType::Float(f64::NAN),
+        )
+        .unwrap_err();
     }
 }

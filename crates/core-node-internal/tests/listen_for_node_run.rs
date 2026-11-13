@@ -2225,16 +2225,12 @@ async fn a_start_that_fails_before_its_ready_signal_leaves_no_process_of_its_gro
     .expect("the daemon accepts the start");
 
     let pid = poll_until(WAIT, "the daemon should spawn the instance", || {
-        started
-            .node_stack
-            .find(NODE_NAME, NODE_TAG)
-            .and_then(|handle| {
-                handle
-                    .read()
-                    .instances()
-                    .first()
-                    .and_then(node_stack::TrackedNodeInstance::pid)
-            })
+        let handle = started.node_stack.find(NODE_NAME, NODE_TAG)?;
+        handle
+            .read()
+            .instances()
+            .first()
+            .and_then(node_stack::TrackedNodeInstance::pid)
     })
     .await;
     let children = poll_until(WAIT, "the instance should fork two children", || {

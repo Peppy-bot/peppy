@@ -358,7 +358,7 @@ mod tests {
                 repo_ref
             );
         }
-        assert!(decode_git_repo_ref("@{upstream}").is_err());
+        decode_git_repo_ref("@{upstream}").unwrap_err();
     }
 
     #[test]

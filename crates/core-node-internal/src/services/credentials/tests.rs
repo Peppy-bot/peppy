@@ -204,11 +204,9 @@ fn a_timestamp_outside_the_window_and_a_replayed_call_are_refused() {
     let refused = refusal_of(late.verify(&call(DESK, "peppy-cli", Some(&proof))));
     assert!(refused.contains("outside the window of 30 s"), "{refused}");
     let early = check_at(&keys, &stack, signed_at(&proof) - skew);
-    assert!(
-        early
-            .verify(&call(DESK, "peppy-cli", Some(&proof)))
-            .is_err()
-    );
+    early
+        .verify(&call(DESK, "peppy-cli", Some(&proof)))
+        .unwrap_err();
 
     let check = check_at(&keys, &stack, signed_at(&proof) + TIMESTAMP_WINDOW);
     check

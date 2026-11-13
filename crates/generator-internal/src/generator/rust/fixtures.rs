@@ -1269,7 +1269,7 @@ fn render_pairing_harness_parts(
             parts.mock_starts.push(quote! {
                 let #field = #module::Mock::start(&router, &instance_id).await?;
             });
-            mocks.inits.push(field.clone());
+            mocks.inits.push(field);
             let seed_pin = quote! {
                 standalone = standalone.with_peer_pin(
                     #link_id,
@@ -1378,7 +1378,7 @@ fn render_pairing_harness_parts(
                     }
                 });
             }
-            mocks.inits.push(field.clone());
+            mocks.inits.push(field);
         }
     }
 }

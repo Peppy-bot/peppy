@@ -1159,7 +1159,7 @@ fn every_feature_set_composes_over_the_bare_stack() {
 
     let prepared = featured_launcher(
         r#"commander: "mcp", brain: "ai_brain_vla""#,
-        &[brain.clone(), recorder.clone()],
+        &[brain, recorder],
         "",
     );
     assert_eq!(

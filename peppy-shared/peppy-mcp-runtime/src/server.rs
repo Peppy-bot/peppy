@@ -88,14 +88,14 @@ const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// One validated call handed to a bridge: the canonical-JSON input the
 /// contract member takes, and the provider it goes to.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCall {
     pub input: Value,
     pub recipient: Recipient,
 }
 
 /// The provider a call goes to.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Recipient {
     /// The producer the launcher bound to the entry's target.
     BoundProducer,

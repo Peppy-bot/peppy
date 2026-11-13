@@ -94,7 +94,7 @@ impl fmt::Display for ExposureValidationError {
 impl std::error::Error for ExposureValidationError {}
 
 /// Where the member behind one catalog entry comes from.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemberSource {
     /// The contract slot behind the entry's target; its `link_id` is the
     /// entry's `target`.
@@ -108,7 +108,7 @@ pub enum MemberSource {
 /// source the entry's target draws from, the member it selects as that
 /// source declares it, the failure kinds the member can give, and the marks
 /// that its source gives it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundMember<M> {
     pub source: MemberSource,
     pub member: M,

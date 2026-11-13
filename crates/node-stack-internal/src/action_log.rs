@@ -937,7 +937,7 @@ mod tests {
         let batch =
             ActionLog::for_add_at(&dirs, exporter.clone(), "source", None, None, stamp()).unwrap();
         let sub_add =
-            ActionLog::for_add_at(&dirs, exporter.clone(), "source", None, None, stamp()).unwrap();
+            ActionLog::for_add_at(&dirs, exporter, "source", None, None, stamp()).unwrap();
         batch.note("Adding camera:v");
         sub_add.note("Cloning repository");
         batch.note("Batch add complete");

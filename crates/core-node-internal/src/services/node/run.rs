@@ -566,7 +566,7 @@ pub(crate) async fn assemble_runtime_config(
         .messenger
         .messaging_endpoint()
         .await
-        .unwrap_or((DEFAULT_MESSAGING_HOST.to_string(), DEFAULT_MESSAGING_PORT));
+        .unwrap_or_else(|| (DEFAULT_MESSAGING_HOST.to_string(), DEFAULT_MESSAGING_PORT));
 
     // The clock travels whole: a domain's identity names the machine hosting
     // its publisher, so a binding means the same thing here as where it was
@@ -3078,14 +3078,14 @@ mod tests {
     /// there is no window to close and nothing to compare against.
     #[test]
     fn a_run_with_no_planned_fingerprint_is_never_refused() {
-        assert!(refuse_stale_manifest("camera", "v1", None, &node_config_for_test()).is_ok());
+        refuse_stale_manifest("camera", "v1", None, &node_config_for_test()).unwrap();
     }
 
     #[test]
     fn a_run_whose_manifest_still_matches_the_plan_proceeds() {
         let config = node_config_for_test();
         let planned = super::super::manifest_fingerprint(&config).expect("fingerprintable");
-        assert!(refuse_stale_manifest("camera", "v1", Some(&planned), &config).is_ok());
+        refuse_stale_manifest("camera", "v1", Some(&planned), &config).unwrap();
     }
 
     /// The whole point of the check: the add phase replaced the manifest the

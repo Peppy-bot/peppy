@@ -129,7 +129,10 @@ pub(crate) enum RepoEntryError {
 /// The one place that reads an entry's fields: identity, attribution,
 /// exclusion and every read of a repository work on the value it returns.
 pub(crate) fn parse_repo_entry(entry: &Value) -> Result<RepoSource, RepoEntryError> {
-    let field = |key: &str| entry.get(key).and_then(|v| v.as_str());
+    let field = |key: &str| {
+        let v = entry.get(key)?;
+        v.as_str()
+    };
     match field("type").ok_or(RepoEntryError::Unrecognized)? {
         "fs" => {
             let path = field("path").ok_or(RepoEntryError::Unrecognized)?;

@@ -609,7 +609,7 @@ async fn bound_set_subscription_merges_bound_producers_and_excludes_unbound() {
             message.instance_id(),
             "the yielded producer tag must match the wire message's producer"
         );
-        received.insert(producer.instance_id.clone(), message.payload().to_vec());
+        received.insert(producer.instance_id, message.payload().to_vec());
     }
     assert_eq!(received.len(), 2, "one message per bound producer");
     assert_eq!(received[front], b"from-front");

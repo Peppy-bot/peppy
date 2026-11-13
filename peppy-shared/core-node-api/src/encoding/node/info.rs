@@ -773,7 +773,7 @@ mod tests {
 
     #[test]
     fn node_info_response_decode_rejects_malformed_bytes() {
-        assert!(NodeInfoResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeInfoResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     /// The restart fields survive the wire for every exit cause, and an

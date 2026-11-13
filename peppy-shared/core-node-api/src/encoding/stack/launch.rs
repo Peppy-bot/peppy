@@ -1074,15 +1074,13 @@ mod tests {
         }
         // A copy reference holds the coordinator when it names no machine,
         // so `@self` on a joined copy is the reference with no machine.
-        assert!(
-            repository_goal("fleet")
-                .with_layout(
-                    PlacementSpec::Local,
-                    words(&["alpha.ai_brain_vla", "mujoco"]),
-                    copies(&["openarm_sim:alpha", "so101_sim:bravo@self"]),
-                )
-                .is_ok()
-        );
+        repository_goal("fleet")
+            .with_layout(
+                PlacementSpec::Local,
+                words(&["alpha.ai_brain_vla", "mujoco"]),
+                copies(&["openarm_sim:alpha", "so101_sim:bravo@self"]),
+            )
+            .unwrap();
 
         let mut builder = Builder::new_default();
         {
@@ -1521,7 +1519,7 @@ mod tests {
 
     #[test]
     fn launch_feedback_decode_rejects_malformed() {
-        assert!(LaunchFeedback::decode(b"not capnp").is_err());
+        LaunchFeedback::decode(b"not capnp").unwrap_err();
     }
 
     /// The node logs of a goal ride its feedback, with the phase that
@@ -1579,7 +1577,7 @@ mod tests {
 
     #[test]
     fn launch_result_decode_rejects_malformed() {
-        assert!(LaunchResult::decode(b"not capnp").is_err());
+        LaunchResult::decode(b"not capnp").unwrap_err();
     }
 
     /// The endpoints of every started instance ride the result with the core

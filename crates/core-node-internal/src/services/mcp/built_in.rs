@@ -290,7 +290,7 @@ pub(crate) async fn run_built_in_add(
         plan.config,
         &manifest_path,
         launch,
-        resolved.spec.contracts.clone(),
+        resolved.spec.contracts,
     ) {
         return Err(record_add_failure(
             &announcer,

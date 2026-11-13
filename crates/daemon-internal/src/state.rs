@@ -286,7 +286,7 @@ mod tests {
         )
         .expect("write invalid state");
 
-        assert!(DaemonState::read_from(&path).is_err());
+        DaemonState::read_from(&path).unwrap_err();
     }
 
     /// A router id zenoh would refuse (a leading zero) fails the read the same
@@ -310,7 +310,7 @@ mod tests {
         )
         .expect("write invalid state");
 
-        assert!(DaemonState::read_from(&path).is_err());
+        DaemonState::read_from(&path).unwrap_err();
     }
 
     #[test]

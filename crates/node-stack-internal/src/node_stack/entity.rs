@@ -4820,12 +4820,10 @@ mod tests {
                 .write()
                 .record_observations_for_restart("waiting-7", &fleet_only)
         );
-        let both: BTreeMap<String, ObservationTargets> = [
-            ("sources".to_owned(), sources.clone()),
-            ("fleet".to_owned(), fleet),
-        ]
-        .into_iter()
-        .collect();
+        let both: BTreeMap<String, ObservationTargets> =
+            [("sources".to_owned(), sources), ("fleet".to_owned(), fleet)]
+                .into_iter()
+                .collect();
         assert_eq!(
             handle.read().instances()[0]
                 .supervision()
@@ -4852,7 +4850,7 @@ mod tests {
         assert_eq!(goal.lifecycle_watchers, watchers);
         let running = Name::new("running-7").unwrap();
         let handle = ready_entity_with(TrackedNodeInstance::new(
-            running.clone(),
+            running,
             InstanceState::Running,
             BTreeMap::new(),
         ));

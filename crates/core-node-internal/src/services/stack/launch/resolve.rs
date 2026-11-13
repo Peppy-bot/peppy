@@ -752,7 +752,7 @@ mod tests {
         assert!(error.contains("git repository"), "got: {error}");
 
         let git_pin = test_root_pin("planner");
-        assert!(refuse_unportable_pins("planner:v1", std::iter::once(&git_pin)).is_ok());
+        refuse_unportable_pins("planner:v1", std::iter::once(&git_pin)).unwrap();
     }
 
     // --- Placement: binding a launcher's declared links to real machines ---

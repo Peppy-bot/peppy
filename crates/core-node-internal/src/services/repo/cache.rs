@@ -1894,7 +1894,7 @@ mod tests {
             &[launcher_entry(
                 "demo",
                 EntryOrigin::Git {
-                    repo_url: repo_url.clone(),
+                    repo_url,
                     read_ref: Some(ReadRef::Named(branch.clone())),
                     repo_ref: Some(branch),
                     commit,

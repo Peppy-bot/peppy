@@ -556,8 +556,8 @@ impl SliceOwnership {
         state
             .slice
             .as_ref()
-            .filter(|slice| slice.launch_id == launch_id)
-            .and(state.slice_daemon.clone())
+            .filter(|slice| slice.launch_id == launch_id)?;
+        state.slice_daemon.clone()
     }
 
     /// The launch this daemon's slice belongs to, reported on every
@@ -888,7 +888,7 @@ mod tests {
     #[test]
     fn local_work_is_excluded_while_another_launch_holds_the_daemon() {
         let ownership = SliceOwnership::new("cn-held");
-        assert!(ownership.admit_node_goal(&LOCAL).is_ok());
+        ownership.admit_node_goal(&LOCAL).unwrap();
 
         ownership.try_reserve("launch-a", "cn-robot-7");
 
@@ -925,7 +925,9 @@ mod tests {
             ownership.admit_node_goal(&Goal(Some("launch-a"))).is_ok(),
             "the reserving launch's own dispatch must pass once the slice is held"
         );
-        assert!(ownership.admit_node_goal(&Goal(Some("launch-b"))).is_err());
+        ownership
+            .admit_node_goal(&Goal(Some("launch-b")))
+            .unwrap_err();
     }
 
     /// A reservation admits a launch's node goals only beside that launch's
@@ -935,12 +937,16 @@ mod tests {
         let ownership = SliceOwnership::new("cn-held");
         ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"), "boot-1");
         ownership.try_reserve("launch-b", "cn-robot-7");
-        assert!(ownership.admit_node_goal(&Goal(Some("launch-b"))).is_err());
+        ownership
+            .admit_node_goal(&Goal(Some("launch-b")))
+            .unwrap_err();
 
         let ownership = SliceOwnership::new("cn-held");
         ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-8"), "boot-1");
         ownership.try_reserve("launch-a", "cn-robot-7");
-        assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_err());
+        ownership
+            .admit_node_goal(&Goal(Some("launch-a")))
+            .unwrap_err();
     }
 
     /// A launch holds a slice of this daemon only while it holds the
@@ -989,7 +995,7 @@ mod tests {
             .expect_err("a stack change holds the stack");
         assert_eq!(refusal.kind().as_str(), "busy", "got: {refusal}");
         drop(mutation);
-        assert!(ownership.admit_node_goal(&LOCAL).is_ok());
+        ownership.admit_node_goal(&LOCAL).unwrap();
     }
 
     /// The slice record outlives the reservation: the reservation guards the
@@ -1050,7 +1056,7 @@ mod tests {
         let ownership = SliceOwnership::new("robot-host");
         ownership.try_reserve("launch-a", "coordinator");
         ownership.record_slice(LaunchIdentity::new("launch-a", "coordinator"), "boot-1");
-        assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_ok());
+        ownership.admit_node_goal(&Goal(Some("launch-a"))).unwrap();
         ownership.clear();
         let refusal = ownership
             .admit_node_goal(&Goal(Some("launch-a")))
@@ -1060,7 +1066,7 @@ mod tests {
             "precondition_failed",
             "a goal of an ended launch can never run; got: {refusal}"
         );
-        assert!(ownership.admit_node_goal(&LOCAL).is_ok());
+        ownership.admit_node_goal(&LOCAL).unwrap();
     }
 
     /// A busy refusal names each restart holding an admission, with the stop

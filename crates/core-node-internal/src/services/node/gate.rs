@@ -681,7 +681,7 @@ mod tests {
         assert_eq!(state.try_admit_node_goal().err(), Some(StackBusy::Change));
         assert_eq!(state.try_begin_change().err(), Some(StackBusy::Change));
         drop(change);
-        assert!(state.try_begin_change().is_ok());
+        let _ = state.try_begin_change().unwrap();
     }
 
     /// The hold of a join or a removal reports its copy change until the

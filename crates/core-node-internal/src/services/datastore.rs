@@ -516,7 +516,10 @@ mod tests {
     fn gated_datastore() -> (Arc<Datastore>, Arc<GatedLiveness>) {
         let liveness = Arc::new(GatedLiveness::new());
         liveness.processes.run("arm", 1);
-        let datastore = Arc::new(Datastore::new(Arc::clone(&liveness) as _, CORE_NODE));
+        let datastore = Arc::new(Datastore::new(
+            Arc::clone(&liveness) as Arc<dyn InstanceLiveness>,
+            CORE_NODE,
+        ));
         store_exclusive(&datastore, "bus", b"arm", "arm");
         liveness.looked_up.lock().clear();
         liveness.gate.store(true, Ordering::SeqCst);
@@ -587,7 +590,10 @@ mod tests {
     fn datastore() -> (Datastore, Arc<FakeLiveness>) {
         let liveness = Arc::new(FakeLiveness::default());
         (
-            Datastore::new(Arc::clone(&liveness) as _, CORE_NODE),
+            Datastore::new(
+                Arc::clone(&liveness) as Arc<dyn InstanceLiveness>,
+                CORE_NODE,
+            ),
             liveness,
         )
     }

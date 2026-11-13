@@ -100,6 +100,6 @@ mod tests {
 
     #[test]
     fn rejects_an_unknown_schema_tag() {
-        assert!(serde_json::from_str::<PeppySchema>("\"repository/v2\"").is_err());
+        serde_json::from_str::<PeppySchema>("\"repository/v2\"").unwrap_err();
     }
 }

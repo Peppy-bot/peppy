@@ -68,7 +68,7 @@ mod tests {
                 core_node: "cn-one".to_owned(),
                 instance_id: "director_inst".to_owned(),
             }),
-            ..remove.clone()
+            ..remove
         };
         assert_eq!(
             StackRemoveGoal::decode(&for_client.encode().unwrap()).unwrap(),

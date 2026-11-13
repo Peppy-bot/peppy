@@ -49,7 +49,7 @@ const DAEMON_ANSWER_BOUND: Duration = Duration::from_secs(10);
 const RESULT_RETRY_PAUSE: Duration = Duration::from_secs(1);
 
 /// Why the server does not make a call of a member that moves a robot.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MoveRefused {
     /// The daemon refuses the move: the kind and the message of its
     /// refusal, which the call gives.

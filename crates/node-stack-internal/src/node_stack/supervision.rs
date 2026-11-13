@@ -151,7 +151,7 @@ impl Supervision {
 
 /// The observations and lifecycle watchers of an instance, taken at its
 /// exit and kept for its next process.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Registrations {
     pub observations: BTreeMap<String, ObservationTargets>,
     pub watchers: Vec<String>,
@@ -169,7 +169,7 @@ pub struct RestartBackoff {
 }
 
 /// The attempt the backoff yields next and the wait before it.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct NextAttempt {
     pub attempt: NonZeroU32,
     pub delay: Duration,
@@ -286,7 +286,7 @@ pub struct ExitRecord {
 /// hold, as its slot keeps them: the daemons of the remote peers its held
 /// pairs name, and the watchers kept for its restart. An exit empties the
 /// registries, so a stop reads these off the slot it removes.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct KeptRelations {
     pub pair_daemons: BTreeSet<String>,
     pub watchers: Vec<String>,
@@ -307,7 +307,7 @@ impl KeptRelations {
 }
 
 /// What a claim and removal did with one instance.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SlotRemoval {
     /// The slot is gone, claimed with the relations it kept.
     Removed(KeptRelations),
@@ -318,7 +318,7 @@ pub enum SlotRemoval {
 }
 
 /// What a stop path's claim of a process found.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ProcessClaim {
     /// The slot ran the process unclaimed, and is claimed now.
     Claimed,
@@ -329,7 +329,7 @@ pub enum ProcessClaim {
 }
 
 /// What a stop's claim of a starting instance found.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum StartingClaim {
     /// A restart's start, now claimed, which cancels it; the slot's
     /// relations come back for the stop to tear down.
@@ -343,7 +343,7 @@ pub enum StartingClaim {
 }
 
 /// Why a claim and removal left an instance's slot in place.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotLeft {
     /// Its start is in flight, a restart's when `restart`.
     Starting { restart: bool },

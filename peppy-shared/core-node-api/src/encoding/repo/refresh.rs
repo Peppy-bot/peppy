@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn goal_decode_rejects_malformed() {
-        assert!(RepoRefreshGoal::decode(b"not capnp").is_err());
+        RepoRefreshGoal::decode(b"not capnp").unwrap_err();
     }
 
     #[test]
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn goal_response_decode_rejects_malformed() {
-        assert!(RepoRefreshGoalResponse::decode(b"not capnp").is_err());
+        RepoRefreshGoalResponse::decode(b"not capnp").unwrap_err();
     }
 
     #[test]
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn feedback_decode_rejects_malformed() {
-        assert!(RepoRefreshFeedback::decode(b"not capnp").is_err());
+        RepoRefreshFeedback::decode(b"not capnp").unwrap_err();
     }
 
     #[test]
@@ -465,6 +465,6 @@ mod tests {
 
     #[test]
     fn result_decode_rejects_malformed() {
-        assert!(RepoRefreshResult::decode(b"not capnp").is_err());
+        RepoRefreshResult::decode(b"not capnp").unwrap_err();
     }
 }

@@ -2524,8 +2524,8 @@ mod tests {
         let from = serialized_node("brain", "v1", NodeStage::Ready, &[]);
         let to = serialized_node("sensor", "v1", NodeStage::Ready, &[]);
         let edges = vec![SerializedEdge {
-            from: from.clone(),
-            to: to.clone(),
+            from,
+            to,
             via_contract: None,
         }];
 

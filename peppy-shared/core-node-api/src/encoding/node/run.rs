@@ -1276,7 +1276,7 @@ mod tests {
         .expect("distinct members");
         let goal = NodeRunGoal::new(plan("commander_1"), "commander", "v1", 0)
             .with_planned_observations(
-                [("observed_joints".to_owned(), targets.clone())]
+                [("observed_joints".to_owned(), targets)]
                     .into_iter()
                     .collect(),
             );
@@ -1715,7 +1715,7 @@ mod tests {
 
     #[test]
     fn node_run_goal_decode_rejects_malformed_bytes() {
-        assert!(NodeRunGoal::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeRunGoal::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     /// Each level's request survives the wire with its cap; a goal that
@@ -1862,7 +1862,7 @@ mod tests {
 
     #[test]
     fn node_run_goal_response_decode_rejects_malformed_bytes() {
-        assert!(NodeRunGoalResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeRunGoalResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     // --- NodeRunFeedback ---
@@ -1897,7 +1897,7 @@ mod tests {
 
     #[test]
     fn node_run_feedback_decode_rejects_malformed_bytes() {
-        assert!(NodeRunFeedback::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeRunFeedback::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     // --- NodeRunResult ---
@@ -1913,7 +1913,7 @@ mod tests {
 
     #[test]
     fn node_run_result_decode_rejects_malformed_bytes() {
-        assert!(NodeRunResult::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeRunResult::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     /// The endpoints a started instance serves ride the result, with their

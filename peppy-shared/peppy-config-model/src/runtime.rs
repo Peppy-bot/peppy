@@ -1155,7 +1155,7 @@ mod tests {
             },
             DiscoveryConfig::default()
         );
-        assert!(serde_json5::from_str::<DiscoveryConfig>("{ multicast: true }").is_err());
+        serde_json5::from_str::<DiscoveryConfig>("{ multicast: true }").unwrap_err();
 
         let empty: LifecycleRuntimeConfig = serde_json5::from_str("{}").unwrap();
         assert_eq!(empty, LifecycleRuntimeConfig::default());
@@ -1167,7 +1167,7 @@ mod tests {
                 setup_timeout_secs: SetupTimeout::DEFAULT,
             }
         );
-        assert!(serde_json5::from_str::<LifecycleRuntimeConfig>("{ grace: 1 }").is_err());
+        serde_json5::from_str::<LifecycleRuntimeConfig>("{ grace: 1 }").unwrap_err();
     }
 
     #[test]

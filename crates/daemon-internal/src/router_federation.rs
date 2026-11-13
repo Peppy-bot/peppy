@@ -395,7 +395,7 @@ mod tests {
             tls.connect_identity,
             Some(pmi::ConnectIdentity {
                 certificate: enrolled.peer_certificate.clone(),
-                private_key: enrolled.peer_key.clone(),
+                private_key: enrolled.peer_key,
             })
         );
         assert!(tls.verify_name_on_connect);

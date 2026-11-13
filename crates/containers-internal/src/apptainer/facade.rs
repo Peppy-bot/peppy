@@ -187,11 +187,10 @@ pub struct Apptainer {
 /// Check if a command is available in PATH.
 #[cfg(target_os = "linux")]
 fn which(cmd: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).find_map(|dir| {
-            let full = dir.join(cmd);
-            full.is_file().then_some(full)
-        })
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths).find_map(|dir| {
+        let full = dir.join(cmd);
+        full.is_file().then_some(full)
     })
 }
 

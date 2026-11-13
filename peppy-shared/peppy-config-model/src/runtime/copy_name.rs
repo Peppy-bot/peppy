@@ -122,7 +122,7 @@ mod tests {
                     .starts_with("a copy's name is its placement link, so it must be non-empty"),
                 "{malformed:?}: {refusal}"
             );
-            assert!(serde_json5::from_str::<CopyName>(&format!("'{malformed}'")).is_err());
+            serde_json5::from_str::<CopyName>(&format!("'{malformed}'")).unwrap_err();
         }
     }
 }

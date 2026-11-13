@@ -355,7 +355,7 @@ impl<'de> Deserialize<'de> for SchemaType {
 /// is accepted only on `string`: the closed set of values the field holds.
 /// `$marks` names the marks of the field, and `$description` says what the
 /// field holds.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(try_from = "RawPrimitiveSchema")]
 pub struct PrimitiveSchema {
     #[serde(rename = "$type")]
@@ -677,7 +677,7 @@ pub enum QoSProfile {
 /// pairing slots (`depends_on.pairings` for emits and consumes,
 /// `depends_on.pairing_observers` for consumes), whose member shapes come from
 /// the pairing document instead.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LinkedEntry<R> {
     pub link_id: String,
@@ -1454,7 +1454,7 @@ pub struct ContractDependency {
 /// [`ContractDependency::sha256`]. Shape-identical to [`ContractDependency`]
 /// but deliberately a distinct type, because the two point in opposite
 /// directions.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ImplementsEntry {
     pub name: Name,
@@ -1637,7 +1637,7 @@ impl<'de> Deserialize<'de> for PairingObserverDependency {
 /// The daemon that runs an instance of the node is the one producer of the
 /// slot, so the entry takes no `cardinality`. The document of the interface
 /// is compiled into peppy, so the entry takes no `sha256`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DaemonTargetDependency {
     pub name: Name,
     pub tag: String,
@@ -2010,7 +2010,7 @@ impl<'de> Deserialize<'de> for Execution {
 /// The `framework` block of `peppy.json5`: knobs the framework applies the
 /// same way to every node, written by the node author as the default for
 /// every instance of the node.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeFramework {
     /// What the daemon does when the instance's process exits on its own,
@@ -2662,19 +2662,19 @@ mod tests {
         assert_eq!(topic.name, "video_stream");
 
         let empty_link_id = r#"{ link_id: "", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(empty_link_id).is_err());
+        serde_json5::from_str::<ConsumedTopic>(empty_link_id).unwrap_err();
 
         let missing_name = r#"{ link_id: "uvc_camera", name: "" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(missing_name).is_err());
+        serde_json5::from_str::<ConsumedTopic>(missing_name).unwrap_err();
 
         let whitespace_only = r#"{ link_id: "   ", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(whitespace_only).is_err());
+        serde_json5::from_str::<ConsumedTopic>(whitespace_only).unwrap_err();
 
         let punctuation_only = r#"{ link_id: "--", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(punctuation_only).is_err());
+        serde_json5::from_str::<ConsumedTopic>(punctuation_only).unwrap_err();
 
         let missing_name_field = r#"{ link_id: "uvc_camera" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(missing_name_field).is_err());
+        serde_json5::from_str::<ConsumedTopic>(missing_name_field).unwrap_err();
 
         let trimmed = r#"{ link_id: " uvc_camera ", name: " video_stream " }"#;
         let topic: ConsumedTopic =
@@ -2751,10 +2751,10 @@ mod tests {
         assert_eq!(service.link_id, "uvc_camera");
 
         let without_link_id = r#"{ name: "enable_camera", description: "A test member." }"#;
-        assert!(serde_json5::from_str::<ConsumedService>(without_link_id).is_err());
+        serde_json5::from_str::<ConsumedService>(without_link_id).unwrap_err();
 
         let blank_link_id = r#"{ link_id: "   ", name: "enable_camera" }"#;
-        assert!(serde_json5::from_str::<ConsumedService>(blank_link_id).is_err());
+        serde_json5::from_str::<ConsumedService>(blank_link_id).unwrap_err();
     }
 
     #[test]
@@ -3787,7 +3787,7 @@ mod tests {
                 { name: "arm_link", tag: "v1", role: "controller", link_id: "arm", extra: true }
             ]
         }"#;
-        assert!(serde_json5::from_str::<DependsOn>(other_unknown).is_err());
+        serde_json5::from_str::<DependsOn>(other_unknown).unwrap_err();
 
         // A well-formed pairing entry still parses.
         let valid = r#"{
@@ -3941,7 +3941,7 @@ mod tests {
                 { name: "depth_camera", tag: "v1", link_id: "cam", extra: "bad" }
             ]
         }"#;
-        assert!(serde_json5::from_str::<Manifest>(json5).is_err());
+        serde_json5::from_str::<Manifest>(json5).unwrap_err();
     }
 
     #[test]
@@ -3954,7 +3954,7 @@ mod tests {
                 { name: "depth_camera", tag: "v1" }
             ]
         }"#;
-        assert!(serde_json5::from_str::<Interfaces>(json5).is_err());
+        serde_json5::from_str::<Interfaces>(json5).unwrap_err();
     }
 
     /// Each field with a `$description` is found by its path, at any
@@ -4132,40 +4132,28 @@ mod tests {
 
     #[test]
     fn contract_backed_service_and_action_reject_inline_shape() {
-        assert!(
-            serde_json5::from_str::<ExposedService>(
-                r#"{ link_id: "cam", name: "is_ready", request_message_format: {} }"#
-            )
-            .is_err()
-        );
-        assert!(
-            serde_json5::from_str::<ExposedAction>(
-                r#"{ link_id: "arm", name: "do_move", goal_service: {} }"#
-            )
-            .is_err()
-        );
+        serde_json5::from_str::<ExposedService>(
+            r#"{ link_id: "cam", name: "is_ready", request_message_format: {} }"#,
+        )
+        .unwrap_err();
+        serde_json5::from_str::<ExposedAction>(
+            r#"{ link_id: "arm", name: "do_move", goal_service: {} }"#,
+        )
+        .unwrap_err();
     }
 
     #[test]
     fn produced_entries_require_non_empty_name() {
-        assert!(
-            serde_json5::from_str::<EmittedTopic>(r#"{ name: "", description: "A test member." }"#)
-                .is_err()
-        );
-        assert!(serde_json5::from_str::<EmittedTopic>(r"{}").is_err());
-        assert!(serde_json5::from_str::<EmittedTopic>(r#"{ link_id: "cam", name: "" }"#).is_err());
-        assert!(
-            serde_json5::from_str::<ExposedService>(
-                r#"{ name: "   ", description: "A test member." }"#
-            )
-            .is_err()
-        );
-        assert!(
-            serde_json5::from_str::<ExposedAction>(
-                r#"{ name: "", description: "A test member." }"#
-            )
-            .is_err()
-        );
+        serde_json5::from_str::<EmittedTopic>(r#"{ name: "", description: "A test member." }"#)
+            .unwrap_err();
+        serde_json5::from_str::<EmittedTopic>(r"{}").unwrap_err();
+        serde_json5::from_str::<EmittedTopic>(r#"{ link_id: "cam", name: "" }"#).unwrap_err();
+        serde_json5::from_str::<ExposedService>(
+            r#"{ name: "   ", description: "A test member." }"#,
+        )
+        .unwrap_err();
+        serde_json5::from_str::<ExposedAction>(r#"{ name: "", description: "A test member." }"#)
+            .unwrap_err();
     }
 
     #[test]
@@ -4315,7 +4303,7 @@ mod tests {
                 nodes: [{ name: "dep", tag: "v1", link_id: "d", extra: "bad" }]
             }
         }"#;
-        assert!(serde_json5::from_str::<Manifest>(json5).is_err());
+        serde_json5::from_str::<Manifest>(json5).unwrap_err();
     }
 
     /// A manifest of only a name and a tag parses, with no `depends_on` and an
@@ -4435,7 +4423,7 @@ mod tests {
             execution: { language: "rust", run_cmd: ["./run"] },
             extra: "bad"
         }"#;
-        assert!(serde_json5::from_str::<NodeConfig>(json5).is_err());
+        serde_json5::from_str::<NodeConfig>(json5).unwrap_err();
     }
 
     /// A node-shaped document that mislabels itself as a launcher must

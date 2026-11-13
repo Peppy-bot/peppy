@@ -153,7 +153,7 @@ fn render_everything() -> RenderedSurface {
 
         if cardinality == Cardinality::OneOrMore {
             let mut action: ConsumedAction = parse(CONSUMED_ACTION);
-            action.link_id = link_id.clone();
+            action.link_id = link_id;
             generator
                 .add_consumed_action(&action, &full_action_messages(), &dependency)
                 .unwrap();

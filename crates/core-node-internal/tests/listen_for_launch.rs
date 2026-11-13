@@ -1375,12 +1375,11 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     });
 
     let node_b_pid = poll_until(RESULT_TIMEOUT, "node_b should start a real process", || {
-        node_stack.find("node_b", NODE_TAG).and_then(|h| {
-            h.read()
-                .instances()
-                .first()
-                .and_then(node_stack::TrackedNodeInstance::pid)
-        })
+        let h = node_stack.find("node_b", NODE_TAG)?;
+        h.read()
+            .instances()
+            .first()
+            .and_then(node_stack::TrackedNodeInstance::pid)
     })
     .await;
     assert!(
@@ -1486,12 +1485,11 @@ async fn a_cancelled_launch_clears_the_stack_and_ends_cancelled() {
         RESULT_TIMEOUT,
         "the start of waiting_inst records its process",
         || {
-            node_stack.find("waiting_node", NODE_TAG).and_then(|h| {
-                h.read()
-                    .instances()
-                    .first()
-                    .and_then(node_stack::TrackedNodeInstance::pid)
-            })
+            let h = node_stack.find("waiting_node", NODE_TAG)?;
+            h.read()
+                .instances()
+                .first()
+                .and_then(node_stack::TrackedNodeInstance::pid)
         },
     )
     .await;

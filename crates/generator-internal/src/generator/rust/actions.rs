@@ -330,7 +330,7 @@ pub(super) fn build_goal_context_complete(
         Span::call_site(),
     );
     let mut method_params: Vec<TokenStream> = Vec::new();
-    if let ResultDelivery::Cancelled = delivery {
+    if matches!(delivery, ResultDelivery::Cancelled) {
         method_params.push(quote!(#reason: impl Into<String>));
     }
     method_params.extend(params.iter().map(|param| {

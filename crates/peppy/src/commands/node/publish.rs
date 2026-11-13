@@ -128,14 +128,12 @@ mod tests {
                 tag: "waldo.v1.v0.36.0.linux-arm64".to_owned(),
             },
         };
-        assert!(
-            report_publish(
-                "waldo",
-                "v1",
-                &[pushed(ArtifactPlatform::LinuxAmd64), already]
-            )
-            .is_ok()
-        );
+        report_publish(
+            "waldo",
+            "v1",
+            &[pushed(ArtifactPlatform::LinuxAmd64), already],
+        )
+        .unwrap();
     }
 
     #[test]

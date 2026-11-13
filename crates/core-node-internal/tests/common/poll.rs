@@ -137,19 +137,21 @@ pub(crate) async fn wait_until_service_reachable(
     use peppylib::messaging::ServiceMessenger;
     let deadline = std::time::Instant::now() + WAIT;
     loop {
-        if let Ok(true) = ServiceMessenger::is_reachable(
-            messenger,
-            bound_core_node,
-            "ready_probe",
-            test_node_target(to_node_name),
-            to_service_name,
-            ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
-                target_core_node,
-                target_instance_id,
-            )),
-        )
-        .await
-        {
+        if matches!(
+            ServiceMessenger::is_reachable(
+                messenger,
+                bound_core_node,
+                "ready_probe",
+                test_node_target(to_node_name),
+                to_service_name,
+                ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
+                    target_core_node,
+                    target_instance_id,
+                )),
+            )
+            .await,
+            Ok(true)
+        ) {
             return;
         }
         assert!(

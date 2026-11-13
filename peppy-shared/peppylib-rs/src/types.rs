@@ -133,6 +133,6 @@ mod tests {
         let wire_address = source.as_ptr();
         let message = received_message(pmi::Payload::from_bytes(source));
 
-        assert_eq!(message.clone().payload_bytes().as_ptr(), wire_address);
+        assert_eq!(message.payload_bytes().as_ptr(), wire_address);
     }
 }

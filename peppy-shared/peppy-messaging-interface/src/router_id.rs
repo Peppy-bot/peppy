@@ -188,8 +188,8 @@ mod tests {
         assert_eq!(json, "\"7f3a9c1e\"");
         let back: RouterId = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, id);
-        assert!(serde_json::from_str::<RouterId>("\"0abc\"").is_err());
-        assert!(serde_json::from_str::<RouterId>("\"ABC\"").is_err());
+        serde_json::from_str::<RouterId>("\"0abc\"").unwrap_err();
+        serde_json::from_str::<RouterId>("\"ABC\"").unwrap_err();
     }
 
     /// Two mints must differ, or the whole scheme collapses into the anonymity

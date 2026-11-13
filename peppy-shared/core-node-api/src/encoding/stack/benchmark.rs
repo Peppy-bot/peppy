@@ -585,6 +585,6 @@ mod tests {
 
     #[test]
     fn result_decode_rejects_malformed() {
-        assert!(StackBenchmarkResult::decode(b"not capnp").is_err());
+        StackBenchmarkResult::decode(b"not capnp").unwrap_err();
     }
 }

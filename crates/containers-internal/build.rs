@@ -1677,11 +1677,7 @@ mod apptainer_build {
         let use_rosetta = is_cross && target_arch == "x86_64" && rosetta_available();
         // Only the QEMU cross-arch fallback needs `--arch` (and a matching guest
         // agent). The Rosetta path runs a native aarch64 VZ VM.
-        let arch_flag = if is_cross && !use_rosetta {
-            Some(lima_arch)
-        } else {
-            None
-        };
+        let arch_flag = (is_cross && !use_rosetta).then_some(lima_arch);
 
         // The QEMU fallback runs a foreign-arch VM, which needs the matching
         // guest agent. Sourcing it from the pinned Lima version keeps host and

@@ -171,7 +171,7 @@ pub fn type_token_name(token: &TypeToken) -> &'static str {
 }
 
 /// Error returned when a runtime value doesn't match its type specification
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeMismatch {
     pub path: String,
     pub expected: String,
@@ -289,11 +289,7 @@ impl ParameterSpec {
                         }
                     }
                 }
-                if all_present {
-                    Some(AnyType::Object(out))
-                } else {
-                    None
-                }
+                all_present.then_some(AnyType::Object(out))
             }
         }
     }
@@ -1177,7 +1173,7 @@ mod tests {
                 }
             }"#,
         );
-        let video = parsed.get("video").unwrap();
+        let video = &parsed["video"];
         let ParameterSpec::Group(video_fields) = video else {
             panic!("expected group");
         };
@@ -1204,7 +1200,7 @@ mod tests {
                 }
             }"#,
         );
-        let ParameterSpec::Group(fields) = parsed.get("device").unwrap() else {
+        let ParameterSpec::Group(fields) = &parsed["device"] else {
             panic!("expected group");
         };
         assert_matches!(
@@ -1396,7 +1392,7 @@ mod tests {
         assert_matches!(err, NodeArgumentsError::TypeMismatch(_));
 
         let raw_nan = BTreeMap::from([("gain".to_string(), AnyType::Float(f64::NAN))]);
-        assert!(validate_node_arguments(raw_nan, &s).is_err());
+        validate_node_arguments(raw_nan, &s).unwrap_err();
     }
 
     #[test]
@@ -1423,7 +1419,7 @@ mod tests {
     fn runtime_f64_accepts_value_above_f32_range() {
         let s = schema(r#"{ gain: "f64" }"#);
         let raw = BTreeMap::from([("gain".to_string(), AnyType::Float(1e100))]);
-        assert!(validate_node_arguments(raw, &s).is_ok());
+        validate_node_arguments(raw, &s).unwrap();
     }
 
     // ---- Array parameter parsing ----
@@ -1596,7 +1592,7 @@ mod tests {
         );
         let raw = BTreeMap::new();
         let args = validate_node_arguments(raw, &s).unwrap();
-        let AnyType::Object(device) = args.0.get("device").unwrap() else {
+        let AnyType::Object(device) = &args.0["device"] else {
             panic!("expected synthesized object");
         };
         assert_eq!(
@@ -1619,7 +1615,7 @@ mod tests {
         );
         let raw = BTreeMap::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
         let args = validate_node_arguments(raw, &s).unwrap();
-        let AnyType::Object(device) = args.0.get("device").unwrap() else {
+        let AnyType::Object(device) = &args.0["device"] else {
             panic!("expected device object");
         };
         assert_eq!(
@@ -1646,7 +1642,7 @@ mod tests {
             )])),
         )]);
         let args = validate_node_arguments(raw, &s).unwrap();
-        let AnyType::Object(device) = args.0.get("device").unwrap() else {
+        let AnyType::Object(device) = &args.0["device"] else {
             panic!("expected device object");
         };
         assert_eq!(
@@ -1697,7 +1693,7 @@ mod tests {
             )])),
         )]);
         let args = validate_node_arguments(raw, &s).unwrap();
-        let AnyType::Object(video) = args.0.get("video").unwrap() else {
+        let AnyType::Object(video) = &args.0["video"] else {
             panic!("expected video object");
         };
         let AnyType::Object(resolution) = video.get("resolution").unwrap() else {
@@ -1720,7 +1716,7 @@ mod tests {
             BTreeMap::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
         let missing = apply_parameter_defaults(&mut args, &s);
         assert!(missing.is_empty(), "got missing: {missing:?}");
-        let AnyType::Object(device) = args.get("device").unwrap() else {
+        let AnyType::Object(device) = &args["device"] else {
             panic!("expected device object");
         };
         assert_eq!(

@@ -466,7 +466,7 @@ fn check_references(
 /// What a refusal over a target offers: the ids in reach, or that there are
 /// none.
 fn in_reach<'a>(ids: impl IntoIterator<Item = &'a str>) -> String {
-    let listed = crate::error::format_quoted_list(ids.into_iter().collect::<BTreeSet<_>>());
+    let listed = crate::error::format_quoted_list(ids);
     if listed.is_empty() {
         String::from("no instance runs beside it to target")
     } else {

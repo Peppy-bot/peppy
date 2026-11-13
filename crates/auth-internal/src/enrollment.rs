@@ -898,8 +898,8 @@ mod tests {
 
     #[test]
     fn router_endpoints_are_validated_on_read() {
-        assert!(RouterEndpoint::parse("", 7447).is_err());
-        assert!(serde_json::from_str::<RouterEndpoint>(r#"{"host":"","port":1}"#).is_err());
+        RouterEndpoint::parse("", 7447).unwrap_err();
+        serde_json::from_str::<RouterEndpoint>(r#"{"host":"","port":1}"#).unwrap_err();
         let endpoint: RouterEndpoint =
             serde_json::from_str(r#"{"host":"rtr.example","port":7447}"#).unwrap();
         assert_eq!(endpoint.locator(), "tls/rtr.example:7447");
