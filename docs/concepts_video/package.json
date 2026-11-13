@@ -11,5 +11,8 @@
     "gsap": "3.15.1",
     "hyperframes": "0.9.41",
     "three": "0.187.0"
+  },
+  "allowScripts": {
+    "esbuild": false
   }
 }
