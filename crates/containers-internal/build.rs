@@ -392,7 +392,7 @@ mod apptainer_build {
         let matches = built == Some(expected_elf_machine(target_arch));
         if !matches {
             println!(
-                "cargo:warning=apptainer {} is ELF machine {:?}, but the {} target needs {}",
+                "cargo::warning=apptainer {} is ELF machine {:?}, but the {} target needs {}",
                 how,
                 built,
                 target_arch,
@@ -553,11 +553,11 @@ mod apptainer_build {
         match status {
             Ok(s) if s.success() => true,
             Ok(s) => {
-                println!("cargo:warning=Failed to extract Lima archive (exit: {s})");
+                println!("cargo::warning=Failed to extract Lima archive (exit: {s})");
                 false
             }
             Err(e) => {
-                println!("cargo:warning=Failed to run tar for Lima extraction: {e}");
+                println!("cargo::warning=Failed to run tar for Lima extraction: {e}");
                 false
             }
         }
@@ -582,7 +582,7 @@ mod apptainer_build {
 
         let Some(expected_sha256) = lima_archive_sha256(version, os, arch) else {
             println!(
-                "cargo:warning=Missing pinned SHA-256 for Lima {version} {os}-{arch} archive; refusing download"
+                "cargo::warning=Missing pinned SHA-256 for Lima {version} {os}-{arch} archive; refusing download"
             );
             return None;
         };
@@ -602,7 +602,7 @@ mod apptainer_build {
 
         if !cached_limactl.exists() {
             println!(
-                "cargo:warning=Lima archive extracted but bin/limactl not found in {cache_dir:?}"
+                "cargo::warning=Lima archive extracted but bin/limactl not found in {cache_dir:?}"
             );
             return None;
         }
@@ -636,7 +636,7 @@ mod apptainer_build {
 
         if !src_agent.exists() {
             println!(
-                "cargo:warning=Fetching pinned Lima {LIMA_VERSION} guest agent for {lima_arch}..."
+                "cargo::warning=Fetching pinned Lima {LIMA_VERSION} guest agent for {lima_arch}..."
             );
             let downloads_dir = build_helpers::cache_dir("downloads");
             let archive_path = downloads_dir.join(format!(
@@ -647,7 +647,7 @@ mod apptainer_build {
                 lima_additional_guestagents_sha256(LIMA_VERSION, host_os, host_arch)
             else {
                 println!(
-                    "cargo:warning=Missing pinned SHA-256 for the Lima {LIMA_VERSION} additional guest agents \
+                    "cargo::warning=Missing pinned SHA-256 for the Lima {LIMA_VERSION} additional guest agents \
                      of {host_os}-{host_arch}; refusing download"
                 );
                 return false;
@@ -669,7 +669,7 @@ mod apptainer_build {
 
         if !src_agent.exists() {
             println!(
-                "cargo:warning=Guest agent {agent_name} missing from pinned Lima {LIMA_VERSION} additional agents"
+                "cargo::warning=Guest agent {agent_name} missing from pinned Lima {LIMA_VERSION} additional agents"
             );
             return false;
         }
@@ -677,7 +677,7 @@ mod apptainer_build {
         let dest = lima_share.join(&agent_name);
         if let Err(e) = std::fs::copy(&src_agent, &dest) {
             println!(
-                "cargo:warning=Failed to install guest agent {agent_name} into {lima_share:?}: {e}"
+                "cargo::warning=Failed to install guest agent {agent_name} into {lima_share:?}: {e}"
             );
             return false;
         }
@@ -845,7 +845,7 @@ mod apptainer_build {
         let label = format!("lima-stop-{}", lima.instance);
         if !build_helpers::run_command_streaming(&mut cmd, &label).success {
             println!(
-                "cargo:warning=Failed to stop Lima {} instance; it may still be \
+                "cargo::warning=Failed to stop Lima {} instance; it may still be \
                  consuming host memory (stop it with `limactl stop {}`)",
                 lima.instance, lima.instance
             );
@@ -861,7 +861,7 @@ mod apptainer_build {
         let label = format!("lima-delete-{}", lima.instance);
         if !build_helpers::run_command_streaming(&mut cmd, &label).success {
             println!(
-                "cargo:warning=Failed to delete Lima {} instance; recreate may fail",
+                "cargo::warning=Failed to delete Lima {} instance; recreate may fail",
                 lima.instance
             );
         }
@@ -943,7 +943,7 @@ mod apptainer_build {
     fn bundle_libseccomp(install_dir: &Path, target_arch: &str) -> bool {
         let Some(source) = locate_libseccomp(target_arch) else {
             println!(
-                "cargo:warning=Could not locate {LIBSECCOMP_SONAME} to bundle with apptainer; \
+                "cargo::warning=Could not locate {LIBSECCOMP_SONAME} to bundle with apptainer; \
                  the binaries would depend on the runtime host's libseccomp"
             );
             return false;
@@ -951,14 +951,14 @@ mod apptainer_build {
 
         let lib_dir = install_dir.join(APPTAINER_BUNDLED_LIB_DIR);
         if let Err(e) = std::fs::create_dir_all(&lib_dir) {
-            println!("cargo:warning=Failed to create {lib_dir:?}: {e}");
+            println!("cargo::warning=Failed to create {lib_dir:?}: {e}");
             return false;
         }
         // `fs::copy` follows the `libseccomp.so.2 -> libseccomp.so.2.x.y`
         // symlink, so the bundle holds a real file under its SONAME.
         let dest = lib_dir.join(LIBSECCOMP_SONAME);
         if let Err(e) = std::fs::copy(&source, &dest) {
-            println!("cargo:warning=Failed to copy {source:?} to {dest:?}: {e}");
+            println!("cargo::warning=Failed to copy {source:?} to {dest:?}: {e}");
             return false;
         }
         build_helpers::progress!("Bundled {:?} into {:?}", source, lib_dir);
@@ -1018,13 +1018,13 @@ mod apptainer_build {
 
         let Some(arch) = gocryptfs_arch(target_arch) else {
             println!(
-                "cargo:warning=Skipping gocryptfs bundle: unsupported target arch {target_arch}"
+                "cargo::warning=Skipping gocryptfs bundle: unsupported target arch {target_arch}"
             );
             return false;
         };
         let Some(expected_sha256) = gocryptfs_sha256(target_arch) else {
             println!(
-                "cargo:warning=Skipping gocryptfs bundle: no pinned SHA-256 for {target_arch}"
+                "cargo::warning=Skipping gocryptfs bundle: no pinned SHA-256 for {target_arch}"
             );
             return false;
         };
@@ -1051,7 +1051,9 @@ mod apptainer_build {
         }
 
         if let Err(e) = std::fs::create_dir_all(&bin_dir) {
-            println!("cargo:warning=Failed to create gocryptfs install directory {bin_dir:?}: {e}");
+            println!(
+                "cargo::warning=Failed to create gocryptfs install directory {bin_dir:?}: {e}"
+            );
             return false;
         }
 
@@ -1063,7 +1065,7 @@ mod apptainer_build {
         let _ = std::fs::remove_file(&archive_path);
 
         if !gocryptfs_bin.exists() {
-            println!("cargo:warning=gocryptfs extracted but binary missing at {gocryptfs_bin:?}");
+            println!("cargo::warning=gocryptfs extracted but binary missing at {gocryptfs_bin:?}");
             return false;
         }
 
@@ -1110,11 +1112,11 @@ mod apptainer_build {
         match status {
             Ok(s) if s.success() => true,
             Ok(s) => {
-                println!("cargo:warning=Failed to extract gocryptfs binaries (exit: {s})");
+                println!("cargo::warning=Failed to extract gocryptfs binaries (exit: {s})");
                 false
             }
             Err(e) => {
-                println!("cargo:warning=Failed to invoke tar for gocryptfs extract: {e}");
+                println!("cargo::warning=Failed to invoke tar for gocryptfs extract: {e}");
                 false
             }
         }
@@ -1235,7 +1237,7 @@ mod apptainer_build {
 
         let built = source_dir.join("squashfuse_ll");
         if !built.exists() {
-            println!("cargo:warning=squashfuse build reported success but {built:?} is missing");
+            println!("cargo::warning=squashfuse build reported success but {built:?} is missing");
             let _ = std::fs::remove_dir_all(&source_dir);
             return false;
         }
@@ -1279,12 +1281,12 @@ mod apptainer_build {
         let bin_dir = dest.parent().expect("squashfuse dest always has a parent");
         if let Err(e) = std::fs::create_dir_all(bin_dir) {
             println!(
-                "cargo:warning=Failed to create squashfuse install directory {bin_dir:?}: {e}"
+                "cargo::warning=Failed to create squashfuse install directory {bin_dir:?}: {e}"
             );
             return false;
         }
         if let Err(e) = std::fs::copy(built, dest) {
-            println!("cargo:warning=Failed to copy squashfuse binary to {dest:?}: {e}");
+            println!("cargo::warning=Failed to copy squashfuse binary to {dest:?}: {e}");
             return false;
         }
         build_helpers::set_executable(dest);
@@ -1617,7 +1619,7 @@ mod apptainer_build {
                 Ok(entries) => entries,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => {
-                    println!("cargo:warning=Failed to read man page directory {dir:?}: {e}");
+                    println!("cargo::warning=Failed to read man page directory {dir:?}: {e}");
                     return false;
                 }
             };
@@ -1636,7 +1638,7 @@ mod apptainer_build {
                 if contents.contains(home.as_ref()) {
                     let scrubbed = contents.replace(home.as_ref(), MAN_PAGE_HOME_PLACEHOLDER);
                     if let Err(e) = std::fs::write(&path, scrubbed) {
-                        println!("cargo:warning=Failed to scrub man page {path:?}: {e}");
+                        println!("cargo::warning=Failed to scrub man page {path:?}: {e}");
                         return false;
                     }
                 }
@@ -1667,7 +1669,7 @@ mod apptainer_build {
             "aarch64" => "aarch64",
             other => {
                 println!(
-                    "cargo:warning=Unsupported Lima VM architecture for apptainer build: {other}"
+                    "cargo::warning=Unsupported Lima VM architecture for apptainer build: {other}"
                 );
                 return false;
             }
@@ -1694,7 +1696,7 @@ mod apptainer_build {
                 .join("share/lima");
             if !ensure_cross_guest_agent(&lima_share, lima_arch, ("Darwin", "arm64")) {
                 println!(
-                    "cargo:warning=Could not provision the pinned {lima_arch} guest agent; \
+                    "cargo::warning=Could not provision the pinned {lima_arch} guest agent; \
                      falling back to SSH-only readiness (cross-arch VM start may be slower)"
                 );
             }
@@ -1702,7 +1704,7 @@ mod apptainer_build {
 
         if !ensure_lima_instance(lima, LIMA_TEMPLATE, arch_flag, use_rosetta) {
             println!(
-                "cargo:warning=Could not ensure a running Lima instance for apptainer source build"
+                "cargo::warning=Could not ensure a running Lima instance for apptainer source build"
             );
             return false;
         }
@@ -1969,13 +1971,13 @@ echo "=== Apptainer build complete ==="
             Ok(o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 println!(
-                    "cargo:warning=Failed to copy installation from Lima VM (exit: {}): {}",
+                    "cargo::warning=Failed to copy installation from Lima VM (exit: {}): {}",
                     o.status, stderr
                 );
                 return false;
             }
             Err(e) => {
-                println!("cargo:warning=Failed to run tar pipe from Lima VM: {e}");
+                println!("cargo::warning=Failed to run tar pipe from Lima VM: {e}");
                 return false;
             }
         }
@@ -2019,12 +2021,12 @@ echo "=== Apptainer build complete ==="
     // -----------------------------------------------------------------------
 
     fn emit_rerun_directives() {
-        println!("cargo:rerun-if-changed=build.rs");
-        println!("cargo:rerun-if-env-changed=PEPPY_APPTAINER_DIR");
-        println!("cargo:rerun-if-env-changed=PEPPY_LIMA_DIR");
-        println!("cargo:rerun-if-env-changed=PEPPY_CROSS_ARCH");
-        println!("cargo:rerun-if-env-changed=PEPPY_NO_ROSETTA");
-        println!("cargo:rerun-if-env-changed=PEPPY_SKIP_APPTAINER_PROVISION");
+        println!("cargo::rerun-if-changed=build.rs");
+        println!("cargo::rerun-if-env-changed=PEPPY_APPTAINER_DIR");
+        println!("cargo::rerun-if-env-changed=PEPPY_LIMA_DIR");
+        println!("cargo::rerun-if-env-changed=PEPPY_CROSS_ARCH");
+        println!("cargo::rerun-if-env-changed=PEPPY_NO_ROSETTA");
+        println!("cargo::rerun-if-env-changed=PEPPY_SKIP_APPTAINER_PROVISION");
     }
 
     fn emit_constant_env_vars() {
@@ -2034,15 +2036,15 @@ echo "=== Apptainer build complete ==="
         // directory inside the binary.
         let target_arch =
             env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "aarch64".to_string());
-        println!("cargo:rustc-env=LIMA_INSTANCE={LIMA_INSTANCE}");
-        println!("cargo:rustc-env=LIMA_TEMPLATE={LIMA_TEMPLATE}");
-        println!("cargo:rustc-env=APPTAINER_VERSION={APPTAINER_VERSION}");
-        println!("cargo:rustc-env=LIMA_VERSION={LIMA_VERSION}");
-        println!("cargo:rustc-env=GOCRYPTFS_VERSION={GOCRYPTFS_VERSION}");
-        println!("cargo:rustc-env=SQUASHFUSE_VERSION={SQUASHFUSE_VERSION}");
-        println!("cargo:rustc-env=GUEST_APPTAINER_DIR={GUEST_APPTAINER_DIR}");
+        println!("cargo::rustc-env=LIMA_INSTANCE={LIMA_INSTANCE}");
+        println!("cargo::rustc-env=LIMA_TEMPLATE={LIMA_TEMPLATE}");
+        println!("cargo::rustc-env=APPTAINER_VERSION={APPTAINER_VERSION}");
+        println!("cargo::rustc-env=LIMA_VERSION={LIMA_VERSION}");
+        println!("cargo::rustc-env=GOCRYPTFS_VERSION={GOCRYPTFS_VERSION}");
+        println!("cargo::rustc-env=SQUASHFUSE_VERSION={SQUASHFUSE_VERSION}");
+        println!("cargo::rustc-env=GUEST_APPTAINER_DIR={GUEST_APPTAINER_DIR}");
         println!(
-            "cargo:rustc-env=APPTAINER_CACHE_DIR_NAME={}",
+            "cargo::rustc-env=APPTAINER_CACHE_DIR_NAME={}",
             apptainer_cache_dir_name(APPTAINER_VERSION, &target_arch)
         );
         // The apptainer of each Linux architecture, which a build for that
@@ -2052,18 +2054,18 @@ echo "=== Apptainer build complete ==="
             ("APPTAINER_CACHE_DIR_NAME_AARCH64", "aarch64"),
         ] {
             println!(
-                "cargo:rustc-env={variable}={}",
+                "cargo::rustc-env={variable}={}",
                 apptainer_cache_dir_name(APPTAINER_VERSION, arch)
             );
         }
         println!(
-            "cargo:rustc-env=APPTAINER_CACHE_SENTINEL_NAME={}",
+            "cargo::rustc-env=APPTAINER_CACHE_SENTINEL_NAME={}",
             apptainer_cache_sentinel_name(APPTAINER_VERSION)
         );
         let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
         let (lima_os, lima_arch) = lima_host_of(&target_os, &target_arch);
         println!(
-            "cargo:rustc-env=LIMA_CACHE_DIR_NAME={}",
+            "cargo::rustc-env=LIMA_CACHE_DIR_NAME={}",
             lima_cache_dir_name(lima_os, lima_arch)
         );
     }
@@ -2079,7 +2081,7 @@ echo "=== Apptainer build complete ==="
         let has_other_agent = ensure_cross_guest_agent(&lima_share, other_arch, lima_host);
         if !has_other_agent {
             println!(
-                "cargo:warning=The Lima {LIMA_VERSION} guest agent of {other_arch} is not \
+                "cargo::warning=The Lima {LIMA_VERSION} guest agent of {other_arch} is not \
                  provisioned: a VM of that architecture cannot start from this build"
             );
         }
@@ -2237,7 +2239,7 @@ echo "=== Apptainer build complete ==="
     /// native source build, whose post-build ELF check refuses a wrong-ISA
     /// result before anything is cached or shipped.
     fn find_macos_cache_fallback(version: &str, arch: &str) -> Option<PathBuf> {
-        println!("cargo:rerun-if-env-changed=PEPPY_HOST_HOME");
+        println!("cargo::rerun-if-env-changed=PEPPY_HOST_HOME");
         let host_home = PathBuf::from(env::var("PEPPY_HOST_HOME").ok()?);
         let candidate = host_home
             .join(".peppy/tmp")
@@ -2317,7 +2319,7 @@ echo "=== Apptainer build complete ==="
             "linux" => false,
             other => {
                 println!(
-                    "cargo:warning=Skipping apptainer build: apptainer is Linux-only (target_os={other})"
+                    "cargo::warning=Skipping apptainer build: apptainer is Linux-only (target_os={other})"
                 );
                 return;
             }
@@ -2338,7 +2340,7 @@ echo "=== Apptainer build complete ==="
         // fine without it.
         if !use_lima && !binary_runs("fuse2fs") {
             println!(
-                "cargo:warning=fuse2fs not found on this host. The bundled rootless apptainer \
+                "cargo::warning=fuse2fs not found on this host. The bundled rootless apptainer \
                  needs it to mount EXT3 filesystem images; without it every container start logs \
                  `fuse2fs not found, will not be able to mount EXT3 filesystems` and EXT3 mounts \
                  are unavailable. Install it with `sudo apt-get install fuse2fs`."
@@ -2357,7 +2359,7 @@ echo "=== Apptainer build complete ==="
         // that cache.
         if env::var("PEPPY_SKIP_APPTAINER_PROVISION").as_deref() == Ok("1") {
             println!(
-                "cargo:warning=Skipping apptainer provisioning \
+                "cargo::warning=Skipping apptainer provisioning \
                  (PEPPY_SKIP_APPTAINER_PROVISION=1); this build cannot run containers"
             );
             return;
@@ -2378,7 +2380,7 @@ echo "=== Apptainer build complete ==="
             }
             (false, Some(_)) => {}
             (false, None) => println!(
-                "cargo:warning=Could not download Lima {LIMA_VERSION}: this build cannot build \
+                "cargo::warning=Could not download Lima {LIMA_VERSION}: this build cannot build \
                  for {other_arch} in an emulated VM"
             ),
         }
@@ -2403,7 +2405,7 @@ echo "=== Apptainer build complete ==="
         // crate without re-running the script that fills the cache, which repairs
         // nothing.
         let cache_sentinel = apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION);
-        println!("cargo:rerun-if-changed={}", cache_sentinel.display());
+        println!("cargo::rerun-if-changed={}", cache_sentinel.display());
 
         // Step 3: Copy apptainer installation to OUT_DIR for release packaging.
         // The stamp also names the bundled gocryptfs and squashfuse versions:

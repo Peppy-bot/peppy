@@ -99,7 +99,7 @@ fn configure_python_from_pixi() {
 
     // Tell cargo to rerun if pixi.lock changes
     println!(
-        "cargo:rerun-if-changed={}",
+        "cargo::rerun-if-changed={}",
         manifest_dir.join("pixi.lock").display()
     );
 

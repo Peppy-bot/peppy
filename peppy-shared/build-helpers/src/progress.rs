@@ -1,12 +1,12 @@
 //! Reporting build-script progress to the person running the build.
 //!
-//! Cargo captures a build script's stdout, keeps every `cargo:warning=` line
+//! Cargo captures a build script's stdout, keeps every `cargo::warning=` line
 //! it finds, and replays them on every later build of that package, including
 //! the fully cached ones where the script never runs again. Progress reported
 //! that way outlives the work it described: a one-off tool compile keeps
 //! reprinting its whole log on every command until something invalidates the
 //! build script. Progress therefore goes straight to the terminal running the
-//! build, which cargo neither captures nor replays, and `cargo:warning=` stays
+//! build, which cargo neither captures nor replays, and `cargo::warning=` stays
 //! reserved for conditions the user has to act on.
 
 use std::fs::{File, OpenOptions};
@@ -24,7 +24,7 @@ const ERASE_STATUS_BAR: &str = "\r\x1b[2K";
 /// Prefer the [`progress!`](crate::progress!) macro at call sites; this is the
 /// function it forwards to. When the build has no controlling terminal (CI, an
 /// IDE, a piped build) the message is dropped: nobody is watching for it, and
-/// the alternative, a `cargo:warning=` line, would be replayed on every later
+/// the alternative, a `cargo::warning=` line, would be replayed on every later
 /// build. Failures are reported as warnings instead, so a build that goes
 /// wrong stays diagnosable without a terminal.
 pub fn report_progress(message: &str) {

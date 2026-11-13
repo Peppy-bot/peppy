@@ -9,11 +9,11 @@ pub fn run_command(command: &mut Command, description: &str) -> bool {
     match command.status() {
         Ok(status) if status.success() => true,
         Ok(status) => {
-            println!("cargo:warning=Failed to {description} (exit status: {status})");
+            println!("cargo::warning=Failed to {description} (exit status: {status})");
             false
         }
         Err(err) => {
-            println!("cargo:warning=Failed to {description}: {err}");
+            println!("cargo::warning=Failed to {description}: {err}");
             false
         }
     }
@@ -38,7 +38,7 @@ const FAILURE_TAIL_LINES: usize = 40;
 /// [`crate::report_progress`], so the user sees real-time progress during
 /// long-running build script operations without cargo replaying that log on
 /// every later build. When the command fails, the tail of its captured output
-/// is emitted as `cargo:warning=` lines instead, which keeps a broken build
+/// is emitted as `cargo::warning=` lines instead, which keeps a broken build
 /// diagnosable where no terminal is watching.
 ///
 /// The full captured stdout and stderr are returned for post-hoc error
@@ -53,7 +53,7 @@ pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutpu
     let mut child = match command.spawn() {
         Ok(c) => c,
         Err(e) => {
-            println!("cargo:warning=[{label}] Failed to spawn: {e}");
+            println!("cargo::warning=[{label}] Failed to spawn: {e}");
             return CommandOutput {
                 success: false,
                 stdout: String::new(),
@@ -99,7 +99,7 @@ pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutpu
     let status = match child.wait() {
         Ok(status) => status,
         Err(e) => {
-            println!("cargo:warning=[{label}] Failed to wait for child process: {e}");
+            println!("cargo::warning=[{label}] Failed to wait for child process: {e}");
             return CommandOutput {
                 success: false,
                 stdout: stdout_captured,
@@ -144,7 +144,7 @@ fn strip_line_ending(line: &[u8]) -> &[u8] {
 /// tool reports sits at the end of its output, and a full compile log would
 /// bury it.
 fn failure_warnings(label: &str, failure: &str, stdout: &str, stderr: &str) -> Vec<String> {
-    let mut warnings = vec![format!("cargo:warning=[{label}] {failure}")];
+    let mut warnings = vec![format!("cargo::warning=[{label}] {failure}")];
 
     for (stream, captured) in [("stderr", stderr), ("stdout", stdout)] {
         let lines: Vec<&str> = captured.lines().collect();
@@ -153,9 +153,9 @@ fn failure_warnings(label: &str, failure: &str, stdout: &str, stderr: &str) -> V
         }
         let first_reported = lines.len().saturating_sub(FAILURE_TAIL_LINES);
         warnings.push(match first_reported {
-            0 => format!("cargo:warning=[{label}] {stream}:"),
+            0 => format!("cargo::warning=[{label}] {stream}:"),
             _ => format!(
-                "cargo:warning=[{label}] {stream}, last {} of {} lines:",
+                "cargo::warning=[{label}] {stream}, last {} of {} lines:",
                 FAILURE_TAIL_LINES,
                 lines.len()
             ),
@@ -163,7 +163,7 @@ fn failure_warnings(label: &str, failure: &str, stdout: &str, stderr: &str) -> V
         warnings.extend(
             lines[first_reported..]
                 .iter()
-                .map(|line| format!("cargo:warning=[{label}]   {line}")),
+                .map(|line| format!("cargo::warning=[{label}]   {line}")),
         );
     }
 
@@ -361,7 +361,7 @@ mod tests {
     fn failure_warnings_report_the_failure_alone_when_nothing_was_captured() {
         assert_eq!(
             failure_warnings("build-tool", "Command failed with exit status: 1", "", ""),
-            ["cargo:warning=[build-tool] Command failed with exit status: 1"]
+            ["cargo::warning=[build-tool] Command failed with exit status: 1"]
         );
     }
 
@@ -370,11 +370,11 @@ mod tests {
         assert_eq!(
             failure_warnings("build-tool", "failed", "out-line\n", "err-line\n"),
             [
-                "cargo:warning=[build-tool] failed",
-                "cargo:warning=[build-tool] stderr:",
-                "cargo:warning=[build-tool]   err-line",
-                "cargo:warning=[build-tool] stdout:",
-                "cargo:warning=[build-tool]   out-line",
+                "cargo::warning=[build-tool] failed",
+                "cargo::warning=[build-tool] stderr:",
+                "cargo::warning=[build-tool]   err-line",
+                "cargo::warning=[build-tool] stdout:",
+                "cargo::warning=[build-tool]   out-line",
             ]
         );
     }
@@ -384,8 +384,8 @@ mod tests {
         let captured = numbered_lines(FAILURE_TAIL_LINES);
         let warnings = failure_warnings("build-tool", "failed", "", &captured);
         assert_eq!(warnings.len(), FAILURE_TAIL_LINES + 2);
-        assert_eq!(warnings[1], "cargo:warning=[build-tool] stderr:");
-        assert_eq!(warnings[2], "cargo:warning=[build-tool]   line-0");
+        assert_eq!(warnings[1], "cargo::warning=[build-tool] stderr:");
+        assert_eq!(warnings[2], "cargo::warning=[build-tool]   line-0");
     }
 
     #[test]
@@ -397,13 +397,13 @@ mod tests {
         assert_eq!(
             warnings[1],
             format!(
-                "cargo:warning=[build-tool] stderr, last {FAILURE_TAIL_LINES} of {line_count} lines:"
+                "cargo::warning=[build-tool] stderr, last {FAILURE_TAIL_LINES} of {line_count} lines:"
             )
         );
-        assert_eq!(warnings[2], "cargo:warning=[build-tool]   line-10");
+        assert_eq!(warnings[2], "cargo::warning=[build-tool]   line-10");
         assert_eq!(
             warnings[warnings.len() - 1],
-            format!("cargo:warning=[build-tool]   line-{}", line_count - 1)
+            format!("cargo::warning=[build-tool]   line-{}", line_count - 1)
         );
     }
 

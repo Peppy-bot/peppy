@@ -20,7 +20,7 @@ const FIXTURES_DIR: &str = "tests/fixtures";
 const FIXTURES: &[&str] = &["everything", "frame"];
 
 fn main() {
-    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-changed=build.rs");
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
     if env::var_os("CARGO_FEATURE_EMBEDDED_COMPILER").is_some() {
         embed_compiler(&out_dir);
@@ -34,7 +34,7 @@ fn embed_compiler(out_dir: &Path) {
     let target = build_helpers::build_target_triple();
     let binary_path = build_helpers::bundled_capnp_for_embedding(&target)
         .unwrap_or_else(|error| panic!("{error}"));
-    println!("cargo:rerun-if-changed={}", binary_path.display());
+    println!("cargo::rerun-if-changed={}", binary_path.display());
     fs::write(
         out_dir.join("embedded_capnp.rs"),
         format!(
@@ -46,7 +46,7 @@ fn embed_compiler(out_dir: &Path) {
 }
 
 fn compile_fixtures(out_dir: &Path) {
-    println!("cargo:rerun-if-changed={FIXTURES_DIR}");
+    println!("cargo::rerun-if-changed={FIXTURES_DIR}");
     let capnp = build_helpers::host_capnp_for_execution();
     let mut command = capnpc::CompilerCommand::new();
     command

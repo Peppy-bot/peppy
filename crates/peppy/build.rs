@@ -20,12 +20,12 @@ fn embed_git_hash() {
     let git_common_dir = run_git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]);
 
     let git_hash = run_git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
-    println!("cargo:rustc-env=PEPPY_GIT_HASH={git_hash}");
+    println!("cargo::rustc-env=PEPPY_GIT_HASH={git_hash}");
 
     if let Some(dir) = git_dir {
         let head = PathBuf::from(&dir).join("HEAD");
         if head.exists() {
-            println!("cargo:rerun-if-changed={}", head.display());
+            println!("cargo::rerun-if-changed={}", head.display());
         }
     }
     // The reflog is updated on every commit, merge, rebase, or checkout.
@@ -35,7 +35,7 @@ fn embed_git_hash() {
     if let Some(common) = git_common_dir {
         let reflog = PathBuf::from(common).join("logs/HEAD");
         if reflog.exists() {
-            println!("cargo:rerun-if-changed={}", reflog.display());
+            println!("cargo::rerun-if-changed={}", reflog.display());
         }
     }
 }

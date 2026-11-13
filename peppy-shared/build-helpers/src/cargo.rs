@@ -23,8 +23,8 @@ pub fn build_target_triple() -> String {
 /// Embed the `PEPPY_GIT_TAG` environment variable into the binary at compile time.
 ///
 /// If `PEPPY_GIT_TAG` is set and non-empty (by `build_release.sh`), emits a
-/// `cargo:rustc-env` directive so the crate can read it via `env!()`.
-/// Also registers `cargo:rerun-if-env-changed` so cargo rebuilds when the
+/// `cargo::rustc-env` directive so the crate can read it via `env!()`.
+/// Also registers `cargo::rerun-if-env-changed` so cargo rebuilds when the
 /// variable changes.
 pub fn embed_git_tag() {
     let tag = std::env::var("PEPPY_GIT_TAG").ok();
@@ -39,9 +39,9 @@ fn git_tag_directives(tag: Option<&str>) -> Vec<String> {
     if let Some(tag) = tag
         && !tag.is_empty()
     {
-        directives.push(format!("cargo:rustc-env=PEPPY_GIT_TAG={tag}"));
+        directives.push(format!("cargo::rustc-env=PEPPY_GIT_TAG={tag}"));
     }
-    directives.push("cargo:rerun-if-env-changed=PEPPY_GIT_TAG".to_string());
+    directives.push("cargo::rerun-if-env-changed=PEPPY_GIT_TAG".to_string());
     directives
 }
 
@@ -135,7 +135,7 @@ fn bundled_tools_dir() -> PathBuf {
 /// serves the one consumer that ships the target's binary inside the
 /// artifact instead of running it.
 ///
-/// Emits a `cargo:rerun-if-changed` directive for the binary so a compiler
+/// Emits a `cargo::rerun-if-changed` directive for the binary so a compiler
 /// update triggers fresh code generation. Panics when the host platform has no
 /// bundled compiler or [`bundled_tools_dir`] does not hold it, because a build
 /// script cannot recover from either.
@@ -149,7 +149,7 @@ pub fn host_capnp_for_execution() -> PathBuf {
         )
     });
     let binary_path = existing_bundled_capnp(platform);
-    println!("cargo:rerun-if-changed={}", binary_path.display());
+    println!("cargo::rerun-if-changed={}", binary_path.display());
     binary_path
 }
 
@@ -323,7 +323,7 @@ fn cargo_install_binary_with(
 
     let built_binary = install_root.join("bin").join(name);
     if !built_binary.exists() {
-        println!("cargo:warning=cargo install succeeded but binary not found at {built_binary:?}");
+        println!("cargo::warning=cargo install succeeded but binary not found at {built_binary:?}");
         return None;
     }
 
@@ -336,7 +336,7 @@ fn cargo_install_binary_with(
         .and_then(|_| std::fs::rename(&staged, &cached_binary));
     if let Err(e) = published {
         let _ = std::fs::remove_file(&staged);
-        println!("cargo:warning=Failed to cache compiled {name} binary: {e}");
+        println!("cargo::warning=Failed to cache compiled {name} binary: {e}");
         return None;
     }
 
@@ -348,7 +348,7 @@ fn cargo_install_binary_with(
 mod tests {
     use super::*;
 
-    const RERUN_DIRECTIVE: &str = "cargo:rerun-if-env-changed=PEPPY_GIT_TAG";
+    const RERUN_DIRECTIVE: &str = "cargo::rerun-if-env-changed=PEPPY_GIT_TAG";
     const SUPPORTED_CAPNP_PLATFORMS: [CapnpPlatform; 3] = [
         CapnpPlatform::LinuxX86_64,
         CapnpPlatform::LinuxAarch64,
@@ -359,7 +359,7 @@ mod tests {
     fn git_tag_directives_emits_rustc_env_then_rerun_for_nonempty_tag() {
         assert_eq!(
             git_tag_directives(Some("v1.2.3")),
-            ["cargo:rustc-env=PEPPY_GIT_TAG=v1.2.3", RERUN_DIRECTIVE]
+            ["cargo::rustc-env=PEPPY_GIT_TAG=v1.2.3", RERUN_DIRECTIVE]
         );
     }
 

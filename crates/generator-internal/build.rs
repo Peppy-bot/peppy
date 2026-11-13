@@ -10,7 +10,7 @@ fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
             Ok(e) => e,
             Err(e) => {
                 println!(
-                    "cargo:warning=Failed to read directory {}: {}",
+                    "cargo::warning=Failed to read directory {}: {}",
                     current.display(),
                     e
                 );
@@ -69,7 +69,7 @@ fn collect_crate_source_files(
             Ok(e) => e,
             Err(e) => {
                 println!(
-                    "cargo:warning=Failed to read directory {}: {}",
+                    "cargo::warning=Failed to read directory {}: {}",
                     current.display(),
                     e
                 );
@@ -124,7 +124,7 @@ mod ruff_build {
 
         if !unpacked {
             println!(
-                "cargo:warning=Failed to download ruff for {target} (no pre-built binary available)"
+                "cargo::warning=Failed to download ruff for {target} (no pre-built binary available)"
             );
             let _ = std::fs::remove_dir_all(&temp_dir);
             return false;
@@ -133,7 +133,7 @@ mod ruff_build {
         let ruff_bin = temp_dir.join("ruff");
         if ruff_bin.exists() {
             if let Err(e) = std::fs::copy(&ruff_bin, dest) {
-                println!("cargo:warning=Failed to copy downloaded ruff binary: {e}");
+                println!("cargo::warning=Failed to copy downloaded ruff binary: {e}");
                 let _ = std::fs::remove_dir_all(&temp_dir);
                 return false;
             }
@@ -141,14 +141,14 @@ mod ruff_build {
             return true;
         }
 
-        println!("cargo:warning=Downloaded ruff archive did not contain ruff binary");
+        println!("cargo::warning=Downloaded ruff archive did not contain ruff binary");
         let _ = std::fs::remove_dir_all(&temp_dir);
         false
     }
 
     pub(crate) fn run() {
-        println!("cargo:rerun-if-changed=build.rs");
-        println!("cargo:rustc-env=RUFF_VERSION={}", super::RUFF_VERSION);
+        println!("cargo::rerun-if-changed=build.rs");
+        println!("cargo::rustc-env=RUFF_VERSION={}", super::RUFF_VERSION);
 
         let target = build_helpers::build_target_triple();
 
@@ -351,16 +351,16 @@ mod peppylib_build {
     /// marker is the one exception, registered by [`track_so_cache_presence`].
     fn register_rerun_triggers(peppylib_py_dir: &Path) {
         for file in so_rebuild_input_files(peppylib_py_dir) {
-            println!("cargo:rerun-if-changed={}", file.display());
+            println!("cargo::rerun-if-changed={}", file.display());
         }
         for py_file in peppylib_python_files(&peppylib_py_dir.join("peppylib")) {
-            println!("cargo:rerun-if-changed={}", py_file.display());
+            println!("cargo::rerun-if-changed={}", py_file.display());
         }
-        println!("cargo:rerun-if-env-changed={REBUILD_ENV_VAR}");
-        println!("cargo:rerun-if-env-changed={PREBUILT_SO_DIR_ENV}");
+        println!("cargo::rerun-if-env-changed={REBUILD_ENV_VAR}");
+        println!("cargo::rerun-if-env-changed={PREBUILT_SO_DIR_ENV}");
         // Toggling the cross-build flag must re-run build.rs so the Linux .so are
         // (re)built or skipped to match, instead of replaying a stale decision.
-        println!("cargo:rerun-if-env-changed=PEPPY_CROSS_BUILD");
+        println!("cargo::rerun-if-env-changed=PEPPY_CROSS_BUILD");
     }
 
     /// Registers the shared `.so` cache's presence marker with cargo and writes
@@ -371,7 +371,7 @@ mod peppylib_build {
     /// re-runs this script once, which then leaves the marker alone.
     fn track_so_cache_presence(so_dir: &Path) {
         let marker = so_dir.join(CACHE_PRESENCE_MARKER);
-        println!("cargo:rerun-if-changed={}", marker.display());
+        println!("cargo::rerun-if-changed={}", marker.display());
         if marker.exists() {
             return;
         }
@@ -751,7 +751,7 @@ mod peppylib_build {
         }
         let hash = hasher.finalize();
         let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
-        println!("cargo:rustc-env=PEPPYLIB_SO_HASH={}", &hex[..16]);
+        println!("cargo::rustc-env=PEPPYLIB_SO_HASH={}", &hex[..16]);
     }
 
     /// Emits `embedded_peppylib_so.rs` into `OUT_DIR`: a `PEPPYLIB_PLATFORM_SO`
@@ -919,7 +919,7 @@ mod peppylib_build {
             peppylib_build_policy::cross_build_requested(),
         );
         println!(
-            "cargo:rustc-env=PEPPYLIB_CROSS_BUILD={}",
+            "cargo::rustc-env=PEPPYLIB_CROSS_BUILD={}",
             u8::from(cross_build)
         );
 
@@ -1000,7 +1000,7 @@ mod peppylib_build {
                 unusable.join("\n")
             );
             println!(
-                "cargo:warning=Skipping peppylib-py build (pixi not available). \
+                "cargo::warning=Skipping peppylib-py build (pixi not available). \
                  Using existing .so files."
             );
             // The assert above already failed the build if any binding is
@@ -1111,7 +1111,7 @@ mod peppylib_build {
         let stale = stale_so_names(&so_dir, &state, &current_hash);
         for name in &stale {
             println!(
-                "cargo:warning=Excluding {name} from the embedded peppylib set: it was \
+                "cargo::warning=Excluding {name} from the embedded peppylib set: it was \
                  built from different sources. Container Python nodes for that platform \
                  will fail to build until a cross build refreshes it \
                  (cargo build --release, or PEPPY_CROSS_BUILD=1 for a debug build)."
@@ -1150,7 +1150,7 @@ fn main() {
     // `#[folder = "$PEPPY_SHARED_DIR/…"]` attributes in src/ expand this at
     // compile time.
     println!(
-        "cargo:rustc-env=PEPPY_SHARED_DIR={}",
+        "cargo::rustc-env=PEPPY_SHARED_DIR={}",
         build_helpers::peppy_shared_dir().display()
     );
 
