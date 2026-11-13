@@ -166,7 +166,7 @@ impl PyTopicMessenger {
     /// node.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_producer, qos, retention, buffer))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -209,7 +209,7 @@ impl PyTopicMessenger {
     /// the pair included.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, pairing_target, link_id, as_topic_name, peer, timeout_secs))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn wait_for_pairing_subscriber<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -246,7 +246,7 @@ impl PyTopicMessenger {
     /// (the node under test, on its slot): the wire shape a pairing emission
     /// has, for a mock playing the other end of a pair.
     #[staticmethod]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn declare_pairing_publisher<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -287,7 +287,7 @@ impl PyTopicMessenger {
     /// The subscription keeps the newest messages, so a test can leave it
     /// unread without holding up the mock's session.
     #[staticmethod]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn subscribe_peer_pinned<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -363,7 +363,7 @@ impl PyTopicMessenger {
     /// matches the reserved default `_` segment.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, timeout_secs, link_id=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn wait_for_subscriber_with_link_id<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -410,7 +410,7 @@ impl PyTopicMessenger {
     /// join later.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, qos, retention, link_id=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn declare_publisher<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,

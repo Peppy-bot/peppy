@@ -70,7 +70,7 @@ fn instance_environment(
 }
 
 /// Starts instances in dependency order, awaiting Running before each next start.
-#[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
+#[expect(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
 pub(in crate::services::stack) async fn start_node_instances(
     ctx: &StackChangeContext,
     phase: &PhaseGoal,
@@ -424,7 +424,6 @@ async fn start_locally(
 /// loudly instead of starting a node the plan was never checked against.
 /// Every remote instance carries it, straddling deployments included,
 /// because the coordinator resolved every deployment itself.
-#[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
 async fn start_remotely(
     ctx: &StackChangeContext,
     core_node: &str,

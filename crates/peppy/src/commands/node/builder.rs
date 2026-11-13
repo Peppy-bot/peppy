@@ -82,7 +82,7 @@ pub async fn build_node_async(
 /// goal rides under), `target_core_node` the daemon that runs the build. They
 /// coincide without a `--core-node` override. `after` says whether the
 /// command sends another goal once the build completed.
-#[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
+#[expect(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
 pub(crate) async fn build_node_on(
     messenger: &MessengerHandle,
     bound_core_node: &str,

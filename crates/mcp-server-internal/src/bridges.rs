@@ -698,7 +698,7 @@ pub(crate) async fn run_task(
 /// on a goal whose admission it did not read: peppylib cancels the goal of
 /// a request that its provider acknowledged and did not answer in time,
 /// and a request that reached no provider started no goal.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) async fn drive_goal(
     task: &PreparedTask,
     messenger: &MessengerHandle,

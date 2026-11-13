@@ -228,7 +228,7 @@ pub fn wait_for_log(logs: impl Fn() -> String, needle: &str, timeout: Duration) 
 // `_instance`, then dropped with the emulation, but never read. The dead-code
 // lint is allowed here deliberately because the value is a lifetime guard, not
 // data anyone inspects.
-#[allow(dead_code)]
+#[expect(dead_code)]
 enum MessengerInstance {
     Mock(MockInstance),
     Zenoh(ZenohdInstance),

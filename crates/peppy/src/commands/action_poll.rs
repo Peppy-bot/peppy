@@ -390,7 +390,7 @@ pub(crate) fn deadline_after(
 ///   [`cancel_unless_stopped`]), with [`Error::Interrupted`].
 ///
 /// The scrolling output is cleared before returning.
-#[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
+#[expect(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
 pub(crate) async fn poll_action_to_completion<R>(
     messenger: &MessengerHandle,
     action_handle: &mut ActionGoalHandle,

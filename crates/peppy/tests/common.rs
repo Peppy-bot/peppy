@@ -498,7 +498,7 @@ pub fn write_minimal_node_config(
 /// build phase is skipped), optional `depends_on` / `implements` manifest
 /// blocks, and an optional top-level `interfaces` block, staged via
 /// [`install_node_manifest`].
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn write_node_config_for_helper(
     nodes_directory: &std::path::Path,
     node_name: &str,

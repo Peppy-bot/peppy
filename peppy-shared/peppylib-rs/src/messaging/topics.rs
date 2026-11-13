@@ -69,7 +69,7 @@ impl TopicMessenger {
     /// yet: [`TopicBuffer::Backpressure`] for a reader that consumes the
     /// stream, such as a node, and [`TopicBuffer::KeepLatest`] for a reader
     /// that can leave messages unread, such as a test that observes a node.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn subscribe(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -138,7 +138,7 @@ impl TopicMessenger {
     /// domain's own `link_id`. Naming the segment is what keeps the two streams
     /// apart for a subscriber that cannot know the daemon's per-boot
     /// `instance_id`. `buffer` is as in [`Self::subscribe`].
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) async fn subscribe_target_scoped_with_link_id(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -179,7 +179,7 @@ impl TopicMessenger {
     /// for either caller. Applications never construct raw key expressions;
     /// every pinned subscription comes through this seam. `buffer` is as in
     /// [`Self::subscribe`].
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) async fn subscribe_peer_pinned(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -231,7 +231,7 @@ impl TopicMessenger {
     /// such as `peppy node echo`, with no observer slot of its own. A slot
     /// that holds no pair publishes nothing, so the subscription receives
     /// nothing until it does. `buffer` is as in [`Self::subscribe`].
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn subscribe_observing(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -275,7 +275,7 @@ impl TopicMessenger {
     /// pairing-shaped target and names the recipient it stands for, and from
     /// [`Self::subscribe_target_scoped`], which leaves the publisher's identity
     /// and `link_id` wildcarded. `buffer` is as in [`Self::subscribe`].
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) async fn subscribe_publisher_pinned(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -304,7 +304,7 @@ impl TopicMessenger {
 
     /// Whether a subscriber matching a pairing emission from this node's
     /// slot `link_id` to `peer` is visible, within `timeout`.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn wait_for_pairing_subscriber(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -331,7 +331,7 @@ impl TopicMessenger {
     /// Declares the publisher for pairing emissions from this node's slot
     /// `link_id` to `peer`: one wire publisher per pair, which is what a
     /// [`crate::runtime::PeerPublisher`] keeps per peer of its slot.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn declare_pairing_publisher(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -422,7 +422,7 @@ impl TopicMessenger {
     /// [`TopicRetention::Latest`] the node's session keeps the topic's newest
     /// messages until the node stops, for subscribers that join later, and
     /// every declaration of the topic states the same retention and QoS.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn declare_publisher(
         messenger: &MessengerHandle,
         as_core_node: &str,

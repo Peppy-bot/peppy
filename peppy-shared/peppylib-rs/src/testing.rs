@@ -73,7 +73,7 @@ const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(200);
 ///
 /// The one scoped unsafe opt-out of this module (see lib.rs): the
 /// get/setrlimit FFI has no safe equivalent.
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
 pub fn ensure_test_fd_limit() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
@@ -242,7 +242,7 @@ pub struct TestTopicPublisher {
 impl TestTopicPublisher {
     /// Declares the underlying publisher now (so the identity is visible to
     /// the mesh immediately) without waiting for any subscriber yet.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn declare(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -281,7 +281,7 @@ impl TestTopicPublisher {
     /// Declares a pairing publisher from the mock's slot `link_id` to `peer`
     /// (the node under test, on its slot), for a mock playing the other end
     /// of a pair.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn declare_to_peer(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -425,7 +425,7 @@ async fn wait_for_matching_subscriber(
 /// The subscription keeps the newest messages ([`TopicBuffer::KeepLatest`]):
 /// a test can leave it unread, and its unread messages never hold up the
 /// other messages to the mock's session.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub async fn subscribe_peer_pinned(
     messenger: &MessengerHandle,
     as_core_node: &str,
@@ -510,7 +510,7 @@ pub async fn wait_action_reachable(
 
 /// The shared probe loop behind the two `wait_*_reachable` helpers: poll the
 /// matching `is_reachable` probe until it answers or `timeout` expires.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 async fn wait_reachable(
     kind: ServiceReadinessKind,
     messenger: &MessengerHandle,

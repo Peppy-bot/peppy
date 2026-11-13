@@ -437,7 +437,7 @@ mod tests {
     use core_node_api::encoding::{ClockConfidence, InterfaceKind};
     use unicode_width::UnicodeWidthStr;
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn row(
         from: &str,
         to: &str,

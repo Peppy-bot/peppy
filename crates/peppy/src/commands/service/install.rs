@@ -289,7 +289,7 @@ fn is_root() -> bool {
 // (see the SAFETY notes on each call). The rest of the crate is
 // `#![deny(unsafe_code)]`.
 #[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
 fn ensure_systemd_user_env() -> Result<()> {
     use std::env;
 

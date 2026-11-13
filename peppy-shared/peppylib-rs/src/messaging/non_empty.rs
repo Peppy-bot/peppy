@@ -13,7 +13,7 @@ pub struct NonEmpty<T> {
 }
 
 // `len` is always at least 1; clippy asks for an `is_empty` beside it.
-#[allow(clippy::len_without_is_empty)]
+#[expect(clippy::len_without_is_empty)]
 impl<T> NonEmpty<T> {
     /// Wraps `members` as a non-empty set, or `None` when the list is empty.
     /// Runtime callers go through the `one_or_more` accessors

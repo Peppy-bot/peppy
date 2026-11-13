@@ -62,7 +62,7 @@ impl From<InfoResponse> for PyInfoResponse {
 #[pymethods]
 impl PyInfoResponse {
     #[new]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new(
         uptime_secs: u64,
         core_node_name: String,
@@ -151,7 +151,7 @@ impl PyStackListResponse {
     /// stack, if any.
     #[new]
     #[pyo3(signature = (graph_json, core_node, instance_id, host_name, copies, launch_copies, shutdown_grace_secs, copy_change=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new(
         graph_json: String,
         core_node: String,

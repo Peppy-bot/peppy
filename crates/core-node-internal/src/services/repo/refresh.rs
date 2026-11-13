@@ -493,7 +493,7 @@ pub(crate) struct RefreshedRepos {
     /// Reported to the client through [`RepoRefreshFeedback::Excluded`]
     /// as the scan runs, so the handler has nothing left to do with it;
     /// kept on the result because the tests assert against it.
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) excluded: Vec<ExcludedRepo>,
     pub(crate) failures: Vec<RepoFailure>,
     /// One entry per repository that was actually read (excluded ones are

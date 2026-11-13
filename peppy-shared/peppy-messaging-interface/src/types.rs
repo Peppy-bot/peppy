@@ -1144,7 +1144,7 @@ impl TopicMessage {
 }
 
 /// Dispatches the Messenger calls to the appropriate backend without using the heap
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 pub enum MessengerAdapter {
     #[cfg(feature = "zenoh")]
     Zenoh(ZenohAdapter),

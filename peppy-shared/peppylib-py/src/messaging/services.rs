@@ -362,7 +362,7 @@ impl PyServiceMessenger {
     /// membership-checked member of the slot's bound set.
     #[staticmethod]
     #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, target=None, request_payload=vec![], response_timeout_secs=2.0))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn poll<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,

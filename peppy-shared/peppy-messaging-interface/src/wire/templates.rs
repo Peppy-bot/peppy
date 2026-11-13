@@ -34,7 +34,7 @@ use super::{SenderTarget, ServiceKind};
 /// * `service_name`, `kind`: the service / action sub-service.
 // The arguments are the wire's positional identity slots; grouping them into a
 // struct would obscure that one-to-one mapping with the key expression.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn service_channel_address(
     to_core: &str,
     from_core: &str,

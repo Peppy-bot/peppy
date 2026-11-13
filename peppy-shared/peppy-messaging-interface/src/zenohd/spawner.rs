@@ -102,7 +102,7 @@ fn arm(mut command: Command) -> Command {
     // captures one `u32`, allocates nothing (`from_raw_os_error` and
     // `last_os_error` build the `Os` variant in place) and touches no parent
     // state.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     unsafe {
         command.pre_exec(move || {
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong) != 0 {

@@ -52,7 +52,7 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         core_node_name: impl Into<String>,
         messaging_host: impl Into<String>,

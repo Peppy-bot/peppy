@@ -186,7 +186,7 @@ const MAX_CONCURRENT_LOCAL_BUILDS: usize = 2;
 ///
 /// `unresolved` collects the nodes whose add on a peer outlived its budget:
 /// whether each landed is known only by asking that peer.
-#[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
+#[expect(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
 pub(in crate::services::stack) async fn add_nodes_to_stack(
     ctx: &StackChangeContext,
     phase: &PhaseGoal,

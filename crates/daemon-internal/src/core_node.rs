@@ -127,7 +127,7 @@ pub struct CoreNodeRunner {
 }
 
 impl CoreNodeRunner {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         messenger: Arc<Mutex<Messenger>>,
         core_node_name: Option<String>,

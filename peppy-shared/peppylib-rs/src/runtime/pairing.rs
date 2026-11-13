@@ -244,7 +244,7 @@ pub async fn subscribe_peer(
 /// publishes to. Prefer [`subscribe_peer`] in nodes; this seam exists for
 /// embedders and tests that manage peer state themselves. The stream ends when
 /// `watch_rx`'s sender drops.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub async fn subscribe_peer_with_watch(
     messenger: MessengerHandle,
     as_core_node: String,
@@ -421,7 +421,7 @@ pub fn declare_peer_publisher(
 /// Messenger-level core of [`declare_peer_publisher`], driven by an explicit
 /// watch channel; the seam for embedders and tests that manage peer state
 /// themselves.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn declare_peer_publisher_with_watch(
     messenger: MessengerHandle,
     as_core_node: String,

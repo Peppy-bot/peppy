@@ -216,7 +216,7 @@ pub(in crate::services::stack) fn phase_cancelled() -> WorkStop {
 /// `cancel_and_drain` controls what happens to the phase future on timeout
 /// and on a cancel; see [`run_phase_with_timeouts`] for the per-phase
 /// rationale.
-#[allow(clippy::too_many_arguments)] // All args serve distinct, unrelated roles; grouping them adds noise.
+#[expect(clippy::too_many_arguments)] // All args serve distinct, unrelated roles; grouping them adds noise.
 pub(super) async fn run_phase<F, T>(
     phase: Pin<Box<F>>,
     activity_notify: Arc<Notify>,

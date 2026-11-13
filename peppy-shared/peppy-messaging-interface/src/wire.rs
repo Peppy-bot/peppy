@@ -554,7 +554,6 @@ pub struct TopicWireReceiver {
 }
 
 impl TopicWireReceiver {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         as_core_node: &str,
         as_instance_id: &str,

@@ -221,7 +221,7 @@ impl ZenohAdapter {
     /// the router keeps one identity across its own restarts. It is taken by
     /// value, not as an `Option`: see [`RouterId`].
     #[cfg(feature = "router")]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn with_router(
         protocol: ZenohNetProtocol,
         host: &str,
@@ -329,7 +329,6 @@ impl ZenohAdapter {
     /// list, gossip toggle, and subscriber buffer sizes. The node runtime passes
     /// its `DiscoveryConfig` here. An empty `seed_peers` falls back to the single
     /// `host:port` seed.
-    #[allow(clippy::too_many_arguments)]
     pub fn connect_to_with_discovery(
         protocol: ZenohNetProtocol,
         host: &str,
@@ -616,7 +615,7 @@ impl ZenohAdapter {
     /// Builds a peer-session config seeded by `host:port` (or `seed_peers` when
     /// non-empty). `buffer_sizes` are applied later at the flume/mpsc layer
     /// (subscribe / listen / call).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn create_client_config(
         protocol: ZenohNetProtocol,
         host: &str,

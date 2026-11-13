@@ -12,7 +12,7 @@
 
 #![cfg(target_os = "linux")]
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 mod common;
 
 use common::{ZenohDaemon, free_port};

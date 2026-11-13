@@ -562,7 +562,7 @@ pub async fn send_node_run_then_cancel(
 /// returns it alongside every feedback line observed. The health responder is
 /// kept alive until the result is fetched so health stays answered through
 /// commit.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub async fn send_node_run_with_delayed_health(
     caller_messenger: &MessengerHandle,
     node_messenger: &MessengerHandle,
@@ -745,7 +745,7 @@ async fn send_node_add_and_wait_internal<'a>(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub async fn send_node_build_and_wait(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -772,7 +772,7 @@ pub async fn send_node_build_and_wait(
 
 /// Like [`send_node_build_and_wait`] but sets the `--force` flag, which cancels
 /// any in-flight build for the node and supersedes it.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub async fn send_node_build_and_wait_forced(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -797,7 +797,7 @@ pub async fn send_node_build_and_wait_forced(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 async fn send_node_build_and_wait_internal(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -1099,7 +1099,7 @@ pub async fn send_node_run_and_wait(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub async fn send_node_run_and_wait_with_env(
     messenger: &MessengerHandle,
     core_node_name: &str,

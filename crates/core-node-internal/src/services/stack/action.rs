@@ -314,7 +314,7 @@ pub(crate) struct StackChangeDefaults {
     pub peppy_version: String,
 }
 
-#[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + two shared handles.
+#[expect(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + two shared handles.
 pub(crate) async fn listen_for_stack_action(
     action_id: ActionId,
     messenger: &MessengerHandle,

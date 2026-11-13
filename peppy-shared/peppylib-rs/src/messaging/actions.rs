@@ -1054,7 +1054,7 @@ impl ActionMessenger {
     ///
     /// Returns `(elapsed, response_bytes_received)` on a clean reply; propagates
     /// the error otherwise.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn probe_latency(
         messenger: &MessengerHandle,
         bound_core_node: &str,
@@ -1124,7 +1124,7 @@ impl ActionMessenger {
     /// Without that, every matching producer would run the handler
     /// concurrently; for actions with side effects (motor commands, file
     /// writes) that is a real-world safety hazard.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn send_goal(
         messenger: &MessengerHandle,
         as_core_node: &str,

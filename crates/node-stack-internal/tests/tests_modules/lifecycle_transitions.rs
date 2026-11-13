@@ -706,7 +706,7 @@ async fn build_sensor_from(
 
 /// [`build_sensor_from`] for a build that may fail. `NodeStackError` is the
 /// error of `NodeEntity::build`, which the library allows to be large.
-#[allow(clippy::result_large_err)]
+#[expect(clippy::result_large_err)]
 async fn try_build_sensor_from(
     h: &BuildHarness,
     config: config::node::NodeConfig,

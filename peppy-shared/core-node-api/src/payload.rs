@@ -154,7 +154,7 @@ mod tests {
 
     // The `&`s are the whole point here: this exercises the two by-reference
     // `PartialEq` impls, so clippy's "drop the reference" suggestion is wrong.
-    #[allow(clippy::op_ref)]
+    #[expect(clippy::op_ref)]
     #[test]
     fn partial_eq_by_reference_both_directions() {
         let owned = Payload::from(vec![9u8, 8, 7]);
