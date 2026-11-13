@@ -43,11 +43,10 @@ fn is_crate_source_file(relative_path: &str, is_config_internal: bool) -> bool {
         return false;
     }
 
-    if relative_path.ends_with(".rs")
-        || relative_path.ends_with(".toml")
-        || relative_path.ends_with(".capnp")
-        || relative_path.ends_with(".j2")
-    {
+    let extension = std::path::Path::new(relative_path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str);
+    if matches!(extension, Some("rs" | "toml" | "capnp" | "j2")) {
         return true;
     }
 
@@ -516,7 +515,11 @@ mod peppylib_build {
     /// True for a platform-suffixed native extension (`_peppylib.abi3.<plat>.so`),
     /// excluding the canonical `_peppylib.abi3.so` Python imports at runtime.
     fn is_platform_so_name(name: &str) -> bool {
-        name.starts_with("_peppylib.abi3.") && name.ends_with(".so") && name != "_peppylib.abi3.so"
+        name.starts_with("_peppylib.abi3.")
+            && Path::new(name)
+                .extension()
+                .is_some_and(|extension| extension == "so")
+            && name != "_peppylib.abi3.so"
     }
 
     /// This build script's own source, embedded so it can be mixed into every

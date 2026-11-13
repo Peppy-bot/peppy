@@ -3806,7 +3806,9 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
         .unwrap_or_default();
     assert!(
         run_log_name.starts_with("delta_recorder_")
-            && run_log_name.ends_with(".log")
+            && Path::new(run_log_name)
+                .extension()
+                .is_some_and(|extension| extension == "log")
             && fs::read_to_string(logs[1])
                 .unwrap_or_default()
                 .contains("the recorder finds no camera"),

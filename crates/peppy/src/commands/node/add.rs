@@ -370,7 +370,7 @@ fn confirm_overwrite(
 ) -> Result<bool> {
     crate::commands::confirm::confirm_prompt(
         &overwrite_question(node_name, tag, instances),
-        reader.as_mut().map(|r| r.as_mut() as &mut dyn BufRead),
+        reader.as_mut().map(|r| -> &mut dyn BufRead { r.as_mut() }),
     )
 }
 

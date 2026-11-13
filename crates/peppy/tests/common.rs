@@ -112,10 +112,11 @@ pub(crate) fn spawn_daemon_with_env(
     // Drain both streams into a shared buffer so tests can wait for output and
     // the child never blocks on a full pipe. The serve daemon logs to stdout.
     let logs = Arc::new(Mutex::new(String::new()));
-    for stream in [
-        Box::new(child.stdout.take().expect("piped stdout")) as Box<dyn std::io::Read + Send>,
-        Box::new(child.stderr.take().expect("piped stderr")) as Box<dyn std::io::Read + Send>,
-    ] {
+    let streams: [Box<dyn std::io::Read + Send>; 2] = [
+        Box::new(child.stdout.take().expect("piped stdout")),
+        Box::new(child.stderr.take().expect("piped stderr")),
+    ];
+    for stream in streams {
         let logs_writer = Arc::clone(&logs);
         std::thread::spawn(move || drain_lines_into(stream, &logs_writer));
     }

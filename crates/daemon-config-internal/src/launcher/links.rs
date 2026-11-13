@@ -286,7 +286,6 @@ mod tests {
     use super::super::compose::{CopyInstance, CopyRecord};
     use super::super::types::DeploymentInstance;
     use super::*;
-    use config::node::ImplementsEntry;
     use config::runtime::{CoreNodeName, Name};
 
     fn parse_instances(json5: &str) -> Vec<DeploymentInstance> {
@@ -306,7 +305,7 @@ mod tests {
             node_tag: "v1",
             instances,
             depends_on,
-            implements: &[] as &[ImplementsEntry],
+            implements: &[],
             addressing: SETS_READ_WHOLE,
         }
     }
@@ -588,7 +587,7 @@ mod tests {
                 node_tag: "v1",
                 instances: &cons_instances,
                 depends_on: Some(&depends_on),
-                implements: &[] as &[ImplementsEntry],
+                implements: &[],
                 addressing: &addressing,
             },
             item(&prod_instances, None),

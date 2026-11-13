@@ -134,12 +134,14 @@ impl RegistryClient {
     }
 
     /// The same client with uploads in chunks of `bytes`.
+    #[must_use]
     pub fn with_upload_chunk_bytes(mut self, bytes: u64) -> Self {
         self.upload_chunk_bytes = bytes.max(1);
         self
     }
 
     /// The same client with pages of `size` tags in the tag list.
+    #[must_use]
     pub fn with_tags_page_size(mut self, size: u32) -> Self {
         self.tags_page_size = size.max(1);
         self

@@ -118,6 +118,10 @@ pub(crate) fn parse_node_source(source: &str, git_ref: Option<String>) -> Result
     Ok(NodeSource::Fs(from_dir))
 }
 
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "the path is in lower case here"
+)]
 fn is_supported_http_archive(url: &url::Url) -> bool {
     let path = url.path().to_ascii_lowercase();
     path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")
@@ -125,6 +129,10 @@ fn is_supported_http_archive(url: &url::Url) -> bool {
 
 /// Returns `true` when the source string looks like a git repository URL
 /// (contains `.git` or uses `git@` / `ssh://` scheme).
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "a git URL writes its `.git` suffix in lower case"
+)]
 pub(crate) fn looks_like_git_url(source: &str) -> bool {
     source.ends_with(".git")
         || source.contains(".git/")
@@ -133,6 +141,10 @@ pub(crate) fn looks_like_git_url(source: &str) -> bool {
         || source.starts_with("git://")
 }
 
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "a git URL writes its `.git` suffix in lower case"
+)]
 pub(crate) fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
     if let Ok(mut parsed) = url::Url::parse(source) {
         parsed.set_query(None);

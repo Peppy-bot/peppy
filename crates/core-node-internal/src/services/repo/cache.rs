@@ -518,11 +518,12 @@ fn parsed_cache<E: RepoCacheEntry>(path: &Path, content: String) -> Result<Arc<V
             path.display()
         ))
     })?);
+    let kept = Arc::clone(&entries);
     parsed_caches().lock().insert(
         path.to_path_buf(),
         ParsedCache {
             content,
-            entries: Arc::clone(&entries) as Arc<dyn Any + Send + Sync>,
+            entries: kept,
         },
     );
     Ok(entries)

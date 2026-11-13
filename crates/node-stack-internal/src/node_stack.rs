@@ -1155,6 +1155,7 @@ impl NodeStack {
     /// `peppy_config.lifecycle.shutdown_grace_secs`). Builder form so the daemon
     /// can configure it at construction without changing [`NodeStack::new`]'s
     /// signature for the many (mostly test) call sites that take the default.
+    #[must_use]
     pub fn with_shutdown_grace(mut self, grace: Duration) -> Self {
         self.shutdown_grace = grace;
         self
@@ -1169,6 +1170,7 @@ impl NodeStack {
     /// Sets the PyPI mirror of Python builds (from
     /// `peppy_config.pypi_mirror`). Builder form, like
     /// [`NodeStack::with_shutdown_grace`]; `None` is the default.
+    #[must_use]
     pub fn with_pypi_mirror(mut self, mirror: Option<PackagesBaseUrl>) -> Self {
         self.pypi_mirror = mirror;
         self
@@ -1183,6 +1185,7 @@ impl NodeStack {
     /// Sets where the publishes of this daemon push to (from
     /// `peppy_config.publish_repository`). Builder form, like
     /// [`NodeStack::with_shutdown_grace`]; no repository is the default.
+    #[must_use]
     pub fn with_publish_settings(mut self, settings: PublishSettings) -> Self {
         self.publish_settings = settings;
         self
@@ -1195,6 +1198,7 @@ impl NodeStack {
 
     /// Sets the exporter of the stack's log files. Builder form, like
     /// [`NodeStack::with_shutdown_grace`].
+    #[must_use]
     pub fn with_log_exporter(mut self, log_exporter: LogExporter) -> Self {
         self.log_exporter = log_exporter;
         self
@@ -1208,6 +1212,7 @@ impl NodeStack {
     /// Sets the time the supervision of the instances runs on. Builder form,
     /// like [`NodeStack::with_shutdown_grace`]; [`TimeSource::System`] is the
     /// default.
+    #[must_use]
     pub fn with_time_source(mut self, time: TimeSource) -> Self {
         self.time = time;
         self
@@ -1221,6 +1226,7 @@ impl NodeStack {
     /// Sets the bounds on the answers to the daemon's requests. Builder form,
     /// like [`NodeStack::with_shutdown_grace`]; [`ReplyBounds::DEFAULT`] is
     /// the default.
+    #[must_use]
     pub fn with_reply_bounds(mut self, reply_bounds: ReplyBounds) -> Self {
         self.reply_bounds = reply_bounds;
         self

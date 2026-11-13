@@ -1113,13 +1113,11 @@ impl CoreNode {
                 Arc::clone(&self.slice_ownership),
             )),
         );
+        let liveness = Arc::clone(&self.node_stack);
         let ctx = ListenerCtx {
             core_node_name,
             clock_source,
-            datastore: Arc::new(datastore::Datastore::new(
-                Arc::clone(&self.node_stack) as Arc<dyn datastore::InstanceLiveness>,
-                core_node_name,
-            )),
+            datastore: Arc::new(datastore::Datastore::new(liveness, core_node_name)),
             relationships,
             raw_calls: raw_calls::RawCallGate::new(),
         };

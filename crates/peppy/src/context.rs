@@ -49,6 +49,7 @@ impl AppContext {
     /// In-process test emulations root their daemon at a per-test temp dir;
     /// this points the context at that daemon's state file without mutating
     /// the process-wide environment, which is not safe from parallel tests.
+    #[must_use]
     pub fn with_daemon_state_file(mut self, daemon_state_path: impl AsRef<Path>) -> Self {
         self.daemon_state_path = Some(daemon_state_path.as_ref().to_path_buf());
         self
@@ -59,6 +60,7 @@ impl AppContext {
     /// default (the local daemon). Only the *target* of each request changes;
     /// the CLI still connects to the local daemon's router, whose federation
     /// carries the traffic to the remote core node.
+    #[must_use]
     pub fn with_core_node_override(mut self, core_node: Option<CoreNodeName>) -> Self {
         self.core_node_override = core_node;
         self

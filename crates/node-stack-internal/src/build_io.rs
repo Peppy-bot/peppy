@@ -712,12 +712,13 @@ mod tests {
     async fn read_lines(input: Vec<u8>, publish: bool) -> (Vec<String>, Vec<String>) {
         let log = scratch_log();
         let hooks = Arc::new(LineRecordingHooks::default());
+        let reader_hooks = Arc::clone(&hooks);
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn_output_reader_async(
             io::Cursor::new(input),
             tx,
             Arc::new(AtomicBool::new(publish)),
-            Arc::clone(&hooks) as Arc<dyn OutputReaderHooks>,
+            reader_hooks,
             Iostream::Stdout,
             None,
             log,
@@ -786,7 +787,7 @@ mod tests {
             io::Cursor::new(input.to_vec()),
             tx,
             Arc::new(AtomicBool::new(true)),
-            Arc::new(LineRecordingHooks::default()) as Arc<dyn OutputReaderHooks>,
+            Arc::new(LineRecordingHooks::default()),
             Iostream::Stderr,
             Some(tail.clone()),
             log,
@@ -864,7 +865,7 @@ mod tests {
             io::Cursor::new(b"first line\npartial".to_vec()).chain(FailingReader),
             tx,
             Arc::new(AtomicBool::new(true)),
-            Arc::new(LineRecordingHooks::default()) as Arc<dyn OutputReaderHooks>,
+            Arc::new(LineRecordingHooks::default()),
             Iostream::Stdout,
             None,
             scratch_log(),

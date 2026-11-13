@@ -1727,6 +1727,7 @@ impl<'a> ApptainerCommand<'a> {
     /// when the command is executed. If `dest` is `None`, the container-side
     /// path mirrors the host path. Optional `opts` (e.g. `"ro"`, `"rw"`) are
     /// appended after the destination.
+    #[must_use]
     pub fn bind(mut self, src: &str, dest: Option<&str>, opts: Option<&str>) -> Self {
         self.bind_mounts.push(BindMount {
             src: src.to_string(),
@@ -1750,6 +1751,7 @@ impl<'a> ApptainerCommand<'a> {
     /// process environment does not cross `limactl shell`, and a value on a
     /// command line shows in the process list. Under Lima, a key or a value
     /// that would break a line fails the terminal method.
+    #[must_use]
     pub fn apptainer_env(mut self, key: &str, value: &str) -> Self {
         self.apptainer_env
             .push((key.to_string(), value.to_string()));
@@ -1773,6 +1775,7 @@ impl<'a> ApptainerCommand<'a> {
     /// the node's environment explicitly as `APPTAINERENV_` variables (which
     /// still apply under `--cleanenv`) keeps the curated set while removing
     /// both hazards.
+    #[must_use]
     pub fn clean_env(mut self) -> Self {
         self.flags.push("--cleanenv".to_string());
         self
@@ -1782,6 +1785,7 @@ impl<'a> ApptainerCommand<'a> {
     ///
     /// These are only effective when running under the Lima backend (macOS).
     /// On Linux (native backend) they are silently ignored.
+    #[must_use]
     pub fn lima_shell_extra_args(mut self, args: &[String]) -> Self {
         self.lima_shell_extra_args.extend(args.iter().cloned());
         self
@@ -1800,6 +1804,7 @@ impl<'a> ApptainerCommand<'a> {
     /// teardown). On the native backend (Linux) the host process-group
     /// SIGKILL already covers the whole tree in the shared namespace, so this is
     /// ignored.
+    #[must_use]
     pub fn cancel_pgid(mut self, key: &str) -> Self {
         self.cancel_pgid_path = Some(lima::guest_pgid_path(key));
         self
@@ -1819,6 +1824,7 @@ impl<'a> ApptainerCommand<'a> {
     /// Lima mount location in the guest, and falls back to the guest home
     /// directory WITHOUT failing, so a build's `%files .` would copy the
     /// user's entire `$HOME` into the image.
+    #[must_use]
     pub fn working_dir(mut self, dir: &Path) -> Self {
         self.working_dir = Some(dir.to_path_buf());
         self
@@ -1832,6 +1838,7 @@ impl<'a> ApptainerCommand<'a> {
     ///
     /// For flags that take a value, call this twice:
     /// `.raw_flag("--overlay").raw_flag("/path/to/overlay")`.
+    #[must_use]
     pub fn raw_flag(mut self, flag: &str) -> Self {
         self.flags.push(flag.to_string());
         self
@@ -1841,6 +1848,7 @@ impl<'a> ApptainerCommand<'a> {
     ///
     /// For `run`: these become container arguments passed to the runscript.
     /// For `exec`: these are appended to the command.
+    #[must_use]
     pub fn args(mut self, args: &[&str]) -> Self {
         match &mut self.kind {
             CommandKind::Run { args: a, .. } => {

@@ -340,7 +340,10 @@ fn entries_of_every_log(dirs: &PeppyDirs) -> BTreeMap<&'static str, Vec<Vec<Stri
                 }
                 match word.rsplit_once('/') {
                     Some((dir, file))
-                        if dir.starts_with("<home>/logs/") && file.ends_with(".log") =>
+                        if dir.starts_with("<home>/logs/")
+                            && Path::new(file)
+                                .extension()
+                                .is_some_and(|extension| extension == "log") =>
                     {
                         format!("{dir}/<log file>")
                     }

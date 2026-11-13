@@ -3,7 +3,7 @@ mod common;
 use common::{
     AbortOnDrop, GOAL_TIMEOUT, GoalEnd, NodeRunTestResponse, RESULT_TIMEOUT, TIMEOUTS, WAIT,
     acquire_container_test_guard, answer_health_probes, answer_readiness, answer_ready_probe,
-    assert_failure, create_test_node_with_name, fast_health_monitor, never,
+    assert_failure, create_test_node_with_name, fast_health_monitor, has_log_extension, never,
     path_env_with_dir_first, poll_until, send_node_add_then_build, send_node_run_and_wait,
     send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
     start_core_node_with_mock_messenger, start_core_node_with_real_messenger, wait_for_state,
@@ -45,7 +45,7 @@ fn assert_run_log_of(path: &std::path::Path, run_dir: &std::path::Path, instance
         .and_then(|name| name.to_str())
         .expect("a run log file name");
     assert!(
-        file_name.starts_with(&format!("{instance_id}_")) && file_name.ends_with(".log"),
+        file_name.starts_with(&format!("{instance_id}_")) && has_log_extension(file_name),
         "{file_name}"
     );
 }

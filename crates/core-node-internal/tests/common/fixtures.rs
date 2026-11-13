@@ -10,6 +10,13 @@ use tempfile::TempDir;
 
 use super::daemon::StartedCoreNode;
 
+/// Whether `file_name` has the `log` extension.
+pub(crate) fn has_log_extension(file_name: &str) -> bool {
+    Path::new(file_name)
+        .extension()
+        .is_some_and(|extension| extension == "log")
+}
+
 /// Publishes `root`'s `peppy_repository.json5`, which is what a repository
 /// offers a daemon. Call it once the repository holds every item the test
 /// expects to be found.

@@ -2,10 +2,11 @@ mod common;
 
 use common::{
     GOAL_TIMEOUT, GoalEnd, NodeAddSource, RESULT_TIMEOUT, acquire_container_test_guard,
-    archive_contains_entry, assert_failure, entity_artifact_path, path_env_with_dir_first,
-    read_file_from_archive, send_logged_node_build, send_node_add_and_wait,
-    send_node_build_and_wait, send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
-    start_core_node_with_mock_messenger_outside_home, write_executable_script, write_peppy_json5,
+    archive_contains_entry, assert_failure, entity_artifact_path, has_log_extension,
+    path_env_with_dir_first, read_file_from_archive, send_logged_node_build,
+    send_node_add_and_wait, send_node_build_and_wait, send_node_build_and_wait_forced,
+    start_core_node_with_mock_messenger, start_core_node_with_mock_messenger_outside_home,
+    write_executable_script, write_peppy_json5,
 };
 use config::failure_kind::PeppyFailureKind;
 use core_node_api::encoding::{NodeBuildFeedback, NodeBuildResult};
@@ -353,7 +354,7 @@ fn read_build_log(
         "log filename should start with '<node_name>_<tag>_', got: {log_filename}"
     );
     assert!(
-        log_filename.ends_with(".log"),
+        has_log_extension(log_filename),
         "log filename should end with '.log', got: {log_filename}"
     );
 

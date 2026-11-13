@@ -83,6 +83,7 @@ impl LogIdentity {
         }
     }
 
+    #[must_use]
     pub fn with_node(self, name: impl Into<String>, tag: impl Into<String>) -> Self {
         Self {
             node: Some(NodeRef {
@@ -93,6 +94,7 @@ impl LogIdentity {
         }
     }
 
+    #[must_use]
     pub fn with_instance(self, instance_id: impl Into<String>) -> Self {
         Self {
             instance_id: Some(instance_id.into()),
@@ -100,6 +102,7 @@ impl LogIdentity {
         }
     }
 
+    #[must_use]
     pub fn with_launch(self, launch_id: Option<&str>) -> Self {
         Self {
             launch_id: launch_id.map(str::to_owned),

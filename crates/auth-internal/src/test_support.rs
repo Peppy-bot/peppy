@@ -197,6 +197,7 @@ impl TestMachineCa {
 
     /// An issuing CA named `name` under this CA, as the platform gives each
     /// peer of a project its own issuer under the CA of the project.
+    #[must_use]
     pub fn issuer(&self, name: &str) -> Self {
         let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).expect("a key");
         let issuer = rcgen::CertifiedIssuer::signed_by(ca_params(name), key, &self.issuer)

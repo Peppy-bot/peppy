@@ -2448,6 +2448,7 @@ impl TrackedNodeInstance {
     }
 
     /// Records the run log of the process this start makes.
+    #[must_use]
     pub fn with_run_log(mut self, path: PathBuf) -> Self {
         self.run_log_path = Some(path);
         self

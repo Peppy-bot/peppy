@@ -646,7 +646,9 @@ mod tests {
         for (name, _) in PEPPYLIB_PLATFORM_SO {
             assert!(
                 name.starts_with(SO_PLATFORM_PREFIX)
-                    && name.ends_with(".so")
+                    && Path::new(name)
+                        .extension()
+                        .is_some_and(|extension| extension == "so")
                     && *name != SO_CANONICAL_NAME,
                 "expected platform-suffixed .so, got: {name}"
             );

@@ -16,6 +16,10 @@ pub(crate) struct ResolvedLocalArchiveSource {
     pub(crate) temp_dir: tempfile::TempDir,
 }
 
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "the path is in lower case here"
+)]
 fn is_supported_archive_path(path: &str) -> bool {
     let path = path.to_ascii_lowercase();
     path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")

@@ -45,11 +45,13 @@ impl NodeInitBuilder {
         }
     }
 
+    #[must_use]
     pub fn with_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.to_dir = dir.into();
         self
     }
 
+    #[must_use]
     pub fn with_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
         self.timeout = timeout.into();
         self
