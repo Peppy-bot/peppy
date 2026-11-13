@@ -92,6 +92,7 @@ impl PairTarget {
     ///
     /// Only a planner holding both manifests may call this: it is the
     /// receiving daemon's sole evidence about a slot it cannot read.
+    #[must_use]
     pub fn with_remote_peer(mut self, remote_peer: RemotePeerPairing) -> Self {
         self.remote_peer = Some(remote_peer);
         self
@@ -360,16 +361,19 @@ impl NodeRunGoal {
 
     /// Pins the manifest the planner validated against. Set by a coordinator
     /// dispatching to a peer; left unset on the in-process launch path.
+    #[must_use]
     pub fn with_manifest_sha256(mut self, manifest_sha256: impl Into<String>) -> Self {
         self.manifest_sha256 = Some(manifest_sha256.into());
         self
     }
 
+    #[must_use]
     pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
         self.env_vars = env_vars;
         self
     }
 
+    #[must_use]
     pub fn with_requested_pairs(
         mut self,
         requested_pairs: BTreeMap<String, Vec<PairTarget>>,
@@ -378,16 +382,19 @@ impl NodeRunGoal {
         self
     }
 
+    #[must_use]
     pub fn with_vacant_pairs(mut self, vacant_pairs: BTreeMap<String, String>) -> Self {
         self.vacant_pairs = vacant_pairs;
         self
     }
 
+    #[must_use]
     pub fn with_covered_pairs(mut self, covered_pairs: BTreeMap<String, Vec<PairTarget>>) -> Self {
         self.covered_pairs = covered_pairs;
         self
     }
 
+    #[must_use]
     pub fn with_planned_observations(
         mut self,
         planned_observations: BTreeMap<String, ObservationTargets>,
@@ -398,6 +405,7 @@ impl NodeRunGoal {
 
     /// Marks this goal as one step of a federated launch's dispatch, so the
     /// receiving daemon accepts it while reserved for that launch.
+    #[must_use]
     pub fn with_launch_id(mut self, launch_id: impl Into<String>) -> Self {
         self.launch_id = Some(launch_id.into());
         self
@@ -405,11 +413,13 @@ impl NodeRunGoal {
 
     /// Names the daemons whose observers tap this instance, so the daemon that
     /// spawns it can report its lifecycle to them.
+    #[must_use]
     pub fn with_lifecycle_watchers(mut self, lifecycle_watchers: Vec<String>) -> Self {
         self.lifecycle_watchers = lifecycle_watchers;
         self
     }
 
+    #[must_use]
     pub fn with_restart(mut self, restart: RestartRequest) -> Self {
         self.restart = restart;
         self
@@ -420,6 +430,7 @@ impl NodeRunGoal {
     /// holds now (its bindings, the observer sets and the watchers its last
     /// exit took, as joins and removals edited them) and no pairs to plan,
     /// which the respawn requests from the pairs its slot held.
+    #[must_use]
     pub fn for_respawn(
         &self,
         slot_bindings: config::runtime::SlotBindings,
@@ -1008,6 +1019,7 @@ impl NodeRunResult {
     }
 
     /// The endpoints the started instance serves.
+    #[must_use]
     pub fn with_endpoints(mut self, endpoints: Vec<InstanceEndpoint>) -> Self {
         self.endpoints = endpoints;
         self

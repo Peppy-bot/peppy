@@ -126,6 +126,7 @@ impl StandaloneConfig {
     /// let config = StandaloneConfig::new()
     ///     .with_parameters(&MyParams { threshold: 0.5, enabled: true });
     /// ```
+    #[must_use]
     pub fn with_parameters<T: serde::Serialize>(mut self, params: &T) -> Self {
         self.parameters =
             Some(serde_json::to_value(params).expect("parameters must be serializable"));
@@ -133,36 +134,42 @@ impl StandaloneConfig {
     }
 
     /// Set runtime parameters from a raw JSON value.
+    #[must_use]
     pub fn with_parameters_json(mut self, params: serde_json::Value) -> Self {
         self.parameters = Some(params);
         self
     }
 
     /// Set instance ID (defaults to "standalone")
+    #[must_use]
     pub fn with_instance_id(mut self, id: impl Into<String>) -> Self {
         self.instance_id = Some(id.into());
         self
     }
 
     /// Set node name (defaults to peppy.json5 manifest name)
+    #[must_use]
     pub fn with_node_name(mut self, name: impl Into<String>) -> Self {
         self.node_name = Some(name.into());
         self
     }
 
     /// Set messaging host (defaults to `DEFAULT_MESSAGING_HOST`)
+    #[must_use]
     pub fn with_messaging_host(mut self, host: impl Into<String>) -> Self {
         self.messaging_host = Some(host.into());
         self
     }
 
     /// Set messaging port (defaults to `DEFAULT_MESSAGING_PORT`)
+    #[must_use]
     pub fn with_messaging_port(mut self, port: u16) -> Self {
         self.messaging_port = Some(port);
         self
     }
 
     /// Set both messaging host and port
+    #[must_use]
     pub fn with_messaging(mut self, host: impl Into<String>, port: u16) -> Self {
         self.messaging_host = Some(host.into());
         self.messaging_port = Some(port);
@@ -172,6 +179,7 @@ impl StandaloneConfig {
     /// Bind the node to `clock`, the standalone spelling of a launcher's
     /// `framework: { clock: "<domain>" }` and of the publisher a domain
     /// declaration names. Wall time is the default.
+    #[must_use]
     pub fn with_clock(mut self, clock: config::runtime::ClockBinding) -> Self {
         self.clock = clock;
         self
@@ -184,6 +192,7 @@ impl StandaloneConfig {
     /// multi slot; a scalar slot takes at most one, and a second one fails
     /// startup. Standalone-mode stand-in for the daemon's pair delivery;
     /// ignored (with a warning) if the manifest declares no such slot.
+    #[must_use]
     pub fn with_peer_pin(
         self,
         link_id: impl Into<String>,
@@ -203,6 +212,7 @@ impl StandaloneConfig {
     /// [`with_peer_pin`](Self::with_peer_pin) for a peer that belongs to the
     /// copy named `copy`, as a `stack join` stamps it: the member the node
     /// reads for this pair carries that copy name.
+    #[must_use]
     pub fn with_peer_pin_in_copy(
         self,
         link_id: impl Into<String>,
@@ -255,6 +265,7 @@ impl StandaloneConfig {
     /// empty says so with [`Self::with_vacant_producer_slot`]).
     /// Standalone-mode stand-in for the launcher's validated binding map;
     /// ignored (with a warning) if the manifest declares no such slot.
+    #[must_use]
     pub fn with_bound_producer(
         self,
         link_id: impl Into<String>,
@@ -273,6 +284,7 @@ impl StandaloneConfig {
     /// the copy's fragment wrote: the producer runs under the id a launch
     /// mints from the two, `<copy>_<instance_id>`, and the member the node
     /// reads for it carries both.
+    #[must_use]
     pub fn with_bound_producer_in_copy(
         self,
         link_id: impl Into<String>,
@@ -313,6 +325,7 @@ impl StandaloneConfig {
     /// a `one` / `one_or_more` slot, exactly as it does for a daemon boot
     /// config. The reason a deployment writes down has no standalone
     /// counterpart, because there is no deployment to write it.
+    #[must_use]
     pub fn with_vacant_producer_slot(mut self, link_id: impl Into<String>) -> Self {
         self.bound_producers.entry(link_id.into()).or_default();
         self
@@ -334,6 +347,7 @@ impl StandaloneConfig {
     /// The seeded members boot live, at the generation the daemon would assign a
     /// first incarnation: there is no daemon to report a source going down, so
     /// standalone liveness never changes.
+    #[must_use]
     pub fn with_observed_source(
         mut self,
         link_id: impl Into<String>,
@@ -408,12 +422,14 @@ where
     /// This config is used as a fallback when not running in daemon mode.
     /// If the CLI launches this node (setting `PEPPY_RUNTIME_CONFIG`),
     /// daemon mode takes precedence and this config is ignored.
+    #[must_use]
     pub fn standalone(mut self, config: StandaloneConfig) -> Self {
         self.standalone_config = Some(config);
         self
     }
 
     /// Use a custom peppy.json5 path
+    #[must_use]
     pub fn with_config_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.manifest = ManifestSource::File(path.into());
         self
@@ -425,6 +441,7 @@ where
     /// itself. In daemon mode there is no codegen output whose fingerprint
     /// could be checked against the manifest, so it is taken as given;
     /// standalone mode reads it exactly as it would read the file.
+    #[must_use]
     pub fn with_manifest(mut self, node_config: NodeConfig) -> Self {
         self.manifest = ManifestSource::Value(Box::new(node_config));
         self
@@ -566,6 +583,7 @@ where
     ///
     /// This is useful when using `init()` for manual async execution and you want
     /// to control the cancellation token yourself.
+    #[must_use]
     pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
         self.cancellation_token = Some(token);
         self

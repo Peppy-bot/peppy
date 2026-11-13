@@ -142,11 +142,13 @@ impl RepoAddRequest {
         }
     }
 
+    #[must_use]
     pub fn with_top(mut self, top: bool) -> Self {
         self.top = top;
         self
     }
 
+    #[must_use]
     pub fn with_id(mut self, id: u64) -> Self {
         self.id = Some(id);
         self

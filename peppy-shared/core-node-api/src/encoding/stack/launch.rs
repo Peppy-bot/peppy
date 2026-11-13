@@ -209,16 +209,19 @@ impl LaunchGoal {
         Ok(self)
     }
 
+    #[must_use]
     pub fn with_rebuild(mut self, rebuild: bool) -> Self {
         self.rebuild = rebuild;
         self
     }
 
+    #[must_use]
     pub fn with_prebuild(mut self, prebuild: bool) -> Self {
         self.prebuild = prebuild;
         self
     }
 
+    #[must_use]
     pub fn with_publish(mut self, publish: Option<crate::encoding::StackPublish>) -> Self {
         self.publish = publish;
         self
@@ -808,6 +811,7 @@ impl LaunchResult {
         }
     }
 
+    #[must_use]
     pub fn with_published(mut self, published: Vec<crate::encoding::NodePublishLine>) -> Self {
         self.published = published;
         self

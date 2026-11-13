@@ -227,6 +227,7 @@ impl RepoRefreshResult {
     /// The refresh ran and published its caches, but the repositories that
     /// `report` names could not be read. The counts are the ones the caches
     /// actually hold, retained entries included.
+    #[must_use]
     pub fn with_read_failure_report(mut self, report: impl Into<String>) -> Self {
         self.read_failure_report = report.into();
         self

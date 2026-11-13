@@ -52,11 +52,13 @@ impl ParticipantReserveRequest {
         }
     }
 
+    #[must_use]
     pub fn with_deployment_pins(mut self, pins: Vec<String>) -> Self {
         self.deployment_pins_json5 = pins;
         self
     }
 
+    #[must_use]
     pub fn with_publish_repository(
         mut self,
         repository: Option<crate::encoding::OciRepository>,

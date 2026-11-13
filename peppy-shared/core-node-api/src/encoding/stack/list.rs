@@ -209,6 +209,7 @@ impl StackListResponse {
 
     /// Attaches the launch this slice belongs to. A daemon whose stack came
     /// from a federated launch always sets this.
+    #[must_use]
     pub fn with_launch(mut self, launch: LaunchIdentity) -> Self {
         self.launch = Some(launch);
         self
@@ -216,12 +217,14 @@ impl StackListResponse {
 
     /// Attaches the reservation currently held over this machine. A daemon
     /// reserved by a federated launch always sets this.
+    #[must_use]
     pub fn with_reservation(mut self, reservation: LaunchIdentity) -> Self {
         self.reservation = Some(reservation);
         self
     }
 
     /// Attaches the join or the removal of a copy that holds the stack now.
+    #[must_use]
     pub fn with_copy_change(mut self, change: CopyChange) -> Self {
         self.copy_change = Some(change);
         self

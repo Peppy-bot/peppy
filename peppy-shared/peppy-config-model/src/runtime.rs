@@ -738,6 +738,7 @@ impl RuntimeConfig {
 
     /// This configuration, naming `credential` as the key file of the
     /// instance.
+    #[must_use]
     pub fn with_credential(mut self, credential: PathBuf) -> Self {
         self.credential = Some(credential);
         self

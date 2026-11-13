@@ -1108,6 +1108,7 @@ impl TopicMessage {
     /// Attach a producer-stamped send time (ns since the Unix epoch), as carried
     /// by the transport. Builder form so the subscribe path can set it after
     /// parsing the keyexpr without widening the common constructors.
+    #[must_use]
     pub fn with_source_timestamp_nanos(mut self, source_timestamp_nanos: Option<u64>) -> Self {
         self.source_timestamp_nanos = source_timestamp_nanos;
         self

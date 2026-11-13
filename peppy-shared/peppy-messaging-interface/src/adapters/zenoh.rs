@@ -403,6 +403,7 @@ impl ZenohAdapter {
     /// until it lands. [`is_linked`](Self::is_linked) is the signal for that.
     /// `reconnecting_client_open_blocks_until_the_router_accepts` pins both
     /// halves of this behaviour.
+    #[must_use]
     pub fn with_session_reconnect(mut self) -> Self {
         self.reconnect_session = true;
         self
@@ -717,6 +718,7 @@ impl ZenohAdapter {
     /// There is intentionally no in-process namespace *swap* once a session is
     /// open: zenoh captures the namespace once at session build, so a change
     /// requires a fresh session (the daemon rebuilds its whole generation).
+    #[must_use]
     pub fn with_namespace(mut self, namespace: Option<Namespace>) -> Self {
         let protocol = self.client_config.protocol;
         let host = self.client_config.host.clone();

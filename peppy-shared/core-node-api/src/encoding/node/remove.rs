@@ -27,11 +27,13 @@ impl NodeRemoveRequest {
         }
     }
 
+    #[must_use]
     pub fn with_stop_instances(mut self, stop_instances: bool) -> Self {
         self.stop_instances = stop_instances;
         self
     }
 
+    #[must_use]
     pub fn with_launch_id(mut self, launch_id: impl Into<String>) -> Self {
         self.launch_id = Some(launch_id.into());
         self

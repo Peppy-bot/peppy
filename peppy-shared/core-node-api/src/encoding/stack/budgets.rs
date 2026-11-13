@@ -39,6 +39,7 @@ impl StackBudgets {
         }
     }
 
+    #[must_use]
     pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
         self.env_vars = env_vars;
         self

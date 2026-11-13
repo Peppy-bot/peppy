@@ -148,6 +148,7 @@ impl CancellationToken {
     }
 
     /// Creates a child token that is cancelled when the parent is cancelled.
+    #[must_use]
     pub fn child_token(&self) -> Self {
         Self(self.0.child_token())
     }

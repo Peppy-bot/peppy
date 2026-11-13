@@ -81,22 +81,26 @@ impl NodeBuildGoal {
         }
     }
 
+    #[must_use]
     pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
         self.env_vars = env_vars;
         self
     }
 
+    #[must_use]
     pub fn with_force(mut self, force: bool) -> Self {
         self.force = force;
         self
     }
 
+    #[must_use]
     pub fn with_rebuild(mut self, rebuild: bool) -> Self {
         self.rebuild = rebuild;
         self
     }
 
     /// Asks for the publish of the node with its build.
+    #[must_use]
     pub fn with_publish(mut self, publish: NodePublishRequest) -> Self {
         self.publish = Some(publish);
         self
@@ -104,6 +108,7 @@ impl NodeBuildGoal {
 
     /// Marks this goal as one step of a federated launch's dispatch, so the
     /// receiving daemon accepts it while reserved for that launch.
+    #[must_use]
     pub fn with_launch_id(mut self, launch_id: impl Into<String>) -> Self {
         self.launch_id = Some(launch_id.into());
         self
@@ -279,6 +284,7 @@ impl NodeBuildResult {
         }
     }
 
+    #[must_use]
     pub fn with_published(mut self, published: Vec<PlatformPublish>) -> Self {
         self.published = published;
         self

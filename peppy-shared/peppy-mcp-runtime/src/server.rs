@@ -254,6 +254,7 @@ impl std::fmt::Debug for ExposureServerBuilder {
 impl ExposureServerBuilder {
     /// Registers where the server reads the fleet of a per-robot bundle:
     /// the members of every target as the stack binds them now.
+    #[must_use]
     pub fn with_fleet(mut self, source: impl FleetSource) -> Self {
         self.fleet_source = Some(Arc::new(source));
         self
@@ -262,6 +263,7 @@ impl ExposureServerBuilder {
     /// Injects the time source for freshness and rate gating. Defaults to
     /// the wall clock; the host passes its sim-time-aware clock so sim time
     /// governs policies too.
+    #[must_use]
     pub fn with_clock(mut self, clock: Clock) -> Self {
         self.clock = clock;
         self
@@ -270,18 +272,21 @@ impl ExposureServerBuilder {
     /// Injects the wall clock the call record stamps its entries on, as
     /// nanoseconds since the Unix epoch. Defaults to the host wall clock;
     /// tests pass a counter.
+    #[must_use]
     pub fn with_wall_clock(mut self, clock: Clock) -> Self {
         self.wall_clock = clock;
         self
     }
 
     /// Registers the bridge behind one tool entry of the bundle.
+    #[must_use]
     pub fn with_tool(mut self, name: impl Into<String>, handler: impl ToolHandler) -> Self {
         self.handlers.insert(name.into(), Arc::new(handler));
         self
     }
 
     /// Registers the action bridge behind one task entry of the bundle.
+    #[must_use]
     pub fn with_task(mut self, name: impl Into<String>, handler: impl TaskHandler) -> Self {
         self.task_handlers.insert(name.into(), Arc::new(handler));
         self

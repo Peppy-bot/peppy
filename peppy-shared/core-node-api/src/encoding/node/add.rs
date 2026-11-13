@@ -246,11 +246,13 @@ impl NodeAddGoal {
         Self::from_source(source, git_hash, 0)
     }
 
+    #[must_use]
     pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
         self.env_vars = env_vars;
         self
     }
 
+    #[must_use]
     pub fn with_force(mut self, force: bool) -> Self {
         self.force = force;
         self
@@ -258,6 +260,7 @@ impl NodeAddGoal {
 
     /// Marks this goal as one step of a federated launch's dispatch, so the
     /// receiving daemon accepts it while reserved for that launch.
+    #[must_use]
     pub fn with_launch_id(mut self, launch_id: impl Into<String>) -> Self {
         self.launch_id = Some(launch_id.into());
         self
@@ -265,6 +268,7 @@ impl NodeAddGoal {
 
     /// Attaches the closure pins of a pinned batch; see
     /// [`Self::pins_json5`].
+    #[must_use]
     pub fn with_pins(mut self, pins_json5: Vec<String>) -> Self {
         self.pins_json5 = pins_json5;
         self

@@ -321,6 +321,7 @@ impl TestTopicPublisher {
 
     /// Override how long the first publish may wait for a subscriber before
     /// failing (default [`READINESS_TIMEOUT`]).
+    #[must_use]
     pub fn with_readiness_timeout(mut self, timeout: Duration) -> Self {
         self.readiness_timeout = timeout;
         self
@@ -785,6 +786,7 @@ impl MockActionServerCore {
     /// [`ConcurrentAction::with_result_retention_grace`] does. A zero grace
     /// makes every later result request of a settled goal read
     /// [`GoalOutcome::Expired`](crate::messaging::GoalOutcome::Expired).
+    #[must_use]
     pub fn with_result_retention_grace(mut self, grace: Duration) -> Self {
         self.engine = self.engine.with_result_retention_grace(grace);
         self

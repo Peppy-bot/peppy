@@ -731,6 +731,7 @@ impl ServiceWireSender {
     }
 
     /// The sender of a call that `signing` signs.
+    #[must_use]
     pub fn signed(mut self, signing: CallSigning) -> Self {
         self.signing = Some(signing);
         self

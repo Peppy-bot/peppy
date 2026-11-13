@@ -2367,6 +2367,7 @@ impl ConcurrentAction {
     /// Override how long a completed-but-unfetched result stays routable after
     /// its [`GoalContext`] drops (default [`RESULT_RETENTION_GRACE`]). Exposed
     /// mainly so tests can exercise eviction without waiting the full window.
+    #[must_use]
     pub fn with_result_retention_grace(mut self, grace: Duration) -> Self {
         self.result_retention_grace = grace;
         self

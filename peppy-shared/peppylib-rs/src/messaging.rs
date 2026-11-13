@@ -290,6 +290,7 @@ impl MessengerConnect {
     /// and re-declares its subscriptions/queryables instead of going dead. Used
     /// by long-lived node processes; short-lived / CLI connections leave it off
     /// so a dead daemon fails fast rather than blocking on connection retries.
+    #[must_use]
     pub fn reconnecting(mut self) -> Self {
         self.reconnect = true;
         self
@@ -298,6 +299,7 @@ impl MessengerConnect {
     /// Dial the router over TLS (`tls/`), validating its certificate against the
     /// trust configured in `tls`, instead of the plaintext `tcp/` default. Used
     /// by an out-of-band prober that connects to a router's `tls/` listener.
+    #[must_use]
     pub fn tls(mut self, tls: pmi::TlsConfig) -> Self {
         self.transport = Transport::Tls(tls);
         self
@@ -309,6 +311,7 @@ impl MessengerConnect {
     /// [`DiscoveryConfig`](SessionScope::Discovery), are mutually exclusive by
     /// construction, so a session can never request both at once. Left unset, the
     /// session opens under the `local` default namespace as a gossip peer.
+    #[must_use]
     pub fn scope(mut self, scope: SessionScope<'_>) -> Self {
         match scope {
             SessionScope::Namespace(ns) => {
@@ -505,6 +508,7 @@ impl MessengerHandle {
     /// This handle, signing with `signer` each user request that it sends to
     /// a daemon: a raw service or action of a daemon, or a member of a daemon
     /// interface. The daemon refuses such a call without a signature.
+    #[must_use]
     pub fn signing_calls_with(mut self, signer: CallSigner) -> Self {
         self.call_signer = Some(Arc::new(signer));
         self
@@ -513,6 +517,7 @@ impl MessengerHandle {
     /// This handle, running `check` on each call that an endpoint of the
     /// handle receives, before its handler reads it. A daemon gives its
     /// session the check of its senders.
+    #[must_use]
     pub fn checking_calls_with(mut self, check: Arc<dyn CallCheck>) -> Self {
         self.call_check = Some(check);
         self
