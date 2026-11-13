@@ -84,6 +84,10 @@ fn status() -> Result<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the Linux form of this function can fail, and both forms have one caller"
+)]
 fn status() -> Result<()> {
     println!("Container prerequisites");
     println!("----------------------");
@@ -173,6 +177,10 @@ fn setup() -> Result<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the Linux form of this function can fail, and both forms have one caller"
+)]
 fn setup() -> Result<()> {
     println!("No setup needed. On macOS, containers run inside a Lima VM (no setup required).");
     Ok(())

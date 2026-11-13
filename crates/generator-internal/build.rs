@@ -277,7 +277,7 @@ mod peppylib_build {
             .expect("failed to read wheels directory")
             .filter_map(Result::ok)
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "whl"))
-            .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
+            .max_by_key(|e| e.metadata().ok()?.modified().ok())
             .map(|e| e.path())
             .expect("no .whl file found in wheels directory");
 

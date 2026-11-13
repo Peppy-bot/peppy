@@ -736,9 +736,9 @@ mod tests {
     ///
     /// The Linux container bindings (linux-aarch64 and linux-x86_64) are produced
     /// only when the cross build is enabled: every release build, plus debug
-    /// builds that opt in via PEPPY_CROSS_BUILD (the CI workflows do). Otherwise
+    /// builds that opt in via `PEPPY_CROSS_BUILD` (the CI workflows do). Otherwise
     /// the embedded set lacks every Linux platform and this test has nothing to
-    /// assert and skips. The gate reads PEPPYLIB_CROSS_BUILD, the decision the
+    /// assert and skips. The gate reads `PEPPYLIB_CROSS_BUILD`, the decision the
     /// build script actually took for this compilation, so the two can never
     /// disagree.
     #[test]
