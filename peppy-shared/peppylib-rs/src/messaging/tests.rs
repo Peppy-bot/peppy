@@ -1395,7 +1395,7 @@ async fn assert_poll_to_absent_producer_is_unreachable(
             // handler) is a failure. `call_count == 0` below is the
             // authoritative guarantee that nothing was processed.
             match handled {
-                Err(_) | Ok(Ok(false)) | Ok(Err(_)) => {}
+                Err(_) | Ok(Ok(false) | Err(_)) => {}
                 Ok(Ok(true)) => {
                     panic!("service handler processed a request despite the wrong target")
                 }

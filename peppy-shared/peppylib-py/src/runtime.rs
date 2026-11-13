@@ -352,7 +352,7 @@ async fn run_python_shutdown_hook(callback: Py<PyAny>, event_loop_slot: SharedEv
 /// By defining these helpers as pure Python (via `PyModule::from_code`), we keep
 /// `catch_unwind` out of the call path entirely, letting Python's own `try/except
 /// BaseException` handle any exception, foreign or otherwise.
-fn create_event_loop_helpers<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyModule>> {
+fn create_event_loop_helpers(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
     PyModule::from_code(
         py,
         c"

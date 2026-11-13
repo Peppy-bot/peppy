@@ -64,10 +64,10 @@ impl LoadedOption {
     /// selection, each with the own axis whose option brings it: its own
     /// fragments first, with no axis, then for each of its axes in
     /// declaration order the fragments of the option `own` picks there.
-    fn selected_fragments<'a, 's>(
+    fn selected_fragments<'a>(
         &'a self,
-        own: &'s UnitSelection,
-    ) -> impl Iterator<Item = (Option<&'a str>, &'a LoadedFragment)> + use<'a, 's> {
+        own: &UnitSelection,
+    ) -> impl Iterator<Item = (Option<&'a str>, &'a LoadedFragment)> {
         self.fragments
             .iter()
             .map(|fragment| (None, fragment))

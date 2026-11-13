@@ -18,7 +18,7 @@ struct PeppyConfigTemplate<'a> {
     peppylib_path: &'a str,
 }
 
-impl<'a> PeppyConfigTemplate<'a> {
+impl PeppyConfigTemplate<'_> {
     pub const TEMPLATE_PATH: &'static str = "peppygen/rust/Cargo.toml.j2";
 }
 

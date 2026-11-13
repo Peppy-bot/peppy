@@ -928,8 +928,9 @@ async fn next_feedback_step(handle: &mut GoalHandle) -> FeedbackStep {
             FeedbackStep::Overflowed { bound }
         }
         Ok(None)
-        | Err(ConsumerError::Messaging(_))
-        | Err(ConsumerError::UndeclaredFailureKind { .. }) => FeedbackStep::Ended,
+        | Err(ConsumerError::Messaging(_) | ConsumerError::UndeclaredFailureKind { .. }) => {
+            FeedbackStep::Ended
+        }
     }
 }
 

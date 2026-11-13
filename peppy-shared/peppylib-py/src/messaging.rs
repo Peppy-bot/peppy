@@ -193,7 +193,7 @@ pub(crate) fn decode_err(what: &str, err: core_node_api::Error) -> PyErr {
 /// through this helper gives them the Pythonic `None` return. The
 /// `Output = PyResult<()>` bound also means the compiler rejects any non-void
 /// future passed here by mistake.
-pub(crate) fn future_into_py_unit<'py, F>(py: Python<'py>, fut: F) -> PyResult<Bound<'py, PyAny>>
+pub(crate) fn future_into_py_unit<F>(py: Python<'_>, fut: F) -> PyResult<Bound<'_, PyAny>>
 where
     F: Future<Output = PyResult<()>> + Send + 'static,
 {
@@ -224,11 +224,11 @@ impl PyZenohdInstance {
     /// Returns a ZenohdInstance that automatically stops the router when dropped.
     #[staticmethod]
     #[pyo3(signature = (host, port=None))]
-    fn start_ephemeral<'py>(
-        py: Python<'py>,
+    fn start_ephemeral(
+        py: Python<'_>,
         host: String,
         port: Option<u16>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    ) -> PyResult<Bound<'_, PyAny>> {
         crate::py_future::future_into_py(py, async move {
             let instance = ZenohAdapter::start_router_ephemeral(&host, port)
                 .await
@@ -307,11 +307,7 @@ pub struct PyMessengerHandle {
 impl PyMessengerHandle {
     /// Connect to a messenger at the specified host and port.
     #[staticmethod]
-    fn from_host_port<'py>(
-        py: Python<'py>,
-        host: String,
-        port: u16,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn from_host_port(py: Python<'_>, host: String, port: u16) -> PyResult<Bound<'_, PyAny>> {
         crate::py_future::future_into_py(py, async move {
             let handle = MessengerHandle::connect(&host, port)
                 .await
@@ -329,12 +325,12 @@ impl PyMessengerHandle {
     /// routes to it.
     #[staticmethod]
     #[pyo3(signature = (host, port, namespace=None))]
-    fn from_host_port_with_namespace<'py>(
-        py: Python<'py>,
+    fn from_host_port_with_namespace(
+        py: Python<'_>,
         host: String,
         port: u16,
         namespace: Option<String>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    ) -> PyResult<Bound<'_, PyAny>> {
         crate::py_future::future_into_py(py, async move {
             let namespace = match namespace {
                 None => Namespace::local(),

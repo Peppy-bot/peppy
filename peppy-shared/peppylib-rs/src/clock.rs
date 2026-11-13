@@ -502,7 +502,7 @@ fn compute_sync(t0: u64, t1: u64, t2: u64, t3: u64) -> (i64, u64) {
         i128::from(t2),
         i128::from(t3),
     );
-    let offset = ((t1 - t0) + (t2 - t3)) / 2;
+    let offset = i128::midpoint(t1 - t0, t2 - t3);
     let delay = (t3 - t0) - (t2 - t1);
 
     // Each clamp bounds its value to the range of the target type, so the

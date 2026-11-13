@@ -84,11 +84,7 @@ fn is_filesystem_reference(trail: &[String]) -> bool {
     let trail: Vec<&str> = trail.iter().map(String::as_str).collect();
     matches!(
         trail.as_slice(),
-        [.., "path"]
-            | ["package", "workspace"]
-            | ["package", "build"]
-            | ["workspace", "members"]
-            | ["workspace", "exclude"]
+        [.., "path"] | ["package", "workspace" | "build"] | ["workspace", "members" | "exclude"]
     )
 }
 

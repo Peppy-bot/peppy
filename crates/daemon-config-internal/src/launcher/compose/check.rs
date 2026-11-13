@@ -195,9 +195,11 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
 fn check_bare_launch(prepared: &PreparedLauncher, label: &str) -> Vec<String> {
     match prepared.launch(&[], &[]) {
         Ok(_)
-        | Err(CompositionError::UnresolvedAxis { .. })
-        | Err(CompositionError::CopyAxisUnfilled { .. })
-        | Err(CompositionError::UnresolvedCopyAxis(_)) => Vec::new(),
+        | Err(
+            CompositionError::UnresolvedAxis { .. }
+            | CompositionError::CopyAxisUnfilled { .. }
+            | CompositionError::UnresolvedCopyAxis(_),
+        ) => Vec::new(),
         Err(e) => vec![format!(
             "{label}: the bare launch (no `--with`) fails: {e}. A launch of what the file \
              deploys must start"

@@ -541,7 +541,7 @@ fn host_clock_ticks_per_second() -> NonZeroU64 {
 
 /// Converts `/proc` clock ticks to time at `ticks_per_second`.
 fn clock_ticks_to_duration(ticks: u64, ticks_per_second: NonZeroU64) -> Duration {
-    Duration::from_micros(ticks.saturating_mul(1_000_000) / ticks_per_second.get())
+    Duration::from_micros(ticks.saturating_mul(1_000_000) / ticks_per_second)
 }
 
 /// Recursive file-size sum of `root`, never following symlinks (a symlink's
