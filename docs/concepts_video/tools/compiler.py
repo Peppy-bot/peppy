@@ -97,8 +97,8 @@ def compile_project(
         shutil.rmtree(destination)
     (destination / "compositions").mkdir(parents=True)
     environment = _environment(transcript, footage)
-    for number, (segment, slot) in enumerate(zip(transcript.segments, timeline.segments, strict=True), start=1):
-        composition = _render_composition(environment, segment, slot, number)
+    for segment, slot in zip(transcript.segments, timeline.segments, strict=True):
+        composition = _render_composition(environment, segment, slot)
         (destination / "compositions" / f"{segment.id}.html").write_text(composition, encoding="utf-8")
     root = environment.get_template(ROOT_TEMPLATE).render(
         segments=timeline.segments, duration=timeline.duration, frames_per_second=FRAMES_PER_SECOND
@@ -175,9 +175,7 @@ def _environment(transcript: Transcript, footage: tuple[FootageFile, ...]) -> ji
     return environment
 
 
-def _render_composition(
-    environment: jinja2.Environment, segment: Segment, slot: SegmentSlot, number: int
-) -> str:
+def _render_composition(environment: jinja2.Environment, segment: Segment, slot: SegmentSlot) -> str:
     name = f"{segment.id}{TEMPLATE_SUFFIX}"
     try:
         template = environment.get_template(name)
@@ -186,7 +184,7 @@ def _render_composition(
     read_paths: set[str] = set()
     rendered = template.render(
         segment=segment,
-        number=number,
+        number=segment.number,
         start=slot.start,
         duration=slot.duration,
         screen=TrackedTable(segment.screen, "screen", read_paths),

@@ -81,3 +81,9 @@ def test_a_voice_setting_that_is_not_above_zero_is_refused() -> None:
 
     with pytest.raises(TranscriptError, match="`speed` is not a number above zero"):
         parse_transcript(document)
+
+
+def test_a_segment_has_the_number_of_its_place_in_the_video() -> None:
+    transcript = transcript_of([segment_table("opening"), segment_table("node")])
+
+    assert [(segment.id, segment.number) for segment in transcript.segments] == [("opening", 1), ("node", 2)]

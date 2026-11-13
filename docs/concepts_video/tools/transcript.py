@@ -68,6 +68,8 @@ ScreenText = Union[str, CodeBlock, tuple["ScreenText", ...], Mapping[str, "Scree
 @dataclass(frozen=True)
 class Segment:
     id: str
+    # The place of the segment in the video, from 1.
+    number: int
     chapter: str
     sources: tuple[Source, ...]
     voice: tuple[Sentence, ...]
@@ -102,8 +104,8 @@ def read_transcript(path: Path) -> Transcript:
 
 def parse_transcript(document: Mapping[str, object]) -> Transcript:
     segments = tuple(
-        _parse_segment(table, f"segment[{index}]")
-        for index, table in enumerate(_list_of_tables(document, "segment", "transcript"))
+        _parse_segment(table, number)
+        for number, table in enumerate(_list_of_tables(document, "segment", "transcript"), start=1)
     )
     if not segments:
         raise TranscriptError("transcript: it has no segment")
@@ -136,8 +138,8 @@ def _parse_texts(table: object, where: str) -> Mapping[str, str]:
     return dict(table)
 
 
-def _parse_segment(table: Mapping[str, object], where: str) -> Segment:
-    segment_id = _identifier(table, "id", where)
+def _parse_segment(table: Mapping[str, object], number: int) -> Segment:
+    segment_id = _identifier(table, "id", f"segment {number}")
     where = f"segment `{segment_id}`"
     sources = tuple(
         _parse_source(source, f"{where}, source[{index}]")
@@ -154,6 +156,7 @@ def _parse_segment(table: Mapping[str, object], where: str) -> Segment:
     _refuse_duplicates([sentence.id for sentence in voice], f"{where}, voice")
     return Segment(
         id=segment_id,
+        number=number,
         chapter=_string(table, "chapter", where),
         sources=sources,
         voice=voice,

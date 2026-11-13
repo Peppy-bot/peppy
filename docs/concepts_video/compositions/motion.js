@@ -57,8 +57,10 @@ window.Motion = (function () {
     );
   }
 
-  /* Move a part in a straight line from one point to another, `times` times. */
+  /* Move a part in a straight line from one point to another, `times` times.
+     The part shows only while it moves. */
   function travel(timeline, target, from, to, at, duration, times) {
+    gsap.set(target, { opacity: 0 });
     timeline.fromTo(
       target,
       { x: from.x, y: from.y, opacity: 1 },

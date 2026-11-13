@@ -67,7 +67,10 @@ function addLights(scene, renderer) {
 }
 
 /* A camera that looks at the robot from its front right, a little from
-   above, and holds the full robot at each angle of the turntable. */
+   above. It holds the sphere around the robot as the robot stands at the
+   angle 0 of the turntable, in the height of the canvas. In a canvas that is
+   less wide than high, an arm can leave the canvas at a large angle: look at
+   the pictures of `pixi run snapshot` when you set the angles of a view. */
 function frameRobot(camera, robot) {
   const sphere = new THREE.Box3().setFromObject(robot).getBoundingSphere(new THREE.Sphere());
   const distance = sphere.radius / FILL / Math.sin((camera.fov * DEGREES) / 2);
