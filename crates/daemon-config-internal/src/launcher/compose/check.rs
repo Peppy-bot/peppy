@@ -36,6 +36,10 @@ const CHECK_COPY: &str = "composition_check";
 /// `composition_check_2`, ... that the stack neither declares as a core
 /// node link nor prefixes an instance id with. `repo index --check` and the
 /// trial joins of a launch's scope checks compose under it.
+#[expect(
+    clippy::maybe_infinite_iter,
+    reason = "the stack has a finite number of ids, so a numbered name is free"
+)]
 pub(super) fn pick_checked_copy_name(bare: &Expanded) -> CopyName {
     let ids: Vec<&str> = bare
         .deployments

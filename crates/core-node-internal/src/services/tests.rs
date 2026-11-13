@@ -320,7 +320,7 @@ async fn start_refuses_to_boot_when_name_already_claimed() {
         .start_with_ready(None)
         .await
         .expect_err("boot must refuse while the name is claimed");
-    assert_matches!(err, crate::Error::CoreNodeNameTaken { ref name } if name == "collision_node",
+    assert_matches!(&err, crate::Error::CoreNodeNameTaken { name } if name == "collision_node",
         "expected CoreNodeNameTaken for `collision_node`, got: {err}"
     );
     assert!(
@@ -418,8 +418,8 @@ async fn simultaneous_daemons_with_same_derived_name_allow_exactly_one_claim() {
         .expect("losing startup task should not panic")
         .expect_err("losing startup must fail");
     assert_matches!(
-        loser_error,
-        crate::Error::CoreNodeNameTaken { ref name } if name == &core_node_name);
+        &loser_error,
+        crate::Error::CoreNodeNameTaken { name } if name == &core_node_name);
     winner_task.abort();
 }
 

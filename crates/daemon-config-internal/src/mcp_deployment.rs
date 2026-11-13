@@ -1401,7 +1401,7 @@ mod tests {
         ));
         let error = plan_deployment(&[mismatched], &[contract(CAMERA_CONTRACT)])
             .expect_err("the author pin disagrees");
-        assert_matches!(error, McpDeploymentError::ContractPinMismatch { ref exposure, ref contract, .. } if exposure == "a:v1" && contract == "rgb_camera:v1",
+        assert_matches!(&error, McpDeploymentError::ContractPinMismatch { exposure, contract, .. } if exposure == "a:v1" && contract == "rgb_camera:v1",
             "{error}"
         );
 
@@ -1428,7 +1428,7 @@ mod tests {
         ));
         let error =
             plan_deployment(&[orphan], &[contract(RECORDING_CONTRACT)]).expect_err("no camera pin");
-        assert_matches!(error, McpDeploymentError::ContractNotPinned { ref contract, .. } if contract == "rgb_camera:v1",
+        assert_matches!(&error, McpDeploymentError::ContractNotPinned { contract, .. } if contract == "rgb_camera:v1",
             "{error}"
         );
     }
@@ -1609,7 +1609,7 @@ mod tests {
         ));
         let error = plan_deployment(&[one.clone(), one], &[contract(CAMERA_CONTRACT)])
             .expect_err("listed twice");
-        assert_matches!(error, McpDeploymentError::DuplicateExposure { ref exposure } if exposure == "a:v1",
+        assert_matches!(&error, McpDeploymentError::DuplicateExposure { exposure } if exposure == "a:v1",
             "{error}"
         );
     }

@@ -175,6 +175,10 @@ pub(crate) enum Backend {
 /// instantly; on macOS it boots the Lima VM and syncs apptainer into the guest
 /// (may take minutes on first run).
 #[derive(Debug)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "`apptainer_dir` is the name of the installation directory across the crate"
+)]
 pub struct Apptainer {
     /// Root of the apptainer installation on the host (contains `bin/`, arch dirs, etc.)
     pub(crate) apptainer_dir: PathBuf,
@@ -225,6 +229,10 @@ fn is_apparmor_manageable() -> bool {
 /// must be installed to allow the `starter` binary to create them.
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is the result of one check of the setup"
+)]
 pub struct SetupStatus {
     /// `newuidmap` is available in PATH (required for fakeroot).
     pub newuidmap_ok: bool,

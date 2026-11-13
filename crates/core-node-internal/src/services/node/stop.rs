@@ -57,8 +57,8 @@ pub(crate) async fn listen_for_node_stop(
     .await?;
 
     let handle = tokio::spawn(async move {
-        endpoint
-            .handle_requests(raw_calls.guard(ServiceId::NodeStop.name(), |context| {
+        Box::pin(
+            endpoint.handle_requests(raw_calls.guard(ServiceId::NodeStop.name(), |context| {
                 handle_node_stop_request(
                     context,
                     messenger.clone(),
@@ -68,9 +68,10 @@ pub(crate) async fn listen_for_node_stop(
                     relationships.clone(),
                     Arc::clone(&ownership),
                 )
-            }))
-            .await
-            .map_err(Into::into)
+            })),
+        )
+        .await
+        .map_err(Into::into)
     });
 
     Ok(handle)
@@ -161,7 +162,7 @@ async fn handle_node_stop_request_inner(
                 )
                 .await;
             }
-            SlotStep::ReadAgain => continue,
+            SlotStep::ReadAgain => {}
         }
     };
 

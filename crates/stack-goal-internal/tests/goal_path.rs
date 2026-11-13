@@ -290,7 +290,7 @@ async fn a_refused_goal_gives_the_daemons_failure_kind_and_reason() {
         DaemonFailureKind::Busy,
         DaemonFailureKind::Peppy(PeppyFailureKind::PreconditionFailed),
     ] {
-        let error = refused_join(Failure::new(kind, REFUSAL_REASON)).await;
+        let error = Box::pin(refused_join(Failure::new(kind, REFUSAL_REASON))).await;
         assert_eq!(
             error.to_string(),
             format!("Join goal refused ({kind}): {REFUSAL_REASON}")
@@ -307,7 +307,7 @@ async fn a_refused_goal_gives_the_daemons_failure_kind_and_reason() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_refusal_with_a_kind_outside_the_daemon_is_an_error() {
     let kind = config::failure_kind::FailureKindName::parse("unreachable").unwrap();
-    let error = refused_join(Failure::new(kind, REFUSAL_REASON)).await;
+    let error = Box::pin(refused_join(Failure::new(kind, REFUSAL_REASON))).await;
     let SendError::UnknownRefusalKind { operation, source } = &error else {
         panic!("expected an unknown refusal kind, got {error}")
     };

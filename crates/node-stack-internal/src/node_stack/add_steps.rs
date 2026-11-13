@@ -93,10 +93,11 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<Vec<String>> {
         let dest_path = dest.join(file_name);
         let ft = entry.file_type()?;
 
+        // Skip symlinks to avoid infinite recursion with circular links
         if ft.is_symlink() {
-            // Skip symlinks to avoid infinite recursion with circular links
             continue;
-        } else if ft.is_dir() {
+        }
+        if ft.is_dir() {
             copy_dir_recursive(&src_path, &dest_path)?;
         } else {
             std::fs::copy(&src_path, &dest_path)?;

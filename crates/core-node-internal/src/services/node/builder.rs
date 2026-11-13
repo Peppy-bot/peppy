@@ -492,7 +492,7 @@ impl NodeBuildGoalHandler {
             let work = under_goal_cancel(&goal_ctx, &cancel_token_for_task, work);
             // A build stops no instance: its cleanup kills its own build
             // command at once.
-            let result = crate::services::node::gate::finish_on_reset(
+            let result = Box::pin(crate::services::node::gate::finish_on_reset(
                 work,
                 &reset_cancellation,
                 COOPERATIVE_TEARDOWN_BUDGET,
@@ -502,7 +502,7 @@ impl NodeBuildGoalHandler {
                         "node build cancelled by stack reset",
                     )))
                 },
-            )
+            ))
             .await;
             // A build that a cancel stopped ends cancelled, with the reason
             // of the cancel: the goal's caller or its gone sender, a stack

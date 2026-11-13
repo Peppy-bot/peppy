@@ -105,14 +105,13 @@ impl Display for Error {
                 write!(fmt, "{readable_msg}")
             }
             Self::Ended { message, .. } => write!(fmt, "{message}"),
-            Self::Interrupted(msg) => write!(fmt, "{msg}"),
+            Self::Interrupted(msg) | Self::Auth(msg) => write!(fmt, "{msg}"),
             Self::Sync(msg) => write!(fmt, "Sync error: {msg}"),
             Self::InvalidNodeName(name) => write!(fmt, "Invalid node name: {name}"),
             Self::NodeWatcher(msg) => write!(fmt, "Node watcher error: {msg}"),
             Self::PeppyMessagingInterface(e) => write!(fmt, "Messaging interface error: {e}"),
             Self::PeppyConfig(e) => write!(fmt, "Config error: {e}"),
             Self::DaemonConfig(e) => write!(fmt, "Config error: {e}"),
-            Self::Auth(msg) => write!(fmt, "{msg}"),
             Self::AuthEngine(e) => write!(fmt, "{e}"),
             Self::Peppy(e) => write!(fmt, "{e}"),
         }

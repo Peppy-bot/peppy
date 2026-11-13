@@ -596,7 +596,7 @@ async fn next_step(
     }
     loop {
         match goal.result(messenger, RESULT_WAIT).await {
-            Err(ConsumerError::Messaging(PeppyError::ActionResultTimeout { .. })) => continue,
+            Err(ConsumerError::Messaging(PeppyError::ActionResultTimeout { .. })) => {}
             outcome => return Step::Ended(outcome),
         }
     }

@@ -635,9 +635,9 @@ pub(crate) struct TestRunningInstance {
     pub pid: u32,
     pub instance_id: config::runtime::Name,
     handle: node_stack::EntityHandle,
-    _working_dir: Option<TempDir>,
-    _feedback_drain: tokio::task::JoinHandle<()>,
-    _shutdown_listener: Option<AbortOnDrop<peppylib::PeppyResult<()>>>,
+    working_dir: Option<TempDir>,
+    feedback_drain: tokio::task::JoinHandle<()>,
+    shutdown_listener: Option<AbortOnDrop<peppylib::PeppyResult<()>>>,
 }
 
 impl Drop for TestRunningInstance {
@@ -647,7 +647,7 @@ impl Drop for TestRunningInstance {
             .arg("-TERM")
             .arg(self.pid.to_string())
             .status();
-        self._feedback_drain.abort();
+        self.feedback_drain.abort();
     }
 }
 
@@ -783,7 +783,7 @@ pub(crate) async fn spawn_real_running_instance(
     instance_id: &config::runtime::Name,
 ) -> TestRunningInstance {
     let mut running = spawn_real_stuck_instance(started, name, tag, instance_id).await;
-    running._shutdown_listener =
+    running.shutdown_listener =
         Some(install_kill_on_shutdown_listener(started, name, instance_id, running.pid).await);
     running
 }
@@ -819,9 +819,9 @@ pub(crate) async fn spawn_real_stuck_instance(
         pid,
         instance_id: instance_id.clone(),
         handle,
-        _working_dir: None,
-        _feedback_drain: feedback_drain,
-        _shutdown_listener: None,
+        working_dir: None,
+        feedback_drain,
+        shutdown_listener: None,
     }
 }
 
@@ -1043,7 +1043,7 @@ pub(crate) struct TestStartingInstance {
     pub instance_id: config::runtime::Name,
     _child: tokio::process::Child,
     _started_ctx: node_stack::StartedInstanceCtx,
-    _feedback_drain: tokio::task::JoinHandle<()>,
+    feedback_drain: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for TestStartingInstance {
@@ -1056,7 +1056,7 @@ impl Drop for TestStartingInstance {
         // drops this, teardown has usually already reaped the group, and the
         // helper ignores that ESRCH.
         node_stack::kill_process_group(self.pid);
-        self._feedback_drain.abort();
+        self.feedback_drain.abort();
     }
 }
 
@@ -1085,7 +1085,7 @@ pub(crate) async fn spawn_real_starting_instance(
         instance_id: instance_id.clone(),
         _child: child,
         _started_ctx: started_ctx,
-        _feedback_drain: feedback_drain,
+        feedback_drain,
     }
 }
 
@@ -1130,7 +1130,7 @@ pub(crate) async fn real_build_and_spawn_instance(
     build_drain.abort();
 
     let mut running = spawn_real_running_instance(started, name, tag, instance_id).await;
-    running._working_dir = Some(working_dir);
+    running.working_dir = Some(working_dir);
     running
 }
 

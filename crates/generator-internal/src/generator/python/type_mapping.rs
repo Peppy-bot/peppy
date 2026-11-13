@@ -24,7 +24,7 @@ pub(super) fn primitive_type_str(token: &TypeToken) -> &'static str {
         TypeToken::Bool => "bool",
         TypeToken::String => "str",
         TypeToken::Bytes => "bytes",
-        TypeToken::Time => "float",
+        TypeToken::Time | TypeToken::F32 | TypeToken::F64 => "float",
         TypeToken::U8
         | TypeToken::U16
         | TypeToken::U32
@@ -33,7 +33,6 @@ pub(super) fn primitive_type_str(token: &TypeToken) -> &'static str {
         | TypeToken::I16
         | TypeToken::I32
         | TypeToken::I64 => "int",
-        TypeToken::F32 | TypeToken::F64 => "float",
     }
 }
 

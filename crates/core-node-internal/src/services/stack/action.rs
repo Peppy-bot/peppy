@@ -614,8 +614,8 @@ async fn handle_stack_request(
     let reset = action_context.slice_ownership.stack.cancellation();
     let cancellation = reset.child_token();
     tokio::spawn(async move {
-        let _mutation = mutation;
-        let _removal = removal;
+        let held_mutation = mutation;
+        let held_removal = removal;
         // Frees the gate slot on every exit: explicitly before the end on the
         // normal path (via `release_then_end` below), or on unwind for a
         // panic. A no-op if a later goal already took over.
@@ -690,8 +690,8 @@ async fn handle_stack_request(
                 ChangeEnd::stopped(Failure::new(PeppyFailureKind::AttemptFailed, msg))
             }
         };
-        drop(_mutation);
-        drop(_removal);
+        drop(held_mutation);
+        drop(held_removal);
         let ending =
             stack_goal_ending(end, &log, &publisher, cancel_reason(&goal_ctx, &reset)).await;
         slot.release_then_end(&goal_ctx, ending).await;

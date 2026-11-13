@@ -329,7 +329,7 @@ fn hash_dir(
 /// the file size) and returns the number of bytes hashed.
 fn hash_file_contents(hasher: &mut Sha256, path: &Path) -> io::Result<u64> {
     let mut file = File::open(path)?;
-    let mut buf = [0u8; 64 * 1024];
+    let mut buf = vec![0u8; 64 * 1024];
     let mut copied = 0u64;
     loop {
         let n = file.read(&mut buf)?;

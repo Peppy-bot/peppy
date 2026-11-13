@@ -51,9 +51,9 @@ fn reap_within(pid: Pid, bound: Duration) -> Option<WaitStatus> {
         Ok(Ok(reaped)) => Some(reaped.expect("a blocking waitpid reports a status").1),
         Ok(Err(rustix::io::Errno::CHILD)) => None,
         Ok(Err(error)) => panic!("waitpid({pid:?}) failed: {error}"),
-        Err(_) => panic!(
+        Err(timed_out) => panic!(
             "instance {pid:?} is still alive {bound:?} after the daemon that spawned it was \
-             dropped: the node stack did not kill it"
+             dropped: the node stack did not kill it ({timed_out})"
         ),
     }
 }

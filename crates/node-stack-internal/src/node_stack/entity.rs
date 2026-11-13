@@ -791,10 +791,10 @@ impl NodeEntity {
     /// present regardless of which stage the entity is in.
     pub fn config_path(&self) -> &Path {
         match &self.stage {
-            NodeStage::Added { config_path } => config_path,
-            NodeStage::Building { config_path } => config_path,
-            NodeStage::Ready { config_path, .. } => config_path,
-            NodeStage::Root { config_path, .. } => config_path,
+            NodeStage::Added { config_path }
+            | NodeStage::Building { config_path }
+            | NodeStage::Ready { config_path, .. }
+            | NodeStage::Root { config_path, .. } => config_path,
         }
     }
 

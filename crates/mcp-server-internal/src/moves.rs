@@ -144,12 +144,11 @@ impl FleetView {
             ));
         }
         match &self.state {
-            ViewState::Waiting => None,
             ViewState::Seen {
                 revision,
                 halted_by: Some(by),
             } if *revision > clearance.revision => Some(FleetStop::Halted(by.clone())),
-            ViewState::Seen { .. } => None,
+            ViewState::Waiting | ViewState::Seen { .. } => None,
             ViewState::Lost(reason) => Some(FleetStop::FollowLost(reason.clone())),
         }
     }

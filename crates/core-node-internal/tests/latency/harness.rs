@@ -145,8 +145,7 @@ pub(crate) fn ceiling_ms(lang: Lang, transport: Transport) -> u64 {
         return parsed;
     }
     match (lang, transport) {
-        (Lang::Rust, Transport::Topic) => 8,
-        (Lang::Rust, Transport::Service) => 8,
+        (Lang::Rust, Transport::Topic | Transport::Service) => 8,
         (Lang::Python, Transport::Topic) => 6,
         (Lang::Python, Transport::Service) => 10,
     }

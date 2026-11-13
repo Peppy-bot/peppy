@@ -937,35 +937,26 @@ fn format_instances_compact(node: &SerializedNode) -> String {
     let finished = count(InstanceState::Finished);
     let failed = count(InstanceState::Failed);
 
+    let total = running + starting + restarting + finished + failed;
+    let parts: Vec<String> = [
+        (running, "running"),
+        (starting, "starting"),
+        (restarting, "restarting"),
+        (finished, "finished"),
+        (failed, "failed"),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, state)| format!("{count} {state}"))
+    .collect();
+
     // The common, unambiguous cases use a compact phrasing; any mix (including
-    // instances without a process) falls through to an explicit per-state
-    // breakdown so no instance is silently dropped from the count.
-    match (running, starting, restarting, finished, failed) {
-        (r, 0, 0, 0, 0) => format!("{r} running"),
-        (0, s, 0, 0, 0) => format!("{s} starting"),
-        (0, 0, w, 0, 0) => format!("{w} restarting"),
-        (0, 0, 0, f, 0) => format!("{f} finished"),
-        (0, 0, 0, 0, x) => format!("{x} failed"),
-        (r, s, w, f, x) => {
-            let total = r + s + w + f + x;
-            let mut parts = Vec::new();
-            if r > 0 {
-                parts.push(format!("{r} running"));
-            }
-            if s > 0 {
-                parts.push(format!("{s} starting"));
-            }
-            if w > 0 {
-                parts.push(format!("{w} restarting"));
-            }
-            if f > 0 {
-                parts.push(format!("{f} finished"));
-            }
-            if x > 0 {
-                parts.push(format!("{x} failed"));
-            }
-            format!("{total} ({})", parts.join(", "))
-        }
+    // instances without a process) is an explicit per-state breakdown so no
+    // instance is silently dropped from the count.
+    match parts.as_slice() {
+        [] => "0 running".to_owned(),
+        [only] => only.clone(),
+        _ => format!("{total} ({})", parts.join(", ")),
     }
 }
 

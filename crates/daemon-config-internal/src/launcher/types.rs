@@ -776,6 +776,10 @@ pub(super) enum CardinalityShapeViolation {
 ///
 /// The one shape rule, shared by producer-binding slots and observer slots so a
 /// deployment writes `["a", "b"]` for the same reason on both.
+#[expect(
+    clippy::match_same_arms,
+    reason = "the match has one arm for each row of the shape table, in the order of the table"
+)]
 pub(super) fn check_cardinality_shape(
     cardinality: config::node::Cardinality,
     selection: &Selection,

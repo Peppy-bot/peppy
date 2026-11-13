@@ -451,7 +451,7 @@ pub(crate) async fn wait_until_action_completes(
             Ok(Err(err)) => {
                 panic!("the action's feedback stream failed before it completed: {err}")
             }
-            Err(_) => panic!("the action did not complete within {timeout:?}"),
+            Err(elapsed) => panic!("the action did not complete within {timeout:?}: {elapsed}"),
         }
     }
 }

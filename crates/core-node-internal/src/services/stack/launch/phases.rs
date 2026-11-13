@@ -39,12 +39,10 @@ pub fn slow_connection_hint(flag: &str) -> String {
 /// Watches for an idle period: returns when no `notify_one()` arrives for `idle_timeout`.
 /// Each call to `notify_one()` on `notify` resets the clock.
 async fn watch_idle(notify: Arc<Notify>, idle_timeout: Duration) {
-    loop {
-        match tokio::time::timeout(idle_timeout, notify.notified()).await {
-            Ok(()) => continue,
-            Err(_) => return,
-        }
-    }
+    while tokio::time::timeout(idle_timeout, notify.notified())
+        .await
+        .is_ok()
+    {}
 }
 
 /// How a phase that cannot be dropped is asked to end: the token asks it to
@@ -387,6 +385,10 @@ mod tests {
         let phase = async {
             // Large enough that inlining the phase into a wrapper would show
             // in the wrapper's own size.
+            #[expect(
+                clippy::large_stack_arrays,
+                reason = "the test measures a future that is large on purpose"
+            )]
             let buffer = [0u8; 64 * 1024];
             tokio::task::yield_now().await;
             borrowed.len() + buffer.len()

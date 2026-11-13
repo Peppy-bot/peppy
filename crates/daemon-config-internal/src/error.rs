@@ -226,6 +226,10 @@ impl std::error::Error for BindingCopyFillsSlotTwice {}
      `adjustments` under the copy's option, with `add_links: {{ {link_id}: [\"<id>\"] }}` on \
      `{owner_instance_id}`, and drop it from `{owner_instance_id}`'s `links`"
 )]
+#[expect(
+    clippy::struct_field_names,
+    reason = "each field is an id that the launcher vocabulary and the error text name so"
+)]
 pub struct BindingMemberOutsideCopy {
     pub instance_id: String,
     pub owner_instance_id: String,

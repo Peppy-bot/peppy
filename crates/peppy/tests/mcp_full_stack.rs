@@ -3435,8 +3435,8 @@ async fn progress_of(
     .map(|received| received.expect("the client outlives the wait").clone());
     match waited {
         Ok(received) => call_progress(&received).expect("the progress is complete"),
-        Err(_) => panic!(
-            "the progress of the call that says {first:?} arrives; received: {:?}",
+        Err(elapsed) => panic!(
+            "the progress of the call that says {first:?} arrives ({elapsed}); received: {:?}",
             progress
                 .borrow()
                 .iter()

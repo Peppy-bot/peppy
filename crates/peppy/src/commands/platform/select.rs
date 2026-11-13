@@ -53,9 +53,8 @@ impl Ask {
     /// The answer to `menu`, or `None` when there is nobody to ask.
     fn answer(&mut self, menu: &Menu<'_>) -> Result<Option<MenuAnswer>> {
         match self {
-            Self::Never => Ok(None),
             Self::Terminal if can_show_menu() => menu.show().map(Some),
-            Self::Terminal => Ok(None),
+            Self::Never | Self::Terminal => Ok(None),
             Self::Scripted(positions) => match positions.pop_front() {
                 None => Ok(Some(MenuAnswer::Cancelled)),
                 Some(position) if position < menu.options.len() => {

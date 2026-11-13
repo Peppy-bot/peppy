@@ -24,6 +24,10 @@ impl PeppyConfigTemplate<'_> {
 
 #[derive(Template)]
 #[template(path = "peppygen/python/pyproject.toml.j2", escape = "none")]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the fields are the variables of the template"
+)]
 struct PeppyPythonConfigTemplate<'a> {
     peppylib_version: &'a str,
     python_min_version: &'a str,
@@ -45,6 +49,10 @@ pub(crate) const PYTHON_PEPPYLIB_VERSION: &str = concat!(env!("CARGO_PKG_VERSION
 
 #[derive(Template)]
 #[template(path = "peppylib/python/pyproject.toml.j2", escape = "none")]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the fields are the variables of the template"
+)]
 struct PeppylibPythonProjectTemplate<'a> {
     peppylib_version: &'a str,
     python_min_version: &'a str,

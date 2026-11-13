@@ -97,7 +97,7 @@ async fn handle_repo_add_request(
 
     let repos_path = repositories_list_path(&peppy_dirs);
 
-    let _guard = crate::services::repo::repos_file_lock().lock();
+    let guard = crate::services::repo::repos_file_lock().lock();
 
     let mut repos = read_or_create_repos(&peppy_dirs)
         .map_err(|error| failure(PeppyFailureKind::AttemptFailed, error))?;
@@ -115,7 +115,7 @@ async fn handle_repo_add_request(
     repos.push(repo_source_to_json(next_id, &request.source));
     write_repo_entries(&repos_path, &repos, "repositories").map_err(crate::Error::into_failure)?;
 
-    drop(_guard);
+    drop(guard);
 
     into_service_answer(RepoAddResponse::new().encode().map_err(Into::into))
 }

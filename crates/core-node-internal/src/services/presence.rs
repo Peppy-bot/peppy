@@ -400,7 +400,7 @@ mod tests {
             Err(err) => err,
             Ok(_token) => panic!("a committed token landing mid-settle must refuse the claim"),
         };
-        assert_matches!(err, crate::Error::CoreNodeNameTaken { ref name } if name == "settle_node",
+        assert_matches!(&err, crate::Error::CoreNodeNameTaken { name } if name == "settle_node",
             "the refusal must be the boot refusal: {err}"
         );
     }

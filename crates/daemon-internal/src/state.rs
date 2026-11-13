@@ -145,16 +145,12 @@ impl DaemonState {
         };
 
         // `test_kill_process` is `kill(pid, 0)`: it sends no signal, just probes
-        // existence and signalling permission.
-        match test_kill_process(pid) {
-            Ok(()) => true,
-            // No such process.
-            Err(Errno::SRCH) => false,
-            // EPERM means the process exists but we may not signal it; any other
-            // probe error is treated as alive so a transient failure never
-            // discards a state file that may belong to a running daemon.
-            Err(_) => true,
-        }
+        // existence and signalling permission. Only `ESRCH` says that no such
+        // process exists. `EPERM` means the process exists but we may not
+        // signal it; any other probe error is treated as alive so a transient
+        // failure never discards a state file that may belong to a running
+        // daemon.
+        !matches!(test_kill_process(pid), Err(Errno::SRCH))
     }
 }
 

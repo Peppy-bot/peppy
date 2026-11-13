@@ -803,8 +803,8 @@ fn default_spec_literal(spec: &config::ParameterSpec) -> Option<String> {
             let value = serde_json::to_value(default).ok()?;
             Some(python_json_literal(&value))
         }
-        config::ParameterSpec::Primitive { default: None, .. } => None,
-        config::ParameterSpec::Array { .. } => None,
+        config::ParameterSpec::Primitive { default: None, .. }
+        | config::ParameterSpec::Array { .. } => None,
         config::ParameterSpec::Group(fields) => default_group_literal(fields),
     }
 }

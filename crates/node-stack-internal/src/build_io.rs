@@ -276,10 +276,10 @@ pub(crate) async fn stream_child_output(
         ));
     }
 
-    // Cancellation safety: if this future is dropped before `child.wait()`
-    // returns, the guard calls `start_kill`, which targets the whole process
-    // group (see `spawn_in_process_group`) so `sh -c "..."` wrappers and
-    // their descendants all die together.
+    // A cancellation drops this future before `child.wait()` returns. The
+    // guard then calls `start_kill`, which targets the whole process group
+    // (see `spawn_in_process_group`) so `sh -c "..."` wrappers and their
+    // descendants all die together.
     let mut child_guard = DropGuard::new(child.as_mut(), |child| {
         let _ = child.start_kill();
     });

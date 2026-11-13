@@ -63,13 +63,7 @@ pub(crate) fn emit_bound_producer_accessor_fn(
             "Optional[peppylib.ProducerRef]",
             Some("from typing import Optional"),
         ),
-        Cardinality::OneOrMore => (
-            "bound_producers",
-            "bound_producers",
-            "List[peppylib.ProducerRef]",
-            Some("from typing import List"),
-        ),
-        Cardinality::ZeroOrMore => (
+        Cardinality::OneOrMore | Cardinality::ZeroOrMore => (
             "bound_producers",
             "bound_producers",
             "List[peppylib.ProducerRef]",

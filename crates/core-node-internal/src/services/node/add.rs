@@ -918,7 +918,12 @@ pub(crate) async fn dispatch_node_add(
             crate::services::mcp::built_in::run_built_in_add(goal, action_context, announcer).await
         }
         NodeSource::Pinned { .. } | NodeSource::ResolveRef { .. } => {
-            super::add_batch::run_pinned_add(goal, action_context, announcer).await
+            Box::pin(super::add_batch::run_pinned_add(
+                goal,
+                action_context,
+                announcer,
+            ))
+            .await
         }
         NodeSource::Fs(_) | NodeSource::Git { .. } | NodeSource::Http { .. } => {
             run_node_add(goal, action_context, announcer).await
@@ -1270,7 +1275,7 @@ async fn handle_goal_request(
                 ) => Ok(result),
             }
         };
-        let ending = match under_goal_cancel(&goal_ctx, &cancel_token_clone, work).await {
+        let ending = match Box::pin(under_goal_cancel(&goal_ctx, &cancel_token_clone, work)).await {
             Ok(result) => {
                 // Drain the feedback consumer before ending so the
                 // end-of-stream sentinel never races ahead of the last

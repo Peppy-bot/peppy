@@ -689,11 +689,10 @@ pub(super) fn combine(
                         return Err(conflict(first, rendered.clone()));
                     }
                 }
-                (Some(Claim::Appended { .. }), AppliedChange::LinkAdded { .. }) => {}
+                (Some(Claim::Appended { .. }), AppliedChange::LinkAdded { .. }) | (None, _) => {}
                 (Some(Claim::Appended { copy: first }), _) => {
                     return Err(conflict(first, String::from("appended producers")));
                 }
-                (None, _) => {}
             }
             let instance = instance_named_mut(&mut flat.deployments, &entry.instance)
                 .expect("a copy writes only instances of the stack it composed over");

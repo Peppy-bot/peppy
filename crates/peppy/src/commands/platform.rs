@@ -479,9 +479,7 @@ fn poll_until_back_under(
             // but its control socket may not have bound yet, so a poke can
             // transiently find no socket or time out. Keep polling until it
             // actually answers (or the deadline above fires).
-            PokeOutcome::Restarting | PokeOutcome::DaemonNotRunning | PokeOutcome::TimedOut => {
-                continue;
-            }
+            PokeOutcome::Restarting | PokeOutcome::DaemonNotRunning | PokeOutcome::TimedOut => {}
             other => break report(other, action),
         }
     }
