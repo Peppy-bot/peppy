@@ -114,6 +114,21 @@ A chapter keeps its words in the rail, on the right of its diagram, in the same 
 - A part that is in a box gets its place from the layout of CSS: a grid or a flex box with a padding. Thus the space on each side of the part comes from one value.
 - A wire gets its shape from `Motion.connect`, which reads the place of the two parts that it joins. Thus a wire always ends at its parts.
 
+### The layout check
+
+```sh
+pixi run layout [segment id]
+```
+
+The command opens each composition, or the one that it names, in the pinned Chrome. At some times of each sentence of the voice, it reads the place of each box and of each text that the page shows. It fails when it finds one of these faults (`tools/layout_rules.py`):
+
+- A part is outside the margins of the frame.
+- A part goes out of the box that it is in, or nearly touches one border of that box.
+- The content of a box is nearer to its right side than to its left side, or much nearer to its bottom than to its top.
+- Two parts overlap.
+
+In a composition, `data-layout="free"` takes a part out of the check: a decoration, or a message that moves on a wire. `data-layout="over"` says that a part is over other parts on purpose: a tab on a border, a mark on an arrow, a label of a picture. Run the command after each change of a composition, then look at the pictures of the next section: the check reads no wire and no picture.
+
 ### The pictures of a composition
 
 To look at a composition while you write it:
@@ -163,7 +178,7 @@ The build gets each tool that changes the result at a pinned version, from its s
 | Tool | Pinned in |
 |---|---|
 | Node.js, FFmpeg, Python, and the Python packages that make the voice and the music | `pixi.toml` and `pixi.lock` |
-| HyperFrames, GSAP, three.js and esbuild | `package.json` and `package-lock.json` |
+| HyperFrames, GSAP, three.js, esbuild, and Puppeteer for the layout check | `package.json` and `package-lock.json` |
 | The Chrome that renders | `pins.toml`. HyperFrames gets the Chrome of its version, and the build refuses another one |
 | Kokoro-82M, the model of the voice | `pins.toml`, with the SHA-256 of each file |
 | The 3D model of the OpenArm v2: the turntable model of the Waldo catalogue | `pins.toml`, with its SHA-256 |
@@ -176,4 +191,4 @@ A new build gives the same video until a person changes a version. To change one
 
 ## The checks of CI
 
-CI does not build the video. The job `concepts-video` of the workflow `Tests` runs `pixi run test` and `pixi run lint`, with no voice model, no Chrome and no footage. The tests calculate some music, which needs no file and no model.
+CI does not build the video. The job `concepts-video` of the workflow `Tests` runs `pixi run test` and `pixi run lint`, with no voice model, no Chrome and no footage. The tests calculate some music, which needs no file and no model. The layout check needs Chrome and the voice, so a person runs it.

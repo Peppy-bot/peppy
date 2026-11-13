@@ -41,3 +41,5 @@ test = "pytest tests -v"
 lint = "python -m tools.lint"
 # Pictures of one segment at given times, to look at a composition.
 snapshot = "python -m tools.snapshot"
+# The check of the place of each part of the compositions, in the pinned Chrome.
+layout = "python -m tools.layout"
