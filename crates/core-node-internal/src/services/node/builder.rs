@@ -200,15 +200,12 @@ pub(crate) async fn run_node_build_for_entity(
     announcer: Announcer,
 ) -> std::result::Result<NodeBuildResult, WorkStop> {
     let log = announcer.log().clone();
-    let entity_handle = match action_context.node_stack.find(&node_name, &node_tag) {
-        Some(handle) => handle,
-        None => {
-            return Err(WorkStop::Failed(record_build_failure(
-                &log,
-                PeppyFailureKind::Rejected,
-                format!("node `{node_name}:{node_tag}` is not in the node stack"),
-            )));
-        }
+    let Some(entity_handle) = action_context.node_stack.find(&node_name, &node_tag) else {
+        return Err(WorkStop::Failed(record_build_failure(
+            &log,
+            PeppyFailureKind::Rejected,
+            format!("node `{node_name}:{node_tag}` is not in the node stack"),
+        )));
     };
 
     let (working_dir_guard, captured_generation) = match buildable_working_dir(&entity_handle) {
@@ -330,27 +327,24 @@ impl NodeBuildGoalHandler {
             goal.node_name, goal.node_tag
         );
 
-        let entity_handle = match self
+        let Some(entity_handle) = self
             .context
             .node_stack
             .find(&goal.node_name, &goal.node_tag)
-        {
-            Some(handle) => handle,
-            None => {
-                self.gate.clear_running();
-                refuse_goal(
-                    pending,
-                    Failure::new(
-                        PeppyFailureKind::Rejected,
-                        format!(
-                            "node `{}:{}` is not in the node stack: run `peppy node add` first",
-                            goal.node_name, goal.node_tag
-                        ),
+        else {
+            self.gate.clear_running();
+            refuse_goal(
+                pending,
+                Failure::new(
+                    PeppyFailureKind::Rejected,
+                    format!(
+                        "node `{}:{}` is not in the node stack: run `peppy node add` first",
+                        goal.node_name, goal.node_tag
                     ),
-                )
-                .await;
-                return;
-            }
+                ),
+            )
+            .await;
+            return;
         };
 
         // A publish checks, before anything else, where it pushes and what

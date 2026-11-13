@@ -272,16 +272,13 @@ fn collect_struct_fields(
         ))
     })?;
 
-    let struct_reader = match node_reader
+    let node::Struct(struct_reader) = node_reader
         .which()
         .map_err(|err| Error::Encoding(format!("failed to inspect node {struct_id:#x}: {err}")))?
-    {
-        node::Struct(struct_reader) => struct_reader,
-        _ => {
-            return Err(Error::Encoding(format!(
-                "node {struct_id:#x} is not a struct"
-            )));
-        }
+    else {
+        return Err(Error::Encoding(format!(
+            "node {struct_id:#x} is not a struct"
+        )));
     };
 
     for field in struct_reader.get_fields()? {

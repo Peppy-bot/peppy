@@ -228,9 +228,8 @@ mod tests {
         let format: MessageFormat = serde_json5::from_str(format).unwrap();
 
         let mut nested = Vec::new();
-        let err = match collect_fields_from_format(&format, "Message", &mut nested) {
-            Ok(_) => panic!("expected FieldNameNormalizationCollision"),
-            Err(err) => err,
+        let Err(err) = collect_fields_from_format(&format, "Message", &mut nested) else {
+            panic!("expected FieldNameNormalizationCollision")
         };
         match err {
             Error::FieldNameNormalizationCollision {

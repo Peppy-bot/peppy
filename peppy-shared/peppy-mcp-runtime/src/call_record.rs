@@ -340,9 +340,8 @@ impl Recording {
     /// provider's failure, cancelled with the goal's reason, or failed in
     /// the words of the exit.
     pub(crate) fn ended_by(&mut self, outcome: &Result<Value, ActionExit>) {
-        let exit = match outcome {
-            Ok(_) => return self.completed(),
-            Err(exit) => exit,
+        let Err(exit) = outcome else {
+            return self.completed();
         };
         if let Some(failure) = exit.call_failure() {
             return self.ended_with(&failure);

@@ -501,10 +501,7 @@ impl PairingCoordinator {
                 unanswered(None, PairCommitRequest::ID.name()),
             )
             .await;
-        let error = match committed {
-            Ok(_) => return Ok(()),
-            Err(error) => error,
-        };
+        let Err(error) = committed else { return Ok(()) };
         // The peer's error reply says how it did not make its half; any
         // other error is a peer that did not answer.
         let Some(failure) = error.failure() else {

@@ -181,11 +181,11 @@ impl RouterLinksProbe {
 
         // One probe session for the whole wait; per-attempt admin queries.
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let session =
-            match tokio::time::timeout(remaining, zenoh::open(self.probe_config.clone())).await {
-                Ok(Ok(session)) => session,
-                Ok(Err(_)) | Err(_) => return false,
-            };
+        let Ok(Ok(session)) =
+            tokio::time::timeout(remaining, zenoh::open(self.probe_config.clone())).await
+        else {
+            return false;
+        };
 
         let established = loop {
             if let Some(dsts) = query_link_dsts(&session).await

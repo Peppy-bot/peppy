@@ -344,9 +344,8 @@ mod tests {
     ) {
         let format: MessageFormat = serde_json5::from_str(format).unwrap();
 
-        let err = match map_message_format("test", Some(&format)) {
-            Ok(_) => panic!("expected FieldNameNormalizationCollision"),
-            Err(err) => err,
+        let Err(err) = map_message_format("test", Some(&format)) else {
+            panic!("expected FieldNameNormalizationCollision")
         };
         match err {
             Error::FieldNameNormalizationCollision {

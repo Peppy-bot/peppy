@@ -1235,16 +1235,13 @@ async fn process_node_run(
         node_name, tag, instance_id_str
     );
 
-    let entity_handle = match ctx.action.node_stack.find(&node_name, &tag) {
-        Some(entity) => entity,
-        None => {
-            let msg = format!(
-                "Node '{node_name}:{tag}' not found in node stack. \
+    let Some(entity_handle) = ctx.action.node_stack.find(&node_name, &tag) else {
+        let msg = format!(
+            "Node '{node_name}:{tag}' not found in node stack. \
                  Run `peppy stack list` to see the nodes in the stack, or `peppy node add <dir>` \
                  to add it from its directory."
-            );
-            return refuse(&ctx, PeppyFailureKind::Rejected, msg);
-        }
+        );
+        return refuse(&ctx, PeppyFailureKind::Rejected, msg);
     };
 
     // Stack-wide `instance_id` uniqueness (spec rule 7): reject if the

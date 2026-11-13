@@ -248,16 +248,15 @@ pub(super) async fn run_goal(ctx: &InterfaceContext, member: &str, pending: Pend
             return;
         }
     };
-    let member = match RobotLeasesMember::named(member) {
-        Some(member @ (RobotLeasesMember::Changes | RobotLeasesMember::Lease)) => member,
-        _ => {
-            let refusal = failure(
-                PeppyFailureKind::Rejected,
-                format!("`{member}` is not an action of robot_leases:v1"),
-            );
-            refuse(pending, refusal).await;
-            return;
-        }
+    let Some(member @ (RobotLeasesMember::Changes | RobotLeasesMember::Lease)) =
+        RobotLeasesMember::named(member)
+    else {
+        let refusal = failure(
+            PeppyFailureKind::Rejected,
+            format!("`{member}` is not an action of robot_leases:v1"),
+        );
+        refuse(pending, refusal).await;
+        return;
     };
     if let Err(refusal) = authorize(&caller, member, &sender) {
         refuse(pending, refusal).await;
