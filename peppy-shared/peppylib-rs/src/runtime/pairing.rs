@@ -35,7 +35,7 @@ pub(crate) fn pairing_shape_panic(link_id: &str, accessor: &str, cardinality: &s
 /// Handle onto a scalar pairing slot's live state (a `one` or `zero_or_one`
 /// slot). Obtained via [`NodeRunner::peer`]; the generated per-slot modules
 /// of those slots expose `paired()` / `wait_paired()` delegating here.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PeerSlot {
     link_id: String,
     cardinality: Cardinality,
@@ -104,7 +104,7 @@ impl PeerSlot {
 /// when either side stops, so a set read now can differ from one read later.
 /// A `one_or_more` slot's floor is a plan-time guarantee that at least one
 /// peer is paired to it; the set still empties when every peer stops.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PeerSlotSet {
     watch_rx: watch::Receiver<PeerSetState>,
 }
@@ -189,6 +189,7 @@ impl FollowedSlot for PeerFollow {
 /// Yields nothing while the slot holds no pair; delivery starts from the
 /// pairing moment, never retroactively: a pairing is a live stream, not a
 /// mailbox.
+#[derive(Debug)]
 pub struct PeerSubscription {
     stream: SlotStream<PeerFollow>,
 }
@@ -282,6 +283,7 @@ pub async fn subscribe_peer_with_watch(
 /// peer. A scalar slot publishes through the [`TopicPublisher`] that
 /// [`declare_sole_peer_publisher`] declares over this publisher, to the one
 /// peer that holds its pair at the publish.
+#[derive(Debug)]
 pub struct PeerPublisher {
     messenger: MessengerHandle,
     as_core_node: String,

@@ -36,7 +36,7 @@ pub const STANDALONE_CORE_NODE: &str = "standalone-core";
 const STANDALONE_CORE_NODE_INSTANCE_ID: &str = "standalone-core";
 
 /// Runtime processor that holds configuration for the node.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Processor {
     runtime_config: RuntimeConfig,
     validated_arguments: NodeArguments,
@@ -1044,7 +1044,7 @@ fn seed_copy_name(link_id: &str, copy: &str) -> Result<Name> {
 /// when a copy joins or leaves. A scalar slot (`one`, `zero_or_one`) holds the
 /// producer its deployment bound at launch for the node's lifetime. Behind
 /// `Arc`s so `Processor::clone` shares them.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct BoundSlots {
     sets: BindingSlotChannels,
     scalars: Arc<BTreeMap<String, ScalarSlot>>,
@@ -1055,6 +1055,7 @@ struct BoundSlots {
 /// slot. `producer` is the head of `channel`'s seeded set, held beside it
 /// because the scalar accessors lend a reference to it, which a watch guard
 /// cannot give. Both are written at boot and read from then on.
+#[derive(Debug)]
 struct ScalarSlot {
     producer: Option<crate::messaging::ProducerRef>,
     channel: watch::Sender<BoundSetState>,

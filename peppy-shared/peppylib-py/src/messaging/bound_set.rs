@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 /// fragment wrote for the instance, which the copy runs as
 /// `<name>_<instance_id>`.
 #[pyclass(name = "CopyTag", frozen, eq, hash, skip_from_py_object)]
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PyCopyTag {
     pub(crate) inner: config::runtime::CopyTag,
 }
@@ -56,7 +56,7 @@ impl PyCopyTag {
 /// any copy). A node holding members from several copies groups them by
 /// `copy.name` and names each one by `copy.instance_id`.
 #[pyclass(name = "BoundMember", frozen, eq, hash, skip_from_py_object)]
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PyBoundMember {
     pub(crate) inner: BoundMember,
 }

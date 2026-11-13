@@ -134,6 +134,7 @@ pub fn unique_test_instance_id() -> String {
 /// a time. That guard is not reentrant: a test that needs two routers at once
 /// must use [`start_unserialized`](Self::start_unserialized) for the second
 /// (or both) and accept the discovery-contention flake risk.
+#[derive(Debug)]
 pub struct EphemeralRouter {
     instance: ZenohdInstance,
     _serial: Option<tokio::sync::MutexGuard<'static, ()>>,
@@ -225,6 +226,7 @@ pub async fn connect_messenger(host: &str, port: u16) -> Result<MessengerHandle>
 /// No subscriber within [`READINESS_TIMEOUT`] is an error, not a silent drop:
 /// it means the node under test never subscribed where the test publishes,
 /// which is a wiring bug the test must surface.
+#[derive(Debug)]
 pub struct TestTopicPublisher {
     publisher: TopicPublisher,
     messenger: MessengerHandle,
@@ -562,7 +564,7 @@ async fn wait_reachable(
 
 /// One service request captured by a [`MockServiceCore`], kept for later
 /// assertions regardless of whether the response was scripted or manual.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct CapturedServiceRequest {
     /// Caller identity and request payload.
     pub message: Message,
@@ -576,6 +578,7 @@ pub struct CapturedServiceRequest {
 /// [`next_request`](Self::next_request) otherwise. Requests that neither path
 /// consumed are reported loudly at drop, so a node call the test never
 /// noticed cannot pass silently.
+#[derive(Debug)]
 pub struct MockServiceCore {
     service_name: String,
     requests: flume::Receiver<(ServiceRequestContext, ServiceResponder)>,
@@ -742,6 +745,7 @@ impl Drop for MockServiceCore {
 /// [`Error::ActionFeedbackProducerGone`]. The caller must also drop the mock's
 /// session for the loss to be complete; the generated veneer owns that
 /// ordering.
+#[derive(Debug)]
 pub struct MockActionServerCore {
     action_name: String,
     engine: ConcurrentAction,
@@ -821,6 +825,7 @@ impl MockActionServerCore {
 
 /// A goal received by a [`MockActionServerCore`], awaiting the test's
 /// admission decision.
+#[derive(Debug)]
 pub struct MockPendingGoal {
     pending: PendingGoal,
     live: Arc<StdMutex<Vec<Weak<GoalContext>>>>,
@@ -897,6 +902,7 @@ impl ClockSource for SkewedWallSource {
     }
 }
 
+#[derive(Debug)]
 enum MockClockDriver {
     /// Publishes wall ticks on the core node's own `clock` key, as a daemon
     /// does.
@@ -924,6 +930,7 @@ enum MockClockDriver {
 /// The `clock` service answers from OS wall time in every mode, skewable via
 /// [`set_offset_ns`](Self::set_offset_ns), because that is what a daemon
 /// serves whatever its instances read.
+#[derive(Debug)]
 pub struct MockClock {
     core_node: String,
     instance_id: String,
@@ -1154,6 +1161,7 @@ impl Drop for MockClock {
 /// subscriptions before the node exists, but in gossip mode the node's fresh
 /// session still has to *discover* them; without this barrier the node's very
 /// first publish can be dropped (subscribe-first alone is not sufficient).
+#[derive(Debug)]
 pub struct PublisherReadiness {
     /// The identity the node publishes under for this topic.
     pub target: SenderTarget,
@@ -1180,6 +1188,7 @@ pub enum ServiceReadinessKind {
 /// queryable that was declared long before the node's session existed. The
 /// harness therefore waits (on the node's own session) until each mock's
 /// queryable answers reachability probes, before `setup` runs.
+#[derive(Debug)]
 pub struct ServiceReadiness {
     /// The identity the mock serves under (the dependency's node/contract
     /// target).
@@ -1204,6 +1213,7 @@ pub struct ServiceReadiness {
 /// release the node session as the harness drops. Dropping without calling
 /// `shutdown` still cancels and aborts, but skips the hook run: prefer the
 /// explicit call.
+#[derive(Debug)]
 pub struct HarnessCore {
     node_runner: Arc<NodeRunner>,
     cancellation_token: CancellationToken,

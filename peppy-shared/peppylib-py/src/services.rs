@@ -8,6 +8,7 @@ use pyo3::prelude::*;
 use crate::messaging::{PyMessengerHandle, to_py_err};
 
 /// Python wrapper for a running service task (`TaskHandle`).
+#[derive(Debug)]
 #[pyclass(name = "ServiceTask")]
 pub struct PyServiceTask {
     inner: Mutex<Option<TaskHandle<PeppyResult<()>>>>,
@@ -45,6 +46,7 @@ impl PyServiceTask {
 /// delegating to the given `peppylib::services::*` function.
 macro_rules! service_listener {
     ($py_name:literal, $struct_name:ident, $listen_fn:path) => {
+        #[derive(Debug)]
         #[pyclass(name = $py_name)]
         pub struct $struct_name;
 

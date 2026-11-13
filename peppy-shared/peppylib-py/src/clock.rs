@@ -26,7 +26,7 @@ use crate::runtime::PyNodeRunner;
 /// the request goes on the wire. Encoders/decoders use the same capnp wire
 /// schema as the Rust [`ClockRequest`].
 #[pyclass(name = "ClockRequest", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyClockRequest {
     inner: ClockRequest,
 }
@@ -69,7 +69,7 @@ impl PyClockRequest {
 /// and `server_send_time` (`t2`). `t3` is the client's local time on receive,
 /// which never goes on the wire.
 #[pyclass(name = "ClockResponse", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyClockResponse {
     inner: ClockResponse,
 }
@@ -122,7 +122,7 @@ impl PyClockResponse {
 /// [`synchronize`]) when you need to bound staleness with an NTP-style
 /// round-trip exchange.
 #[pyclass(name = "ClockTick", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyClockTick {
     inner: ClockTick,
 }
@@ -164,7 +164,7 @@ impl PyClockTick {
 /// Mirrors [`peppylib::clock::ClockSync`]. `synchronize` does not
 /// adjust the local clock: it only measures.
 #[pyclass(name = "ClockSync", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyClockSync {
     inner: ClockSync,
 }
@@ -221,6 +221,7 @@ fn synchronize_clock<'py>(
 /// Wraps the raw [`Subscription`] (not the Rust `ClockSubscription` adapter)
 /// so the Python lock guards the same inner state as
 /// [`crate::messaging::PySubscription`], with no double-mutex layering.
+#[derive(Debug)]
 #[pyclass(name = "ClockSubscription")]
 pub struct PyClockSubscription {
     inner: Arc<Mutex<Subscription>>,
@@ -280,6 +281,7 @@ fn subscribe_clock_py<'py>(
 /// Build via [`clock_for_node_py`]. A consumer opens its domain's
 /// subscription up front so subsequent `now_ns()` reads from the in-memory
 /// cache; a publisher reads what it last committed.
+#[derive(Debug)]
 #[pyclass(name = "PeppyClock")]
 pub struct PyPeppyClock {
     inner: PeppyClock,
@@ -315,7 +317,7 @@ fn clock_for_node_py<'py>(
 /// would have bound.
 // Taken only by reference from Python, so it needs no extraction impl.
 #[pyclass(name = "ClockBinding", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyClockBinding {
     pub(crate) inner: config::runtime::ClockBinding,
 }
@@ -392,6 +394,7 @@ impl PyClockBinding {
 /// The instance that supplies one simulated clock domain. Mirrors
 /// [`peppylib::clock::ClockPublisher`]: each `publish` commits the instant
 /// locally and sends it on the domain's stream.
+#[derive(Debug)]
 #[pyclass(name = "ClockPublisher")]
 pub struct PyClockPublisher {
     inner: Arc<ClockPublisher>,

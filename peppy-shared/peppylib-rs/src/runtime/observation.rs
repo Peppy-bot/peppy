@@ -58,7 +58,7 @@ pub(crate) fn observer_empty_panic(link_id: &str, declared: &str) -> ! {
 /// `zero_or_one` slot). Obtained via [`NodeRunner::observation_slot`]; the
 /// generated per-slot modules of those slots expose `source()` delegating here.
 /// Multi-member slots are read through [`ObservationSlotSet`] instead.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ObservationSlot {
     link_id: String,
     /// The slot's declared cardinality, carried only so a shape panic names the
@@ -127,7 +127,7 @@ impl ObservationSlot {
 /// set, at its position. A copy joining or leaving adds or removes members, and
 /// the planner sizes every set the slot holds, at launch and at each join or
 /// removal, so the slot's declared floor holds on every read.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ObservationSlotSet {
     link_id: String,
     /// The slot's declared cardinality, carried only so a shape panic names the
@@ -266,6 +266,7 @@ impl FollowedSlot for ObservedFollow {
 /// slot's whole member set. Yields nothing while the set is empty or no member
 /// is emitting; delivery is a live stream, never a mailbox, so messages
 /// published before observation became active are never replayed.
+#[derive(Debug)]
 pub struct ObservedTopicSubscription {
     stream: SlotStream<ObservedFollow>,
 }

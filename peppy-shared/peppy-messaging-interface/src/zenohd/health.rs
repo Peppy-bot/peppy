@@ -20,6 +20,7 @@ pub(super) async fn close_probe_session(session: zenoh::Session) {
 /// completes the Zenoh session handshake. Obtain one via
 /// [`crate::Messenger::router_health_checker`] and probe without holding the
 /// central messenger lock.
+#[derive(Debug)]
 pub struct RouterHealthChecker {
     probe_config: zenoh::config::Config,
 }

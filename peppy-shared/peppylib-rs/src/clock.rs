@@ -50,6 +50,7 @@ pub trait ClockSource: Send + Sync {
 
 /// Reads OS wall time. Used when the serving side resolves the clock source
 /// to `wall` (the default).
+#[derive(Debug)]
 pub struct WallClockSource;
 
 impl ClockSource for WallClockSource {
@@ -61,6 +62,7 @@ impl ClockSource for WallClockSource {
 /// Serves timestamps from a domain's cache, filled by the subscription a
 /// consumer feeds or by the instant a publisher commits. `0` is reserved as
 /// "no tick observed yet" and reads back as [`ClockSourceError::NotReady`].
+#[derive(Debug)]
 struct SimClockSource {
     cache: Arc<AtomicU64>,
 }
@@ -175,6 +177,7 @@ pub async fn synchronize(
 
 /// Subscription handle returned by [`subscribe`]. Each call to
 /// [`ClockSubscription::on_next_tick`] yields the next decoded [`ClockTick`].
+#[derive(Debug)]
 pub struct ClockSubscription {
     inner: Subscription,
 }
@@ -208,10 +211,12 @@ impl ClockSubscription {
 /// and installs the matching source. The generator emits a pre-bound
 /// `peppygen::clock::now_ns()` free function so user code never threads a
 /// `PeppyClock` around.
+#[derive(Debug)]
 pub struct PeppyClock {
     inner: PeppyClockInner,
 }
 
+#[derive(Debug)]
 enum PeppyClockInner {
     Wall,
     /// Reads the domain's ticks as they arrive, cached by a feeder task.
@@ -435,6 +440,7 @@ pub async fn subscribe(node_runner: &NodeRunner, buffer: TopicBuffer) -> Result<
 /// being that domain's source. Each `publish` commits the instant locally and
 /// sends one tick on the domain's stream; every instance bound to the domain
 /// reads that stream, wherever it runs.
+#[derive(Debug)]
 pub struct ClockPublisher {
     domain: ClockDomainId,
     cache: Arc<AtomicU64>,

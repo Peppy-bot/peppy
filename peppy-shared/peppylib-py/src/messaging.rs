@@ -205,6 +205,7 @@ where
 ///
 /// Use as an async context manager (`async with`) or call `stop()` explicitly
 /// to ensure the router is cleanly shut down.
+#[derive(Debug)]
 #[pyclass(name = "ZenohdInstance")]
 pub struct PyZenohdInstance {
     inner: Arc<Mutex<Option<ZenohdInstance>>>,
@@ -296,7 +297,7 @@ impl PyZenohdInstance {
 /// `MessengerHandle` already manages its own internal `Arc<Mutex<Messenger>>`,
 /// so no additional outer lock is needed here. Cloning is a cheap `Arc` bump.
 #[pyclass(name = "MessengerHandle", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyMessengerHandle {
     pub(crate) inner: MessengerHandle,
 }

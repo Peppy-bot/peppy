@@ -84,6 +84,7 @@ impl FollowedSlot for BoundFollow {
 /// one cannot starve a quiet one. A live-only topic delivers what a producer
 /// publishes while the slot follows it. A retaining topic also delivers the
 /// messages each producer retains.
+#[derive(Debug)]
 pub struct BoundSetSubscription {
     stream: SlotStream<BoundFollow>,
     shutdown: CancellationToken,

@@ -15,6 +15,7 @@ use std::sync::Arc;
 /// `(core_node, instance_id)` pair in the keyexpr, and infra subscriptions
 /// deliberately wildcard it. So every message the wire delivers surfaces to
 /// user code; there is no in-process producer filtering.
+#[derive(Debug)]
 pub struct Subscription {
     inner: pmi::Subscription,
 }
@@ -45,6 +46,7 @@ impl Subscription {
     }
 }
 
+#[derive(Debug)]
 pub struct TopicMessenger;
 
 impl TopicMessenger {
@@ -484,12 +486,12 @@ fn pairing_sender(
 /// ([`crate::runtime::declare_sole_peer_publisher`]) addresses each publish
 /// to the one peer that holds the pair when it runs, and sends nothing while
 /// the slot is unpaired.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TopicPublisher {
     route: PublisherRoute,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 enum PublisherRoute {
     /// One wire publisher, whose key is fixed when it is declared.
     Fixed(Arc<MessengerPublisher>),

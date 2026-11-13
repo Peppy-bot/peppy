@@ -116,6 +116,7 @@ fn all_established(endpoints: &[ConfiguredEndpoint], dsts: &[String]) -> bool {
 /// same fail-fast probe config as [`super::RouterHealthChecker`], plus the
 /// active router config's `connect.endpoints`; `None` there means there is
 /// nothing to wait for.
+#[derive(Debug)]
 pub struct RouterLinksProbe {
     probe_config: zenoh::config::Config,
     endpoints: Vec<ConfiguredEndpoint>,

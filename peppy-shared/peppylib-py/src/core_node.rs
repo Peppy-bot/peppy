@@ -15,7 +15,7 @@ use crate::runtime::PyNodeRunner;
 
 /// Python wrapper for `core_node_api::encoding::ContainerInfo`.
 #[pyclass(name = "ContainerInfo", from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyContainerInfo {
     inner: ContainerInfo,
 }
@@ -48,7 +48,7 @@ impl PyContainerInfo {
 /// Exposes the same fields as the Rust type plus `encode()` so tests can
 /// fabricate capnp wire bytes for stub listeners.
 #[pyclass(name = "InfoResponse", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyInfoResponse {
     inner: InfoResponse,
 }
@@ -139,7 +139,7 @@ impl PyInfoResponse {
 /// Python wrapper for `core_node_api::encoding::StackListResponse`, used by
 /// test stubs to produce capnp wire bytes for the `STACK_LIST` service.
 #[pyclass(name = "StackListResponse", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyStackListResponse {
     inner: StackListResponse,
 }
@@ -221,6 +221,7 @@ impl PyStackListResponse {
 /// `SerializedNodeGraph` types all derive `Serialize`/`Deserialize`, so a
 /// dict/list representation faithfully mirrors the Rust shape without hand-
 /// wrapping six more classes.
+#[derive(Debug)]
 #[pyclass(name = "StackList")]
 pub struct PyStackList {
     inner: peppylib::stack::StackList,

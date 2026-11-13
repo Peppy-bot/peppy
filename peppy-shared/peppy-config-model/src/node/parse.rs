@@ -412,6 +412,7 @@ fn validate_execution(execution: &Execution) -> Result<()> {
 }
 
 /// Parser responsible for extracting configuration from JSON5 documents
+#[derive(Debug)]
 pub struct NodeConfigParser;
 
 impl NodeConfigParser {

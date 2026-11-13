@@ -95,7 +95,7 @@ pub struct EmptyPayloadError;
 /// Lives next to [`Payload`] so that capnp `encode()` helpers can return a
 /// non-emptiness-typed payload directly without `peppylib` and
 /// `core-node-api` having to depend on each other.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct NonEmptyPayload(Payload);
 
 impl NonEmptyPayload {

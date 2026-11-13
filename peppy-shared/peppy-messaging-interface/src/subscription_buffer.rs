@@ -68,7 +68,7 @@ pub(crate) fn subscription_channel(
 
 /// The transport's side of a subscription buffer. Cloning it shares the same
 /// buffer.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) enum SubscriptionSink {
     /// A topic's bounded queue: a message waits while the queue is full.
     Backpressure(flume::Sender<TopicMessage>),
@@ -120,6 +120,7 @@ impl SubscriptionSink {
 /// A bounded topic queue that never makes its sender wait: a message that
 /// arrives while the queue is full drops the oldest unread one. The first
 /// drop of a queue is logged once, with the keyexpr of its subscription.
+#[derive(Debug)]
 pub(crate) struct LatestQueue {
     tx: flume::Sender<TopicMessage>,
     /// A receiver of the queue's own, which takes the oldest unread message
@@ -197,6 +198,7 @@ impl LatestQueue {
 /// unread messages. A message that arrives while `bound` messages wait
 /// overflows the buffer: it drops every unread message, takes nothing more,
 /// and raises its [`FeedbackOverflow`].
+#[derive(Debug)]
 pub(crate) struct FeedbackSink {
     /// Unbounded, so a send never waits: the bound is checked before it.
     tx: flume::Sender<TopicMessage>,

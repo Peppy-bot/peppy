@@ -19,6 +19,7 @@ use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err
 /// [`PyTopicMessage`] keeps its message: every getter borrows out of it, so
 /// receiving a request copies nothing and Python pays a single copy of the
 /// request body in the [`payload`](Self::payload) getter.
+#[derive(Debug)]
 #[pyclass(name = "ServiceRequestContext")]
 pub struct PyServiceRequestContext {
     inner: ServiceRequestContext,
@@ -71,6 +72,7 @@ impl From<ServiceRequestContext> for PyServiceRequestContext {
 /// request by [`PyServiceEndpoint::recv_next_request`]. Responding consumes
 /// the underlying token, so it is held behind an `Option` and taken on first
 /// use; a second respond raises `ValueError`.
+#[derive(Debug)]
 #[pyclass(name = "ServiceResponder")]
 pub struct PyServiceResponder {
     inner: Arc<Mutex<Option<ServiceResponder>>>,
@@ -123,6 +125,7 @@ impl PyServiceResponder {
 }
 
 /// Python wrapper for a service endpoint that listens for incoming requests.
+#[derive(Debug)]
 #[pyclass(name = "ServiceEndpoint")]
 pub struct PyServiceEndpoint {
     pub(crate) inner: Arc<Mutex<ServiceEndpoint>>,
@@ -285,6 +288,7 @@ fn awaited_response_bytes(awaited: PyResult<Py<PyAny>>) -> Result<Vec<u8>, Failu
 }
 
 /// Python wrapper for `ServiceMessenger` (request-response pattern).
+#[derive(Debug)]
 #[pyclass(name = "ServiceMessenger")]
 pub struct PyServiceMessenger;
 

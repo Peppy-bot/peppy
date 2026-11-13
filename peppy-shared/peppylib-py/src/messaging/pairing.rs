@@ -20,7 +20,7 @@ use tokio::sync::Mutex;
 /// make it usable directly as a `dict` key, mirroring the Rust
 /// `HashMap<PeerInfo, _>` idiom.
 #[pyclass(name = "PeerInfo", frozen, eq, hash, skip_from_py_object)]
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PyPeerInfo {
     pub(crate) inner: PeerInfo,
 }
@@ -64,7 +64,7 @@ impl From<PeerInfo> for PyPeerInfo {
 /// instance belongs to (`None` for an instance run outside a copy). A node
 /// holding pairs from several copies groups them by `copy`.
 #[pyclass(name = "PeerMember", frozen, eq, hash, skip_from_py_object)]
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PyPeerMember {
     pub(crate) inner: PeerMember,
 }
@@ -113,6 +113,7 @@ impl From<PeerMember> for PyPeerMember {
 /// slot), obtained via `node_runner.peer(link_id)`. `paired()` reads the
 /// current peer (or `None` while unpaired); `wait_paired()` awaits one.
 /// Multi-peer slots are read through [`PyPeerSlotSet`] instead.
+#[derive(Debug)]
 #[pyclass(name = "PeerSlot")]
 pub struct PyPeerSlot {
     pub(crate) inner: PeerSlot,
@@ -155,6 +156,7 @@ impl PyPeerSlot {
 /// either side stops. A `one_or_more` slot's floor is a plan-time guarantee
 /// that at least one peer is paired to it; the set still empties when every
 /// peer stops.
+#[derive(Debug)]
 #[pyclass(name = "PeerSlotSet")]
 pub struct PyPeerSlotSet {
     pub(crate) inner: PeerSlotSet,
@@ -198,6 +200,7 @@ impl PyPeerSlotSet {
 /// the slot does not hold. A scalar slot publishes through the
 /// `TopicPublisher` `node_runner.declare_sole_peer_publisher(...)` vends,
 /// to the one peer that holds its pair.
+#[derive(Debug)]
 #[pyclass(name = "PeerPublisher")]
 pub struct PyPeerPublisher {
     pub(crate) inner: Arc<PeerPublisher>,
@@ -237,6 +240,7 @@ impl PyPeerPublisher {
 /// yields a `(peer, message)` tuple, or `None` when the runtime is torn down.
 /// Yields nothing while the slot holds no pair; delivery follows the slot's
 /// live set.
+#[derive(Debug)]
 #[pyclass(name = "PeerSubscription")]
 pub struct PyPeerSubscription {
     pub(crate) inner: Arc<Mutex<PeerSubscription>>,

@@ -85,6 +85,7 @@ use pmi::{
     ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
+use std::fmt;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -145,6 +146,17 @@ pub struct MessengerHandle {
     call_check: Option<Arc<dyn CallCheck>>,
 }
 
+impl fmt::Debug for MessengerHandle {
+    /// Shows whether the handle signs and checks calls: the signer holds a
+    /// key, and the check is a trait object, which has no text.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MessengerHandle")
+            .field("signs_calls", &self.call_signer.is_some())
+            .field("checks_calls", &self.call_check.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 /// The liveliness tokens of the identities a handle sends goals as, one per
 /// `(core_node, instance_id)`, declared at the first goal the handle sends
 /// as that identity. The provider of each goal watches the token of its
@@ -198,6 +210,7 @@ pub(crate) fn generate_short_id(domain: &str) -> String {
 
 /// Transport for a [`MessengerConnect`]: plaintext TCP (`tcp/`, the default) or
 /// TLS (`tls/`), the latter validated against a [`pmi::TlsConfig`].
+#[derive(Debug)]
 enum Transport {
     Tcp,
     Tls(pmi::TlsConfig),
@@ -237,6 +250,7 @@ enum SessionKind {
 /// two cases are mutually exclusive *by construction*: a session is either
 /// pinned to an explicit namespace or driven by a node's discovery config,
 /// never both.
+#[derive(Debug)]
 pub enum SessionScope<'a> {
     /// Open a pure client session under an explicit workspace namespace
     /// instead of the `local` default: no listener, no gossip
@@ -260,6 +274,7 @@ pub enum SessionScope<'a> {
 /// [`IntoFuture`](std::future::IntoFuture)) to perform the connect. Every
 /// builder method is infallible; the only failure point is the awaited connect,
 /// which yields `Result<MessengerHandle>`.
+#[derive(Debug)]
 pub struct MessengerConnect {
     host: String,
     port: u16,

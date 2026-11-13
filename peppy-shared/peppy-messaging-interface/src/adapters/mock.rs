@@ -17,6 +17,7 @@ use super::super::wire::{
 };
 use config::node::{RetentionDepth, TopicRetention};
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -24,6 +25,7 @@ use tokio::sync::mpsc;
 
 /// A mock messenger with its router started, as [`MockAdapter::start_router`]
 /// returns it.
+#[derive(Debug)]
 pub struct MockInstance {
     messenger: Option<Messenger>,
     pub host: String,
@@ -48,6 +50,7 @@ impl MockInstance {
 /// subscriber wildcards the `link_id` slot at the keyexpr level (the topic
 /// `from_link_id: None` case): `route_publish` drops non-primary fan-out
 /// for those entries so a multi-link `emit` yields one delivery.
+#[derive(Debug)]
 pub struct MockSubscription {
     sink: SubscriptionSink,
     drop_secondary: bool,
@@ -79,7 +82,7 @@ pub(crate) type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<MockSubscription
 
 /// The messages one retaining mock topic keeps: its newest `depth`, oldest
 /// first.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct RetainedMessages {
     depth: RetentionDepth,
     messages: Arc<Mutex<VecDeque<TopicMessage>>>,
@@ -149,6 +152,16 @@ struct MockLivelinessState {
     watchers: HashMap<String, Vec<MockLivelinessWatcher>>,
 }
 
+impl fmt::Debug for MockLivelinessState {
+    /// Shows the watch patterns: a watcher is a callback, which has no text.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MockLivelinessState")
+            .field("tokens", &self.tokens)
+            .field("watch_patterns", &self.watchers.keys())
+            .finish()
+    }
+}
+
 /// Registration-time callback that types and forwards one liveliness
 /// transition to its watch channel. Each watch domain owns its event
 /// mapping (action watches forward the `()` event as-is, presence watches
@@ -158,7 +171,7 @@ type MockLivelinessWatcher = Box<dyn Fn(&str, LivelinessEvent) + Send>;
 
 type LivelinessState = Arc<Mutex<MockLivelinessState>>;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct MockAdapter {
     is_session_connected: bool,
     subscriptions: SubscriptionMap,
@@ -1003,6 +1016,7 @@ async fn handle_mock_queryable(
 /// [`MockAdapter::declare_action_feedback_publisher`].
 /// Holds `Arc`s into the adapter's in-process matcher state, so `publish` is
 /// independent of the `Arc<Mutex<Messenger>>` global lock that everyone shares.
+#[derive(Debug)]
 pub struct MockPublisher {
     topic: String,
     subscriptions: SubscriptionMap,

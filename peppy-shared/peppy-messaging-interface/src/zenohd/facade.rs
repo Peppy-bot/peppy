@@ -30,6 +30,7 @@ pub const ROUTER_START_BOUND: std::time::Duration = ROUTER_PROBE_TIMEOUT
     .saturating_add(READINESS_MAX_BACKOFF)
     .saturating_add(ROUTER_PROBE_TIMEOUT);
 
+#[derive(Debug)]
 enum RouterOwnership {
     /// A router spawned and supervised by peppy from a rendered (or
     /// operator-pinned) config file.
@@ -199,6 +200,7 @@ fn resolve_zenohd_binary(
 
 /// The Zenoh daemon binary facade. Zenohd is not accessible via the Rust API (or in a very limited fashion).
 /// This facade allows calling the binary in the background.
+#[derive(Debug)]
 pub struct ZenohdFacade {
     ownership: RouterOwnership,
     router_process: Option<Child>,

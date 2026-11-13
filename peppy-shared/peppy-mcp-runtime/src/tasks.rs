@@ -155,6 +155,19 @@ pub struct ActionContext {
     pub(crate) surface: ActionSurface,
 }
 
+impl std::fmt::Debug for ActionContext {
+    /// Shows the kind of the surface: the task context of rmcp has no text.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let surface = match &self.surface {
+            ActionSurface::Task(_) => "task",
+            ActionSurface::Call { .. } => "call",
+        };
+        f.debug_struct("ActionContext")
+            .field("surface", &surface)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ActionContext {
     /// Publishes a feedback message to the client: as the task's status
     /// message, which `tasks/get` reports, or as a progress notification on

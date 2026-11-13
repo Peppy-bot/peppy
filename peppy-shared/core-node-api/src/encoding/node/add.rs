@@ -153,6 +153,7 @@ fn validate_repo_node_tag(tag: &str, label: &str) -> Result<()> {
 }
 
 /// Goal message for the `NodeAdd` action.
+#[derive(Debug)]
 pub struct NodeAddGoal {
     pub source: NodeSource,
     pub git_hash: String,

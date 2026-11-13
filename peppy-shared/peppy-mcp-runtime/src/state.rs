@@ -60,6 +60,7 @@ pub(crate) struct SnapshotView {
     pub(crate) remaining_fresh_ms: u64,
 }
 
+#[derive(Debug)]
 pub(crate) struct ResourceState {
     pub(crate) entry: ResourceEntry,
     /// Minimum nanoseconds between admitted messages, from `update.max_hz`.
@@ -247,7 +248,7 @@ enum Admission {
 
 /// The feed a topic pump pushes decoded messages through. Handed out by
 /// [`ExposureServer::ingest`](crate::ExposureServer::ingest).
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ResourceIngest {
     pub(crate) state: Arc<ResourceState>,
     pub(crate) events: broadcast::Sender<CatalogEvent>,

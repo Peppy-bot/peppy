@@ -27,6 +27,7 @@ use super::{
 /// Python wrapper for a per-goal feedback publisher used by action servers.
 /// Vended by [`PyActionFeedbackPublisherFactory::declare`] once a goal is
 /// accepted.
+#[derive(Debug)]
 #[pyclass(name = "ActionFeedbackPublisher")]
 pub struct PyActionFeedbackPublisher {
     inner: ActionFeedbackPublisher,
@@ -74,6 +75,7 @@ impl PyActionFeedbackPublisher {
 /// a field of [`PyActionCreation`]; the codegen calls
 /// [`Self::declare`] from inside `handle_goal_next_request` once a goal is
 /// accepted, scoping the feedback topic to that single goal cycle.
+#[derive(Debug)]
 #[pyclass(name = "ActionFeedbackPublisherFactory")]
 pub struct PyActionFeedbackPublisherFactory {
     inner: ActionFeedbackPublisherFactory,
@@ -117,6 +119,7 @@ impl PyActionFeedbackPublisherFactory {
 /// decoded Rust-side, so Python reads the typed `status`, the raw result
 /// `body`, the failure of a failed goal and the reason of a cancelled one
 /// directly (no re-parsing of the framing).
+#[derive(Debug)]
 #[pyclass(name = "ActionResultReply")]
 pub struct PyActionResultReply {
     status: u8,
@@ -199,6 +202,7 @@ impl PyActionResultReply {
 /// Python wrapper for the typed cancel reply returned by
 /// `ActionMessenger.cancel_goal`. The framework cancel-ack is decoded Rust-side
 /// (mirroring `request_result`), so Python reads the typed `state` tag directly.
+#[derive(Debug)]
 #[pyclass(name = "ActionCancelReply")]
 pub struct PyActionCancelReply {
     state: u8,
@@ -235,6 +239,7 @@ impl PyActionCancelReply {
 /// A clone of the underlying [`ActionWireSender`] is cached at construction so
 /// that `cancel_goal` and `request_result` can proceed without locking the
 /// mutex, which is only needed by `on_next_feedback` (mutates the subscription).
+#[derive(Debug)]
 #[pyclass(name = "ActionGoalHandle")]
 pub struct PyActionGoalHandle {
     pub(crate) inner: Arc<Mutex<ActionGoalHandle>>,
@@ -320,6 +325,7 @@ impl PyActionGoalHandle {
 // ---------------------------------------------------------------------------
 
 /// Python wrapper for the server-side action components returned by `expose`.
+#[derive(Debug)]
 #[pyclass(name = "ActionCreation")]
 pub struct PyActionCreation {
     goal_service: Arc<Mutex<ServiceEndpoint>>,
@@ -368,6 +374,7 @@ impl PyActionCreation {
 // ---------------------------------------------------------------------------
 
 /// Python wrapper for `ActionMessenger` (goal / feedback / result / cancel pattern).
+#[derive(Debug)]
 #[pyclass(name = "ActionMessenger")]
 pub struct PyActionMessenger;
 
@@ -596,6 +603,7 @@ impl PyActionMessenger {
 // the generated Python, and it crosses this boundary as plain `bytes`.
 
 /// Python wrapper for [`peppylib::messaging::ConcurrentAction`].
+#[derive(Debug)]
 #[pyclass(name = "ConcurrentAction")]
 pub struct PyConcurrentAction {
     inner: Arc<Mutex<ConcurrentAction>>,
@@ -678,6 +686,7 @@ impl PyConcurrentAction {
 /// Python wrapper for [`peppylib::messaging::PendingGoal`]. `accept`/`refuse`
 /// consume the underlying goal, so it is held behind an `Option` and taken on
 /// first use.
+#[derive(Debug)]
 #[pyclass(name = "PendingGoal")]
 pub struct PyPendingGoal {
     inner: Arc<Mutex<Option<PendingGoal>>>,
@@ -761,6 +770,7 @@ impl PyPendingGoal {
 /// `weakref` so `peppylib.testing`'s mock action server can track live goal
 /// contexts without keeping them alive: a strong registry would defer the
 /// abandon-on-drop transition a test triggers by releasing its goal handle.
+#[derive(Debug)]
 #[pyclass(name = "GoalContext", weakref)]
 pub struct PyGoalContext {
     inner: Arc<GoalContext>,

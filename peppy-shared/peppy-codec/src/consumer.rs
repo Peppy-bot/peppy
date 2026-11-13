@@ -164,12 +164,14 @@ pub fn contract_topic_codec(
 /// A subscription to a topic member, decoding messages on request: across
 /// every producer bound to a slot of the consumer's node, or from one
 /// producer that a client with no node names itself.
+#[derive(Debug)]
 pub struct TopicConsumer {
     codec: MessageCodec,
     source: TopicSource,
 }
 
 /// Where the messages of a [`TopicConsumer`] come from.
+#[derive(Debug)]
 enum TopicSource {
     /// The producers a launcher binds to a slot of the consumer's node.
     BoundSet(BoundSetSubscription),
@@ -504,6 +506,7 @@ impl ActionClient {
 }
 
 /// A goal in flight.
+#[derive(Debug)]
 pub struct GoalHandle {
     inner: ActionGoalHandle,
     member: String,

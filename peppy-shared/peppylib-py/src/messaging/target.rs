@@ -18,7 +18,7 @@ fn sender_target_error_to_py(err: SenderTargetError) -> PyErr {
 /// Subscribers that should match any publisher pass `None` for `from_target`
 /// in `subscribe()` rather than constructing a wildcard `SenderTarget`.
 #[pyclass(name = "SenderTarget", frozen, eq, hash, from_py_object)]
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PySenderTarget {
     pub(crate) inner: SenderTarget,
 }
@@ -131,7 +131,7 @@ impl PySenderTarget {
 /// Rust `HashMap<ProducerRef, _>` idiom. `from_py_object` lets it be extracted
 /// as a call argument.
 #[pyclass(name = "ProducerRef", frozen, eq, hash, from_py_object)]
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PyProducerRef {
     pub(crate) inner: ProducerRef,
 }

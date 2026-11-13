@@ -371,6 +371,7 @@ impl StandaloneConfig {
 /// The builder automatically detects execution mode:
 /// - If `PEPPY_RUNTIME_CONFIG` is set (by CLI), runs in daemon mode
 /// - Otherwise, runs in standalone mode with the provided config (or defaults)
+#[derive(Debug)]
 pub struct NodeBuilder<Params> {
     standalone_config: Option<StandaloneConfig>,
     manifest: ManifestSource,
@@ -538,6 +539,7 @@ where
 /// Returned by `NodeBuilder::init()`. Parameters are parsed eagerly
 /// during construction. Call [`take_parameters`](Self::take_parameters) to
 /// take the already-validated, typed parameters.
+#[derive(Debug)]
 pub struct NodeContext<Params> {
     processor: Processor,
     mode: ExecutionMode,

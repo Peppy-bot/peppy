@@ -7,7 +7,7 @@ pub const CONTROLLER_NODE_NAME: &str = "controller";
 pub const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
 pub const LIDAR_SENSOR_NODE_NAME: &str = "lidar_sensor";
 
-#[derive(Template)]
+#[derive(Debug, Template)]
 #[template(path = "nodes/uvc_camera/peppy.json5.j2")]
 pub struct UvcCameraNodeTemplate<'a> {
     node_name: &'a str,
@@ -19,7 +19,7 @@ impl<'a> UvcCameraNodeTemplate<'a> {
     }
 }
 
-#[derive(Template)]
+#[derive(Debug, Template)]
 #[template(path = "nodes/lidar_sensor/peppy.json5.j2")]
 pub struct LidarSensorNodeTemplate<'a> {
     node_name: &'a str,
@@ -35,7 +35,7 @@ impl<'a> LidarSensorNodeTemplate<'a> {
     }
 }
 
-#[derive(Template)]
+#[derive(Debug, Template)]
 #[template(path = "nodes/web_video_stream/peppy.json5.j2")]
 pub struct WebStreamVideoStreamNodeTemplate<'a> {
     pub node_name: &'a str,
@@ -51,7 +51,7 @@ impl<'a> WebStreamVideoStreamNodeTemplate<'a> {
     }
 }
 
-#[derive(Template)]
+#[derive(Debug, Template)]
 #[template(path = "nodes/brain/peppy.json5.j2")]
 pub struct BrainNodeTemplate<'a> {
     pub node_name: &'a str,
@@ -76,7 +76,7 @@ impl<'a> BrainNodeTemplate<'a> {
     }
 }
 
-#[derive(Template)]
+#[derive(Debug, Template)]
 #[template(path = "nodes/controller/peppy.json5.j2")]
 pub struct ControllerNodeTemplate<'a> {
     pub node_name: &'a str,

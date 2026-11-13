@@ -15,6 +15,7 @@ use capnp::serialize::{self, OwnedSegments};
 use config::node::{MessageFormat, PrimitiveSchema, SchemaType, TypeToken};
 use indexmap::IndexMap;
 use std::collections::HashMap;
+use std::fmt;
 
 /// The result of the schema functions.
 pub type Result<T> = std::result::Result<T, SchemaError>;
@@ -97,6 +98,13 @@ impl MessageSchema {
 /// that the `capnp` binary gives for it, read fully into memory.
 pub struct CompiledSchema {
     message: Reader<OwnedSegments>,
+}
+
+impl fmt::Debug for CompiledSchema {
+    /// Leaves out the message: a capnp reader has no text.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CompiledSchema").finish_non_exhaustive()
+    }
 }
 
 impl CompiledSchema {

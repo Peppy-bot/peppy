@@ -237,6 +237,20 @@ pub struct ExposureServerBuilder {
     fleet_source: Option<Arc<dyn FleetSource>>,
 }
 
+impl std::fmt::Debug for ExposureServerBuilder {
+    /// Shows the names that have a handler: a handler is a trait object,
+    /// which has no text.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExposureServerBuilder")
+            .field("exposure", &self.bundle.exposure.name)
+            .field("tag", &self.bundle.exposure.tag)
+            .field("handlers", &self.handlers.keys())
+            .field("task_handlers", &self.task_handlers.keys())
+            .field("reads_a_fleet", &self.fleet_source.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl ExposureServerBuilder {
     /// Registers where the server reads the fleet of a per-robot bundle:
     /// the members of every target as the stack binds them now.
@@ -1634,6 +1648,15 @@ pub struct FleetHandle {
     fleet: Arc<FleetRuntime>,
     events: broadcast::Sender<CatalogEvent>,
     clock: Clock,
+}
+
+impl std::fmt::Debug for FleetHandle {
+    /// Leaves out the fleet: its source is a trait object, which has no text.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FleetHandle")
+            .field("clock", &self.clock)
+            .finish_non_exhaustive()
+    }
 }
 
 impl FleetHandle {

@@ -141,6 +141,7 @@ fn py_of<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
 /// `"feedback"` and `"result"` of an action), and a field by its path in
 /// the format: the key of each object it sits in, with the items of an
 /// array passed through.
+#[derive(Debug)]
 #[pyclass(name = "Contract", frozen)]
 pub struct PyContract {
     inner: Arc<PeppyContract>,
@@ -351,6 +352,7 @@ impl PyContract {
 /// `u8` are base64 strings, `u64` and `i64` are decimal strings, and the
 /// other types are the matching JSON values. An optional field is left out
 /// of the `dict` when it is absent.
+#[derive(Debug)]
 #[pyclass(name = "MessageCodec", frozen)]
 pub struct PyMessageCodec {
     inner: MessageCodec,
@@ -405,6 +407,7 @@ fn identity(as_core_node: String, as_instance_id: String) -> ConsumerIdentity {
 }
 
 /// A client of a service of a contract.
+#[derive(Debug)]
 #[pyclass(name = "ServiceClient", frozen)]
 pub struct PyServiceClient {
     client: ServiceClient,
@@ -480,6 +483,7 @@ impl<'py> IntoPyObject<'py> for JsonValue {
 }
 
 /// A client of an action of a contract.
+#[derive(Debug)]
 #[pyclass(name = "ActionClient", frozen)]
 pub struct PyActionClient {
     client: ActionClient,
@@ -557,6 +561,7 @@ impl PyActionClient {
 }
 
 /// A goal in flight, sent by `ActionClient.send_goal`.
+#[derive(Debug)]
 #[pyclass(name = "GoalHandle", frozen)]
 pub struct PyGoalHandle {
     /// The handle, for the feedback, which only one reader takes at a time.
@@ -678,6 +683,7 @@ fn cancel_state_name(state: CancelState) -> &'static str {
 /// its result). `result` is the result of a completed or a cancelled goal as
 /// a `dict`, `reason` the reason of a cancel, and `failure_kind` and
 /// `failure_message` the failure of a failed goal.
+#[derive(Debug)]
 #[pyclass(name = "GoalOutcome", frozen)]
 pub struct PyGoalOutcome {
     outcome: GoalOutcome,
@@ -742,6 +748,7 @@ impl PyGoalOutcome {
 }
 
 /// A subscription to a topic of a contract on one producer.
+#[derive(Debug)]
 #[pyclass(name = "TopicConsumer", frozen)]
 pub struct PyTopicConsumer {
     inner: Arc<Mutex<TopicConsumer>>,

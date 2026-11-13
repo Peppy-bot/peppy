@@ -62,6 +62,7 @@ async fn answer_request<F, Fut>(
     }
 }
 
+#[derive(Debug)]
 pub struct ServiceMessenger;
 
 /// Producer scope of a [`ServiceMessenger::poll`] / [`ServiceMessenger::is_reachable`]
@@ -139,6 +140,17 @@ pub struct ServiceEndpoint {
     call_check: Option<Arc<dyn CallCheck>>,
 }
 
+impl fmt::Debug for ServiceEndpoint {
+    /// Shows whether the endpoint checks its callers: the check is a trait
+    /// object, which has no text.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServiceEndpoint")
+            .field("queryable", &self.queryable)
+            .field("checks_callers", &self.call_check.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl ServiceEndpoint {
     pub(crate) fn new(
         messenger: Arc<Mutex<Messenger>>,
@@ -176,6 +188,7 @@ impl ServiceEndpoint {
 /// Handle returned by [`ServiceEndpoint::recv_next_request`] that must be used
 /// to send the response back to the caller. Wraps the inbound query's
 /// [`ResponseToken`]: `respond` issues a single reply on it.
+#[derive(Debug)]
 pub struct ServiceResponder {
     token: ResponseToken,
 }

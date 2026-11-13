@@ -20,6 +20,7 @@ pub fn run_command(command: &mut Command, description: &str) -> bool {
 }
 
 /// Output from a streamed command execution.
+#[derive(Debug)]
 pub struct CommandOutput {
     pub success: bool,
     pub stdout: String,

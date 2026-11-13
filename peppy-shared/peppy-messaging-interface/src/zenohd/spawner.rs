@@ -31,6 +31,7 @@ struct Request {
     reply: SyncSender<io::Result<Child>>,
 }
 
+#[derive(Debug)]
 pub(super) struct ZenohdSpawner {
     /// Hands each request to the thread; dropping the last clone ends the thread.
     #[cfg(target_os = "linux")]

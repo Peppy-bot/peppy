@@ -13,16 +13,19 @@ use std::collections::HashMap;
 
 /// The publish keys one session declared. `H` is the adapter's handle to a
 /// retaining topic's publisher.
+#[derive(Debug)]
 pub(crate) struct DeclaredTopics<H> {
     topics: HashMap<String, Declared<H>>,
 }
 
 /// What a session declared on one publish key.
+#[derive(Debug)]
 enum Declared<H> {
     LiveOnly,
     Retaining(RetainingTopic<H>),
 }
 
+#[derive(Debug)]
 struct RetainingTopic<H> {
     depth: RetentionDepth,
     qos: PublisherQoS,

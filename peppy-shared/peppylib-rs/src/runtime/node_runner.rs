@@ -6,6 +6,7 @@ use pmi::ClientCredential;
 
 use futures::FutureExt;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::pin::Pin;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -32,6 +33,18 @@ pub struct NodeRunner {
     cancellation_token: CancellationToken,
     shutdown_hooks: Mutex<Vec<ShutdownHook>>,
     endpoints: Mutex<AnnouncedEndpoints>,
+}
+
+impl fmt::Debug for NodeRunner {
+    /// Leaves out the shutdown hooks: a hook is a future, which has no text.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeRunner")
+            .field("messenger", &self.messenger)
+            .field("processor", &self.processor)
+            .field("cancellation_token", &self.cancellation_token)
+            .field("endpoints", &self.endpoints)
+            .finish_non_exhaustive()
+    }
 }
 
 impl NodeRunner {

@@ -935,6 +935,7 @@ impl Drop for CancelSetupOnStop {
 }
 
 /// Python wrapper for `CancellationToken`.
+#[derive(Debug)]
 #[pyclass(name = "CancellationToken")]
 pub struct PyCancellationToken {
     inner: CancellationToken,
@@ -968,6 +969,7 @@ impl PyCancellationToken {
 }
 
 /// Python wrapper for `NodeRunner`.
+#[derive(Debug)]
 #[pyclass(name = "NodeRunner")]
 pub struct PyNodeRunner {
     pub(crate) inner: Arc<NodeRunner>,
@@ -1527,7 +1529,7 @@ impl PyNodeRunner {
 
 /// Python wrapper for `StandaloneConfig`.
 #[pyclass(name = "StandaloneConfig", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyStandaloneConfig {
     inner: StandaloneConfig,
 }
@@ -1730,6 +1732,7 @@ impl PyStandaloneConfig {
 }
 
 /// Python wrapper for `NodeBuilder`.
+#[derive(Debug)]
 #[pyclass(name = "NodeBuilder")]
 pub struct PyNodeBuilder {
     standalone_config: Option<StandaloneConfig>,

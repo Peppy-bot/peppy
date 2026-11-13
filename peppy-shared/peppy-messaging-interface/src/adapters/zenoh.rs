@@ -69,6 +69,7 @@ use tracing::info;
 const ADOPTION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Zenoh-specific QoS settings derived from a `PublisherQoS` level.
+#[derive(Debug)]
 struct ZenohQoS {
     priority: Priority,
     congestion_control: CongestionControl,
@@ -114,6 +115,7 @@ fn reserve_ephemeral_port() -> std::io::Result<(u16, TcpListener)> {
 /// Result of starting a zenohd router process.
 ///
 /// The router is automatically stopped when this instance is dropped.
+#[derive(Debug)]
 #[cfg(feature = "router")]
 pub struct ZenohdInstance {
     messenger: Option<Messenger>,
@@ -164,6 +166,7 @@ use zenoh_ext::{
 /// Resolved config for a node/daemon peer session, plus the inputs needed to
 /// rebuild it (the reconnecting session is re-derived on every
 /// [`start_session`](MessengerBackend::start_session)).
+#[derive(Debug)]
 pub(crate) struct ZenohClientConfig {
     zenoh_config: zenoh::config::Config,
     host: String,
@@ -189,6 +192,7 @@ pub(crate) struct ZenohClientConfig {
     namespace: Option<Namespace>,
 }
 
+#[derive(Debug)]
 pub struct ZenohAdapter {
     #[cfg(feature = "router")]
     zenohd: Option<zenohd::ZenohdFacade>,
@@ -1488,6 +1492,7 @@ fn live_route(session: &Arc<zenoh::Session>, topic: String, qos: PublisherQoS) -
 }
 
 /// The session's publisher for one retaining topic.
+#[derive(Debug)]
 struct RetainingPublisher {
     publisher: AdvancedPublisher<'static>,
     /// Held across each put: a message takes its timestamp, enters the cache
@@ -1634,8 +1639,10 @@ fn process_inbound_query(
 /// Zenoh-side per-topic publisher returned by
 /// [`ZenohAdapter::declare_topic_publisher`]. Its `publish` takes no adapter
 /// lock.
+#[derive(Debug)]
 pub struct ZenohPublisher(PublishRoute);
 
+#[derive(Debug)]
 enum PublishRoute {
     /// A live-only topic: each publish is one `session.put()`, and no Zenoh
     /// publisher is declared.
@@ -1655,6 +1662,7 @@ enum PublishRoute {
 /// release any shared adapter lock before waiting out the timeout, the same
 /// issue-then-resolve split as
 /// [`LivelinessProbe`](crate::types::LivelinessProbe).
+#[derive(Debug)]
 pub struct SubscriberMatchWait {
     session: Arc<zenoh::Session>,
     keyexpr: String,

@@ -40,6 +40,7 @@ use crate::messaging::{MessengerHandle, ProducerRef, Subscription};
 use crate::runtime::TaskHandle;
 use crate::types::Message;
 use config::node::QoSProfile;
+use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tokio::sync::{Notify, watch};
@@ -178,6 +179,17 @@ pub(crate) struct SlotStream<S: FollowedSlot> {
 /// every pinned subscription is keyed on.
 pub(crate) fn published_by_producer(producer: &ProducerRef, message: &Message) -> bool {
     message.core_node() == producer.core_node && message.instance_id() == producer.instance_id
+}
+
+impl<S: FollowedSlot> fmt::Debug for SlotStream<S> {
+    /// Shows the size of the followed set: a member holds a wire channel,
+    /// which has no text.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SlotStream")
+            .field("members", &self.members.len())
+            .field("replays_retained", &self.replays_retained)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<S: FollowedSlot> SlotStream<S> {

@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 /// wrapper copies nothing. Python pays a single copy of the wire bytes, in the
 /// [`payload`](Self::payload) getter, and that one is unavoidable: `PyBytes`
 /// owns its buffer and needs the GIL, while reception runs without it.
+#[derive(Debug)]
 #[pyclass(name = "TopicMessage")]
 pub struct PyTopicMessage {
     inner: Message,
@@ -69,6 +70,7 @@ impl From<Message> for PyTopicMessage {
 }
 
 /// Python wrapper for Subscription
+#[derive(Debug)]
 #[pyclass(name = "Subscription")]
 pub struct PySubscription {
     inner: Arc<Mutex<Subscription>>,
@@ -96,6 +98,7 @@ impl PySubscription {
 /// [`BoundSetSubscription`] for the merge semantics (per-producer order, fair
 /// polling, drain-before-shutdown, empty-set pending, producers joining and
 /// leaving the set).
+#[derive(Debug)]
 #[pyclass(name = "BoundSetSubscription")]
 pub struct PyBoundSetSubscription {
     pub(crate) inner: Arc<Mutex<BoundSetSubscription>>,
@@ -129,7 +132,7 @@ impl PyBoundSetSubscription {
 /// `KeepLatest` keeps the newest messages and drops the oldest unread one when
 /// the queue is full, so the transport never waits for the reader.
 #[pyclass(name = "TopicBuffer", eq, eq_int, from_py_object)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PyTopicBuffer {
     Backpressure,
     KeepLatest,
@@ -145,6 +148,7 @@ impl From<PyTopicBuffer> for TopicBuffer {
 }
 
 /// Python wrapper for `TopicMessenger`
+#[derive(Debug)]
 #[pyclass(name = "TopicMessenger")]
 pub struct PyTopicMessenger;
 
@@ -446,6 +450,7 @@ impl PyTopicMessenger {
 /// Python wrapper for a lock-free per-topic publisher, vended by
 /// [`PyTopicMessenger::declare_publisher`]. Holds the topic binding so each
 /// `publish` skips the central messenger lock; clone-cheap (an `Arc` bump).
+#[derive(Debug)]
 #[pyclass(name = "TopicPublisher")]
 pub struct PyTopicPublisher {
     pub(crate) inner: TopicPublisher,

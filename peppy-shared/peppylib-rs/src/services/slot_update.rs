@@ -88,6 +88,7 @@ fn members_phrase(members: usize) -> String {
 
 /// One declared slot the daemon delivers into: the cardinality the node's
 /// manifest gives it, and the watch channel holding its state.
+#[derive(Debug)]
 pub struct SlotChannel<S> {
     cardinality: Cardinality,
     sender: watch::Sender<S>,

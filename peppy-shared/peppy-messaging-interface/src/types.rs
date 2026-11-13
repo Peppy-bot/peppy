@@ -519,6 +519,7 @@ impl Drop for AbortOnDrop {
 /// publisher; with [`TopicBuffer::KeepLatest`] it drops its oldest unread
 /// message instead. A goal's feedback channel never blocks it either: see
 /// [`FeedbackBuffer`] and the `subscription_buffer` module.
+#[derive(Debug)]
 pub struct Subscription {
     pub rx: flume::Receiver<TopicMessage>,
     _guard: Guard,
@@ -538,6 +539,7 @@ impl Subscription {
 /// token advertised; dropping it (or losing the declaring session, however
 /// that happens) removes the token, which watchers observe as
 /// [`LivelinessEvent::Gone`].
+#[derive(Debug)]
 pub struct LivelinessToken {
     _guard: Guard,
 }
@@ -635,6 +637,7 @@ pub enum LivelinessEvent<T = ()> {
 /// liveliness transitions are rare (bounded by producer restarts and router
 /// flaps) and the producing side runs inside the transport's reception
 /// callback, which must never block.
+#[derive(Debug)]
 pub struct LivelinessWatch<T = ()> {
     pub rx: flume::Receiver<LivelinessEvent<T>>,
     _guard: Guard,
@@ -651,6 +654,7 @@ impl<T> LivelinessWatch<T> {
 /// when a matching token is found and drops its sender when the query
 /// finalizes, so [`resolve`](Self::resolve) maps "channel yielded" to
 /// alive and "channel disconnected" to gone.
+#[derive(Debug)]
 pub struct LivelinessProbe {
     rx: flume::Receiver<()>,
 }
@@ -673,6 +677,7 @@ impl LivelinessProbe {
 /// parsed token per reply and drops its sender when the query finalizes,
 /// so [`collect`](Self::collect) ends exactly when every reply was
 /// delivered.
+#[derive(Debug)]
 pub struct CoreNodePresenceList {
     rx: flume::Receiver<Result<CoreNodePresence>>,
 }
@@ -713,6 +718,7 @@ impl CoreNodePresenceList {
 /// Like [`Subscription`], the channel uses `flume` so the zenoh reception
 /// callback can `send` synchronously with backpressure rather than dropping
 /// inbound requests when the consumer falls behind.
+#[derive(Debug)]
 pub struct ServiceQueryable {
     pub rx: flume::Receiver<IncomingRequest>,
     _guard: Guard,
@@ -730,6 +736,7 @@ impl ServiceQueryable {
 /// the producer set on the reply attachment. The consumer's poll loop
 /// matches on `kind` to skip ACKs, return regular responses, and surface
 /// handler errors without inspecting payload bytes.
+#[derive(Debug)]
 pub struct ServiceReply {
     message: TopicMessage,
     kind: ServiceReplyKind,
@@ -760,6 +767,7 @@ impl ServiceReply {
 /// core-node-scoped infra call) reaches several producers. Each
 /// [`ServiceReply`] carries the producer-set kind on its attachment so
 /// peppylib can discriminate without inspecting payload bytes.
+#[derive(Debug)]
 pub struct ReplyStream {
     pub rx: tokio::sync::mpsc::Receiver<ServiceReply>,
     _guard: Option<Guard>,
@@ -775,6 +783,7 @@ impl ReplyStream {
 /// only legal way to send replies: peppylib calls `respond_ack` first
 /// (lets the consumer distinguish `ServiceUnreachable` from `ServiceTimeout`),
 /// then exactly one terminal `respond_response` / `respond_failure`.
+#[derive(Debug)]
 pub struct IncomingRequest {
     pub payload: Payload,
     /// Whether this is a user request (handler should run) or a discovery
@@ -824,6 +833,7 @@ impl IncomingRequest {
 /// `respond_failure` consumes the token. Consuming the token drops
 /// the underlying Zenoh `Query` (or mock reply channel), closing the
 /// consumer's reply stream after the final reply is observed.
+#[derive(Debug)]
 pub enum ResponseToken {
     #[cfg(feature = "zenoh")]
     Zenoh(ZenohResponseToken),
@@ -877,6 +887,7 @@ impl ResponseToken {
 /// plus a precomputed concrete reply keyexpr (topic-shape, with caller and
 /// responder identities filled in) so `parse_topic_keyexpr` on the caller
 /// side surfaces the responder's `(core_node, instance_id)` to the user.
+#[derive(Debug)]
 #[cfg(feature = "zenoh")]
 pub struct ZenohResponseToken {
     query: zenoh::query::Query,
@@ -906,6 +917,7 @@ impl ZenohResponseToken {
 /// In-process variant of [`ResponseToken`]. Holds the reply channel half
 /// the mock's `call_service` is reading from, so each reply pushes one
 /// [`ServiceReply`] back to the caller.
+#[derive(Debug)]
 pub struct MockResponseToken {
     reply_tx: tokio::sync::mpsc::Sender<ServiceReply>,
     reply_keyexpr: String,
@@ -1042,7 +1054,7 @@ impl PartialEq<Payload> for bytes::Bytes {
 }
 
 /// Envelope for messages travelling through the transport layer.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TopicMessage {
     key_expr: String,
     instance_id: String,
@@ -1143,6 +1155,7 @@ impl TopicMessage {
 }
 
 /// Dispatches the Messenger calls to the appropriate backend without using the heap
+#[derive(Debug)]
 #[expect(clippy::large_enum_variant)]
 pub enum MessengerAdapter {
     #[cfg(feature = "zenoh")]
@@ -1151,6 +1164,7 @@ pub enum MessengerAdapter {
 }
 
 /// Main messaging implementation
+#[derive(Debug)]
 pub struct Messenger {
     pub adapter: MessengerAdapter,
 }
@@ -1272,6 +1286,7 @@ impl Messenger {
 /// Per-topic publisher handle that bypasses the central `Messenger` mutex.
 /// Construct via [`Messenger::declare_topic_publisher`] (or
 /// [`Messenger::declare_action_feedback_publisher`] for action feedback).
+#[derive(Debug)]
 pub enum MessengerPublisher {
     #[cfg(feature = "zenoh")]
     Zenoh(ZenohPublisher),

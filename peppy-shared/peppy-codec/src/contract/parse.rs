@@ -31,6 +31,7 @@ enum NoStructuredRefusal {}
 /// `peppy_schema: "contract/v1"`. Like launchers, they are filename-agnostic:
 /// schema and shape validation are handled by serde so callers walking a
 /// repository can attempt to parse and treat failures as "not a contract."
+#[derive(Debug)]
 pub struct PeppyContractParser;
 
 impl PeppyContractParser {

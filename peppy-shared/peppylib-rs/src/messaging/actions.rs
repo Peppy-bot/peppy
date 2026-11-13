@@ -26,6 +26,7 @@ use tokio::sync::{Mutex as TokioMutex, Notify};
 use tokio::time::{Duration, Instant};
 use tracing::warn;
 
+#[derive(Debug)]
 pub struct ActionMessenger;
 
 /// How many unread feedback messages an action client keeps by default. A
@@ -420,7 +421,7 @@ pub use core_node_api::{EmptyPayloadError, NonEmptyPayload};
 /// [`ActionGoalHandle::on_next_feedback`]. Regular feedback publishes go
 /// through [`ActionFeedbackPublisher::publish`], which takes a
 /// [`NonEmptyPayload`] so empty payloads cannot reach the publish path.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ActionFeedbackPublisher {
     inner: TopicPublisher,
 }
@@ -451,6 +452,7 @@ impl ActionFeedbackPublisher {
 /// the per-goal feedback publisher, the embedded `goal_id` and sender
 /// generation, and the envelope-stripped user payload ready to be decoded by
 /// the goal handler.
+#[derive(Debug)]
 pub struct DeclaredFeedback {
     pub publisher: ActionFeedbackPublisher,
     pub goal_id: String,
@@ -463,7 +465,7 @@ pub struct DeclaredFeedback {
 /// callers feed each incoming goal request's wire bytes to
 /// [`Self::declare_from_wire`], which extracts the client-originated
 /// `goal_id` and declares a feedback publisher scoped to that goal cycle.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ActionFeedbackPublisherFactory {
     messenger: MessengerHandle,
     receiver: ActionWireReceiver,
@@ -807,6 +809,7 @@ impl Drop for OverflowCancel {
 /// ended, also when the caller's future is dropped. [`Self::disarm`] keeps
 /// the cancel from going out, once the caller read the end of the goal or
 /// sent a cancel of its own.
+#[derive(Debug)]
 pub struct CancelOnDrop {
     messenger: MessengerHandle,
     sender: ActionWireSender,
@@ -989,6 +992,7 @@ fn abandoned_reply(sender: &ActionWireSender) -> ActionResultReply {
 }
 
 // https://docs.ros.org/en/foxy/_images/Action-SingleActionClient.gif
+#[derive(Debug)]
 pub struct ActionCreation {
     pub goal_service: ServiceEndpoint,
     pub cancel_service: ServiceEndpoint,
@@ -1501,6 +1505,7 @@ pub fn decode_cancel_ack(payload: &[u8]) -> Result<CancelState> {
 /// Lifecycle state of a goal's result, owned by the engine. A goal is `Pending`
 /// from accept until it reaches a terminal outcome; result polls park their
 /// responders in `Pending` and are drained on the transition to `Terminal`.
+#[derive(Debug)]
 enum GoalState {
     /// The worker is running. `waiters` is a `Vec`, not a single slot, because
     /// a relay may poll twice and several clients may race one `goal_id`.
@@ -1538,7 +1543,7 @@ impl CancelCause {
 /// sweeper evicts the terminal slot. Cheaply cloneable (all shared state is
 /// behind `Arc`), so the loops clone it out from under the `std` registry lock
 /// and then work on it without holding that lock across `.await`.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct GoalSlot {
     /// The caller that sent the goal, as the check of the endpoint verified
     /// it; `None` on an endpoint with no check. Only that caller cancels the
@@ -1558,7 +1563,7 @@ struct GoalSlot {
 
 /// The tokens linked to the cancel signal of one goal, each under the id of
 /// its [`CancelLink`].
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct LinkedTokens {
     next_id: u64,
     tokens: Vec<(u64, CancellationToken)>,
@@ -1621,6 +1626,7 @@ impl GoalSlot {
 /// The link of a token to the cancel signal of a goal, from
 /// [`GoalContext::cancel_at_signal`]. The link ends when it drops: a later
 /// signal leaves the token as it is.
+#[derive(Debug)]
 #[must_use = "the link ends when it drops"]
 pub struct CancelLink {
     linked: Arc<StdMutex<LinkedTokens>>,
@@ -1645,6 +1651,7 @@ type GoalRegistry = Arc<StdMutex<HashMap<String, GoalSlot>>>;
 /// A result poll that arrived for a `goal_id` not yet in the registry (it beat
 /// `accept`). Held until `accept` adopts it into the new slot or its `deadline`
 /// passes (the sweeper drops it; the client then falls back to its own timeout).
+#[derive(Debug)]
 struct PendingWaiter {
     responder: ServiceResponder,
     deadline: Instant,
@@ -1794,6 +1801,7 @@ impl ExpiredTombstones {
 type Tombstones = Arc<StdMutex<ExpiredTombstones>>;
 
 /// The live goals of one sender, and the task that watches its presence.
+#[derive(Debug)]
 struct SenderWatch {
     goals: HashSet<String>,
     task: TaskHandle<()>,
@@ -2254,6 +2262,7 @@ fn sweep_once(
 /// sender is gone and the sender grace of the action passed (zero unless
 /// [`Self::set_sender_grace`] sets it), each of its goals that did not end
 /// receives its cancel signal, with the cause [`CancelCause::SenderGone`].
+#[derive(Debug)]
 pub struct ConcurrentAction {
     goal_service: ServiceEndpoint,
     factory: ActionFeedbackPublisherFactory,
@@ -2501,6 +2510,7 @@ impl Drop for ConcurrentAction {
 }
 
 /// The engine state a [`PendingGoal`] needs to register its goal.
+#[derive(Debug)]
 struct EngineShared {
     messenger: MessengerHandle,
     registry: GoalRegistry,
@@ -2544,6 +2554,7 @@ impl EngineShared {
 /// (empty when the action declares none), or [`refuse`](Self::refuse) with a
 /// failure. Both wrap the reply in the framework admission ack (see
 /// [`wrap_goal_accepted`] and [`wrap_goal_refused`]) before it reaches the wire.
+#[derive(Debug)]
 pub struct PendingGoal {
     goal_id: String,
     sender: ClientPresence,
@@ -2670,6 +2681,7 @@ impl PendingGoal {
 /// Carries the decoded request bytes, the per-goal feedback publisher, and the
 /// shared goal slot (cancel signal + result-delivery state). Cheaply movable
 /// into a spawned task.
+#[derive(Debug)]
 pub struct GoalContext {
     goal_id: String,
     sender: ClientPresence,
