@@ -29,7 +29,7 @@ runs:
         exit 1
 
     # The tests look for the archive where a release build writes it.
-    - uses: actions/download-artifact@v8
+    - uses: actions/download-artifact@v8.0.2
       with:
         name: ${{ inputs.archive }}
         path: dist

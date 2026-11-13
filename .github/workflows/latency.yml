@@ -34,7 +34,7 @@ jobs:
     #     PEPPY_LATENCY_MAX_MS_RUST_TOPIC: "10"
     #     PEPPY_LATENCY_MAX_MS_PYTHON_SERVICE: "20"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
@@ -52,7 +52,7 @@ jobs:
 
       # Rust toolchain plus the system libraries the container build script
       # compiles apptainer against. Must precede the cargo step below.
-      - uses: ./.github/actions/rust-build-env
+      - uses: $/.github/actions/rust-build-env
 
       # The guard asserts the MEDIAN against generous ceilings, so it does not
       # flake on ordinary jitter. The *absolute* numbers, however, swing with CPU

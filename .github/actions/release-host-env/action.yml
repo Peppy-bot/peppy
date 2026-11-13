@@ -71,7 +71,7 @@ runs:
     # one. macOS has no equivalent: apptainer is built in a Lima guest there,
     # and the two pieces of host state this prepares are the guest's.
     - if: runner.os == 'Linux'
-      uses: ./.github/actions/rust-build-env
+      uses: $/.github/actions/rust-build-env
 
     - name: Install the Claude CLI
       if: inputs.claude == 'true'

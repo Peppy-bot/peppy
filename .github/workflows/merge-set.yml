@@ -60,7 +60,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           sparse-checkout: .github
           persist-credentials: false
@@ -78,7 +78,7 @@ jobs:
       # that changes .github/workflows/ without it.
       - name: Make the merge-set token
         id: token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@v3.3.0
         with:
           client-id: ${{ secrets.MERGE_SET_BOT_CLIENT_ID }}
           private-key: ${{ secrets.MERGE_SET_BOT_PRIVATE_KEY }}
