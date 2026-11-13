@@ -40,13 +40,15 @@ def spoken(text: str, pronunciation: Mapping[str, str]) -> str:
     """The text as the voice says it.
 
     Each key of `pronunciation` that the text holds as full words becomes its
-    value. The longest key goes first, so `peppy.json5` wins over `peppy`.
+    value. Where two keys start at the same place, the longest one wins, so
+    `peppy.json5` wins over `peppy`.
     """
     said = without_marks(text)
-    for written in sorted(pronunciation, key=len, reverse=True):
-        as_full_words = rf"(?<!\w){re.escape(written)}(?!\w)"
-        said = re.sub(as_full_words, lambda _: pronunciation[written], said)
-    return said
+    if not pronunciation:
+        return said
+    longest_first = sorted(pronunciation, key=len, reverse=True)
+    written_words = "|".join(re.escape(written) for written in longest_first)
+    return re.sub(rf"(?<!\w)({written_words})(?!\w)", lambda match: pronunciation[match.group(1)], said)
 
 
 def sentences(text: str) -> list[str]:

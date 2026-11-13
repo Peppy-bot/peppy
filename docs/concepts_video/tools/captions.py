@@ -57,9 +57,10 @@ def split_evenly(text: str, parts: int) -> list[str]:
     target = len(text) / parts
     runs: list[list[str]] = [[]]
     for word in words:
-        current = " ".join(runs[-1])
-        is_full = len(current) + len(word) / 2 > target
-        if runs[-1] and is_full and len(runs) < parts:
+        length = len(" ".join(runs[-1]))
+        length_with_word = length + 1 + len(word)
+        is_nearer_without_word = abs(length - target) <= abs(length_with_word - target)
+        if runs[-1] and is_nearer_without_word and len(runs) < parts:
             runs.append([])
         runs[-1].append(word)
     return [" ".join(run) for run in runs]
