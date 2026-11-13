@@ -141,8 +141,7 @@ pub fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
 
         let segments: Vec<&str> = parsed
             .path_segments()
-            .map(|segments| segments.collect())
-            .unwrap_or_default();
+            .map_or_default(|segments| segments.collect());
         let repo_index = segments
             .iter()
             .rposition(|segment| segment.ends_with(".git"));

@@ -9,7 +9,7 @@ use tracing::{debug, error};
 /// Minimum interval between successive name-collision alarms. A reconnect can
 /// replay the same live token, so rate limiting keeps router flapping from
 /// flooding the daemon log.
-const NAME_COLLISION_ALARM_COOLDOWN: Duration = Duration::from_secs(60);
+const NAME_COLLISION_ALARM_COOLDOWN: Duration = Duration::from_mins(1);
 
 /// Settle window a *federated* daemon's [`claim_name`] holds its candidacy
 /// open before committing, re-querying throughout.
@@ -379,7 +379,7 @@ mod tests {
                     &messenger,
                     "settle_node",
                     "joiner_instance",
-                    Duration::from_secs(60),
+                    Duration::from_mins(1),
                 )
                 .await
             }

@@ -862,10 +862,10 @@ if __name__ == "__main__":
     let (consumer_stdout, consumer_stderr) =
         assert_exited_successfully("consumer process", &consumer_output);
 
-    let exposer1_stdout = String::from_utf8_lossy(&exposer_output1.stdout).into_owned();
-    let exposer1_stderr = String::from_utf8_lossy(&exposer_output1.stderr).into_owned();
-    let exposer2_stdout = String::from_utf8_lossy(&exposer_output2.stdout).into_owned();
-    let exposer2_stderr = String::from_utf8_lossy(&exposer_output2.stderr).into_owned();
+    let exposer1_stdout = String::from_utf8_lossy_owned(exposer_output1.stdout);
+    let exposer1_stderr = String::from_utf8_lossy_owned(exposer_output1.stderr);
+    let exposer2_stdout = String::from_utf8_lossy_owned(exposer_output2.stdout);
+    let exposer2_stderr = String::from_utf8_lossy_owned(exposer_output2.stderr);
 
     // The consumer's slot is bound to exposer1, so exposer1 must serve
     // the request and exposer2 must NEVER run its handler; that's the

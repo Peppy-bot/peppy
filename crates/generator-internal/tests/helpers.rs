@@ -231,9 +231,8 @@ fn consumer_stub_node_config_with_execution(
     cardinality: Option<&str>,
     execution: &str,
 ) -> String {
-    let cardinality_field = cardinality
-        .map(|cardinality| format!(r#", cardinality: "{cardinality}""#))
-        .unwrap_or_default();
+    let cardinality_field =
+        cardinality.map_or_default(|cardinality| format!(r#", cardinality: "{cardinality}""#));
     format!(
         r#"{{
   peppy_schema: "node/v1",
@@ -923,7 +922,7 @@ fn cargo_build(dir: &Path) -> std::process::Output {
 /// returns what the compiler wrote to stderr.
 pub fn compile_project_expecting_failure(dir: impl AsRef<Path>) -> String {
     let cargo_output = cargo_build(dir.as_ref());
-    let stderr = String::from_utf8_lossy(&cargo_output.stderr).into_owned();
+    let stderr = String::from_utf8_lossy_owned(cargo_output.stderr);
     assert!(
         !cargo_output.status.success(),
         "cargo build succeeded for a crate that must not compile\nstderr:\n{stderr}"

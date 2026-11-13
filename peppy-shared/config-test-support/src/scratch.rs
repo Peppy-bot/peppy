@@ -49,7 +49,7 @@ pub fn test_tmp_root() -> PathBuf {
 /// Scratch older than this is treated as abandoned by an earlier run and is
 /// safe to delete. Far longer than any real test run (which finishes in
 /// minutes), so an in-flight run is never affected.
-const STALE_TEST_TMP_AGE: Duration = Duration::from_secs(60 * 60);
+const STALE_TEST_TMP_AGE: Duration = Duration::from_hours(1);
 
 /// Best-effort removal of stale leftovers directly under `root`. Errors are
 /// ignored on purpose: reclaiming scratch must never fail a test.

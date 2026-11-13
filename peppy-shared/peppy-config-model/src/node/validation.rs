@@ -181,13 +181,11 @@ pub fn validate_dependency_specs(
         dependency_link_ids: manifest
             .depends_on
             .as_ref()
-            .map(|d| d.producer_slots().map(|(link_id, _)| link_id).collect())
-            .unwrap_or_default(),
+            .map_or_default(|d| d.producer_slots().map(|(link_id, _)| link_id).collect()),
         pairing_link_ids: manifest
             .depends_on
             .as_ref()
-            .map(|d| d.pairing_link_ids().collect())
-            .unwrap_or_default(),
+            .map_or_default(|d| d.pairing_link_ids().collect()),
         implements_link_ids: manifest
             .implements
             .iter()

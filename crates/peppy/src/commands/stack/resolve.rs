@@ -458,15 +458,13 @@ fn check_link_plan(
                 .manifest
                 .depends_on
                 .as_ref()
-                .map(|d| d.pairings.as_slice())
-                .unwrap_or_default(),
+                .map_or_default(|d| d.pairings.as_slice()),
             observer_deps: checked
                 .config
                 .manifest
                 .depends_on
                 .as_ref()
-                .map(|d| d.pairing_observers.as_slice())
-                .unwrap_or_default(),
+                .map_or_default(|d| d.pairing_observers.as_slice()),
             preexisting: false,
         })
         .collect();

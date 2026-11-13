@@ -525,7 +525,7 @@ async fn harness_core_node_reads_the_setup_budget_of_its_manifest() {
     .expect("harness should start");
     assert_eq!(
         harness.node_runner().setup_timeout(),
-        Duration::from_secs(180)
+        Duration::from_mins(3)
     );
 
     harness.shutdown().await.expect("harness shutdown");

@@ -224,8 +224,7 @@ pub(crate) fn records(request: ExportLogsServiceRequest) -> Vec<ReceivedRecord> 
             let resource = attributes(
                 resource_logs
                     .resource
-                    .map(|resource| resource.attributes)
-                    .unwrap_or_default(),
+                    .map_or_default(|resource| resource.attributes),
             );
             resource_logs
                 .scope_logs
@@ -236,7 +235,7 @@ pub(crate) fn records(request: ExportLogsServiceRequest) -> Vec<ReceivedRecord> 
                     attributes: attributes(record.attributes),
                     severity_number: record.severity_number,
                     severity_text: record.severity_text,
-                    body: record.body.map(text).unwrap_or_default(),
+                    body: record.body.map_or_default(text),
                     time_unix_nano: record.time_unix_nano,
                     observed_time_unix_nano: record.observed_time_unix_nano,
                 })
@@ -247,7 +246,7 @@ pub(crate) fn records(request: ExportLogsServiceRequest) -> Vec<ReceivedRecord> 
 fn attributes(attributes: Vec<KeyValue>) -> BTreeMap<String, String> {
     attributes
         .into_iter()
-        .map(|attribute| (attribute.key, attribute.value.map(text).unwrap_or_default()))
+        .map(|attribute| (attribute.key, attribute.value.map_or_default(text)))
         .collect()
 }
 

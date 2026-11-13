@@ -31,7 +31,7 @@ pub const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long a test waits for a goal to end, on the terms of
 /// [`GOAL_TIMEOUT`].
-pub const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
+pub const RESULT_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Source for a node to be added. Used by `send_node_add_and_wait` to support
 /// filesystem paths, git repositories, and HTTP URLs.

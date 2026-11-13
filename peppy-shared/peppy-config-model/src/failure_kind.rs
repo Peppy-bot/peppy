@@ -288,8 +288,7 @@ impl ContractKinds {
         self.members
             .get(&(section, name.to_owned()))
             .cloned()
-            .map(MemberFailureKinds::of_member)
-            .unwrap_or_default()
+            .map_or_default(MemberFailureKinds::of_member)
     }
 
     /// The names of the kinds of the contract that the member `name` of
@@ -297,8 +296,7 @@ impl ContractKinds {
     pub fn listed(&self, section: MemberSection, name: &str) -> Vec<FailureKindName> {
         self.members
             .get(&(section, name.to_owned()))
-            .map(|kinds| kinds.iter().map(|(kind, _)| kind.clone()).collect())
-            .unwrap_or_default()
+            .map_or_default(|kinds| kinds.iter().map(|(kind, _)| kind.clone()).collect())
     }
 }
 

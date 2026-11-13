@@ -73,7 +73,7 @@ fn forget_reuse_announced(dir: &Path) {
 /// referenced mid-add must not vanish underneath it. The window runs from
 /// the last hand-out, which is long enough to cover any single add and
 /// short enough that a superseded pin does not linger for a day.
-const PRUNE_GRACE: Duration = Duration::from_secs(60 * 60);
+const PRUNE_GRACE: Duration = Duration::from_hours(1);
 
 /// Path where the checkout for `(repo_url, commit)` lives (whether or not
 /// it has been populated yet). Exposed for tests and diagnostics.
@@ -420,8 +420,7 @@ mod tests {
                     .head()
                     .ok()
                     .and_then(|head| head.target())
-                    .map(|oid| vec![repo.find_commit(oid).expect("find parent commit")])
-                    .unwrap_or_default();
+                    .map_or_default(|oid| vec![repo.find_commit(oid).expect("find parent commit")]);
                 let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
                 let oid = repo
                     .commit(

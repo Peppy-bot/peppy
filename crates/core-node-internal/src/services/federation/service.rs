@@ -604,8 +604,7 @@ async fn release_inner(
         let held = context
             .ownership
             .held_reservation()
-            .map(|(launch_id, _)| launch_id)
-            .unwrap_or_default();
+            .map_or_default(|(launch_id, _)| launch_id);
         return Err(failure(
             PeppyFailureKind::PreconditionFailed,
             format!(

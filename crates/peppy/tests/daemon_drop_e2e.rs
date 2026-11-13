@@ -23,7 +23,7 @@ use std::time::Duration;
 /// Hang guard only. The SIGKILL is sent synchronously while the runtime is
 /// dropped, before the reap begins, so a passing run never depends on this
 /// bound; a missing kill turns into a failed assertion instead of a hung test.
-const REAP_BOUND: Duration = Duration::from_secs(60);
+const REAP_BOUND: Duration = Duration::from_mins(1);
 
 /// The pid the daemon reported for `instance_id`, read from the CLI's
 /// `Started node instance '<id>' (pid: <n>)` line, which `node run` logs

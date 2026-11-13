@@ -63,7 +63,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Bound for waits that are already response-driven (launch readiness is
 /// blocking; everything after polls real endpoints).
-const WAIT: Duration = Duration::from_secs(120);
+const WAIT: Duration = Duration::from_mins(2);
 
 const STATUS_URI: &str = "peppy://resource/front_camera.status";
 const FRAME_URI: &str = "peppy://resource/front_camera.latest_frame";
@@ -430,9 +430,7 @@ fn recording_sha() -> String {
 /// policies the endpoint behaviours exercise. `tag` and `title` vary so two
 /// tags of one exposure can be served side by side and told apart.
 fn camera_endpoint_exposure(tag: &str, title: &str, sha256: Option<&str>) -> String {
-    let pin = sha256
-        .map(|sha| format!(", sha256: \"{sha}\""))
-        .unwrap_or_default();
+    let pin = sha256.map_or_default(|sha| format!(", sha256: \"{sha}\""));
     format!(
         r#"{{
         peppy_schema: "mcp_exposure/v1",

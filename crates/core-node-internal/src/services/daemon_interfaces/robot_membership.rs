@@ -211,8 +211,7 @@ pub(super) async fn answer(
         let active = ctx.slice_ownership.active.lock();
         let (copies, launch_copies) = active
             .as_ref()
-            .map(|active| (active.copies(), active.launch_copies()))
-            .unwrap_or_default();
+            .map_or_default(|active| (active.copies(), active.launch_copies()));
         (
             copies,
             launch_copies,
@@ -342,8 +341,7 @@ async fn join(
         .active
         .lock()
         .as_ref()
-        .map(|active| active.copies())
-        .unwrap_or_default();
+        .map_or_default(|active| active.copies());
     if let Err(reason) = refuse_join(scope, &copies, &copy.name) {
         return refuse(
             pending,
@@ -389,8 +387,7 @@ async fn remove(
         .active
         .lock()
         .as_ref()
-        .map(|active| active.copies())
-        .unwrap_or_default();
+        .map_or_default(|active| active.copies());
     if let Err(reason) = refuse_removal(scope, &copies, &copy_name) {
         return refuse(pending, failure(PeppyFailureKind::Rejected, reason)).await;
     }
@@ -689,8 +686,7 @@ fn listed_copy(scope: &RobotMembershipScope, copy: &CopyInfo, running: bool) -> 
 fn join_input(scope: &RobotMembershipScope, copy: &CopyInfo) -> JoinInput {
     let features = scope
         .option(&copy.option)
-        .map(|entry| entry.features_in(&copy.selections))
-        .unwrap_or_default()
+        .map_or_default(|entry| entry.features_in(&copy.selections))
         .into_iter()
         .map(|placed| FeatureInput {
             feature: placed.feature.feature().as_str().to_owned(),

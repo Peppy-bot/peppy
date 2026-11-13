@@ -1177,8 +1177,8 @@ mod tests {
             .expect("run the prune command");
         (
             output.status.code(),
-            String::from_utf8_lossy(&output.stdout).into_owned(),
-            String::from_utf8_lossy(&output.stderr).into_owned(),
+            String::from_utf8_lossy_owned(output.stdout),
+            String::from_utf8_lossy_owned(output.stderr),
         )
     }
 

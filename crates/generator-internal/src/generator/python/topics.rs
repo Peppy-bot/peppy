@@ -128,8 +128,7 @@ fn tag_annotation(tag: SubscriptionTag) -> &'static str {
 /// The set-following sentence as a docstring suffix, empty on a scalar slot.
 fn follows_the_set_suffix(cardinality: Cardinality) -> String {
     crate::generator::types::follows_the_set_doc(cardinality)
-        .map(|sentence| format!(" {sentence}"))
-        .unwrap_or_default()
+        .map_or_default(|sentence| format!(" {sentence}"))
 }
 
 /// Emits what a consumer module decodes into, shared by the bound-set, peer

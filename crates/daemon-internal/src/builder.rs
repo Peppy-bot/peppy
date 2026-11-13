@@ -25,7 +25,7 @@ use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-const DEFAULT_NODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(600);
+const DEFAULT_NODE_STARTUP_TIMEOUT: Duration = Duration::from_mins(10);
 
 pub struct ServeCommandBuilder {
     composite_command: CompositeCommand,

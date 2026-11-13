@@ -13,9 +13,7 @@ pub(super) fn lock_with_wheels(wheels: &[(&str, Option<u64>)]) -> String {
          source = { registry = \"https://pypi.org/simple\" }\nwheels = [\n",
     );
     for (path, size) in wheels {
-        let size = size
-            .map(|size| format!(", size = {size}"))
-            .unwrap_or_default();
+        let size = size.map_or_default(|size| format!(", size = {size}"));
         lock.push_str(&format!(
             "    {{ url = \"{PYPI_PACKAGES_BASE}{path}\", hash = \"sha256:00\"{size} }},\n"
         ));

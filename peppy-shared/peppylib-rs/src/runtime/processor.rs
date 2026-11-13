@@ -686,8 +686,7 @@ fn build_observation_slots(
         .map(|(link_id, cardinality)| {
             let members: Vec<ObservedMemberState> = seeds
                 .get(link_id)
-                .map(|seeded| seeded.iter().map(ObservedMemberState::from).collect())
-                .unwrap_or_default();
+                .map_or_default(|seeded| seeded.iter().map(ObservedMemberState::from).collect());
             // The wire decoder rejects a repeated observed pairing on a live
             // delivery; the seed path holds the same line, keyed on the whole
             // `ObservedSource`, which is the member identity and carries the
@@ -759,8 +758,7 @@ fn build_pairing_slots(
         .map(|(link_id, cardinality)| {
             let seeded: Vec<PeerMember> = seeds
                 .get(link_id)
-                .map(|pairs| pairs.iter().map(PeerMember::from).collect())
-                .unwrap_or_default();
+                .map_or_default(|pairs| pairs.iter().map(PeerMember::from).collect());
             // A pair is one peer to this slot, and a slot holds each peer
             // once. The identity is the peer triple, which is what the wire
             // decoder keys its own duplicate refusal on.
@@ -1623,10 +1621,7 @@ mod tests {
             in_memory_manifest(),
         )
         .expect("the manifest and the launch config agree");
-        assert_eq!(
-            processor.setup_timeout(),
-            std::time::Duration::from_secs(180)
-        );
+        assert_eq!(processor.setup_timeout(), std::time::Duration::from_mins(3));
 
         let processor = Processor::daemon_from_manifest(
             runtime_config_with_setup_budget(None),
@@ -1650,10 +1645,7 @@ mod tests {
             Some(config::node::SetupTimeout::from_secs(540).expect("in range"));
         let processor = Processor::standalone_from_manifest(declaring, &config)
             .expect("should create processor");
-        assert_eq!(
-            processor.setup_timeout(),
-            std::time::Duration::from_secs(540)
-        );
+        assert_eq!(processor.setup_timeout(), std::time::Duration::from_mins(9));
 
         let processor = Processor::standalone_from_manifest(in_memory_manifest(), &config)
             .expect("should create processor");

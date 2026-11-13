@@ -306,9 +306,7 @@ mod exposures {
     }
 
     fn camera_ref(sha256: Option<&str>) -> String {
-        let pin = sha256
-            .map(|sha| format!(", sha256: \"{sha}\""))
-            .unwrap_or_default();
+        let pin = sha256.map_or_default(|sha| format!(", sha256: \"{sha}\""));
         format!(r#"contract: {{ name: "rgb_camera", tag: "v1"{pin} }}"#)
     }
 

@@ -743,7 +743,7 @@ async fn listen_for_launch_configuration_succeed() {
             .node_logs
             .node_add_logs
             .iter()
-            .all(|e| !e.log_path.as_os_str().is_empty()),
+            .all(|e| !e.log_path.is_empty()),
         "all add log paths should be non-empty, got: {:?}",
         result
             .node_logs
@@ -790,7 +790,7 @@ async fn listen_for_launch_configuration_succeed() {
             .node_logs
             .node_build_logs
             .iter()
-            .all(|e| !e.log_path.as_os_str().is_empty()),
+            .all(|e| !e.log_path.is_empty()),
         "all build log paths should be non-empty, got: {:?}",
         result
             .node_logs
@@ -837,7 +837,7 @@ async fn listen_for_launch_configuration_succeed() {
             .node_logs
             .node_run_logs
             .iter()
-            .all(|e| !e.log_path.as_os_str().is_empty()),
+            .all(|e| !e.log_path.is_empty()),
         "all start log paths should be non-empty, got: {:?}",
         result
             .node_logs
@@ -2168,8 +2168,7 @@ async fn waldo_generation_launch() {
         "the failed node is cleared from the stack"
     );
     let staging_leftovers: Vec<PathBuf> = fs::read_dir(peppy_dirs.tmp_dir())
-        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
-        .unwrap_or_default();
+        .map_or_default(|entries| entries.flatten().map(|entry| entry.path()).collect());
     assert!(
         staging_leftovers.is_empty(),
         "a cleared node leaves no staging directory behind: {staging_leftovers:?}"

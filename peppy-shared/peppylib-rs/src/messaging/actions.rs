@@ -685,7 +685,7 @@ impl ProducerGoneWatch {
                 return;
             }
             let notified = self.notify.notified();
-            tokio::pin!(notified);
+            let mut notified = std::pin::pin!(notified);
             // Register interest before the re-check so a notify between the
             // check and the await cannot be missed.
             notified.as_mut().enable();
@@ -1860,7 +1860,7 @@ async fn run_sender_watch(
                 continue;
             }
         }
-        let goals = forget_sender().map(|watch| watch.goals).unwrap_or_default();
+        let goals = forget_sender().map_or_default(|watch| watch.goals);
         let slots: Vec<GoalSlot> = {
             let registry = registry.lock().unwrap();
             goals
@@ -3675,7 +3675,7 @@ mod engine_tests {
             .await
             .unwrap();
 
-        assert!(!cancelled_within(&context, Duration::from_secs(60)).await);
+        assert!(!cancelled_within(&context, Duration::from_mins(1)).await);
         assert_eq!(context.cancel_cause(), None);
     }
 
@@ -3827,7 +3827,7 @@ mod engine_tests {
         let (goal, context) = accept_and_overflow_one_message(&caller, &mut action).await;
 
         assert!(
-            !cancelled_within(&context, Duration::from_secs(60)).await,
+            !cancelled_within(&context, Duration::from_mins(1)).await,
             "an overflow that no read finds cancels nothing"
         );
         context
@@ -3850,7 +3850,7 @@ mod engine_tests {
         let caller = process_on(&session);
         let (_goal, context) = send_and_accept(&caller, &mut action).await;
 
-        assert!(!cancelled_within(&context, Duration::from_secs(60)).await);
+        assert!(!cancelled_within(&context, Duration::from_mins(1)).await);
         assert_eq!(context.cancel_cause(), None);
     }
 
@@ -3878,7 +3878,7 @@ mod engine_tests {
 
         assert!(cancelled_within(&first_context, CONFIRM_GONE + MARGIN).await);
         assert_eq!(first_context.cancel_cause(), Some(CancelCause::SenderGone));
-        assert!(!cancelled_within(&second_context, Duration::from_secs(60)).await);
+        assert!(!cancelled_within(&second_context, Duration::from_mins(1)).await);
     }
 
     /// A goal whose sender declared no presence token (a sender that died

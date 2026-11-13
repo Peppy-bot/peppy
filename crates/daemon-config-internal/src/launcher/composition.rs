@@ -870,7 +870,10 @@ impl<'de> Deserialize<'de> for ConditionOptions {
             ));
         }
         names.sort();
-        if names.windows(2).any(|pair| pair[0] == pair[1]) {
+        if names
+            .array_windows()
+            .any(|[previous, next]| previous == next)
+        {
             return Err(de::Error::custom("a condition must name each option once"));
         }
         Ok(Self(names))

@@ -202,7 +202,7 @@ pub fn run_command_with_timeout(command: &mut Command, timeout: Duration) -> Com
             // fully drained and captured lossily instead of being discarded.
             let mut bytes = Vec::new();
             pipe.read_to_end(&mut bytes).ok();
-            String::from_utf8_lossy(&bytes).into_owned()
+            String::from_utf8_lossy_owned(bytes)
         })
     }
     let stdout_thread = drain(child.stdout.take().unwrap());

@@ -277,10 +277,7 @@ pub(crate) fn spawn_health_monitor(p: HealthMonitorParams) {
             // does not re-emit the same warning every tick.
             match edge {
                 Some(HealthEdge::Down) => {
-                    let reason = probe_error
-                        .as_ref()
-                        .map(ToString::to_string)
-                        .unwrap_or_default();
+                    let reason = probe_error.as_ref().map_or_default(ToString::to_string);
                     tracing::warn!(
                         "Health monitor: instance '{}' of node '{}:{}' became unhealthy after {} \
                          consecutive missed health checks, last: {}",
@@ -521,7 +518,7 @@ mod tests {
     fn kill_due_needs_an_unhealthy_instance_silent_past_the_bound() {
         use super::kill_due;
         use std::time::{Duration, Instant};
-        let kill_after = Duration::from_secs(60);
+        let kill_after = Duration::from_mins(1);
         let silent_since = Instant::now();
         let at_the_bound = silent_since + kill_after;
         let mut tracker = HealthTracker::new(threshold(1));

@@ -232,7 +232,9 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
     // Strict (not non-strict) so a publisher that re-emits the same payload
     // doesn't silently pass.
     assert!(
-        times.windows(2).all(|w| w[0] < w[1]),
+        times
+            .array_windows()
+            .all(|[previous, next]| previous < next),
         "clock ticks should be strictly monotonic, got {times:?}",
     );
 }

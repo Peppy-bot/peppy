@@ -201,7 +201,7 @@ async fn optional_deadline_preserves_future_results() {
     let (tx, rx) = oneshot::channel();
     let mut unbounded = Box::pin(within_service_deadline(None, rx));
     assert!(poll!(unbounded.as_mut()).is_pending());
-    advance(Duration::from_secs(86_400)).await;
+    advance(Duration::from_hours(24)).await;
     assert!(poll!(unbounded.as_mut()).is_pending());
     tx.send(42).unwrap();
     assert_eq!(unbounded.await, Some(Ok(42)));

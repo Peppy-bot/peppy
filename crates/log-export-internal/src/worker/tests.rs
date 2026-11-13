@@ -260,7 +260,10 @@ async fn the_wait_between_retries_doubles_up_to_thirty_seconds() {
 
     let times = harness.post_times();
     assert_eq!(times.len(), 9);
-    let waits: Vec<Duration> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    let waits: Vec<Duration> = times
+        .array_windows()
+        .map(|[previous, next]| *next - *previous)
+        .collect();
     let ceilings = [1, 2, 4, 8, 16, 30, 30, 30].map(Duration::from_secs);
     for (wait, ceiling) in waits.iter().zip(ceilings) {
         assert!(

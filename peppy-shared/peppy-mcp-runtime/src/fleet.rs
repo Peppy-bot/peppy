@@ -569,8 +569,7 @@ impl FleetRuntime {
     fn published_by(&self, target: &str) -> &[ResourceEntry] {
         self.by_target
             .get(target)
-            .map(|names| names.resources.as_slice())
-            .unwrap_or_default()
+            .map_or_default(|names| names.resources.as_slice())
     }
 
     /// The robot `member` serves and the name a call addresses it by

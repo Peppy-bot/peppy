@@ -346,9 +346,12 @@ pub fn plan_deployment(
         .map(|exposure| exposure.reference())
         .collect();
     // Sorted references put a repeated exposure beside its first listing.
-    if let Some(pair) = references.windows(2).find(|pair| pair[0] == pair[1]) {
+    if let Some([_, repeated]) = references
+        .array_windows()
+        .find(|[previous, next]| previous == next)
+    {
         return Err(McpDeploymentError::DuplicateExposure {
-            exposure: pair[1].to_string(),
+            exposure: repeated.to_string(),
         });
     }
     let name = built_in_identity(&references);
@@ -771,9 +774,7 @@ mod tests {
         sha256: Option<&str>,
         member: &str,
     ) -> String {
-        let pin = sha256
-            .map(|sha| format!(", sha256: \"{sha}\""))
-            .unwrap_or_default();
+        let pin = sha256.map_or_default(|sha| format!(", sha256: \"{sha}\""));
         format!(
             r#"{{
             peppy_schema: "mcp_exposure/v1",

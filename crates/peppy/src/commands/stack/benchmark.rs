@@ -45,9 +45,9 @@ use crate::terminal::ScrollingOutput;
 const BASELINE_SUBDIR: &str = "stack-benchmark";
 /// Idle watchdog: the daemon emits feedback per edge; a long gap means a hang.
 /// Generous because a single dead edge can take a few probe timeouts to skip.
-const CLI_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+const CLI_IDLE_TIMEOUT: Duration = Duration::from_mins(5);
 /// Absolute ceiling so the command can never wedge forever.
-const CLI_MAX_TIMEOUT: Duration = Duration::from_secs(3600);
+const CLI_MAX_TIMEOUT: Duration = Duration::from_hours(1);
 
 pub fn benchmark(
     ctx: &Arc<AppContext>,
@@ -715,7 +715,9 @@ mod tests {
                 .map(UnicodeWidthStr::width)
                 .collect();
             assert!(
-                widths.windows(2).all(|w| w[0] == w[1]),
+                widths
+                    .array_windows()
+                    .all(|[previous, next]| previous == next),
                 "box lines misaligned: {widths:?}"
             );
             let table_width = widths.first().copied().unwrap_or(0);

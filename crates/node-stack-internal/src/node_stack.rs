@@ -1938,8 +1938,7 @@ impl NodeStack {
                         .manifest
                         .depends_on
                         .as_ref()
-                        .map(|d| d.pairings.clone())
-                        .unwrap_or_default(),
+                        .map_or_default(|d| d.pairings.clone()),
                 })
             })
             .collect()

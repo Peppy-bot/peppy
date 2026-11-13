@@ -45,7 +45,7 @@ const RESTART_EXIT_CODE: i32 = 75;
 /// Wall-clock window and cap for the in-process flap backstop: more than
 /// [`FLAP_CAP`] restarts within [`FLAP_WINDOW`] converts a same-PID busy loop
 /// (otherwise invisible to systemd) into a visible `exit(RESTART_EXIT_CODE)`.
-const FLAP_WINDOW: Duration = Duration::from_secs(60);
+const FLAP_WINDOW: Duration = Duration::from_mins(1);
 const FLAP_CAP: usize = 5;
 
 pub(crate) type ServeFuture = Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>;

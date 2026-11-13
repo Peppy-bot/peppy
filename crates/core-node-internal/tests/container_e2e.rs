@@ -33,13 +33,13 @@ mod container_e2e_tests {
         "rust_e2e_node",
         "rust_e2e_instance",
         Toolchain::Cargo,
-        Duration::from_secs(600)
+        Duration::from_mins(10)
     )]
     #[case::python(
         "python_e2e_node",
         "python_e2e_instance",
         Toolchain::Uv,
-        Duration::from_secs(300)
+        Duration::from_mins(5)
     )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn container_e2e_init_add_build_start(
@@ -51,7 +51,7 @@ mod container_e2e_tests {
         const NODE_TAG: &str = "v1";
 
         let started = start_core_node_with_real_messenger_and_timeouts(
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             setup_budget(60),
         )
         .await;
@@ -185,7 +185,7 @@ mod container_e2e_tests {
         const NODE_TAG: &str = "v1";
 
         let started = start_core_node_with_real_messenger_and_timeouts(
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             setup_budget(60),
         )
         .await;
@@ -251,7 +251,7 @@ mod container_e2e_tests {
         const INSTANCE_ID: &str = "data_root_view_e2e_instance";
 
         let started = start_core_node_with_real_messenger_and_timeouts(
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             setup_budget(120),
         )
         .await;
@@ -349,7 +349,7 @@ mod container_e2e_tests {
             .join(INSTANCE_ID)
             .join("view.txt");
         let view = common::poll_until(
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             "the container node writes what it sees of the data root",
             || std::fs::read_to_string(&view_file).ok(),
         )
@@ -383,7 +383,7 @@ mod container_e2e_tests {
         const ORPHAN_ARCHIVE: &str = "peppy-e2e-orphan";
 
         let started = start_core_node_with_real_messenger_and_timeouts(
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             setup_budget(60),
         )
         .await;
@@ -558,7 +558,7 @@ mod container_e2e_tests {
         task: &mut JoinHandle<Result<GoalEnd<NodeBuildResult>, String>>,
         index: usize,
     ) -> HashSet<u32> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        let deadline = std::time::Instant::now() + Duration::from_mins(2);
         loop {
             if task.is_finished() {
                 let outcome = task.await.expect("build task should not panic");
@@ -600,7 +600,7 @@ mod container_e2e_tests {
         const BUILDS: usize = 6;
 
         let started = start_core_node_with_real_messenger_and_timeouts(
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             setup_budget(60),
         )
         .await;

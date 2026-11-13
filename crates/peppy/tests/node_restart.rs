@@ -1135,13 +1135,12 @@ async fn arms_of(h: &Harness) -> Vec<String> {
         .await
         .slot_bindings
         .get("arms")
-        .map(|producers| {
+        .map_or_default(|producers| {
             producers
                 .iter()
                 .map(|member| member.producer.instance_id.clone())
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// An arm `arm_1` running vacant and a controller `ctrl_1` paired to it,

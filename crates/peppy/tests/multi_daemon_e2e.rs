@@ -34,7 +34,7 @@ use testcontainers::core::client::docker_client_instance;
 use testcontainers::runners::AsyncBuilder;
 use tokio::sync::OnceCell;
 
-const TIMEOUT: Duration = Duration::from_secs(60);
+const TIMEOUT: Duration = Duration::from_mins(1);
 /// How long a check that a restart asks for no pair waits once the restart
 /// is listed running. A restart asks for its held pairs after it tells its
 /// observers and watchers it runs; every daemon of the fixture answers both
@@ -97,7 +97,7 @@ async fn engine_client() -> Docker {
 
 /// How long the client testcontainers builds waits for an answer of the
 /// engine.
-const TESTCONTAINERS_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const TESTCONTAINERS_REQUEST_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// `client`, made to wait for every answer of its engine however late it
 /// comes.
@@ -5164,15 +5164,12 @@ fn recorded_bindings(section: &serde_json::Value, instance_id: &str, link_id: &s
         .into_iter()
         .flatten()
         .map(|member| {
-            let copy = member["copy"]["name"]
-                .as_str()
-                .map(|name| {
-                    let in_copy = member["copy"]["instance_id"]
-                        .as_str()
-                        .expect("a member of a copy names the id inside it");
-                    format!(" [copy {name}/{in_copy}]")
-                })
-                .unwrap_or_default();
+            let copy = member["copy"]["name"].as_str().map_or_default(|name| {
+                let in_copy = member["copy"]["instance_id"]
+                    .as_str()
+                    .expect("a member of a copy names the id inside it");
+                format!(" [copy {name}/{in_copy}]")
+            });
             format!(
                 "{}@{}{copy}",
                 member["producer"]["instance_id"]
@@ -6179,7 +6176,7 @@ const HUB_START_GATE: &str = "/tmp/pairing_hub_start_gate";
 /// How long the hub can take to run again once its start gate opens: the
 /// backoff's attempts its gate failed leave a wait of up to its 60 s
 /// ceiling, then its start.
-const GATED_RESTART_WAIT: Duration = Duration::from_secs(120);
+const GATED_RESTART_WAIT: Duration = Duration::from_mins(2);
 
 /// Waits until the hub on the coordinator runs with `restarts` restarts, up
 /// to [`GATED_RESTART_WAIT`], which a restart whose start gate held its

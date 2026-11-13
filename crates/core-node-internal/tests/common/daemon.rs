@@ -454,7 +454,7 @@ pub async fn start_core_node_with_supervision_and_grace(
 /// How long each guard bound of a daemon on manual time lasts: no wait of a
 /// test comes near it on a host of any speed, so a wait of the daemon ends by
 /// its own outcome or once the test moves the time past it.
-pub const OUT_OF_REACH: Duration = Duration::from_secs(3600);
+pub const OUT_OF_REACH: Duration = Duration::from_hours(1);
 
 /// A core node whose supervision runs on a [`ManualTime`], which only the
 /// test advances, with `health_monitor`, `restart_backoff` and a

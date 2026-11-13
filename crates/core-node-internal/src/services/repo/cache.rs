@@ -135,50 +135,44 @@ impl From<&config::node::Manifest> for DeclaredLinks {
                     sha256: claim.sha256.clone(),
                 })
                 .collect(),
-            contracts: depends_on
-                .map(|deps| {
-                    deps.contracts
-                        .iter()
-                        .map(|slot| ContractSlot {
-                            name: slot.name.clone(),
-                            tag: slot.tag.clone(),
-                            link_id: slot.link_id.clone(),
-                            sha256: slot.sha256.clone(),
-                            cardinality: slot.cardinality,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            pairings: depends_on
-                .map(|deps| {
-                    deps.pairings
-                        .iter()
-                        .map(|slot| PairingSlot {
-                            name: slot.name.clone(),
-                            tag: slot.tag.clone(),
-                            role: slot.role.clone(),
-                            link_id: slot.link_id.clone(),
-                            sha256: slot.sha256.clone(),
-                            cardinality: slot.cardinality,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            pairing_observers: depends_on
-                .map(|deps| {
-                    deps.pairing_observers
-                        .iter()
-                        .map(|slot| ObserverSlot {
-                            name: slot.name.clone(),
-                            tag: slot.tag.clone(),
-                            role: slot.role.clone(),
-                            link_id: slot.link_id.clone(),
-                            sha256: slot.sha256.clone(),
-                            cardinality: slot.cardinality,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
+            contracts: depends_on.map_or_default(|deps| {
+                deps.contracts
+                    .iter()
+                    .map(|slot| ContractSlot {
+                        name: slot.name.clone(),
+                        tag: slot.tag.clone(),
+                        link_id: slot.link_id.clone(),
+                        sha256: slot.sha256.clone(),
+                        cardinality: slot.cardinality,
+                    })
+                    .collect()
+            }),
+            pairings: depends_on.map_or_default(|deps| {
+                deps.pairings
+                    .iter()
+                    .map(|slot| PairingSlot {
+                        name: slot.name.clone(),
+                        tag: slot.tag.clone(),
+                        role: slot.role.clone(),
+                        link_id: slot.link_id.clone(),
+                        sha256: slot.sha256.clone(),
+                        cardinality: slot.cardinality,
+                    })
+                    .collect()
+            }),
+            pairing_observers: depends_on.map_or_default(|deps| {
+                deps.pairing_observers
+                    .iter()
+                    .map(|slot| ObserverSlot {
+                        name: slot.name.clone(),
+                        tag: slot.tag.clone(),
+                        role: slot.role.clone(),
+                        link_id: slot.link_id.clone(),
+                        sha256: slot.sha256.clone(),
+                        cardinality: slot.cardinality,
+                    })
+                    .collect()
+            }),
         }
     }
 }

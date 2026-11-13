@@ -835,7 +835,7 @@ fn test_from_valid_dir() {
         }
     };
     assert!(
-        !apptainer_bin.as_os_str().is_empty(),
+        !apptainer_bin.is_empty(),
         "the apptainer invocation binary path should be non-empty"
     );
 }

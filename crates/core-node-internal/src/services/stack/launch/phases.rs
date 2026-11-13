@@ -173,7 +173,7 @@ where
             None => std::future::pending::<()>().await,
         }
     };
-    tokio::pin!(deadline_sleep);
+    let mut deadline_sleep = std::pin::pin!(deadline_sleep);
 
     let timeout_kind = tokio::select! {
         biased;
@@ -238,7 +238,7 @@ where
         change_deadline,
         cancel_and_drain.as_ref(),
     );
-    tokio::pin!(phase);
+    let mut phase = std::pin::pin!(phase);
     let outcome = tokio::select! {
         biased;
         _ = cancel.cancelled() => {
@@ -448,7 +448,7 @@ mod tests {
             Box::pin(cancellable_phase(token.clone(), Arc::clone(&cleanup_ran))),
             Arc::clone(&notify),
             // Idle much larger than max so only the deadline branch can fire.
-            Duration::from_secs(600),
+            Duration::from_mins(10),
             Some(deadline),
             &drain(token),
         )
@@ -542,7 +542,7 @@ mod tests {
                 Arc::clone(&cleanup_ran),
             )),
             Arc::new(Notify::new()),
-            Duration::from_secs(600),
+            Duration::from_mins(10),
             None,
             &reset,
             &log,

@@ -1066,7 +1066,7 @@ mod tests {
             message,
             format!("the start gave up{STDERR_TAIL_HEADER}last words")
         );
-        tokio::time::timeout(Duration::from_secs(60), dropped_rx)
+        tokio::time::timeout(Duration::from_mins(1), dropped_rx)
             .await
             .expect("the reader a process keeps open must be aborted")
             .expect("the reader's future is dropped on abort");

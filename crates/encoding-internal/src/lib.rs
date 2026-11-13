@@ -59,7 +59,7 @@ where
         command.output_path(&capnp_output_dir);
         command.default_parent_module(vec!["capnp".to_string()]);
 
-        if let Some(parent) = capnp_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if let Some(parent) = capnp_path.parent().filter(|p| !p.is_empty()) {
             command.src_prefix(parent);
         }
 

@@ -615,8 +615,7 @@ fn write_consumer_with_slots(
         .iter()
         .map(|(link_id, cardinality)| {
             let cardinality = cardinality
-                .map(|c| format!(r#", cardinality: "{c}""#))
-                .unwrap_or_default();
+                .map_or_default(|c| format!(r#", cardinality: "{c}""#));
             format!(
                 r#"            {{ name: "{producer_name}", tag: "v1", link_id: "{link_id}"{cardinality} }}"#
             )

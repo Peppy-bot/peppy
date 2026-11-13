@@ -383,8 +383,7 @@ fn resolve_observation(
     } else {
         let held = pairs
             .get(&(target_instance.to_string(), end.link_id.clone()))
-            .map(Vec::as_slice)
-            .unwrap_or_default();
+            .map_or_default(Vec::as_slice);
         let (peer_instance, peer_link_id) = match held {
             [] => {
                 return Err(ParsingError::ObservationTargetUnpaired(Box::new(

@@ -860,7 +860,7 @@ mod tests {
     }
 
     /// Bounds a hang only: the outcome never depends on how fast the host is.
-    const PRUNE_HANG_GUARD: Duration = Duration::from_secs(300);
+    const PRUNE_HANG_GUARD: Duration = Duration::from_mins(5);
 
     /// A deadline that never comes within a test.
     fn no_deadline() -> tokio::time::Sleep {
@@ -1332,7 +1332,7 @@ mod tests {
                 .await
                 .map_err(|e| format!("reading cargo's stderr failed: {e}"))?;
             if read == 0 {
-                return Err(String::from_utf8_lossy(&output).into_owned());
+                return Err(String::from_utf8_lossy_owned(output));
             }
             output.extend_from_slice(&chunk[..read]);
             let repaint = output
@@ -1365,7 +1365,7 @@ mod tests {
         use tokio::io::AsyncReadExt;
 
         // Bounds a hang only: the outcome never depends on how fast cargo is.
-        const HANG_GUARD: Duration = Duration::from_secs(300);
+        const HANG_GUARD: Duration = Duration::from_mins(5);
         // Cargo and the curl it embeds route a request through these when
         // they are set, and no proxy reaches the loopback registry.
         const PROXY_ENV_VARS: [&str; 7] = [

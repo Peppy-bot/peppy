@@ -917,8 +917,7 @@ fn format_slot_binding(bound: &config::runtime::BoundProducers) -> String {
 /// The ` [copy NAME]` a member of a set or a pair carries when a copy brought
 /// it; an instance running outside a copy has none to name.
 fn copy_label(copy: Option<&config::runtime::Name>) -> String {
-    copy.map(|copy| format!(" [copy {}]", copy.as_str()))
-        .unwrap_or_default()
+    copy.map_or_default(|copy| format!(" [copy {}]", copy.as_str()))
 }
 
 /// Compact per-node instance summary. Detailed per-instance info is

@@ -1173,7 +1173,7 @@ async fn daemon_shutdown_hooks_are_bounded_by_grace_window() {
             });
             node_runner.on_shutdown(async move {
                 order_stuck.lock().expect("order lock").push("stuck-start");
-                tokio::time::sleep(Duration::from_secs(600)).await;
+                tokio::time::sleep(Duration::from_mins(10)).await;
                 order_stuck.lock().expect("order lock").push("stuck-end");
             });
             let _ = setup_tx.send(());

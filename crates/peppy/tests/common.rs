@@ -511,14 +511,10 @@ pub fn write_node_config_for_helper(
 ) -> std::path::PathBuf {
     let run_cmd_json5 = run_cmd_json5(run_cmd);
     let manifest_extra = implements_json5
-        .map(|implements| format!(",\n            implements: {implements}"))
-        .unwrap_or_default()
-        + &depends_on_json5
-            .map(|deps| format!(",\n            depends_on: {deps}"))
-            .unwrap_or_default();
-    let interfaces_extra = interfaces_json5
-        .map(|ifaces| format!(",\n            interfaces: {ifaces}"))
-        .unwrap_or_default();
+        .map_or_default(|implements| format!(",\n            implements: {implements}"))
+        + &depends_on_json5.map_or_default(|deps| format!(",\n            depends_on: {deps}"));
+    let interfaces_extra =
+        interfaces_json5.map_or_default(|ifaces| format!(",\n            interfaces: {ifaces}"));
     let body = format!(
         r#"{{
             peppy_schema: "node/v1",

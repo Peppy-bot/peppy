@@ -598,7 +598,9 @@ mod tests {
                 .filter_map(|payload| payload.strip_prefix(&prefix)?.parse().ok())
                 .collect();
             assert!(
-                indexes.windows(2).all(|pair| pair[0] < pair[1]),
+                indexes
+                    .array_windows()
+                    .all(|[previous, next]| previous < next),
                 "publisher {publisher}'s messages keep their order: {kept:?}"
             );
         }

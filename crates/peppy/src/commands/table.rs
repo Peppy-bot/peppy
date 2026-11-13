@@ -374,7 +374,9 @@ mod tests {
             .map(|l| UnicodeWidthStr::width(*l))
             .collect();
         assert!(
-            widths.windows(2).all(|w| w[0] == w[1]),
+            widths
+                .array_windows()
+                .all(|[previous, next]| previous == next),
             "rows misaligned: {widths:?}"
         );
     }

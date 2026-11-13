@@ -1032,7 +1032,7 @@ impl FragmentPaths {
 /// working directory when the launcher path itself was elided.
 fn launcher_dir_of(launcher_file: &Path) -> PathBuf {
     match launcher_file.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        Some(parent) if !parent.is_empty() => parent.to_path_buf(),
         _ => PathBuf::from("."),
     }
 }

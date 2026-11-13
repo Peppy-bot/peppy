@@ -62,9 +62,7 @@ fn exposure(
     sha256: Option<&str>,
     member: &str,
 ) -> String {
-    let pin = sha256
-        .map(|sha| format!(", sha256: \"{sha}\""))
-        .unwrap_or_default();
+    let pin = sha256.map_or_default(|sha| format!(", sha256: \"{sha}\""));
     let selection = if contract == "episode_recording" {
         format!(
             r#"actions: [{{ member: "{member}", tool: "{target}.{member}", description: "R.",

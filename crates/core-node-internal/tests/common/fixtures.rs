@@ -45,8 +45,7 @@ pub fn commit_work_tree(root: &Path) -> String {
         .head()
         .ok()
         .and_then(|head| head.target())
-        .map(|oid| vec![repo.find_commit(oid).expect("find parent commit")])
-        .unwrap_or_default();
+        .map_or_default(|oid| vec![repo.find_commit(oid).expect("find parent commit")]);
     let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
     repo.commit(
         Some("HEAD"),

@@ -620,7 +620,7 @@ pub(crate) fn resolve_declared_item(
 
     let declared = declaration_of(item.kind, content, item.path.as_path())
         .map_err(|detail| format!("is not a {}: {detail}", item.kind))?;
-    let expected_tag = item.tag.map(ItemTag::as_str).unwrap_or_default();
+    let expected_tag = item.tag.map_or_default(ItemTag::as_str);
     if declared.name != item.name.as_str() || declared.tag != expected_tag {
         let found = format_identity(&declared.name, &declared.tag);
         return Err(format!("declares `{found}`"));
@@ -841,10 +841,7 @@ fn check_compositions(root: &Path, generated: &RepositoryIndex) -> Result<(), In
 }
 
 fn identity_label(item: &DeclaredItem<'_>) -> String {
-    format_identity(
-        item.name.as_str(),
-        item.tag.map(ItemTag::as_str).unwrap_or_default(),
-    )
+    format_identity(item.name.as_str(), item.tag.map_or_default(ItemTag::as_str))
 }
 
 /// Walk a repository's working tree for the files that declare items.
@@ -991,8 +988,7 @@ fn collect_item(
     let relative_path = ctx
         .config_path
         .strip_prefix(ctx.root)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|p| p.to_string_lossy().into_owned());
     let mut skip = |reason: String| {
         debug!(
             "Skipping {} .json5 at {}: {}",

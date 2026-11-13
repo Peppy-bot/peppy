@@ -15,7 +15,7 @@ use tracing::{info, warn};
 
 /// How long an instance may answer no health check before the daemon kills
 /// it, under a policy that restarts after a failure.
-const KILL_AFTER_UNANSWERED: Duration = Duration::from_secs(60);
+const KILL_AFTER_UNANSWERED: Duration = Duration::from_mins(1);
 
 /// Cadence and tolerance of the per-node health monitor (see
 /// `core_node::services::node::health_monitor`). The monitor probes each
@@ -209,7 +209,7 @@ impl ServeAsyncCommand for CoreNodeRunner {
         let future = Box::pin(async move {
             // Tear down when the serve coordinator stops the generation.
             let teardown = serve_teardown_token.cancelled();
-            tokio::pin!(teardown);
+            let mut teardown = std::pin::pin!(teardown);
 
             if !*messaging_ready.borrow() {
                 info!("Waiting for messaging session before starting core node...");
@@ -249,7 +249,7 @@ impl ServeAsyncCommand for CoreNodeRunner {
 
             let log_export = log_export.start(core_node.node_name());
             let core_node_future = core_node.start_with_ready(Some(ready_tx));
-            tokio::pin!(core_node_future);
+            let mut core_node_future = std::pin::pin!(core_node_future);
 
             let mut shutdown_triggered = false;
             let result: Result<(), Error> = tokio::select! {
@@ -344,7 +344,7 @@ mod tests {
     /// the default grace.
     #[test]
     fn the_shipped_kill_window_outlasts_the_router_recovery() {
-        assert_eq!(KILL_AFTER_UNANSWERED, Duration::from_secs(60));
+        assert_eq!(KILL_AFTER_UNANSWERED, Duration::from_mins(1));
         let probe_to_probe = HEALTH_MONITOR.interval + HEALTH_MONITOR.timeout;
         assert_eq!(
             KILL_AFTER_UNANSWERED + probe_to_probe,

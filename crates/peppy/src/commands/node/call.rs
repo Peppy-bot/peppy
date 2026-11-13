@@ -65,7 +65,7 @@ const CANCEL_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long one request for the end of a goal waits before the command
 /// asks again. The provider answers the request at the end of the goal, so
 /// the command follows a goal of any length.
-const RESULT_WAIT: Duration = Duration::from_secs(60);
+const RESULT_WAIT: Duration = Duration::from_mins(1);
 
 /// What `peppy node call` calls.
 pub struct CallParams {
@@ -359,7 +359,7 @@ impl MemberCall {
                 None => std::future::pending().await,
             }
         };
-        tokio::pin!(fleet_stop);
+        let mut fleet_stop = std::pin::pin!(fleet_stop);
         loop {
             let step = tokio::select! {
                 biased;

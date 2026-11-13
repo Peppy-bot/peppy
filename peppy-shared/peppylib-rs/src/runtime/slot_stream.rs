@@ -1068,7 +1068,7 @@ mod tests {
 
             // The third retry landed: nothing is owed, so the clock can run
             // on without another attempt.
-            tokio::time::advance(Duration::from_secs(60)).await;
+            tokio::time::advance(Duration::from_mins(1)).await;
             settle().await;
             assert_eq!(attempts(), 5, "a declaration that lands ends the retries");
         }

@@ -480,7 +480,7 @@ impl FeedbackSync {
             // Register for the next state change before re-checking, so a change
             // between the check and the await is not lost.
             let notified = self.changed.notified();
-            tokio::pin!(notified);
+            let mut notified = std::pin::pin!(notified);
             notified.as_mut().enable();
 
             if self.is_drained(require_stdout) {
@@ -914,7 +914,7 @@ async fn handle_goal_request(
                 )))
             },
         );
-        tokio::pin!(work);
+        let mut work = std::pin::pin!(work);
 
         let mut feedback_open = true;
         let result = loop {
@@ -1428,8 +1428,7 @@ async fn process_node_run(
         .manifest
         .depends_on
         .as_ref()
-        .map(|d| d.pairings.as_slice())
-        .unwrap_or_default();
+        .map_or_default(|d| d.pairings.as_slice());
     // The goal carries each vacancy's reason as text; this is where it becomes
     // the domain type the validator and the feedback line both speak.
     let vacant_reasons = match vacant_pairs
@@ -2891,7 +2890,7 @@ mod tests {
             Some(declared),
             SetupTimeout::DEFAULT,
         );
-        assert_eq!(budget.duration(), Duration::from_secs(180));
+        assert_eq!(budget.duration(), Duration::from_mins(3));
         assert_eq!(
             budget.source,
             SetupBudgetSource::Declared {
@@ -3446,7 +3445,7 @@ mod tests {
         feedback.sync.increment_read();
         feedback.sync.reader_idle();
         let closing = feedback.close("arm_inst", false);
-        tokio::pin!(closing);
+        let mut closing = std::pin::pin!(closing);
         assert!(
             tokio::time::timeout(Duration::from_millis(50), &mut closing)
                 .await
@@ -3537,7 +3536,7 @@ mod tests {
         // No readers registered, e.g. a failure before the child was spawned.
         // The long windows would block forever if the fast path were missing.
         let drained = sync
-            .wait_for_drain(Duration::from_secs(60), false, Duration::from_secs(60))
+            .wait_for_drain(Duration::from_mins(1), false, Duration::from_mins(1))
             .await;
         assert!(drained, "with no live readers there is nothing to drain");
     }

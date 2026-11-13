@@ -39,7 +39,7 @@ pub const DEFAULT_BUDGETS: StackBudgets = StackBudgets {
 /// and sends that failure as the result, so a caller that waits this much
 /// longer gets the daemon's own error, which names the phase, and not a
 /// silence of its own.
-pub const DAEMON_RESPONSE_GRACE: Duration = Duration::from_secs(60);
+pub const DAEMON_RESPONSE_GRACE: Duration = Duration::from_mins(1);
 
 /// How long a goal that runs under `budgets` can stay silent before its
 /// caller stops waiting: the largest phase budget, because one phase runs at
@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn the_silence_window_of_the_default_budgets_is_660_s() {
-        assert_eq!(silence_window(&DEFAULT_BUDGETS), Duration::from_secs(660));
+        assert_eq!(silence_window(&DEFAULT_BUDGETS), Duration::from_mins(11));
     }
 
     /// One phase runs at a time, so the largest budget sizes the window,
@@ -81,7 +81,7 @@ mod tests {
             StackBudgets::new(1, 900, 1, None),
             StackBudgets::new(1, 1, 900, Some(5)),
         ] {
-            assert_eq!(silence_window(&budgets), Duration::from_secs(960));
+            assert_eq!(silence_window(&budgets), Duration::from_mins(16));
         }
     }
 

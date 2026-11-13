@@ -793,7 +793,12 @@ async fn a_crash_under_on_failure_respawns_under_the_same_id() {
         .iter()
         .map(|needle| lines.iter().position(|line| line.contains(needle)).unwrap())
         .collect();
-    assert!(positions.windows(2).all(|w| w[0] < w[1]), "{lines:?}");
+    assert!(
+        positions
+            .array_windows()
+            .all(|[previous, next]| previous < next),
+        "{lines:?}"
+    );
 
     let (first_log, second_log) = (previous_run_log(&started, ID), run_log(&started, ID));
     let opening = format!(
@@ -4324,9 +4329,7 @@ async fn peer_daemon(
 
 /// The pairs the slot of `instance_id` holds for its restarts.
 fn held_pairs(started: &StartedCoreNode, instance_id: &str) -> Vec<node_stack::PlannedPair> {
-    slot_of(started, instance_id)
-        .map(|slot| slot.supervision().held_pairs.clone())
-        .unwrap_or_default()
+    slot_of(started, instance_id).map_or_default(|slot| slot.supervision().held_pairs.clone())
 }
 
 /// Waits until the exit of a paired instance has dissolved its pairs, after

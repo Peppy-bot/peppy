@@ -328,7 +328,7 @@ pub(crate) async fn stream_child_output(
         return Err(err);
     }
 
-    let tail_lines = stderr_tail.map(|tail| tail.lines()).unwrap_or_default();
+    let tail_lines = stderr_tail.map_or_default(|tail| tail.lines());
 
     Ok((status, tail_lines))
 }
@@ -533,7 +533,7 @@ where
             // blocking for more. A reader that is slow to be scheduled never
             // reaches this point, so it never falsely reports being drained.
             let next = reader.read(&mut buf);
-            tokio::pin!(next);
+            let mut next = std::pin::pin!(next);
             let read = match std::future::poll_fn(|cx| Poll::Ready(next.as_mut().poll(cx))).await {
                 Poll::Ready(read) => read,
                 Poll::Pending => {

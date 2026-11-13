@@ -152,7 +152,7 @@ impl ResourceState {
         // message admitted for this reader cannot be stored before the
         // reader listens for it.
         let arrived = self.arrived.notified();
-        tokio::pin!(arrived);
+        let mut arrived = std::pin::pin!(arrived);
         arrived.as_mut().enable();
         let reader = WaitingReader::register(&self.waiting);
         let _ = tokio::time::timeout(max_wait, arrived).await;

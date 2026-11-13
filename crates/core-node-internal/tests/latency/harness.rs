@@ -58,7 +58,7 @@ const ECHO_SERVICE: &str = "echo";
 /// Generous ceiling for a single `bench_control` call: it runs warmup + all
 /// measured roundtrips before replying, so it must comfortably exceed
 /// `(warmup + iters) * per-roundtrip`.
-const CONTROL_TIMEOUT: Duration = Duration::from_secs(180);
+const CONTROL_TIMEOUT: Duration = Duration::from_mins(3);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lang {

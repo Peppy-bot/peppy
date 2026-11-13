@@ -15,7 +15,7 @@ use std::path::Path;
 use std::time::Duration;
 
 const BUILD_CMD_MARKER_FILE: &str = "build_cmd_executed.marker";
-const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
+const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Helper: stage a node via `send_node_add_and_wait` and assert success.
 /// Returns (node_name, node_tag) for use in subsequent build calls.
@@ -329,10 +329,7 @@ fn read_build_log(
     node_name: &str,
     node_tag: &str,
 ) -> String {
-    assert!(
-        !log_path.as_os_str().is_empty(),
-        "log_path should not be empty"
-    );
+    assert!(!log_path.is_empty(), "log_path should not be empty");
     assert!(log_path.exists(), "log file should exist at {log_path:?}");
 
     let log_dir = started_core_node.peppy_dirs.logs_dir_build();

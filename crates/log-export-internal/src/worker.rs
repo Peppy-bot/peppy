@@ -264,7 +264,7 @@ impl<T: Transport> ExportWorker<T> {
         let post = self
             .transport
             .post(request.body.clone(), &self.config.headers);
-        tokio::pin!(post);
+        let mut post = std::pin::pin!(post);
         tokio::select! {
             biased;
             answer = &mut post => Posted::Answered(answer),

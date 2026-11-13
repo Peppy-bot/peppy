@@ -47,8 +47,7 @@ impl<'a> LauncherAdjustment<'a> {
                 .when
                 .as_ref()
                 .and_then(|when| when.get(axis))
-                .map(|options| options.iter().collect())
-                .unwrap_or_default(),
+                .map_or_default(|options| options.iter().collect()),
         }
     }
 

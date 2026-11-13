@@ -374,7 +374,7 @@ mod tests {
             ),
             (
                 StackLogEvent::HealthKill {
-                    unanswered_for: Duration::from_secs(60),
+                    unanswered_for: Duration::from_mins(1),
                 },
                 Severity::Warn,
                 "Instance 'arm_inst' of node 'openarm_arm:v1' answered no health check for 60 s; \
@@ -382,7 +382,7 @@ mod tests {
             ),
             (
                 StackLogEvent::HealthKillSkipped {
-                    unanswered_for: Duration::from_secs(60),
+                    unanswered_for: Duration::from_mins(1),
                     running: 2,
                 },
                 Severity::Warn,

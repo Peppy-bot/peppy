@@ -414,15 +414,13 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
                 .manifest
                 .depends_on
                 .as_ref()
-                .map(|d| d.pairings.as_slice())
-                .unwrap_or_default(),
+                .map_or_default(|d| d.pairings.as_slice()),
             observer_deps: p
                 .config
                 .manifest
                 .depends_on
                 .as_ref()
-                .map(|d| d.pairing_observers.as_slice())
-                .unwrap_or_default(),
+                .map_or_default(|d| d.pairing_observers.as_slice()),
             preexisting: false,
         })
         .collect();

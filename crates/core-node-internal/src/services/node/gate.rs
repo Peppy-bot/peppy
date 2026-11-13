@@ -474,7 +474,7 @@ pub(crate) async fn finish_on_reset<F, T>(
 where
     F: std::future::Future<Output = T>,
 {
-    tokio::pin!(work);
+    let mut work = std::pin::pin!(work);
     tokio::select! {
         biased;
         _ = cancellation.cancelled() => {

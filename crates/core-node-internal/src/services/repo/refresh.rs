@@ -1383,8 +1383,7 @@ mod tests {
             .head()
             .ok()
             .and_then(|head| head.target())
-            .map(|oid| vec![repo.find_commit(oid).expect("find parent commit")])
-            .unwrap_or_default();
+            .map_or_default(|oid| vec![repo.find_commit(oid).expect("find parent commit")]);
         let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
         repo.commit(
             Some("HEAD"),
@@ -2626,8 +2625,7 @@ mod tests {
 
             let parent_commits: Vec<git2::Commit> = commits
                 .last()
-                .map(|oid| vec![repo.find_commit(*oid).expect("find parent")])
-                .unwrap_or_default();
+                .map_or_default(|oid| vec![repo.find_commit(*oid).expect("find parent")]);
             let parent_refs: Vec<&git2::Commit> = parent_commits.iter().collect();
 
             let oid = repo

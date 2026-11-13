@@ -2469,7 +2469,7 @@ mod tests {
         let server = server_with_resume(async |_call: ToolCall, context: ActionContext| {
             assert!(!context.is_cancel_requested());
             let cancel = context.cancel_requested();
-            tokio::pin!(cancel);
+            let mut cancel = std::pin::pin!(cancel);
             assert!(
                 futures::poll!(cancel.as_mut()).is_pending(),
                 "a call that stays open asks for no cancel"
@@ -2654,11 +2654,10 @@ mod tests {
         };
         // Paused time: a goal that does not see the close leaves nothing to
         // run, and the clock jumps to the end of this bound at once.
-        let (result, ()) = tokio::time::timeout(Duration::from_secs(3600), async {
-            tokio::join!(call, close)
-        })
-        .await
-        .expect("the goal sees the close while the client holds a message");
+        let (result, ()) =
+            tokio::time::timeout(Duration::from_hours(1), async { tokio::join!(call, close) })
+                .await
+                .expect("the goal sees the close while the client holds a message");
         let result = result.expect("a cancelled goal is a tool error, not a protocol error");
         assert_eq!(
             tool_error_text(&result),
@@ -3989,7 +3988,7 @@ mod tests {
     async fn a_handler_slower_than_the_deadline_is_a_tool_error() {
         let server = ExposureServer::builder(test_bundle())
             .with_tool("front_camera.set_brightness", async |_call: ToolCall| {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
+                tokio::time::sleep(Duration::from_hours(1)).await;
                 Ok(json!({ "applied": true }))
             })
             .build()

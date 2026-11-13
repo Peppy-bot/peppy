@@ -55,8 +55,7 @@ static MINTED: AtomicU64 = AtomicU64::new(0);
 pub fn mint_incarnation() -> ClockIncarnation {
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|since_epoch| since_epoch.as_millis() as u64)
-        .unwrap_or_default();
+        .map_or_default(|since_epoch| since_epoch.as_millis() as u64);
     MINTED.fetch_max(seed, Ordering::Relaxed);
     let value = MINTED.fetch_add(1, Ordering::Relaxed) + 1;
     ClockIncarnation::try_from(value).expect("a counter seeded from unix-millis is in range")
@@ -313,7 +312,9 @@ mod tests {
         let distinct: BTreeSet<u64> = minted.iter().copied().collect();
         assert_eq!(distinct.len(), minted.len(), "a lifetime is never reused");
         assert!(
-            minted.windows(2).all(|pair| pair[0] < pair[1]),
+            minted
+                .array_windows()
+                .all(|[previous, next]| previous < next),
             "each lifetime exceeds the one before it"
         );
     }

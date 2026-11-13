@@ -256,7 +256,7 @@ impl From<QoSProfile> for SubscriberQoS {
 /// once the consumer receives `Ack`, the zenoh query must stay open long
 /// enough for the producer's `Response` reply. Shortening this would
 /// silently cap how long a service handler may run.
-pub(crate) const NO_TIMEOUT_SENTINEL: std::time::Duration = std::time::Duration::from_secs(86_400);
+pub(crate) const NO_TIMEOUT_SENTINEL: std::time::Duration = std::time::Duration::from_hours(24);
 
 /// How long a service query stays open on the wire after its caller stopped
 /// waiting for a reply.

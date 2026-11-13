@@ -49,7 +49,7 @@ pub(crate) const STACK_RESET_REASON: &str = "cancelled by a stack reset";
 /// participant daemon goes on through a router restart or a short loss of
 /// the link between two machines. A command line process that is gone gets
 /// its goal cancelled once the grace passes.
-pub const DAEMON_SENDER_GRACE: Duration = Duration::from_secs(60);
+pub const DAEMON_SENDER_GRACE: Duration = Duration::from_mins(1);
 
 /// Exposes the built-in action `id` of the daemon on `messenger`, with
 /// feedback and with the sender grace of the daemon

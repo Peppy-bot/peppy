@@ -53,7 +53,7 @@ const GOAL_ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Bound on the destructive commit. It tears down the peer's running stack, so
 /// it is allowed to take as long as a cooperative shutdown of that stack takes.
-const SLICE_BEGIN_TIMEOUT: Duration = Duration::from_secs(120);
+const SLICE_BEGIN_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Bound on telling a peer to cancel a goal, and on its answer for work it
 /// drops at once: both fit inside the CLI's grace past the change deadline,
@@ -722,7 +722,7 @@ mod tests {
 
     #[test]
     fn a_prompt_answer_or_a_peer_whose_listing_did_not_answer_waits_the_settle_timeout() {
-        let long_grace = Some(Duration::from_secs(600));
+        let long_grace = Some(Duration::from_mins(10));
         assert_eq!(
             cancelled_answer_budget(CancelledAnswer::Prompt, long_grace),
             CANCEL_SETTLE_TIMEOUT

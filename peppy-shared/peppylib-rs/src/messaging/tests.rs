@@ -2624,7 +2624,7 @@ async fn action_communication_goal_cancelled() {
                     let mut ticker = tokio::time::interval(Duration::from_millis(50));
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     let stop_notified = stop_feedback.notified();
-                    tokio::pin!(stop_notified);
+                    let mut stop_notified = std::pin::pin!(stop_notified);
                     loop {
                         tokio::select! {
                             biased;

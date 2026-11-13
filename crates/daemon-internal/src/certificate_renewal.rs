@@ -31,7 +31,7 @@ use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 
 /// The longest sleep between two checks, and the delay before the next attempt
 /// after a renewal that failed with no delay from the platform.
-const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const CHECK_INTERVAL: Duration = Duration::from_hours(1);
 
 /// The shortest delay before the next attempt, for a platform that asks for
 /// no delay or for a delay of zero.
@@ -351,7 +351,7 @@ mod tests {
 
         assert_eq!(
             check_and_renew(&machine.deps()).await,
-            Step::Wait(Duration::from_secs(120))
+            Step::Wait(Duration::from_mins(2))
         );
         assert!(machine.renewals().is_empty());
     }
@@ -394,7 +394,7 @@ mod tests {
     #[tokio::test]
     async fn a_refusal_waits_for_the_delay_the_platform_asked_for() {
         let cases = [
-            (Some(1800), Duration::from_secs(1800)),
+            (Some(1800), Duration::from_mins(30)),
             (Some(0), MIN_RETRY_DELAY),
             (None, CHECK_INTERVAL),
         ];

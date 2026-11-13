@@ -29,8 +29,8 @@ pub fn instant_restart_backoff() -> RestartBackoff {
 /// wait.
 pub fn parked_restart_backoff() -> RestartBackoff {
     RestartBackoff {
-        first_delay: Duration::from_secs(3600),
-        max_delay: Duration::from_secs(3600),
+        first_delay: Duration::from_hours(1),
+        max_delay: Duration::from_hours(1),
         reset_after: Duration::MAX,
     }
 }

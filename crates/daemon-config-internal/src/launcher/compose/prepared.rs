@@ -534,8 +534,7 @@ impl PreparedLauncher {
             .option_deployments
             .iter()
             .find(|entry| entry.axis == axis && entry.option == option)
-            .map(OptionDeployment::entry_settings)
-            .unwrap_or_default()
+            .map_or_default(OptionDeployment::entry_settings)
             .overlaid_by(with, arguments, [])
     }
 

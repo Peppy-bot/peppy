@@ -722,7 +722,11 @@ mod tests {
             .map(|record| log_line(record.time, Some("stdout"), &record.body))
             .collect();
         assert_eq!(written, expected);
-        assert!(records.windows(2).all(|pair| pair[0].time < pair[1].time));
+        assert!(
+            records
+                .array_windows()
+                .all(|[previous, next]| previous.time < next.time)
+        );
     }
 
     #[test]

@@ -324,8 +324,7 @@ fn resolve_link(
 fn producer_topic_qos(producer: Option<&NodeConfig>, topic_name: &str) -> QoSProfile {
     producer
         .and_then(|c| c.interfaces.native_emits().find(|e| e.name == topic_name))
-        .map(|e| e.qos_profile.clone())
-        .unwrap_or_default()
+        .map_or_default(|e| e.qos_profile.clone())
 }
 
 /// Each config keyed by its `(name, tag)`, so the QoS and probe-size passes

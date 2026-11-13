@@ -451,7 +451,7 @@ fn cancel_pgid_run_is_killable_in_guest() {
 
     // The in-VM workload should come up (first run may pull layers/start slowly).
     assert!(
-        poll_until(Duration::from_secs(60), || guest_has_process(
+        poll_until(Duration::from_mins(1), || guest_has_process(
             &facade,
             SLEEP_MARKER
         )),

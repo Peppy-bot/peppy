@@ -97,7 +97,7 @@ async fn sync_node(
         include_repositories,
     } = request;
 
-    if node_root_dir.as_os_str().is_empty() {
+    if node_root_dir.is_empty() {
         return Err(rejected(
             "Missing `node_root_dir` in node_sync request".to_owned(),
         ));

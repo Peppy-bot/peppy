@@ -3502,7 +3502,7 @@ mod tests {
             instance.supervision.run_started = Some(started);
             let handle = ready_entity_with(instance);
             let kill = HealthKill {
-                unanswered_for: Duration::from_secs(60),
+                unanswered_for: Duration::from_mins(1),
                 last_answer: last_answer_after.map(|after| started + after),
             };
             assert!(handle.write().arm_health_kill(id.as_str(), kill).is_some());

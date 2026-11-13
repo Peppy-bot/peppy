@@ -143,9 +143,7 @@ struct TokenErrorBody {
 /// [`classify`] acts on passes this filter unchanged, so polling behaviour is
 /// unaffected.
 pub(crate) fn safe_oauth_error_code(body: &str) -> String {
-    let code = serde_json::from_str::<TokenErrorBody>(body)
-        .map(|body| body.error)
-        .unwrap_or_default();
+    let code = serde_json::from_str::<TokenErrorBody>(body).map_or_default(|body| body.error);
     if !code.is_empty()
         && code.len() <= 64
         && code

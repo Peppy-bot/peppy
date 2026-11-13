@@ -257,18 +257,16 @@ impl FleetBook {
                     holder_core_node: lease.holder.core_node.clone(),
                     name: lease.name.clone(),
                     open: lease.open,
-                    giver: giver.map(|g| g.instance_id.clone()).unwrap_or_default(),
-                    giver_core_node: giver.map(|g| g.core_node.clone()).unwrap_or_default(),
+                    giver: giver.map_or_default(|g| g.instance_id.clone()),
+                    giver_core_node: giver.map_or_default(|g| g.core_node.clone()),
                     receiver: lease
                         .offer
                         .as_ref()
-                        .map(|r| r.instance_id.clone())
-                        .unwrap_or_default(),
+                        .map_or_default(|r| r.instance_id.clone()),
                     receiver_core_node: lease
                         .offer
                         .as_ref()
-                        .map(|r| r.core_node.clone())
-                        .unwrap_or_default(),
+                        .map_or_default(|r| r.core_node.clone()),
                 }
             })
             .collect()
@@ -376,8 +374,8 @@ impl FleetBook {
             let _ = holder.events.send(LeaseEvent {
                 event,
                 robot: robot.to_owned(),
-                giver: giver.map(|g| g.instance_id.clone()).unwrap_or_default(),
-                giver_core_node: giver.map(|g| g.core_node.clone()).unwrap_or_default(),
+                giver: giver.map_or_default(|g| g.instance_id.clone()),
+                giver_core_node: giver.map_or_default(|g| g.core_node.clone()),
                 cause: cause.to_owned(),
             });
         }

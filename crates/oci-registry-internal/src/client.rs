@@ -778,7 +778,7 @@ async fn report_taken_while<T>(
     taken: &mut tokio::sync::mpsc::UnboundedReceiver<u64>,
     mut on_taken: impl FnMut(u64),
 ) -> T {
-    tokio::pin!(request);
+    let mut request = std::pin::pin!(request);
     let outcome = loop {
         tokio::select! {
             outcome = &mut request => break outcome,

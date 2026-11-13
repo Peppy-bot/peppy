@@ -938,8 +938,7 @@ impl MessengerBackend for ZenohAdapter {
                 let zbytes = sample.payload().clone();
                 let attachment_bytes = sample
                     .attachment()
-                    .map(|z| z.to_bytes())
-                    .unwrap_or_default();
+                    .map_or_default(|z| z.to_bytes());
                 let reply_kind = match ServiceReplyAttachment::decode(attachment_bytes.as_ref()) {
                     Ok(a) => a.kind,
                     Err(err) => {
@@ -1426,10 +1425,7 @@ impl ZenohAdapter {
                     ..
                 } = sample.into();
                 if drop_secondary {
-                    let raw = attachment
-                        .as_ref()
-                        .map(|z| z.to_bytes())
-                        .unwrap_or_default();
+                    let raw = attachment.as_ref().map_or_default(|z| z.to_bytes());
                     if !TopicAttachment::decode(raw.as_ref()).is_primary {
                         return;
                     }
@@ -1555,7 +1551,7 @@ fn process_inbound_query(
     tx: &flume::Sender<IncomingRequest>,
     rt: &tokio::runtime::Handle,
 ) {
-    let attachment_bytes = query.attachment().map(|z| z.to_bytes()).unwrap_or_default();
+    let attachment_bytes = query.attachment().map_or_default(|z| z.to_bytes());
     let parsed = match ZenohWireFormat::parse_inbound_query(
         recv,
         query.key_expr().as_str(),

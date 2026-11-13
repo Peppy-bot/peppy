@@ -199,8 +199,7 @@ impl FollowedGoal<'_> {
     /// " Log file: {path}", or nothing for a goal with no log file.
     fn log_tail(&self) -> String {
         self.log_path
-            .map(|path| format!(" Log file: {}", path.display()))
-            .unwrap_or_default()
+            .map_or_default(|path| format!(" Log file: {}", path.display()))
     }
 
     /// The line a command writes when a Ctrl-C sends the daemon a cancel.

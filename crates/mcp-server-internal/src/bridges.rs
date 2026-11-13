@@ -969,7 +969,7 @@ async fn settle_after_feedback(
     // Armed once: the deadline bounds the whole goal, so no message moves
     // it.
     let expiry = tokio::time::sleep(remaining());
-    tokio::pin!(expiry);
+    let mut expiry = std::pin::pin!(expiry);
     loop {
         if cancel_pending {
             cancel_pending = false;
@@ -1020,7 +1020,7 @@ async fn settle_on_result(
         .expect("the follow holds its goal until it drops");
     let messenger = *messenger;
     let result = handle.result(messenger, remaining());
-    tokio::pin!(result);
+    let mut result = std::pin::pin!(result);
     let mut cancel_forwarded = false;
     loop {
         tokio::select! {

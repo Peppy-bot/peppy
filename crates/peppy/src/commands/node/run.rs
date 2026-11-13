@@ -762,14 +762,12 @@ async fn validate_links_against_stack(
                 .manifest
                 .depends_on
                 .as_ref()
-                .map(|d| d.pairings.clone())
-                .unwrap_or_default(),
+                .map_or_default(|d| d.pairings.clone()),
             observer_deps: info
                 .config
                 .manifest
                 .depends_on
-                .map(|d| d.pairing_observers)
-                .unwrap_or_default(),
+                .map_or_default(|d| d.pairing_observers),
         });
     }
 
@@ -836,12 +834,10 @@ async fn validate_links_against_stack(
     // covered at their own start).
     let target_pairing_deps: Vec<config::node::PairingParticipantDependency> = target_depends_on
         .as_ref()
-        .map(|d| d.pairings.clone())
-        .unwrap_or_default();
+        .map_or_default(|d| d.pairings.clone());
     let target_observer_deps: Vec<config::node::PairingObserverDependency> = target_depends_on
         .as_ref()
-        .map(|d| d.pairing_observers.clone())
-        .unwrap_or_default();
+        .map_or_default(|d| d.pairing_observers.clone());
     let mut pairing_items: Vec<PairingValidationItem<'_>> = snapshot
         .iter()
         .map(|s| PairingValidationItem {

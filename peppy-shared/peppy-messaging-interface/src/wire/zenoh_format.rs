@@ -477,7 +477,7 @@ pub(crate) fn service_root(
     name: &str,
     kind: ServiceKind,
 ) -> String {
-    let suffix = kind.suffix().map(|s| format!("/{s}")).unwrap_or_default();
+    let suffix = kind.suffix().map_or_default(|s| format!("/{s}"));
     format!(
         "{}/{}/{}/{}/{link_id}/{name}{suffix}",
         kind.root_segment(),

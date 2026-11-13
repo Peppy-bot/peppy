@@ -350,8 +350,7 @@ fn platform_section(platform: &Result<Option<PlatformReport>>) -> String {
         .router
         .address
         .as_ref()
-        .map(|address| format!(" at {}:{}", address.host(), address.port()))
-        .unwrap_or_default();
+        .map_or_default(|address| format!(" at {}:{}", address.host(), address.port()));
     out.push_str(&format!("  router    : {}{address}\n", report.router.phase));
     if report.router.phase == RouterPhase::Stopped {
         out.push_str("              start it with `peppy platform router start`\n");

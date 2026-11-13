@@ -449,10 +449,10 @@ mod tests {
         last_output.record("");
         last_output.record(" \t ");
         assert_eq!(
-            last_output.quiet_output(printed_at + Duration::from_secs(60)),
+            last_output.quiet_output(printed_at + Duration::from_mins(1)),
             Some(QuietOutput {
                 text: "INFO:    Creating SIF file...".to_string(),
-                quiet_for: Duration::from_secs(60),
+                quiet_for: Duration::from_mins(1),
             })
         );
     }

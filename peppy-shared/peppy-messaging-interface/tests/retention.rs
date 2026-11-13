@@ -473,7 +473,9 @@ async fn joins_during_a_publish_loop_read_an_increasing_stream_up_to_the_newest_
                 let subscription = subscribe(&subscriber_session, &topic, latest(depth)).await;
                 let values = next_values(&subscription, READS_PER_JOIN, "a value").await;
                 assert!(
-                    values.windows(2).all(|pair| pair[0] < pair[1]),
+                    values
+                        .array_windows()
+                        .all(|[previous, next]| previous < next),
                     "{topology:?}, depth {depth}, join {join}: {values:?} is not increasing"
                 );
             }
@@ -809,7 +811,7 @@ async fn starting_the_session_again_forgets_its_retaining_topics() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_subscriber_that_reconnects_reads_the_current_value_then_live_values() {
     /// Covers the sessions' reconnect backoff; only a failure waits this long.
-    const RECONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+    const RECONNECT_TIMEOUT: Duration = Duration::from_mins(1);
     const TOPIC: &str = "reconnect";
     let _lock = ZENOH_SERIAL.lock().await;
     let mut router = start_router().await;

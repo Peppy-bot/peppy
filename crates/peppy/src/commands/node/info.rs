@@ -362,9 +362,7 @@ pub(super) fn retention_note(retention: TopicRetention) -> String {
 /// Suffix naming the `manifest.implements` slot a contract-backed produced
 /// entry resolves through; empty for a native entry.
 fn via_slot(link_id: Option<&str>) -> String {
-    link_id
-        .map(|link_id| format!(" (via implements slot: {link_id})"))
-        .unwrap_or_default()
+    link_id.map_or_default(|link_id| format!(" (via implements slot: {link_id})"))
 }
 
 /// Render a parameter declaration: a primitive shows its type and optional

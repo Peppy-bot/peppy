@@ -249,7 +249,7 @@ mod tests {
             1_753_900_000
         );
         assert_eq!(
-            unix_secs(UNIX_EPOCH - std::time::Duration::from_secs(60)),
+            unix_secs(UNIX_EPOCH - std::time::Duration::from_mins(1)),
             0,
             "a clock set before the epoch degrades rather than panicking"
         );

@@ -601,8 +601,7 @@ fn usage_report(
     // that node asks for. Empty for every other kind.
     let own_slots: Vec<PairingSlot> = lookup_repo_entry(nodes, name, tag)
         .map_err(|ambiguity| ambiguity.to_string())?
-        .map(|entry| entry.links.pairings.clone())
-        .unwrap_or_default();
+        .map_or_default(|entry| entry.links.pairings.clone());
     // Each slot's pairing resolves to its own document, so a peer's pin is
     // checked against the pairing it claims, not against `name:tag`.
     let slot_docs: Vec<Option<PublishedDoc>> = own_slots
