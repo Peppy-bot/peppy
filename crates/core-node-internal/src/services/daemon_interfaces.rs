@@ -43,7 +43,6 @@ use peppylib::types::Payload;
 use peppylib::{CoreNodePresenceMessenger, ServiceMessenger};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;

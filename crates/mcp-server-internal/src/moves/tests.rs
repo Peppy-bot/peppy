@@ -255,7 +255,7 @@ const OPERATOR: &str = "`peppy-cli` on `cn-desk`";
 
 /// Polls `future` once, in the calling task, and tells whether it is still
 /// pending.
-async fn pending_after_one_poll<F: std::future::Future>(future: F) -> bool {
+async fn pending_after_one_poll<F: Future>(future: F) -> bool {
     let mut future = std::pin::pin!(future);
     std::future::poll_fn(|context| {
         std::task::Poll::Ready(future.as_mut().poll(context).is_pending())

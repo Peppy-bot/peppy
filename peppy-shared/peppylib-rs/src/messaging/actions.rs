@@ -578,7 +578,7 @@ const PRODUCER_GONE_CONFIRM_PROBES: usize = 2;
 async fn confirm_gone<P, F>(probe: &P) -> bool
 where
     P: Fn() -> F,
-    F: std::future::Future<Output = Result<bool>>,
+    F: Future<Output = Result<bool>>,
 {
     for _ in 0..PRODUCER_GONE_CONFIRM_PROBES {
         tokio::time::sleep(PRODUCER_GONE_CONFIRM_DELAY).await;
@@ -598,7 +598,7 @@ where
 async fn wait_until_confirmed_gone<P, F>(watch: LivelinessWatch, probe: P) -> bool
 where
     P: Fn() -> F,
-    F: std::future::Future<Output = Result<bool>>,
+    F: Future<Output = Result<bool>>,
 {
     // Initial resolve: the token is expected to replay as an immediate
     // `Alive` (the watch subscribes with history). Seeing nothing inside the

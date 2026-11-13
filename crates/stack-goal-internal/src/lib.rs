@@ -82,7 +82,7 @@
 //!     node: &NodeRunner,
 //!     copy: CopyReference,
 //!     window: Duration,
-//!     cancelled: impl std::future::Future<Output = ()>,
+//!     cancelled: impl Future<Output = ()>,
 //!     relay: impl Fn(String),
 //! ) -> Outcome {
 //!     let goal = StackJoinGoal::new(copy, DEFAULT_BUDGETS);

@@ -6,7 +6,6 @@ use pmi::ClientCredential;
 
 use futures::FutureExt;
 use std::collections::BTreeMap;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;

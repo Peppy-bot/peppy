@@ -15,7 +15,7 @@ use pmi::{
 use std::assert_matches;
 use std::{
     cell::Cell,
-    future::{Future, poll_fn, ready},
+    future::{poll_fn, ready},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},

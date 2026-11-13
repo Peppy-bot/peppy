@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::{Duration, Instant};

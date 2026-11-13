@@ -17,7 +17,6 @@ mod table;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 

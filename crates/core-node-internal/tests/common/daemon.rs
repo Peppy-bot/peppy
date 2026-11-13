@@ -15,7 +15,6 @@ use node_stack::NodeStack;
 use peppylib::messaging::{MessengerHandle, ServiceAnswer, ServiceRequestContext};
 use peppylib::runtime::spawn;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
-use std::future::Future;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -23,7 +23,6 @@
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use auth::{AuthError, Enrollment, FederationIdentity};
 use daemon_config::consts::PeppyDirs;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;

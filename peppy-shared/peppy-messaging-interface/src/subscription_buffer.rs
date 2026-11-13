@@ -481,7 +481,7 @@ mod tests {
     }
 
     /// Polls `future` once, without a runtime.
-    fn poll_once<F: std::future::Future>(future: std::pin::Pin<&mut F>) -> std::task::Poll<()> {
+    fn poll_once<F: Future>(future: std::pin::Pin<&mut F>) -> std::task::Poll<()> {
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         future.poll(&mut context).map(|_| ())
     }

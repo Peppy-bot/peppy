@@ -11,7 +11,6 @@ use config::namespace::Namespace;
 use config::node::{QoSProfile, TopicRetention};
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::future::Future;
 use std::net::SocketAddr;
 #[cfg(feature = "zenoh")]
 use zenoh::bytes::ZBytes;

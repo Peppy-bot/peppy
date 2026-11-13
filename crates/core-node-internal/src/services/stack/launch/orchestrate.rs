@@ -592,9 +592,9 @@ mod tests {
     /// alone: nothing is constructed or run.
     fn future_size<'a, F>(_: impl FnOnce(&'a StackChangeContext, NodeAddGoal) -> F) -> usize
     where
-        F: std::future::Future,
+        F: Future,
     {
-        std::mem::size_of::<F>()
+        size_of::<F>()
     }
 
     /// The most the per-node add future of a launch or a join may occupy.

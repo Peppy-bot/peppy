@@ -3269,7 +3269,7 @@ async fn a_removal_waits_for_the_process_another_stop_ends() {
 async fn a_second_into_the_deadline<T>(
     started: &StartedCoreNode,
     grace_secs: u64,
-    second: impl std::future::Future<Output = T>,
+    second: impl Future<Output = T>,
 ) -> T {
     let deadline = deadline_of(grace_secs);
     let second_of_it = Duration::from_secs(1);

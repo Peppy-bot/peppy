@@ -23,7 +23,6 @@ use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;

@@ -99,7 +99,7 @@ async fn run_phase_with_timeouts<F, T>(
     cancel_and_drain: Option<&DrainOnCancel>,
 ) -> PhaseOutcome<T>
 where
-    F: std::future::Future<Output = T> + ?Sized,
+    F: Future<Output = T> + ?Sized,
 {
     match cancel_and_drain {
         None => {
@@ -127,7 +127,7 @@ async fn run_phase_drop_on_timeout<F, T>(
     change_deadline: Option<Instant>,
 ) -> PhaseOutcome<T>
 where
-    F: std::future::Future<Output = T> + ?Sized,
+    F: Future<Output = T> + ?Sized,
 {
     let inner = async {
         tokio::select! {
@@ -163,7 +163,7 @@ async fn run_phase_cancel_on_timeout<F, T>(
     drain: &DrainOnCancel,
 ) -> PhaseOutcome<T>
 where
-    F: std::future::Future<Output = T> + ?Sized,
+    F: Future<Output = T> + ?Sized,
 {
     // With no deadline this arm waits on a future that never resolves, so
     // only the idle watcher or the phase can end the race.
@@ -229,7 +229,7 @@ pub(super) async fn run_phase<F, T>(
     cancel_and_drain: Option<DrainOnCancel>,
 ) -> T
 where
-    F: std::future::Future<Output = T> + ?Sized,
+    F: Future<Output = T> + ?Sized,
 {
     let phase = run_phase_with_timeouts(
         phase,
@@ -384,7 +384,7 @@ mod tests {
             tokio::task::yield_now().await;
             borrowed.len() + buffer.len()
         };
-        let inner_size = std::mem::size_of_val(&phase);
+        let inner_size = size_of_val(&phase);
         assert!(
             inner_size >= 64 * 1024,
             "the phase future carries its buffer: {inner_size} bytes"
@@ -398,7 +398,7 @@ mod tests {
             Some(Instant::now() + Duration::from_secs(1)),
             None,
         );
-        let wrapper_size = std::mem::size_of_val(&wrapper);
+        let wrapper_size = size_of_val(&wrapper);
         assert!(
             wrapper_size < 1024,
             "the wrapper owns a pointer to the phase, not the phase: {wrapper_size} bytes"

@@ -32,7 +32,6 @@ use peppylib::messaging::{
 };
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult};
-use std::future::Future;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;

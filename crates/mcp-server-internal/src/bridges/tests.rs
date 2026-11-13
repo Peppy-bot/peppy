@@ -806,7 +806,7 @@ impl super::TaskSurface for HeldSurface {
         hold.await.expect("the test lets the bridge go");
     }
 
-    fn cancel_requested(&self) -> impl std::future::Future<Output = ()> + Send {
+    fn cancel_requested(&self) -> impl Future<Output = ()> + Send {
         self.surface.cancel_requested()
     }
 }

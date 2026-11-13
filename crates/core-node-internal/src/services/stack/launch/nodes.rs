@@ -23,7 +23,6 @@ use daemon_config::repository::{DeploymentRoot, EntryOrigin};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::{BTreeMap, HashMap};
-use std::future::Future;
 use std::path::PathBuf;
 use std::time::Duration;
 

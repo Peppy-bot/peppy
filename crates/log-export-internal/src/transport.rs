@@ -4,7 +4,6 @@ use crate::headers::OtlpHeaders;
 use bytes::Bytes;
 use daemon_config::peppy_config::OtlpEndpoint;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue, RETRY_AFTER};
-use std::future::Future;
 use std::time::Duration;
 
 /// How long one request may take, from the connection to the last byte of

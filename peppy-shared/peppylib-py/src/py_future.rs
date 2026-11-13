@@ -34,7 +34,6 @@ use pyo3::prelude::*;
 use pyo3::types::{PyCFunction, PyDict};
 use pyo3_async_runtimes::TaskLocals;
 use pyo3_async_runtimes::err::RustPanic;
-use std::future::Future;
 
 /// Whether runtime threads may attach to the interpreter. Open until the
 /// interpreter starts exiting; never reopens afterwards.

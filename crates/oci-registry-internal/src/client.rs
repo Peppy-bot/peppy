@@ -774,7 +774,7 @@ impl RequestBody {
 /// Awaits `request`, and gives `on_taken` each count of `taken` while the
 /// request runs, then the counts left once it ended.
 async fn report_taken_while<T>(
-    request: impl std::future::Future<Output = T>,
+    request: impl Future<Output = T>,
     taken: &mut tokio::sync::mpsc::UnboundedReceiver<u64>,
     mut on_taken: impl FnMut(u64),
 ) -> T {

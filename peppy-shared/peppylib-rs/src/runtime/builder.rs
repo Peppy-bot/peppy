@@ -498,7 +498,7 @@ where
     pub fn run<F, Fut>(self, setup_fn: F) -> Result<()>
     where
         F: FnOnce(Params, Arc<NodeRunner>) -> Fut,
-        Fut: std::future::Future<Output = Result<()>>,
+        Fut: Future<Output = Result<()>>,
     {
         let context = self.init()?;
         context.run_with_closure(setup_fn)
@@ -616,7 +616,7 @@ where
     fn run_with_closure<F, Fut>(mut self, setup_fn: F) -> Result<()>
     where
         F: FnOnce(Params, Arc<NodeRunner>) -> Fut,
-        Fut: std::future::Future<Output = Result<()>>,
+        Fut: Future<Output = Result<()>>,
     {
         let rt = tokio::runtime::Runtime::new().map_err(|source| Error::RuntimeInitialization {
             context: "node runner".to_string(),
@@ -708,7 +708,7 @@ where
     async fn run_standalone<F, Fut>(mut self, parameters: Params, setup_fn: F) -> Result<()>
     where
         F: FnOnce(Params, Arc<NodeRunner>) -> Fut,
-        Fut: std::future::Future<Output = Result<()>>,
+        Fut: Future<Output = Result<()>>,
     {
         // Create cancellation token for standalone mode
         let cancellation_token = CancellationToken::new();

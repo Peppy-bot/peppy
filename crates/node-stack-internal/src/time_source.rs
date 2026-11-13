@@ -7,7 +7,6 @@
 //! fires only when the test moves the time past it.
 
 use std::collections::BTreeMap;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

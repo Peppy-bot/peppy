@@ -17,7 +17,6 @@ use futures::future::{Either, Ready, ready};
 use peppylib::messaging::{
     CallerKind, Failure, ServiceAnswer, ServiceRequestContext, VerifiedCaller,
 };
-use std::future::Future;
 
 /// Refuses the raw calls of the daemon from the instances of the nodes.
 #[derive(Clone, Default)]

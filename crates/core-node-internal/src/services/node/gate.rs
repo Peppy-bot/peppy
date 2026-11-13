@@ -472,7 +472,7 @@ pub(crate) async fn finish_on_reset<F, T>(
     failure: impl FnOnce() -> T,
 ) -> T
 where
-    F: std::future::Future<Output = T>,
+    F: Future<Output = T>,
 {
     let mut work = std::pin::pin!(work);
     tokio::select! {

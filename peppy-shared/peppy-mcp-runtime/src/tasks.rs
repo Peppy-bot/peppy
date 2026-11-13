@@ -21,7 +21,6 @@ use crate::server::ToolCall;
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::task_manager::TaskContext;
 use serde_json::Value;
-use std::future::Future;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;

@@ -40,7 +40,6 @@ use crate::messaging::{MessengerHandle, ProducerRef, Subscription};
 use crate::runtime::TaskHandle;
 use crate::types::Message;
 use config::node::QoSProfile;
-use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tokio::sync::{Notify, watch};

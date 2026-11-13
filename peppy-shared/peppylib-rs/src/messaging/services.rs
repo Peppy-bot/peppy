@@ -24,7 +24,7 @@ pub type ServiceAnswer = std::result::Result<Payload, Failure>;
 async fn run_handler<F, Fut>(handler: F, context: ServiceRequestContext) -> ServiceAnswer
 where
     F: FnOnce(ServiceRequestContext) -> Fut,
-    Fut: std::future::Future<Output = ServiceAnswer>,
+    Fut: Future<Output = ServiceAnswer>,
 {
     let answer = handler(context).await;
     if let Err(failure) = &answer {
@@ -49,7 +49,7 @@ async fn answer_request<F, Fut>(
     responder: ServiceResponder,
 ) where
     F: FnOnce(ServiceRequestContext) -> Fut,
-    Fut: std::future::Future<Output = ServiceAnswer>,
+    Fut: Future<Output = ServiceAnswer>,
 {
     let request_id = context.request_id().to_string();
     let answer = run_handler(handler, context).await;
@@ -246,7 +246,7 @@ impl ServiceEndpoint {
     pub async fn handle_next_request<F, Fut>(&mut self, handler: F) -> Result<bool>
     where
         F: FnOnce(ServiceRequestContext) -> Fut,
-        Fut: std::future::Future<Output = ServiceAnswer>,
+        Fut: Future<Output = ServiceAnswer>,
     {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(false);
@@ -261,7 +261,7 @@ impl ServiceEndpoint {
     pub async fn handle_requests<F, Fut>(&mut self, mut handler: F) -> Result<()>
     where
         F: FnMut(ServiceRequestContext) -> Fut,
-        Fut: std::future::Future<Output = ServiceAnswer>,
+        Fut: Future<Output = ServiceAnswer>,
     {
         while let Some((context, responder)) = self.recv_next_request().await? {
             answer_request(&mut handler, context, responder).await;
@@ -277,7 +277,7 @@ impl ServiceEndpoint {
     ) -> Result<Option<TaskHandle<Result<()>>>>
     where
         F: FnOnce(ServiceRequestContext) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = ServiceAnswer> + Send + 'static,
+        Fut: Future<Output = ServiceAnswer> + Send + 'static,
     {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(None);

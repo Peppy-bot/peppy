@@ -29,7 +29,6 @@ use crate::commands::SCROLLING_OUTPUT_LINES;
 use crate::error::{CallEnd, Error, INTERRUPTED_EXIT_CODE, Result};
 use crate::terminal::ScrollingOutput;
 
-use std::future::Future;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;

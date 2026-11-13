@@ -8,7 +8,6 @@ use peppy_mcp_runtime::{ExposureServer, ExposureSet};
 use peppylib::messaging::MessengerHandle;
 use peppylib::testing::READINESS_TIMEOUT;
 use serde_json::{Value, json};
-use std::future::Future;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;

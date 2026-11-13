@@ -16,7 +16,6 @@
 //! enrollment and the clock again. A machine that was suspended, or a clock
 //! that was set, thus moves the renewal by one interval at most.
 
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;

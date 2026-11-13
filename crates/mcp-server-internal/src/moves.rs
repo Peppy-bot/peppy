@@ -33,7 +33,6 @@ use peppylib::PeppyError;
 use peppylib::messaging::{DEFAULT_FEEDBACK_BOUND, MessengerHandle, ProducerRef};
 use serde_json::json;
 use std::fmt;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;

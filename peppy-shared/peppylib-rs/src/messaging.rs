@@ -324,8 +324,7 @@ impl MessengerConnect {
 
 impl std::future::IntoFuture for MessengerConnect {
     type Output = Result<MessengerHandle>;
-    type IntoFuture =
-        std::pin::Pin<Box<dyn std::future::Future<Output = Result<MessengerHandle>> + Send>>;
+    type IntoFuture = std::pin::Pin<Box<dyn Future<Output = Result<MessengerHandle>> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
@@ -387,7 +386,7 @@ impl std::future::IntoFuture for MessengerConnect {
 /// deadline, so a reply the producer already sent is never discarded for the
 /// caller's own scheduling latency. `None` when the deadline passes with the
 /// future still pending, which drops it.
-async fn within_service_deadline<F: std::future::Future>(
+async fn within_service_deadline<F: Future>(
     deadline: Option<Instant>,
     future: F,
 ) -> Option<F::Output> {

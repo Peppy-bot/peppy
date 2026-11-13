@@ -45,7 +45,6 @@ pub(crate) const RESYNC_REMEDY: &str = concat!(
 );
 
 use std::fmt;
-use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::task::JoinHandle as TokioJoinHandle;

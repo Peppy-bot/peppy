@@ -1229,7 +1229,7 @@ impl HarnessCore {
     where
         Params: serde::de::DeserializeOwned + schemars::JsonSchema,
         F: FnOnce(Params, Arc<NodeRunner>) -> Fut,
-        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
     {
         let cancellation_token = CancellationToken::new();
         let mut context = NodeBuilder::<Params>::new()

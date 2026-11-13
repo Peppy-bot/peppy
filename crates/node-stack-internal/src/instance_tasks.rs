@@ -5,7 +5,6 @@
 //! became.
 
 use std::collections::BTreeMap;
-use std::future::Future;
 use std::sync::Arc;
 
 use config::runtime::Name;

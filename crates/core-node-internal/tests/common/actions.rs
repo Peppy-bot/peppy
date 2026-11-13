@@ -512,7 +512,7 @@ pub async fn send_node_run_then_cancel(
     node_name: &str,
     tag: &str,
     timeouts: &NodeRunTestTimeouts,
-    before_cancel: impl std::future::Future<Output = ()>,
+    before_cancel: impl Future<Output = ()>,
 ) -> Result<GoalEnd<NodeRunResult>, String> {
     let (mut action_handle, _) = send_node_run_goal(
         messenger,

@@ -456,7 +456,7 @@ async fn send_accepted_stack_goal(
 async fn cancel_and_follow_to_end(
     started: &StartedCoreNode,
     mut handle: ActionGoalHandle,
-    after_cancel: impl std::future::Future<Output = ()>,
+    after_cancel: impl Future<Output = ()>,
 ) -> GoalEnd<LaunchResult> {
     peppylib::ActionMessenger::cancel_goal(&started.caller_handle, &handle, GOAL_TIMEOUT)
         .await

@@ -19,7 +19,6 @@ use peppylib::messaging::{
 use peppylib::runtime::BoundSetSubscription;
 use peppylib::{Message, MessengerHandle, Payload, PeppyError};
 use serde_json::{Map, Value};
-use std::future::Future;
 use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]

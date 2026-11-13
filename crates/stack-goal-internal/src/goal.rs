@@ -1,7 +1,6 @@
 //! Sending a stack goal, following its feedback, cancelling it, and reading
 //! how it ended.
 
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

@@ -926,11 +926,11 @@ async fn topic_publish_reliable_5000hz_messages() {
         let payload_bytes = payload.as_ref();
         assert_eq!(
             payload_bytes.len(),
-            std::mem::size_of::<u32>(),
+            size_of::<u32>(),
             "Payload should encode the message index"
         );
 
-        let mut id_bytes = [0u8; std::mem::size_of::<u32>()];
+        let mut id_bytes = [0u8; size_of::<u32>()];
         id_bytes.copy_from_slice(payload_bytes.as_ref());
         let received_id = u32::from_le_bytes(id_bytes);
 

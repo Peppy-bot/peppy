@@ -318,7 +318,7 @@ fn expected_frame() -> Value {
 
 /// Bounds a wait on the provider by [`DEFAULT_WAIT_TIMEOUT`]; the provider
 /// answers on its own schedule and the assertion is never about timing.
-async fn bounded<T>(what: &str, future: impl std::future::Future<Output = T>) -> T {
+async fn bounded<T>(what: &str, future: impl Future<Output = T>) -> T {
     tokio::time::timeout(DEFAULT_WAIT_TIMEOUT, future)
         .await
         .unwrap_or_else(|_| panic!("{what} did not happen within {DEFAULT_WAIT_TIMEOUT:?}"))
