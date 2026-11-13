@@ -258,13 +258,12 @@ mod peppylib_build {
             .output()
             .unwrap_or_else(|e| panic!("Failed to run `pixi run {task}`: {e}"));
 
-        if !output.status.success() {
-            panic!(
-                "pixi run {task} failed for peppylib-py:\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
-            );
-        }
+        assert!(
+            output.status.success(),
+            "pixi run {task} failed for peppylib-py:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     /// Extracts `_peppylib.abi3.so` from the newest `.whl` file in the given directory.
@@ -1137,7 +1136,7 @@ fn embed_ruff_binary() {
             ruff_binary_path.display()
         )
     } else {
-        r#"pub(crate) const RUFF_BINARY: Option<&[u8]> = None;"#.to_string()
+        r"pub(crate) const RUFF_BINARY: Option<&[u8]> = None;".to_string()
     };
 
     // Use write_if_changed to avoid bumping mtime: this file is

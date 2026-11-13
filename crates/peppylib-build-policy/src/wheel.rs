@@ -6,6 +6,7 @@
 //! [`native_extension_of_wheel`] reads. Only a macOS build script calls it, and
 //! it lives here so that the Linux hosts of the CI compile and test it too.
 
+use std::borrow::Cow;
 use std::io::{Read, Seek};
 
 /// The file name of peppylib's native extension inside a wheel.
@@ -76,7 +77,7 @@ fn native_extension_entry_name<R: Read + Seek>(
     let extension_names: Vec<String> = entry_names
         .into_iter()
         .filter(|name| is_native_extension(name))
-        .map(|name| name.into_owned())
+        .map(Cow::into_owned)
         .collect();
     match extension_names.as_slice() {
         [] => Err(WheelError::NoNativeExtension),

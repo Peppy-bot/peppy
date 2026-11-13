@@ -891,13 +891,13 @@ impl ActionGoalHandle {
         }
         let msg = tokio::select! {
             biased;
-            _ = self.feedback_overflow.raised() => {
+            () = self.feedback_overflow.raised() => {
                 return Err(self.overflow_error());
             }
             msg = self.feedback.on_next_message() => {
                 msg.ok_or(Error::ActionFeedbackChannelClosed)?
             }
-            _ = self.producer_gone.gone() => {
+            () = self.producer_gone.gone() => {
                 return Err(producer_gone_error(&self.sender));
             }
         };
@@ -1150,19 +1150,17 @@ impl ActionMessenger {
         // the goal handler; only the discovered producer receives the real
         // goal request.
         let started_at = Instant::now();
-        let resolved: ProducerRef = match target {
-            Some(producer) => producer.clone(),
-            None => {
-                let probe_sender = ActionWireSender::new(
-                    as_core_node,
-                    as_instance_id,
-                    None,
-                    to_target.clone(),
-                    to_action_name,
-                )?;
-                discover_producer(messenger, &probe_sender.goal_service(), Some(goal_timeout))
-                    .await?
-            }
+        let resolved: ProducerRef = if let Some(producer) = target {
+            producer.clone()
+        } else {
+            let probe_sender = ActionWireSender::new(
+                as_core_node,
+                as_instance_id,
+                None,
+                to_target.clone(),
+                to_action_name,
+            )?;
+            discover_producer(messenger, &probe_sender.goal_service(), Some(goal_timeout)).await?
         };
 
         let sender = ActionWireSender::new(
@@ -1203,7 +1201,7 @@ impl ActionMessenger {
                 sender.clone(),
                 goal_id.clone(),
                 "its caller did not read the answer of the goal",
-            )
+            );
         };
         let goal_response = match messenger
             .poll_service(
@@ -1949,7 +1947,7 @@ async fn next_goal_request(
 ) -> Option<GoalRequest> {
     loop {
         let next = tokio::select! {
-            _ = stop.cancelled() => return None,
+            () = stop.cancelled() => return None,
             next = service.recv_next_request() => next,
         };
         let (context, responder) = match next {
@@ -2165,8 +2163,8 @@ async fn run_retention_sweeper(
 ) {
     loop {
         tokio::select! {
-            _ = stop.cancelled() => return,
-            _ = tokio::time::sleep(SWEEP_INTERVAL) => {}
+            () = stop.cancelled() => return,
+            () = tokio::time::sleep(SWEEP_INTERVAL) => {}
         }
         let now = Instant::now();
         sweep_once(&registry, &pending_waiters, &tombstones, now);
@@ -3338,7 +3336,7 @@ mod envelope_tests {
         );
         let senders: SenderWatches = Arc::new(StdMutex::new(HashMap::new()));
         let watch = |goals: &[&str]| SenderWatch {
-            goals: goals.iter().map(|goal| goal.to_string()).collect(),
+            goals: goals.iter().map(ToString::to_string).collect(),
             task: spawn(std::future::pending::<()>()),
         };
         senders
@@ -3594,7 +3592,7 @@ mod engine_tests {
         drop((goal, caller));
 
         assert!(
-            !cancelled_within(&context, CONFIRM_GONE - MARGIN).await,
+            !cancelled_within(&context, CONFIRM_GONE.checked_sub(MARGIN).unwrap()).await,
             "the engine confirms the end of a sender before it cancels"
         );
         assert!(cancelled_within(&context, MARGIN * 2).await);
@@ -3614,7 +3612,11 @@ mod engine_tests {
         drop((goal, caller));
 
         assert!(
-            !cancelled_within(&context, CONFIRM_GONE + grace - MARGIN).await,
+            !cancelled_within(
+                &context,
+                (CONFIRM_GONE + grace).checked_sub(MARGIN).unwrap()
+            )
+            .await,
             "the goal is kept for the sender grace"
         );
         assert!(cancelled_within(&context, MARGIN * 2).await);
@@ -3899,7 +3901,7 @@ mod engine_tests {
         goal_reply.unwrap();
 
         let wait = LIVELINESS_RESOLVE_TIMEOUT + CONFIRM_GONE;
-        assert!(!cancelled_within(&context, wait - MARGIN).await);
+        assert!(!cancelled_within(&context, wait.checked_sub(MARGIN).unwrap()).await);
         assert!(cancelled_within(&context, MARGIN * 2).await);
         assert_eq!(context.cancel_cause(), Some(CancelCause::SenderGone));
     }

@@ -477,7 +477,7 @@ where
     let mut work = std::pin::pin!(work);
     tokio::select! {
         biased;
-        _ = cancellation.cancelled() => {
+        () = cancellation.cancelled() => {
             let _ = tokio::time::timeout(budget, work.as_mut()).await;
             failure()
         }

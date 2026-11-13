@@ -516,7 +516,7 @@ async fn a_cancel_of_the_client_reaches_the_change_and_the_lock_holds_until_its_
 
     let during_the_undo = mesh.join("charlie").await;
     assert_eq!(
-        during_the_undo.refusal().map(|refusal| refusal.message()),
+        during_the_undo.refusal().map(Failure::message),
         Some(JOIN_BUSY_REASON),
         "the join lock holds while the daemon undoes the change"
     );

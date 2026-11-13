@@ -339,21 +339,21 @@ fn node_info_no_dependencies_when_no_consumes() {
         .topics
         .as_ref()
         .and_then(|t| t.consumes.as_ref())
-        .is_none_or(|t| t.is_empty());
+        .is_none_or(Vec::is_empty);
     let no_consumed_services = info_response
         .config
         .interfaces
         .services
         .as_ref()
         .and_then(|s| s.consumes.as_ref())
-        .is_none_or(|s| s.is_empty());
+        .is_none_or(Vec::is_empty);
     let no_consumed_actions = info_response
         .config
         .interfaces
         .actions
         .as_ref()
         .and_then(|a| a.consumes.as_ref())
-        .is_none_or(|a| a.is_empty());
+        .is_none_or(Vec::is_empty);
     assert!(
         no_consumed_topics && no_consumed_services && no_consumed_actions,
         "standalone node should have no dependencies"

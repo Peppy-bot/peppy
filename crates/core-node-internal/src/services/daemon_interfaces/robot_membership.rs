@@ -50,6 +50,7 @@ use super::codecs::Side;
 use super::{InterfaceContext, end_goal, refuse};
 use crate::services::fleet::ClientRef;
 use crate::services::response::failure;
+use crate::services::stack::state::ActiveLaunch;
 use config::failure_kind::PeppyFailureKind;
 use config::runtime::{CopyName, CoreNodeName, CoreNodeTarget, Name};
 use core_node_api::encoding::{
@@ -341,7 +342,7 @@ async fn join(
         .active
         .lock()
         .as_ref()
-        .map_or_default(|active| active.copies());
+        .map_or_default(ActiveLaunch::copies);
     if let Err(reason) = refuse_join(scope, &copies, &copy.name) {
         return refuse(
             pending,
@@ -387,7 +388,7 @@ async fn remove(
         .active
         .lock()
         .as_ref()
-        .map_or_default(|active| active.copies());
+        .map_or_default(ActiveLaunch::copies);
     if let Err(reason) = refuse_removal(scope, &copies, &copy_name) {
         return refuse(pending, failure(PeppyFailureKind::Rejected, reason)).await;
     }

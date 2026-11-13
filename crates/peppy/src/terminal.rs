@@ -35,9 +35,7 @@ pub(crate) fn stdout_width() -> Option<usize> {
 
 /// The width of the terminal, or 80 columns when the size cannot be read.
 fn terminal_width() -> usize {
-    crossterm::terminal::size()
-        .map(|(width, _)| width as usize)
-        .unwrap_or(80)
+    crossterm::terminal::size().map_or(80, |(width, _)| width as usize)
 }
 
 /// Whether the `NO_COLOR` convention asks for plain output: the variable set to

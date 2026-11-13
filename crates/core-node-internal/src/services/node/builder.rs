@@ -260,7 +260,7 @@ struct NodeBuildGoalHandler {
 
 impl GoalHandler for NodeBuildGoalHandler {
     async fn handle_goal(&self, pending: PendingGoal) {
-        self.handle_goal_request(pending).await
+        self.handle_goal_request(pending).await;
     }
 }
 

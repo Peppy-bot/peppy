@@ -1293,7 +1293,7 @@ async fn a_run_past_the_reset_window_starts_the_backoff_over() {
     let pid = run(&started, NODE, ID, capped(2)).await;
     // A run shorter than the window backs off further: attempt 2 after a
     // second run one second short of it.
-    let just_short = RESET_WINDOW - Duration::from_secs(1);
+    let just_short = RESET_WINDOW.checked_sub(Duration::from_secs(1)).unwrap();
     time(&started).advance(just_short);
     signal_process(pid, "-9");
     wait_for_restarts(&started, ID, 1).await;
@@ -2552,7 +2552,13 @@ async fn a_health_kill_during_a_stop_is_skipped() {
         // The answered request leaves the node running, so the stop waits
         // out the rest of its force-kill deadline.
         shutdowns.release.notify_one();
-        advance_to_deadline(&started, deadline_of(LONG_GRACE_SECS) - KILL_AFTER).await;
+        advance_to_deadline(
+            &started,
+            deadline_of(LONG_GRACE_SECS)
+                .checked_sub(KILL_AFTER)
+                .unwrap(),
+        )
+        .await;
     };
     tokio::join!(stop_ok(&started, ID), silent_while_claimed);
     assert_eq!(state_of(&started, ID), None);
@@ -2702,7 +2708,7 @@ async fn a_hung_instance_that_ignores_sigterm_is_killed_at_the_deadline() {
     let deadline = deadline_of(SHORT_GRACE_SECS);
     wait_for_pending(&started, deadline).await;
     let time = time(&started);
-    time.advance(deadline - Duration::from_secs(1));
+    time.advance(deadline.checked_sub(Duration::from_secs(1)).unwrap());
     assert_eq!(
         serialized_pid(&started, ID),
         pid,
@@ -3207,7 +3213,7 @@ async fn a_removal_kills_what_does_not_exit_and_names_it() {
     let deadline = deadline_of(SHORT_GRACE_SECS);
     let kill_at_the_deadline = async {
         wait_for_pending(&started, deadline).await;
-        time(&started).advance(deadline - Duration::from_secs(1));
+        time(&started).advance(deadline.checked_sub(Duration::from_secs(1)).unwrap());
         for pid in [answering, unreachable] {
             assert!(
                 common::is_process_running(pid),
@@ -3276,7 +3282,12 @@ async fn a_second_into_the_deadline<T>(
     wait_for_pending(started, deadline).await;
     time(started).advance(second_of_it);
     let (output, ()) = tokio::join!(second, async {
-        advance_to_deadline_from(started, deadline, deadline - second_of_it).await;
+        advance_to_deadline_from(
+            started,
+            deadline,
+            deadline.checked_sub(second_of_it).unwrap(),
+        )
+        .await;
     });
     output
 }

@@ -232,7 +232,7 @@ if __name__ == "__main__":
         &router_host,
         router_port,
         NodeInstanceConfig {
-            arguments: serde_json5::from_str(r#"{ frequency: 10.0 }"#).unwrap(),
+            arguments: serde_json5::from_str(r"{ frequency: 10.0 }").unwrap(),
             ..NodeInstanceConfig::new(Name::new(emitter_instance_id).unwrap())
         },
         UVC_CAMERA_NODE_NAME, // Must match the node name expected by the receiver

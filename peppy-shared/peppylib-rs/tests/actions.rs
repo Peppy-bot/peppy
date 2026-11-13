@@ -339,9 +339,10 @@ async fn action_feedback_publish_end_signals_channel_closed_via_try_next() {
         match goal_handle.try_next_feedback() {
             Err(PeppyError::ActionFeedbackChannelClosed) => break,
             Ok(None) => {
-                if tokio::time::Instant::now() >= deadline {
-                    panic!("close signal did not arrive via try_next_feedback within timeout");
-                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "close signal did not arrive via try_next_feedback within timeout"
+                );
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             Ok(Some(msg)) => panic!("expected close signal, got message: {msg:?}"),
@@ -538,13 +539,13 @@ async fn concurrent_action_cancel_targets_one_goal() {
             };
             tokio::spawn(async move {
                 tokio::select! {
-                    _ = ctx.cancel_signal() => {
+                    () = ctx.cancel_signal() => {
                         let mut result = b"cancelled:".to_vec();
                         result.extend_from_slice(&request);
                         let reason = ctx.cancel_cause().expect("a cancelled goal has its cause").reason();
                         let _ = ctx.complete_cancelled(reason, Payload::from(result)).await;
                     }
-                    _ = tokio::time::sleep(Duration::from_millis(400)) => {
+                    () = tokio::time::sleep(Duration::from_millis(400)) => {
                         let mut result = b"done:".to_vec();
                         result.extend_from_slice(&request);
                         let _ = ctx.complete(Payload::from(result)).await;
@@ -1350,7 +1351,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
     // Winner has been serviced; release the loser from its `recv_next_request`.
     shutdown_tx.send(true).expect("signal producers to stop");
 
-    let winner_inst = goal_handle.goal_reply().instance_id.to_string();
+    let winner_inst = goal_handle.goal_reply().instance_id.clone();
     assert!(
         winner_inst == producer_a_inst || winner_inst == producer_b_inst,
         "goal response identity must come from one of the producers, got {winner_inst:?}",

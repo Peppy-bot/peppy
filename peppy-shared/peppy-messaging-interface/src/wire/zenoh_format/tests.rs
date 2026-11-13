@@ -1459,7 +1459,7 @@ fn a_signed_call_carries_a_proof_that_the_receiver_verifies_against_the_key_expr
         "another payload"
     );
     assert_eq!(
-        proof.machine_proof().map(|bytes| bytes.as_ref()),
+        proof.machine_proof().map(AsRef::as_ref),
         Some(&b"machine proof"[..])
     );
 }

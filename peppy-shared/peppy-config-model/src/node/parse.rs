@@ -553,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_cannot_parse_json5() {
-        let json5 = r#"{ manifest: [unclosed"#; // invalid JSON5
+        let json5 = r"{ manifest: [unclosed"; // invalid JSON5
         assert_matches!(parse_error(json5), ParsingError::CannotParseConfig(_));
     }
 
@@ -1873,7 +1873,7 @@ mod tests {
         let json5 = node_with(
             r#"{ name: "uvc_camera", tag: "v1", link_id: "cam_a" },
                { name: "uvc_camera", tag: "v1", link_id: "cam_b" }"#,
-            r#"{}"#,
+            r"{}",
         );
         let error = parse_error(&json5);
         assert_matches!(
@@ -1889,7 +1889,7 @@ mod tests {
         let json5 = node_with(
             r#"{ name: "uvc_camera", tag: "v-1", link_id: "cam_a" },
                { name: "uvc_camera", tag: "v_1", link_id: "cam_b" }"#,
-            r#"{}"#,
+            r"{}",
         );
         let error = parse_error(&json5);
         assert_matches!(
@@ -1920,7 +1920,7 @@ mod tests {
     fn a_contract_that_two_slots_pin_to_two_sha256_values_is_rejected() {
         let json5 = node_with(
             &format!(r#"{{ name: "uvc_camera", tag: "v1", link_id: "cam", sha256: "{SHA_A}" }}"#),
-            r#"{}"#,
+            r"{}",
         )
         .replace(
             "implements:",

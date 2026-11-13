@@ -127,8 +127,8 @@ impl ServeAsyncCommand for MessagingRouter {
                     tokio::select! {
                         // The watchdog loops for the daemon's lifetime; in
                         // practice only the shared token resolves this select.
-                        _ = run_router_watchdog(&messenger, &checker) => {}
-                        _ = teardown_token.cancelled() => {}
+                        () = run_router_watchdog(&messenger, &checker) => {}
+                        () = teardown_token.cancelled() => {}
                     }
                 }
                 None => {

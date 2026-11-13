@@ -17,7 +17,7 @@
 use std::time::Duration;
 
 use core_node_api::Payload;
-use core_node_api::encoding::*;
+use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use core_node_api::names;
 use core_node_api::{ActionGoal, ServiceId, ServiceRequest};
 

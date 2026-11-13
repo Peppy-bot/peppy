@@ -939,7 +939,7 @@ mod tests {
         let listed: Vec<(String, String)> = fleet()
             .resources(&entries)
             .iter()
-            .map(|resource| (resource.name.to_string(), resource.uri.to_string()))
+            .map(|resource| (resource.name.clone(), resource.uri.clone()))
             .collect();
         assert_eq!(
             listed,

@@ -108,7 +108,11 @@ fn validate_pairing_specs(
             )?),
         };
         if !doc.has_role(slot.role) {
-            let declared: Vec<&str> = doc.roles.iter().map(|r| r.as_str()).collect();
+            let declared: Vec<&str> = doc
+                .roles
+                .iter()
+                .map(config::runtime::Name::as_str)
+                .collect();
             return Err(format!(
                 "pairing slot `{}`: role `{}` is not declared by pairing `{}:{}` \
                  (declared roles: [{}])",
@@ -810,7 +814,7 @@ mod tests {
         );
         let bad_emit = r#"{ link_id: "leader", name: "joint_states", refine: { message_format: { stamp: { $length: 1 } } } }"#;
 
-        let cfg = interfaces(&format!(r#"{{ topics: {{ emits: [{bad_emit}] }} }}"#));
+        let cfg = interfaces(&format!(r"{{ topics: {{ emits: [{bad_emit}] }} }}"));
         let err = collect(&follower, &cfg, &dirs).expect_err("a `time` field has no length to pin");
         let PairingError::Refinement(mismatches) = err else {
             panic!("expected a refinement report, got: {err}");

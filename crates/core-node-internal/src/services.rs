@@ -294,14 +294,13 @@ fn derive_core_node_name() -> Name {
             })
         });
 
-    match seed_source {
-        Some(src) => derive_name_from_host_id(&src),
-        None => {
-            tracing::warn!(
-                "machine UID and hostname unavailable; falling back to non-deterministic core node name"
-            );
-            format_core_node_name(&get_random(rng()))
-        }
+    if let Some(src) = seed_source {
+        derive_name_from_host_id(&src)
+    } else {
+        tracing::warn!(
+            "machine UID and hostname unavailable; falling back to non-deterministic core node name"
+        );
+        format_core_node_name(&get_random(rng()))
     }
 }
 

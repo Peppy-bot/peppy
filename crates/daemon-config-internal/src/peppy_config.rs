@@ -103,19 +103,19 @@ pub(crate) const MIN_SHUTDOWN_GRACE_SECS: u64 = 1;
 // the serde `Default` impls the parser falls back to when an entry is absent.
 
 /// Comment block at the top of the bundled config file.
-const TEMPLATE_HEADER: &str = r#"// Daemon settings are read once at startup, so edits to them take effect only
+const TEMPLATE_HEADER: &str = r"// Daemon settings are read once at startup, so edits to them take effect only
 // after restart. resource_servers is refreshed by each CLI authentication command.
-"#;
+";
 
 /// The `core_node_name` entry with its explanatory comment. Spelled out as an
 /// explicit `null` (parsed as `None` → derive the default) rather than
 /// omitting the key: completion treats a `null` entry as present, so splicing
 /// this snippet into an older file is idempotent.
 const CORE_NODE_NAME_SECTION_SNIPPET: &str = const_format::concatcp!(
-    r#"  // Fixed name for this daemon's core node, or null to derive a
+    r"  // Fixed name for this daemon's core node, or null to derive a
   // machine-specific default (cn-...). Names must be unique across all
   // daemons reachable over the same router/federation: a daemon whose name is
-  // already in use refuses to boot. At most "#,
+  // already in use refuses to boot. At most ",
     MAX_CORE_NODE_NAME_LEN,
     r#" characters from
   // ""#,
@@ -163,13 +163,13 @@ const HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET: &str = const_format::concatcp!(
 /// The whole `zenoh.managed.subscriber_buffers` block with its explanatory
 /// comment.
 const SUBSCRIBER_BUFFERS_SECTION_SNIPPET: &str = const_format::concatcp!(
-    r#"      // Subscriber channel buffer sizes (number of in-flight messages) per QoS
+    r"      // Subscriber channel buffer sizes (number of in-flight messages) per QoS
       // tier, used by local node sessions in both managed topologies. They matter
       // most in peer mode, where no router relay buffers between a publisher and
       // a subscriber. Defaults match peppy's built-in behavior; only edit to tune
       // backpressure.
       subscriber_buffers: {
-"#,
+",
     STANDARD_BUFFER_FIELD_SNIPPET,
     HIGH_THROUGHPUT_BUFFER_FIELD_SNIPPET,
     "      },\n"
@@ -178,10 +178,10 @@ const SUBSCRIBER_BUFFERS_SECTION_SNIPPET: &str = const_format::concatcp!(
 /// The `lifecycle.daemon_grace_secs` entry with its comment, indented for the
 /// `lifecycle` block.
 const DAEMON_GRACE_FIELD_SNIPPET: &str = const_format::concatcp!(
-    r#"    // Node lifecycle knobs. `daemon_grace_secs` is the grace period a spawned node
+    r"    // Node lifecycle knobs. `daemon_grace_secs` is the grace period a spawned node
     // waits, after the daemon's heartbeat goes silent, before shutting itself down
     // to avoid orphaning.
-    daemon_grace_secs: "#,
+    daemon_grace_secs: ",
     DEFAULT_DAEMON_GRACE_SECS,
     ",\n"
 );
@@ -189,11 +189,11 @@ const DAEMON_GRACE_FIELD_SNIPPET: &str = const_format::concatcp!(
 /// The `lifecycle.shutdown_grace_secs` entry with its comment, indented for the
 /// `lifecycle` block.
 const SHUTDOWN_GRACE_FIELD_SNIPPET: &str = const_format::concatcp!(
-    r#"    // How long a clean shutdown (ctrl+C / `systemctl stop`) and `peppy node
+    r"    // How long a clean shutdown (ctrl+C / `systemctl stop`) and `peppy node
     // stop` wait for a node to exit cooperatively before force-killing its
     // process group. Seconds; minimum 1. A robot node uses this window to park
     // actuators and release hardware before it is killed.
-    shutdown_grace_secs: "#,
+    shutdown_grace_secs: ",
     DEFAULT_SHUTDOWN_GRACE_SECS,
     ",\n"
 );
@@ -265,11 +265,11 @@ const API_FIELD_SNIPPET: &str = const_format::concatcp!("    api: \"", DEFAULT_A
 /// CLI auth commands read this URL; the daemon ignores it but seeds and
 /// completes the block like every other knob.
 const RESOURCE_SERVERS_SECTION_SNIPPET: &str = const_format::concatcp!(
-    r#"  // Backend resource-server URL the `peppy platform` commands talk to. Baked in
+    r"  // Backend resource-server URL the `peppy platform` commands talk to. Baked in
   // at compile time (the dev backend in debug builds, prod in release);
   // --api-url / PEPPY_API_URL override it at runtime.
   resource_servers: {
-"#,
+",
     API_FIELD_SNIPPET,
     "  },\n"
 );
@@ -277,10 +277,10 @@ const RESOURCE_SERVERS_SECTION_SNIPPET: &str = const_format::concatcp!(
 /// The whole `zenoh.managed` block. Every child setting is meaningful only
 /// while peppy owns the router process.
 const MANAGED_SECTION_SNIPPET: &str = const_format::concatcp!(
-    r#"    // Settings peppy can only honor because it owns the router process. Replace
+    r"    // Settings peppy can only honor because it owns the router process. Replace
     // this whole block with `external` to use your own router.
     managed: {
-"#,
+",
     LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET,
     "\n",
     SUBSCRIBER_BUFFERS_SECTION_SNIPPET,
@@ -1366,8 +1366,7 @@ mod tests {
 
     #[test]
     fn override_outdated_lists_missing_paths() {
-        let message =
-            error_message(load_override_config(r#"{ future_setting: true }"#).unwrap_err());
+        let message = error_message(load_override_config(r"{ future_setting: true }").unwrap_err());
 
         assert!(message.contains("PEPPY_CONFIG (inline document)"));
         assert!(message.contains("core_node_name"));
@@ -1384,7 +1383,7 @@ mod tests {
     #[test]
     fn outdated_check_runs_after_validation() {
         let content =
-            r#"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_size: 0 } } } }"#;
+            r"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_size: 0 } } } }";
 
         let message = error_message(load_override_config(content).unwrap_err());
 
@@ -1725,7 +1724,7 @@ mod tests {
                 "zenoh.managed and zenoh.external are mutually exclusive; configure exactly one",
             ),
             (
-                r#"{ zenoh: { external: {} } }"#,
+                r"{ zenoh: { external: {} } }",
                 "zenoh.external.endpoint is required",
             ),
             (
@@ -1733,7 +1732,7 @@ mod tests {
                 "zenoh.external must be a block like { endpoint: \"tcp/<host>:<port>\" }",
             ),
             (
-                r#"{ zenoh: { external: { endpoint: 7448 } } }"#,
+                r"{ zenoh: { external: { endpoint: 7448 } } }",
                 "zenoh.external.endpoint must be a string",
             ),
         ] {
@@ -1750,7 +1749,7 @@ mod tests {
     #[test]
     fn external_unknown_fields_fail_loud() {
         for content in [
-            r#"{ zenoh: { external: { future_router_option: { enabled: true } } } }"#,
+            r"{ zenoh: { external: { future_router_option: { enabled: true } } } }",
             r#"{
   zenoh: {
     external: {
@@ -1774,15 +1773,15 @@ mod tests {
     fn zenoh_unknown_fields_fail_loud_and_leave_files_untouched() {
         for (content, expected_message) in [
             (
-                r#"{ zenoh: { future_transport_option: true } }"#,
+                r"{ zenoh: { future_transport_option: true } }",
                 "unknown field `zenoh.future_transport_option`; zenoh holds exactly one of `managed` or `external`",
             ),
             (
-                r#"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_sze: 64 } } } }"#,
+                r"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_sze: 64 } } } }",
                 "zenoh.managed: unknown field `standard_buffer_sze`",
             ),
             (
-                r#"{ zenoh: { managed: { federation_timeout_secs: 5 } } }"#,
+                r"{ zenoh: { managed: { federation_timeout_secs: 5 } } }",
                 "zenoh.managed: unknown field `federation_timeout_secs`",
             ),
         ] {
@@ -1813,7 +1812,7 @@ mod tests {
 
         // A file that already spells the knob as `null` parses to `None` and
         // does not gain a second line.
-        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ core_node_name: null }"#);
+        let (_tmp, peppy_dirs, path) = dirs_with_config(r"{ core_node_name: null }");
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(cfg.core_node_name, None);
         let completed = fs::read_to_string(&path).unwrap();
@@ -1918,11 +1917,11 @@ mod tests {
             ),
             (r#"{ pypi_mirror: "" }"#, "not a URL"),
             (
-                r#"{ pypi_mirror: 7 }"#,
+                r"{ pypi_mirror: 7 }",
                 "it is not a string; expected the packages base URL",
             ),
             (
-                r#"{ pypi_mirror: true }"#,
+                r"{ pypi_mirror: true }",
                 "it is not a string; expected the packages base URL",
             ),
             (
@@ -2024,7 +2023,7 @@ mod tests {
                 ["it is not a URL", ENDPOINT_EXPECTED],
             ),
             (
-                r#"{ otlp_endpoint: 4318 }"#,
+                r"{ otlp_endpoint: 4318 }",
                 [
                     "invalid otlp_endpoint: it is not a string",
                     ENDPOINT_EXPECTED,
@@ -2052,7 +2051,7 @@ mod tests {
                 ],
             ),
             (
-                r#"{ otlp_min_severity: 13 }"#,
+                r"{ otlp_min_severity: 13 }",
                 [
                     "invalid otlp_min_severity: it is not a string",
                     SEVERITY_EXPECTED,
@@ -2074,7 +2073,7 @@ mod tests {
 
     #[test]
     fn otlp_settings_complete_to_explicit_null_idempotently() {
-        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ core_node_name: null }"#);
+        let (_tmp, peppy_dirs, path) = dirs_with_config(r"{ core_node_name: null }");
 
         let cfg = load_or_create(&peppy_dirs).unwrap();
 
@@ -2180,7 +2179,7 @@ mod tests {
 
     #[test]
     fn pypi_mirror_completes_to_explicit_null_idempotently() {
-        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ core_node_name: null }"#);
+        let (_tmp, peppy_dirs, path) = dirs_with_config(r"{ core_node_name: null }");
 
         let cfg = load_or_create(&peppy_dirs).unwrap();
 
@@ -2202,15 +2201,14 @@ mod tests {
         assert_eq!(managed(&cfg).local_nodes_topology, LocalNodesTopology::Peer);
 
         // An empty block falls back to the build's default backend URL.
-        let (_tmp, peppy_dirs, _) = dirs_with_config(r#"{ resource_servers: {} }"#);
+        let (_tmp, peppy_dirs, _) = dirs_with_config(r"{ resource_servers: {} }");
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(cfg.resource_servers.api, DEFAULT_API_URL);
     }
 
     #[test]
     fn parses_partial_lifecycle_block() {
-        let (_tmp, peppy_dirs, _) =
-            dirs_with_config(r#"{ lifecycle: { daemon_grace_secs: 600 } }"#);
+        let (_tmp, peppy_dirs, _) = dirs_with_config(r"{ lifecycle: { daemon_grace_secs: 600 } }");
 
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(cfg.lifecycle.daemon_grace_secs, 600);
@@ -2234,19 +2232,19 @@ mod tests {
     fn out_of_range_values_fail_loud_and_leave_the_file() {
         for (content, field) in [
             (
-                r#"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_size: 0 } } } }"#,
+                r"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_size: 0 } } } }",
                 "standard_buffer_size",
             ),
             (
-                r#"{ zenoh: { managed: { subscriber_buffers: { high_throughput_buffer_size: 0 } } } }"#,
+                r"{ zenoh: { managed: { subscriber_buffers: { high_throughput_buffer_size: 0 } } } }",
                 "high_throughput_buffer_size",
             ),
             (
-                r#"{ lifecycle: { shutdown_grace_secs: 0 } }"#,
+                r"{ lifecycle: { shutdown_grace_secs: 0 } }",
                 "shutdown_grace_secs",
             ),
             (
-                r#"{ lifecycle: { daemon_grace_secs: 5 } }"#,
+                r"{ lifecycle: { daemon_grace_secs: 5 } }",
                 "daemon_grace_secs",
             ),
         ] {
@@ -2466,7 +2464,7 @@ mod tests {
     #[test]
     fn accepts_minimal_nonzero_buffer_sizes() {
         let (_tmp, peppy_dirs, _) = dirs_with_config(
-            r#"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_size: 1, high_throughput_buffer_size: 1 } } } }"#,
+            r"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_size: 1, high_throughput_buffer_size: 1 } } } }",
         );
 
         let cfg = load_or_create(&peppy_dirs).unwrap();

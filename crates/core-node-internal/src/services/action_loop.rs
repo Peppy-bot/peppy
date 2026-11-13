@@ -483,7 +483,7 @@ mod tests {
                 // This poll of the work goes on only once the cancel is
                 // answered.
                 tokio::task::block_in_place(|| {
-                    answered_rx.recv().expect("the test tells the answer")
+                    answered_rx.recv().expect("the test tells the answer");
                 });
                 read_by_the_work.is_cancelled()
             })

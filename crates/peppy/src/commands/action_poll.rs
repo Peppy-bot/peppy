@@ -30,7 +30,7 @@ use crate::error::{CallEnd, Error, INTERRUPTED_EXIT_CODE, Result};
 use crate::terminal::ScrollingOutput;
 
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 /// How long the daemon has to answer a cancel request.
@@ -128,9 +128,7 @@ impl Drop for CtrlC {
 /// The follow slot. A panic while it is held leaves nothing half written,
 /// so a poisoned lock is read as it is.
 fn follow_slot() -> std::sync::MutexGuard<'static, Option<mpsc::UnboundedSender<()>>> {
-    FOLLOW
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    FOLLOW.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Starts the thread that reads each SIGINT of the process and hands it on

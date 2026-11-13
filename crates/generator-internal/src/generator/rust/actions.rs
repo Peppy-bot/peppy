@@ -153,20 +153,21 @@ pub(super) fn build_handle_goal_next_request(
         }
     };
 
-    let accept_arm = match response_serialization {
-        Some(serialize) => quote! {
+    let accept_arm = if let Some(serialize) = response_serialization {
+        quote! {
             GoalDecision::Accept(response) => {
                 let response_payload = #serialize;
                 let inner = pending.accept(response_payload).await?;
                 return Ok(Some(GoalContext { inner, request }));
             }
-        },
-        None => quote! {
+        }
+    } else {
+        quote! {
             GoalDecision::Accept => {
                 let inner = pending.accept(peppylib::Payload::new()).await?;
                 return Ok(Some(GoalContext { inner, request }));
             }
-        },
+        }
     };
 
     quote! {
@@ -338,11 +339,10 @@ pub(super) fn build_goal_context_complete(
         quote!(#ident: #ty)
     }));
 
-    let serialize = match encoding {
-        Some(spec) => {
-            build_serialize_payload(&spec.builder_type, &[], &spec.assignments, &error_context)
-        }
-        None => quote!(peppylib::Payload::new()),
+    let serialize = if let Some(spec) = encoding {
+        build_serialize_payload(&spec.builder_type, &[], &spec.assignments, &error_context)
+    } else {
+        quote!(peppylib::Payload::new())
     };
 
     let (doc, method, delivery_call) = match delivery {

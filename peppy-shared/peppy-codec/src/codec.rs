@@ -178,13 +178,13 @@ fn encode_scalar(
         Scalar::U16 => builder.set_data_field::<u16>(offset, value::value_u16(value, name)?),
         Scalar::U32 => builder.set_data_field::<u32>(offset, value::value_u32(value, name)?),
         Scalar::U64 => {
-            builder.set_data_field::<u64>(offset, value::value_u64_decimal(value, name)?)
+            builder.set_data_field::<u64>(offset, value::value_u64_decimal(value, name)?);
         }
         Scalar::I8 => builder.set_data_field::<i8>(offset, value::value_i8(value, name)?),
         Scalar::I16 => builder.set_data_field::<i16>(offset, value::value_i16(value, name)?),
         Scalar::I32 => builder.set_data_field::<i32>(offset, value::value_i32(value, name)?),
         Scalar::I64 => {
-            builder.set_data_field::<i64>(offset, value::value_i64_decimal(value, name)?)
+            builder.set_data_field::<i64>(offset, value::value_i64_decimal(value, name)?);
         }
         Scalar::F32 => builder.set_data_field::<f32>(offset, value_f32(value, name)?),
         Scalar::F64 => builder.set_data_field::<f64>(offset, value::value_f64(value, name)?),
@@ -198,7 +198,7 @@ fn encode_scalar(
 /// letting an out-of-range value become `inf` on the wire.
 fn value_f32(value: &Value, name: &str) -> Result<f32, ConversionError> {
     let wide = value::value_f64(value, name)?;
-    if !wide.is_finite() || wide < f32::MIN as f64 || wide > f32::MAX as f64 {
+    if !wide.is_finite() || wide < f64::from(f32::MIN) || wide > f64::from(f32::MAX) {
         return Err(ConversionError(format!(
             "`{name}` is outside the range of a 32-bit float"
         )));

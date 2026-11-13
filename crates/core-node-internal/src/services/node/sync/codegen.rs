@@ -84,8 +84,7 @@ pub(super) fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
 fn unique_sibling_dir(node_root_dir: &std::path::Path, prefix: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     node_root_dir.join(format!("{prefix}-{}-{nanos}", std::process::id()))
 }
 

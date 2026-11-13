@@ -70,8 +70,7 @@ pub fn install_peppy_daemon(service_dir_override: Option<PathBuf>) -> Result<Pat
     let program_path = std::env::current_exe()?;
     let working_dir = program_path
         .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("/"));
+        .map_or_else(|| PathBuf::from("/"), Path::to_path_buf);
     let ctx = make_install_context(
         label.clone(),
         program_path,

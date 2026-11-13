@@ -3181,7 +3181,7 @@ mod tests {
             panic!("`action` is a structured primitive");
         };
         assert_eq!(
-            action.enum_values.as_ref().map(|values| values.values()),
+            action.enum_values.as_ref().map(EnumValues::values),
             Some(["join".to_owned(), "remove".to_owned()].as_slice())
         );
         assert!(action.marks.contains("change_kind"));
@@ -3479,7 +3479,7 @@ mod tests {
             r#"{ name: "depth_camera", tag: "v1" }"#,
             r#"{ name: "depth_camera", tag: "v1", link_id: "depth_camera", extra: "bad" }"#,
         ] {
-            let json5 = format!(r#"{{ nodes: [], contracts: [{entry}] }}"#);
+            let json5 = format!(r"{{ nodes: [], contracts: [{entry}] }}");
             assert!(
                 serde_json5::from_str::<DependsOn>(&json5).is_err(),
                 "contracts entry should be rejected: {entry}"
@@ -4152,7 +4152,7 @@ mod tests {
             serde_json5::from_str::<EmittedTopic>(r#"{ name: "", description: "A test member." }"#)
                 .is_err()
         );
-        assert!(serde_json5::from_str::<EmittedTopic>(r#"{}"#).is_err());
+        assert!(serde_json5::from_str::<EmittedTopic>(r"{}").is_err());
         assert!(serde_json5::from_str::<EmittedTopic>(r#"{ link_id: "cam", name: "" }"#).is_err());
         assert!(
             serde_json5::from_str::<ExposedService>(

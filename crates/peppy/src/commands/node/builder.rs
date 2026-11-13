@@ -118,14 +118,15 @@ pub(crate) async fn build_node_on(
     >(messenger, &mut action_handle, timeouts, "Node build", after)
     .await?;
 
-    match &build_result.artifact_path {
-        Some(artifact) => info!(
+    if let Some(artifact) = &build_result.artifact_path {
+        info!(
             "Built node {}:{}. Artifact: {}",
             node_name,
             node_tag,
             artifact.to_string_lossy()
-        ),
-        None => info!("Built node {}:{}", node_name, node_tag),
+        );
+    } else {
+        info!("Built node {}:{}", node_name, node_tag);
     }
 
     Ok(())

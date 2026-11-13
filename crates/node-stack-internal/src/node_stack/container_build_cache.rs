@@ -1344,7 +1344,7 @@ mod tests {
     }
 
     fn lines(lines: &[&str]) -> Vec<String> {
-        lines.iter().map(|line| line.to_string()).collect()
+        lines.iter().map(ToString::to_string).collect()
     }
 
     /// The stderr shapes are those of uv 0.12.1 and apptainer 1.5.2.

@@ -221,7 +221,7 @@ impl ProgressTracker {
         let bytes_written = activity.bytes_on_disk.saturating_sub(self.bytes_on_disk);
         self.bytes_on_disk = activity.bytes_on_disk;
         self.cpu_reported = self.cpu_reported.min(activity.cpu_time);
-        let cpu_accrued = activity.cpu_time - self.cpu_reported;
+        let cpu_accrued = activity.cpu_time.checked_sub(self.cpu_reported).unwrap();
         let cpu_burned = (cpu_accrued >= CPU_ACTIVITY_THRESHOLD).then_some(cpu_accrued);
         if cpu_burned.is_some() {
             self.cpu_reported = activity.cpu_time;

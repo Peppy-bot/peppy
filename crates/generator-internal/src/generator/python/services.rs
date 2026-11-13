@@ -450,11 +450,11 @@ pub(super) fn build_consumed_service(
 
         // Deserialize response and return
         if has_response {
-            builder.py(r#"
+            builder.py(r"
 payload = response_message.payload
 response_data = _deserialize_response(payload)
 return Response(core_node=response_message.core_node, instance_id=response_message.instance_id, data=response_data)
-"#);
+");
         }
     });
 

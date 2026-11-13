@@ -139,7 +139,9 @@ fn log_record(record: LogRecord) -> OtlpLogRecord {
             LineOrigin::Captured(_) => 0,
         },
         observed_time_unix_nano: observed,
-        severity_number: record.severity.map_or(0, |severity| severity.number()),
+        severity_number: record
+            .severity
+            .map_or(0, daemon_config::peppy_config::Severity::number),
         severity_text: record.severity_text.unwrap_or_default(),
         body: Some(AnyValue {
             value: Some(any_value::Value::StringValue(record.body)),

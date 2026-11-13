@@ -454,7 +454,7 @@ fn feed<E: std::fmt::Display>(
             }
         }
         Err(error) => {
-            tracing::debug!(%error, resource = ingest.resource_name(), "message does not convert")
+            tracing::debug!(%error, resource = ingest.resource_name(), "message does not convert");
         }
     }
     true
@@ -976,14 +976,14 @@ async fn settle_after_feedback(
             let _ = goal.cancel(remaining()).await;
         }
         tokio::select! {
-            _ = &mut expiry => break,
-            _ = surface.cancel_requested(), if !cancel_forwarded => {
+            () = &mut expiry => break,
+            () = surface.cancel_requested(), if !cancel_forwarded => {
                 cancel_pending = true;
             }
             step = goal.next_feedback_step() => match step {
                 FeedbackStep::Message(message) => tokio::select! {
                     () = surface.report_feedback(message) => {}
-                    _ = &mut expiry => break,
+                    () = &mut expiry => break,
                 },
                 FeedbackStep::Skipped => {}
                 FeedbackStep::Ended => break,
@@ -1030,7 +1030,7 @@ async fn settle_on_result(
                 }
                 return outcome;
             }
-            _ = surface.cancel_requested(), if !cancel_forwarded => {
+            () = surface.cancel_requested(), if !cancel_forwarded => {
                 cancel_forwarded = true;
                 stop_cancel.disarm();
                 *cancel_sent = true;

@@ -720,8 +720,10 @@ mod tests {
     /// the CLI's flag accumulation would build it.
     fn flags(targets: &[&str]) -> super::super::types::LinkValue {
         super::super::types::LinkValue::Bound(Selection::Flags(
-            super::super::types::LinkTargets::new(targets.iter().map(|t| t.to_string()).collect())
-                .expect("test targets are unique"),
+            super::super::types::LinkTargets::new(
+                targets.iter().map(ToString::to_string).collect(),
+            )
+            .expect("test targets are unique"),
         ))
     }
 
@@ -991,7 +993,7 @@ mod tests {
             ("main", Cardinality::One, r#"wrist: "prod1""#),
             ("wrist", Cardinality::ZeroOrOne, r#"main: "prod1""#),
         ] {
-            for producers in [r#"["prod1", "prod2"]"#, r#"["prod1"]"#, r#"[]"#] {
+            for producers in [r#"["prod1", "prod2"]"#, r#"["prod1"]"#, r"[]"] {
                 let cons_instances = parse_instances(&format!(
                     r#"[{{
                         instance_id: "cons1",

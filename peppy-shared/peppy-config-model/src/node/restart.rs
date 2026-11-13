@@ -452,7 +452,7 @@ mod tests {
             ),
             "{err}"
         );
-        let err = parse_declaration(r#"{ policy: 1 }"#).unwrap_err();
+        let err = parse_declaration(r"{ policy: 1 }").unwrap_err();
         assert!(
             err.contains("expected `never`, `on_failure` or `always`"),
             "{err}"
@@ -502,7 +502,7 @@ mod tests {
             err.contains("unknown field `retries`, expected `policy` or `max_restarts`"),
             "{err}"
         );
-        let err = parse_declaration(r#"{ max_restarts: 2 }"#).unwrap_err();
+        let err = parse_declaration(r"{ max_restarts: 2 }").unwrap_err();
         assert!(
             err.contains(
                 "`restart` as an object needs `policy`: `never`, `on_failure` or `always`"

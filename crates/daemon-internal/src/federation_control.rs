@@ -94,8 +94,8 @@ impl ServeAsyncCommand for FederationControl {
             // Race the accept loop against the shared token so the daemon can
             // exit promptly (the loop is otherwise infinite).
             tokio::select! {
-                _ = serve_control(&socket_path, trigger_tx, restart_tx) => {}
-                _ = teardown_token.cancelled() => {}
+                () = serve_control(&socket_path, trigger_tx, restart_tx) => {}
+                () = teardown_token.cancelled() => {}
             }
             // Best-effort cleanup so a stale socket does not linger (the next start
             // unlinks unconditionally anyway).
@@ -301,7 +301,7 @@ mod tests {
         ));
         match resp {
             ControlResponse::Unreachable { message } => {
-                assert_eq!(message, "received fatal alert: UnknownCA")
+                assert_eq!(message, "received fatal alert: UnknownCA");
             }
             other => panic!("expected Unreachable, got {other:?}"),
         }

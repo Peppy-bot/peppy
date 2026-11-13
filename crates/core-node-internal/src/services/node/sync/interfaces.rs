@@ -64,7 +64,7 @@ fn pairing_slot_link_ids(manifest: &config::node::Manifest) -> HashSet<&str> {
     manifest
         .depends_on
         .iter()
-        .flat_map(|d| d.pairing_link_ids())
+        .flat_map(config::node::DependsOn::pairing_link_ids)
         .collect()
 }
 
@@ -113,7 +113,7 @@ fn collect_consumed_interfaces(
 
     // Pre-resolve each unique dependency into its offerings table / contract
     // document, so the per-entry lookups below are pure map reads.
-    for (link_id, entry) in deps.lookup.iter() {
+    for (link_id, entry) in &deps.lookup {
         match entry.kind {
             DependencyKind::Node => {
                 let node_key = (entry.name.clone(), entry.tag.clone());
@@ -1635,16 +1635,16 @@ mod implements_tests {
         for interface in &out {
             match interface.interface() {
                 InterfaceVariant::EmittedTopic { topic, .. } => {
-                    emitted_topics.push(topic.name.as_str())
+                    emitted_topics.push(topic.name.as_str());
                 }
                 InterfaceVariant::PeerEmittedTopic { topic, .. } => {
-                    peer_emitted.push(topic.name.as_str())
+                    peer_emitted.push(topic.name.as_str());
                 }
                 InterfaceVariant::PeerConsumedTopic { topic, .. } => {
-                    peer_consumed.push(topic.name.as_str())
+                    peer_consumed.push(topic.name.as_str());
                 }
                 InterfaceVariant::ConsumedTopic { topic, .. } => {
-                    consumed_topics.push(topic.name.as_str())
+                    consumed_topics.push(topic.name.as_str());
                 }
                 other => panic!("unexpected variant {other:?}"),
             }

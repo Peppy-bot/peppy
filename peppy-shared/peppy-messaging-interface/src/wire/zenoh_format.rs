@@ -244,7 +244,7 @@ impl ZenohWireFormat {
                 .ok_or(ZenohWireParseError::MissingSegment("service_root"))?;
             if got != expected {
                 return Err(ZenohWireParseError::ServiceRootMismatch {
-                    expected: expected.to_string(),
+                    expected: expected.clone(),
                     got: got.to_string(),
                 });
             }

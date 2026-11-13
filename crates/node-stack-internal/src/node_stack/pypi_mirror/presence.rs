@@ -345,7 +345,7 @@ mod tests {
         let mut checked = 0;
 
         let on_mirror = files_on_mirror(&client().unwrap(), &mirror_of(&server), &files, |n| {
-            checked = n
+            checked = n;
         })
         .await
         .expect("a mirror that answers 404 is reachable");

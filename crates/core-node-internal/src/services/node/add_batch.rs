@@ -597,7 +597,7 @@ impl Drop for RollbackGuard {
                             {
                                 handle.write().set_pending_working_dir(guard);
                             }
-                            debug!("Rolled back batched replacement of {}:{}", name, tag)
+                            debug!("Rolled back batched replacement of {}:{}", name, tag);
                         }
                         Err(e) => warn!(
                             "Batch-add rollback (restore previous) failed for {}:{}: {}",

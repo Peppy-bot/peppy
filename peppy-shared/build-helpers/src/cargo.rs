@@ -172,13 +172,12 @@ pub fn bundled_capnp_for_embedding(target: &str) -> Result<PathBuf, UnsupportedC
 /// file means the tree itself is broken.
 fn existing_bundled_capnp(platform: CapnpPlatform) -> PathBuf {
     let binary_path = bundled_tools_dir().join(platform.binary_name());
-    if !binary_path.exists() {
-        panic!(
-            "bundled capnp binary missing at {}; add it to \
-             peppy-shared/peppy-config-model/tools/",
-            binary_path.display()
-        );
-    }
+    assert!(
+        binary_path.exists(),
+        "bundled capnp binary missing at {}; add it to \
+         peppy-shared/peppy-config-model/tools/",
+        binary_path.display()
+    );
     binary_path
 }
 

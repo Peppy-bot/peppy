@@ -152,7 +152,7 @@ fn field_descriptions<'a>(
 
 /// A member kind in the cache: `topic`, `service` or `action`.
 mod interface_kind_name {
-    use super::*;
+    use super::{Deserialize, Deserializer, InterfaceKind, Serializer};
 
     pub(super) fn serialize<S: Serializer>(
         kind: &InterfaceKind,
@@ -171,7 +171,7 @@ mod interface_kind_name {
 
 /// A message side in the cache, by its name ([`MessageSide::as_str`]).
 mod message_side_name {
-    use super::*;
+    use super::{Deserialize, Deserializer, MessageSide, Serializer};
 
     pub(super) fn serialize<S: Serializer>(
         side: &MessageSide,

@@ -118,7 +118,7 @@ async fn run_clock_publisher(
             // Check cancellation first so a shutdown that races a due tick wins,
             // stopping the loop instead of emitting one last doomed publish.
             biased;
-            _ = cancel.cancelled() => break,
+            () = cancel.cancelled() => break,
             _ = ticker.tick() => {}
         }
         let now_ns = match source.now_ns() {
@@ -199,7 +199,7 @@ async fn run_heartbeat_publisher(
         tokio::select! {
             // Stop cleanly on shutdown rather than beating into a closed session.
             biased;
-            _ = cancel.cancelled() => break,
+            () = cancel.cancelled() => break,
             _ = ticker.tick() => {}
         }
         if let Err(e) = publisher.publish(payload.clone()).await {

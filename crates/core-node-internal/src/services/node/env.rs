@@ -60,8 +60,7 @@ pub(crate) fn is_sccache_available() -> bool {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+            .is_ok_and(|s| s.success());
         if available {
             tracing::debug!("sccache detected, will set RUSTC_WRAPPER=sccache for Rust nodes");
         }

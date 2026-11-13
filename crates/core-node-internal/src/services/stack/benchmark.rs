@@ -886,22 +886,19 @@ async fn measure_probe(
                 .await
             }
         };
-        match result {
-            Ok((d, resp_bytes)) => {
-                any_success = true;
-                consecutive_errors = 0;
-                honored_full |= resp_bytes >= edge.probe_response_size;
-                if i >= warmup {
-                    out.push(d.as_nanos() as u64);
-                }
+        if let Ok((d, resp_bytes)) = result {
+            any_success = true;
+            consecutive_errors = 0;
+            honored_full |= resp_bytes >= edge.probe_response_size;
+            if i >= warmup {
+                out.push(d.as_nanos() as u64);
             }
-            Err(_) => {
-                consecutive_errors += 1;
-                // Bail on a dead edge instead of spending the whole sample budget
-                // waiting out the per-sample timeout on every probe.
-                if !any_success && consecutive_errors >= 3 {
-                    break;
-                }
+        } else {
+            consecutive_errors += 1;
+            // Bail on a dead edge instead of spending the whole sample budget
+            // waiting out the per-sample timeout on every probe.
+            if !any_success && consecutive_errors >= 3 {
+                break;
             }
         }
     }
@@ -1083,7 +1080,7 @@ async fn measure_topic_delivery(
 
     // Borrowed: `classify_clock` takes the exchange below. A producer on a
     // simulated domain reports zero here, so the delta it corrects is its own.
-    let off = offset.as_ref().map(|c| c.offset_ns).unwrap_or(0) as i128;
+    let off = i128::from(offset.as_ref().map_or(0, |c| c.offset_ns));
     let mut seen: u32 = 0;
     let mut measured: u32 = 0;
     let mut out = Vec::new();
@@ -1105,7 +1102,7 @@ async fn measure_topic_delivery(
                     continue;
                 }
                 let recv = wall_now_ns().unwrap_or(0);
-                let corrected = recv as i128 - src as i128 - off;
+                let corrected = i128::from(recv) - i128::from(src) - off;
                 measured += 1;
                 if (0..=IMPLAUSIBLE_DELIVERY_NS).contains(&corrected) {
                     out.push(corrected as u64);

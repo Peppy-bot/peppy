@@ -261,7 +261,7 @@ impl PairingCoordinator {
         };
         let committed = tokio::select! {
             biased;
-            _ = cancel.cancelled() => Err(PairFailure::Undelivered(
+            () = cancel.cancelled() => Err(PairFailure::Undelivered(
                 "the start was cancelled".to_owned(),
             )),
             committed = self.commit_pair_remotely(&pairing, endpoint, peer, true) => committed,
@@ -1337,7 +1337,7 @@ mod tests {
         PairingNodeSnapshot {
             node_name: name.to_string(),
             node_tag: "v1".to_string(),
-            instance_ids: instance_ids.iter().map(|s| s.to_string()).collect(),
+            instance_ids: instance_ids.iter().map(ToString::to_string).collect(),
             pairing_deps: deps.to_vec(),
         }
     }

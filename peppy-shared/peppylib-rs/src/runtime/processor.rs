@@ -525,14 +525,13 @@ impl Processor {
         link_id: &str,
         accessor: Cardinality,
     ) -> Option<&crate::messaging::ProducerRef> {
-        if self.bound_slots.sets.contains_key(link_id) {
-            panic!(
-                "consumer slot `{link_id}` holds a producer set, but the generated accessor \
-                 expects cardinality `{}`: {}",
-                accessor.as_str(),
-                super::RESYNC_REMEDY
-            );
-        }
+        assert!(
+            !self.bound_slots.sets.contains_key(link_id),
+            "consumer slot `{link_id}` holds a producer set, but the generated accessor \
+             expects cardinality `{}`: {}",
+            accessor.as_str(),
+            super::RESYNC_REMEDY
+        );
         let Some(slot) = self.bound_slots.scalars.get(link_id) else {
             undeclared_consumer_slot(link_id)
         };
@@ -545,7 +544,9 @@ impl Processor {
     /// set; the `binding_update` service uses the set slots' sender side via
     /// [`Self::binding_slot_channels`].
     pub(crate) fn bound_set_watch(&self, link_id: &str) -> Option<watch::Receiver<BoundSetState>> {
-        self.bound_slots.channel(link_id).map(|tx| tx.subscribe())
+        self.bound_slots
+            .channel(link_id)
+            .map(watch::Sender::subscribe)
     }
 
     /// Shared handle to the set slots' channels, handed to the pre-setup
@@ -581,7 +582,7 @@ impl Processor {
             .node_instance
             .copy
             .as_ref()
-            .map(|copy| copy.as_str())
+            .map(Name::as_str)
     }
 
     /// The scope of each daemon target this instance serves, keyed by
@@ -1009,8 +1010,8 @@ fn seed_bound_member(link_id: &str, pin: &BoundPin) -> Result<config::runtime::B
             let name = seed_copy_name(link_id, copy)?;
             let in_copy = Name::new(instance_id).map_err(|e| Error::InvalidInstanceIdInCopy {
                 link_id: link_id.to_string(),
-                copy: copy.to_string(),
-                instance_id: instance_id.to_string(),
+                copy: copy.clone(),
+                instance_id: instance_id.clone(),
                 reason: e.to_string(),
             })?;
             (

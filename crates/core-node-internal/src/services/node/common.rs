@@ -56,8 +56,7 @@ impl SlotUpdateClient {
     ) -> Self {
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or(1);
+            .map_or(1, |duration| duration.as_millis() as u64);
         Self {
             node_stack,
             messenger,

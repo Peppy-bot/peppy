@@ -88,7 +88,7 @@ fn generated_peer_modules_import_from_venv() {
         );
         let entries: Vec<String> = fs::read_dir(&dir)
             .expect("category dir reads")
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|name| name != "__init__.py")
             .collect();

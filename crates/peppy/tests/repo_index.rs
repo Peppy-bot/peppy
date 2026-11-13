@@ -372,7 +372,7 @@ mod exposures {
                 &format!(
                     "{}, {}",
                     camera_ref(None),
-                    brightness_tool(r#", restrict: { label: { min: 0 } }"#)
+                    brightness_tool(r", restrict: { label: { min: 0 } }")
                 ),
             ),
         );

@@ -699,7 +699,7 @@ impl NodeLogs {
     fn read(wire: launch_capnp::node_logs::Reader<'_>) -> Result<Self> {
         let add_logs_reader = wire.get_node_add_logs()?;
         let mut node_add_logs = Vec::with_capacity(add_logs_reader.len() as usize);
-        for e in add_logs_reader.iter() {
+        for e in add_logs_reader {
             node_add_logs.push(NodeAddLogEntry {
                 node_label: e.get_node_label()?.to_str()?.to_owned(),
                 log_path: PathBuf::from(e.get_log_path()?.to_str()?),
@@ -710,7 +710,7 @@ impl NodeLogs {
 
         let build_logs_reader = wire.get_node_build_logs()?;
         let mut node_build_logs = Vec::with_capacity(build_logs_reader.len() as usize);
-        for e in build_logs_reader.iter() {
+        for e in build_logs_reader {
             node_build_logs.push(NodeBuildLogEntry {
                 node_label: e.get_node_label()?.to_str()?.to_owned(),
                 log_path: PathBuf::from(e.get_log_path()?.to_str()?),
@@ -721,7 +721,7 @@ impl NodeLogs {
 
         let run_logs_reader = wire.get_node_run_logs()?;
         let mut node_run_logs = Vec::with_capacity(run_logs_reader.len() as usize);
-        for e in run_logs_reader.iter() {
+        for e in run_logs_reader {
             node_run_logs.push(NodeRunLogEntry {
                 instance_id: e.get_instance_id()?.to_str()?.to_owned(),
                 node_label: e.get_node_label()?.to_str()?.to_owned(),
@@ -845,7 +845,7 @@ impl LaunchResult {
         let result = reader.get_root::<launch_capnp::launch_result::Reader<'_>>()?;
         let instances_reader = result.get_instance_endpoints()?;
         let mut instance_endpoints = Vec::with_capacity(instances_reader.len() as usize);
-        for e in instances_reader.iter() {
+        for e in instances_reader {
             instance_endpoints.push(InstanceEndpoints {
                 instance_id: required_text(
                     e.get_instance_id()?.to_str()?,

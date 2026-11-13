@@ -392,7 +392,7 @@ pub(crate) fn build_cache_entries(items: Vec<PublishedItem>) -> Result<RepoItems
                     origin: item.origin,
                     descriptions,
                     repo_id: 0,
-                })
+                });
             }
             DeclaredContent::Contract { descriptions } => {
                 built.contracts.push(ContractCacheEntry {
@@ -402,7 +402,7 @@ pub(crate) fn build_cache_entries(items: Vec<PublishedItem>) -> Result<RepoItems
                     origin: item.origin,
                     descriptions,
                     repo_id: 0,
-                })
+                });
             }
             DeclaredContent::Pairing { descriptions } => built.pairings.push(PairingCacheEntry {
                 tag: tagged(item.tag, &item.name)?,
@@ -456,7 +456,7 @@ pub enum IndexError {
 fn format_conflicts(conflicts: &[RepoConflict]) -> String {
     conflicts
         .iter()
-        .map(|conflict| conflict.to_string())
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("; ")
 }
@@ -791,7 +791,7 @@ pub fn check_repository_index(root: &Path) -> Result<Vec<IndexDrift>, IndexError
 
     // Sorted by rendered text so the report is reproducible in a test and
     // comparable between two machines.
-    drifts.sort_by_key(|drift| drift.to_string());
+    drifts.sort_by_key(ToString::to_string);
     Ok(drifts)
 }
 
@@ -1587,7 +1587,7 @@ mod tests {
             peek_peppy_schema(br#"{ peppy_schema: "repository/v99" }"#),
             None
         );
-        assert_eq!(peek_peppy_schema(br#"{ unrelated: true }"#), None);
+        assert_eq!(peek_peppy_schema(br"{ unrelated: true }"), None);
         assert_eq!(
             peek_peppy_schema(br#"{ peppy_schema: "repository/v1" }"#),
             Some(PeppySchema::RepositoryV1)

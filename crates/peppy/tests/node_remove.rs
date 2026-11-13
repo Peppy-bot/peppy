@@ -63,7 +63,11 @@ fn node_remove_command_succeeds() {
         graph.nodes.len(),
         2,
         "graph should only contain the core node + the added node. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 
     NodeCommand {
@@ -92,7 +96,11 @@ fn node_remove_command_succeeds() {
         graph.nodes.len(),
         1,
         "graph should only contain the core node. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -228,7 +236,11 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             .iter()
             .any(|n| n.label().contains(&format!("{node_name}:{node_tag}"))),
         "graph should not contain the removed node. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -269,6 +281,10 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             .iter()
             .any(|n| n.label().contains(&format!("{node_name}:{node_tag}"))),
         "graph should not contain the removed node. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 }

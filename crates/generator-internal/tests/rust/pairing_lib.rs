@@ -70,7 +70,7 @@ fn assert_no_modules_under(src_dir: &Path, category: &str) {
     );
     let entries: Vec<String> = fs::read_dir(&dir)
         .expect("category dir reads")
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|name| name != "mod.rs")
         .collect();

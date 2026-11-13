@@ -467,13 +467,12 @@ impl ZenohAdapter {
         let max_attempts = if port.is_some() { 1 } else { 32 };
 
         for attempt in 0..max_attempts {
-            let (port, reservation) = match port {
-                Some(p) => (p, None),
-                None => {
-                    let (p, listener) =
-                        reserve_ephemeral_port().map_err(|e| Error::BackendError(e.to_string()))?;
-                    (p, Some(listener))
-                }
+            let (port, reservation) = if let Some(p) = port {
+                (p, None)
+            } else {
+                let (p, listener) =
+                    reserve_ephemeral_port().map_err(|e| Error::BackendError(e.to_string()))?;
+                (p, Some(listener))
             };
 
             let adapter = Self::with_router(
@@ -599,7 +598,9 @@ impl ZenohAdapter {
 
     #[cfg(feature = "router")]
     pub fn router_is_adopted(&self) -> bool {
-        self.zenohd.as_ref().is_some_and(|z| z.is_adopted())
+        self.zenohd
+            .as_ref()
+            .is_some_and(zenohd::ZenohdFacade::is_adopted)
     }
 
     /// Whether the owned router runs under an operator-pinned `ZENOH_CONFIG`
@@ -609,7 +610,9 @@ impl ZenohAdapter {
     /// owns no router.
     #[cfg(feature = "router")]
     pub fn router_config_is_pinned(&self) -> bool {
-        self.zenohd.as_ref().is_some_and(|z| z.is_pinned())
+        self.zenohd
+            .as_ref()
+            .is_some_and(zenohd::ZenohdFacade::is_pinned)
     }
 
     /// Builds a peer-session config seeded by `host:port` (or `seed_peers` when
@@ -1047,12 +1050,13 @@ impl MessengerBackend for ZenohAdapter {
             ZenohWireFormat::core_node_presence_filter(PresenceScope::Session, core_node),
             |sample| {
                 let keyexpr = sample.key_expr().as_str();
-                match ZenohWireFormat::parse_core_node_presence(PresenceScope::Session, keyexpr) {
-                    Ok(presence) => Some(presence),
-                    Err(_) => {
-                        tracing::error!(%keyexpr, "failed to parse core-node presence keyexpr");
-                        None
-                    }
+                if let Ok(presence) =
+                    ZenohWireFormat::parse_core_node_presence(PresenceScope::Session, keyexpr)
+                {
+                    Some(presence)
+                } else {
+                    tracing::error!(%keyexpr, "failed to parse core-node presence keyexpr");
+                    None
                 }
             },
         )

@@ -329,7 +329,7 @@ fn layout_timestamp(
     };
     let mut sec = None;
     let mut nsec = None;
-    for field in timestamp.get_fields()?.iter() {
+    for field in timestamp.get_fields()? {
         let name = field
             .get_name()?
             .to_str()

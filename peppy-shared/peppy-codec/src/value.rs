@@ -242,8 +242,8 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let adjusted_year = if month <= 2 { year - 1 } else { year };
     let era = adjusted_year.div_euclid(400);
     let year_of_era = adjusted_year - era * 400;
-    let shifted_month = if month > 2 { month - 3 } else { month + 9 } as i64;
-    let day_of_year = (153 * shifted_month + 2) / 5 + day as i64 - 1;
+    let shifted_month = i64::from(if month > 2 { month - 3 } else { month + 9 });
+    let day_of_year = (153 * shifted_month + 2) / 5 + i64::from(day) - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     era * 146_097 + day_of_era - 719_468
 }

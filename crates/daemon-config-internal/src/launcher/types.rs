@@ -1343,7 +1343,7 @@ mod tests {
     /// Test shorthand: an `Array` binding value from unique literals.
     fn array(targets: &[&str]) -> LinkValue {
         LinkValue::Bound(Selection::Array(
-            LinkTargets::new(targets.iter().map(|t| t.to_string()).collect())
+            LinkTargets::new(targets.iter().map(ToString::to_string).collect())
                 .expect("test targets are unique"),
         ))
     }
@@ -1520,7 +1520,7 @@ mod tests {
                 "carries no `source`",
             ),
             (r#"{ robot: "sim" }"#, "`sim` names no clock source"),
-            (r#"{ robot: {} }"#, "names its `publisher`"),
+            (r"{ robot: {} }", "names its `publisher`"),
             (
                 r#"{ robot: { publisher: "a", extra: "b" } }"#,
                 "carries no `extra`",
@@ -1833,11 +1833,11 @@ mod tests {
         for (json5, expected) in [
             (r#"{ vacant: "" }"#, "a vacancy needs a reason"),
             (r#"{ vacant: "   " }"#, "a vacancy needs a reason"),
-            (r#"{ vacant: 12 }"#, "invalid type"),
-            (r#"{ vacant: null }"#, "invalid type"),
+            (r"{ vacant: 12 }", "invalid type"),
+            (r"{ vacant: null }", "invalid type"),
             (r#"{ vacant: ["a"] }"#, "invalid type"),
-            (r#"{ vacant: { nested: 1 } }"#, "invalid type"),
-            (r#"{}"#, "missing field `vacant`"),
+            (r"{ vacant: { nested: 1 } }", "invalid type"),
+            (r"{}", "missing field `vacant`"),
             (r#"{ nope: "x" }"#, "unknown link key `nope`"),
             (r#"{ vacant: "x", extra: 1 }"#, "unknown link key `extra`"),
         ] {

@@ -79,8 +79,7 @@ fn print_repo_header(repo: &RepoListRepoEntry, node_count: usize, colorize: bool
         // stops a machine sitting on stale bytes believing otherwise.
         let when = repo
             .last_read_unix_secs
-            .map(format_timestamp)
-            .unwrap_or_else(|| "never".to_owned());
+            .map_or_else(|| "never".to_owned(), format_timestamp);
         header.push_str(&paint(
             colorize,
             ORANGE,
@@ -139,12 +138,14 @@ fn format_timestamp(unix_secs: u64) -> String {
     i64::try_from(unix_secs)
         .ok()
         .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
-        .map(|dt| {
-            dt.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M")
-                .to_string()
-        })
-        .unwrap_or_else(|| format!("unix {unix_secs}"))
+        .map_or_else(
+            || format!("unix {unix_secs}"),
+            |dt| {
+                dt.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            },
+        )
 }
 
 #[cfg(test)]

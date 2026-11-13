@@ -784,7 +784,7 @@ pub(crate) async fn stop_instances(
                 .map(|instance_id| {
                     let pid = guard
                         .claim_instance(instance_id)
-                        .and_then(|inst| inst.pid());
+                        .and_then(TrackedNodeInstance::pid);
                     DoomedInstance::of(&guard, instance_id.clone(), pid)
                 })
                 .collect()

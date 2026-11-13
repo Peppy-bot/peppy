@@ -1890,8 +1890,8 @@ mod tests {
         let error = parse_option(r#"{ fragments: ["fragments/a.json5"], adjustments: null }"#)
             .expect_err("null names nothing");
         assert!(error.contains("expected a sequence"), "got: {error}");
-        let error = parse_option(r#"{ fragments: null, deployments: [] }"#)
-            .expect_err("null names no file");
+        let error =
+            parse_option(r"{ fragments: null, deployments: [] }").expect_err("null names no file");
         assert!(error.contains("expected a sequence"), "got: {error}");
     }
 
@@ -2028,7 +2028,7 @@ mod tests {
 
     #[test]
     fn an_empty_fragments_list_is_refused() {
-        let error = parse_option(r#"{ fragments: [] }"#).expect_err("no file named");
+        let error = parse_option(r"{ fragments: [] }").expect_err("no file named");
         assert!(error.contains("names no file"), "got: {error}");
     }
 
@@ -2051,7 +2051,7 @@ mod tests {
     fn an_option_round_trips_through_its_written_shape() {
         for written in [
             r#""fragments/a.json5""#,
-            r#"{ deployments: [] }"#,
+            r"{ deployments: [] }",
             r#"{ fragments: ["fragments/a.json5", "fragments/b.json5"] }"#,
             r#"{ fragments: ["fragments/a.json5"], core_nodes: ["edge"],
                 adjustments: [{ target: "x_inst", set_arguments: { fast: true } }] }"#,

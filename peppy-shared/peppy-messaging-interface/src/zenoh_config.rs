@@ -120,27 +120,24 @@ pub async fn probe_tls_reachable(
 
     // Build the trust anchors: either an explicit private CA, or the OS roots.
     let mut roots = RootCertStore::empty();
-    match &tls.root_ca_certificate {
-        Some(path) => {
-            for cert in read_pem_certificates(path, "root CA")? {
-                roots
-                    .add(cert)
-                    .map_err(|e| format!("add root CA `{}` failed: {e}", path.display()))?;
-            }
+    if let Some(path) = &tls.root_ca_certificate {
+        for cert in read_pem_certificates(path, "root CA")? {
+            roots
+                .add(cert)
+                .map_err(|e| format!("add root CA `{}` failed: {e}", path.display()))?;
         }
-        None => {
-            // rustls-native-certs 0.8 returns a `CertificateResult`; take all of
-            // its `.certs` (any per-cert load errors are non-fatal as long as at
-            // least one root ends up trusted).
-            let native = rustls_native_certs::load_native_certs();
-            for cert in native.certs {
-                let _ = roots.add(cert);
-            }
-            if roots.is_empty() {
-                return Err(
-                    "system trust store is empty (no native roots could be loaded)".to_string(),
-                );
-            }
+    } else {
+        // rustls-native-certs 0.8 returns a `CertificateResult`; take all of
+        // its `.certs` (any per-cert load errors are non-fatal as long as at
+        // least one root ends up trusted).
+        let native = rustls_native_certs::load_native_certs();
+        for cert in native.certs {
+            let _ = roots.add(cert);
+        }
+        if roots.is_empty() {
+            return Err(
+                "system trust store is empty (no native roots could be loaded)".to_string(),
+            );
         }
     }
 

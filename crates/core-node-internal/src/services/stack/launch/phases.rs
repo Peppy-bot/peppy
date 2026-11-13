@@ -132,7 +132,7 @@ where
     let inner = async {
         tokio::select! {
             biased;
-            _ = watch_idle(activity_notify, idle_timeout) => None,
+            () = watch_idle(activity_notify, idle_timeout) => None,
             result = phase => Some(result),
         }
     };
@@ -178,8 +178,8 @@ where
     let timeout_kind = tokio::select! {
         biased;
         result = phase.as_mut() => return PhaseOutcome::Completed(result),
-        _ = watch_idle(activity_notify, idle_timeout) => PhaseOutcome::IdleTimeout,
-        _ = &mut deadline_sleep => PhaseOutcome::MaxTimeout,
+        () = watch_idle(activity_notify, idle_timeout) => PhaseOutcome::IdleTimeout,
+        () = &mut deadline_sleep => PhaseOutcome::MaxTimeout,
     };
 
     // Timeout fired. Ask the phase to tear itself down, then drive it to
@@ -241,7 +241,7 @@ where
     let mut phase = std::pin::pin!(phase);
     let outcome = tokio::select! {
         biased;
-        _ = cancel.cancelled() => {
+        () = cancel.cancelled() => {
             if let Some(drain) = &cancel_and_drain {
                 drain.token.cancel();
                 let _ = tokio::time::timeout(drain.budget, phase.as_mut()).await;
@@ -303,11 +303,11 @@ mod tests {
         cleanup_ran: Arc<AtomicBool>,
     ) -> &'static str {
         tokio::select! {
-            _ = cancel.cancelled() => {
+            () = cancel.cancelled() => {
                 cleanup_ran.store(true, Ordering::SeqCst);
                 "cleaned_up"
             }
-            _ = std::future::pending::<()>() => unreachable!("phase should never complete on its own in these tests"),
+            () = std::future::pending::<()>() => unreachable!("phase should never complete on its own in these tests"),
         }
     }
 

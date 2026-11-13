@@ -1112,10 +1112,10 @@ impl LanguageGenerator for RustGenerator {
                 let deserializer_fn = build_action_request_deserializer(
                     &Ident::new("deserialize_goal_request", Span::call_site()),
                     spec,
-                    request_artifacts
-                        .as_ref()
-                        .map(|a| a.message_format())
-                        .unwrap_or(&MessageFormat(IndexMap::new())),
+                    request_artifacts.as_ref().map_or(
+                        &MessageFormat(IndexMap::new()),
+                        CapnpSchemaArtifacts::message_format,
+                    ),
                     &goal_data_params,
                     goal_struct_prefix,
                     goal_request_data_struct.as_ref(),

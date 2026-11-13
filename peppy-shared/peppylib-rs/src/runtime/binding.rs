@@ -101,7 +101,7 @@ impl BoundSetSubscription {
             next = self.stream.next() => {
                 next.map(|(producer, message)| ((*producer).clone(), message))
             }
-            _ = self.shutdown.cancelled() => None,
+            () = self.shutdown.cancelled() => None,
         }
     }
 }

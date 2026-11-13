@@ -227,12 +227,12 @@ fn require_delivered(output: ExecOutput, operation: &str) -> String {
 }
 
 fn require_success(output: ExecOutput, operation: &str) -> String {
-    if !output.success() {
-        panic!(
-            "{operation} failed (exit code {}):\n{}",
-            output.exit_code, output.text
-        );
-    }
+    assert!(
+        output.success(),
+        "{operation} failed (exit code {}):\n{}",
+        output.exit_code,
+        output.text
+    );
     output.text
 }
 
@@ -4833,7 +4833,7 @@ fn foreign_markers(stations: &[Station], retired: &[String], copy: &str) -> Vec<
     let own_gate = stations
         .iter()
         .find(|station| station.name == copy)
-        .map(|station| station.gate());
+        .map(Station::gate);
     let mut markers: BTreeSet<String> = stations
         .iter()
         .filter(|station| station.name != copy)

@@ -660,13 +660,7 @@ fn write_remote_peer(
     builder.set_pairing_tag(&remote.pairing_tag);
     builder.set_peer_role(&remote.peer_role);
     builder.set_peer_cardinality(remote.peer_cardinality.as_str());
-    builder.set_peer_copy(
-        remote
-            .peer_copy
-            .as_ref()
-            .map(|copy| copy.as_str())
-            .unwrap_or(""),
-    );
+    builder.set_peer_copy(remote.peer_copy.as_ref().map_or("", |copy| copy.as_str()));
 }
 
 /// Inverse of [`fill_pair_requests`]: an empty `peerLinkId` decodes to
@@ -1460,7 +1454,7 @@ mod tests {
             config::node::Cardinality::ZeroOrMore
         );
         assert_eq!(
-            remote.peer_copy.as_ref().map(|copy| copy.as_str()),
+            remote.peer_copy.as_ref().map(config::runtime::Name::as_str),
             Some("atlas")
         );
     }

@@ -139,7 +139,7 @@ pub(in crate::services::stack) async fn start_node_instances(
         .map(|(instance, hosts)| {
             (
                 instance.to_string(),
-                hosts.iter().map(|host| host.to_string()).collect(),
+                hosts.iter().map(ToString::to_string).collect(),
             )
         })
         .collect();

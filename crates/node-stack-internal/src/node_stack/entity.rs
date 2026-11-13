@@ -2077,7 +2077,7 @@ impl NodeEntity {
         producers: config::runtime::BoundProducers,
     ) -> bool {
         self.edit_instance(instance_id.as_str(), |inst| {
-            inst.set_slot_binding(link_id, producers)
+            inst.set_slot_binding(link_id, producers);
         })
     }
 
@@ -2091,7 +2091,7 @@ impl NodeEntity {
         producers: config::runtime::BoundProducers,
     ) -> bool {
         self.edit_restarting(instance_id.as_str(), |inst| {
-            inst.set_slot_binding(link_id, producers)
+            inst.set_slot_binding(link_id, producers);
         })
     }
 

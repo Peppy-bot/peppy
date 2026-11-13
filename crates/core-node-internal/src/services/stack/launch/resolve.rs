@@ -260,7 +260,7 @@ fn wire_core_node_links<'a>(
     }
     let undeclared: Vec<&str> = places
         .keys()
-        .map(|link| link.as_str())
+        .map(config::runtime::Name::as_str)
         .filter(|link| !declared.contains(link))
         .collect();
     if !undeclared.is_empty() {
@@ -559,7 +559,7 @@ async fn resolve_one(
             let references = exposures.clone();
             let resolved = tokio::task::spawn_blocking(move || {
                 crate::services::mcp::resolve_exposure_deployment(&dirs, &references, &|line| {
-                    feedback(line)
+                    feedback(line);
                 })
             })
             .await

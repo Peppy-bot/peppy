@@ -432,35 +432,32 @@ impl ZenohdFacade {
     /// listening socket accepts TCP before the TLS handshake, which is all a
     /// "port already bound / accepting yet?" check needs.
     pub(crate) async fn start_router(&mut self) -> Result<()> {
-        let (zenohd_config_path, zenohd_log_path) =
-            match (&self.ownership, self.router_process.is_some()) {
-                // A managed child already exists (an earlier, e.g. timed-out,
-                // start spawned it): resume waiting on that child instead of
-                // spawning a replacement.
-                (
-                    RouterOwnership::Managed {
-                        zenohd_config_path,
-                        zenohd_log_path,
-                        ..
-                    },
-                    true,
-                ) => (zenohd_config_path.clone(), zenohd_log_path.clone()),
-                _ => {
-                    // Pre-flight (managed routers only, since the external case
-                    // falls through to `spawn_router_process`'s ownership
-                    // error): refuse to spawn onto a port something is already
-                    // listening on.
-                    if !self.is_external()
-                        && self.router_endpoint_reachable(ROUTER_PROBE_TIMEOUT).await
-                    {
-                        return Err(Error::BackendError(format!(
-                            "Zenoh router port already in use: {}",
-                            self.connect_addr()
-                        )));
-                    }
-                    self.spawn_router_process()?
-                }
-            };
+        let (zenohd_config_path, zenohd_log_path) = if let (
+            RouterOwnership::Managed {
+                zenohd_config_path,
+                zenohd_log_path,
+                ..
+            },
+            true,
+        ) =
+            (&self.ownership, self.router_process.is_some())
+        {
+            // A managed child already exists (an earlier, e.g. timed-out,
+            // start spawned it): resume waiting on that child instead of
+            // spawning a replacement.
+            (zenohd_config_path.clone(), zenohd_log_path.clone())
+        } else {
+            // Pre-flight (managed routers only, since the external case falls
+            // through to `spawn_router_process`'s ownership error): refuse to
+            // spawn onto a port something is already listening on.
+            if !self.is_external() && self.router_endpoint_reachable(ROUTER_PROBE_TIMEOUT).await {
+                return Err(Error::BackendError(format!(
+                    "Zenoh router port already in use: {}",
+                    self.connect_addr()
+                )));
+            }
+            self.spawn_router_process()?
+        };
 
         if self.tcp_based() {
             self.wait_until_router_accepts(&zenohd_log_path).await?;

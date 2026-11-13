@@ -103,7 +103,7 @@ fn repo_entry(repo: &ListedRepo, status: Option<&RepoStatus>) -> RepoListRepoEnt
         label: repo.label.clone(),
         source_type: repo.source.kind(),
         last_read_unix_secs: status.and_then(|s| s.last_read_unix_secs),
-        retained: status.is_some_and(|s| s.is_retained()),
+        retained: status.is_some_and(RepoStatus::is_retained),
         failed_read: status
             .and_then(|s| s.last_failure.as_ref())
             .map(|f| wire_failed_read(&f.read_failure, &f.message)),

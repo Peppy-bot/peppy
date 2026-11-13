@@ -853,7 +853,7 @@ mod tests {
             digest
         );
         for raw in [
-            "".to_owned(),
+            String::new(),
             "a".repeat(64),
             format!("sha512:{}", "a".repeat(64)),
             format!("sha256:{}", "a".repeat(63)),

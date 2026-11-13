@@ -97,10 +97,10 @@ fn health_label(healthy: bool) -> &'static str {
 /// health via [`health_label`]. Shared by `stack list` and `node info` so the
 /// two never diverge.
 pub(crate) fn instance_health_label(state: InstanceState, healthy: bool) -> &'static str {
-    if !state.has_process() {
-        "-"
-    } else {
+    if state.has_process() {
         health_label(healthy)
+    } else {
+        "-"
     }
 }
 
@@ -357,12 +357,11 @@ pub(crate) fn block_on<F, T>(future: F) -> Result<T>
 where
     F: Future<Output = Result<T>>,
 {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
-        Err(_) => {
-            let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(future)
-        }
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(future))
+    } else {
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(future)
     }
 }
 
@@ -467,7 +466,7 @@ mod tests {
         InstanceEndpoint {
             label: label.to_string(),
             kind,
-            urls: urls.iter().map(|url| url.to_string()).collect(),
+            urls: urls.iter().map(ToString::to_string).collect(),
         }
     }
 

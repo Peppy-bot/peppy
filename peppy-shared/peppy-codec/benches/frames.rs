@@ -82,7 +82,7 @@ fn main() {
             std::hint::black_box(codec.decode(&wire).expect("decodes"));
         });
         let jpeg = measure(ROUNDS, || {
-            std::hint::black_box(jpeg_bytes(&pixels, width as u32, height as u32));
+            std::hint::black_box(jpeg_bytes(&pixels, u32::from(width), u32::from(height)));
         });
         println!(
             "{:<12} {:>12} {:>12.2?} {:>12.2?} {:>12.2?}",

@@ -205,8 +205,7 @@ fn take_frame(value: &mut Value, fields: &ImageFieldMap) -> Result<String, Publi
 fn jpeg_quality(representation: &ImageRepresentation) -> u8 {
     representation
         .quality
-        .map(|quality| quality.get())
-        .unwrap_or(DEFAULT_JPEG_QUALITY)
+        .map_or(DEFAULT_JPEG_QUALITY, peppy_mcp_catalog::JpegQuality::get)
 }
 
 /// Rewrites an uncompressed frame into JPEG in place: a colour frame as it
@@ -1029,7 +1028,10 @@ mod tests {
             "dimensions should shrink, got {width}x{height}"
         );
         let gray = decoded_gray(&content);
-        assert_eq!((gray.width() as u64, gray.height() as u64), (width, height));
+        assert_eq!(
+            (u64::from(gray.width()), u64::from(gray.height())),
+            (width, height)
+        );
     }
 
     #[test]
@@ -1190,7 +1192,7 @@ mod tests {
         assert_eq!(document["encoding"], "mjpeg");
         let decoded = decoded_jpeg(&content);
         assert_eq!(
-            (decoded.width() as u64, decoded.height() as u64),
+            (u64::from(decoded.width()), u64::from(decoded.height())),
             (width, height)
         );
     }

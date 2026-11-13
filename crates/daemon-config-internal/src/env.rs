@@ -290,7 +290,7 @@ mod tests {
         );
         for name in NEVER_FORWARDED_ENV_KEYS
             .iter()
-            .map(|name| name.to_string())
+            .map(ToString::to_string)
             .chain(["pythonpath".to_string()])
         {
             assert_eq!(

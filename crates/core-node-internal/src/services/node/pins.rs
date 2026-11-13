@@ -95,8 +95,7 @@ pub(crate) async fn materialize_pinned_node(
     let label = pin.label();
     let may_block = pin.origin.resolution_may_block()
         || repo_cache::lookup_by_content(entries, pin)
-            .map(|entry| entry.origin.resolution_may_block())
-            .unwrap_or(true);
+            .is_none_or(|entry| entry.origin.resolution_may_block());
 
     let (manifest_path, bytes) = if may_block {
         let dirs = peppy_dirs.clone();
@@ -496,7 +495,7 @@ impl DocPinMinter {
         for reference in manifest.document_references() {
             match reference.kind {
                 DocumentKind::Contract => {
-                    self.mint(peppy_dirs, contracts, reference, on_feedback)?
+                    self.mint(peppy_dirs, contracts, reference, on_feedback)?;
                 }
                 DocumentKind::Pairing => self.mint(peppy_dirs, pairings, reference, on_feedback)?,
             }

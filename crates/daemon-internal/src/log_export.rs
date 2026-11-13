@@ -99,7 +99,7 @@ impl LogExport {
         };
         let discard_log = setup.discard_log;
         let worker = ExportWorker::new(setup.receiver, setup.transport, config, move |count| {
-            discard_log.record(count)
+            discard_log.record(count);
         });
         RunningLogExport {
             worker: Some(tokio::spawn(worker.run(shutdown.clone()))),

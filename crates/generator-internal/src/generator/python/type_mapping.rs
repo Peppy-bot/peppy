@@ -48,8 +48,8 @@ pub(super) fn schema_type_to_python(
     let base_type = match schema {
         SchemaType::Type(token) => primitive_type_str(token).to_string(),
         SchemaType::Primitive(primitive) => primitive_type_str(&primitive.kind).to_string(),
-        SchemaType::Array(array) => match array.items.as_ref() {
-            SchemaType::Object(object) => {
+        SchemaType::Array(array) => {
+            if let SchemaType::Object(object) = array.items.as_ref() {
                 let class_name = array_item_type_name(struct_prefix, field_name);
                 let fields = collect_python_fields(&object.fields, &class_name, nested_classes)?;
                 nested_classes.push(NestedDataclass {
@@ -57,8 +57,7 @@ pub(super) fn schema_type_to_python(
                     fields,
                 });
                 format!("list[{class_name}]")
-            }
-            _ => {
+            } else {
                 let item_type = match array.items.as_ref().as_type_token() {
                     Some(TypeToken::U8) => return Ok(wrap_optional(schema, "bytes".to_string())),
                     Some(token) => primitive_type_str(token),
@@ -70,7 +69,7 @@ pub(super) fn schema_type_to_python(
                 };
                 format!("list[{item_type}]")
             }
-        },
+        }
         SchemaType::Object(object) => {
             let class_name = nested_type_name(struct_prefix, field_name);
             let fields = collect_python_fields(&object.fields, &class_name, nested_classes)?;

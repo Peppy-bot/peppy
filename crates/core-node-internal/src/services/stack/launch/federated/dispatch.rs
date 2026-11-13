@@ -357,14 +357,11 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
             }
         }
 
-        let result_timeout = ctx
-            .change_deadline
-            .map(|deadline| {
-                deadline
-                    .saturating_duration_since(tokio::time::Instant::now())
-                    .max(Duration::from_secs(1))
-            })
-            .unwrap_or(GOAL_ACCEPT_TIMEOUT);
+        let result_timeout = ctx.change_deadline.map_or(GOAL_ACCEPT_TIMEOUT, |deadline| {
+            deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .max(Duration::from_secs(1))
+        });
         let payload = ActionMessenger::request_result_body(&ctx.messenger, &handle, result_timeout)
             .await
             .map_err(|error| ended_without_result::<G>(core_node, error))?;
@@ -621,20 +618,19 @@ async fn ask_participant_slices(
                     .await;
                 }
             }
-            Err(e) => match e.failure() {
-                Some(refusal) => {
+            Err(e) => {
+                if let Some(refusal) = e.failure() {
                     refusals
                         .lines
                         .push(format!("`{core_node}` refused: {}", refusal.message()));
                     refusals.refusers.push(core_node);
-                }
-                None => {
+                } else {
                     refusals.a_machine_did_not_answer = true;
                     refusals
                         .lines
                         .push(format!("`{core_node}` did not answer: {e}"));
                 }
-            },
+            }
         }
     }
 

@@ -93,8 +93,7 @@ impl PyBoundMember {
             "BoundMember(producer={}, copy={})",
             super::repr_producer(&self.inner.producer),
             self.copy()
-                .map(|copy| copy.__repr__())
-                .unwrap_or_else(|| "None".to_string())
+                .map_or_else(|| "None".to_string(), |copy| copy.__repr__())
         )
     }
 }

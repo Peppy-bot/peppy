@@ -359,7 +359,7 @@ fn fetch_commit(
 ) -> Result<(), String> {
     let shown_url = SourceUrl::new(repo_url);
     let shallow = fetch_commit_shallow(repo, repo_url, commit, &mut |line| {
-        on_feedback(Report::Progress(line))
+        on_feedback(Report::Progress(line));
     });
     if shallow.is_ok() && has_commit(repo, commit) {
         return Ok(());
@@ -373,7 +373,7 @@ fn fetch_commit(
     repo.remote_anonymous(repo_url)
         .and_then(|mut remote| {
             fetch_with_progress(&mut remote, repo_url, refspec, false, &mut |line| {
-                on_feedback(Report::Progress(line))
+                on_feedback(Report::Progress(line));
             })
         })
         .map_err(|e| {
@@ -519,7 +519,7 @@ mod tests {
             let lines = std::cell::RefCell::new(Vec::new());
             let checkout =
                 ensure_checkout_at_commit(&self.peppy_dirs, &self.url, read_ref, commit, &|line| {
-                    lines.borrow_mut().push(line.text().to_owned())
+                    lines.borrow_mut().push(line.text().to_owned());
                 });
             (checkout, lines.into_inner())
         }

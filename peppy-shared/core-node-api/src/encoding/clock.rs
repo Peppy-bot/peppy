@@ -335,7 +335,7 @@ impl ClockListResponse {
         let reader = decode_message(data)?;
         let response = reader.get_root::<clock_capnp::clock_list_response::Reader<'_>>()?;
         let mut domains = Vec::new();
-        for entry in response.get_domains()?.iter() {
+        for entry in response.get_domains()? {
             domains.push(ClockDomainInfo {
                 domain: read_domain(
                     entry.get_name()?.to_str()?,
@@ -352,7 +352,7 @@ impl ClockListResponse {
             });
         }
         let mut consumers = Vec::new();
-        for entry in response.get_consumers()?.iter() {
+        for entry in response.get_consumers()? {
             consumers.push(ClockConsumerInfo {
                 instance_id: entry.get_instance_id()?.to_str()?.to_owned(),
                 domain: read_domain(

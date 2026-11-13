@@ -305,7 +305,7 @@ async fn reserve_inner(
         // lifetime is the one the existing watch is holding, so watching again would leave
         // a presence subscription per retry.
         ReserveOutcome::Reserved { lifetime } => {
-            watch_coordinator_presence(context, &decoded.coordinator_core_node, lifetime)
+            watch_coordinator_presence(context, &decoded.coordinator_core_node, lifetime);
         }
         ReserveOutcome::TookOverFromSameCoordinator { stale_launch_id } => {
             warn!(
@@ -396,27 +396,23 @@ fn watch_coordinator_presence(
         loop {
             let event = tokio::select! {
                 biased;
-                _ = shutdown.cancelled() => return,
+                () = shutdown.cancelled() => return,
                 // The reservation ended some other way, so there is nothing
                 // left to supervise and the subscription can go.
-                _ = lifetime.ended() => return,
-                event = watch.rx.recv_async() => match event {
-                    Ok(event) => event,
-                    // The presence stream ended, so nothing ends this
-                    // reservation when its coordinator is gone. Same verdict
-                    // as failing to open the watch at all: release rather than
-                    // hold one nothing supervises, which only a daemon restart
-                    // could then clear.
-                    Err(_) => {
-                        warn!(
-                            "presence stream for coordinator `{coordinator}` ended; releasing \
-                             its reservation rather than holding one this daemon can no longer \
-                             supervise"
-                        );
-                        ownership.release_because_coordinator_gone(&lifetime);
-                        return;
-                    }
-                },
+                () = lifetime.ended() => return,
+                event = watch.rx.recv_async() => event,
+            };
+            // The presence stream ended, so nothing ends this reservation when
+            // its coordinator is gone. Same verdict as failing to open the
+            // watch at all: release rather than hold one nothing supervises,
+            // which only a daemon restart could then clear.
+            let Ok(event) = event else {
+                warn!(
+                    "presence stream for coordinator `{coordinator}` ended; releasing its \
+                     reservation rather than holding one this daemon can no longer supervise"
+                );
+                ownership.release_because_coordinator_gone(&lifetime);
+                return;
             };
 
             let LivelinessEvent::Gone(_) = event else {

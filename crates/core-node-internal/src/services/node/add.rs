@@ -114,7 +114,7 @@ impl GoalHandler for NodeAddGoalHandler {
             self.gate.clone(),
             &self.slice_ownership,
         )
-        .await
+        .await;
     }
 }
 
@@ -438,8 +438,7 @@ fn bundle_file_name(url: &url::Url) -> String {
     url.path_segments()
         .and_then(|mut segments| segments.next_back())
         .filter(|segment| !segment.is_empty())
-        .map(sanitize_http_filename)
-        .unwrap_or_else(|| "bundle.tar.zst".to_string())
+        .map_or_else(|| "bundle.tar.zst".to_string(), sanitize_http_filename)
 }
 
 /// Total attempts (initial try plus retries) for a bundle download that
@@ -791,7 +790,7 @@ fn node_named_by(source: &NodeSource) -> Option<(String, String)> {
             };
             Some((
                 config.manifest.name.as_str().to_owned(),
-                config.manifest.tag.to_string(),
+                config.manifest.tag.clone(),
             ))
         }
         NodeSource::Git { .. } | NodeSource::Http { .. } => None,
@@ -1249,7 +1248,7 @@ async fn handle_goal_request(
         let work = async {
             tokio::select! {
                 biased;
-                _ = cancel_token_clone.cancelled() => {
+                () = cancel_token_clone.cancelled() => {
                     let reason = cancel_reason(&goal_ctx, &reset_token)
                         .unwrap_or_else(|| "superseded by a forced node add".to_owned());
                     log_for_cancel.error(&format!("node add {reason}"));

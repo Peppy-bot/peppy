@@ -971,12 +971,10 @@ pub(crate) fn insert_dependency_line(contents: &str, dependency_line: &str) -> S
     if let Some(section_start) = contents.find(header) {
         let after_header = contents[section_start..]
             .find('\n')
-            .map(|offset| section_start + offset + 1)
-            .unwrap_or(contents.len());
+            .map_or(contents.len(), |offset| section_start + offset + 1);
         let insert_pos = contents[after_header..]
             .find("\n[")
-            .map(|offset| after_header + offset)
-            .unwrap_or(contents.len());
+            .map_or(contents.len(), |offset| after_header + offset);
 
         let mut updated = contents.to_string();
         if insert_pos > 0 && !updated[..insert_pos].ends_with('\n') {
@@ -1082,16 +1080,15 @@ pub(crate) async fn wait_for_service_reachable_or_exit(
 ) {
     let start = Instant::now();
     loop {
-        if start.elapsed() > timeout {
-            panic!(
-                "timed out after {:?} waiting for service `{}` (node={}, instance={:?}) to become reachable for project at {}",
-                timeout,
-                to_service_name,
-                to_node_name,
-                target_instance_id,
-                dir.display(),
-            );
-        }
+        assert!(
+            start.elapsed() <= timeout,
+            "timed out after {:?} waiting for service `{}` (node={}, instance={:?}) to become reachable for project at {}",
+            timeout,
+            to_service_name,
+            to_node_name,
+            target_instance_id,
+            dir.display(),
+        );
 
         if let Some(status) = child
             .try_wait()
@@ -1178,16 +1175,15 @@ pub(crate) async fn wait_for_action_reachable_via_target_or_exit(
 ) {
     let start = Instant::now();
     loop {
-        if start.elapsed() > timeout {
-            panic!(
-                "timed out after {:?} waiting for action `{}` (target={:?}, instance={:?}) to become reachable for project at {}",
-                timeout,
-                to_action_name,
-                to_target,
-                target_instance_id,
-                dir.display(),
-            );
-        }
+        assert!(
+            start.elapsed() <= timeout,
+            "timed out after {:?} waiting for action `{}` (target={:?}, instance={:?}) to become reachable for project at {}",
+            timeout,
+            to_action_name,
+            to_target,
+            target_instance_id,
+            dir.display(),
+        );
 
         if let Some(status) = child
             .try_wait()
@@ -1545,12 +1541,12 @@ pub(crate) const JOINTS_CONTRACT_ACTION: &str = r#"
 "#;
 
 /// The three-joint implementer's `refine` block for that member.
-pub(crate) const JOINTS_REFINEMENT: &str = r#"
+pub(crate) const JOINTS_REFINEMENT: &str = r"
 {
   goal_service: { request_message_format: { joint_positions: { $length: 3 } } },
   result_service: { response_message_format: { final_joint_positions: { $length: 3 } } }
 }
-"#;
+";
 
 pub(crate) const EXPOSED_ACTION_EXAMPLE: &str = r#"
 {

@@ -378,7 +378,7 @@ fn host_process_table() -> Vec<ProcessCpu> {
     };
     let ticks_per_second = host_clock_ticks_per_second();
     entries
-        .filter_map(|entry| entry.ok())
+        .filter_map(Result::ok)
         .filter(|entry| is_pid_dir_name(&entry.file_name()))
         // A process that exits between the listing and the read is skipped.
         .filter_map(|entry| std::fs::read_to_string(entry.path().join("stat")).ok())
@@ -566,14 +566,12 @@ fn dir_tree_size(dir: &Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
     };
-    entries
-        .filter_map(|entry| entry.ok())
-        .fold(0, |sum, entry| {
-            let size = match entry.file_type() {
-                Ok(file_type) if file_type.is_dir() => dir_tree_size(&entry.path()),
-                Ok(_) => entry.metadata().map_or(0, |meta| meta.len()),
-                Err(_) => 0,
-            };
-            sum.saturating_add(size)
-        })
+    entries.filter_map(Result::ok).fold(0, |sum, entry| {
+        let size = match entry.file_type() {
+            Ok(file_type) if file_type.is_dir() => dir_tree_size(&entry.path()),
+            Ok(_) => entry.metadata().map_or(0, |meta| meta.len()),
+            Err(_) => 0,
+        };
+        sum.saturating_add(size)
+    })
 }

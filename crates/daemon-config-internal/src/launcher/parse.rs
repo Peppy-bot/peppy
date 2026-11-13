@@ -167,7 +167,7 @@ mod tests {
             .description
             .paragraphs()
             .iter()
-            .map(|paragraph| paragraph.as_str())
+            .map(config::description::Description::as_str)
             .collect();
         assert_eq!(
             paragraphs,

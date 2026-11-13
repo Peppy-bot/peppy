@@ -179,8 +179,8 @@ fn generate_present_field_assignment(
             value_is_ref,
             &primitive.kind,
         )),
-        SchemaType::Array(array) => match array.items.as_ref() {
-            SchemaType::Object(object) => {
+        SchemaType::Array(array) => {
+            if let SchemaType::Object(object) = array.items.as_ref() {
                 let length_expr = make_length_expr(array.length, value_expr, field_name)?;
                 generate_object_list_assignment(
                     builder_expr,
@@ -191,8 +191,7 @@ fn generate_present_field_assignment(
                     value_is_ref,
                     &length_expr,
                 )
-            }
-            _ => {
+            } else {
                 let item_token = array.items.as_ref().as_type_token();
                 if matches!(item_token, Some(TypeToken::U8)) {
                     Ok(quote!(#builder_expr.#set_method(#value_expr.as_ref());))
@@ -212,7 +211,7 @@ fn generate_present_field_assignment(
                     })
                 }
             }
-        },
+        }
         SchemaType::Object(object) => generate_object_assignment(
             builder_expr,
             &init_method,

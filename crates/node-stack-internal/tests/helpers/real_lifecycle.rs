@@ -146,7 +146,7 @@ pub(crate) fn override_execution_for_fixture(
 ) -> NodeConfig {
     config.execution.container = None;
     config.execution.build_cmd = None;
-    config.execution.run_cmd = Some(run_cmd.iter().map(|s| s.to_string()).collect());
+    config.execution.run_cmd = Some(run_cmd.iter().map(ToString::to_string).collect());
     config
 }
 

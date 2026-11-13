@@ -1913,7 +1913,7 @@ impl ServerHandler for ExposureServer {
         let mut events = self.state.events.subscribe();
         loop {
             let received = tokio::select! {
-                _ = context.cancelled() => return Ok(()),
+                () = context.cancelled() => return Ok(()),
                 received = events.recv() => received,
             };
             let event = match received {
@@ -3463,7 +3463,7 @@ mod tests {
                 .fleet()
                 .resources(&fleet.entries)
                 .iter()
-                .map(|resource| resource.uri.to_string())
+                .map(|resource| resource.uri.clone())
                 .collect();
             assert_eq!(
                 listed,

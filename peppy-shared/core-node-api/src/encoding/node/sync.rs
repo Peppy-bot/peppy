@@ -122,7 +122,7 @@ impl NodeSyncResponse {
         let resolved_from_stack = read_text_list(response.get_resolved_from_stack()?)?;
         let repositories = response.get_resolved_from_repositories()?;
         let mut resolved_from_repositories = Vec::with_capacity(repositories.len() as usize);
-        for item in repositories.iter() {
+        for item in repositories {
             let kind_str = item.get_source_kind()?.to_str()?;
             let source_kind = RepoSourceKind::parse(kind_str).ok_or_else(|| {
                 crate::Error::Decoding(format!(

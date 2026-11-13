@@ -672,7 +672,7 @@ where
                     }
                     // Fired during setup by a process signal or by the watchdog
                     // when the daemon has been gone past the grace period.
-                    _ = cancellation_token.cancelled() => {
+                    () = cancellation_token.cancelled() => {
                         info!("Shutdown signal during setup");
                         return Ok(());
                     }
@@ -990,7 +990,7 @@ async fn run_post_setup_services(
         // `SHUTDOWN_SERVICE`: the caller cancels the token (idempotent), runs
         // the registered shutdown hooks, and exits, so the node tears down
         // (and reaps its own children) instead of lingering as an orphan.
-        _ = cancellation_token.cancelled() => {
+        () = cancellation_token.cancelled() => {
             info!("Shutdown signal received; shutting down");
         }
     }

@@ -611,7 +611,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
         // win; a completed add only signals a regression when the requests
         // never arrived.
         biased;
-        _ = both_shutdown_requests_observed => {}
+        () = both_shutdown_requests_observed => {}
         add_result = &mut add_task => {
             panic!(
                 "node_add overwrite completed without sending shutdown \

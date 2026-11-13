@@ -56,13 +56,13 @@ pub(super) fn build_exposed_service_method(
     let handler_helper_name = Ident::new("handle_request_payload", Span::call_site());
     let request_deserializer_name = Ident::new("deserialize_request", Span::call_site());
 
-    let response_ty = response_spec
-        .as_ref()
-        .map(|spec| {
+    let response_ty = response_spec.as_ref().map_or_else(
+        || quote!(()),
+        |spec| {
             let struct_ident = &spec.struct_ident;
             quote!(#struct_ident)
-        })
-        .unwrap_or_else(|| quote!(()));
+        },
+    );
 
     let request_ident = Ident::new("request", Span::call_site());
     let callback_call = quote!(handler(#request_ident));

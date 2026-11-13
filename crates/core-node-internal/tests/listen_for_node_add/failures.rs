@@ -333,7 +333,7 @@ const CONFIG_CONSUMING_AN_ABSENT_DEPENDENCY: &str = r#"{
 
 #[rstest::rstest]
 #[case::invalid_json5(
-    r#"{ manifest: [unclosed"#.to_string(),
+    r"{ manifest: [unclosed".to_string(),
     PeppyFailureKind::AttemptFailed,
     &["Failed to parse node config"]
 )]

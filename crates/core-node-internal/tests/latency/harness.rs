@@ -602,7 +602,7 @@ impl Drop for Scenario {
 // `seq` payload, so the tight request/reply loop is race-free.
 // ---------------------------------------------------------------------------
 
-const DRIVER_MAIN_RS: &str = r####"
+const DRIVER_MAIN_RS: &str = r#"
 use peppygen::{NodeBuilder, Result};
 use peppylib::config::{QoSProfile, TopicRetention};
 use peppylib::messaging::{ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget, Subscription, TopicBuffer, TopicMessenger};
@@ -802,9 +802,9 @@ fn main() -> Result<()> {
         Ok(())
     })
 }
-"####;
+"#;
 
-const RESPONDER_MAIN_RS: &str = r####"
+const RESPONDER_MAIN_RS: &str = r#"
 use peppygen::{NodeBuilder, Result};
 use peppylib::config::{QoSProfile, TopicRetention};
 use peppylib::messaging::{ProducerRef, SenderTarget, ServiceMessenger, TopicBuffer, TopicMessenger};
@@ -897,9 +897,9 @@ fn main() -> Result<()> {
         Ok(())
     })
 }
-"####;
+"#;
 
-const RESPONDER_MAIN_PY: &str = r####"
+const RESPONDER_MAIN_PY: &str = r#"
 import asyncio
 import os
 import sys
@@ -1000,4 +1000,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-"####;
+"#;

@@ -363,8 +363,7 @@ fn platform_section(platform: &Result<Option<PlatformReport>>) -> String {
         report
             .peer_status
             .as_ref()
-            .map(peer_status_label)
-            .unwrap_or("not listed (removed?)")
+            .map_or("not listed (removed?)", peer_status_label)
     ));
     out
 }

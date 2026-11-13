@@ -501,12 +501,11 @@ async fn converge_subscriptions<S: FollowedSlot>(
     let mut converged: Vec<Option<(Arc<S::Pin>, Subscription)>> = Vec::with_capacity(desired.len());
     let mut pending: Vec<(usize, S::Pin)> = Vec::new();
     for (position, pin) in desired.into_iter().enumerate() {
-        match current.iter().position(|(followed, _)| **followed == pin) {
-            Some(idx) => converged.push(Some(current.swap_remove(idx))),
-            None => {
-                converged.push(None);
-                pending.push((position, pin));
-            }
+        if let Some(idx) = current.iter().position(|(followed, _)| **followed == pin) {
+            converged.push(Some(current.swap_remove(idx)));
+        } else {
+            converged.push(None);
+            pending.push((position, pin));
         }
     }
 

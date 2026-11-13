@@ -45,7 +45,7 @@ fn find_peppy_documents(root: &Path) -> Vec<PathBuf> {
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| ext == "json5")
         })
-        .map(|e| e.into_path())
+        .map(walkdir::DirEntry::into_path)
         .collect()
 }
 

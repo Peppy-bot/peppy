@@ -109,7 +109,7 @@ async fn subscribe(
 /// Waits until the observer's wire subscription pinned to `source_instance` is
 /// visible to the publisher's session.
 async fn wait_for_source_wire_sub(handle: &MessengerHandle, source_instance: &str) {
-    wait_for_source_wire_sub_on_link(handle, source_instance, SOURCE_SLOT_LINK_ID).await
+    wait_for_source_wire_sub_on_link(handle, source_instance, SOURCE_SLOT_LINK_ID).await;
 }
 
 async fn wait_for_source_wire_sub_on_link(
@@ -154,7 +154,7 @@ async fn expect_message(
         &source_on_link(expected_producer, SOURCE_SLOT_LINK_ID),
         expected_payload,
     )
-    .await
+    .await;
 }
 
 async fn expect_message_from_source(
@@ -423,7 +423,7 @@ async fn an_observation_pinned_to_a_pair_hears_that_pair_only() {
             TOPIC,
             &ctrl(instance),
         )
-        .await
+        .await;
     };
 
     let (tx, watch_rx) = watch::channel(ObservationState::unregistered());

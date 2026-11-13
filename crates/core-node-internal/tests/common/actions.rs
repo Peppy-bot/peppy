@@ -955,9 +955,10 @@ pub(crate) async fn build_staged_node(started: &StartedCoreNode, node_name: &str
     )
     .await
     .expect("node_build request should complete");
-    if !result.is_completed() {
-        panic!("build_staged_node failed: {result:?}");
-    }
+    assert!(
+        result.is_completed(),
+        "build_staged_node failed: {result:?}"
+    );
 }
 
 /// Convenience helper for tests that need a node to be both added AND built

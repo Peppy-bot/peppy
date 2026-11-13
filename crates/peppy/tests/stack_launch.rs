@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use config::consts::NODE_CONFIG_FILE;
 use config::failure_kind::PeppyFailureKind;
 use core_node_api::NodeStage;
+use daemon_config::launcher::LaunchVariable;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::stack::{
@@ -245,7 +246,11 @@ async fn stack_launch_command_succeeds() {
             .iter()
             .any(|n| n.label().contains(&format!("{node_a_name}:{node_tag}"))),
         "graph should contain node_a before launch. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 
     let instance_id = "node_b_instance";
@@ -311,13 +316,21 @@ async fn stack_launch_command_succeeds() {
             .iter()
             .any(|n| n.label().contains(&format!("{node_a_name}:{node_tag}"))),
         "graph should not contain node_a after launch. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 
     let node_b = graph.find_node(node_b_name, node_tag).unwrap_or_else(|| {
         panic!(
             "graph should contain node_b after launch. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            graph
+                .nodes
+                .iter()
+                .map(core_node_api::SerializedNode::label)
+                .collect::<Vec<_>>()
         )
     });
     assert_eq!(
@@ -344,7 +357,11 @@ async fn stack_launch_command_succeeds() {
     let node_b = graph.find_node(node_b_name, node_tag).unwrap_or_else(|| {
         panic!(
             "graph should contain node_b after stop. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            graph
+                .nodes
+                .iter()
+                .map(core_node_api::SerializedNode::label)
+                .collect::<Vec<_>>()
         )
     });
     assert_eq!(
@@ -411,7 +428,11 @@ async fn stack_launch_fails_when_a_node_never_becomes_healthy_and_clears_the_sta
             .iter()
             .any(|n| n.label().contains(&format!("{node_a_name}:{node_tag}"))),
         "graph should contain node_a before launch. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
@@ -453,7 +474,11 @@ async fn stack_launch_fails_when_a_node_never_becomes_healthy_and_clears_the_sta
             .iter()
             .any(|n| n.label().contains(&format!("{node_a_name}:{node_tag}"))),
         "node_a should be torn down by the failed launch, not restored. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 
     assert!(
@@ -462,14 +487,22 @@ async fn stack_launch_fails_when_a_node_never_becomes_healthy_and_clears_the_sta
             .iter()
             .any(|n| n.label().contains(&format!("{node_b_name}:{node_tag}"))),
         "node_b should not be present after a failed launch. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 
     assert_eq!(
         graph.nodes.len(),
         1,
         "only the root core node should remain after a failed launch. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1154,7 +1187,11 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
             .iter()
             .any(|n| n.name == camera_name || n.name == lidar_name),
         "rejected launcher must not have added or spawned anything. Graph: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -2111,7 +2148,11 @@ async fn stack_launch_rejects_unbound_slot() {
             .iter()
             .any(|n| n.name == producer_name || n.name == consumer_name),
         "rejected launcher must not have added or spawned anything. Graph: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -3167,7 +3208,11 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
     assert!(
         graph.find_node(consumer_name, node_tag).is_some(),
         "the consumer should be in the stack. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
     // The dependency's config still joins the stack: the deployment's pinned
     // closure carries every dependency, and the batch add materializes the
@@ -3176,7 +3221,11 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
     let recorder_node = graph.find_node(recorder_name, node_tag).unwrap_or_else(|| {
         panic!(
             "the dependency's config arrives with the deployment's pinned closure. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            graph
+                .nodes
+                .iter()
+                .map(core_node_api::SerializedNode::label)
+                .collect::<Vec<_>>()
         )
     });
     assert_eq!(
@@ -3712,7 +3761,7 @@ fn stack_resolve_prints_the_launch_variables_after_the_adjustments() {
         brain
             .env_from_launch
             .iter()
-            .map(|variable| variable.as_str())
+            .map(LaunchVariable::as_str)
             .collect::<Vec<_>>(),
         ["GEMINI_API_KEY"],
         "{document}"
@@ -4402,8 +4451,7 @@ impl CountedLaunch {
         )
         .await
         .find_node(CACHED_NODE_NAME, "v1")
-        .map(|node| node.instance_count())
-        .unwrap_or(0)
+        .map_or(0, core_node_api::SerializedNode::instance_count)
     }
 
     /// The node's stage in the stack and the ids of every instance of it the
@@ -4774,8 +4822,10 @@ async fn stack_build_builds_the_nodes_the_selection_runs() {
     let log_file = logs
         .lines()
         .find_map(|line| line.split_once("Build goal accepted, log file: "))
-        .map(|(_, path)| PathBuf::from(path.trim()))
-        .unwrap_or_else(|| panic!("the build names its log file: {logs}"));
+        .map_or_else(
+            || panic!("the build names its log file: {logs}"),
+            |(_, path)| PathBuf::from(path.trim()),
+        );
     assert!(
         log_file
             .file_name()

@@ -138,10 +138,10 @@ async fn restart_task(
     let time = target.action.node_stack.time().clone();
     tokio::select! {
         biased;
-        _ = target.action.shutdown_token.cancelled() => return,
-        _ = reset.cancelled() => return,
-        _ = restart_token.cancelled() => return,
-        _ = time.sleep_from(scheduled_at, delay) => {}
+        () = target.action.shutdown_token.cancelled() => return,
+        () = reset.cancelled() => return,
+        () = restart_token.cancelled() => return,
+        () = time.sleep_from(scheduled_at, delay) => {}
     }
     let Some(admission) = target
         .action

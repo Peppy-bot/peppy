@@ -330,7 +330,7 @@ async fn a_downloaded_blob_lands_only_when_its_digest_and_size_match() {
     let mut seen = Vec::new();
     client
         .download_blob(&digest, content.len() as u64, &good, &mut |bytes| {
-            seen.push(bytes)
+            seen.push(bytes);
         })
         .await
         .expect("download");
@@ -452,7 +452,7 @@ async fn a_file_is_pushed_in_chunks_with_their_ranges_then_closed_with_its_diges
 
     let pushed = client
         .push_blob_file(&path, &digest, content.len() as u64, &mut |sent| {
-            progress.push(sent)
+            progress.push(sent);
         })
         .await
         .expect("push");
@@ -515,7 +515,7 @@ async fn the_progress_of_a_push_moves_by_the_parts_of_a_chunk() {
     registry
         .client(Access::Push)
         .push_blob_file(&path, &digest, content.len() as u64, &mut |sent| {
-            progress.push(sent)
+            progress.push(sent);
         })
         .await
         .expect("push");

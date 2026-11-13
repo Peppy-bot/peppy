@@ -87,7 +87,7 @@ pub fn ensure_test_fd_limit() {
                 rlim_cur: 0,
                 rlim_max: 0,
             };
-            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+            if libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) != 0 {
                 return;
             }
             let target = DESIRED_SOFT.min(limit.rlim_max);
@@ -95,7 +95,7 @@ pub fn ensure_test_fd_limit() {
                 return;
             }
             limit.rlim_cur = target;
-            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &limit);
+            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit);
         }
     });
 }

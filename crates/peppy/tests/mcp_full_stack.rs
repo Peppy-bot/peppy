@@ -801,7 +801,7 @@ fn stage_provider(
     let origin = ContractOrigin {
         link_id: link_id.to_string(),
         contract_name: contract.manifest.name.to_string(),
-        contract_tag: contract.manifest.tag.to_string(),
+        contract_tag: contract.manifest.tag.clone(),
         failure_kinds: contract.failure_kinds.clone(),
     };
     let mut generator = generator::RustGenerator::default();
@@ -4061,8 +4061,10 @@ impl JoinableStack {
         let path = printed
             .lines()
             .find_map(|line| line.split_once("goal accepted, log file: "))
-            .map(|(_, path)| path.trim().to_owned())
-            .unwrap_or_else(|| panic!("the command prints its log file:\n{printed}"));
+            .map_or_else(
+                || panic!("the command prints its log file:\n{printed}"),
+                |(_, path)| path.trim().to_owned(),
+            );
         fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"))
     }
 

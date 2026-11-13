@@ -300,7 +300,7 @@ libEGL_nvidia.so
     }
 
     fn names(list: &[&str]) -> Vec<String> {
-        list.iter().map(|name| name.to_string()).collect()
+        list.iter().map(ToString::to_string).collect()
     }
 
     // -- parsing --------------------------------------------------------------

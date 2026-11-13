@@ -713,7 +713,7 @@ mod tests {
 
         match err {
             Error::RegistryAuthFileInvalid { path, .. } => {
-                assert!(path.ends_with("home/.docker/config.json"), "path {path}")
+                assert!(path.ends_with("home/.docker/config.json"), "path {path}");
             }
             other => panic!("unexpected error: {other}"),
         }
@@ -732,7 +732,7 @@ mod tests {
 
         match err {
             Error::RegistryAuthFileUnreadable { path, .. } => {
-                assert!(path.ends_with("home/.docker/config.json"), "path {path}")
+                assert!(path.ends_with("home/.docker/config.json"), "path {path}");
             }
             other => panic!("unexpected error: {other}"),
         }

@@ -1461,11 +1461,10 @@ impl MonitorSlots {
                 format!(
                     "{}:{}",
                     member.producer.instance_id,
-                    member
-                        .copy
-                        .as_ref()
-                        .map(|copy| format!("{}/{}", copy.name, copy.instance_id))
-                        .unwrap_or_else(|| "-".to_string())
+                    member.copy.as_ref().map_or_else(
+                        || "-".to_string(),
+                        |copy| format!("{}/{}", copy.name, copy.instance_id)
+                    )
                 )
             })
             .collect()
@@ -1525,7 +1524,7 @@ async fn a_monitor_holding_a_later_set_keeps_its_record_through_a_join() {
         .expect("the monitor runs")
         .slot_bindings
         .get("robots")
-        .map(|bound| bound.len());
+        .map(config::runtime::BoundProducers::len);
     assert_eq!(
         recorded,
         Some(0),

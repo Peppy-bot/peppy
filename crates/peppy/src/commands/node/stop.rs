@@ -96,7 +96,7 @@ mod tests {
                  worst-case stop {daemon_worst_case:?}",
             );
             assert_eq!(
-                cli - daemon_worst_case,
+                cli.checked_sub(daemon_worst_case).unwrap(),
                 DAEMON_MESSAGING_MARGIN,
                 "the headroom must be exactly the messaging margin",
             );

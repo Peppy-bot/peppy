@@ -2628,7 +2628,7 @@ async fn action_communication_goal_cancelled() {
                     loop {
                         tokio::select! {
                             biased;
-                            _ = stop_notified.as_mut() => break,
+                            () = stop_notified.as_mut() => break,
                             _ = ticker.tick() => {
                                 feedback_publisher
                                     .publish(
@@ -2745,9 +2745,10 @@ async fn action_communication_goal_cancelled() {
         if now >= quiet_deadline {
             break;
         }
-        if now.duration_since(start) >= overall_timeout {
-            panic!("feedback did not stop within {overall_timeout:?} after cancellation");
-        }
+        assert!(
+            now.duration_since(start) < overall_timeout,
+            "feedback did not stop within {overall_timeout:?} after cancellation"
+        );
 
         let remaining = quiet_deadline
             .checked_duration_since(now)
@@ -3172,8 +3173,8 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
     .await
     .expect("send_goal should succeed");
 
-    let winner_inst = goal_handle.goal_reply().instance_id.to_string();
-    let winner_core = goal_handle.goal_reply().core_node.to_string();
+    let winner_inst = goal_handle.goal_reply().instance_id.clone();
+    let winner_core = goal_handle.goal_reply().core_node.clone();
     assert!(
         winner_inst == server_a_inst || winner_inst == server_b_inst,
         "goal_response identity must come from one of the producers, got {winner_inst:?}",
@@ -3478,7 +3479,7 @@ async fn action_send_goal_full_wildcard_discovers() {
     .expect("send_goal should succeed");
 
     assert_eq!(goal_handle.goal_reply().instance_id, shared_inst);
-    let winner_core = goal_handle.goal_reply().core_node.to_string();
+    let winner_core = goal_handle.goal_reply().core_node.clone();
     assert!(
         winner_core == server_a_core || winner_core == server_b_core,
         "goal_response core_node must come from one of the producers, got {winner_core:?}",
@@ -4314,7 +4315,7 @@ async fn topic_pinned_subscription_compares_full_pairs() {
             loop {
                 tokio::select! {
                     biased;
-                    _ = stop.cancelled() => break,
+                    () = stop.cancelled() => break,
                     _ = ticker.tick() => {
                         publisher
                             .publish(payload.clone())

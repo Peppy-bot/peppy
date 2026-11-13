@@ -261,7 +261,7 @@ mod tests {
         // Exactly one entry per id 1000 and 1001: the user's entries, not the defaults.
         let id_1000: Vec<_> = repos
             .iter()
-            .filter(|e| e.get("id").and_then(|v| v.as_u64()) == Some(1000))
+            .filter(|e| e.get("id").and_then(Value::as_u64) == Some(1000))
             .collect();
         assert_eq!(
             id_1000.len(),
@@ -276,7 +276,7 @@ mod tests {
 
         let id_1001: Vec<_> = repos
             .iter()
-            .filter(|e| e.get("id").and_then(|v| v.as_u64()) == Some(1001))
+            .filter(|e| e.get("id").and_then(Value::as_u64) == Some(1001))
             .collect();
         assert_eq!(
             id_1001.len(),

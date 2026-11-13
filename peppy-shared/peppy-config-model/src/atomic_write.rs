@@ -117,7 +117,7 @@ mod tests {
         // The staging tmp file must not linger in the parent directory either.
         let leftovers: Vec<_> = std::fs::read_dir(dir.path())
             .expect("read dir")
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .collect();
         assert!(
             leftovers.is_empty(),

@@ -204,7 +204,7 @@ impl PyContract {
         let paragraphs = self.inner.description().paragraphs();
         paragraphs
             .iter()
-            .map(|paragraph| paragraph.as_str())
+            .map(config::description::Description::as_str)
             .collect()
     }
 
@@ -274,13 +274,13 @@ impl PyContract {
         path: Vec<String>,
     ) -> PyResult<Vec<String>> {
         let field = self.field(kind, name, side, &path)?;
-        Ok(field.marks().iter().map(|mark| mark.to_string()).collect())
+        Ok(field.marks().iter().map(ToString::to_string).collect())
     }
 
     /// The marks of a member, empty for a member with none.
     fn member_marks(&self, kind: &str, name: &str) -> PyResult<Vec<String>> {
         let marks = self.inner.marks.of(interface_kind(kind)?, name);
-        Ok(marks.iter().map(|mark| mark.to_string()).collect())
+        Ok(marks.iter().map(ToString::to_string).collect())
     }
 
     /// The description of a member. Raises `KeyError` for a member that the
@@ -288,7 +288,7 @@ impl PyContract {
     fn member_description(&self, kind: &str, name: &str) -> PyResult<&str> {
         self.inner
             .member_description(interface_kind(kind)?, name)
-            .map(|description| description.as_str())
+            .map(config::description::Description::as_str)
             .ok_or_else(|| PyKeyError::new_err(format!("the contract has no {kind} `{name}`")))
     }
 
@@ -303,7 +303,9 @@ impl PyContract {
         path: Vec<String>,
     ) -> PyResult<Option<&str>> {
         let field = self.field(kind, name, side, &path)?;
-        Ok(field.description().map(|description| description.as_str()))
+        Ok(field
+            .description()
+            .map(config::description::Description::as_str))
     }
 
     /// The failure kinds of the contract that a service or an action lists,

@@ -175,7 +175,7 @@ fn verify_runs(path: &Path) -> Result<(), CompilerError> {
             Ok(output) => break output,
             Err(err) if is_transient_exec_error(&err) && attempt < MAX_TRANSIENT_RETRIES => {
                 attempt += 1;
-                let backoff = Duration::from_millis((10 * attempt as u64).min(100));
+                let backoff = Duration::from_millis((10 * u64::from(attempt)).min(100));
                 std::thread::sleep(backoff);
             }
             Err(err) => {
@@ -243,9 +243,9 @@ fn ensure_executable(path: &Path) -> Result<(), CompilerError> {
 /// compared.
 fn matches_carried(path: &Path, expected: &[u8]) -> bool {
     match fs::metadata(path) {
-        Ok(metadata) if metadata.len() == expected.len() as u64 => fs::read(path)
-            .map(|actual| actual.as_slice() == expected)
-            .unwrap_or(false),
+        Ok(metadata) if metadata.len() == expected.len() as u64 => {
+            fs::read(path).is_ok_and(|actual| actual.as_slice() == expected)
+        }
         _ => false,
     }
 }

@@ -204,10 +204,10 @@ impl LoadedComposition {
 /// The label error messages and reports name a launcher by: its file name,
 /// or the path as written when it has no final component.
 pub(super) fn launcher_file_label(launcher_file: &Path) -> String {
-    launcher_file
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| launcher_file.display().to_string())
+    launcher_file.file_name().map_or_else(
+        || launcher_file.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
 }
 
 /// Reads every fragment the launcher references and runs the

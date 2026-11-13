@@ -201,7 +201,7 @@ fn refresh_result(refreshed: &RefreshedRepos) -> RepoRefreshResult {
 /// running four times. `failures` arrives in repository id order, which
 /// is what makes the report reproducible between machines.
 pub(crate) fn failure_report(failures: &[RepoFailure]) -> String {
-    let lines: Vec<String> = failures.iter().map(|f| f.to_string()).collect();
+    let lines: Vec<String> = failures.iter().map(ToString::to_string).collect();
     format!(
         "{} of the configured repositories could not be updated. \
          Every other repository was updated normally.{}",
@@ -693,14 +693,13 @@ pub(crate) fn process_refresh(
     // A repository outside `scope` keeps its entries from the previous
     // caches. Without them it would keep nothing and vanish until the next
     // full refresh, so the refresh then reads every repository.
-    let (previous, scope) = match load_previous_caches(peppy_dirs) {
-        Some(previous) => (previous, scope),
-        None => {
-            if *scope != RefreshScope::Every {
-                info!("The previous caches cannot be read, so the refresh reads every repository");
-            }
-            (RepoItems::default(), &RefreshScope::Every)
+    let (previous, scope) = if let Some(previous) = load_previous_caches(peppy_dirs) {
+        (previous, scope)
+    } else {
+        if *scope != RefreshScope::Every {
+            info!("The previous caches cannot be read, so the refresh reads every repository");
         }
+        (RepoItems::default(), &RefreshScope::Every)
     };
     // Resolved once for the whole refresh: retention asks which repository
     // owns an entry for every previous entry of all five kinds, of every
@@ -1227,7 +1226,7 @@ mod tests {
         let by_id = |id: u64| -> &Value {
             repos
                 .iter()
-                .find(|r| r.get("id").and_then(|v| v.as_u64()) == Some(id))
+                .find(|r| r.get("id").and_then(Value::as_u64) == Some(id))
                 .unwrap_or_else(|| panic!("default repos should include id {id}"))
         };
 
@@ -2209,7 +2208,7 @@ mod tests {
         let repo_url = format!("file://{}", src.display());
         write_repos(
             &peppy_dirs,
-            &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#,),
+            &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#),
         );
 
         let contracts = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
@@ -2492,7 +2491,7 @@ mod tests {
         let repo_url = format!("file://{}", src.display());
         write_repos(
             &peppy_dirs,
-            &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#,),
+            &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#),
         );
 
         let launchers = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})

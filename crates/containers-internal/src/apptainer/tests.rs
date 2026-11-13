@@ -200,8 +200,7 @@ fn run_bundled_binary_or_skip(binary: &Path, args: &[&str]) -> Option<std::proce
 #[cfg(target_os = "linux")]
 fn apparmor_restricts_userns() -> bool {
     fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-        .map(|v| v.trim() == "1")
-        .unwrap_or(false)
+        .is_ok_and(|v| v.trim() == "1")
 }
 
 // ---------------------------------------------------------------------------
@@ -1326,8 +1325,7 @@ fn check_setup_status_detects_stale_apparmor_profile_path() {
     // Read this install's profile and check if it references the current path.
     let profile = apparmor_profile_ref(&apptainer_dir);
     let profile_references_current_path = fs::read_to_string(&profile.file)
-        .map(|content| content.contains(&profile.starter_path))
-        .unwrap_or(false);
+        .is_ok_and(|content| content.contains(&profile.starter_path));
 
     if !profile_references_current_path {
         assert!(
@@ -1863,7 +1861,7 @@ fn native_build_fails_on_an_invalid_registry_auth_file() {
 
     match err {
         Error::RegistryAuthFileInvalid { path, .. } => {
-            assert_eq!(path, fixture.docker_config.display().to_string())
+            assert_eq!(path, fixture.docker_config.display().to_string());
         }
         other => panic!("unexpected error: {other}"),
     }

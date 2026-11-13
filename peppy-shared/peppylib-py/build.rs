@@ -20,7 +20,7 @@ fn check_pixi_installed() {
         Ok(output) if output.status.success() => {}
         _ => {
             panic!(
-                r#"
+                r"
 ================================================================================
 ERROR: pixi is not installed or not found in PATH
 
@@ -32,7 +32,7 @@ To install pixi, run:
 
 For more information, visit: https://pixi.sh
 ================================================================================
-"#
+"
             );
         }
     }
@@ -46,7 +46,7 @@ fn check_uv_installed() {
         Ok(output) if output.status.success() => {}
         _ => {
             panic!(
-                r#"
+                r"
 ================================================================================
 ERROR: uv is not installed or not found in PATH
 
@@ -58,7 +58,7 @@ To install uv, run:
 
 For more information, visit: https://docs.astral.sh/uv/
 ================================================================================
-"#
+"
             );
         }
     }
@@ -74,9 +74,7 @@ fn configure_python_from_pixi() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let pixi_toml = manifest_dir.join("pixi.toml");
 
-    if !pixi_toml.exists() {
-        panic!("pixi.toml not found at {pixi_toml:?}");
-    }
+    assert!(pixi_toml.exists(), "pixi.toml not found at {pixi_toml:?}");
 
     // Serialize concurrent pixi invocations to avoid "Text file busy" races
     // when multiple build scripts run pixi on the same environment.

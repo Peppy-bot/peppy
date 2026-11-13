@@ -1006,7 +1006,7 @@ mod tests {
             )
             .expect("the field `mode`");
         assert_eq!(
-            mode.enum_values().map(|values| values.values()),
+            mode.enum_values().map(config::mark::EnumValues::values),
             Some(["idle".to_owned(), "moving".to_owned()].as_slice())
         );
         assert!(mode.marks().is_empty());
@@ -1033,7 +1033,7 @@ mod tests {
         assert!(item.marks().contains("item_id"));
 
         let marks = contract.marks.of(InterfaceKind::Action, "move_gripper");
-        let names: Vec<&str> = marks.iter().map(|mark| mark.as_str()).collect();
+        let names: Vec<&str> = marks.iter().map(config::mark::MarkName::as_str).collect();
         assert_eq!(names, ["moves_robot", "long_motion"]);
         assert!(
             contract
@@ -1204,7 +1204,7 @@ mod tests {
     #[test]
     fn the_parser_refuses_a_missing_or_blank_description_and_names_the_part() {
         let blank_paragraph = r#", description: ["An arm.", " "]"#;
-        let no_paragraph = r#", description: []"#;
+        let no_paragraph = r", description: []";
         let blank_member = r#", description: """#;
         let blank_field = r#", $description: "  ""#;
         let cases = [

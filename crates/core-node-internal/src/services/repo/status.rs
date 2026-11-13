@@ -81,9 +81,7 @@ pub(crate) fn repo_status_path(peppy_dirs: &PeppyDirs) -> PathBuf {
 /// it. A status file is a diagnostic, so a nonsense clock degrades the
 /// reporting rather than failing the refresh that produced it.
 pub(crate) fn unix_secs(now: SystemTime) -> u64 {
-    now.duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 /// Reads the status file, or an empty list when it is missing or

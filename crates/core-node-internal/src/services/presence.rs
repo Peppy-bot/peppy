@@ -245,7 +245,7 @@ pub(crate) async fn watch_for_duplicate_name(
         loop {
             let event = tokio::select! {
                 biased;
-                _ = cancel.cancelled() => break,
+                () = cancel.cancelled() => break,
                 event = watch.rx.recv_async() => match event {
                     Ok(event) => event,
                     Err(_) => break,

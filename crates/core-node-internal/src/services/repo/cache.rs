@@ -291,6 +291,10 @@ pub(crate) trait RepoCacheEntry:
     /// Empty for untagged kinds (launchers), so `(name, tag)` is the
     /// identity key for every kind. Those kinds carry no tag field at all,
     /// so the default is what they use.
+    #[expect(
+        clippy::unnecessary_literal_bound,
+        reason = "a tagged kind returns the tag that the entry holds"
+    )]
     fn tag(&self) -> &str {
         ""
     }

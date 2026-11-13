@@ -3403,7 +3403,7 @@ fn a_file_copy_may_leave_an_axis_for_a_launch_word() {
 
     // An override of an instance only one option defines is reported for
     // the other option the launch word may name.
-    let problems = composition_problems(&document(r#", arguments: { headset_inst: { fov: 1 } }"#));
+    let problems = composition_problems(&document(r", arguments: { headset_inst: { fov: 1 } }"));
     assert!(
         problems
             .iter()
@@ -3457,7 +3457,7 @@ fn a_file_copy_may_leave_two_axes_for_launch_words() {
 
     // An override of an instance only one commander defines is reported for
     // each camera the other commander runs beside.
-    let problems = composition_problems(&document(r#", arguments: { headset_inst: { fov: 1 } }"#));
+    let problems = composition_problems(&document(r", arguments: { headset_inst: { fov: 1 } }"));
     for combination in [
         "(commander=web) (camera=usb)",
         "(commander=web) (camera=ip)",

@@ -219,7 +219,7 @@ async fn run_watchdog<S: DaemonSignals>(
     let loss = tokio::select! {
         biased;
         // Another shutdown path already fired; stop watching.
-        _ = cancellation_token.cancelled() => return Ok(()),
+        () = cancellation_token.cancelled() => return Ok(()),
         loss = watch_own_daemon(daemons, own, grace) => loss,
     };
     // The session closed: losing the session is not proof that the daemon is
@@ -604,10 +604,10 @@ mod tests {
             Step::Present(OWN),
             Step::Beat(OWN),
             Step::Absent(OWN),
-            Step::Silence(grace - Duration::from_secs(1)),
+            Step::Silence(grace.checked_sub(Duration::from_secs(1)).unwrap()),
             Step::Present(OWN),
             Step::Beat(OWN),
-            Step::Silence(grace - Duration::from_secs(1)),
+            Step::Silence(grace.checked_sub(Duration::from_secs(1)).unwrap()),
             Step::Beat(OWN),
         ]);
 

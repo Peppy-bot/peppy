@@ -1027,7 +1027,7 @@ mod tests {
             .execution
             .endpoints
             .keys()
-            .map(|label| label.to_string())
+            .map(ToString::to_string)
             .collect();
         assert_eq!(labels, ["camera_v1", "camera_v2"]);
         assert!(

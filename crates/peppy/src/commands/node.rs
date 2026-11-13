@@ -1432,7 +1432,7 @@ mod tests {
     fn repeated_link_keys_accumulate_and_exact_duplicates_are_rejected() {
         let flags = |targets: &[&str]| {
             LinkValue::Bound(Selection::Flags(
-                LinkTargets::new(targets.iter().map(|t| t.to_string()).collect())
+                LinkTargets::new(targets.iter().map(ToString::to_string).collect())
                     .expect("test targets are unique"),
             ))
         };

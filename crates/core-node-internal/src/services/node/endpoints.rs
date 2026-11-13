@@ -140,7 +140,10 @@ pub(crate) fn expand_announcements(
         .iter()
         .map(|endpoint| endpoint.label.as_str())
         .collect();
-    let declared_labels: BTreeSet<&str> = declared.keys().map(|label| label.as_str()).collect();
+    let declared_labels: BTreeSet<&str> = declared
+        .keys()
+        .map(config::node::EndpointLabel::as_str)
+        .collect();
     if announced_labels != declared_labels {
         let joined =
             |labels: &BTreeSet<&str>| labels.iter().copied().collect::<Vec<_>>().join(", ");

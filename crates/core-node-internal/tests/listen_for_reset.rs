@@ -436,7 +436,7 @@ fn starting_pid(node_stack: &NodeStack, name: &str, tag: &str) -> Option<u32> {
             .read()
             .instances()
             .first()
-            .and_then(|inst| inst.pid())
+            .and_then(node_stack::TrackedNodeInstance::pid)
     })
 }
 

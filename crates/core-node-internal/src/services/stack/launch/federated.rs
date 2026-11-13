@@ -224,26 +224,25 @@ async fn reserve_participants(
                     }
                 }
             }
-            Err(error) => match error.failure() {
-                // An answered refusal reserved nothing, so the peer owes no
-                // release.
-                Some(refusal) => {
+            Err(error) => {
+                if let Some(refusal) = error.failure() {
+                    // An answered refusal reserved nothing, so the peer owes
+                    // no release.
                     every_refusal_is_busy &= DaemonFailureKind::parse(refusal.kind().as_str())
                         == Some(DaemonFailureKind::Busy);
                     refusals.push(format!("`{core_node}` refused: {}", refusal.message()));
-                }
-                // An unanswered reservation is not a refusal: the request may
-                // have landed and reserved the peer with only the ack lost, so
-                // it is released with the ones that acked. Releasing a peer
-                // that never reserved succeeds as a no-op.
-                None => {
+                } else {
+                    // An unanswered reservation is not a refusal: the request
+                    // may have landed and reserved the peer with only the ack
+                    // lost, so it is released with the ones that acked.
+                    // Releasing a peer that never reserved succeeds as a no-op.
                     to_release.push(core_node.clone());
                     a_peer_is_unavailable = true;
                     refusals.push(format!(
                         "`{core_node}` did not answer the reservation: {error}"
                     ));
                 }
-            },
+            }
         }
     }
 
@@ -393,17 +392,20 @@ async fn release_participants(
             // a reservation for a DIFFERENT launch, so this one never owned it
             // and its end with this coordinator will not clear it either. Worth its own
             // line, because it means two coordinators overlapped.
-            Err(e) => match e.failure() {
-                Some(refusal) => tracing::warn!(
-                    "`{core_node}` refused to release launch `{launch_id}`: {}",
-                    refusal.message()
-                ),
-                None => tracing::warn!(
-                    "could not release `{core_node}` from launch `{launch_id}` ({e}); its \
-                     reservation drops on its own when this coordinator reserves it for its \
-                     next launch or leaves the federation"
-                ),
-            },
+            Err(e) => {
+                if let Some(refusal) = e.failure() {
+                    tracing::warn!(
+                        "`{core_node}` refused to release launch `{launch_id}`: {}",
+                        refusal.message()
+                    );
+                } else {
+                    tracing::warn!(
+                        "could not release `{core_node}` from launch `{launch_id}` ({e}); its \
+                 reservation drops on its own when this coordinator reserves it for its \
+                 next launch or leaves the federation"
+                    );
+                }
+            }
         }
     }))
     .await;

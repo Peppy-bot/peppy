@@ -209,7 +209,7 @@ mod tests {
 
     fn leaf(path: &[&str]) -> InterfaceArtifact {
         InterfaceArtifact {
-            module_path: path.iter().map(|s| s.to_string()).collect(),
+            module_path: path.iter().map(ToString::to_string).collect(),
             kind: InterfaceKind::ConsumedTopic,
             code_output: "x\n".to_string(),
         }

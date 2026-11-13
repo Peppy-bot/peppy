@@ -230,23 +230,22 @@ pub fn run_command_with_timeout(command: &mut Command, timeout: Duration) -> Com
     let stdout = stdout_thread.join().unwrap_or_default();
     let stderr = stderr_thread.join().unwrap_or_default();
 
-    match exit_status {
-        Some(status) => CommandOutput {
+    if let Some(status) = exit_status {
+        CommandOutput {
             success: status.success(),
             stdout,
             stderr,
-        },
-        None => {
-            let timed_out = if stderr.trim().is_empty() {
-                format!("command timed out after {timeout:?}")
-            } else {
-                format!("command timed out after {timeout:?}: {stderr}")
-            };
-            CommandOutput {
-                success: false,
-                stdout,
-                stderr: timed_out,
-            }
+        }
+    } else {
+        let timed_out = if stderr.trim().is_empty() {
+            format!("command timed out after {timeout:?}")
+        } else {
+            format!("command timed out after {timeout:?}: {stderr}")
+        };
+        CommandOutput {
+            success: false,
+            stdout,
+            stderr: timed_out,
         }
     }
 }

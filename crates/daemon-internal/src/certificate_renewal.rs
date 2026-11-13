@@ -94,8 +94,8 @@ impl ServeAsyncCommand for CertificateRenewal {
         } = *self;
         let future = Box::pin(async move {
             tokio::select! {
-                _ = keep_certificate_valid(&deps) => {}
-                _ = teardown_token.cancelled() => {}
+                () = keep_certificate_valid(&deps) => {}
+                () = teardown_token.cancelled() => {}
             }
             Ok(())
         });
@@ -214,8 +214,7 @@ fn retry_delay(retry_after_secs: Option<u64>) -> Duration {
 /// a date.
 pub(crate) fn rfc3339(unix: i64) -> String {
     chrono::DateTime::from_timestamp(unix, 0)
-        .map(|time| time.to_rfc3339())
-        .unwrap_or_else(|| unix.to_string())
+        .map_or_else(|| unix.to_string(), |time| time.to_rfc3339())
 }
 
 #[cfg(test)]

@@ -372,7 +372,7 @@ async fn hold_leases(ctx: &InterfaceContext, client: ClientRef, pending: Pending
         Err(error) => {
             tracing::debug!(%error, "a `lease` goal was not accepted");
             ctx.slice_ownership.fleet.with(|book| {
-                book.end_holding(&client, &generation, "its lease goal was not accepted")
+                book.end_holding(&client, &generation, "its lease goal was not accepted");
             });
             return;
         }

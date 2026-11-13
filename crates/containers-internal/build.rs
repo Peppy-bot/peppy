@@ -414,13 +414,12 @@ mod apptainer_build {
         // Fall back to rm -rf which can sometimes succeed where std::fs
         // cannot (e.g. when directory permissions differ).
         let _ = Command::new("rm").args(["-rf"]).arg(dir).status();
-        if dir.exists() {
-            panic!(
-                "Cannot remove stale apptainer cache at {dir:?} (likely contains root-owned files \
-                 from a previous Lima VM build). Please remove it manually:\n  \
-                 sudo rm -rf {dir:?}"
-            );
-        }
+        assert!(
+            !dir.exists(),
+            "Cannot remove stale apptainer cache at {dir:?} (likely contains root-owned files \
+             from a previous Lima VM build). Please remove it manually:\n  \
+             sudo rm -rf {dir:?}"
+        );
     }
 
     /// LIMA_HOME for the build-time VM instance.
@@ -711,8 +710,7 @@ mod apptainer_build {
     /// QEMU fallback path.
     fn build_vm_cpus() -> usize {
         std::thread::available_parallelism()
-            .map(|n| n.get().saturating_sub(2))
-            .unwrap_or(4)
+            .map_or(4, |n| n.get().saturating_sub(2))
             .clamp(2, 8)
     }
 
@@ -1459,8 +1457,7 @@ mod apptainer_build {
     fn probe_succeeds(command: &mut Command) -> bool {
         silenced(command)
             .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
+            .is_ok_and(|status| status.success())
     }
 
     /// Discard a probe's stdio: these run for their exit status alone, and

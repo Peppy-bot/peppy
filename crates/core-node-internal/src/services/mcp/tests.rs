@@ -6,7 +6,9 @@ use super::*;
 use crate::services::repo::index::publish_repository_index;
 use crate::test_support::{SeededDocument, seed_contract_cache, seed_exposure_cache};
 use daemon_config::consts::PeppyDirs;
-use daemon_config::repository::{DeploymentPins, DeploymentRoot, ManifestFingerprint, PinKind};
+use daemon_config::repository::{
+    DeploymentPins, DeploymentRoot, ManifestFingerprint, PinKind, PinnedItem,
+};
 use daemon_config::source::ExposureRef;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -200,8 +202,11 @@ fn a_launch_resolves_exposures_and_their_contracts_through_the_caches() {
     let resolved = resolve_exposure_deployment(&home.dirs, &references(&["both", "cam"]), &quiet)
         .expect("resolves");
     assert_eq!(resolved.plan.name.as_str(), "mcp_both_v1_cam_v1");
-    let mut contract_pins: Vec<String> =
-        resolved.contract_pins().iter().map(|p| p.label()).collect();
+    let mut contract_pins: Vec<String> = resolved
+        .contract_pins()
+        .iter()
+        .map(PinnedItem::label)
+        .collect();
     contract_pins.sort();
     assert_eq!(
         contract_pins,
@@ -283,7 +288,11 @@ fn a_daemon_target_resolves_no_contract() {
         &quiet,
     )
     .expect("resolves");
-    let contract_pins: Vec<String> = mixed.contract_pins().iter().map(|p| p.label()).collect();
+    let contract_pins: Vec<String> = mixed
+        .contract_pins()
+        .iter()
+        .map(PinnedItem::label)
+        .collect();
     assert_eq!(contract_pins, ["contract `rgb_camera:v1`"]);
     assert_eq!(
         mixed.plan.targets.daemon.keys().collect::<Vec<_>>(),

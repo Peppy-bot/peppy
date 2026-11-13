@@ -35,8 +35,8 @@ pub fn summarize(samples: &[u64]) -> Summary {
     let mut sorted = samples.to_vec();
     sorted.sort_unstable();
     let count = sorted.len() as u64;
-    let sum: u128 = sorted.iter().map(|&v| v as u128).sum();
-    let mean_ns = (sum / count as u128) as u64;
+    let sum: u128 = sorted.iter().map(|&v| u128::from(v)).sum();
+    let mean_ns = (sum / u128::from(count)) as u64;
     Summary {
         p50_ns: percentile(&sorted, 0.5),
         p90_ns: percentile(&sorted, 0.9),

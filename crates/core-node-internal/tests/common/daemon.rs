@@ -952,7 +952,7 @@ pub(crate) async fn install_shutdown_listener_for_instance(
                 .instances()
                 .iter()
                 .find(|inst| inst.instance_id().as_str() == instance_id)
-                .and_then(|inst| inst.pid())
+                .and_then(node_stack::TrackedNodeInstance::pid)
         });
         if let Some(pid) = pid {
             let _ = std::process::Command::new("kill")

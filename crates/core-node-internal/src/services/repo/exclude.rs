@@ -197,8 +197,7 @@ fn exclude_repository(
         .iter()
         .filter_map(repo_entry_id)
         .max()
-        .map(|max| max + 1)
-        .unwrap_or(1);
+        .map_or(1, |max| max + 1);
 
     repos.push(repo_source_to_json(next_id, &request.source));
     repos.sort_by_key(|e| repo_entry_id(e).unwrap_or(0));

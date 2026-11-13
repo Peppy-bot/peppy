@@ -168,9 +168,7 @@ async fn wait_until_reachable<T: std::fmt::Debug>(
             return;
         }
 
-        if Instant::now() >= deadline {
-            panic!("{timeout_message}");
-        }
+        assert!(Instant::now() < deadline, "{timeout_message}");
 
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -511,7 +509,7 @@ async fn poll_test_node_until_answered(
         {
             Ok(response) => return response.payload(),
             Err(_) if Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(50)).await
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
             Err(err) => panic!("`{service}` never answered: {err}"),
         }

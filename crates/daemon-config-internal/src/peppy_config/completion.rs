@@ -954,7 +954,7 @@ mod tests {
     #[test]
     fn partial_subscriber_buffers_block_gains_missing_field() {
         let completed = complete_config_content(
-            r#"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_size: 64 } } } }"#,
+            r"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_size: 64 } } } }",
         )
         .expect("high_throughput_buffer_size missing")
         .content;
@@ -976,7 +976,7 @@ mod tests {
     #[test]
     fn empty_subscriber_buffers_block_gains_fields_at_depth_four() {
         let completed =
-            complete_config_content(r#"{ zenoh: { managed: { subscriber_buffers: {} } } }"#)
+            complete_config_content(r"{ zenoh: { managed: { subscriber_buffers: {} } } }")
                 .expect("the buffer sizes and everything else missing")
                 .content;
         let config = parse(&completed);
@@ -990,7 +990,7 @@ mod tests {
 
     #[test]
     fn partial_lifecycle_block_gains_field_with_its_comment() {
-        let completed = complete_config_content(r#"{ lifecycle: { daemon_grace_secs: 600, } }"#)
+        let completed = complete_config_content(r"{ lifecycle: { daemon_grace_secs: 600, } }")
             .expect("shutdown_grace_secs missing")
             .content;
         let config = parse(&completed);

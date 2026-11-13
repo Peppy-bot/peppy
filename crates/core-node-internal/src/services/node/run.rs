@@ -375,7 +375,7 @@ struct NodeRunGoalHandler {
 
 impl GoalHandler for NodeRunGoalHandler {
     async fn handle_goal(&self, pending: PendingGoal) {
-        handle_goal_request(pending, self.context.clone(), self.gate.clone()).await
+        handle_goal_request(pending, self.context.clone(), self.gate.clone()).await;
     }
 }
 
@@ -492,7 +492,7 @@ impl FeedbackSync {
                 // state holds for the quiet window before closing.
                 match tokio::time::timeout(quiet_window, notified).await {
                     Err(_) => return true,
-                    Ok(_) => continue,
+                    Ok(()) => continue,
                 }
             }
 
@@ -1825,7 +1825,7 @@ async fn process_node_run(
     // failure. The node does not listen for the shutdown request yet.
     let ready = tokio::select! {
         biased;
-        _ = cancel_token.cancelled() => Err(StartFailure::cancelled("ready-signal wait")),
+        () = cancel_token.cancelled() => Err(StartFailure::cancelled("ready-signal wait")),
         res = poll_startup_service(&signal_target, StartupProbe::Ready { first_start: respawn.is_none() }, ctx.action.node_startup_timeout, &child) => res.map(drop),
     };
     if let Err(failure) = ready {
@@ -1853,7 +1853,7 @@ async fn process_node_run(
     // hooks run.
     let setup = tokio::select! {
         biased;
-        _ = cancel_token.cancelled() => Err(StartFailure::cancelled("setup")),
+        () = cancel_token.cancelled() => Err(StartFailure::cancelled("setup")),
         res = poll_startup_service(&signal_target, StartupProbe::Health(&setup_budget), setup_budget.duration(), &child) => res.map(drop),
     };
 
@@ -1866,7 +1866,7 @@ async fn process_node_run(
             let host = host_addresses(&ctx.action.daemon_defaults.host_addresses);
             tokio::select! {
                 biased;
-                _ = cancel_token.cancelled() => Err(StartFailure::cancelled("setup")),
+                () = cancel_token.cancelled() => Err(StartFailure::cancelled("setup")),
                 res = poll_startup_service(&signal_target, StartupProbe::Endpoints, NODE_ENDPOINTS_TIMEOUT, &child) => {
                     res.and_then(|reply| {
                         let response = NodeEndpointsResponse::decode(reply.as_ref()).map_err(|e| {
@@ -2475,7 +2475,7 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
         // removal; on a self-exit (`Some`) it moves on below.
         let status = tokio::select! {
             biased;
-            _ = action.shutdown_token.cancelled() => None,
+            () = action.shutdown_token.cancelled() => None,
             status = child.wait() => Some(status),
         };
 
@@ -3245,10 +3245,7 @@ mod tests {
             // The node is stamped with the daemon's namespace, so it opens its
             // session under the same routing-isolation prefix as the daemon.
             assert_eq!(
-                cfg.discovery
-                    .namespace
-                    .as_ref()
-                    .map(|namespace| namespace.as_str()),
+                cfg.discovery.namespace.as_ref().map(pmi::Namespace::as_str),
                 Some("local")
             );
         }
@@ -3288,10 +3285,7 @@ mod tests {
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(&mut cfg, &defaults, false);
         assert_eq!(
-            cfg.discovery
-                .namespace
-                .as_ref()
-                .map(|namespace| namespace.as_str()),
+            cfg.discovery.namespace.as_ref().map(pmi::Namespace::as_str),
             Some("550e8400-e29b-41d4-a716-446655440000")
         );
     }

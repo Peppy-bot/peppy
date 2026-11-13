@@ -178,12 +178,12 @@ fn primitive_json(token: &TypeToken) -> Value {
 /// here.
 pub(crate) fn integer_bounds(token: &TypeToken) -> Option<(i64, i64)> {
     match token {
-        TypeToken::U8 => Some((0, u8::MAX as i64)),
-        TypeToken::U16 => Some((0, u16::MAX as i64)),
-        TypeToken::U32 => Some((0, u32::MAX as i64)),
-        TypeToken::I8 => Some((i8::MIN as i64, i8::MAX as i64)),
-        TypeToken::I16 => Some((i16::MIN as i64, i16::MAX as i64)),
-        TypeToken::I32 => Some((i32::MIN as i64, i32::MAX as i64)),
+        TypeToken::U8 => Some((0, i64::from(u8::MAX))),
+        TypeToken::U16 => Some((0, i64::from(u16::MAX))),
+        TypeToken::U32 => Some((0, i64::from(u32::MAX))),
+        TypeToken::I8 => Some((i64::from(i8::MIN), i64::from(i8::MAX))),
+        TypeToken::I16 => Some((i64::from(i16::MIN), i64::from(i16::MAX))),
+        TypeToken::I32 => Some((i64::from(i32::MIN), i64::from(i32::MAX))),
         _ => None,
     }
 }

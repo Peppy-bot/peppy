@@ -603,13 +603,14 @@ mod tests {
         let cases: [(&str, Change); 4] = [
             ("peer id", |answer| answer.peer.id = "peer-2".into()),
             ("zenoh id", |answer| {
-                answer.zenoh_id = RouterId::parse("7f3a9c1e").unwrap()
+                answer.zenoh_id = RouterId::parse("7f3a9c1e").unwrap();
             }),
             ("namespace", |answer| {
-                answer.namespace = Namespace::parse("11111111-e29b-41d4-a716-446655440000").unwrap()
+                answer.namespace =
+                    Namespace::parse("11111111-e29b-41d4-a716-446655440000").unwrap();
             }),
             ("router address", |answer| {
-                answer.address = RouterEndpoint::parse("rtr-other.example", 7447).unwrap()
+                answer.address = RouterEndpoint::parse("rtr-other.example", 7447).unwrap();
             }),
         ];
         for (member, change) in cases {

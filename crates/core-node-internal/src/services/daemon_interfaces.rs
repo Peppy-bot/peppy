@@ -291,7 +291,7 @@ async fn serve_action(
                 }
                 match interface {
                     DaemonInterface::RobotLeases => {
-                        robot_leases::run_goal(&ctx, &member, pending).await
+                        robot_leases::run_goal(&ctx, &member, pending).await;
                     }
                     DaemonInterface::RobotMembership => {
                         robot_membership::run_goal(&ctx, &member, pending).await;

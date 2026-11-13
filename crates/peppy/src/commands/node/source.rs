@@ -111,8 +111,7 @@ pub(crate) fn parse_node_source(source: &str, git_ref: Option<String>) -> Result
 
     let from_dir = peppy_json5
         .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+        .map_or_else(|| PathBuf::from("."), PathBuf::from);
 
     let from_dir = resolve_node_root_dir(&from_dir)?;
 
@@ -139,9 +138,7 @@ pub(crate) fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, Strin
         parsed.set_query(None);
         parsed.set_fragment(None);
 
-        let segments: Vec<&str> = parsed
-            .path_segments()
-            .map_or_default(|segments| segments.collect());
+        let segments: Vec<&str> = parsed.path_segments().map_or_default(Iterator::collect);
         let repo_index = segments
             .iter()
             .rposition(|segment| segment.ends_with(".git"));

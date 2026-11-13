@@ -170,19 +170,19 @@ fn emit_subscription_class(builder: &mut PythonCodeBuilder, docstring: &str, tag
     builder.block("class Subscription:", |builder| {
         builder.docstring(docstring);
         builder.blank_line();
-        builder.py(r#"
+        builder.py(r"
 def __init__(self, inner) -> None:
     self._inner = inner
-"#);
+");
         builder.blank_line();
         builder.block(
             &format!("async def next(self) -> Optional[Tuple[{annotation}, Message]]:"),
             |builder| {
-                builder.py(r#"
+                builder.py(r"
 item = await self._inner.on_next_message()
 if item is None:
     return None
-"#);
+");
                 builder.line(&format!("{binding}, raw_message = item"));
                 builder.line("message = _deserialize_payload(raw_message.payload)");
                 builder.line(&format!("return {binding}, message"));
@@ -197,12 +197,12 @@ def __aiter__(self) -> "Subscription":
         builder.block(
             &format!("async def __anext__(self) -> Tuple[{annotation}, Message]:"),
             |builder| {
-                builder.py(r#"
+                builder.py(r"
 result = await self.next()
 if result is None:
     raise StopAsyncIteration
 return result
-"#);
+");
             },
         );
     });

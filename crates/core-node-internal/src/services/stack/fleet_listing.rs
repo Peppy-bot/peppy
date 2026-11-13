@@ -218,8 +218,9 @@ fn scoped_options(active: &ActiveLaunch) -> Vec<FleetOption> {
                 .collect();
             let kind = trials
                 .join(entry.option(), &every_feature)
-                .map(|trial| kind_of_deployments(&trial.deployments))
-                .unwrap_or(RobotKind::Physical);
+                .map_or(RobotKind::Physical, |trial| {
+                    kind_of_deployments(&trial.deployments)
+                });
             let features = entry
                 .features()
                 .iter()

@@ -115,11 +115,10 @@ async fn handle_node_info_request_inner(
             .manifest
             .depends_on
             .as_ref()
-            .map(|d| d.pairings.as_slice())
-            .unwrap_or(&[]);
+            .map_or_default(|d| d.pairings.as_slice());
         let mut instances: Vec<NodeInstanceInfo> = Vec::with_capacity(tracked.len());
         let mut run_log_paths: Vec<PathBuf> = Vec::with_capacity(tracked.len());
-        for instance in tracked.iter() {
+        for instance in tracked {
             let id = instance.instance_id().as_str();
             instances.push(NodeInstanceInfo {
                 instance_id: id.to_owned(),

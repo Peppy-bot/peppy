@@ -201,7 +201,7 @@ async fn listen_for_node_sync_invalid_peppy_json5_fails() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
-    common::write_plain_peppy_json5(node_dir.path(), r#"{ manifest: [unclosed"#);
+    common::write_plain_peppy_json5(node_dir.path(), r"{ manifest: [unclosed");
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 

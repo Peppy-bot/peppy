@@ -302,7 +302,7 @@ async fn reading_pairs_for_notification_does_not_prune_the_dissolution_away() {
     ));
 
     assert_eq!(
-        stack.with_pairs(|pairs| pairs.len()),
+        stack.with_pairs(<[node_stack::Pairing]>::len),
         1,
         "the notification path must still see the pair of an instance that is already gone"
     );

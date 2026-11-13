@@ -189,8 +189,8 @@ impl ServeAsyncCommand for RouterFederation {
             // Race the poke loop against the shared token so the daemon can
             // exit promptly (the loop is otherwise infinite).
             tokio::select! {
-                _ = serve_pokes(&deps, trigger_rx, &generation, pinned) => {}
-                _ = teardown_token.cancelled() => {}
+                () = serve_pokes(&deps, trigger_rx, &generation, pinned) => {}
+                () = teardown_token.cancelled() => {}
             }
             Ok(())
         });
@@ -501,7 +501,7 @@ mod tests {
                         && reason.contains("peppy platform login")
                         && reason.contains("peppy platform enroll --replace"),
                     "{reason}"
-                )
+                );
             }
             other => panic!("expected Unreachable, got {other:?}"),
         }

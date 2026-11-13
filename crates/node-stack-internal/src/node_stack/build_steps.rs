@@ -451,7 +451,7 @@ async fn begin_uv_cache_use(
         .line(container_build_cache::prune_wait_line());
     tokio::select! {
         uv_cache_use = UvCacheUse::begin(cache_root) => Ok(uv_cache_use),
-        _ = inputs.cancel_token.cancelled() => Err("build cancelled".to_string()),
+        () = inputs.cancel_token.cancelled() => Err("build cancelled".to_string()),
     }
 }
 
@@ -624,7 +624,7 @@ pub(super) fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String 
         let name = &after_open[..name_len];
         match env_vars.iter().find(|(key, _)| key == name) {
             Some((_, value)) => out.push_str(value),
-            None => out.push_str(&rest[start..start + 2 + name_len + 1]),
+            None => out.push_str(&rest[start..=(start + 2 + name_len)]),
         }
         rest = &after_open[name_len + 1..];
     }
@@ -649,7 +649,7 @@ pub(super) async fn run_build_cmd(
 
     if cmd.is_empty() {
         return Err("build_cmd is empty".to_string());
-    };
+    }
 
     // Build a *display* form (with `${VAR}` references intact) for logs and
     // error messages, and a separate *expanded* form used only to actually

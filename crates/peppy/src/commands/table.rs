@@ -171,9 +171,12 @@ pub(super) fn wrap(s: &str, width: usize) -> String {
 /// columns with [`wrap`]; lines already inside it pass through untouched.
 fn fit_cell(cell: &str, width: usize) -> String {
     cell.split('\n')
-        .map(|line| match col_width(line) > width {
-            true => wrap(line, width),
-            false => line.to_owned(),
+        .map(|line| {
+            if col_width(line) > width {
+                wrap(line, width)
+            } else {
+                line.to_owned()
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -295,7 +298,7 @@ fn write_border(out: &mut String, widths: &[usize], left: char, sep: char, right
 /// have fewer lines so the borders stay aligned.
 fn write_row(out: &mut String, cells: &[String], widths: &[usize]) {
     let split: Vec<Vec<&str>> = cells.iter().map(|c| c.split('\n').collect()).collect();
-    let height = split.iter().map(|c| c.len()).max().unwrap_or(1);
+    let height = split.iter().map(Vec::len).max().unwrap_or(1);
     for line in 0..height {
         let _ = write!(out, "│");
         for (i, w) in widths.iter().enumerate() {

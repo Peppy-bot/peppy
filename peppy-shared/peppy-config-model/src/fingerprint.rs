@@ -281,7 +281,7 @@ mod tests {
         let upper = fingerprint.as_str().to_ascii_uppercase();
         let parsed = ManifestFingerprint::parse(&format!("  {upper} ")).expect("parses");
         assert_eq!(parsed, fingerprint, "parsing trims and lowercases");
-        assert!(parsed == fingerprint.as_str());
+        assert_eq!(parsed, fingerprint.as_str());
         assert_eq!(parsed.to_string(), fingerprint.as_str());
     }
 

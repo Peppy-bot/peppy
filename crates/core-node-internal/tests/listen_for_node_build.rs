@@ -381,7 +381,7 @@ async fn wait_for_building(node_stack: &node_stack::NodeStack, name: &str, tag: 
             .then_some(())
         },
     )
-    .await
+    .await;
 }
 
 /// `node build --force` on a node whose build is stuck mid-flight (the daemon

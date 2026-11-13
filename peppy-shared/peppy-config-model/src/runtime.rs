@@ -770,6 +770,7 @@ impl RuntimeConfig {
 mod tests {
     use super::*;
     use crate::error::Error;
+    use crate::internal::namespace::Namespace;
     use tempfile::TempDir;
 
     /// The tag a launch stamps on an instance of a copy: the copy's name and
@@ -1125,7 +1126,7 @@ mod tests {
                 .discovery
                 .namespace
                 .as_ref()
-                .map(|namespace| namespace.as_str()),
+                .map(Namespace::as_str),
             Some("550e8400-e29b-41d4-a716-446655440000")
         );
         let namespace_serialized = serde_json5::to_string(&with_namespace).unwrap();

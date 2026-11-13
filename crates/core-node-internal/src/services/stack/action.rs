@@ -13,7 +13,7 @@ use crate::services::action_loop::{
     invalid_payload, refuse_goal, run_action_loop, under_goal_cancel,
 };
 use crate::services::federation::SliceOwnership;
-use crate::services::fleet::ClientRef;
+use crate::services::fleet::{ClientRef, Refusal};
 use crate::services::node::common::{encode_response_or_err, panic_message};
 use crate::services::node::gate::{
     Admission, ConcurrencyGate, finish_on_reset, reset_drain_budget,
@@ -225,7 +225,7 @@ impl StackRequest {
                 }
                 Self::Launch(_) | Self::Build(_) => Ok(None),
             })
-            .map_err(|refusal| refusal.into_daemon_failure())
+            .map_err(Refusal::into_daemon_failure)
     }
 
     fn process(self, ctx: StackChangeContext) -> futures::future::BoxFuture<'static, ChangeEnd> {
@@ -398,7 +398,7 @@ impl GoalHandler for StackActionHandler {
             self.gate.clone(),
             self.action,
         )
-        .await
+        .await;
     }
 }
 

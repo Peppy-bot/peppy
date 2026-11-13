@@ -356,12 +356,12 @@ mod tests {
     fn py_strips_the_common_indent_and_re_indents_at_the_current_level() {
         let mut builder = PythonCodeBuilder::new();
         builder.indent();
-        builder.py(r#"
+        builder.py(r"
             def f():
                 if ready:
                     return 1
                 return 0
-        "#);
+        ");
         builder.line("after");
         assert_eq!(
             builder.build(),
@@ -375,12 +375,12 @@ mod tests {
     fn py_emits_blank_lines_with_no_indentation() {
         let mut builder = PythonCodeBuilder::new();
         builder.indent();
-        builder.py(r#"
+        builder.py(r"
             class C:
                 x = 1
 
                 y = 2
-        "#);
+        ");
         assert_eq!(
             builder.build(),
             "    class C:\n        x = 1\n\n        y = 2"
@@ -391,11 +391,11 @@ mod tests {
     #[test]
     fn py_takes_the_common_indent_from_the_shallowest_line() {
         let mut builder = PythonCodeBuilder::new();
-        builder.py(r#"
+        builder.py(r"
                 nested = True
         if nested:
             pass
-        "#);
+        ");
         assert_eq!(
             builder.build(),
             "        nested = True\nif nested:\n    pass"

@@ -632,7 +632,7 @@ fn rewrite_report(
                 }
                 AppliedChange::LinkAdded { target, .. } => *target = rewrite(target),
                 AppliedChange::LinkRemoved { old, .. } => {
-                    rewrite_link(old, rewrite).map_err(collide)?
+                    rewrite_link(old, rewrite).map_err(collide)?;
                 }
             }
             Ok(entry)

@@ -260,7 +260,7 @@ impl ServeAsyncCommand for CoreNodeRunner {
                         ))
                     })
                 }
-                _ = &mut teardown => {
+                () = &mut teardown => {
                     shutdown_triggered = true;
                     Ok(())
                 }

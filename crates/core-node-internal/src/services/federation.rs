@@ -56,6 +56,7 @@ pub(crate) use service::{
     listen_for_relationship_notify,
 };
 
+use crate::services::node::gate::StackBusy;
 use crate::services::response::failure;
 use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
@@ -422,7 +423,7 @@ impl SliceOwnership {
         let admission = self
             .stack
             .try_admit_node_goal()
-            .map_err(|busy| busy.failure())?;
+            .map_err(StackBusy::failure)?;
         if self.stack.cancellation().is_cancelled() {
             return Err(failure(
                 DaemonFailureKind::Busy,
@@ -476,14 +477,13 @@ impl SliceOwnership {
     ) -> Option<RestartAdmission> {
         loop {
             let reset = self.stack.cancellation();
-            let guard = match self.stack.try_admit_node_goal() {
-                Ok(guard) => guard,
-                Err(_) => {
-                    let _waiting = self.admission_wait(instance_id);
-                    tokio::select! {
-                        _ = cancel.cancelled() => return None,
-                        guard = self.stack.admit_node_goal_waiting() => guard,
-                    }
+            let guard = if let Ok(guard) = self.stack.try_admit_node_goal() {
+                guard
+            } else {
+                let _waiting = self.admission_wait(instance_id);
+                tokio::select! {
+                    () = cancel.cancelled() => return None,
+                    guard = self.stack.admit_node_goal_waiting() => guard,
                 }
             };
             if reset.is_cancelled() {
@@ -493,8 +493,8 @@ impl SliceOwnership {
                 drop(guard);
                 let _waiting = self.admission_wait(instance_id);
                 tokio::select! {
-                    _ = cancel.cancelled() => return None,
-                    _ = lifetime.ended() => continue,
+                    () = cancel.cancelled() => return None,
+                    () = lifetime.ended() => continue,
                 }
             }
             let mut holds = self.restart_holds.subscribe();
@@ -513,7 +513,7 @@ impl SliceOwnership {
             drop(guard);
             let _waiting = self.admission_wait(instance_id);
             tokio::select! {
-                _ = cancel.cancelled() => return None,
+                () = cancel.cancelled() => return None,
                 _ = holds.wait_for(|holds| *holds == 0) => {}
             }
         }

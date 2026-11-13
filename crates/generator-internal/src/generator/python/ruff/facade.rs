@@ -85,7 +85,7 @@ impl RuffFacade {
                 Ok(output) => return Ok(output),
                 Err(e) if is_transient_exec_error(&e) && attempt < MAX_RETRIES => {
                     attempt += 1;
-                    let backoff = Duration::from_millis((10 * attempt as u64).min(100));
+                    let backoff = Duration::from_millis((10 * u64::from(attempt)).min(100));
                     std::thread::sleep(backoff);
                 }
                 Err(e) => return Err(e),

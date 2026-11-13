@@ -472,15 +472,15 @@ fn daemon_state_for_messenger(
     router_id: Option<RouterId>,
     command_line_key: PathBuf,
 ) -> DaemonState {
-    let (messaging_host, messaging_port) = messenger
-        .messaging_locator()
-        .map(|endpoint| (endpoint.host().to_string(), endpoint.port()))
-        .unwrap_or_else(|| {
+    let (messaging_host, messaging_port) = messenger.messaging_locator().map_or_else(
+        || {
             (
                 config::consts::DEFAULT_MESSAGING_HOST.to_string(),
                 messenger.messaging_port(),
             )
-        });
+        },
+        |endpoint| (endpoint.host().to_string(), endpoint.port()),
+    );
     DaemonState::new(
         core_node_name,
         messaging_host,

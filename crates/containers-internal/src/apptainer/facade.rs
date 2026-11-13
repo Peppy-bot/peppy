@@ -5,8 +5,8 @@ use super::registry_auth::{APPTAINER_AUTH_FILE_ENV, RegistryAuth};
 use core_node_api::encoding::ArtifactPlatform;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// Serializes Lima VM initialization to prevent concurrent boot/sync races.
@@ -338,8 +338,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
     // have no access to.
     let apparmor_restricted = apparmor_manageable
         && std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-            .map(|v| v.trim() == "1")
-            .unwrap_or(false);
+            .is_ok_and(|v| v.trim() == "1");
 
     let profile = apparmor_profile_ref(apptainer_dir);
     let apparmor_ok = !apparmor_restricted || profile_references_starter(&profile);
@@ -365,8 +364,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
 #[cfg(target_os = "linux")]
 fn profile_references_starter(profile: &ApparmorProfileRef) -> bool {
     std::fs::read_to_string(&profile.file)
-        .map(|content| content.contains(&profile.starter_path))
-        .unwrap_or(false)
+        .is_ok_and(|content| content.contains(&profile.starter_path))
 }
 
 /// Whether the kernel has `profile` loaded. Reads the policy directory
@@ -375,15 +373,13 @@ fn profile_references_starter(profile: &ApparmorProfileRef) -> bool {
 #[cfg(target_os = "linux")]
 fn is_profile_loaded(profile: &ApparmorProfileRef) -> bool {
     let kernel_entry_prefix = format!("{}.", profile.name);
-    std::fs::read_dir("/sys/kernel/security/apparmor/policy/profiles")
-        .map(|entries| {
-            entries.filter_map(|e| e.ok()).any(|e| {
-                e.file_name()
-                    .to_str()
-                    .is_some_and(|name| name.starts_with(&kernel_entry_prefix))
-            })
+    std::fs::read_dir("/sys/kernel/security/apparmor/policy/profiles").is_ok_and(|entries| {
+        entries.flatten().any(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(&kernel_entry_prefix))
         })
-        .unwrap_or(false)
+    })
 }
 
 /// The shell script that fixes the failing checks, one step per failure
@@ -597,7 +593,7 @@ impl Apptainer {
                 apptainer_bin,
                 vm,
             } => {
-                let _guard = LIMA_INIT.lock().unwrap_or_else(|e| e.into_inner());
+                let _guard = LIMA_INIT.lock().unwrap_or_else(PoisonError::into_inner);
 
                 lima::ensure_lima_instance(limactl_path, lima_home, vm, lima::LIMA_TEMPLATE)?;
                 lima::ensure_guest_userns(limactl_path, lima_home, &vm.name)?;
@@ -653,7 +649,7 @@ impl Apptainer {
                     return Ok(());
                 }
 
-                let _guard = LIMA_INIT.lock().unwrap_or_else(|e| e.into_inner());
+                let _guard = LIMA_INIT.lock().unwrap_or_else(PoisonError::into_inner);
 
                 let limactl_path = limactl_path.clone();
                 let lima_home = lima_home.clone();
@@ -870,7 +866,7 @@ impl Apptainer {
             self,
             CommandKind::Exec {
                 container: container.to_string(),
-                cmd: cmd.iter().map(|s| s.to_string()).collect(),
+                cmd: cmd.iter().map(ToString::to_string).collect(),
             },
             Vec::new(),
         )
@@ -1081,7 +1077,7 @@ impl Apptainer {
                     if apptainer_env.is_empty() {
                         (
                             apptainer_bin,
-                            args.iter().map(|s| s.to_string()).collect(),
+                            args.iter().map(ToString::to_string).collect(),
                             None,
                         )
                     } else {
@@ -1091,7 +1087,7 @@ impl Apptainer {
                             Some(lima::guest_env_lines(apptainer_env)?),
                         )
                     };
-                let guest_args: Vec<&str> = guest_args_owned.iter().map(|s| s.as_str()).collect();
+                let guest_args: Vec<&str> = guest_args_owned.iter().map(String::as_str).collect();
 
                 let guest_workdir = working_dir
                     .map(|dir| self.translate_path(dir))
@@ -1710,8 +1706,8 @@ impl<'a> ApptainerCommand<'a> {
     pub fn bind(mut self, src: &str, dest: Option<&str>, opts: Option<&str>) -> Self {
         self.bind_mounts.push(BindMount {
             src: src.to_string(),
-            dest: dest.map(|d| d.to_string()),
-            opts: opts.map(|o| o.to_string()),
+            dest: dest.map(ToString::to_string),
+            opts: opts.map(ToString::to_string),
         });
         self
     }
@@ -1824,10 +1820,10 @@ impl<'a> ApptainerCommand<'a> {
     pub fn args(mut self, args: &[&str]) -> Self {
         match &mut self.kind {
             CommandKind::Run { args: a, .. } => {
-                a.extend(args.iter().map(|s| s.to_string()));
+                a.extend(args.iter().map(ToString::to_string));
             }
             CommandKind::Exec { cmd: c, .. } => {
-                c.extend(args.iter().map(|s| s.to_string()));
+                c.extend(args.iter().map(ToString::to_string));
             }
             CommandKind::Build { .. } => {
                 debug_assert!(false, "args() is not applicable to build commands");
@@ -1869,7 +1865,7 @@ impl<'a> ApptainerCommand<'a> {
             self.facade.prepare_nv_library_list()?;
         }
         let args = self.build_args()?;
-        let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let str_args: Vec<&str> = args.iter().map(String::as_str).collect();
         // The pgid path comes from `lima::guest_pgid_path`, i.e. it is already a
         // guest-side path, so it must NOT go through `translate_path` (which
         // would reject `/tmp/...` as outside `$HOME`).
@@ -1958,7 +1954,7 @@ impl<'a> ApptainerCommand<'a> {
                 // Options ride after a destination, so a mirrored bind that
                 // carries options writes its source out as the destination.
                 (None, Some(opts)) => {
-                    args.push(format!("{translated_src}:{translated_src}:{opts}"))
+                    args.push(format!("{translated_src}:{translated_src}:{opts}"));
                 }
                 (None, None) => args.push(translated_src),
             }

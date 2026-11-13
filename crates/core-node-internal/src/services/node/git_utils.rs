@@ -920,7 +920,7 @@ mod tests {
     fn a_read_ref_targets_a_commit_or_the_refs_its_name_is_looked_up_as() {
         let named = |name: &str| ShallowTarget::of(Some(&ReadRef::Named(name.to_owned())));
         let first_advertised = |names: &[&str]| {
-            ShallowTarget::FirstAdvertised(names.iter().map(|name| name.to_string()).collect())
+            ShallowTarget::FirstAdvertised(names.iter().map(ToString::to_string).collect())
         };
         assert_eq!(
             named("0123456789ABCDEF0123456789abcdef01234567"),

@@ -277,17 +277,17 @@ mod tests {
     fn the_compact_style_tags_each_level_it_names() {
         let warned = |colorize| {
             written_by(LogStyle::Compact, "info", colorize, || {
-                tracing::warn!("Disk almost full")
+                tracing::warn!("Disk almost full");
             })
         };
         let failed = |colorize| {
             written_by(LogStyle::Compact, "info", colorize, || {
-                tracing::error!("Build failed")
+                tracing::error!("Build failed");
             })
         };
         let debugged = |colorize| {
             written_by(LogStyle::Compact, "debug", colorize, || {
-                tracing::debug!("Resolved 3 nodes")
+                tracing::debug!("Resolved 3 nodes");
             })
         };
         assert_eq!(warned(true), "\x1b[33m[WARNING]\x1b[0m Disk almost full\n");

@@ -575,7 +575,7 @@ impl MockAdapter {
         keyexpr: &str,
         event: LivelinessEvent,
     ) {
-        for (pattern, watchers) in liveliness.watchers.iter() {
+        for (pattern, watchers) in &liveliness.watchers {
             if !Self::key_exprs_intersect(pattern, keyexpr) {
                 continue;
             }
@@ -837,7 +837,7 @@ impl MockAdapter {
                 if !Self::key_exprs_intersect(pattern, topic) {
                     continue;
                 }
-                for sub in subs.iter() {
+                for sub in subs {
                     if !sub.receives() || (sub.drop_secondary && !is_primary) {
                         continue;
                     }

@@ -92,6 +92,5 @@ pub(crate) fn primitive_type_token(token: &TypeToken) -> TokenStream {
 
 pub(crate) fn render_tokens(tokens: TokenStream) -> String {
     parse2::<File>(tokens.clone())
-        .map(|file| prettyplease::unparse(&file))
-        .unwrap_or_else(|_| tokens.to_string())
+        .map_or_else(|_| tokens.to_string(), |file| prettyplease::unparse(&file))
 }

@@ -48,7 +48,11 @@ async fn stack_reset_command_resets_node_stack() {
             .iter()
             .any(|n| n.label().contains(&format!("{node_name}:{node_tag}"))),
         "graph should contain added node before reset. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 
     StackCommand {
@@ -63,13 +67,21 @@ async fn stack_reset_command_resets_node_stack() {
         graph.nodes.len(),
         1,
         "graph should contain only the root node after reset. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 
     assert_eq!(
         graph.nodes[0].name,
         core_node_name,
         "root node name should match core node name. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 }

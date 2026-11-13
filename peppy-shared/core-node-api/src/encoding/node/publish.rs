@@ -285,7 +285,7 @@ impl NodePublishLine {
         match &self.outcome {
             NodePublishLineOutcome::ProcessNode => outcome.set_process_node(()),
             NodePublishLineOutcome::OciOrigin(repository) => {
-                outcome.set_oci_origin(repository.to_string())
+                outcome.set_oci_origin(repository.to_string());
             }
             NodePublishLineOutcome::Platform(PlatformPublish {
                 platform,

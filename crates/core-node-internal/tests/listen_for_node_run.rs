@@ -1059,7 +1059,7 @@ async fn listen_for_node_run_with_container_creates_missing_mount_dir_and_warns(
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let apptainer_def = format!(
-        r#"
+        r"
 Bootstrap: docker
 From: {DEFAULT_ALPINE_BASE_IMAGE}
 
@@ -1069,7 +1069,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 
 %runscript
     exec sleep 300
-"#
+"
     );
     std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
         .expect("failed to write apptainer definition");
@@ -2228,7 +2228,13 @@ async fn a_start_that_fails_before_its_ready_signal_leaves_no_process_of_its_gro
         started
             .node_stack
             .find(NODE_NAME, NODE_TAG)
-            .and_then(|handle| handle.read().instances().first().and_then(|i| i.pid()))
+            .and_then(|handle| {
+                handle
+                    .read()
+                    .instances()
+                    .first()
+                    .and_then(node_stack::TrackedNodeInstance::pid)
+            })
     })
     .await;
     let children = poll_until(WAIT, "the instance should fork two children", || {

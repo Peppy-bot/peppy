@@ -12,7 +12,7 @@ use super::super::{ChangeResult, attempt_failed, rejected};
 use config::runtime::{CoreNodeName, Name};
 use core_node_api::encoding::StackJoinGoal;
 use daemon_config::launcher::{
-    CopyRecord, ForwardedEnv, JoinRequest, PeppyLauncher, Placements, RunningStack,
+    CopyRecord, ForwardedEnv, JoinRequest, PeppyLauncher, Placements, RunningStack, Selection,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -203,7 +203,7 @@ pub(super) fn join_dependencies(
         .filter(|instance| new_ids.contains(instance.instance_id.as_str()))
         .flat_map(|instance| instance.links.values())
         .filter_map(|link| link.selection())
-        .flat_map(|selection| selection.targets())
+        .flat_map(Selection::targets)
         .map(|target| {
             daemon_config::launcher::split_link_target(target)
                 .0
@@ -247,7 +247,7 @@ pub(super) fn selected_instances(
 mod tests {
     use super::*;
     use crate::services::stack::fixtures::planned_deployment;
-    use daemon_config::launcher::{LinkValue, Selection};
+    use daemon_config::launcher::LinkValue;
 
     /// A join takes part with every instance it brings, whatever those name
     /// as a producer, and with the instances supplying the clocks it reads. An

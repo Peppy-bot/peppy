@@ -284,7 +284,7 @@ pub(crate) async fn stream_child_output(
         wait_result = child_guard.wait() => {
             wait_result.map_err(|e| format!("failed to wait for process: {e}"))?
         }
-        _ = cancel_token.cancelled() => {
+        () = cancel_token.cancelled() => {
             // SIGKILL the whole process group, then *await* the child so it is
             // reaped before we return; the superseding build must not race a
             // dying subprocess over the same working dir.
@@ -642,7 +642,7 @@ mod tests {
             got,
             vec![
                 ("a".to_string(), LineTerminator::Newline),
-                ("".to_string(), LineTerminator::Newline),
+                (String::new(), LineTerminator::Newline),
                 ("b".to_string(), LineTerminator::EndOfStream),
             ]
         );
@@ -751,7 +751,7 @@ mod tests {
             vec![
                 "line1".to_string(),
                 "line2".to_string(),
-                "".to_string(),
+                String::new(),
                 "line3".to_string(),
             ]
         );

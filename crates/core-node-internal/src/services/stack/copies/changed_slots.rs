@@ -807,11 +807,10 @@ mod tests {
                     format!(
                         "{}:{}",
                         member.producer.instance_id,
-                        member
-                            .copy
-                            .as_ref()
-                            .map(|copy| format!("{}/{}", copy.name, copy.instance_id))
-                            .unwrap_or_else(|| "-".to_string())
+                        member.copy.as_ref().map_or_else(
+                            || "-".to_string(),
+                            |copy| format!("{}/{}", copy.name, copy.instance_id)
+                        )
                     )
                 })
                 .collect(),

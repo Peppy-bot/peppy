@@ -670,9 +670,7 @@ fn counting_build_cmd(counter: &std::path::Path) -> String {
 }
 
 fn build_count(counter: &std::path::Path) -> usize {
-    std::fs::read_to_string(counter)
-        .map(|contents| contents.lines().count())
-        .unwrap_or(0)
+    std::fs::read_to_string(counter).map_or(0, |contents| contents.lines().count())
 }
 
 /// Pushes a fresh `sensor:v1` entity with `build_cmd_shell` into a new stack
@@ -1207,7 +1205,7 @@ async fn a_build_cancelled_during_the_mirror_check_never_starts_its_build() {
 
     match error {
         NodeStackError::BuildFailed { reason, .. } => {
-            assert_eq!(reason, "build cancelled")
+            assert_eq!(reason, "build cancelled");
         }
         other => panic!("expected BuildFailed, got {other:?}"),
     }
@@ -1671,8 +1669,7 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
         .arg("-0")
         .arg(pid.to_string())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| s.success());
     assert!(
         !still_alive,
         "child PID {pid} should be dead after abort_started, but kill -0 reported alive"

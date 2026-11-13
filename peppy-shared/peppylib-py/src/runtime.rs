@@ -733,7 +733,7 @@ fn build_async_setup(
                 tokio::select! {
                     biased;
                     _ = &mut disarm_rx => false,
-                    _ = cancel_for_shutdown.cancelled() => true,
+                    () = cancel_for_shutdown.cancelled() => true,
                 }
             });
             if !cancelled_during_setup {

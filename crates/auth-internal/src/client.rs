@@ -450,7 +450,7 @@ fn api_path(api_url: &str, segments: &[&str]) -> Result<String> {
     let mut url = url::Url::parse(api_url)
         .map_err(|e| Error::Auth(format!("invalid platform API `{api_url}`: {e}")))?;
     url.path_segments_mut()
-        .map_err(|_| {
+        .map_err(|()| {
             Error::Auth(format!(
                 "invalid platform API `{api_url}`: cannot be a base"
             ))

@@ -241,7 +241,7 @@ fn every_entry_is_bound_to_the_failure_kinds_of_its_member() {
     // lists; the camera declares none.
     let recording = RECORDING_CONTRACT
         .replacen(
-            r#"    interfaces: {"#,
+            r"    interfaces: {",
             r#"    failure_kinds: { disk_full: "The dataset disk is full" },
     interfaces: {"#,
             1,

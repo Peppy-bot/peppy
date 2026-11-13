@@ -136,7 +136,7 @@ mod tests {
         header[263..265].copy_from_slice(b"00");
         // Checksum is computed with the checksum field read as ASCII spaces.
         header[148..156].fill(b' ');
-        let sum: u32 = header.iter().map(|&b| b as u32).sum();
+        let sum: u32 = header.iter().map(|&b| u32::from(b)).sum();
         header[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
 
         let mut out = header.to_vec();

@@ -543,24 +543,24 @@ fn report_unenroll(outcome: PokeOutcome) {
     match outcome {
         PokeOutcome::Applied(None) => println!("The daemon runs standalone again."),
         PokeOutcome::Applied(Some(locator)) => {
-            println!("Note: the daemon still reports a project link ({locator}).")
+            println!("Note: the daemon still reports a project link ({locator}).");
         }
         PokeOutcome::Pinned => println!("{PINNED_NOTE}"),
         PokeOutcome::Unreachable(msg) | PokeOutcome::DaemonError(msg) => {
             println!(
                 "Note: the daemon could not apply the change now ({msg}); it will on its next start."
-            )
+            );
         }
         PokeOutcome::DaemonNotRunning => {
-            println!("No running daemon; it starts standalone next time.")
+            println!("No running daemon; it starts standalone next time.");
         }
         PokeOutcome::TimedOut => {
             println!(
                 "The daemon did not answer within the timeout; it applies the change on its next start."
-            )
+            );
         }
         PokeOutcome::Restarting => {
-            println!("The daemon is restarting under the local namespace.")
+            println!("The daemon is restarting under the local namespace.");
         }
     }
 }
@@ -573,9 +573,7 @@ pub(crate) fn date(time: &chrono::DateTime<chrono::Utc>) -> String {
 /// A unix timestamp as a calendar date for human output, or the number itself
 /// when it is not a date.
 pub(crate) fn date_of(unix: i64) -> String {
-    chrono::DateTime::from_timestamp(unix, 0)
-        .map(|time| date(&time))
-        .unwrap_or_else(|| unix.to_string())
+    chrono::DateTime::from_timestamp(unix, 0).map_or_else(|| unix.to_string(), |time| date(&time))
 }
 
 #[derive(Subcommand)]

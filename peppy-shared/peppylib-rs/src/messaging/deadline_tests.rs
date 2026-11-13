@@ -177,7 +177,7 @@ async fn pending_issuance_is_cancelled_at_the_deadline() {
 #[tokio::test(start_paused = true)]
 async fn a_result_ready_when_polled_wins_at_and_after_the_deadline() {
     for elapsed in [
-        BUDGET - Duration::from_millis(1),
+        BUDGET.checked_sub(Duration::from_millis(1)).unwrap(),
         BUDGET,
         BUDGET + Duration::from_millis(1),
     ] {
@@ -276,7 +276,7 @@ async fn lock_wait_is_subtracted_from_the_transport_budget() {
     let delayed_request = delayed_service.rx.recv_async().await.unwrap();
     acknowledge(&delayed_request.token, delayed.as_mut(), &delayed_wake).await;
 
-    advance(BUDGET - lock_wait).await;
+    advance(BUDGET.checked_sub(lock_wait).unwrap()).await;
     tokio::join!(immediate_wake.0.notified(), delayed_wake.0.notified());
     assert_eq!(Instant::now(), started + BUDGET);
 

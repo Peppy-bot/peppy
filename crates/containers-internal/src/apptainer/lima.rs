@@ -220,7 +220,7 @@ pub(crate) fn lima_guest_pgid_argv(
     }
     argv.push(pgid_file.display().to_string());
     argv.push(apptainer_bin.display().to_string());
-    argv.extend(apptainer_args.iter().map(|arg| arg.to_string()));
+    argv.extend(apptainer_args.iter().map(ToString::to_string));
     argv
 }
 
@@ -254,7 +254,7 @@ pub(crate) fn lima_guest_env_args(apptainer_bin: &Path, apptainer_args: &[&str])
         GUEST_SHELL.to_string(),
         apptainer_bin.display().to_string(),
     ];
-    args.extend(apptainer_args.iter().map(|arg| arg.to_string()));
+    args.extend(apptainer_args.iter().map(ToString::to_string));
     args
 }
 
@@ -316,7 +316,7 @@ pub(crate) fn lima_guest_workdir_argv(
         guest_workdir.display().to_string(),
         apptainer_bin.display().to_string(),
     ];
-    argv.extend(apptainer_args.iter().map(|arg| arg.to_string()));
+    argv.extend(apptainer_args.iter().map(ToString::to_string));
     argv
 }
 
@@ -1205,7 +1205,7 @@ fn plan_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<MountPlan> {
             entry
                 .get("location")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
+                .map(ToString::to_string)
         })
         .collect();
 
@@ -1641,7 +1641,7 @@ mod tests {
             "system path /private/tmp should be removed, got:\n{content}"
         );
         assert!(
-            content.contains("~"),
+            content.contains('~'),
             "home mount should be preserved, got:\n{content}"
         );
     }
@@ -1667,7 +1667,7 @@ mod tests {
             "stale mount should be removed, got:\n{content}"
         );
         assert!(
-            content.contains("~"),
+            content.contains('~'),
             "home mount should be preserved, got:\n{content}"
         );
     }

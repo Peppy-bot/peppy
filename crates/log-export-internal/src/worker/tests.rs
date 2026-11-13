@@ -260,7 +260,7 @@ async fn the_wait_between_retries_doubles_up_to_thirty_seconds() {
     assert_eq!(times.len(), 9);
     let waits: Vec<Duration> = times
         .array_windows()
-        .map(|[previous, next]| *next - *previous)
+        .map(|[previous, next]| (*next).checked_sub(*previous).unwrap())
         .collect();
     let ceilings = [1, 2, 4, 8, 16, 30, 30, 30].map(Duration::from_secs);
     for (wait, ceiling) in waits.iter().zip(ceilings) {
@@ -306,8 +306,14 @@ async fn a_retry_after_of_zero_still_waits_for_the_backoff() {
 
     let times = harness.post_times();
     assert_eq!(times.len(), 3);
-    assert!(times[1] - times[0] >= SECOND / 2, "{times:?}");
-    assert!(times[2] - times[1] >= SECOND, "{times:?}");
+    assert!(
+        times[1].checked_sub(times[0]).unwrap() >= SECOND / 2,
+        "{times:?}"
+    );
+    assert!(
+        times[2].checked_sub(times[1]).unwrap() >= SECOND,
+        "{times:?}"
+    );
 }
 
 #[tokio::test(start_paused = true)]

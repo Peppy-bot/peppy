@@ -211,7 +211,7 @@ fn inherits_from_workspace(package: &toml_edit::Table, key: &str) -> bool {
         .get(key)
         .and_then(|field| field.as_table_like())
         .and_then(|table| table.get("workspace"))
-        .and_then(|workspace| workspace.as_bool())
+        .and_then(toml_edit::Item::as_bool)
         == Some(true)
 }
 
@@ -995,7 +995,7 @@ mod tests {
         assert_eq!(
             dependencies["peppy-config-model"]["features"]
                 .as_array()
-                .map(|features| features.len()),
+                .map(toml_edit::Array::len),
             Some(1)
         );
         assert_eq!(dependencies["serde"].as_str(), Some("1"));

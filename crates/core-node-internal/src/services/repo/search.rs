@@ -135,7 +135,7 @@ impl SearchQuery {
 
     /// The tag part as typed, when the query has one.
     pub fn tag_pattern(&self) -> Option<&str> {
-        self.tag.as_ref().map(|pattern| pattern.as_str())
+        self.tag.as_ref().map(regex::Regex::as_str)
     }
 
     /// The digest, when the query pins one.
@@ -754,11 +754,10 @@ fn indexed(repo: &ListedRepo, node: &AttributedNode<'_>) -> IndexedNode {
 /// The label of the listed repository `repo_id`, or a phrase saying there
 /// is none: a cached entry can outlive its repository's configuration.
 fn label_of(repos: &[ListedRepo], repo_id: u32) -> String {
-    repos
-        .iter()
-        .find(|repo| repo.id == repo_id)
-        .map(|repo| repo.label.clone())
-        .unwrap_or_else(|| "no configured repository".to_owned())
+    repos.iter().find(|repo| repo.id == repo_id).map_or_else(
+        || "no configured repository".to_owned(),
+        |repo| repo.label.clone(),
+    )
 }
 
 /// The document `name:tag` resolves to through `entries`, by the priority

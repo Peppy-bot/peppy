@@ -191,7 +191,7 @@ fn remote_machines<'a>(goal: &'a LaunchGoal, coordinator: &str) -> BTreeSet<&'a 
         .chain(goal.joins().iter().map(|join| &join.core_node))
         .chain(goal.selections().iter().filter_map(|word| word.core_node()))
         .filter_map(CoreNodeTarget::named)
-        .map(|machine| machine.as_str())
+        .map(config::runtime::CoreNodeName::as_str)
         .filter(|machine| *machine != coordinator)
         .collect()
 }

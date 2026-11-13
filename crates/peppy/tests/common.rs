@@ -387,7 +387,11 @@ pub(crate) async fn assert_instance_count(
         .unwrap_or_else(|| {
             panic!(
                 "graph should contain the added node. Got: {:?}",
-                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+                graph
+                    .nodes
+                    .iter()
+                    .map(core_node_api::SerializedNode::label)
+                    .collect::<Vec<_>>()
             )
         });
     assert_eq!(
@@ -611,9 +615,7 @@ pub(crate) fn counting_build_cmd(counter: &std::path::Path) -> Vec<String> {
 
 /// How many times [`counting_build_cmd`] ran.
 pub(crate) fn build_count(counter: &std::path::Path) -> usize {
-    std::fs::read_to_string(counter)
-        .map(|contents| contents.lines().count())
-        .unwrap_or(0)
+    std::fs::read_to_string(counter).map_or(0, |contents| contents.lines().count())
 }
 
 /// The build logs the daemon rooted at `peppy_root` wrote for `name:tag`,

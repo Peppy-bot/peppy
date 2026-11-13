@@ -276,9 +276,10 @@ fn seeded_commit(seed: &str) -> String {
 /// fixture whose file is written later (or never, for a lookup-only test)
 /// falls back to `seed`.
 fn fingerprint_or_seeded(path: &Path, seed: &str) -> String {
-    std::fs::read(path)
-        .map(|bytes| config::fingerprint::fingerprint_for_bytes(&bytes))
-        .unwrap_or_else(|_| seeded_sha(seed))
+    std::fs::read(path).map_or_else(
+        |_| seeded_sha(seed),
+        |bytes| config::fingerprint::fingerprint_for_bytes(&bytes),
+    )
 }
 
 /// The descriptions of the document `label` as a refresh records them: one
@@ -320,8 +321,7 @@ fn head_commit_of(repo_url: &str, repo_ref: &str, seed: &str) -> String {
         .or_else(|_| repo.revparse_single("HEAD"))
         .ok()
         .and_then(|object| object.peel_to_commit().ok())
-        .map(|commit| commit.id().to_string())
-        .unwrap_or_else(|| seeded_commit(seed))
+        .map_or_else(|| seeded_commit(seed), |commit| commit.id().to_string())
 }
 
 /// The `origin` object of a cache entry for an item held by a remote, in
@@ -737,7 +737,7 @@ peppygen = {{ path = "{PEPPYGEN_OUTPUT_PATH}" }}
 
     std::fs::write(
         node_dir.join("src/main.rs"),
-        r#"use peppygen::{NodeBuilder, Parameters, Result};
+        r"use peppygen::{NodeBuilder, Parameters, Result};
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|args: Parameters, node_runner| async {
@@ -746,7 +746,7 @@ fn main() -> Result<()> {
         Ok(())
     })
 }
-"#,
+",
     )
     .expect("failed to write test node src/main.rs");
 

@@ -464,7 +464,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
             "Dependency order: {}",
             ordered
                 .iter()
-                .map(|k| k.label())
+                .map(NodeKey::label)
                 .collect::<Vec<_>>()
                 .join(" -> ")
         ),

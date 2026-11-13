@@ -83,20 +83,17 @@ pub(crate) fn copy_embedded_templates(prefix: &str, to: &Path, peppylib_path: &s
             continue;
         }
 
-        match relative_path.strip_suffix(".j2") {
-            Some(rendered_path) => {
-                let rendered = render_template(file_path_str, peppylib_path)?;
-                write_creating_parent(&to.join(rendered_path), rendered.as_bytes())?;
-            }
-            None => {
-                let content = EmbeddedTemplates::get(file_path_str).ok_or_else(|| {
-                    io::Error::new(
-                        ErrorKind::NotFound,
-                        format!("embedded template not found: {file_path_str}"),
-                    )
-                })?;
-                write_creating_parent(&to.join(relative_path), content.data.as_ref())?;
-            }
+        if let Some(rendered_path) = relative_path.strip_suffix(".j2") {
+            let rendered = render_template(file_path_str, peppylib_path)?;
+            write_creating_parent(&to.join(rendered_path), rendered.as_bytes())?;
+        } else {
+            let content = EmbeddedTemplates::get(file_path_str).ok_or_else(|| {
+                io::Error::new(
+                    ErrorKind::NotFound,
+                    format!("embedded template not found: {file_path_str}"),
+                )
+            })?;
+            write_creating_parent(&to.join(relative_path), content.data.as_ref())?;
         }
     }
 

@@ -37,9 +37,10 @@ pub fn search_rendered(
     max_width: Option<usize>,
 ) -> Result<String> {
     let query = SearchQuery::parse(query).map_err(Error::ExecutionFailed)?;
-    let query = match text {
-        true => query.with_descriptions().map_err(Error::ExecutionFailed)?,
-        false => query,
+    let query = if text {
+        query.with_descriptions().map_err(Error::ExecutionFailed)?
+    } else {
+        query
     };
     let outcome =
         core_node::search_repo_items(peppy_dirs, &query).map_err(Error::ExecutionFailed)?;
@@ -176,7 +177,7 @@ pub(super) fn query_json(query: &SearchQuery) -> serde_json::Value {
         "raw": query.raw(),
         "name": query.name_pattern(),
         "tag": query.tag_pattern(),
-        "sha256": query.digest().map(|digest| digest.as_str()),
+        "sha256": query.digest().map(config::fingerprint::ManifestFingerprint::as_str),
         "text": query.matches_descriptions(),
     })
 }
@@ -190,10 +191,7 @@ pub(super) fn matches_json(matches: &[MatchedItem]) -> serde_json::Value {
             serde_json::json!({
                 "kind": item.kind.as_str(),
                 "name": item.name,
-                "tag": match item.tag.is_empty() {
-                    true => serde_json::Value::Null,
-                    false => item.tag.clone().into(),
-                },
+                "tag": if item.tag.is_empty() { serde_json::Value::Null } else { item.tag.clone().into() },
                 "by_name": item.by_name,
                 "exact": item.exact,
                 "summary": summary(item),

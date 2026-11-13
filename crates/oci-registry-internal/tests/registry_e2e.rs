@@ -136,7 +136,7 @@ async fn a_chunk_sent_in_parts_reaches_the_registry_whole() {
 
     let pushed = pusher
         .push_blob_file(&sif_path, &sif_digest, sif_size, &mut |sent| {
-            progress.push(sent)
+            progress.push(sent);
         })
         .await
         .expect("push sif");

@@ -383,7 +383,9 @@ impl PyClockBinding {
     /// `None` for wall time.
     #[getter]
     fn link_id(&self) -> Option<String> {
-        self.inner.domain().map(|domain| domain.link_id())
+        self.inner
+            .domain()
+            .map(config::runtime::ClockDomainId::link_id)
     }
 }
 

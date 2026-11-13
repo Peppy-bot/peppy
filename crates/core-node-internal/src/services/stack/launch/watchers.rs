@@ -122,14 +122,14 @@ mod tests {
         assert_eq!(
             initial[&source]
                 .iter()
-                .map(|host| host.as_str())
+                .map(CoreNodeName::as_str)
                 .collect::<Vec<_>>(),
             ["cloud"]
         );
         assert_eq!(
             joined[&source]
                 .iter()
-                .map(|host| host.as_str())
+                .map(CoreNodeName::as_str)
                 .collect::<Vec<_>>(),
             ["cloud", "edge"]
         );
@@ -162,7 +162,7 @@ mod tests {
         let hosts_of = |id: &str| {
             watchers
                 .get(&Name::new(id).unwrap())
-                .map(|hosts| hosts.iter().map(|host| host.as_str()).collect::<Vec<_>>())
+                .map(|hosts| hosts.iter().map(CoreNodeName::as_str).collect::<Vec<_>>())
         };
         assert_eq!(hosts_of("arm_inst"), Some(vec!["cloud", "desk"]));
         assert_eq!(hosts_of("recorder_inst"), Some(vec!["desk"]));

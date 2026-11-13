@@ -379,7 +379,11 @@ fn node_add_same_node_shutdown_existing_instances() {
     let node_before = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the node after first add. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            graph
+                .nodes
+                .iter()
+                .map(core_node_api::SerializedNode::label)
+                .collect::<Vec<_>>()
         )
     });
     assert_eq!(
@@ -423,7 +427,11 @@ fn node_add_same_node_shutdown_existing_instances() {
     let node_after = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the node after re-add. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            graph
+                .nodes
+                .iter()
+                .map(core_node_api::SerializedNode::label)
+                .collect::<Vec<_>>()
         )
     });
     assert_eq!(
@@ -535,7 +543,11 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     let node_before = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the node after first add. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            graph
+                .nodes
+                .iter()
+                .map(core_node_api::SerializedNode::label)
+                .collect::<Vec<_>>()
         )
     });
     assert_eq!(
@@ -644,7 +656,11 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     let node_after = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the node after git re-add. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            graph
+                .nodes
+                .iter()
+                .map(core_node_api::SerializedNode::label)
+                .collect::<Vec<_>>()
         )
     });
     assert_eq!(
@@ -1439,10 +1455,7 @@ fn node_add_build_force_supersedes_inflight_build() {
     // goal and spawned build_cmd, so polling for it is race-free.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
-        if std::fs::read_to_string(&pid_file)
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false)
-        {
+        if std::fs::read_to_string(&pid_file).is_ok_and(|s| !s.trim().is_empty()) {
             break;
         }
         assert!(
@@ -1584,12 +1597,20 @@ fn node_add_resolves_absent_optional_dependency_through_the_repo_cache() {
     assert!(
         graph.find_node(consumer_name, "v1").is_some(),
         "the consumer should be in the stack. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
     assert!(
         graph.find_node(recorder_name, "v1").is_none(),
         "a local add carries no closure, so the cache-resolved dependency stays out of the stack. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 }
 

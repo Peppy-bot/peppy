@@ -102,9 +102,7 @@ pub(crate) fn parse_repo_source(
         }
         let path = std::path::Path::new(source_str);
         let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| {
-            std::env::current_dir()
-                .map(|cwd| cwd.join(path))
-                .unwrap_or_else(|_| path.to_path_buf())
+            std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
         });
         return Ok(RepoSource::Fs(resolved));
     }

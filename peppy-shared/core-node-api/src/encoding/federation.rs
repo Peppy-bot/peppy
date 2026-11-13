@@ -208,7 +208,7 @@ impl ParticipantSliceBeginRequest {
                 entry.set_instance_id(instance.as_str());
                 write_text_list(
                     entry.init_core_nodes(capnp_list_len(watchers.len(), "core_nodes")?),
-                    watchers.iter().map(|watcher| watcher.as_str()),
+                    watchers.iter().map(CoreNodeName::as_str),
                 );
             }
         }
@@ -672,12 +672,7 @@ impl PairCommitRequest {
             request.set_peer_link_id(&self.peer_link_id);
             request.set_peer_role(&self.peer_role);
             request.set_peer_cardinality(self.peer_cardinality.as_str());
-            request.set_peer_copy(
-                self.peer_copy
-                    .as_ref()
-                    .map(|copy| copy.as_str())
-                    .unwrap_or(""),
-            );
+            request.set_peer_copy(self.peer_copy.as_ref().map_or("", |copy| copy.as_str()));
             request.set_held(self.held);
             write_instance_address(request.reborrow().init_local(), &self.local);
             write_instance_address(request.init_peer(), &self.peer);

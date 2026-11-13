@@ -91,9 +91,8 @@ pub fn generate_peppygen_lib(
     node_tree: common::NodeTree,
 ) -> Result<()> {
     let node_dir = node_dir.as_ref();
-    let node_config_path = config_path
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| node_dir.join(NODE_CONFIG_FILE));
+    let node_config_path =
+        config_path.map_or_else(|| node_dir.join(NODE_CONFIG_FILE), Path::to_path_buf);
 
     let peppy_dir = node_dir.join(daemon_config::consts::PEPPY_OUTPUT_DIR);
     fs::create_dir_all(&peppy_dir)?;

@@ -170,9 +170,10 @@ pub(crate) fn parse_repo_entry(entry: &Value) -> Result<RepoSource, RepoEntryErr
 /// - `Oci`: the `oci://` URL in its normal form.
 pub(crate) fn source_identity(source: &RepoSource) -> String {
     match source {
-        RepoSource::Fs(path) => std::fs::canonicalize(path)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| path.to_string_lossy().into_owned()),
+        RepoSource::Fs(path) => std::fs::canonicalize(path).map_or_else(
+            |_| path.to_string_lossy().into_owned(),
+            |p| p.to_string_lossy().into_owned(),
+        ),
         RepoSource::Git { repo_url, repo_ref } => match repo_ref.configured() {
             Some(r) => format!("{repo_url}@{r}"),
             None => repo_url.clone(),
@@ -448,10 +449,10 @@ pub(crate) fn normalize_repo_entries(
         if let Some(id) = repo_entry_id(entry)
             && !seen_ids.insert(id)
         {
-            let file = file_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| file_path.to_string_lossy().into_owned());
+            let file = file_path.file_name().map_or_else(
+                || file_path.to_string_lossy().into_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
             return Err(crate::Error::DuplicateRepoId { id, file });
         }
     }

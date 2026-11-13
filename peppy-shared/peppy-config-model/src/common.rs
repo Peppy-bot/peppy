@@ -63,16 +63,18 @@ impl AnyType {
                 Self::Int(_) | Self::UInt(_) => Ok(()),
                 other => Err(mismatch(other.type_name())),
             },
-            TypeToken::U8 => check_unsigned_range(self, u8::MAX as u64, path, token),
-            TypeToken::U16 => check_unsigned_range(self, u16::MAX as u64, path, token),
-            TypeToken::U32 => check_unsigned_range(self, u32::MAX as u64, path, token),
+            TypeToken::U8 => check_unsigned_range(self, u64::from(u8::MAX), path, token),
+            TypeToken::U16 => check_unsigned_range(self, u64::from(u16::MAX), path, token),
+            TypeToken::U32 => check_unsigned_range(self, u64::from(u32::MAX), path, token),
             TypeToken::U64 => check_unsigned_range(self, u64::MAX, path, token),
-            TypeToken::I8 => check_signed_range(self, i8::MIN as i64, i8::MAX as i64, path, token),
+            TypeToken::I8 => {
+                check_signed_range(self, i64::from(i8::MIN), i64::from(i8::MAX), path, token)
+            }
             TypeToken::I16 => {
-                check_signed_range(self, i16::MIN as i64, i16::MAX as i64, path, token)
+                check_signed_range(self, i64::from(i16::MIN), i64::from(i16::MAX), path, token)
             }
             TypeToken::I32 => {
-                check_signed_range(self, i32::MIN as i64, i32::MAX as i64, path, token)
+                check_signed_range(self, i64::from(i32::MIN), i64::from(i32::MAX), path, token)
             }
             TypeToken::I64 => check_signed_range(self, i64::MIN, i64::MAX, path, token),
             TypeToken::F32 => match check_f32(self) {
@@ -128,7 +130,7 @@ fn check_signed_range(
 ) -> Result<(), TypeMismatch> {
     let v: i64 = match value {
         AnyType::Int(i) => *i,
-        AnyType::UInt(u) if *u <= i64::MAX as u64 => *u as i64,
+        AnyType::UInt(u) if i64::try_from(*u).is_ok() => *u as i64,
         other => {
             return Err(TypeMismatch {
                 path: path.to_string(),
@@ -261,13 +263,14 @@ impl ParameterSpec {
     /// missing path.
     fn synthesize_default(&self, path: &str, missing: &mut Vec<String>) -> Option<AnyType> {
         match self {
-            Self::Primitive { default, .. } => match default {
-                Some(d) => Some(d.to_any()),
-                None => {
+            Self::Primitive { default, .. } => {
+                if let Some(d) = default {
+                    Some(d.to_any())
+                } else {
                     missing.push(path.to_string());
                     None
                 }
-            },
+            }
             Self::Array { .. } => {
                 missing.push(path.to_string());
                 None
@@ -601,17 +604,27 @@ fn parse_default_value(kind: &TypeToken, raw: AnyType, path: &str) -> Result<Def
         TypeToken::Time => Err(format!(
             "at `{display}`: `$default` is not supported for type `time`"
         )),
-        TypeToken::U8 => bounded_uint_default(raw, u8::MAX as u64, "u8", display),
-        TypeToken::U16 => bounded_uint_default(raw, u16::MAX as u64, "u16", display),
-        TypeToken::U32 => bounded_uint_default(raw, u32::MAX as u64, "u32", display),
+        TypeToken::U8 => bounded_uint_default(raw, u64::from(u8::MAX), "u8", display),
+        TypeToken::U16 => bounded_uint_default(raw, u64::from(u16::MAX), "u16", display),
+        TypeToken::U32 => bounded_uint_default(raw, u64::from(u32::MAX), "u32", display),
         TypeToken::U64 => bounded_uint_default(raw, u64::MAX, "u64", display),
-        TypeToken::I8 => bounded_int_default(raw, i8::MIN as i64, i8::MAX as i64, "i8", display),
-        TypeToken::I16 => {
-            bounded_int_default(raw, i16::MIN as i64, i16::MAX as i64, "i16", display)
+        TypeToken::I8 => {
+            bounded_int_default(raw, i64::from(i8::MIN), i64::from(i8::MAX), "i8", display)
         }
-        TypeToken::I32 => {
-            bounded_int_default(raw, i32::MIN as i64, i32::MAX as i64, "i32", display)
-        }
+        TypeToken::I16 => bounded_int_default(
+            raw,
+            i64::from(i16::MIN),
+            i64::from(i16::MAX),
+            "i16",
+            display,
+        ),
+        TypeToken::I32 => bounded_int_default(
+            raw,
+            i64::from(i32::MIN),
+            i64::from(i32::MAX),
+            "i32",
+            display,
+        ),
         TypeToken::I64 => bounded_int_default(raw, i64::MIN, i64::MAX, "i64", display),
         TypeToken::F32 => match check_f32(&raw) {
             F32Check::Ok(f) => Ok(DefaultValue::Float(f)),
@@ -679,7 +692,7 @@ fn bounded_int_default(
 ) -> Result<DefaultValue, String> {
     let v: i64 = match raw {
         AnyType::Int(i) => i,
-        AnyType::UInt(u) if u <= i64::MAX as u64 => u as i64,
+        AnyType::UInt(u) if i64::try_from(u).is_ok() => u as i64,
         AnyType::UInt(u) => {
             return Err(format!(
                 "at `{display}`: `$default` value {u} is outside the range of `{name}` [{min}, {max}]"
@@ -719,7 +732,7 @@ enum F32Check {
 fn check_f32(value: &AnyType) -> F32Check {
     match value {
         AnyType::Float(f) if !f.is_finite() => F32Check::NonFinite,
-        AnyType::Float(f) if f.abs() > f32::MAX as f64 => F32Check::FloatOutOfRange,
+        AnyType::Float(f) if f.abs() > f64::from(f32::MAX) => F32Check::FloatOutOfRange,
         AnyType::Float(f) => F32Check::Ok(*f),
         AnyType::Int(i) if i.unsigned_abs() > F32_LOSSLESS_INT_LIMIT => F32Check::IntPrecisionLoss,
         AnyType::Int(i) => F32Check::Ok(*i as f64),

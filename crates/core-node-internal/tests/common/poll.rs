@@ -46,9 +46,11 @@ pub(crate) async fn poll_until_explained<T>(
         if let Some(value) = predicate() {
             return value;
         }
-        if std::time::Instant::now() > deadline {
-            panic!("{}", timeout_message());
-        }
+        assert!(
+            std::time::Instant::now() <= deadline,
+            "{}",
+            timeout_message()
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
@@ -80,7 +82,7 @@ pub(crate) async fn wait_until_process_exits(pid: u32, timeout: Duration, timeou
     poll_until(timeout, timeout_message, || {
         (!is_process_running(pid)).then_some(())
     })
-    .await
+    .await;
 }
 
 /// PIDs of live children of `parent_pid`, via sysinfo's parent links.
@@ -150,13 +152,12 @@ pub(crate) async fn wait_until_service_reachable(
         {
             return;
         }
-        if std::time::Instant::now() >= deadline {
-            panic!(
-                "service {to_node_name}/{to_service_name} on \
-                 {target_core_node}/{target_instance_id} did not become \
-                 reachable within {WAIT:?}"
-            );
-        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "service {to_node_name}/{to_service_name} on \
+             {target_core_node}/{target_instance_id} did not become \
+             reachable within {WAIT:?}"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }

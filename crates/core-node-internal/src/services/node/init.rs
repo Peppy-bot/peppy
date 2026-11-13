@@ -127,7 +127,7 @@ fn scaffold_node(
 fn create_gitignore(node_dir: &std::path::Path, build_system: Toolchain) -> std::io::Result<()> {
     let content = match build_system {
         Toolchain::Cargo => {
-            r#"
+            r"
 # Peppy-specific files
 .peppy
 
@@ -147,10 +147,10 @@ fn create_gitignore(node_dir: &std::path::Path, build_system: Toolchain) -> std:
 
 # Logs
 *.log
-"#
+"
         }
         Toolchain::Uv => {
-            r#"
+            r"
 # Peppy-specific files
 .peppy
 
@@ -179,7 +179,7 @@ __pycache__/
 
 # Logs
 *.log
-"#
+"
         }
     };
     std::fs::write(node_dir.join(".gitignore"), content)?;

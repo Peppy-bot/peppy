@@ -322,7 +322,7 @@ fn a_null_adjustments_key_is_refused_wherever_it_is_written() {
     let dir = tempdir().unwrap();
     write(
         &dir.path().join("fragments/a.json5"),
-        &fragment_file(r#"deployments: [], adjustments: null"#),
+        &fragment_file(r"deployments: [], adjustments: null"),
     );
     let (launcher, parsed) = write_launcher(
         dir.path(),

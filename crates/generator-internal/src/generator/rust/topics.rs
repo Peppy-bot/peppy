@@ -167,36 +167,33 @@ fn build_topic_build_message(
 
     let error_context = quote!(String::from(#label_literal));
 
-    match encoding {
-        Some(spec) => {
-            let serialize_block =
-                build_serialize_payload(&spec.builder_type, &[], &spec.assignments, &error_context);
+    if let Some(spec) = encoding {
+        let serialize_block =
+            build_serialize_payload(&spec.builder_type, &[], &spec.assignments, &error_context);
 
-            quote! {
-                #[allow(clippy::too_many_arguments)]
-                pub fn build_message(#(#method_param_tokens),*) -> crate::Result<peppylib::Payload> {
-                    let payload = #serialize_block;
-                    Ok(payload)
-                }
+        quote! {
+            #[allow(clippy::too_many_arguments)]
+            pub fn build_message(#(#method_param_tokens),*) -> crate::Result<peppylib::Payload> {
+                let payload = #serialize_block;
+                Ok(payload)
             }
         }
-        None => {
-            let ignore_params: Vec<TokenStream> = kept_params
-                .iter()
-                .map(|param| {
-                    let ident = &param.ident;
-                    quote!(let _ = #ident;)
-                })
-                .collect();
+    } else {
+        let ignore_params: Vec<TokenStream> = kept_params
+            .iter()
+            .map(|param| {
+                let ident = &param.ident;
+                quote!(let _ = #ident;)
+            })
+            .collect();
 
-            quote! {
-                #[allow(clippy::too_many_arguments)]
-                pub fn build_message(#(#method_param_tokens),*) -> crate::Result<peppylib::Payload> {
-                    #(#ignore_params)*
-                    Err(crate::Error::MessageFormatUnavailable {
-                        context: #error_context,
-                    })
-                }
+        quote! {
+            #[allow(clippy::too_many_arguments)]
+            pub fn build_message(#(#method_param_tokens),*) -> crate::Result<peppylib::Payload> {
+                #(#ignore_params)*
+                Err(crate::Error::MessageFormatUnavailable {
+                    context: #error_context,
+                })
             }
         }
     }
@@ -621,16 +618,15 @@ fn build_subscription_struct(
 pub(super) fn sender_target_expression(
     origin: Option<&crate::generator::types::ContractOrigin>,
 ) -> TokenStream {
-    match origin {
-        Some(o) => {
-            let name = Literal::string(&o.contract_name);
-            let tag = Literal::string(&o.contract_tag);
-            quote!(peppylib::messaging::SenderTarget::contract(#name, #tag)?)
-        }
-        None => quote!(peppylib::messaging::SenderTarget::node(
+    if let Some(o) = origin {
+        let name = Literal::string(&o.contract_name);
+        let tag = Literal::string(&o.contract_tag);
+        quote!(peppylib::messaging::SenderTarget::contract(#name, #tag)?)
+    } else {
+        quote!(peppylib::messaging::SenderTarget::node(
             node_runner.processor().node_name(),
             node_runner.processor().node_tag(),
-        )?),
+        )?)
     }
 }
 
@@ -856,17 +852,14 @@ fn build_bound_members_accessor_fn(
 pub(super) fn consumed_to_target_expression(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
-    match &dependency.origin {
-        Some(origin) => {
-            let name = Literal::string(&origin.contract_name);
-            let tag = Literal::string(&origin.contract_tag);
-            quote!(peppylib::messaging::SenderTarget::contract(#name, #tag)?)
-        }
-        None => {
-            let node_name = Literal::string(&dependency.producer_name);
-            let node_tag = Literal::string(&dependency.producer_tag);
-            quote!(peppylib::messaging::SenderTarget::node(#node_name, #node_tag)?)
-        }
+    if let Some(origin) = &dependency.origin {
+        let name = Literal::string(&origin.contract_name);
+        let tag = Literal::string(&origin.contract_tag);
+        quote!(peppylib::messaging::SenderTarget::contract(#name, #tag)?)
+    } else {
+        let node_name = Literal::string(&dependency.producer_name);
+        let node_tag = Literal::string(&dependency.producer_tag);
+        quote!(peppylib::messaging::SenderTarget::node(#node_name, #node_tag)?)
     }
 }
 

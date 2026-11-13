@@ -724,9 +724,10 @@ mod tests {
         // MissingExecutionLanguage round-trips through the structured bridge.
         let json = serde_json5::to_string(&StructuredError::MissingExecutionLanguage).unwrap();
         let err = ParsingError::from(make_err(&json));
-        if !matches!(err, ParsingError::MissingExecutionLanguage) {
-            panic!("Expected MissingExecutionLanguage, got {err:?}");
-        }
+        assert!(
+            matches!(err, ParsingError::MissingExecutionLanguage),
+            "Expected MissingExecutionLanguage, got {err:?}"
+        );
     }
 
     #[test]

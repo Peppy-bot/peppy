@@ -554,7 +554,7 @@ mod tests {
         let remote = signer.prove(&call(b"x"), CallReceiver::OtherMachine);
         assert_eq!(local.machine_proof(), None);
         assert_eq!(
-            remote.machine_proof().map(|proof| proof.as_ref()),
+            remote.machine_proof().map(AsRef::as_ref),
             Some(&b"endorsement and boot credential"[..])
         );
     }

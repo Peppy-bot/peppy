@@ -327,48 +327,47 @@ fn resolve_observation(
         }))
     };
 
-    let end = match requested_link {
-        Some(link) => target_item
+    let end = if let Some(link) = requested_link {
+        target_item
             .pairing_deps
             .iter()
             .filter(on_pairing)
             .find(|dep| dep.link_id == link)
-            .ok_or_else(not_observable)?,
-        None => {
-            // Slots playing the observed role name the source itself; a slot
-            // of the other role names a pair only on an instance that plays
-            // the observed role through none. Observation is not exclusive,
-            // so every slot is a candidate regardless of who else observes it.
-            let (sources, far_ends): (Vec<_>, Vec<_>) = target_item
-                .pairing_deps
-                .iter()
-                .filter(on_pairing)
-                .partition(|dep| dep.role == own_dep.role);
-            let candidates = if sources.is_empty() {
-                far_ends
-            } else {
-                sources
-            };
-            match candidates.as_slice() {
-                [] => return Err(not_observable()),
-                [single] => *single,
-                several => {
-                    return Err(ParsingError::ObservationTargetAmbiguous(Box::new(
-                        ObservationTargetAmbiguous {
-                            owner_instance_id: owner_id.to_string(),
-                            key: key.to_string(),
-                            source_instance_id: target_instance.to_string(),
-                            pairing_name: own_dep.name.as_str().to_string(),
-                            pairing_tag: own_dep.tag.clone(),
-                            candidate_role: several[0].role.clone(),
-                            candidate_link_ids: several
-                                .iter()
-                                .map(|dep| dep.link_id.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                        },
-                    )));
-                }
+            .ok_or_else(not_observable)?
+    } else {
+        // Slots playing the observed role name the source itself; a slot
+        // of the other role names a pair only on an instance that plays
+        // the observed role through none. Observation is not exclusive,
+        // so every slot is a candidate regardless of who else observes it.
+        let (sources, far_ends): (Vec<_>, Vec<_>) = target_item
+            .pairing_deps
+            .iter()
+            .filter(on_pairing)
+            .partition(|dep| dep.role == own_dep.role);
+        let candidates = if sources.is_empty() {
+            far_ends
+        } else {
+            sources
+        };
+        match candidates.as_slice() {
+            [] => return Err(not_observable()),
+            [single] => *single,
+            several => {
+                return Err(ParsingError::ObservationTargetAmbiguous(Box::new(
+                    ObservationTargetAmbiguous {
+                        owner_instance_id: owner_id.to_string(),
+                        key: key.to_string(),
+                        source_instance_id: target_instance.to_string(),
+                        pairing_name: own_dep.name.as_str().to_string(),
+                        pairing_tag: own_dep.tag.clone(),
+                        candidate_role: several[0].role.clone(),
+                        candidate_link_ids: several
+                            .iter()
+                            .map(|dep| dep.link_id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    },
+                )));
             }
         }
     };
@@ -1046,7 +1045,7 @@ mod tests {
                 "observed_arm".to_string(),
                 super::super::types::LinkValue::Bound(Selection::Flags(
                     super::super::types::LinkTargets::new(
-                        targets.iter().map(|target| target.to_string()).collect(),
+                        targets.iter().map(ToString::to_string).collect(),
                     )
                     .expect("distinct flag targets"),
                 )),

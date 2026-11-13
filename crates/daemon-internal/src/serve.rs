@@ -85,7 +85,7 @@ impl CompositeCommand {
     pub(crate) fn execute(self) -> Vec<ServeAsyncHandle> {
         self.async_commands
             .into_iter()
-            .map(|command| command.run())
+            .map(ServeAsyncCommand::run)
             .collect()
     }
 }
@@ -226,7 +226,7 @@ impl Serve {
         for ready in readiness {
             let gate = tokio::select! {
                 gate = ready => gate,
-                _ = shutdown_signal.recv() => return Startup::ShutdownSignal,
+                () = shutdown_signal.recv() => return Startup::ShutdownSignal,
             };
             if gate.is_ok() {
                 continue;
@@ -281,7 +281,7 @@ impl Serve {
                         }
                     }
                 }
-                _ = async {
+                () = async {
                     match &external_shutdown {
                         Some(token) => token.cancelled().await,
                         None => std::future::pending::<()>().await,
@@ -290,11 +290,11 @@ impl Serve {
                     info!("External shutdown requested");
                     return Ok(ServeOutcome::Stop);
                 }
-                _ = shutdown_signal.recv() => {
+                () = shutdown_signal.recv() => {
                     info!("Shutdown signal received");
                     return Ok(ServeOutcome::Stop);
                 }
-                _ = async {
+                () = async {
                     match &mut restart_rx {
                         Some(rx) => {
                             // Only an explicit `true` is a restart request. A
@@ -415,9 +415,8 @@ fn run_one_generation(options: &ServeOptions) -> Result<(ServeOutcome, bool)> {
     let outcome = executor
         .execute()
         .inspect_err(|e| error!("Serve command failed: {}", e))?;
-    let router_adopted = messenger
-        .map(|messenger| messenger.blocking_lock().router_is_adopted())
-        .unwrap_or(false);
+    let router_adopted =
+        messenger.is_some_and(|messenger| messenger.blocking_lock().router_is_adopted());
     Ok((outcome, router_adopted))
 }
 

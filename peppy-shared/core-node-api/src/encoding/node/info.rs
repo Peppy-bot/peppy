@@ -375,7 +375,7 @@ fn write_exit_cause(mut builder: node_capnp::exit_cause::Builder<'_>, cause: Opt
             group.set_core_dumped(*core_dumped);
         }
         Some(ExitCause::HealthKill { unanswered_secs }) => {
-            builder.set_health_kill_secs(*unanswered_secs)
+            builder.set_health_kill_secs(*unanswered_secs);
         }
         Some(ExitCause::Message(text)) => builder.set_message(text),
     }
@@ -713,10 +713,10 @@ mod tests {
         type Corrupt = fn(node_capnp::node_instance_info::Builder<'_>);
         let fields: [(&str, Corrupt); 3] = [
             ("slot_bindings", |mut entry| {
-                entry.set_slot_bindings_json("{")
+                entry.set_slot_bindings_json("{");
             }),
             ("pairing_slots", |mut entry| {
-                entry.set_pairing_slots_json("{")
+                entry.set_pairing_slots_json("{");
             }),
             ("clock", |mut entry| entry.set_clock_json("{")),
         ];

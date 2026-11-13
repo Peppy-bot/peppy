@@ -523,7 +523,7 @@ pub mod test_support {
         let prefix = format!("{instance_id}_");
         let mut logs: Vec<((String, u32), PathBuf)> = std::fs::read_dir(dir)
             .ok()?
-            .filter_map(|entry| entry.ok())
+            .filter_map(Result::ok)
             .filter_map(|entry| {
                 let name = entry.file_name();
                 let stem = name.to_str()?.strip_prefix(&prefix)?.strip_suffix(".log")?;

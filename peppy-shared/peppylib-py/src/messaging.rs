@@ -33,8 +33,7 @@ pub(crate) use topics::{
 
 /// A member's copy as the member reprs spell it: the quoted name, or `None`.
 pub(crate) fn repr_copy(copy: Option<&str>) -> String {
-    copy.map(|copy| format!("{copy:?}"))
-        .unwrap_or_else(|| "None".to_string())
+    copy.map_or_else(|| "None".to_string(), |copy| format!("{copy:?}"))
 }
 
 /// A producer as every repr spells it, the `ProducerRef` constructor call.

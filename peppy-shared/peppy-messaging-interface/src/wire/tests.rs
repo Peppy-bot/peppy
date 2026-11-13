@@ -324,7 +324,7 @@ fn action_sender_pinned_to_overwrites_identity_and_preserves_rest() {
 fn action_sender_pinned_to_rejects_invalid_identity_segment() {
     let wildcard = sample_action_sender();
     let err = wildcard.pinned_to("ok_core", "bad/inst").unwrap_err();
-    assert!(format!("{err}").contains("/"));
+    assert!(format!("{err}").contains('/'));
 }
 
 // ─── ActionWireReceiver derived services ──────────────────────────────────
