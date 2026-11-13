@@ -25,6 +25,13 @@ async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: Str
 }
 
 /// What `peppy node info` prints for `node_name:node_tag`.
+#[cfg_attr(
+    not(feature = "test-support"),
+    expect(
+        unreachable_pub,
+        reason = "the `test-support` feature exports this function"
+    )
+)]
 pub async fn node_info_rendered(
     ctx: &Arc<AppContext>,
     node_name: &str,

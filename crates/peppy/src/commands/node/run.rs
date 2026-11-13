@@ -1028,6 +1028,13 @@ pub(super) async fn validate_and_run_instance(
     clippy::too_many_arguments,
     reason = "each argument is a distinct input, and a struct of them only moves the list"
 )]
+#[cfg_attr(
+    not(feature = "test-support"),
+    expect(
+        unreachable_pub,
+        reason = "the `test-support` feature exports this function"
+    )
+)]
 pub async fn run_instance_async(
     messenger_handle: &MessengerHandle,
     core_node_name: &str,

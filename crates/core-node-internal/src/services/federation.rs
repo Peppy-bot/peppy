@@ -47,6 +47,14 @@
 //! unit-testable without a messenger, a timer, or a sleep. Wiring the presence
 //! watch to it lives in the service handler below.
 
+#![cfg_attr(
+    not(any(test, feature = "test-support")),
+    expect(
+        unreachable_pub,
+        reason = "the `test-support` feature exports items of this module"
+    )
+)]
+
 mod service;
 
 pub(crate) use service::{

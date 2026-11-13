@@ -42,6 +42,14 @@
 //! only while that generation is still current. A superseded task's release is
 //! thus a safe no-op.
 
+#![cfg_attr(
+    not(any(test, feature = "test-support")),
+    expect(
+        unreachable_pub,
+        reason = "the `test-support` feature exports items of this module"
+    )
+)]
+
 use crate::services::action_loop::GoalEnding;
 use crate::services::response::failure;
 use config::runtime::Name;

@@ -57,6 +57,13 @@ impl FirstStart {
 }
 
 /// What the stack keeps of an instance across its processes.
+#[cfg_attr(
+    not(any(test, feature = "test-support")),
+    expect(
+        unreachable_pub,
+        reason = "the `test-support` feature exports this type"
+    )
+)]
 #[derive(Debug, Clone, Default)]
 pub struct Supervision {
     /// `None` for the root instance and a test fixture built without a
