@@ -601,6 +601,7 @@ impl DocLanguage {
 /// `summary` and puts the rest after a blank line, Rust emits every line as one
 /// `///` block. Splitting it in the type is what keeps that convention out of
 /// the callers' indexing.
+#[derive(Debug)]
 pub struct AccessorDoc {
     pub summary: &'static str,
     /// The rest of the prose, without [`Self::api_note`] or
@@ -801,7 +802,7 @@ impl DeploymentInterface {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct InterfaceArtifact {
     /// Module path under the category dir, leaf-last. Native artifacts have a
     /// single segment (the topic/service/action name); slot-backed artifacts
@@ -1157,7 +1158,7 @@ fn validate_sibling_type_name_collisions(
 /// second registration lands on the same file stem: identical text is the
 /// consumer and the mock of one slot sharing a file, anything else is a
 /// naming collision that must fail loudly.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct CapnpSchema {
     schema_key: String,
     file_stem: String,

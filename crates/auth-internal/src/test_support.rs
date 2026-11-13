@@ -168,6 +168,7 @@ pub fn problem(kind: ProblemKind, status: u16) -> Problem {
 /// A CA that mints the machine certificates of a test federation: the CA of
 /// an operator, or the CA of a project of the platform with an issuer under
 /// it.
+#[derive(Debug)]
 pub struct TestMachineCa {
     issuer: rcgen::CertifiedIssuer<'static, rcgen::KeyPair>,
     /// The certificates above `issuer`, nearest first: empty for a root.

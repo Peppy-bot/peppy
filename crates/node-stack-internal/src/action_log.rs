@@ -46,11 +46,12 @@ pub fn log_line(time: SystemTime, marker: Option<&str>, text: &str) -> String {
 ///
 /// Writes are best-effort: a line the file refuses is still exported, and the
 /// action goes on.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ActionLog {
     inner: Arc<Inner>,
 }
 
+#[derive(Debug)]
 struct Inner {
     exporter: LogExporter,
     state: Mutex<State>,
@@ -66,6 +67,7 @@ enum ExistingFile {
     Replace,
 }
 
+#[derive(Debug)]
 struct State {
     file: File,
     identity: Arc<LogIdentity>,
@@ -430,7 +432,7 @@ impl LogFileName {
 
 /// A log and the feedback channel of its action: where the daemon reports the
 /// steps of an add, a build or a run.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Announcer {
     log: ActionLog,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,

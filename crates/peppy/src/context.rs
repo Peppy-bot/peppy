@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{Mutex, OnceCell};
 
+#[derive(Debug)]
 pub struct AppContext {
     pub root_dir: PathBuf,
     daemon_state_path: Option<PathBuf>,

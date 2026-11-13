@@ -32,6 +32,7 @@ pub(crate) struct ProjectInWorkspace {
 
 /// Whether a pick may ask the person when more than one candidate is left,
 /// and how.
+#[derive(Debug)]
 pub enum Ask {
     /// Do not ask: stop with the list of the choices.
     Never,

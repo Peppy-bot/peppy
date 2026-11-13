@@ -265,6 +265,7 @@ pub enum PeerRemoval {
 /// base URL of the backend, and the bearer of the session. On a `401` the
 /// request is retried once after the bearer is refreshed (and persisted) in
 /// place.
+#[derive(Debug)]
 pub struct PlatformApi {
     http: HttpClient,
     api_url: String,

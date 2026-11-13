@@ -387,6 +387,7 @@ pub struct StackState {
 /// it clears the copy change it reported, so `stack list` never reports the
 /// change of a hold that ended.
 #[must_use = "the stack is free again once the hold is dropped"]
+#[derive(Debug)]
 pub struct StackHold {
     copy_change: Arc<Mutex<Option<CopyChange>>>,
     _write: tokio::sync::OwnedRwLockWriteGuard<()>,

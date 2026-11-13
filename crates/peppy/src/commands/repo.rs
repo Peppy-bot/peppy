@@ -50,7 +50,7 @@ fn identity_label(name: &str, tag: &str) -> String {
     format!("{name}:{tag}")
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum RepoCommands {
     /// Sync the local `repositories.json5` with the bundled defaults.
     ///
@@ -211,6 +211,7 @@ pub enum RepoCommands {
     },
 }
 
+#[derive(Debug)]
 pub struct RepoCommand {
     pub command: RepoCommands,
 }

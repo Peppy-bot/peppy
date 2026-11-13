@@ -21,6 +21,7 @@ use crate::error::{Error, Result};
 use auth::client::PeerRemoval;
 use auth::enrollment::{self, EnrollmentDocument};
 
+#[derive(Debug)]
 pub struct UnenrollCommand {
     pub api_url: Option<String>,
     /// Only delete the local enrollment; leave the platform's peer alone.

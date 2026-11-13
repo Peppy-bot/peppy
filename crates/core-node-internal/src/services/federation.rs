@@ -244,6 +244,7 @@ impl Drop for RestartAdmission {
 
 /// A hold on restarts, released when dropped: a removal's, or a test's.
 #[must_use = "restarts run again once the hold is dropped"]
+#[derive(Debug)]
 pub struct RestartHold {
     holds: tokio::sync::watch::Sender<usize>,
 }
@@ -985,9 +986,15 @@ mod tests {
         let ownership = SliceOwnership::new("cn-held");
         let first = ownership.admit_node_goal(&LOCAL).unwrap();
         let second = ownership.admit_node_goal(&LOCAL).unwrap();
-        assert!(ownership.stack.try_begin_change().is_err());
+        assert_eq!(
+            ownership.stack.try_begin_change().err(),
+            Some(StackBusy::NodeGoals)
+        );
         drop(first);
-        assert!(ownership.stack.try_begin_change().is_err());
+        assert_eq!(
+            ownership.stack.try_begin_change().err(),
+            Some(StackBusy::NodeGoals)
+        );
         drop(second);
         let mutation = ownership.stack.try_begin_change().unwrap();
         let refusal = ownership

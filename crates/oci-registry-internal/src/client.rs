@@ -9,6 +9,7 @@ use core_node_api::encoding::{OciDigest, OciRepository};
 use futures_util::StreamExt as _;
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use reqwest::{Method, StatusCode};
+use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -71,6 +72,22 @@ pub struct RegistryClient {
     authorization: tokio::sync::Mutex<Option<HeaderValue>>,
     upload_chunk_bytes: u64,
     tags_page_size: u32,
+}
+
+/// Shows which repository the client speaks to and how. The `Authorization`
+/// header is a secret, so it is not shown.
+impl fmt::Debug for RegistryClient {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RegistryClient")
+            .field("repository", &self.repository)
+            .field("base", &self.base)
+            .field("access", &self.access)
+            .field("credentials", &self.credentials)
+            .field("upload_chunk_bytes", &self.upload_chunk_bytes)
+            .field("tags_page_size", &self.tags_page_size)
+            .finish_non_exhaustive()
+    }
 }
 
 /// An answer that the request expects, or the error of any other.

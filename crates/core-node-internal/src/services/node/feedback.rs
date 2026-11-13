@@ -15,7 +15,7 @@ pub(crate) use node_stack::{FeedbackLine, FeedbackStream};
 use tokio::sync::mpsc;
 
 /// One line a blocking checkout or materialization reports while it works.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum Report<'a> {
     /// A step of the work.
     Step(&'a str),

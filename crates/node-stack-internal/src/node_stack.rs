@@ -125,6 +125,7 @@ struct EndpointMeta {
     copy: Option<Name>,
 }
 
+#[derive(Debug)]
 struct NodeStackInner {
     graph: StableDiGraph<EntityHandle, ()>,
     key_to_index: HashMap<NodeKey, NodeIndex>,
@@ -1060,7 +1061,7 @@ impl NodeStackInner {
 // Public thread-safe wrapper
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct NodeStack {
     shared: Arc<RwLock<NodeStackInner>>,
     /// Most-recent add log path per node key. This is a daemon-only cache

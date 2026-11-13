@@ -21,6 +21,7 @@ use auth::{CertificateValidity, FederationIdentity, storage};
 
 const DAY_SECS: i64 = 24 * 60 * 60;
 
+#[derive(Debug)]
 pub struct StatusCommand {
     pub api_url: Option<String>,
     pub json: bool,
@@ -91,6 +92,7 @@ impl RenewalMeans {
 }
 
 /// The platform's view, when a session allowed asking for it.
+#[derive(Debug)]
 struct PlatformReport {
     router: RouterStatus,
     /// This peer's status as the platform reports it, if it still lists it.
@@ -455,6 +457,7 @@ fn link_json(link: &PokeOutcome) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     use auth::test_support::ISSUED_AT;
 
@@ -542,7 +545,7 @@ mod tests {
     fn the_platform_view_is_absent_without_a_session() {
         let dir = tempfile::tempdir().expect("temp dir");
         let report = platform_report(&session_in(&dir), &auth::test_support::enrollment());
-        assert!(matches!(report, Ok(None)));
+        assert_matches!(report, Ok(None));
     }
 
     /// A credentials file that cannot be read is not the absence of a

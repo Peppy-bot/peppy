@@ -1,5 +1,6 @@
 use parking_lot::RwLock;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -263,6 +264,28 @@ pub struct BuildContext<'a> {
     pub pypi_mirror: Option<&'a PackagesBaseUrl>,
 }
 
+/// Shows the inputs of the build. An environment value can be a secret, so
+/// the variables are shown by name.
+impl fmt::Debug for BuildContext<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BuildContext")
+            .field("working_dir", &self.working_dir)
+            .field("peppy_dirs", &self.peppy_dirs)
+            .field("announcer", &self.announcer)
+            .field("env_vars", &env_var_names(self.env_vars))
+            .field("cancel_token", &self.cancel_token)
+            .field("rebuild", &self.rebuild)
+            .field("pypi_mirror", &self.pypi_mirror)
+            .finish()
+    }
+}
+
+/// The names of `env_vars`, for a `Debug` output that shows no value.
+fn env_var_names(env_vars: &[(String, String)]) -> Vec<&str> {
+    env_vars.iter().map(|(name, _)| name.as_str()).collect()
+}
+
 /// What [`NodeEntity::build`] snapshots under its Phase 1 write lock, so the
 /// I/O phases run without touching the entity again.
 struct BuildSnapshot {
@@ -357,6 +380,30 @@ pub struct StartContext<'a> {
     pub output_sinks: OutputSinks,
 }
 
+/// Shows the inputs of the start. An environment value and a parameter of
+/// the runtime configuration can be a secret, so the variables are shown by
+/// name and the configuration is not shown.
+impl fmt::Debug for StartContext<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StartContext")
+            .field("core_node", &self.core_node)
+            .field("run_log_path", &self.run_log_path)
+            .field("instance_id", &self.instance_id)
+            .field("slot_bindings", &self.slot_bindings)
+            .field("clock", &self.clock)
+            .field("launch", &self.launch)
+            .field("copy", &self.copy)
+            .field("spawn", &self.spawn)
+            .field("env_vars", &env_var_names(self.env_vars))
+            .field("mount_paths_resolved", &self.mount_paths_resolved)
+            .field("credential", &self.credential)
+            .field("peppy_dirs", &self.peppy_dirs)
+            .field("output_sinks", &self.output_sinks)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Output-pipeline plumbing forwarded by [`NodeEntity::prepare_and_spawn`]
 /// into the spawned reader tasks. Grouped into its own struct so the
 /// entity's `StartContext` surface only carries fields the entity actually
@@ -375,6 +422,18 @@ pub struct OutputSinks {
     /// successful publish. The daemon implements this for its `FeedbackSync`
     /// quiescence-detection primitive; tests can pass a no-op.
     pub hooks: Arc<dyn OutputReaderHooks>,
+}
+
+/// Shows the announcer and the gate. The hooks are a trait object that does
+/// not have to be `Debug`.
+impl fmt::Debug for OutputSinks {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OutputSinks")
+            .field("announcer", &self.announcer)
+            .field("publish_enabled", &self.publish_enabled)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OutputSinks {

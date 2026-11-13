@@ -92,11 +92,12 @@ impl fmt::Display for FleetStop {
 /// The fleet rules of one server. Every entry of the server shares them, so
 /// one follow of the changes serves every goal on a member that moves a
 /// robot.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct MoveRules {
     inner: Arc<Inner>,
 }
 
+#[derive(Debug)]
 struct Inner {
     messenger: MessengerHandle,
     identity: ConsumerIdentity,
@@ -156,7 +157,7 @@ impl FleetView {
 
 /// The goals on members that move a robot that run, and the follow of the
 /// changes that runs while one does.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Follow {
     goals: usize,
     /// Counts the follows of the changes: a follow changes the view only
@@ -361,6 +362,7 @@ async fn follow_changes(inner: Arc<Inner>, generation: u64, stop: CancellationTo
 
 /// A goal on a member that moves a robot, while it runs: the server follows
 /// the changes of the fleet until the last such goal drops its guard.
+#[derive(Debug)]
 pub struct MarkedGoal {
     rules: MoveRules,
     view: watch::Receiver<FleetView>,

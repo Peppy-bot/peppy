@@ -23,7 +23,7 @@ use peppylib::messaging::ProducerRef;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum FleetCommands {
     /// List the robots of the stack: the kind, the software and the lease of
     /// each, and the halt.
@@ -43,6 +43,7 @@ pub enum FleetCommands {
     ClearHalt,
 }
 
+#[derive(Debug)]
 pub struct FleetCommand {
     pub command: FleetCommands,
 }

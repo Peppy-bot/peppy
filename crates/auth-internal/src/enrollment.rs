@@ -301,6 +301,7 @@ impl IssuedMaterial {
 
 /// Everything `enroll` writes: the private key this machine made, and what the
 /// platform issued for it.
+#[derive(Debug)]
 pub struct EnrollmentBundle {
     pub peer_key_pem: SecretString,
     pub issued: IssuedMaterial,

@@ -105,7 +105,7 @@ pub fn signal_process(pid: u32, signal: &str) {
 
 /// Cloneable in-memory sink for `tracing_subscriber`: pass a clone to
 /// `with_writer` and read back everything logged via [`LogCapture::logs`].
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct LogCapture {
     buffer: Arc<parking_lot::Mutex<Vec<u8>>>,
 }

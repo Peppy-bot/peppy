@@ -68,6 +68,7 @@ const CANCEL_TIMEOUT: Duration = Duration::from_secs(10);
 const RESULT_WAIT: Duration = Duration::from_mins(1);
 
 /// What `peppy node call` calls.
+#[derive(Debug)]
 pub struct CallParams {
     pub instance_id: String,
     pub member: String,

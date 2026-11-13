@@ -25,6 +25,7 @@ use std::sync::Arc;
 use tracing::warn;
 
 /// What `peppy node echo` prints.
+#[derive(Debug)]
 pub struct EchoParams {
     pub instance_id: String,
     pub topic: String,

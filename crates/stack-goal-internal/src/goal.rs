@@ -64,7 +64,7 @@ impl StackGoal for StackRemoveGoal {
 }
 
 /// Who sends a stack goal, and the daemon that runs it.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct DaemonRoute<'a> {
     /// The session the goal travels on.
     pub messenger: &'a MessengerHandle,
@@ -236,6 +236,7 @@ enum Stage {
 
 /// A stack goal the daemon admitted, followed one event at a time with
 /// [`next`](Self::next).
+#[derive(Debug)]
 pub struct RunningStackGoal {
     operation: &'static str,
     messenger: MessengerHandle,

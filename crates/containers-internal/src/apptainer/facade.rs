@@ -3,6 +3,7 @@ use super::l4t_manifest::{self, L4T_MANIFEST_DIR, NVLIBLIST_PATH, NvliblistSync}
 use super::lima;
 use super::registry_auth::{APPTAINER_AUTH_FILE_ENV, RegistryAuth};
 use core_node_api::encoding::ArtifactPlatform;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1595,6 +1596,7 @@ pub(crate) fn await_guest_kill(
 // ---------------------------------------------------------------------------
 
 /// Bind mount specification (path translation deferred to spawn/output).
+#[derive(Debug)]
 struct BindMount {
     src: String,
     dest: Option<String>,
@@ -1602,6 +1604,7 @@ struct BindMount {
 }
 
 /// The kind of apptainer subcommand being built.
+#[derive(Debug)]
 enum CommandKind {
     /// `apptainer run <image> [container-args...]`
     Run { image: String, args: Vec<String> },
@@ -1674,6 +1677,28 @@ pub struct ApptainerCommand<'a> {
     /// Host-side working directory for the apptainer process. See
     /// [`ApptainerCommand::working_dir`].
     working_dir: Option<PathBuf>,
+}
+
+/// Shows the command. A variable that goes into the container can hold a
+/// secret, so the variables are shown by name.
+impl fmt::Debug for ApptainerCommand<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let env_names: Vec<&str> = self
+            .apptainer_env
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        formatter
+            .debug_struct("ApptainerCommand")
+            .field("kind", &self.kind)
+            .field("flags", &self.flags)
+            .field("bind_mounts", &self.bind_mounts)
+            .field("apptainer_env", &env_names)
+            .field("lima_shell_extra_args", &self.lima_shell_extra_args)
+            .field("cancel_pgid_path", &self.cancel_pgid_path)
+            .field("working_dir", &self.working_dir)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> ApptainerCommand<'a> {

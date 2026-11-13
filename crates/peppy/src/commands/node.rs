@@ -111,6 +111,7 @@ fn tracked_instances(
 
 /// Idle + absolute-max timeout pair of the watchdog of a command that follows
 /// a daemon goal.
+#[derive(Debug)]
 pub struct TimeoutConfig {
     pub idle_secs: u64,
     pub max_secs: u64,
@@ -283,7 +284,7 @@ fn merge_link_flags(
     Ok(merged)
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum NodeCommands {
     /// Create a new peppy node
     #[command(visible_alias = "create")]
@@ -690,6 +691,7 @@ impl NodeCommands {
     }
 }
 
+#[derive(Debug)]
 pub struct NodeCommand {
     pub command: NodeCommands,
 }

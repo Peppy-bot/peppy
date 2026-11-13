@@ -17,6 +17,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 /// What `peppy node describe` prints.
+#[derive(Debug)]
 pub struct DescribeParams {
     pub instance_id: String,
     pub json: bool,

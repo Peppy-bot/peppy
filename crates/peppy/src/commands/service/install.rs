@@ -19,6 +19,7 @@ fn service_label(kind: ServiceManagerKind) -> &'static str {
     }
 }
 
+#[derive(Debug)]
 pub struct InstallCommand;
 
 impl Command for InstallCommand {
@@ -27,6 +28,7 @@ impl Command for InstallCommand {
     }
 }
 
+#[derive(Debug)]
 pub struct StopCommand;
 
 impl Command for StopCommand {
@@ -35,6 +37,7 @@ impl Command for StopCommand {
     }
 }
 
+#[derive(Debug)]
 pub struct UninstallCommand;
 
 impl Command for UninstallCommand {

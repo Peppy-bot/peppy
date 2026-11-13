@@ -16,7 +16,7 @@ mod logging;
 
 use logging::{LogSink, LogStyle, init_tracing};
 
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[command(name = "peppy")]
 #[command(about = "The Peppy cli tool")]
 #[command(version = PEPPY_VERSION)]
@@ -41,7 +41,7 @@ fn parse_core_node_target(value: &str) -> Result<CoreNodeName, String> {
     CoreNodeName::parse(value).map_err(|reason| reason.to_string())
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum Commands {
     /// Related to the peppy service (running in systemd/launchctl)
     Service {
@@ -179,6 +179,7 @@ fn clear_dev_root_of_earlier_boot() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn core_node_flag_parses_after_the_subcommand() {
@@ -190,12 +191,12 @@ mod tests {
             cli.core_node.as_ref().map(CoreNodeName::as_str),
             Some("robot-7")
         );
-        assert!(matches!(
+        assert_matches!(
             cli.command,
             Commands::Stack {
                 command: stack::StackCommands::List { .. }
             }
-        ));
+        );
     }
 
     #[test]
@@ -206,7 +207,7 @@ mod tests {
             cli.core_node.as_ref().map(CoreNodeName::as_str),
             Some("robot-7")
         );
-        assert!(matches!(cli.command, Commands::Info {}));
+        assert_matches!(cli.command, Commands::Info {});
     }
 
     /// The daemon serves wall time and hosts whatever domains its launches
@@ -360,12 +361,12 @@ mod tests {
     #[test]
     fn mcp_subcommands_parse() {
         let cli = Cli::try_parse_from(["peppy", "mcp", "serve"]).expect("mcp serve parses");
-        assert!(matches!(
+        assert_matches!(
             cli.command,
             Commands::Mcp {
                 command: mcp::McpCommands::Serve
             }
-        ));
+        );
         let cli = Cli::try_parse_from(["peppy", "mcp", "catalog", "camera_and_recording:v1"])
             .expect("mcp catalog parses");
         let Commands::Mcp {
@@ -458,12 +459,12 @@ mod tests {
     fn repo_search_text_parses() {
         let cli = Cli::try_parse_from(["peppy", "repo", "search", "gripper", "--text"])
             .expect("repo search --text parses");
-        assert!(matches!(
+        assert_matches!(
             cli.command,
             Commands::Repo {
                 command: repo::RepoCommands::Search { text: true, .. }
             }
-        ));
+        );
     }
 
     #[test]
@@ -482,12 +483,12 @@ mod tests {
 
         let cli = Cli::try_parse_from(["peppy", "repositories", "search", "rgb_camera:v1"])
             .expect("the repositories alias parses");
-        assert!(matches!(
+        assert_matches!(
             cli.command,
             Commands::Repo {
                 command: repo::RepoCommands::Search { json: false, .. }
             }
-        ));
+        );
 
         let cli = Cli::try_parse_from(["peppy", "repo", "search", "-bot[0-9]+"])
             .expect("a pattern starting with `-` is a query, not a flag");
@@ -539,7 +540,7 @@ mod tests {
             "--validate-mcp-exposures",
         ])
         .expect("the flag pair parses");
-        assert!(matches!(
+        assert_matches!(
             cli.command,
             Commands::Repo {
                 command: repo::RepoCommands::Index {
@@ -548,7 +549,7 @@ mod tests {
                     ..
                 }
             }
-        ));
+        );
         assert!(
             Cli::try_parse_from(["peppy", "repo", "index", ".", "--validate-mcp-exposures"])
                 .is_err(),
@@ -563,7 +564,7 @@ mod tests {
     fn repo_add_id_flag_parses_and_conflicts_with_top() {
         let cli = Cli::try_parse_from(["peppy", "repo", "add", "/hub", "--id", "2000"])
             .expect("repo add --id parses");
-        assert!(matches!(
+        assert_matches!(
             cli.command,
             Commands::Repo {
                 command: repo::RepoCommands::Add {
@@ -572,7 +573,7 @@ mod tests {
                     ..
                 }
             }
-        ));
+        );
         assert!(
             Cli::try_parse_from(["peppy", "repo", "add", "/hub", "--id", "2000", "--top"]).is_err(),
             "--id with --top is refused"
@@ -781,19 +782,19 @@ mod tests {
     #[test]
     fn stack_list_json_flag_parses() {
         let cli = Cli::try_parse_from(["peppy", "stack", "list", "--json"]).expect("parses");
-        assert!(matches!(
+        assert_matches!(
             cli.command,
             Commands::Stack {
                 command: stack::StackCommands::List { json: true }
             }
-        ));
+        );
         let cli = Cli::try_parse_from(["peppy", "stack", "list"]).expect("parses");
-        assert!(matches!(
+        assert_matches!(
             cli.command,
             Commands::Stack {
                 command: stack::StackCommands::List { json: false }
             }
-        ));
+        );
     }
 
     #[test]
@@ -1002,12 +1003,12 @@ mod tests {
     #[test]
     fn platform_status_is_not_whoami() {
         let cli = Cli::try_parse_from(["peppy", "platform", "status"]).expect("status parses");
-        assert!(matches!(
+        assert_matches!(
             cli.command,
             Commands::Platform {
                 command: platform::PlatformCommands::Status { .. },
                 ..
             }
-        ));
+        );
     }
 }

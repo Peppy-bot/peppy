@@ -25,7 +25,7 @@ use stack_goal::DEFAULT_BUDGETS;
 use super::Command;
 use crate::{context::AppContext, error::Error as CommandError};
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum StackCommands {
     /// Launch a stack from a launcher, replacing the current node stack.
     Launch(LauncherArgs),
@@ -141,7 +141,7 @@ pub enum StackCommands {
 }
 
 /// What `stack build` takes.
-#[derive(clap::Args)]
+#[derive(Debug, clap::Args)]
 pub struct StackBuildArgs {
     #[command(flatten)]
     pub launcher: LauncherArgs,
@@ -173,7 +173,7 @@ impl From<LauncherArgs> for StackBuildArgs {
 }
 
 /// What `stack launch` and `stack build` take.
-#[derive(clap::Args)]
+#[derive(Debug, clap::Args)]
 pub struct LauncherArgs {
     /// The launcher: a repository launcher's name, or a path to a
     /// `launcher/v1` file.
@@ -237,7 +237,7 @@ impl StackTimeouts {
 
 /// The copies `--join OPTION:NAME[@CORE_NODE]` composes with a launch,
 /// shared by launch, build, and resolve.
-#[derive(clap::Args, Default)]
+#[derive(Debug, clap::Args, Default)]
 pub struct LaunchJoins {
     /// A copy of OPTION, one of an axis that runs as copies, named NAME in
     /// the launch, its base on `CORE_NODE` (the coordinator when no machine is
@@ -273,7 +273,7 @@ fn parse_copy_name(raw: &str) -> Result<CopyName, String> {
 
 /// The `--with` words of `stack join`: each selects an option of the copied
 /// option's own axes.
-#[derive(clap::Args, Default)]
+#[derive(Debug, clap::Args, Default)]
 pub struct JoinWords {
     /// Select one option of the copied option's own axes: `option` or
     /// `axis=option`. After `@`, the machine that runs the part the option
@@ -292,7 +292,7 @@ pub struct JoinWords {
 }
 
 /// The `--with` words of launch, build and resolve.
-#[derive(clap::Args, Default)]
+#[derive(Debug, clap::Args, Default)]
 pub struct LaunchWords {
     /// Select one option of a `components` axis: `option` or `axis=option`.
     /// The words swap what the launcher deploys on its `one` axes and turn
@@ -327,6 +327,7 @@ fn parse_launch_word(raw: &str) -> Result<LaunchWord, String> {
         .map_err(|error: core_node_api::encoding::WordError| error.to_string())
 }
 
+#[derive(Debug)]
 pub struct StackCommand {
     pub command: StackCommands,
 }

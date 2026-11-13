@@ -7,7 +7,7 @@ use crate::{context::AppContext, error::Error as CommandError};
 use clap::Subcommand;
 use std::sync::Arc;
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum ServiceCommands {
     /// Run the peppy service that listen to node communication, node configuration file changes and also act as a Zenoh router.
     /// This is the background service that runs with the systemd peppy service.
@@ -29,6 +29,7 @@ pub enum ServiceCommands {
     Uninstall {},
 }
 
+#[derive(Debug)]
 pub struct ServiceCommand {
     pub command: ServiceCommands,
 }

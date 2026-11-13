@@ -576,7 +576,7 @@ pub(crate) fn date_of(unix: i64) -> String {
     chrono::DateTime::from_timestamp(unix, 0).map_or_else(|| unix.to_string(), |time| date(&time))
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum PlatformCommands {
     /// Sign in to the platform via the browser (OAuth device flow), then enroll this machine in a project
     Login {
@@ -663,6 +663,7 @@ pub enum PlatformCommands {
     },
 }
 
+#[derive(Debug)]
 pub struct PlatformCommand {
     /// The `--api-url` of the group, accepted before and after the subcommand.
     pub api_url: Option<String>,

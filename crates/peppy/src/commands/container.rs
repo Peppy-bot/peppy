@@ -11,7 +11,7 @@ use crate::context::AppContext;
 use crate::error::Error;
 use crate::error::Result;
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum ContainerCommands {
     /// Check container prerequisites and show what needs fixing
     Status,
@@ -19,6 +19,7 @@ pub enum ContainerCommands {
     Setup,
 }
 
+#[derive(Debug)]
 pub struct ContainerCommand {
     pub command: ContainerCommands,
 }

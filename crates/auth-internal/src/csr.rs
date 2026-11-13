@@ -66,6 +66,7 @@ fn is_invisible(c: char) -> bool {
 }
 
 /// A minted key pair and the signing request for it.
+#[derive(Debug)]
 pub struct PeerIdentity {
     /// The PKCS#8 private key, PEM encoded. Held as a secret so it never
     /// surfaces in `Debug` or log output.

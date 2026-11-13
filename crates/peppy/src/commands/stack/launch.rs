@@ -88,7 +88,7 @@ pub(super) fn infer_launcher_origin(input: PathBuf) -> Result<LauncherOrigin> {
 /// Mixing the two is refused: they are two ways of saying where things go, and
 /// a launch that took some placements from one and some from the other would be
 /// legible to nobody.
-#[derive(clap::Args, Default)]
+#[derive(Debug, clap::Args, Default)]
 pub struct PlacementArgs {
     /// Wire a placement link to a real federated core node:
     /// `NAME@<core-node>`, with NAME a `core_nodes` placeholder the

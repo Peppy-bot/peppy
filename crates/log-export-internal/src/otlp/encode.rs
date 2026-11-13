@@ -20,6 +20,7 @@ const SCOPE_NAME: &str = "peppy";
 
 /// What every record a daemon exports has in common: the machine and the
 /// daemon they come from.
+#[derive(Debug)]
 pub struct ExportResource {
     pub core_node_name: String,
     pub host_name: String,
@@ -27,7 +28,7 @@ pub struct ExportResource {
 }
 
 /// The records of one export request, grouped by the service they belong to.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct RequestBuilder {
     by_service: BTreeMap<String, Vec<OtlpLogRecord>>,
     records: u64,

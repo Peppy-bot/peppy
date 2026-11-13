@@ -22,7 +22,7 @@ use crate::commands::table::render_columns;
 use crate::context::AppContext;
 use crate::error::Result;
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum ProjectCommands {
     /// Show the selected project
     Show {
@@ -51,6 +51,7 @@ pub enum ProjectCommands {
     Clear,
 }
 
+#[derive(Debug)]
 pub struct ProjectCommand {
     pub command: ProjectCommands,
     pub api_url: Option<String>,

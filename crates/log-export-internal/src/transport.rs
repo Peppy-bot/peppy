@@ -40,6 +40,7 @@ pub trait Transport: Send + Sync + 'static {
 
 /// The OTLP/HTTP transport: a `POST` of the protobuf request to the logs URL
 /// of the endpoint.
+#[derive(Debug)]
 pub struct HttpTransport {
     client: reqwest::Client,
     logs_url: String,

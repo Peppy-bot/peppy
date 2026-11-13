@@ -8,6 +8,7 @@ use std::path::Path;
 /// position at the root of the scanned tree, so a caller never has to try
 /// parsing one speculatively: it is either there and readable or reading it
 /// is an error.
+#[derive(Debug)]
 pub struct PeppyRepositoryIndexParser;
 
 impl PeppyRepositoryIndexParser {

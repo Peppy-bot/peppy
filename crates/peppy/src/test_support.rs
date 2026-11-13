@@ -44,6 +44,7 @@ fn modify_node_config(peppy_json5: &Path, modify: impl FnOnce(&mut config::node:
 /// outlives its own spawn. Every such instance ends when this value drops, so
 /// a test's instances are tied to the test rather than to a stopwatch.
 #[must_use = "instances stay alive only while this guard is held"]
+#[derive(Debug)]
 pub struct InstanceLifetime {
     dir: TempDir,
 }
@@ -229,6 +230,7 @@ pub fn wait_for_log(logs: impl Fn() -> String, needle: &str, timeout: Duration) 
 // lint is allowed here deliberately because the value is a lifetime guard, not
 // data anyone inspects.
 #[expect(dead_code)]
+#[derive(Debug)]
 enum MessengerInstance {
     Mock(MockInstance),
     Zenoh(ZenohdInstance),
@@ -286,6 +288,7 @@ pub fn default_arguments() -> CoreNodeArguments {
     }
 }
 
+#[derive(Debug)]
 pub struct ServeCommandEmulation {
     /// The daemon's data root. Owned when the emulation created it, borrowed
     /// when a test supplied one so that a later emulation can reopen it.

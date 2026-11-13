@@ -18,6 +18,7 @@ pub use tokio_util::sync::CancellationToken;
 /// the build-time env.
 const GIT_HASH: &str = env!("PEPPY_GIT_HASH");
 
+#[derive(Debug)]
 pub struct ServeCommand {
     pub messaging_engine: String,
     pub core_node_name: Option<String>,

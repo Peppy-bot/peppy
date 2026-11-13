@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 
 /// The stack log file and the exporter of its lines, with the identity the
 /// lines of one writer carry.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct StackLogWriter {
     identity: Arc<LogIdentity>,
     exporter: LogExporter,
@@ -197,6 +197,7 @@ impl StackLog {
 
 /// The stack log, as the log export writes to it: how many records the export
 /// discarded. The line is exported like every other line of the stack log.
+#[derive(Debug)]
 pub struct ExportDiscardLog {
     writer: StackLogWriter,
 }

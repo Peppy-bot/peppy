@@ -42,7 +42,7 @@ pub fn of_file_reporting(
 }
 
 /// An incremental sha256, for bytes that arrive in parts.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Hasher(Sha256);
 
 impl Hasher {

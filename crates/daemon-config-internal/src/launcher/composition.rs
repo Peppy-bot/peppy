@@ -1261,6 +1261,7 @@ impl<'de> Deserialize<'de> for OptionSpec {
 /// Fragment files have no fixed name: any `.json5` file whose body declares
 /// the fragment schema is one. A fragment is inert on its own; it only ever
 /// contributes to the document whose option references it.
+#[derive(Debug)]
 pub struct LauncherFragmentParser;
 
 impl LauncherFragmentParser {

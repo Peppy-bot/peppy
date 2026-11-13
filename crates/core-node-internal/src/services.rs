@@ -100,6 +100,7 @@ pub fn current_host_name() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+#[derive(Debug)]
 pub struct CoreNodeArguments {
     pub node_startup_timeout: Duration,
     /// The default setup budget: how long the daemon waits for the setup of an
@@ -157,6 +158,7 @@ impl CoreNodeArguments {
 /// single named bundle rather than a long positional argument list (the
 /// `Arc<Mutex<Messenger>>`, `PeppyDirs`, and `PeppyConfig` are easy to transpose
 /// positionally).
+#[derive(Debug)]
 pub struct CoreNodeConfig {
     /// Shared messaging interface the core node binds its services on.
     pub messenger: Arc<Mutex<Messenger>>,
@@ -195,6 +197,7 @@ pub struct CoreNodeConfig {
     pub machine_certificate: Option<auth::machine_proof::MachineCertificate>,
 }
 
+#[derive(Debug)]
 pub struct CoreNode {
     node_stack: Arc<NodeStack>,
     node_config: NodeConfig,
@@ -247,7 +250,7 @@ pub struct CoreNode {
 /// Writes the key file of an instance that a test spawns itself, as the
 /// daemon writes one at each start of an instance.
 #[cfg(any(test, feature = "test-support"))]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct InstanceKeys(Arc<credentials::DaemonKeys>);
 
 #[cfg(any(test, feature = "test-support"))]

@@ -41,6 +41,7 @@ pub enum RegistryAuth {
 }
 
 /// A running registry. Dropping it stops the process.
+#[derive(Debug)]
 pub struct LocalRegistry {
     child: Child,
     address: SocketAddr,

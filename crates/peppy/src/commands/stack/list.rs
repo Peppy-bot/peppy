@@ -49,6 +49,7 @@ struct StackSection {
 /// Rendered `stack list` output plus the core nodes whose section failed.
 /// Callers own the failure policy: the CLI prints the output and exits
 /// non-zero on any failed name, tests assert on the fields directly.
+#[derive(Debug)]
 pub struct StackListReport {
     pub output: String,
     pub failed_names: Vec<String>,

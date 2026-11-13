@@ -69,7 +69,7 @@ use topics::{
 use type_mapping::render_tokens;
 
 /// Rust-specific implementation of the interface generator.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,

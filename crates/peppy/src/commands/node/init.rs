@@ -15,6 +15,7 @@ use peppylib::core_node::transport::poll;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[derive(Debug)]
 pub struct NodeInitBuilder {
     ctx: Arc<AppContext>,
     to_dir: PathBuf,

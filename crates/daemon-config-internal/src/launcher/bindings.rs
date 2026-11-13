@@ -56,6 +56,7 @@ pub const SETS_READ_WHOLE: &MemberAddressing = &MemberAddressing::WholeSet;
 /// validation. Built by the launcher with borrowed references to avoid
 /// cloning the full planned-deployment graph; consumed by
 /// [`validate_bindings`].
+#[derive(Debug)]
 pub struct BindingValidationItem<'a> {
     pub node_name: &'a str,
     pub node_tag: &'a str,

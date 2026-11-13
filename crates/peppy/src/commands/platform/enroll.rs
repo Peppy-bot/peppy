@@ -29,6 +29,7 @@ use auth::enrollment::{self, Enrollment, EnrollmentBundle, IssuedMaterial};
 use auth::selection::project_label;
 use auth::{AuthError, Problem, ProblemKind, storage};
 
+#[derive(Debug)]
 pub struct EnrollCommand {
     pub api_url: Option<String>,
     pub workspace: Option<String>,

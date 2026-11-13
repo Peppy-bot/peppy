@@ -88,6 +88,7 @@ where
 }
 
 /// This struct turns a `MessageFormat` into a capnp proto and its associated Rust types
+#[derive(Debug)]
 pub struct MessageFormatMapper {
     schema_name: String,
     message_format: MessageFormat,
@@ -179,6 +180,7 @@ impl MessageFormatMapper {
     }
 }
 
+#[derive(Debug)]
 pub struct CapnpSchemaArtifacts {
     message_format: MessageFormat,
     schema: String,

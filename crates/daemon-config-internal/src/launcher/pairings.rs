@@ -29,6 +29,7 @@ use super::types::{
 /// Minimal view of one node's planned (or already-running) instances needed
 /// for pairing validation. Mirrors `BindingValidationItem` for the pairing
 /// mechanism.
+#[derive(Debug)]
 pub struct PairingValidationItem<'a> {
     pub node_name: &'a str,
     pub node_tag: &'a str,

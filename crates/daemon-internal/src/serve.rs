@@ -317,6 +317,7 @@ impl Serve {
 }
 
 /// Everything a daemon run needs from its embedding binary.
+#[derive(Debug)]
 pub struct ServeOptions {
     /// The working root the core node resolves node sources against.
     pub root_dir: PathBuf,

@@ -9,6 +9,7 @@ use std::path::Path;
 /// filename-agnostic: schema and shape validation are handled by serde so
 /// callers walking a repository can attempt to parse and treat failures as
 /// "not an exposure."
+#[derive(Debug)]
 pub struct PeppyMcpExposureParser;
 
 impl PeppyMcpExposureParser {

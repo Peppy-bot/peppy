@@ -45,6 +45,7 @@ const SIGN_IN_ONLY: &str = "Do not enroll this machine (sign in only)";
 const SIGNED_IN_ONLY: &str =
     "Signed in only. `peppy platform enroll` enrolls this machine in a project.";
 
+#[derive(Debug)]
 pub struct LoginCommand {
     /// Override the backend base URL (else the build's `resource_servers.api` /
     /// `PEPPY_API_URL`).

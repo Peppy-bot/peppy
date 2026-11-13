@@ -24,6 +24,7 @@ pub fn drain_records(receiver: &mut LogRecordReceiver) -> Vec<LogRecord> {
 }
 
 /// An OTLP/HTTP server on a port of its own.
+#[derive(Debug)]
 pub struct OtlpReceiver {
     address: SocketAddr,
     requests: mpsc::UnboundedReceiver<ReceivedRequest>,
@@ -32,6 +33,7 @@ pub struct OtlpReceiver {
 }
 
 /// The statuses the receiver answers with.
+#[derive(Debug)]
 struct Answers {
     /// The answers of the next requests, in order.
     next: VecDeque<u16>,

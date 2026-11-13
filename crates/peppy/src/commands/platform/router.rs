@@ -21,7 +21,7 @@ use crate::error::{Error, Result};
 use auth::client::{PeerStatus, PlatformApi, RouterPhase, RouterStatus};
 use auth::{AuthError, ProblemKind};
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum RouterCommands {
     /// Restart the router, which applies every pending change
     Restart {
@@ -62,6 +62,7 @@ impl RouterAction {
     }
 }
 
+#[derive(Debug)]
 pub struct RouterCommand {
     pub action: RouterAction,
     pub api_url: Option<String>,
