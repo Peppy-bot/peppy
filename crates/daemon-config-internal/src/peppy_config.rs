@@ -964,13 +964,13 @@ fn load_or_create_with_override(
     }
 
     let conf_dir = peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir)?;
+    fs::create_dir_all(&conf_dir)?;
     let path = conf_dir.join(PEPPY_CONFIG_FILE);
 
     if !path.exists() {
         // Plain write: there is no user-authored content to protect yet, and
         // it leaves the new file with normal umask-derived permissions.
-        std::fs::write(&path, DEFAULT_PEPPY_CONFIG_TEMPLATE)?;
+        fs::write(&path, DEFAULT_PEPPY_CONFIG_TEMPLATE)?;
         tracing::info!("created {PEPPY_CONFIG_FILE} with the bundled defaults");
         // The bundled template is a compile-time invariant; a parse failure here
         // means the shipped asset is broken, not the user's file.
@@ -982,7 +982,7 @@ fn load_or_create_with_override(
         return Ok(config);
     }
 
-    let content = std::fs::read_to_string(&path)?;
+    let content = fs::read_to_string(&path)?;
     let config: PeppyConfig = serde_json5::from_str(&content)
         .map_err(|e| cannot_parse_config(format!("{PEPPY_CONFIG_FILE}: {e}")))?;
     // serde parses any numeric field, so a hand-edited 0 buffer size survives
@@ -1129,7 +1129,7 @@ fn complete_file_with_defaults(path: &Path, content: &str, config: &PeppyConfig)
     // symlink and its real target receives the completed content. (The atomic
     // rename below replaces the path entry itself, so it must point at the
     // resolved file.)
-    let target = match std::fs::canonicalize(path) {
+    let target = match fs::canonicalize(path) {
         Ok(target) => target,
         Err(e) => {
             tracing::warn!("could not resolve {PEPPY_CONFIG_FILE} for completion: {e}");
@@ -1155,10 +1155,10 @@ fn complete_file_with_defaults(path: &Path, content: &str, config: &PeppyConfig)
 /// staged file first: `NamedTempFile` creates it as 0600 on unix, and the
 /// rename would otherwise silently tighten the user's file.
 fn write_config_file(path: &Path, content: &str) -> Result<()> {
-    let permissions = std::fs::metadata(path)?.permissions();
+    let permissions = fs::metadata(path)?.permissions();
     publish_atomic(path, |tmp| {
-        std::fs::write(tmp, content)?;
-        std::fs::set_permissions(tmp, permissions)
+        fs::write(tmp, content)?;
+        fs::set_permissions(tmp, permissions)
     })?;
     Ok(())
 }
@@ -1175,9 +1175,9 @@ mod tests {
         let tmp = tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
+        fs::create_dir_all(&conf_dir).unwrap();
         let path = conf_dir.join(PEPPY_CONFIG_FILE);
-        std::fs::write(&path, content).unwrap();
+        fs::write(&path, content).unwrap();
         (tmp, peppy_dirs, path)
     }
 
@@ -1210,7 +1210,7 @@ mod tests {
             error.contains("zenoh.managed: unknown field `federation`"),
             "{error}"
         );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), content);
     }
 
     #[test]
@@ -1288,8 +1288,8 @@ mod tests {
             "local_nodes_topology: \"router\"",
             1,
         );
-        std::fs::write(&path, &content).unwrap();
-        let before = std::fs::read(&path).unwrap();
+        fs::write(&path, &content).unwrap();
+        let before = fs::read(&path).unwrap();
 
         let config = load_override_config(path.to_str().unwrap()).unwrap();
 
@@ -1297,14 +1297,14 @@ mod tests {
             managed(&config).local_nodes_topology,
             LocalNodesTopology::Router
         );
-        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read(&path).unwrap(), before);
     }
 
     #[test]
     fn file_form_errors_do_not_fall_back_to_inline() {
         let tmp = tempdir().unwrap();
         let path = tmp.path().join("malformed.json5");
-        std::fs::write(&path, "{ not json5").unwrap();
+        fs::write(&path, "{ not json5").unwrap();
 
         let message = error_message(load_override_config(path.to_str().unwrap()).unwrap_err());
 
@@ -1398,26 +1398,26 @@ mod tests {
         let tmp = tempdir().unwrap();
         let path = tmp.path().join("outdated.json5");
         let content = b"{ future_setting: true }\n";
-        std::fs::write(&path, content).unwrap();
+        fs::write(&path, content).unwrap();
 
         let message = error_message(load_override_config(path.to_str().unwrap()).unwrap_err());
 
         assert!(message.contains(&format!("file {}", path.display())));
         assert!(message.contains("core_node_name"));
-        assert_eq!(std::fs::read(&path).unwrap(), content);
+        assert_eq!(fs::read(&path).unwrap(), content);
     }
 
     #[test]
     fn override_takes_precedence_over_dirs_without_touching_disk() {
         let (_tmp, peppy_dirs, path) = dirs_with_config("{ not json5");
-        let before = std::fs::read(&path).unwrap();
+        let before = fs::read(&path).unwrap();
 
         let config =
             load_or_create_with_override(&peppy_dirs, Some(DEFAULT_PEPPY_CONFIG_TEMPLATE.into()))
                 .unwrap();
 
         assert_eq!(config, PeppyConfig::default());
-        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read(&path).unwrap(), before);
     }
 
     #[test]
@@ -1429,13 +1429,13 @@ mod tests {
 
         assert_eq!(config, PeppyConfig::default());
         assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
+            fs::read_to_string(&path).unwrap(),
             DEFAULT_PEPPY_CONFIG_TEMPLATE
         );
 
         let (_tmp, peppy_dirs, path) = dirs_with_config("{}");
         load_or_create_with_override(&peppy_dirs, None).unwrap();
-        let completed = std::fs::read_to_string(path).unwrap();
+        let completed = fs::read_to_string(path).unwrap();
         assert_eq!(
             serde_json5::from_str::<PeppyConfig>(&completed).unwrap(),
             PeppyConfig::default()
@@ -1452,7 +1452,7 @@ mod tests {
         let (_tmp, peppy_dirs, path) = dirs_with_config(&content);
 
         let config = load_or_create(&peppy_dirs).unwrap();
-        let completed = std::fs::read_to_string(&path).unwrap();
+        let completed = fs::read_to_string(&path).unwrap();
 
         assert_eq!(config, PeppyConfig::default());
         assert_ne!(completed, content);
@@ -1460,7 +1460,7 @@ mod tests {
         assert!(!completed.contains(SHUTDOWN_GRACE_FIELD_SNIPPET));
         assert!(completed.contains(r#""life\u0063ycle""#));
         assert_eq!(load_or_create(&peppy_dirs).unwrap(), config);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), completed);
     }
 
     #[test]
@@ -1528,10 +1528,10 @@ mod tests {
                 cfg.zenoh,
                 ZenohConfig::Managed(ManagedZenohConfig::default())
             );
-            let completed = std::fs::read_to_string(&path).unwrap();
+            let completed = fs::read_to_string(&path).unwrap();
             assert!(completed.contains("managed: {"));
             assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+            assert_eq!(fs::read_to_string(&path).unwrap(), completed);
         }
 
         // An external block carries the exact dial endpoint downstream.
@@ -1685,7 +1685,7 @@ mod tests {
                 message.contains("zenoh.external.endpoint") && message.contains(expected_message),
                 "expected an external endpoint error for {endpoint:?}, got: {message}"
             );
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+            assert_eq!(fs::read_to_string(&path).unwrap(), content);
         }
     }
 
@@ -1743,7 +1743,7 @@ mod tests {
                 message.contains(expected),
                 "expected {expected:?} for {content}, got: {message}"
             );
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+            assert_eq!(fs::read_to_string(&path).unwrap(), content);
         }
     }
 
@@ -1766,7 +1766,7 @@ mod tests {
                 message.contains("unknown field `zenoh.external.future_router_option`"),
                 "expected an unknown external field error for {content}, got: {message}"
             );
-            assert_eq!(std::fs::read_to_string(path).unwrap(), content);
+            assert_eq!(fs::read_to_string(path).unwrap(), content);
         }
     }
 
@@ -1793,7 +1793,7 @@ mod tests {
                 message.contains(expected_message),
                 "expected an unknown-field error containing {expected_message:?}, got: {message}"
             );
-            assert_eq!(std::fs::read_to_string(path).unwrap(), content);
+            assert_eq!(fs::read_to_string(path).unwrap(), content);
         }
     }
 
@@ -1806,17 +1806,17 @@ mod tests {
             dirs_with_config(r#"{ zenoh: { managed: { local_nodes_topology: "router" } } }"#);
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(cfg.core_node_name, None);
-        let completed = std::fs::read_to_string(&path).unwrap();
+        let completed = fs::read_to_string(&path).unwrap();
         assert!(completed.contains("core_node_name: null,"));
         assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), completed);
 
         // A file that already spells the knob as `null` parses to `None` and
         // does not gain a second line.
         let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ core_node_name: null }"#);
         let cfg = load_or_create(&peppy_dirs).unwrap();
         assert_eq!(cfg.core_node_name, None);
-        let completed = std::fs::read_to_string(&path).unwrap();
+        let completed = fs::read_to_string(&path).unwrap();
         assert_eq!(completed.matches("core_node_name:").count(), 1);
     }
 
@@ -1828,11 +1828,11 @@ mod tests {
 
         // Completion appends the other knobs but never touches the user's
         // value, and a second load is idempotent.
-        let completed = std::fs::read_to_string(&path).unwrap();
+        let completed = fs::read_to_string(&path).unwrap();
         assert!(completed.contains(r#"core_node_name: "robot-7""#));
         assert!(!completed.contains("core_node_name: null"));
         assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), completed);
     }
 
     #[test]
@@ -1852,7 +1852,7 @@ mod tests {
             );
             // Invalid names fail BEFORE completion: the file keeps omitting
             // knobs and is not rewritten, same as the malformed case.
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), bad);
+            assert_eq!(fs::read_to_string(&path).unwrap(), bad);
         }
     }
 
@@ -1873,7 +1873,7 @@ mod tests {
             message.contains("core_node_name"),
             "expected a core-node-name validation error, got: {message}"
         );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), content);
     }
 
     #[test]
@@ -1897,7 +1897,7 @@ mod tests {
         );
         assert_eq!(mirror.host(), "pypi.tuna.tsinghua.edu.cn");
         // Completion adds the other settings and keeps the user's value.
-        let completed = std::fs::read_to_string(&path).unwrap();
+        let completed = fs::read_to_string(&path).unwrap();
         assert_eq!(completed.matches("pypi_mirror:").count(), 1);
         assert!(
             completed.contains(r#"pypi_mirror: "https://pypi.tuna.tsinghua.edu.cn/packages/""#)
@@ -1940,7 +1940,7 @@ mod tests {
                 "{content}: {message}"
             );
             assert!(message.contains(reason), "{content}: {message}");
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+            assert_eq!(fs::read_to_string(&path).unwrap(), content);
         }
     }
 
@@ -1965,7 +1965,7 @@ mod tests {
         assert_eq!(endpoint.logs_url(), "http://localhost:4318/v1/logs");
         assert_eq!(cfg.otlp_min_severity, Some(OtlpMinSeverity::Warn));
         // Completion adds the other settings and keeps the user's values.
-        let completed = std::fs::read_to_string(&path).unwrap();
+        let completed = fs::read_to_string(&path).unwrap();
         assert_eq!(completed.matches("otlp_endpoint:").count(), 1);
         assert_eq!(completed.matches("otlp_min_severity:").count(), 1);
         assert!(completed.contains(r#"otlp_endpoint: "http://localhost:4318""#));
@@ -2068,7 +2068,7 @@ mod tests {
                 assert!(message.contains(reason), "{content}: {message}");
             }
             assert!(!message.contains("user:key"), "{content}: {message}");
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+            assert_eq!(fs::read_to_string(&path).unwrap(), content);
         }
     }
 
@@ -2080,13 +2080,13 @@ mod tests {
 
         assert_eq!(cfg.otlp_endpoint, None);
         assert_eq!(cfg.otlp_min_severity, None);
-        let completed = std::fs::read_to_string(&path).unwrap();
+        let completed = fs::read_to_string(&path).unwrap();
         assert!(completed.contains("  otlp_endpoint: null,\n"));
         assert!(completed.contains("  otlp_min_severity: null,\n"));
         assert!(completed.contains("// OTLP/HTTP URL of an OpenTelemetry collector"));
         assert!(completed.contains("// Lowest severity the daemon exports"));
         assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), completed);
     }
 
     #[test]
@@ -2126,7 +2126,7 @@ mod tests {
             .expect("a repository is set");
         assert_eq!(repository.to_string(), "oci://ghcr.io/acme/peppy-nodes");
         // Completion adds the other settings and keeps the user's value.
-        let completed = std::fs::read_to_string(&path).unwrap();
+        let completed = fs::read_to_string(&path).unwrap();
         assert_eq!(completed.matches("publish_repository:").count(), 1);
         assert!(completed.contains(r#"publish_repository: "oci://ghcr.io/acme/peppy-nodes""#));
         assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
@@ -2154,7 +2154,7 @@ mod tests {
                 "{content}: {message}"
             );
             assert!(message.contains(reason), "{content}: {message}");
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+            assert_eq!(fs::read_to_string(&path).unwrap(), content);
         }
     }
 
@@ -2170,12 +2170,12 @@ mod tests {
 
         assert_eq!(cfg.publish_repository, None);
         assert_eq!(cfg.core_node_name.as_deref(), Some("bench"));
-        let completed = std::fs::read_to_string(&path).unwrap();
+        let completed = fs::read_to_string(&path).unwrap();
         assert!(completed.contains("  publish_repository: null,\n"));
         assert!(completed.contains("// The OCI repository that `peppy node publish`"));
         assert_eq!(completed.matches("publish_repository:").count(), 1);
         assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), completed);
     }
 
     #[test]
@@ -2185,11 +2185,11 @@ mod tests {
         let cfg = load_or_create(&peppy_dirs).unwrap();
 
         assert_eq!(cfg.pypi_mirror, None);
-        let completed = std::fs::read_to_string(&path).unwrap();
+        let completed = fs::read_to_string(&path).unwrap();
         assert!(completed.contains("  pypi_mirror: null,\n"));
         assert!(completed.contains("// Packages base URL of a PyPI mirror, or null."));
         assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), completed);
     }
 
     #[test]
@@ -2254,7 +2254,7 @@ mod tests {
 
             let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
             assert!(message.contains(field), "{content}: {message}");
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+            assert_eq!(fs::read_to_string(&path).unwrap(), content);
         }
     }
 
@@ -2269,7 +2269,7 @@ mod tests {
 
         assert!(path.exists());
         // Verbatim write preserves the template's comments byte-for-byte.
-        let written = std::fs::read_to_string(&path).unwrap();
+        let written = fs::read_to_string(&path).unwrap();
         assert_eq!(written, DEFAULT_PEPPY_CONFIG_TEMPLATE);
         assert_eq!(cfg, PeppyConfig::default());
     }
@@ -2284,7 +2284,7 @@ mod tests {
         // A file that already spells out every knob is not rewritten.
         let path = peppy_dirs.conf_dir().join(PEPPY_CONFIG_FILE);
         assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
+            fs::read_to_string(&path).unwrap(),
             DEFAULT_PEPPY_CONFIG_TEMPLATE
         );
     }
@@ -2312,7 +2312,7 @@ mod tests {
 
         // The user's values survive in the file and the omitted knobs now
         // appear in it with their defaults.
-        let completed = std::fs::read_to_string(&path).unwrap();
+        let completed = fs::read_to_string(&path).unwrap();
         assert!(completed.contains(r#"local_nodes_topology: "router""#));
         assert!(completed.contains("daemon_grace_secs: 45"));
         assert!(completed.contains(&format!(
@@ -2325,7 +2325,7 @@ mod tests {
         // A second load parses the completed file to the same config and no
         // longer rewrites it.
         assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), completed);
     }
 
     /// The cross-release guarantee end to end: one load brings a file written
@@ -2341,7 +2341,7 @@ mod tests {
 
         load_or_create(&peppy_dirs).unwrap();
 
-        let on_disk = std::fs::read_to_string(&path).unwrap();
+        let on_disk = fs::read_to_string(&path).unwrap();
         let doc: serde_json::Value = serde_json5::from_str(&on_disk).unwrap();
         let schema = serde_json::to_value(PeppyConfig::default()).unwrap();
         for leaf in completion::leaf_paths(&schema) {
@@ -2366,7 +2366,7 @@ mod tests {
 
         // A second load has nothing left to add and leaves the bytes alone.
         load_or_create(&peppy_dirs).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), on_disk);
+        assert_eq!(fs::read_to_string(&path).unwrap(), on_disk);
     }
 
     #[test]
@@ -2460,7 +2460,7 @@ mod tests {
             "expected a parse error, got: {err:?}"
         );
         // A failed load never modifies the file, even though it omits knobs.
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), malformed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), malformed);
     }
 
     #[test]
@@ -2484,17 +2484,15 @@ mod tests {
 
         let (_tmp, peppy_dirs, path) =
             dirs_with_config(r#"{ zenoh: { managed: { local_nodes_topology: "router" } } }"#);
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
 
         load_or_create(&peppy_dirs).unwrap();
 
         // The staged tmp file is born 0600; the completed file must come out
         // with the user's permissions, not the tmp file's.
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert!(
-            std::fs::read_to_string(&path)
-                .unwrap()
-                .contains("lifecycle"),
+            fs::read_to_string(&path).unwrap().contains("lifecycle"),
             "completion did not run"
         );
         assert_eq!(mode, 0o640);
@@ -2506,11 +2504,11 @@ mod tests {
         let tmp = tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
+        fs::create_dir_all(&conf_dir).unwrap();
         // A dotfiles-style setup: the file under conf/ is a symlink to a
         // config managed elsewhere.
         let real = tmp.path().join("dotfiles_peppy.json5");
-        std::fs::write(
+        fs::write(
             &real,
             r#"{ zenoh: { managed: { local_nodes_topology: "router" } } }"#,
         )
@@ -2526,15 +2524,11 @@ mod tests {
 
         // The symlink survives and the completed content landed in its target.
         assert!(
-            std::fs::symlink_metadata(&link)
+            fs::symlink_metadata(&link)
                 .unwrap()
                 .file_type()
                 .is_symlink()
         );
-        assert!(
-            std::fs::read_to_string(&real)
-                .unwrap()
-                .contains("lifecycle")
-        );
+        assert!(fs::read_to_string(&real).unwrap().contains("lifecycle"));
     }
 }

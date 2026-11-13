@@ -35,8 +35,8 @@ pub fn add_peppylib_dependencies(
 ) -> Result<()> {
     let to_path = to_path.as_ref();
     let libs_dir = to_path.parent().ok_or_else(|| {
-        Error::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
+        Error::Io(io::Error::new(
+            ErrorKind::InvalidInput,
             "peppygen path has no parent directory",
         ))
     })?;

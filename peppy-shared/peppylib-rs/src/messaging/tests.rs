@@ -2260,7 +2260,7 @@ impl OneGoalExchange {
             .expect("action should start");
 
             let (publisher_tx, publisher_rx) =
-                tokio::sync::oneshot::channel::<crate::messaging::ActionFeedbackPublisher>();
+                oneshot::channel::<crate::messaging::ActionFeedbackPublisher>();
             let publisher_tx = std::sync::Mutex::new(Some(publisher_tx));
             let factory_for_handler = action.feedback_publisher_factory.clone();
 
@@ -2571,7 +2571,7 @@ async fn action_communication_goal_cancelled() {
             .expect("action should start");
 
             let (publisher_tx, publisher_rx) =
-                tokio::sync::oneshot::channel::<crate::messaging::ActionFeedbackPublisher>();
+                oneshot::channel::<crate::messaging::ActionFeedbackPublisher>();
             let publisher_tx = std::sync::Mutex::new(Some(publisher_tx));
             let factory_for_handler = action.feedback_publisher_factory.clone();
 

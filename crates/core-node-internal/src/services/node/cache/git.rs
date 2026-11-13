@@ -125,7 +125,7 @@ fn recently_used(dir: &Path) -> bool {
 ///
 /// Anything already at the key is a checkout that did not finish, since a
 /// finished one at this key is the commit asked for.
-fn clear_dir(dir: &Path) -> std::result::Result<(), String> {
+fn clear_dir(dir: &Path) -> Result<(), String> {
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             format!(
@@ -199,7 +199,7 @@ pub fn ensure_checkout_at_commit(
     read_ref: Option<&str>,
     commit: &GitCommit,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<PathBuf, String> {
+) -> Result<PathBuf, String> {
     let shown_url = SourceUrl::new(repo_url);
     let dir = checkout_dir_for(peppy_dirs, repo_url, commit);
     let lock_key = dir.to_string_lossy().into_owned();
@@ -351,7 +351,7 @@ fn fetch_commit(
     read_ref: Option<&str>,
     commit: &GitCommit,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<(), String> {
+) -> Result<(), String> {
     let shown_url = SourceUrl::new(repo_url);
     let shallow = fetch_commit_shallow(repo, repo_url, commit, &mut |line| {
         on_feedback(Report::Progress(line))

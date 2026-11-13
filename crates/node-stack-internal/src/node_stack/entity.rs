@@ -332,7 +332,7 @@ pub struct StartContext<'a> {
     pub launch: Option<LaunchIdentity>,
     /// The copy this instance belongs to, recorded on the
     /// `TrackedNodeInstance` so every pair it takes part in can name it.
-    pub copy: Option<config::runtime::Name>,
+    pub copy: Option<Name>,
     /// Whether this start registers a new instance, with its policy and the
     /// goal it keeps, or starts the next process of a `restarting` one.
     pub spawn: SpawnTarget,
@@ -2185,7 +2185,7 @@ pub struct TrackedNodeInstance {
     launch: Option<LaunchIdentity>,
     /// The copy this instance belongs to, as the launch composed it; `None`
     /// for an instance run on its own.
-    copy: Option<config::runtime::Name>,
+    copy: Option<Name>,
     /// Last `node_health` outcome recorded by the daemon's health monitor.
     /// Behind an `Arc<AtomicBool>` so the monitor can update it through the
     /// cheap clone returned by `NodeStack::find_by_instance_id`, without taking
@@ -2241,8 +2241,8 @@ impl TrackedNodeInstance {
             clock: config::runtime::ClockBinding::Wall,
             launch: None,
             copy: None,
-            healthy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            stopping: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            healthy: Arc::new(AtomicBool::new(true)),
+            stopping: Arc::new(AtomicBool::new(false)),
             shutdown_requests: 0,
             endpoints: Vec::new(),
             supervision: Supervision::default(),
@@ -2396,12 +2396,12 @@ impl TrackedNodeInstance {
 
     /// The copy this instance belongs to; `None` for an instance run on its
     /// own.
-    pub fn copy(&self) -> Option<&config::runtime::Name> {
+    pub fn copy(&self) -> Option<&Name> {
         self.copy.as_ref()
     }
 
     /// Records the copy this instance belongs to.
-    pub(crate) fn with_copy(mut self, copy: Option<config::runtime::Name>) -> Self {
+    pub(crate) fn with_copy(mut self, copy: Option<Name>) -> Self {
         self.copy = copy;
         self
     }
@@ -2480,9 +2480,7 @@ impl TrackedNodeInstance {
     /// the flag, so of two calls at once one returns `true`.
     #[must_use]
     fn claim_once(&self) -> bool {
-        let claimed = !self
-            .stopping
-            .swap(true, std::sync::atomic::Ordering::AcqRel);
+        let claimed = !self.stopping.swap(true, Ordering::AcqRel);
         self.supervision.restart_token.cancel();
         claimed
     }
@@ -2628,7 +2626,7 @@ impl TrackedNodeInstance {
         self.pid = None;
         self.endpoints.clear();
         self.supervision.next_start = None;
-        self.healthy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        self.healthy = Arc::new(AtomicBool::new(true));
         if let Some(files) = self.spawn_files.take() {
             files.remove();
         }
@@ -4268,7 +4266,7 @@ mod tests {
             impl OutputReaderHooks for NoHooks {}
             StartContext {
                 core_node: "cn-a",
-                run_log_path: std::path::Path::new("run.log"),
+                run_log_path: Path::new("run.log"),
                 instance_id,
                 runtime_config_json5: "{}",
                 slot_bindings: BTreeMap::new(),
@@ -4278,7 +4276,7 @@ mod tests {
                 spawn: SpawnTarget::Respawn,
                 env_vars: &[],
                 mount_paths_resolved: &[],
-                credential: std::path::Path::new("no-such.key"),
+                credential: Path::new("no-such.key"),
                 peppy_dirs,
                 output_sinks: OutputSinks {
                     announcer: Announcer::new(scratch_log(), feedback_tx.clone()),
@@ -4544,14 +4542,14 @@ mod tests {
         let id = Name::new("waiting-8").unwrap();
         let mut slot = waiting_instance(&id);
         slot.set_healthy(false);
-        let previous = std::sync::Arc::clone(&slot.healthy);
+        let previous = Arc::clone(&slot.healthy);
         slot.begin_respawn();
         assert!(slot.healthy(), "the next process starts healthy");
         assert!(
-            !std::sync::Arc::ptr_eq(&previous, &slot.healthy),
+            !Arc::ptr_eq(&previous, &slot.healthy),
             "the flag is a new one"
         );
-        assert!(!previous.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!previous.load(Ordering::Acquire));
     }
 
     /// A respawn's start reports no start due: the one it waited for is
@@ -4896,7 +4894,7 @@ mod tests {
                 pairing_name: "arm_link".to_owned(),
                 pairing_tag: "v1".to_owned(),
                 role: "arm".to_owned(),
-                cardinality: config::node::Cardinality::ZeroOrOne,
+                cardinality: Cardinality::ZeroOrOne,
                 copy: None,
             }),
         };

@@ -4,7 +4,7 @@ use common::{TestPackagesCache, write_plain_peppy_json5};
 /// Adds `source` and asserts that the add succeeded, naming the add `what`
 /// in the failure messages. Returns the result of the add.
 async fn add_node_successfully<'a>(
-    started: &common::StartedCoreNode,
+    started: &StartedCoreNode,
     source: impl Into<NodeAddSource<'a>>,
     what: &str,
 ) -> NodeAddResult {

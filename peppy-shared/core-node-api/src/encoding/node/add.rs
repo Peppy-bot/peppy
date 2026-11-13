@@ -524,19 +524,19 @@ impl NodeAddResult {
 }
 
 impl crate::encoding::Wire for NodeAddGoal {
-    type Root = crate::node_capnp::node_add_goal::Owned;
+    type Root = node_capnp::node_add_goal::Owned;
 }
 
 impl crate::encoding::Wire for NodeAddGoalResponse {
-    type Root = crate::node_capnp::node_add_goal_response::Owned;
+    type Root = node_capnp::node_add_goal_response::Owned;
 }
 
 impl crate::encoding::Wire for NodeAddFeedback {
-    type Root = crate::node_capnp::node_add_feedback::Owned;
+    type Root = node_capnp::node_add_feedback::Owned;
 }
 
 impl crate::encoding::Wire for NodeAddResult {
-    type Root = crate::node_capnp::node_add_result::Owned;
+    type Root = node_capnp::node_add_result::Owned;
 }
 
 #[cfg(test)]

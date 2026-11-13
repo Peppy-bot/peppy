@@ -219,7 +219,7 @@ mod tests {
 
         // `generate`, `read`, and `verify` all resolve the fingerprint relative
         // to the config's parent, so the same `output_path` feeds every side.
-        let rel_output = std::path::Path::new(crate::consts::PEPPYGEN_OUTPUT_PATH);
+        let rel_output = Path::new(crate::consts::PEPPYGEN_OUTPUT_PATH);
         generate_node_config_fingerprint(&config_path, rel_output)
             .expect("failed to generate fingerprint");
 
@@ -249,7 +249,7 @@ mod tests {
 
         // No fingerprint was ever generated, so the read must fail rather than
         // silently returning an empty/garbage digest.
-        let rel_output = std::path::Path::new(crate::consts::PEPPYGEN_OUTPUT_PATH);
+        let rel_output = Path::new(crate::consts::PEPPYGEN_OUTPUT_PATH);
         assert!(read_codegen_fingerprint(&config_path, rel_output).is_err());
     }
 

@@ -1210,12 +1210,12 @@ async fn a_respawn_whose_spawn_fails_schedules_the_next_attempt() {
 }
 
 /// The `sleep` binary of this machine.
-fn which_sleep() -> std::path::PathBuf {
+fn which_sleep() -> PathBuf {
     let output = std::process::Command::new("sh")
         .args(["-c", "command -v sleep"])
         .output()
         .expect("sh runs");
-    std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+    PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
 }
 
 /// A reset during a respawn's start cancels it at once, well before the
@@ -1761,7 +1761,7 @@ async fn a_stop_that_claims_a_restarts_start_before_its_fork_forks_nothing() {
 /// The FIFO at a path a start may be blocked opening, which a test that ends
 /// before it writes the FIFO opens for writing on drop, from a thread of its
 /// own: the start then reads an end of file, and the runtime can shut down.
-struct UnblockFifoOnDrop(Option<std::path::PathBuf>);
+struct UnblockFifoOnDrop(Option<PathBuf>);
 
 impl Drop for UnblockFifoOnDrop {
     fn drop(&mut self) {
@@ -3973,7 +3973,7 @@ async fn add_joint_link_node(
     cardinality: Cardinality,
     run_cmd: &str,
 ) -> TempDir {
-    let pairing = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let pairing = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/launch_assets/waldo_codegen/pairings/joint_link.json5");
     let body = std::fs::read_to_string(&pairing).expect("read the joint_link pairing fixture");
     common::TestPackagesCache::new()
@@ -4204,7 +4204,7 @@ fn pair_commit_of(
         peer: ProducerRef::new(WATCHER, leader),
         peer_link_id: LEADER_SLOT.to_owned(),
         peer_role: "leader".to_owned(),
-        peer_cardinality: config::node::Cardinality::ZeroOrMore,
+        peer_cardinality: Cardinality::ZeroOrMore,
         peer_copy: None,
         held,
     }

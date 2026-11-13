@@ -192,13 +192,13 @@ impl<'de> Deserialize<'de> for DeploymentSource {
             #[serde(default)]
             exposures: Option<Vec<String>>,
             #[serde(default)]
-            local: Option<serde::de::IgnoredAny>,
+            local: Option<de::IgnoredAny>,
             #[serde(default)]
-            git: Option<serde::de::IgnoredAny>,
+            git: Option<de::IgnoredAny>,
             #[serde(default)]
-            url: Option<serde::de::IgnoredAny>,
+            url: Option<de::IgnoredAny>,
             #[serde(default)]
-            repo: Option<serde::de::IgnoredAny>,
+            repo: Option<de::IgnoredAny>,
         }
 
         let raw = RawDeploymentSource::deserialize(deserializer)?;

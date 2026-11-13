@@ -41,7 +41,7 @@ fn other_platform() -> ArtifactPlatform {
         .expect("two platforms")
 }
 
-async fn add(started: &common::StartedCoreNode, name: &str, tag: &str) -> GoalEnd<NodeAddResult> {
+async fn add(started: &StartedCoreNode, name: &str, tag: &str) -> GoalEnd<NodeAddResult> {
     send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,

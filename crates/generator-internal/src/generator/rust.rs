@@ -1514,8 +1514,7 @@ impl LanguageGenerator for RustGenerator {
             fn_param_tokens.push(quote!(request: #request_struct_ident));
         }
 
-        let bound_producer_accessor_fn =
-            crate::generator::rust::topics::build_bound_producer_accessor_fn(dependency);
+        let bound_producer_accessor_fn = topics::build_bound_producer_accessor_fn(dependency);
 
         let target_selection_doc = doc_attrs(dependency.target_selection_doc());
         let function_token = quote! {
@@ -1742,8 +1741,7 @@ impl LanguageGenerator for RustGenerator {
             }
         };
 
-        let bound_producer_accessor_fn =
-            crate::generator::rust::topics::build_bound_producer_accessor_fn(dependency);
+        let bound_producer_accessor_fn = topics::build_bound_producer_accessor_fn(dependency);
 
         let mut items = vec![
             constants_tokens,

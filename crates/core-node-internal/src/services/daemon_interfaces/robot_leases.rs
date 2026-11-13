@@ -269,7 +269,7 @@ pub(super) async fn run_goal(ctx: &InterfaceContext, member: &str, pending: Pend
 }
 
 /// Publishes `feedback` on `goal`, encoded as the feedback of `member`.
-async fn publish<T: serde::Serialize>(
+async fn publish<T: Serialize>(
     ctx: &InterfaceContext,
     goal: &GoalContext,
     member: &str,

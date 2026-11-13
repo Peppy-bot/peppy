@@ -266,7 +266,7 @@ async fn a_refused_credential_is_an_error_with_the_answer_of_the_registry() {
 async fn a_manifest_is_read_with_its_digest_and_a_missing_one_is_none() {
     let registry = Registry::start().await;
     let body = br#"{"schemaVersion":2}"#;
-    let digest = crate::digest::of_bytes(body);
+    let digest = digest::of_bytes(body);
     registry
         .server
         .mock_async(|when, then| {
@@ -305,8 +305,8 @@ async fn a_manifest_is_read_with_its_digest_and_a_missing_one_is_none() {
 async fn a_downloaded_blob_lands_only_when_its_digest_and_size_match() {
     let registry = Registry::start().await;
     let content = vec![7u8; 10_000];
-    let digest = crate::digest::of_bytes(&content);
-    let tampered = crate::digest::of_bytes(b"other");
+    let digest = digest::of_bytes(&content);
+    let tampered = digest::of_bytes(b"other");
     registry
         .server
         .mock_async(|when, then| {
@@ -368,7 +368,7 @@ async fn a_downloaded_blob_lands_only_when_its_digest_and_size_match() {
 #[tokio::test]
 async fn a_missing_blob_is_not_found() {
     let registry = Registry::start().await;
-    let digest = crate::digest::of_bytes(b"absent");
+    let digest = digest::of_bytes(b"absent");
     registry
         .server
         .mock_async(|when, then| {
@@ -392,7 +392,7 @@ async fn a_missing_blob_is_not_found() {
 async fn a_file_is_pushed_in_chunks_with_their_ranges_then_closed_with_its_digest() {
     let registry = Registry::start().await;
     let content: Vec<u8> = (0..25u8).collect();
-    let digest = crate::digest::of_bytes(&content);
+    let digest = digest::of_bytes(&content);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("node.sif");
     std::fs::write(&path, &content).expect("write");
@@ -471,7 +471,7 @@ async fn a_file_is_pushed_in_chunks_with_their_ranges_then_closed_with_its_diges
 async fn the_progress_of_a_push_moves_by_the_parts_of_a_chunk() {
     let registry = Registry::start().await;
     let content: Vec<u8> = Vec::from_fn(2 * UPLOAD_PART_BYTES + 100, |i| i as u8);
-    let digest = crate::digest::of_bytes(&content);
+    let digest = digest::of_bytes(&content);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("node.sif");
     std::fs::write(&path, &content).expect("write");
@@ -528,7 +528,7 @@ async fn the_progress_of_a_push_moves_by_the_parts_of_a_chunk() {
 #[tokio::test]
 async fn a_blob_the_registry_has_is_not_pushed_again() {
     let registry = Registry::start().await;
-    let digest = crate::digest::of_bytes(b"present");
+    let digest = digest::of_bytes(b"present");
     registry
         .server
         .mock_async(|when, then| {
@@ -632,7 +632,7 @@ async fn a_manifest_is_put_under_its_tag_with_the_image_manifest_media_type() {
         .await
         .expect("put");
 
-    assert_eq!(digest, crate::digest::of_bytes(&body));
+    assert_eq!(digest, digest::of_bytes(&body));
     put.assert_calls_async(1).await;
 }
 
@@ -727,7 +727,7 @@ async fn the_platforms_of_an_index_leave_out_attestations() {
 async fn the_platform_of_a_single_manifest_is_the_one_of_its_config() {
     let registry = Registry::start().await;
     let config = br#"{"os": "linux", "architecture": "amd64"}"#;
-    let config_digest = crate::digest::of_bytes(config);
+    let config_digest = digest::of_bytes(config);
     registry
         .server
         .mock_async(|when, then| {

@@ -1715,7 +1715,7 @@ mod tests {
         }
         let mut zst_data = Vec::new();
         let mut encoder = zstd::Encoder::new(&mut zst_data, 0).unwrap();
-        std::io::Write::write_all(&mut encoder, &tar_data).unwrap();
+        Write::write_all(&mut encoder, &tar_data).unwrap();
         encoder.finish().unwrap();
         zst_data
     }

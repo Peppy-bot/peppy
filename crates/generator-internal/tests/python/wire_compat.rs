@@ -385,7 +385,7 @@ if __name__ == "__main__":
     init_python_project_venv(&producer.dir);
     init_python_project_venv(&consumer.dir);
 
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+    let messenger = MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
@@ -642,7 +642,7 @@ if __name__ == "__main__":
     init_python_project_venv(&producer.dir);
     init_python_project_venv(&consumer.dir);
 
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+    let messenger = MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
@@ -903,7 +903,7 @@ if __name__ == "__main__":
     init_python_project_venv(&producer.dir);
     init_python_project_venv(&consumer.dir);
 
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+    let messenger = MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 

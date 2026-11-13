@@ -652,7 +652,7 @@ pub struct PairCommitRequest {
     /// taken by one pair.
     pub peer_cardinality: config::node::Cardinality,
     /// The copy the peer's instance belongs to; `None` outside a copy.
-    pub peer_copy: Option<config::runtime::Name>,
+    pub peer_copy: Option<Name>,
     /// Whether the peer held this pair before its restart and asks for it
     /// again, which the receiver makes only while its own endpoint still
     /// keeps it; `false` for a pair a start's link names.
@@ -852,39 +852,39 @@ impl RelationshipNotificationAck {
 }
 
 impl crate::encoding::Wire for ParticipantReserveRequest {
-    type Root = crate::federation_capnp::participant_reserve_request::Owned;
+    type Root = federation_capnp::participant_reserve_request::Owned;
 }
 
 impl crate::encoding::Wire for ParticipantReserveResponse {
-    type Root = crate::federation_capnp::participant_reserve_response::Owned;
+    type Root = federation_capnp::participant_reserve_response::Owned;
 }
 
 impl crate::encoding::Wire for ParticipantSliceBeginRequest {
-    type Root = crate::federation_capnp::participant_slice_begin_request::Owned;
+    type Root = federation_capnp::participant_slice_begin_request::Owned;
 }
 
 impl crate::encoding::Wire for ParticipantSliceBeginResponse {
-    type Root = crate::federation_capnp::participant_slice_begin_response::Owned;
+    type Root = federation_capnp::participant_slice_begin_response::Owned;
 }
 
 impl crate::encoding::Wire for ParticipantReleaseRequest {
-    type Root = crate::federation_capnp::launch_scoped_request::Owned;
+    type Root = federation_capnp::launch_scoped_request::Owned;
 }
 
 impl crate::encoding::Wire for PairCommitRequest {
-    type Root = crate::federation_capnp::pair_commit_request::Owned;
+    type Root = federation_capnp::pair_commit_request::Owned;
 }
 
 impl crate::encoding::Wire for FederationAck {
-    type Root = crate::federation_capnp::federation_ack::Owned;
+    type Root = federation_capnp::federation_ack::Owned;
 }
 
 impl crate::encoding::Wire for RelationshipNotification {
-    type Root = crate::federation_capnp::relationship_notification::Owned;
+    type Root = federation_capnp::relationship_notification::Owned;
 }
 
 impl crate::encoding::Wire for RelationshipNotificationAck {
-    type Root = crate::federation_capnp::relationship_notification_ack::Owned;
+    type Root = federation_capnp::relationship_notification_ack::Owned;
 }
 
 #[cfg(test)]
@@ -1302,7 +1302,7 @@ mod tests {
             peer_link_id: "delegation".to_owned(),
             peer_role: "planner".to_owned(),
             peer_cardinality: config::node::Cardinality::ZeroOrMore,
-            peer_copy: Some(config::runtime::Name::new("bravo").unwrap()),
+            peer_copy: Some(Name::new("bravo").unwrap()),
             held: true,
         }
     }

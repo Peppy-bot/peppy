@@ -88,7 +88,7 @@ struct GatedShutdownResponder {
 /// graceful wait observes the instance gone instead of burning the whole
 /// grace budget. Returns once callers can reach the service.
 async fn serve_gated_shutdown(
-    started: &common::StartedCoreNode,
+    started: &StartedCoreNode,
     node_name: &str,
     instance_id: &str,
     pid: u32,

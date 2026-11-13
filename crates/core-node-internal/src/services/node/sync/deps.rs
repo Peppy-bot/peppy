@@ -45,7 +45,7 @@ pub(crate) async fn materialize_repo_deps(
     node_stack: &NodeStack,
     peppy_dirs: &PeppyDirs,
     closure: DepClosure,
-) -> std::result::Result<MaterializedDeps, String> {
+) -> Result<MaterializedDeps, String> {
     let mut found = MaterializedDeps {
         configs: HashMap::new(),
         provenance: Vec::new(),
@@ -166,11 +166,11 @@ pub(crate) struct DependencyLookupEntry {
 /// across the lists, so no entry overwrites another.
 pub(super) fn build_dependency_lookup(
     manifest: &config::node::Manifest,
-) -> std::collections::HashMap<String, DependencyLookupEntry> {
+) -> HashMap<String, DependencyLookupEntry> {
     let Some(depends_on) = manifest.depends_on.as_ref() else {
-        return std::collections::HashMap::new();
+        return HashMap::new();
     };
-    let mut out = std::collections::HashMap::new();
+    let mut out = HashMap::new();
     for node in &depends_on.nodes {
         out.insert(
             node.link_id.clone(),

@@ -1435,7 +1435,7 @@ async fn process_node_run(
                 .map(|reason| (link_id.clone(), reason))
                 .map_err(|e| format!("pairing slot `{link_id}`: {e}"))
         })
-        .collect::<std::result::Result<std::collections::BTreeMap<_, _>, String>>()
+        .collect::<std::result::Result<BTreeMap<_, _>, String>>()
     {
         Ok(reasons) => reasons,
         Err(msg) => {
@@ -1755,22 +1755,22 @@ async fn process_node_run(
         return RunOutcome::Cancelled(msg);
     }
 
-    let (child, started_ctx) =
-        match node_stack::NodeEntity::prepare_and_spawn(&entity_handle, start_ctx).await {
-            Ok(t) => t,
-            Err(e) => {
-                let msg = e.to_string();
-                ctx.announcer.log().error(&msg);
-                feedback.close(instance_id_str, false).await;
-                return match e {
-                    // A stop removed the slot the respawn was for, or claimed
-                    // the start before its spawn.
-                    node_stack::NodeStackError::RespawnTargetMissing { .. }
-                    | node_stack::NodeStackError::StartClaimed { .. } => RunOutcome::Gone(msg),
-                    _ => RunOutcome::StartFailed(msg),
-                };
-            }
-        };
+    let (child, started_ctx) = match NodeEntity::prepare_and_spawn(&entity_handle, start_ctx).await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            let msg = e.to_string();
+            ctx.announcer.log().error(&msg);
+            feedback.close(instance_id_str, false).await;
+            return match e {
+                // A stop removed the slot the respawn was for, or claimed
+                // the start before its spawn.
+                node_stack::NodeStackError::RespawnTargetMissing { .. }
+                | node_stack::NodeStackError::StartClaimed { .. } => RunOutcome::Gone(msg),
+                _ => RunOutcome::StartFailed(msg),
+            };
+        }
+    };
 
     let abandon = StartAbandon {
         ctx: &ctx,
@@ -1922,7 +1922,7 @@ async fn process_node_run(
             .await;
     }
     let group = started_ctx.group;
-    let commit_result = node_stack::NodeEntity::commit_started(
+    let commit_result = NodeEntity::commit_started(
         &entity_handle,
         child,
         started_ctx,
@@ -3008,7 +3008,7 @@ mod tests {
     }
 
     fn runtime_config_for_test() -> RuntimeConfig {
-        let instance_id = config::runtime::Name::new("camera_front").unwrap();
+        let instance_id = Name::new("camera_front").unwrap();
         RuntimeConfig::new(
             "127.0.0.1",
             7448,

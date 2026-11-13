@@ -38,7 +38,7 @@ fn level_tag(level: Level) -> Option<(&'static str, &'static str)> {
 
 impl<S, N, E> FormatEvent<S, N> for LevelPrefixFormatter<E>
 where
-    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    S: Subscriber + for<'a> LookupSpan<'a>,
     N: for<'a> FormatFields<'a> + 'static,
     E: FormatEvent<S, N>,
 {

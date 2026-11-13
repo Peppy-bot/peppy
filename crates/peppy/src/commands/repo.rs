@@ -223,7 +223,7 @@ impl Command for RepoCommand {
                 path,
                 check,
                 validate_mcp_exposures,
-            } => index::repo_index(
+            } => repo_index(
                 path,
                 match (check, validate_mcp_exposures) {
                     (false, _) => None,

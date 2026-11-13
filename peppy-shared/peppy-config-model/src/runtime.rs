@@ -797,7 +797,7 @@ mod tests {
     fn name_error_message() {
         let err = Name::new("Invalid!").unwrap_err();
         if let ParsingError::InvalidName(_, msg) = err {
-            assert_eq!(msg, crate::consts::ALLOWED_CONFIG_CHARS);
+            assert_eq!(msg, ALLOWED_CONFIG_CHARS);
         } else {
             panic!("Expected InvalidName error");
         }

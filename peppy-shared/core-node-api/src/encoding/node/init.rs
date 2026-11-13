@@ -97,11 +97,11 @@ impl NodeInitResponse {
 }
 
 impl crate::encoding::Wire for NodeInitRequest {
-    type Root = crate::node_capnp::node_init_request::Owned;
+    type Root = node_capnp::node_init_request::Owned;
 }
 
 impl crate::encoding::Wire for NodeInitResponse {
-    type Root = crate::node_capnp::node_init_response::Owned;
+    type Root = node_capnp::node_init_response::Owned;
 }
 
 #[cfg(test)]

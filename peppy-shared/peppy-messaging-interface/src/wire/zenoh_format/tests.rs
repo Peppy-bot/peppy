@@ -1436,7 +1436,7 @@ fn a_signed_call_carries_a_proof_that_the_receiver_verifies_against_the_key_expr
         "ws-a",
         &selector,
         ServiceQueryKind::UserRequest,
-        &crate::Payload::from_bytes(bytes::Bytes::from_static(b"payload")),
+        &Payload::from_bytes(bytes::Bytes::from_static(b"payload")),
     );
 
     let receiver = sample_sender_producer();
@@ -1473,7 +1473,7 @@ fn an_unsigned_call_carries_no_proof() {
         "ws-a",
         &selector,
         ServiceQueryKind::UserRequest,
-        &crate::Payload::from_bytes(bytes::Bytes::from_static(b"payload")),
+        &Payload::from_bytes(bytes::Bytes::from_static(b"payload")),
     );
     assert_eq!(
         attachment.as_ref(),
@@ -1494,7 +1494,7 @@ fn service_query_attachment_decode_rejects_a_proof_that_does_not_decode() {
         "ws-a",
         &selector,
         ServiceQueryKind::UserRequest,
-        &crate::Payload::from_bytes(bytes::Bytes::new()),
+        &Payload::from_bytes(bytes::Bytes::new()),
     );
     let cut = &attachment[..attachment.len() - 1];
     assert_matches!(

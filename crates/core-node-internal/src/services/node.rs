@@ -113,7 +113,7 @@ use std::path::{Path, PathBuf};
 /// the instance plan so a participant can refuse a manifest that changed under
 /// it between preflight and dispatch. Computing it two ways would make that
 /// refusal fire on formatting.
-pub(crate) fn manifest_fingerprint(config: &NodeConfig) -> std::result::Result<String, String> {
+pub(crate) fn manifest_fingerprint(config: &NodeConfig) -> Result<String, String> {
     let serialized = json5_pretty::to_string_pretty(config)
         .map_err(|e| format!("failed to serialize node config for fingerprinting: {e}"))?;
     Ok(config::fingerprint::fingerprint_for_bytes(

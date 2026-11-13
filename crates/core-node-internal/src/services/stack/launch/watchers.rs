@@ -19,7 +19,7 @@ pub(in crate::services::stack) fn lifecycle_watchers<'a>(
     observations: &[PlannedObservation],
     placements: &Placements,
     instances: impl IntoIterator<Item = &'a Name>,
-) -> std::result::Result<LifecycleWatchers, String> {
+) -> Result<LifecycleWatchers, String> {
     let mut watchers: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
     for observation in observations {
         let instance =

@@ -24,7 +24,7 @@ fn reset_timeout(started: &StartedCoreNode) -> Duration {
 
 /// The instance id of the stack's root, which is the core node itself. A
 /// reset keeps it.
-fn root_instance_id(node_stack: &node_stack::NodeStack) -> String {
+fn root_instance_id(node_stack: &NodeStack) -> String {
     node_stack
         .root()
         .read()

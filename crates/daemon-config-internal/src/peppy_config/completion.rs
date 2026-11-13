@@ -1037,15 +1037,15 @@ mod tests {
         let expected = format!(
             "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}{}",
             &content[..close],
-            super::super::CORE_NODE_NAME_SECTION_SNIPPET,
-            super::super::ZENOH_SECTION_SNIPPET,
-            super::super::LIFECYCLE_SECTION_SNIPPET,
+            CORE_NODE_NAME_SECTION_SNIPPET,
+            ZENOH_SECTION_SNIPPET,
+            LIFECYCLE_SECTION_SNIPPET,
             PYPI_MIRROR_SECTION_SNIPPET,
             PUBLISH_REPOSITORY_SECTION_SNIPPET,
             OTLP_ENDPOINT_SECTION_SNIPPET,
             OTLP_MIN_SEVERITY_SECTION_SNIPPET,
-            super::super::MACHINE_CERTIFICATE_SECTION_SNIPPET,
-            super::super::RESOURCE_SERVERS_SECTION_SNIPPET,
+            MACHINE_CERTIFICATE_SECTION_SNIPPET,
+            RESOURCE_SERVERS_SECTION_SNIPPET,
             &content[close..]
         );
         assert_eq!(completed, expected);

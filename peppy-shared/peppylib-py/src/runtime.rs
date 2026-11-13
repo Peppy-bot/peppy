@@ -1891,13 +1891,13 @@ impl PyNodeBuilder {
                     config::NodeArgumentsError::MissingParameters(ref params),
                 ) = e
                 {
-                    return PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                    return PyErr::new::<PyRuntimeError, _>(format!(
                         "missing required parameter(s) for standalone mode: {}. \
                          Provide them via StandaloneConfig().with_parameters()",
                         params.join(", ")
                     ));
                 }
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
+                PyErr::new::<PyRuntimeError, _>(e.to_string())
             })
         })
     }

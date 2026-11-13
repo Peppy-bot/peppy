@@ -740,7 +740,7 @@ mod tests {
 
     #[test]
     fn an_entry_parses_into_the_source_it_describes() {
-        let entry = |value: serde_json::Value| parse_repo_entry(&value);
+        let entry = |value: Value| parse_repo_entry(&value);
         assert_eq!(
             entry(serde_json::json!({ "type": "git", "url": "https://github.com/org/repo" })),
             Ok(git_source(GitRepoRef::RemoteHead))
@@ -774,7 +774,7 @@ mod tests {
 
     #[test]
     fn an_entry_peppy_cannot_read_is_refused_with_its_reason() {
-        let entry = |value: serde_json::Value| parse_repo_entry(&value);
+        let entry = |value: Value| parse_repo_entry(&value);
         assert_eq!(
             entry(serde_json::json!({
                 "type": "git", "url": "https://github.com/org/repo", "ref": "@{upstream}"
@@ -842,7 +842,7 @@ mod tests {
         }
     }
 
-    fn fs_origin(path: impl Into<std::path::PathBuf>) -> EntryOrigin {
+    fn fs_origin(path: impl Into<PathBuf>) -> EntryOrigin {
         EntryOrigin::Fs { path: path.into() }
     }
 

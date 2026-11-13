@@ -1627,7 +1627,7 @@ async fn an_observer_sees_the_new_generation_after_a_restart() {
             "robot_arm",
             "arm",
             "controller",
-            config::node::Cardinality::ZeroOrOne,
+            Cardinality::ZeroOrOne,
             &instances,
             &source_pidfile,
         ),

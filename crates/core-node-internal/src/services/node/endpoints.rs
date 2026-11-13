@@ -133,7 +133,7 @@ pub fn expand_announcements(
     declared: &EndpointDeclarations,
     announced: Vec<AnnouncedEndpoint>,
     host: &[IpAddr],
-) -> std::result::Result<Vec<InstanceEndpoint>, String> {
+) -> Result<Vec<InstanceEndpoint>, String> {
     // Compared as sets: a node is free to announce in whatever order its
     // setup binds, and the result is sorted by label below.
     let announced_labels: BTreeSet<&str> = announced

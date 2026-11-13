@@ -122,7 +122,7 @@ pub fn unique_test_instance_id() -> String {
     format!(
         "test-{}-{}",
         std::process::id(),
-        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        COUNTER.fetch_add(1, Ordering::Relaxed),
     )
 }
 

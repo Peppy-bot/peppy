@@ -815,7 +815,7 @@ mod tests {
                 pairing_tag: "v1".to_string(),
                 role: "controller".to_string(),
                 cardinality: Cardinality::One,
-                peers: vec![config::runtime::PairedPeer {
+                peers: vec![PairedPeer {
                     peer: ProducerRef::new("core_a", "arm_1"),
                     peer_link_id: "controller".to_string(),
                     copy: None,

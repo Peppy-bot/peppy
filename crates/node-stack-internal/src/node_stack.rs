@@ -122,7 +122,7 @@ struct EndpointMeta {
     /// Only a scalar slot is taken by one pair.
     cardinality: config::node::Cardinality,
     /// The copy the endpoint's instance belongs to.
-    copy: Option<config::runtime::Name>,
+    copy: Option<Name>,
 }
 
 struct NodeStackInner {
@@ -835,7 +835,7 @@ impl NodeStackInner {
     }
 
     /// The copy a local instance belongs to, as recorded when it started.
-    fn instance_copy(&self, instance_id: &str) -> Option<config::runtime::Name> {
+    fn instance_copy(&self, instance_id: &str) -> Option<Name> {
         self.tracked(instance_id, |tracked| tracked.instance.copy().cloned())
             .flatten()
     }
@@ -915,12 +915,12 @@ impl NodeStackInner {
         let pairing = Pairing {
             pairing_name: dep_a.name.clone(),
             pairing_tag: dep_a.tag.clone(),
-            a: pairing::PairEndpoint {
+            a: PairEndpoint {
                 slot: a.clone(),
                 role: dep_a.role.clone(),
                 copy: dep_a.copy.clone(),
             },
-            b: pairing::PairEndpoint {
+            b: PairEndpoint {
                 slot: b.clone(),
                 role: dep_b.role.clone(),
                 copy: dep_b.copy.clone(),
@@ -1134,11 +1134,8 @@ impl NodeStack {
         let instance_id = instance_id.unwrap_or_else(|| {
             Name::new(get_random(rng())).expect("random name generation failed")
         });
-        let instance = TrackedNodeInstance::new(
-            instance_id,
-            InstanceState::Running,
-            std::collections::BTreeMap::new(),
-        );
+        let instance =
+            TrackedNodeInstance::new(instance_id, InstanceState::Running, BTreeMap::new());
         let root_entity = NodeEntity::root(root_config, root_path, instance);
         Self {
             shared: Arc::new(RwLock::new(NodeStackInner::new(root_entity))),
@@ -1349,7 +1346,7 @@ impl NodeStack {
     /// starts once the spawn has forked it: the key that the process signs
     /// its calls to the daemon with. `None` when no instance has the id,
     /// before the fork, and once its process is gone.
-    pub fn live_credential(&self, instance_id: &str) -> Option<std::path::PathBuf> {
+    pub fn live_credential(&self, instance_id: &str) -> Option<PathBuf> {
         self.shared
             .read()
             .tracked(instance_id, |tracked| {
@@ -2018,7 +2015,7 @@ pub struct PairingNodeSnapshot {
     pub node_name: String,
     pub node_tag: String,
     pub instance_ids: Vec<String>,
-    pub pairing_deps: Vec<config::node::PairingParticipantDependency>,
+    pub pairing_deps: Vec<PairingParticipantDependency>,
 }
 
 /// The serialized pairing-slot view of one instance: every declared
@@ -2031,10 +2028,10 @@ pub struct PairingNodeSnapshot {
 pub fn pairing_slot_view(
     core_node: &str,
     instance_id: &str,
-    deps: &[config::node::PairingParticipantDependency],
+    deps: &[PairingParticipantDependency],
     live_pairs: &[Pairing],
-) -> std::collections::BTreeMap<String, SerializedPairingSlot> {
-    let mut out = std::collections::BTreeMap::new();
+) -> BTreeMap<String, SerializedPairingSlot> {
+    let mut out = BTreeMap::new();
     for dep in deps {
         let slot = SlotAddr::new(core_node, instance_id, &dep.link_id);
         let peers = live_pairs
@@ -2092,7 +2089,7 @@ mod live_container_instances_tests {
         TrackedNodeInstance::new(
             Name::new(id).expect("valid instance id"),
             state,
-            std::collections::BTreeMap::new(),
+            BTreeMap::new(),
         )
     }
 
@@ -2213,7 +2210,7 @@ mod clock_tests {
         TrackedNodeInstance::new(
             Name::new(id).expect("valid instance id"),
             state,
-            std::collections::BTreeMap::new(),
+            BTreeMap::new(),
         )
         .with_clock(binding)
     }

@@ -40,7 +40,7 @@ pub enum Toolchain {
 }
 
 impl fmt::Display for Toolchain {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Toolchain::Uv => write!(f, "uv"),
             Toolchain::Cargo => write!(f, "cargo"),
@@ -274,8 +274,8 @@ impl InterfaceKind {
     }
 }
 
-impl std::fmt::Display for InterfaceKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for InterfaceKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             InterfaceKind::Topic => write!(f, "topic"),
             InterfaceKind::Service => write!(f, "service"),
@@ -284,10 +284,10 @@ impl std::fmt::Display for InterfaceKind {
     }
 }
 
-impl std::str::FromStr for InterfaceKind {
+impl FromStr for InterfaceKind {
     type Err = String;
 
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "topic" => Ok(InterfaceKind::Topic),
             "service" => Ok(InterfaceKind::Service),
@@ -1392,7 +1392,7 @@ impl Cardinality {
 
 /// The four spellings [`Cardinality::as_str`] writes, read back; anything
 /// else is the spelling that was refused.
-impl std::str::FromStr for Cardinality {
+impl FromStr for Cardinality {
     type Err = String;
 
     fn from_str(spelling: &str) -> Result<Self, Self::Err> {
@@ -1799,7 +1799,7 @@ impl fmt::Display for EndpointKind {
 pub struct EndpointLabel(String);
 
 impl EndpointLabel {
-    pub fn new(label: impl Into<String>) -> std::result::Result<Self, ParsingError> {
+    pub fn new(label: impl Into<String>) -> Result<Self, ParsingError> {
         let label = label.into();
         if Self::is_valid(&label) {
             Ok(Self(label))
@@ -2082,7 +2082,7 @@ pub enum DocumentKind {
 }
 
 impl fmt::Display for DocumentKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Contract => "contract",
             Self::Pairing => "pairing",
@@ -3758,11 +3758,11 @@ mod tests {
                         ]
                     }}"#
                 );
-                let parsing_err = crate::error::ParsingError::from(
+                let parsing_err = ParsingError::from(
                     serde_json5::from_str::<DependsOn>(&json5)
                         .expect_err("optional on a pairing slot must be rejected"),
                 );
-                let crate::error::ParsingError::OptionalOnPairingSlot {
+                let ParsingError::OptionalOnPairingSlot {
                     link_id: got_link_id,
                     section: got_section,
                 } = &parsing_err
@@ -3841,11 +3841,11 @@ mod tests {
             r#"{ pairings: [ { name: "arm_link", tag: "v1", link_id: "x" } ] }"#,
             r#"{ pairing_observers: [ { name: "arm_link", tag: "v1", link_id: "x" } ] }"#,
         ] {
-            let err = crate::error::ParsingError::from(
+            let err = ParsingError::from(
                 serde_json5::from_str::<DependsOn>(json5)
                     .expect_err("a missing role must be rejected"),
             );
-            assert_matches!(&err, crate::error::ParsingError::PairingSlotMissingRole { link_id } if link_id == "x",
+            assert_matches!(&err, ParsingError::PairingSlotMissingRole { link_id } if link_id == "x",
                 "expected PairingSlotMissingRole, got {err:?}"
             );
         }

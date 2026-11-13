@@ -309,7 +309,7 @@ impl ReadSource {
 pub(crate) fn read_published_items(
     root: &Path,
     source: &ReadSource,
-) -> std::result::Result<Vec<PublishedItem>, (RepoReadFailure, String)> {
+) -> Result<Vec<PublishedItem>, (RepoReadFailure, String)> {
     let unreachable = |detail: String| (RepoReadFailure::Unreachable, detail);
     let contradictory = |detail: String| (RepoReadFailure::Conflict, detail);
 
@@ -361,9 +361,7 @@ pub(crate) fn read_published_items(
 /// The one place an identity crosses from what a repository declares into
 /// what a machine caches, so the two cannot disagree about which field
 /// holds what.
-pub(crate) fn build_cache_entries(
-    items: Vec<PublishedItem>,
-) -> std::result::Result<RepoItems, String> {
+pub(crate) fn build_cache_entries(items: Vec<PublishedItem>) -> Result<RepoItems, String> {
     let mut built = RepoItems::default();
     for item in items {
         // A tag is present for exactly the four tagged kinds, because the
@@ -537,10 +535,7 @@ pub fn generate_repository_index(root: &Path) -> Result<RepositoryIndex, IndexEr
 
 /// Records one walked item in `index`, converting the strings the walk
 /// produced into the validated identity the index is keyed on.
-fn declare_walked_item(
-    index: &mut RepositoryIndex,
-    item: &WalkedItem,
-) -> std::result::Result<(), String> {
+fn declare_walked_item(index: &mut RepositoryIndex, item: &WalkedItem) -> Result<(), String> {
     let name = ItemName::parse(&item.name)?;
     let tag = if item.kind == RepoItemKind::Launcher {
         None
@@ -600,7 +595,7 @@ pub(crate) struct ResolvedItem {
 pub(crate) fn resolve_declared_item(
     root: &Path,
     item: &DeclaredItem<'_>,
-) -> std::result::Result<ResolvedItem, String> {
+) -> Result<ResolvedItem, String> {
     let joined = root.join(item.path.as_path());
     // Canonicalizing is the only way to catch a target reached through a
     // symlink that leaves the tree: the walk never follows a symlinked
@@ -651,11 +646,7 @@ struct Declaration {
 /// disagree. `Err` carries why the file is not a usable `kind`: it does not
 /// parse as one, carries a `peppy_schema` that is not this kind's, or (for a
 /// launcher) has no usable file stem to take a name from.
-fn declaration_of(
-    kind: RepoItemKind,
-    content: &str,
-    path: &Path,
-) -> std::result::Result<Declaration, String> {
+fn declaration_of(kind: RepoItemKind, content: &str, path: &Path) -> Result<Declaration, String> {
     match kind {
         RepoItemKind::Node => {
             let parsed = NodeConfigParser::from_content(content).map_err(|e| e.to_string())?;
@@ -1399,7 +1390,7 @@ mod tests {
         let index = generate_repository_index(&repo).expect("index the repository");
         write_repository_index(&repo, &index).expect("write the index");
 
-        let commit = daemon_config::repository::GitCommit::parse(&"a".repeat(40)).unwrap();
+        let commit = GitCommit::parse(&"a".repeat(40)).unwrap();
         let git = read_published_items(
             &repo,
             &ReadSource::Git {
@@ -1415,12 +1406,10 @@ mod tests {
         assert_eq!(entries.nodes[0].origin.path_str(), "nodes/a/peppy.json5");
         assert_eq!(entries.nodes[0].origin.commit(), Some(&commit));
 
-        let manifest = repo.join("nodes/a").join(config::consts::NODE_CONFIG_FILE);
+        let manifest = repo.join("nodes/a").join(NODE_CONFIG_FILE);
         assert_eq!(
             entries.nodes[0].sha256,
-            daemon_config::repository::ManifestFingerprint::of_bytes(
-                &std::fs::read(&manifest).unwrap()
-            ),
+            ManifestFingerprint::of_bytes(&std::fs::read(&manifest).unwrap()),
             "the fingerprint is of the bytes that declare the node"
         );
 
@@ -1568,7 +1557,7 @@ mod tests {
         write_node_json5(&repo.join("nodes/a"), "a", "v1");
         let index = generate_repository_index(&repo).expect("index the repository");
         write_repository_index(&repo, &index).expect("write the index");
-        std::fs::remove_file(repo.join("nodes/a").join(config::consts::NODE_CONFIG_FILE)).unwrap();
+        std::fs::remove_file(repo.join("nodes/a").join(NODE_CONFIG_FILE)).unwrap();
 
         let (kind, detail) = read_published_items(
             &repo,

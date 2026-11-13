@@ -96,7 +96,7 @@ pub fn generate_peppygen_lib(
         .unwrap_or_else(|| node_dir.join(NODE_CONFIG_FILE));
 
     let peppy_dir = node_dir.join(daemon_config::consts::PEPPY_OUTPUT_DIR);
-    std::fs::create_dir_all(&peppy_dir)?;
+    fs::create_dir_all(&peppy_dir)?;
     if !node_config_path.exists() {
         return Err(Error::NodeNotFound(node_config_path.display().to_string()));
     }
@@ -626,9 +626,9 @@ mod tests {
         let custom_path = temp_dir.path().join("custom_peppy.json5");
         fs::write(&custom_path, custom_config).unwrap();
 
-        let peppy_dirs = daemon_config::consts::PeppyDirs::default();
+        let peppy_dirs = PeppyDirs::default();
         generate_peppygen_lib(
-            config::node::PeppygenLanguage::Rust,
+            PeppygenLanguage::Rust,
             &node_dir,
             Vec::new(),
             "test-hash",
@@ -678,9 +678,9 @@ mod tests {
         fs::create_dir_all(&node_dir).unwrap();
 
         // Do NOT write any peppy.json5; generation should fail with NodeNotFound
-        let peppy_dirs = daemon_config::consts::PeppyDirs::default();
+        let peppy_dirs = PeppyDirs::default();
         let result = generate_peppygen_lib(
-            config::node::PeppygenLanguage::Rust,
+            PeppygenLanguage::Rust,
             &node_dir,
             Vec::new(),
             "test-hash",
@@ -727,9 +727,9 @@ mod tests {
         )
         .unwrap();
 
-        let peppy_dirs = daemon_config::consts::PeppyDirs::default();
+        let peppy_dirs = PeppyDirs::default();
         generate_peppygen_lib(
-            config::node::PeppygenLanguage::Rust,
+            PeppygenLanguage::Rust,
             &node_dir,
             Vec::new(),
             "daemon-build-hash",

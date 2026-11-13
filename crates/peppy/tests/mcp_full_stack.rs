@@ -1135,7 +1135,7 @@ impl Stack {
 
     /// The names of the copies the daemon's own stack list reports.
     async fn daemon_copies(&self) -> Vec<String> {
-        let report = peppy::commands::stack::list_nodes_json_collecting(&self.ctx)
+        let report = list_nodes_json_collecting(&self.ctx)
             .await
             .expect("stack list answers");
         let listed: Value = serde_json::from_str(&report.output).expect("the list is JSON");
@@ -3798,7 +3798,7 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
         2,
         "the stack log and the node's run log: {message}"
     );
-    let run_log_name = std::path::Path::new(logs[1])
+    let run_log_name = Path::new(logs[1])
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();

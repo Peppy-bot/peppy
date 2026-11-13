@@ -157,8 +157,8 @@ fn default_node_arguments() -> CoreNodeArguments {
         // These daemons run standalone routers (no federation links), where
         // production also settles for zero.
         name_claim_settle: Duration::ZERO,
-        time_source: core_node::TimeSource::System,
-        reply_bounds: core_node::ReplyBounds::DEFAULT,
+        time_source: TimeSource::System,
+        reply_bounds: ReplyBounds::DEFAULT,
     }
 }
 
@@ -675,7 +675,7 @@ fn make_real_output_sinks(
 ) -> (
     node_stack::OutputSinks,
     tokio::task::JoinHandle<()>,
-    std::path::PathBuf,
+    PathBuf,
 ) {
     use std::sync::atomic::AtomicBool;
 

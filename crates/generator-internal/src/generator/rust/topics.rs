@@ -311,12 +311,9 @@ pub fn build_observed_module_header(
     };
 
     let sources_doc = super::doc_attrs(
-        &crate::generator::types::observed_sources_doc(
-            cardinality,
-            crate::generator::types::DocLanguage::Rust,
-        )
-        .lines()
-        .collect::<Vec<_>>(),
+        &crate::generator::types::observed_sources_doc(cardinality, DocLanguage::Rust)
+            .lines()
+            .collect::<Vec<_>>(),
     );
 
     quote! {

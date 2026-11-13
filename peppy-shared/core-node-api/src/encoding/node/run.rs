@@ -1042,19 +1042,19 @@ impl NodeRunResult {
 }
 
 impl crate::encoding::Wire for NodeRunGoal {
-    type Root = crate::node_capnp::node_run_goal::Owned;
+    type Root = node_capnp::node_run_goal::Owned;
 }
 
 impl crate::encoding::Wire for NodeRunGoalResponse {
-    type Root = crate::node_capnp::node_run_goal_response::Owned;
+    type Root = node_capnp::node_run_goal_response::Owned;
 }
 
 impl crate::encoding::Wire for NodeRunFeedback {
-    type Root = crate::node_capnp::node_run_feedback::Owned;
+    type Root = node_capnp::node_run_feedback::Owned;
 }
 
 impl crate::encoding::Wire for NodeRunResult {
-    type Root = crate::node_capnp::node_run_result::Owned;
+    type Root = node_capnp::node_run_result::Owned;
 }
 
 #[cfg(test)]
@@ -1105,9 +1105,10 @@ mod tests {
                 clock: sim_clock(),
                 slot_bindings: BTreeMap::from([(
                     "camera".to_owned(),
-                    config::runtime::BoundProducers::try_from(vec![
-                        config::runtime::ProducerRef::new("cn-robot-7", "wrist_cam_inst"),
-                    ])
+                    config::runtime::BoundProducers::try_from(vec![ProducerRef::new(
+                        "cn-robot-7",
+                        "wrist_cam_inst",
+                    )])
                     .expect("one producer is a valid set"),
                 )]),
                 daemon_scopes: BTreeMap::from([(
@@ -1148,9 +1149,10 @@ mod tests {
             NodeInstancePlan {
                 slot_bindings: BTreeMap::from([(
                     "scene".to_owned(),
-                    config::runtime::BoundProducers::try_from(vec![
-                        config::runtime::ProducerRef::new("cn-robot-7", "wrist_cam_inst"),
-                    ])
+                    config::runtime::BoundProducers::try_from(vec![ProducerRef::new(
+                        "cn-robot-7",
+                        "wrist_cam_inst",
+                    )])
                     .expect("one producer is a valid set"),
                 )]),
                 ..plan("planner_inst")
@@ -1524,7 +1526,7 @@ mod tests {
             goal.set_node_name("node");
             goal.set_tag("tag");
         }
-        let encoded = crate::encoding::encode_message(&builder).expect("encode");
+        let encoded = encode_message(&builder).expect("encode");
         let error = NodeRunGoal::decode(&encoded).expect_err("a goal with no plan must fail");
         assert!(
             error.to_string().contains("instance_plan is empty"),
@@ -1553,7 +1555,7 @@ mod tests {
             goal.set_tag("tag");
             fill(goal.init_planned_observations(request_count));
         }
-        crate::encoding::encode_message(&builder).expect("encode")
+        encode_message(&builder).expect("encode")
     }
 
     /// An empty member list is never written (a slot that observes nothing is

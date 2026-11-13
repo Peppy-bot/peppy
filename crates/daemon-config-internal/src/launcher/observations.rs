@@ -527,12 +527,12 @@ mod tests {
         serde_json5::from_str(json5).expect("instances fixture should parse")
     }
 
-    fn parse_pairing_deps(json5: &str) -> Vec<config::node::PairingParticipantDependency> {
+    fn parse_pairing_deps(json5: &str) -> Vec<PairingParticipantDependency> {
         serde_json5::from_str(json5).expect("pairing deps fixture should parse")
     }
 
     /// A robot arm exposing the `arm` participant role of `arm_link/v1`.
-    fn arm_deps() -> Vec<config::node::PairingParticipantDependency> {
+    fn arm_deps() -> Vec<PairingParticipantDependency> {
         parse_pairing_deps(
             r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }]"#,
         )
@@ -604,7 +604,7 @@ mod tests {
     }
 
     /// The `controller` role of `arm_link/v1`, the far end of an `arm`.
-    fn controller_deps() -> Vec<config::node::PairingParticipantDependency> {
+    fn controller_deps() -> Vec<PairingParticipantDependency> {
         parse_pairing_deps(
             r#"[{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }]"#,
         )
@@ -614,7 +614,7 @@ mod tests {
     fn item<'a>(
         node_name: &'a str,
         instances: &'a [DeploymentInstance],
-        pairing_deps: &'a [config::node::PairingParticipantDependency],
+        pairing_deps: &'a [PairingParticipantDependency],
     ) -> PairingValidationItem<'a> {
         PairingValidationItem {
             node_name,

@@ -27,7 +27,7 @@ pub fn collect_all_deployment_interfaces(
     peppy_dirs: &PeppyDirs,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<Vec<DeploymentInterface>, String> {
+) -> Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = collect_consumed_interfaces(
         manifest,
         interfaces_cfg,
@@ -103,7 +103,7 @@ fn collect_consumed_interfaces(
     peppy_dirs: &PeppyDirs,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<Vec<DeploymentInterface>, String> {
+) -> Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = Vec::new();
     let mut deps = ResolvedDependencies {
         lookup: build_dependency_lookup(manifest),
@@ -159,7 +159,7 @@ fn collect_consumed_interfaces(
                 continue;
             }
             let Some((offered, dependency)) = deps.resolve_consumed_offering(
-                config::node::InterfaceKind::Topic.consumed_section(),
+                InterfaceKind::Topic.consumed_section(),
                 &consumed_topic.link_id,
                 consumed_topic.name.trim(),
                 |offerings, name| offerings.topics.get(name).cloned(),
@@ -197,7 +197,7 @@ fn collect_consumed_interfaces(
         for consumed_service in consumed_services {
             let Some(((request_format, response_format), dependency)) = deps
                 .resolve_consumed_offering(
-                    config::node::InterfaceKind::Service.consumed_section(),
+                    InterfaceKind::Service.consumed_section(),
                     &consumed_service.link_id,
                     consumed_service.name.trim(),
                     |offerings, name| offerings.services.get(name).cloned(),
@@ -236,7 +236,7 @@ fn collect_consumed_interfaces(
     {
         for consumed_action in consumed_actions {
             let Some((action_message, dependency)) = deps.resolve_consumed_offering(
-                config::node::InterfaceKind::Action.consumed_section(),
+                InterfaceKind::Action.consumed_section(),
                 &consumed_action.link_id,
                 consumed_action.name.trim(),
                 |offerings, name| offerings.actions.get(name).cloned(),
@@ -295,7 +295,7 @@ impl ResolvedDependencies {
             &peppy_codec::contract::PeppyContract,
             &str,
         ) -> Option<Result<T, Vec<RefinementProblem>>>,
-    ) -> std::result::Result<Option<(T, generator::DependencyContext)>, String> {
+    ) -> Result<Option<(T, generator::DependencyContext)>, String> {
         let Some(entry) = self.lookup.get(link_id) else {
             return Ok(None);
         };
@@ -410,7 +410,7 @@ mod action_message_tests {
 fn daemon_interface_doc(
     link_id: &str,
     entry: &DependencyLookupEntry,
-) -> std::result::Result<peppy_codec::contract::PeppyContract, String> {
+) -> Result<peppy_codec::contract::PeppyContract, String> {
     let target = config::node::DaemonTargetDependency {
         name: config::runtime::Name::new(&entry.name).map_err(|e| e.to_string())?,
         tag: entry.tag.clone(),
@@ -435,7 +435,7 @@ pub(crate) fn resolve_contract_doc(
     sha256_pin: Option<&str>,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<peppy_codec::contract::PeppyContract, String> {
+) -> Result<peppy_codec::contract::PeppyContract, String> {
     let parse = |content: &str| {
         peppy_codec::contract::PeppyContractParser::from_content(content).map_err(|e| e.to_string())
     };
@@ -536,7 +536,7 @@ fn resolve_implements(
     peppy_dirs: &PeppyDirs,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<Vec<DeploymentInterface>, ImplementsError> {
+) -> Result<Vec<DeploymentInterface>, ImplementsError> {
     if manifest.implements.is_empty() {
         return Ok(Vec::new());
     }
@@ -743,7 +743,7 @@ pub fn stack_resolver(
 /// `node sync` and `node add`.
 pub(crate) fn stack_then_repo_resolver<'a>(
     node_stack: &'a NodeStack,
-    repo_resolved: &'a std::collections::HashMap<(String, String), config::node::NodeConfig>,
+    repo_resolved: &'a HashMap<(String, String), config::node::NodeConfig>,
 ) -> impl Fn(&str, &str) -> Option<config::node::NodeConfig> + 'a {
     let stack = stack_resolver(node_stack);
     move |name, tag| {

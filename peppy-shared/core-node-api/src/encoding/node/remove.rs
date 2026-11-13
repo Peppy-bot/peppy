@@ -101,11 +101,11 @@ impl NodeRemoveResponse {
 }
 
 impl crate::encoding::Wire for NodeRemoveRequest {
-    type Root = crate::node_capnp::node_remove_request::Owned;
+    type Root = node_capnp::node_remove_request::Owned;
 }
 
 impl crate::encoding::Wire for NodeRemoveResponse {
-    type Root = crate::node_capnp::node_remove_response::Owned;
+    type Root = node_capnp::node_remove_response::Owned;
 }
 
 #[cfg(test)]

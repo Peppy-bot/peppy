@@ -314,7 +314,7 @@ pub async fn for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
 /// publishes its own wall ticks. The `link_id` segment tells the two apart: a
 /// domain's carries its name and incarnation, the daemon's is the reserved
 /// default, and each subscription names the one it reads.
-fn domain_target(domain: &ClockDomainId) -> Result<crate::messaging::SenderTarget> {
+fn domain_target(domain: &ClockDomainId) -> Result<SenderTarget> {
     Ok(SenderTarget::node(
         domain.core_node.as_str(),
         names::CORE_NODE_TAG,

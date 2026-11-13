@@ -441,10 +441,7 @@ fn manual_clock() -> (Clock, Arc<AtomicU64>) {
     )
 }
 
-fn with_camera_tools(
-    builder: peppy_mcp_runtime::ExposureServerBuilder,
-    expected: &Expected,
-) -> peppy_mcp_runtime::ExposureServerBuilder {
+fn with_camera_tools(builder: ExposureServerBuilder, expected: &Expected) -> ExposureServerBuilder {
     let info = expected.info.clone();
     builder
         .with_tool("front_camera.info", move |_call: ToolCall| {

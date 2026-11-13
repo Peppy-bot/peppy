@@ -76,11 +76,11 @@ impl RepoRemoveResponse {
 }
 
 impl crate::encoding::Wire for RepoRemoveRequest {
-    type Root = crate::repo_capnp::repo_remove_request::Owned;
+    type Root = repo_capnp::repo_remove_request::Owned;
 }
 
 impl crate::encoding::Wire for RepoRemoveResponse {
-    type Root = crate::repo_capnp::repo_remove_response::Owned;
+    type Root = repo_capnp::repo_remove_response::Owned;
 }
 
 #[cfg(test)]

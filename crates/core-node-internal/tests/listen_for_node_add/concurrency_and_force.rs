@@ -26,7 +26,7 @@ async fn stalled_http_server() -> (url::Url, AbortOnDrop<()>) {
 /// supersedes it. The test holds the returned guard and action handle until
 /// it ends.
 async fn send_stalled_add_goal(
-    started_core_node: &common::StartedCoreNode,
+    started_core_node: &StartedCoreNode,
 ) -> (AbortOnDrop<()>, peppylib::messaging::ActionGoalHandle) {
     let (url, server) = stalled_http_server().await;
     let action_handle = common::send_daemon_goal(

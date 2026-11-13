@@ -168,7 +168,7 @@ impl Source {
                 (interface.name().to_owned(), interface.tag().to_owned())
             }
         };
-        let contract = SenderTarget::contract(&name, &tag).map_err(peppylib::PeppyError::from)?;
+        let contract = SenderTarget::contract(&name, &tag).map_err(PeppyError::from)?;
         Ok(Self {
             label: format!("{name}:{tag}"),
             contract,
@@ -442,7 +442,7 @@ pub(crate) async fn pump_resource(
 /// resource's policies. Whether the message was admitted, and so decoded.
 fn feed<E: std::fmt::Display>(
     ingest: &ResourceIngest,
-    decode: impl FnOnce() -> Result<serde_json::Value, E>,
+    decode: impl FnOnce() -> Result<Value, E>,
 ) -> bool {
     let Some(token) = ingest.admit() else {
         return false;

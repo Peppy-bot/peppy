@@ -90,7 +90,7 @@ struct ParticipantSlice {
 fn partition_reservations<'a>(
     items: impl Iterator<Item = (&'a Deployment, &'a DeploymentRoot, &'a [PinnedItem])>,
     placements: &Placements,
-) -> std::result::Result<BTreeMap<String, Vec<String>>, String> {
+) -> Result<BTreeMap<String, Vec<String>>, String> {
     let coordinator = placements.coordinator();
     let mut by_core_node: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (deployment, root, closure_pins) in items {
@@ -123,7 +123,7 @@ fn partition_reservations<'a>(
 /// read from zenoh presence.
 pub(in crate::services::stack) async fn live_core_nodes(
     ctx: &StackChangeContext,
-) -> std::result::Result<BTreeSet<String>, String> {
+) -> Result<BTreeSet<String>, String> {
     CoreNodePresenceMessenger::live_core_node_names(
         &ctx.messenger,
         &ctx.bound_core_node,
@@ -141,7 +141,7 @@ pub(in crate::services::stack) async fn live_core_nodes(
 fn reject_unreachable_core_nodes(
     wanted: &BTreeSet<String>,
     live: &BTreeSet<String>,
-) -> std::result::Result<(), String> {
+) -> Result<(), String> {
     let missing: Vec<&String> = wanted.difference(live).collect();
     if missing.is_empty() {
         return Ok(());
@@ -284,7 +284,7 @@ fn check_version(
     core_node: &str,
     response: &ParticipantReserveResponse,
     own_version: &str,
-) -> std::result::Result<(), String> {
+) -> Result<(), String> {
     if response.peppy_version == own_version {
         return Ok(());
     }

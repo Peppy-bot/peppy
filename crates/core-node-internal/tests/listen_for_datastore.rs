@@ -382,7 +382,7 @@ async fn a_refused_second_start_leaves_the_key_of_the_running_process() {
         DatastoreStoreExclusiveResponse::Stored,
         "the running process still calls with the key of its own start"
     );
-    core_node::test_support::signal_process(pid, "-9");
+    signal_process(pid, "-9");
 }
 
 /// Runs an owner under `restart` on a daemon restarting with `backoff`, has it

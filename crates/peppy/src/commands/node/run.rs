@@ -745,7 +745,7 @@ async fn validate_links_against_stack(
         let instances: Vec<DeploymentInstance> = node
             .instances
             .iter()
-            .filter(|inst| inst.state == core_node_api::InstanceState::Running)
+            .filter(|inst| inst.state == InstanceState::Running)
             .filter_map(|inst| {
                 Name::new(inst.instance_id.clone())
                     .ok()
@@ -1265,7 +1265,7 @@ mod tests {
             nodes: vec![crate::commands::serialized_node(
                 "arm",
                 "v1",
-                core_node_api::NodeStage::Ready,
+                NodeStage::Ready,
                 &[("arm_1", InstanceState::Failed)],
             )],
             edges: Vec::new(),
@@ -1322,19 +1322,19 @@ mod tests {
     /// free.
     #[test]
     fn a_taken_instance_id_is_refused_naming_its_owner() {
-        let failed = core_node_api::InstanceState::Failed;
+        let failed = InstanceState::Failed;
         let graph = core_node_api::SerializedNodeGraph {
             nodes: vec![
                 crate::commands::serialized_node(
                     "core",
                     "v1",
-                    core_node_api::NodeStage::Root,
+                    NodeStage::Root,
                     &[("cn-sweet-buffalo", failed)],
                 ),
                 crate::commands::serialized_node(
                     "cam",
                     "v1",
-                    core_node_api::NodeStage::Ready,
+                    NodeStage::Ready,
                     &[("cam_inst", failed)],
                 ),
             ],
@@ -1346,7 +1346,7 @@ mod tests {
         );
         assert_eq!(
             taken_instance_id_refusal(&graph, "cam_inst"),
-            Some(core_node_api::duplicate_instance_id_message(
+            Some(duplicate_instance_id_message(
                 "cam_inst", "cam", "v1", "core-a", failed
             ))
         );

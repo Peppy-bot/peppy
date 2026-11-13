@@ -323,7 +323,7 @@ impl Fragment {
     /// beside its `fragments` and `adjustments`.
     /// `adjustments` is passed in, so an option writes the one list it
     /// carries and a fragment file writes its own.
-    fn serialize_entries<M: serde::ser::SerializeMap>(
+    fn serialize_entries<M: SerializeMap>(
         &self,
         map: &mut M,
         adjustments: &[Adjustment],
@@ -784,7 +784,7 @@ fn read_deployment_entry(
 
 /// Reads the optional `key` of one option entry, taking its value out of the
 /// entry instead of copying it. A refusal names the key and the entry.
-fn read_entry_key<T: serde::de::DeserializeOwned>(
+fn read_entry_key<T: de::DeserializeOwned>(
     entry: &mut serde_json::Map<String, serde_json::Value>,
     key: &str,
     origin: &str,
@@ -1152,7 +1152,7 @@ fn check_fragment_path<E: de::Error>(path: &str) -> Result<(), E> {
 
 /// Reads a written key as a value of its type, so `null` is refused as the
 /// type's deserializer refuses it; an absent key takes the field's default.
-pub(crate) fn written<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(
+pub(crate) fn written<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     deserializer: D,
 ) -> Result<Option<T>, D::Error> {
     T::deserialize(deserializer).map(Some)
@@ -1210,8 +1210,7 @@ impl<'de> Deserialize<'de> for OptionSpec {
             /// Files first, in order, then the inline body; an
             /// object with neither is an empty body.
             fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-                let raw =
-                    RawOption::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                let raw = RawOption::deserialize(de::value::MapAccessDeserializer::new(map))?;
                 let files = match raw.fragments {
                     Some(files) if files.is_empty() => {
                         return Err(de::Error::custom(

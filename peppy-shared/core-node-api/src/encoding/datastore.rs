@@ -499,43 +499,43 @@ impl DatastoreStoreExclusiveResponse {
 }
 
 impl crate::encoding::Wire for DatastoreStoreRequest {
-    type Root = crate::datastore_capnp::datastore_store_request::Owned;
+    type Root = datastore_capnp::datastore_store_request::Owned;
 }
 
 impl crate::encoding::Wire for DatastoreStoreResponse {
-    type Root = crate::datastore_capnp::datastore_store_response::Owned;
+    type Root = datastore_capnp::datastore_store_response::Owned;
 }
 
 impl crate::encoding::Wire for DatastoreGetRequest {
-    type Root = crate::datastore_capnp::datastore_get_request::Owned;
+    type Root = datastore_capnp::datastore_get_request::Owned;
 }
 
 impl crate::encoding::Wire for DatastoreGetResponse {
-    type Root = crate::datastore_capnp::datastore_get_response::Owned;
+    type Root = datastore_capnp::datastore_get_response::Owned;
 }
 
 impl crate::encoding::Wire for DatastoreListRequest {
-    type Root = crate::datastore_capnp::datastore_list_request::Owned;
+    type Root = datastore_capnp::datastore_list_request::Owned;
 }
 
 impl crate::encoding::Wire for DatastoreListResponse {
-    type Root = crate::datastore_capnp::datastore_list_response::Owned;
+    type Root = datastore_capnp::datastore_list_response::Owned;
 }
 
 impl crate::encoding::Wire for DatastoreRemoveRequest {
-    type Root = crate::datastore_capnp::datastore_remove_request::Owned;
+    type Root = datastore_capnp::datastore_remove_request::Owned;
 }
 
 impl crate::encoding::Wire for DatastoreRemoveResponse {
-    type Root = crate::datastore_capnp::datastore_remove_response::Owned;
+    type Root = datastore_capnp::datastore_remove_response::Owned;
 }
 
 impl crate::encoding::Wire for DatastoreStoreExclusiveRequest {
-    type Root = crate::datastore_capnp::datastore_store_request::Owned;
+    type Root = datastore_capnp::datastore_store_request::Owned;
 }
 
 impl crate::encoding::Wire for DatastoreStoreExclusiveResponse {
-    type Root = crate::datastore_capnp::datastore_store_exclusive_response::Owned;
+    type Root = datastore_capnp::datastore_store_exclusive_response::Owned;
 }
 
 #[cfg(test)]
@@ -703,7 +703,7 @@ mod tests {
 
     /// Asserts that building or decoding the `request` failed on its
     /// datastore key.
-    fn assert_invalid_datastore_key<T: std::fmt::Debug>(request: &str, result: crate::Result<T>) {
+    fn assert_invalid_datastore_key<T: fmt::Debug>(request: &str, result: Result<T>) {
         let err = result.expect_err(&format!("the {request} request should refuse an empty key"));
         assert_matches!(
             err,

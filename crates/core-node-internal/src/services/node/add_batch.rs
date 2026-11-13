@@ -660,7 +660,7 @@ mod tests {
                         .expect("valid path"),
                 },
             },
-            root_dir: std::path::PathBuf::from("/unused"),
+            root_dir: PathBuf::from("/unused"),
             config,
             is_root,
         }

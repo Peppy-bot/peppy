@@ -1242,11 +1242,8 @@ mod tests {
     #[test]
     fn a_claimed_start_ends_by_its_slot() {
         let slot = |state: InstanceState, claimed: bool| {
-            let slot = TrackedNodeInstance::new(
-                Name::new("arm_inst").unwrap(),
-                state,
-                std::collections::BTreeMap::new(),
-            );
+            let slot =
+                TrackedNodeInstance::new(Name::new("arm_inst").unwrap(), state, BTreeMap::new());
             if claimed {
                 slot.mark_stopping();
             }

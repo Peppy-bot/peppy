@@ -315,19 +315,19 @@ impl NodeBuildResult {
 }
 
 impl crate::encoding::Wire for NodeBuildGoal {
-    type Root = crate::node_capnp::node_build_goal::Owned;
+    type Root = node_capnp::node_build_goal::Owned;
 }
 
 impl crate::encoding::Wire for NodeBuildGoalResponse {
-    type Root = crate::node_capnp::node_build_goal_response::Owned;
+    type Root = node_capnp::node_build_goal_response::Owned;
 }
 
 impl crate::encoding::Wire for NodeBuildFeedback {
-    type Root = crate::node_capnp::node_build_feedback::Owned;
+    type Root = node_capnp::node_build_feedback::Owned;
 }
 
 impl crate::encoding::Wire for NodeBuildResult {
-    type Root = crate::node_capnp::node_build_result::Owned;
+    type Root = node_capnp::node_build_result::Owned;
 }
 
 #[cfg(test)]

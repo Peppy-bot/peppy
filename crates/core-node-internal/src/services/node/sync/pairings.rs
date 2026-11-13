@@ -22,7 +22,7 @@ fn resolve_pairing_doc(
     tag: &str,
     sha256_pin: Option<&str>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<PeppyPairing, String> {
+) -> Result<PeppyPairing, String> {
     let cache = repo_cache::load_pairing_cache(peppy_dirs)
         .map_err(|e| format!("failed to load pairing cache: {e}"))?;
     resolve_pairing_doc_cached(&cache, peppy_dirs, name, tag, sha256_pin, None, on_feedback)
@@ -43,7 +43,7 @@ fn resolve_pairing_doc_cached(
     sha256_pin: Option<&str>,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<PeppyPairing, String> {
+) -> Result<PeppyPairing, String> {
     let parse = |content: &str| {
         daemon_config::pairing::PeppyPairingParser::from_content(content).map_err(|e| e.to_string())
     };
@@ -77,7 +77,7 @@ fn validate_pairing_specs(
     peppy_dirs: &PeppyDirs,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<HashMap<String, PeppyPairing>, String> {
+) -> Result<HashMap<String, PeppyPairing>, String> {
     let slots = pairing_slots(manifest);
     if slots.is_empty() {
         return Ok(HashMap::new());
@@ -223,7 +223,7 @@ pub(super) fn collect_pairing_interfaces(
     peppy_dirs: &PeppyDirs,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<Vec<generator::DeploymentInterface>, PairingError> {
+) -> Result<Vec<generator::DeploymentInterface>, PairingError> {
     let Some(depends_on) = manifest.depends_on.as_ref() else {
         return Ok(Vec::new());
     };
@@ -624,7 +624,7 @@ mod tests {
         manifest: &config::node::Manifest,
         interfaces_cfg: &config::node::Interfaces,
         dirs: &PeppyDirs,
-    ) -> std::result::Result<Vec<generator::DeploymentInterface>, PairingError> {
+    ) -> Result<Vec<generator::DeploymentInterface>, PairingError> {
         collect_pairing_interfaces(manifest, interfaces_cfg, dirs, None, &|_| {})
     }
 

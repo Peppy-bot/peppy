@@ -45,7 +45,7 @@ fn arm_peer_context() -> PeerContext {
         link_id: "controller".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        cardinality: config::node::Cardinality::One,
+        cardinality: Cardinality::One,
     }
 }
 
@@ -140,12 +140,12 @@ fn generated_multi_peer_modules_are_cardinality_typed() {
 
     let limbs = PeerContext {
         link_id: "limbs".to_string(),
-        cardinality: config::node::Cardinality::ZeroOrMore,
+        cardinality: Cardinality::ZeroOrMore,
         ..arm_peer_context()
     };
     let crew = PeerContext {
         link_id: "crew".to_string(),
-        cardinality: config::node::Cardinality::OneOrMore,
+        cardinality: Cardinality::OneOrMore,
         ..arm_peer_context()
     };
     let user_node = generate_node_project::<generator::PythonGenerator>(

@@ -801,8 +801,8 @@ async fn node_ready_but_not_healthy() {
     .expect_err("health service should not respond while setup is blocked");
 
     match health_err {
-        peppylib::PeppyError::ServiceUnreachable { service_name, .. }
-        | peppylib::PeppyError::ServiceTimeout { service_name, .. } => {
+        PeppyError::ServiceUnreachable { service_name, .. }
+        | PeppyError::ServiceTimeout { service_name, .. } => {
             assert_eq!(service_name, NODE_HEALTH_SERVICE);
         }
         other => panic!("unexpected health error: {other:?}"),

@@ -1181,14 +1181,8 @@ mod tests {
             DeploymentTargets {
                 linked: BTreeSet::new(),
                 daemon: [
-                    (
-                        "stack".to_owned(),
-                        crate::internal::daemon_interface::DaemonInterface::RobotMembership
-                    ),
-                    (
-                        "fleet".to_owned(),
-                        crate::internal::daemon_interface::DaemonInterface::RobotLeases
-                    ),
+                    ("stack".to_owned(), DaemonInterface::RobotMembership),
+                    ("fleet".to_owned(), DaemonInterface::RobotLeases),
                 ]
                 .into_iter()
                 .collect(),

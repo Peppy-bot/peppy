@@ -451,7 +451,7 @@ fn consumed_service() {
             ") -> Response:",
         ],
     );
-    super::topics::assert_no_producer_identity_params(&rendered);
+    topics::assert_no_producer_identity_params(&rendered);
 
     // The cardinality-typed module surface plus the per-call membership
     // check: this `one` slot exposes the singular, infallible

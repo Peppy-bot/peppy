@@ -807,7 +807,7 @@ impl Apptainer {
     /// [`kill_guest_process_group`](Self::kill_guest_process_group) for diagnostics
     /// and lifecycle checks that need to observe runtime-side processes (the same
     /// kernel the build/run executes in).
-    pub fn guest_command(&self, args: &[&str]) -> Result<std::process::Output> {
+    pub fn guest_command(&self, args: &[&str]) -> Result<Output> {
         let (program, rest) = args.split_first().ok_or_else(|| {
             Error::ConfigurationError("guest_command requires at least one argument".into())
         })?;

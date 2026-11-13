@@ -1539,7 +1539,7 @@ mod tests {
 
         assert_eq!(reindex_after_change(&peppy_dirs).await, None);
 
-        let cached = crate::services::repo::cache::load_repo_cache::<NodeCacheEntry>(&peppy_dirs)
+        let cached = load_repo_cache::<NodeCacheEntry>(&peppy_dirs)
             .expect("the re-index published the node cache");
         assert_eq!(cached.len(), 1);
         assert_eq!(cached[0].node_name, "first");
@@ -1646,7 +1646,7 @@ mod tests {
             "the cancel stops the refresh"
         );
         assert!(
-            crate::services::repo::cache::load_repo_cache::<NodeCacheEntry>(&peppy_dirs)
+            load_repo_cache::<NodeCacheEntry>(&peppy_dirs)
                 .unwrap_or_default()
                 .is_empty(),
             "a cancelled refresh publishes no cache"
@@ -2443,7 +2443,7 @@ mod tests {
         assert!(cache_path.exists(), "launcher cache should be written");
 
         let raw = std::fs::read_to_string(&cache_path).expect("read launcher cache");
-        let parsed: serde_json::Value =
+        let parsed: Value =
             serde_json5::from_str(&raw).expect("launcher cache should be valid JSON5");
         let arr = parsed.as_array().expect("expected JSON array");
         assert_eq!(arr.len(), 1);
@@ -2524,7 +2524,7 @@ mod tests {
         write_repo_cache(&peppy_dirs, &launchers).unwrap();
         let raw = std::fs::read_to_string(launchers_repo_cache_path(&peppy_dirs))
             .expect("read launcher cache");
-        let parsed: serde_json::Value =
+        let parsed: Value =
             serde_json5::from_str(&raw).expect("launcher cache should be valid JSON5");
         let entry = &parsed.as_array().expect("array")[0];
         assert_eq!(entry["launcher_name"], "openarm01_teleop");
@@ -3119,8 +3119,7 @@ mod tests {
     }
 
     fn cached_node_commit(peppy_dirs: &PeppyDirs) -> String {
-        let nodes: Vec<NodeCacheEntry> =
-            crate::services::repo::cache::load_repo_cache(peppy_dirs).unwrap();
+        let nodes: Vec<NodeCacheEntry> = load_repo_cache(peppy_dirs).unwrap();
         nodes[0].origin.commit().unwrap().as_str().to_owned()
     }
 

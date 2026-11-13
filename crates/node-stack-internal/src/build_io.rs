@@ -229,7 +229,7 @@ pub(crate) async fn stream_child_output(
     log: ActionLog,
     collect_stderr_tail: bool,
     cancel_token: &CancellationToken,
-) -> std::result::Result<(std::process::ExitStatus, Vec<String>), String> {
+) -> Result<(std::process::ExitStatus, Vec<String>), String> {
     let stderr_tail = collect_stderr_tail.then(StderrTail::new);
 
     let mut reader_handles = Vec::new();
@@ -652,7 +652,7 @@ mod tests {
 
     #[test]
     fn coalescer_throttles_repaints_but_never_newlines() {
-        let t0 = std::time::Instant::now();
+        let t0 = Instant::now();
         let mut coalescer = RepaintCoalescer::default();
 
         // First repaint forwards; a rapid follow-up is suppressed.
@@ -710,7 +710,7 @@ mod tests {
         let hooks = Arc::new(LineRecordingHooks::default());
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn_output_reader_async(
-            std::io::Cursor::new(input),
+            io::Cursor::new(input),
             tx,
             Arc::new(AtomicBool::new(publish)),
             Arc::clone(&hooks) as Arc<dyn OutputReaderHooks>,
@@ -779,7 +779,7 @@ mod tests {
         let tail = StderrTail::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn_output_reader_async(
-            std::io::Cursor::new(input.to_vec()),
+            io::Cursor::new(input.to_vec()),
             tx,
             Arc::new(AtomicBool::new(true)),
             Arc::new(LineRecordingHooks::default()) as Arc<dyn OutputReaderHooks>,
@@ -857,7 +857,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn_output_reader_async(
-            std::io::Cursor::new(b"first line\npartial".to_vec()).chain(FailingReader),
+            io::Cursor::new(b"first line\npartial".to_vec()).chain(FailingReader),
             tx,
             Arc::new(AtomicBool::new(true)),
             Arc::new(LineRecordingHooks::default()) as Arc<dyn OutputReaderHooks>,

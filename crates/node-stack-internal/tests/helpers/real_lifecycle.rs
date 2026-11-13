@@ -60,7 +60,7 @@ pub struct LifecycleHarness {
     pub hooks: Arc<dyn OutputReaderHooks>,
     /// The key file each fixture start names, which the start owns once it
     /// gets it.
-    pub credential: std::path::PathBuf,
+    pub credential: PathBuf,
     feedback_drain: Option<tokio::task::JoinHandle<()>>,
 }
 

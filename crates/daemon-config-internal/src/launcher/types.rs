@@ -911,7 +911,7 @@ impl<'de> Deserialize<'de> for LinkValue {
     {
         struct LinkValueVisitor;
 
-        impl<'de> de::Visitor<'de> for LinkValueVisitor {
+        impl<'de> Visitor<'de> for LinkValueVisitor {
             type Value = LinkValue;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -941,7 +941,7 @@ impl<'de> Deserialize<'de> for LinkValue {
             /// `vacant`, holding a reason that says something.
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
             where
-                A: de::MapAccess<'de>,
+                A: MapAccess<'de>,
             {
                 let mut reason: Option<VacantReason> = None;
                 while let Some(key) = map.next_key::<String>()? {
@@ -1233,8 +1233,7 @@ where
     let mut seen = HashSet::with_capacity(instances.len());
     for instance in &instances {
         if !seen.insert(instance.instance_id.as_str()) {
-            let err =
-                crate::error::StructuredError::DuplicateName(instance.instance_id.to_string());
+            let err = StructuredError::DuplicateName(instance.instance_id.to_string());
             return Err(de::Error::custom(err.json5_message()));
         }
     }
@@ -2023,8 +2022,8 @@ mod tests {
         }
     }
 
-    fn core_node(name: &str) -> config::runtime::CoreNodeName {
-        config::runtime::CoreNodeName::new(name).expect("valid test core node name")
+    fn core_node(name: &str) -> CoreNodeName {
+        CoreNodeName::new(name).expect("valid test core node name")
     }
 
     /// A placed instance resolves to the machine it was placed on, every

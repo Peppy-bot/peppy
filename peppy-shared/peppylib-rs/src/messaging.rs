@@ -322,7 +322,7 @@ impl MessengerConnect {
     }
 }
 
-impl std::future::IntoFuture for MessengerConnect {
+impl IntoFuture for MessengerConnect {
     type Output = Result<MessengerHandle>;
     type IntoFuture = std::pin::Pin<Box<dyn Future<Output = Result<MessengerHandle>> + Send>>;
 
@@ -532,8 +532,8 @@ impl MessengerHandle {
         instance_id: &str,
     ) -> Result<ClientPresence> {
         let client = ClientPresence {
-            core_node: Segment::try_from(core_node).map_err(pmi::SenderTargetError::from)?,
-            instance_id: Segment::try_from(instance_id).map_err(pmi::SenderTargetError::from)?,
+            core_node: Segment::try_from(core_node).map_err(SenderTargetError::from)?,
+            instance_id: Segment::try_from(instance_id).map_err(SenderTargetError::from)?,
             generation: self.client_presence.generation.clone(),
         };
         let identity = (client.core_node.clone(), client.instance_id.clone());
@@ -808,13 +808,12 @@ impl MessengerHandle {
         let message = Message::from(reply.into_message());
         match kind {
             ServiceReplyKind::Failure => {
-                let failure =
-                    pmi::Failure::decode(message.payload_bytes().as_ref()).map_err(|err| {
-                        Error::InternalEncodingError {
-                            identifier: sender.to_service_name().to_string(),
-                            reason: format!("the error reply is not a failure: {err}"),
-                        }
-                    })?;
+                let failure = Failure::decode(message.payload_bytes().as_ref()).map_err(|err| {
+                    Error::InternalEncodingError {
+                        identifier: sender.to_service_name().to_string(),
+                        reason: format!("the error reply is not a failure: {err}"),
+                    }
+                })?;
                 Err(Error::ServiceFailed {
                     instance_id: sender.target_instance_id().map(str::to_string),
                     service_name: sender.to_service_name().to_string(),
@@ -848,7 +847,7 @@ impl MessengerHandle {
         // from dropping feedback or the end of the stream on the way. A
         // caller that reads slowly does not slow the publisher: its feedback
         // buffer never waits (see `pmi::FeedbackBuffer`).
-        let feedback_publisher_factory = actions::ActionFeedbackPublisherFactory::new(
+        let feedback_publisher_factory = ActionFeedbackPublisherFactory::new(
             self.clone(),
             recv.clone(),
             PublisherQoS::Important,

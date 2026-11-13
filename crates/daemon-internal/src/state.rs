@@ -190,7 +190,7 @@ mod tests {
         );
         assert_eq!(
             read.command_line_key,
-            std::path::Path::new("/peppy/credentials/command_line.key")
+            Path::new("/peppy/credentials/command_line.key")
         );
         assert!(read.has_federation_control());
     }
@@ -243,7 +243,7 @@ mod tests {
     fn state_file_with_unknown_fields_still_parses() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("daemon_state.json5");
-        std::fs::write(
+        fs::write(
             &path,
             r#"{
                 "core_node_name": "old",
@@ -271,7 +271,7 @@ mod tests {
     fn an_invalid_namespace_fails_the_read() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("daemon_state.json5");
-        std::fs::write(
+        fs::write(
             &path,
             r#"{
                 "core_node_name": "bad",
@@ -295,7 +295,7 @@ mod tests {
     fn an_invalid_router_id_fails_the_read() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("daemon_state.json5");
-        std::fs::write(
+        fs::write(
             &path,
             r#"{
                 "core_node_name": "bad",

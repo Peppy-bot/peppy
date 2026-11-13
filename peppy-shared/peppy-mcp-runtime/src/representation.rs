@@ -788,7 +788,7 @@ mod tests {
 
         let mut eight = Vec::new();
         RgbImage::from_pixel(1, 1, image::Rgb([1, 2, 3]))
-            .write_to(&mut std::io::Cursor::new(&mut eight), ImageFormat::Png)
+            .write_to(&mut Cursor::new(&mut eight), ImageFormat::Png)
             .expect("encodes");
         let png = json!({
             "frame": BASE64.encode(&eight), "encoding": "png", "width": 1, "height": 1,

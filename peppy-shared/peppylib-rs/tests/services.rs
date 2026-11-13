@@ -439,7 +439,7 @@ async fn service_wildcard_poll_runs_handler_on_winner_only() {
         handler_count: Arc<AtomicUsize>,
         ready: oneshot::Sender<()>,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
-    ) -> tokio::task::JoinHandle<()> {
+    ) -> JoinHandle<()> {
         let handle = MessengerHandle::connect(&host, port)
             .await
             .expect("connect");

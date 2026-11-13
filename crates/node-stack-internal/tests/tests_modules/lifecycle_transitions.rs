@@ -450,11 +450,7 @@ async fn push_config_rejects_replacement_with_live_instances() {
 async fn concurrent_builds_are_rejected_immediately() {
     // Process node (no container): `NodeEntity::build` runs the pure-Rust
     // archive path, no apptainer required.
-    let stack = NodeStack::new(
-        crate::helpers::config_common::core_node_config(),
-        None,
-        PathBuf::from("/tmp"),
-    );
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
 
     // Isolated peppy_dirs root for this test.

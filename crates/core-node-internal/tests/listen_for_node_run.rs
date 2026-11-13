@@ -1620,7 +1620,7 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
     );
     assert_eq!(
         started.node_stack.instance_state(instance_id.as_str()),
-        Some(core_node_api::InstanceState::Failed),
+        Some(InstanceState::Failed),
         "the crashed instance stays tracked so it remains visible in the stack"
     );
 
@@ -1961,7 +1961,7 @@ async fn run_panel_node(
     started: &common::StartedCoreNode,
     node_name: &str,
     instance_id: &str,
-) -> common::NodeRunTestResponse {
+) -> NodeRunTestResponse {
     send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,

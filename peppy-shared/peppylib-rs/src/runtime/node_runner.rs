@@ -150,7 +150,7 @@ impl NodeRunner {
     /// (if any) and `wait_paired()` awaits one. Errors if the manifest
     /// declares no such slot, and panics if it declares one with a
     /// multi-peer cardinality, which is read through [`Self::peer_set`].
-    pub fn peer(&self, link_id: &str) -> crate::error::Result<super::PeerSlot> {
+    pub fn peer(&self, link_id: &str) -> Result<super::PeerSlot> {
         let cardinality = self.pairing_slot_cardinality(link_id)?;
         if !cardinality.is_scalar() {
             super::pairing::pairing_shape_panic(link_id, "peer()", cardinality.as_str());
@@ -168,7 +168,7 @@ impl NodeRunner {
     /// `members()` or `peers()`. Errors if the manifest declares no such
     /// slot, and panics if it declares one with a scalar cardinality, which
     /// is read through [`Self::peer`].
-    pub fn peer_set(&self, link_id: &str) -> crate::error::Result<super::PeerSlotSet> {
+    pub fn peer_set(&self, link_id: &str) -> Result<super::PeerSlotSet> {
         let cardinality = self.pairing_slot_cardinality(link_id)?;
         if cardinality.is_scalar() {
             super::pairing::pairing_shape_panic(link_id, "peer_set()", cardinality.as_str());
@@ -191,10 +191,7 @@ impl NodeRunner {
         self.processor.daemon_scopes()
     }
 
-    fn pairing_slot_cardinality(
-        &self,
-        link_id: &str,
-    ) -> crate::error::Result<config::node::Cardinality> {
+    fn pairing_slot_cardinality(&self, link_id: &str) -> Result<config::node::Cardinality> {
         self.processor
             .pairing_slot_cardinality(link_id)
             .ok_or_else(|| crate::error::Error::UnknownPairingSlot {
@@ -205,7 +202,7 @@ impl NodeRunner {
     pub(crate) fn peer_set_watch(
         &self,
         link_id: &str,
-    ) -> crate::error::Result<tokio::sync::watch::Receiver<crate::messaging::PeerSetState>> {
+    ) -> Result<tokio::sync::watch::Receiver<crate::messaging::PeerSetState>> {
         self.processor.peer_set_watch(link_id).ok_or_else(|| {
             crate::error::Error::UnknownPairingSlot {
                 link_id: link_id.to_string(),
@@ -222,7 +219,7 @@ impl NodeRunner {
     /// vacant. Errors if the manifest declares no such observer slot, and panics
     /// if it declares one with a multi-member cardinality, which is read through
     /// [`Self::observation_slot_set`] instead.
-    pub fn observation_slot(&self, link_id: &str) -> crate::error::Result<super::ObservationSlot> {
+    pub fn observation_slot(&self, link_id: &str) -> Result<super::ObservationSlot> {
         let cardinality = self.observation_slot_cardinality(link_id)?;
         if !cardinality.is_scalar() {
             super::observation::observer_shape_panic(
@@ -249,10 +246,7 @@ impl NodeRunner {
     /// manifest declares no such observer slot, and panics if it declares one
     /// with a scalar cardinality, which is read through
     /// [`Self::observation_slot`] instead.
-    pub fn observation_slot_set(
-        &self,
-        link_id: &str,
-    ) -> crate::error::Result<super::ObservationSlotSet> {
+    pub fn observation_slot_set(&self, link_id: &str) -> Result<super::ObservationSlotSet> {
         let cardinality = self.observation_slot_cardinality(link_id)?;
         if cardinality.is_scalar() {
             super::observation::observer_shape_panic(
@@ -268,10 +262,7 @@ impl NodeRunner {
         ))
     }
 
-    fn observation_slot_cardinality(
-        &self,
-        link_id: &str,
-    ) -> crate::error::Result<config::node::Cardinality> {
+    fn observation_slot_cardinality(&self, link_id: &str) -> Result<config::node::Cardinality> {
         self.processor
             .observation_slot_cardinality(link_id)
             .ok_or_else(|| crate::error::Error::UnknownObservationSlot {
@@ -282,8 +273,7 @@ impl NodeRunner {
     pub(crate) fn observation_slot_watch(
         &self,
         link_id: &str,
-    ) -> crate::error::Result<tokio::sync::watch::Receiver<crate::messaging::ObservationState>>
-    {
+    ) -> Result<tokio::sync::watch::Receiver<crate::messaging::ObservationState>> {
         self.processor
             .observation_slot_watch(link_id)
             .ok_or_else(|| crate::error::Error::UnknownObservationSlot {

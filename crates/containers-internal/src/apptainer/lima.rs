@@ -1489,13 +1489,9 @@ mod tests {
         use std::os::unix::process::ExitStatusExt;
 
         let status = std::process::ExitStatus::from_raw(42 << 8);
-        let err = validate_lima_version_output(
-            std::path::Path::new("/fake/limactl"),
-            status,
-            b"",
-            b"bad lima",
-        )
-        .expect_err("expected version check failure");
+        let err =
+            validate_lima_version_output(Path::new("/fake/limactl"), status, b"", b"bad lima")
+                .expect_err("expected version check failure");
         match err {
             Error::LimaVersionCheckFailed(msg) => {
                 assert!(msg.contains("--version"), "unexpected message: {msg}");
@@ -1512,13 +1508,9 @@ mod tests {
         // `parse_lima_version` returns `None` for garbage, which `unwrap_or_default()`
         // turns into (0, 0, 0); that should fail the MIN_LIMA_VERSION check.
         let status = std::process::ExitStatus::default();
-        let err = validate_lima_version_output(
-            std::path::Path::new("/fake/limactl"),
-            status,
-            b"not a version",
-            b"",
-        )
-        .expect_err("expected version-too-old failure");
+        let err =
+            validate_lima_version_output(Path::new("/fake/limactl"), status, b"not a version", b"")
+                .expect_err("expected version-too-old failure");
         match err {
             Error::LimaVersionTooOld { found, minimum } => {
                 assert_eq!(found, "0.0.0");

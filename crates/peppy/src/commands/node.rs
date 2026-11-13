@@ -639,7 +639,7 @@ pub enum NodeCommands {
         member: String,
         /// The kind of the member, for a service and an action of one name
         #[arg(long, value_enum)]
-        kind: Option<call::CallKind>,
+        kind: Option<CallKind>,
         /// A JSON5 file that holds the whole request or goal
         #[arg(long, value_name = "FILE")]
         args: Option<PathBuf>,
@@ -761,9 +761,9 @@ impl Command for NodeCommand {
                 // an unbuilt node. `--sync` is independent (prerequisite, not
                 // a post-step) and is not implied by either.
                 let chain_build = build || run;
-                add::add_node(
+                add_node(
                     ctx,
-                    add::AddNodeParams {
+                    AddNodeParams {
                         source,
                         git_ref,
                         run_options,
@@ -895,7 +895,7 @@ impl Command for NodeCommand {
                 files,
             } => call::call(
                 ctx,
-                call::CallParams {
+                CallParams {
                     instance_id,
                     member,
                     kind,
@@ -907,10 +907,10 @@ impl Command for NodeCommand {
                 },
             ),
             NodeCommands::Echo { instance_id, topic } => {
-                echo::echo(ctx, echo::EchoParams { instance_id, topic })
+                echo::echo(ctx, EchoParams { instance_id, topic })
             }
             NodeCommands::Describe { instance_id, json } => {
-                describe::describe(ctx, describe::DescribeParams { instance_id, json })
+                describe::describe(ctx, DescribeParams { instance_id, json })
             }
         }
     }
@@ -934,8 +934,8 @@ mod tests {
             instance_id: instance_id.to_owned(),
             state,
             healthy: true,
-            slot_bindings: std::collections::BTreeMap::new(),
-            pairing_slots: std::collections::BTreeMap::new(),
+            slot_bindings: BTreeMap::new(),
+            pairing_slots: BTreeMap::new(),
             endpoints: Vec::new(),
             restart_status: core_node_api::RestartStatus::default(),
         };

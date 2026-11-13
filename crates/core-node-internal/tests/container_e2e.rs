@@ -190,7 +190,7 @@ mod container_e2e_tests {
         )
         .await;
 
-        let source_dir = tempfile::tempdir().expect("source dir");
+        let source_dir = tempdir().expect("source dir");
         write_peppy_json5(
             source_dir.path(),
             r#"{
@@ -267,7 +267,7 @@ mod container_e2e_tests {
             "the daemon wrote the key of the command line"
         );
 
-        let source_dir = tempfile::tempdir().expect("source dir");
+        let source_dir = tempdir().expect("source dir");
         write_peppy_json5(
             source_dir.path(),
             r#"{
@@ -397,7 +397,7 @@ mod container_e2e_tests {
         std::fs::create_dir_all(&orphan_archive).expect("create the orphan archive");
         std::fs::write(orphan_archive.join("marker"), b"").expect("write into the orphan archive");
 
-        let source_dir = tempfile::tempdir().expect("source dir");
+        let source_dir = tempdir().expect("source dir");
         write_peppy_json5(
             source_dir.path(),
             r#"{
@@ -621,7 +621,7 @@ mod container_e2e_tests {
         // fails takes its build's entity out of the stack with it, and every
         // later `--force` goal is then rejected. Doing it once, up front, in a
         // build whose only job is the fetch, keeps that failure legible.
-        let base_dir = tempfile::tempdir().expect("base source dir");
+        let base_dir = tempdir().expect("base source dir");
         write_peppy_json5(
             base_dir.path(),
             r#"{
@@ -665,7 +665,7 @@ mod container_e2e_tests {
         // A container node whose apptainer build blocks forever in `%post`,
         // leaving a uniquely-named process (`sh /PEPPY_ZOMBIE_E2E_MARKER`, so the
         // marker shows up in `ps args`) for each in-flight build.
-        let source_dir = tempfile::tempdir().expect("source dir");
+        let source_dir = tempdir().expect("source dir");
         write_peppy_json5(
             source_dir.path(),
             r#"{

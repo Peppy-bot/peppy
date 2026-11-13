@@ -308,7 +308,7 @@ pub(crate) struct StackChangeDefaults {
     pub shutdown_token: CancellationToken,
     /// Which launch this daemon's slice belongs to. Shared with the federation
     /// endpoints so a reservation and the slice it produces are one authority.
-    pub slice_ownership: Arc<crate::services::federation::SliceOwnership>,
+    pub slice_ownership: Arc<SliceOwnership>,
     /// This daemon's peppy version, compared against each participant's during
     /// a federated preflight.
     pub peppy_version: String,
@@ -379,7 +379,7 @@ struct StackActionContext {
     daemon_defaults: DaemonDefaults,
     shutdown_token: CancellationToken,
     relationships: RelationshipCoordinators,
-    slice_ownership: Arc<crate::services::federation::SliceOwnership>,
+    slice_ownership: Arc<SliceOwnership>,
     peppy_version: String,
 }
 
@@ -451,7 +451,7 @@ pub(super) struct StackChangeContext {
     /// Which launch this daemon's slice belongs to. Recorded once the launch
     /// commits, so `stack list` reports it and a coordinator can rediscover
     /// every participant by query.
-    pub(super) slice_ownership: Arc<crate::services::federation::SliceOwnership>,
+    pub(super) slice_ownership: Arc<SliceOwnership>,
     /// This daemon's peppy version, compared against each participant's during
     /// preflight so a mixed-version federation is refused before any stack is
     /// touched.

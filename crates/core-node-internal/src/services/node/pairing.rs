@@ -76,7 +76,7 @@ impl PairingCoordinator {
     /// `Starting`, and pins are only delivered once it commits to Running).
     /// All of `pair_slots`' validation applies: existence, liveness,
     /// same-pairing, complementary roles, sha pins, exclusivity.
-    pub async fn reserve(&self, pair: &PlannedPair) -> std::result::Result<(), String> {
+    pub async fn reserve(&self, pair: &PlannedPair) -> Result<(), String> {
         let _guard = self.op_lock.lock().await;
         // A same-daemon pair validates both halves against local manifests. A
         // cross-daemon one validates the half this daemon owns and takes the
@@ -110,7 +110,7 @@ impl PairingCoordinator {
         &self,
         instance_id: &str,
         planned: &[PlannedPair],
-    ) -> std::result::Result<(), String> {
+    ) -> Result<(), String> {
         let _guard = self.op_lock.lock().await;
         let pairs: Vec<Pairing> = self
             .updates
@@ -182,7 +182,7 @@ impl PairingCoordinator {
         held: &[PlannedPair],
         pid: u32,
         cancel: &CancellationToken,
-        mut on_outcome: impl FnMut(&PlannedPair, std::result::Result<(), PairFailure>),
+        mut on_outcome: impl FnMut(&PlannedPair, Result<(), PairFailure>),
     ) {
         let stack = self.updates.node_stack();
         let runs_pid = |pair: &PlannedPair| stack.runs_process(&pair.own.instance_id, pid);
@@ -225,7 +225,7 @@ impl PairingCoordinator {
         pair: &PlannedPair,
         pid: u32,
         cancel: &CancellationToken,
-    ) -> std::result::Result<(), PairFailure> {
+    ) -> Result<(), PairFailure> {
         let stack = self.updates.node_stack();
         let local = self.updates.core_node_name();
         let pairing = {
@@ -291,8 +291,8 @@ impl PairingCoordinator {
     async fn revert_delivery(
         &self,
         pairing: &Pairing,
-        endpoint: &node_stack::PairEndpoint,
-        peer: &node_stack::PairEndpoint,
+        endpoint: &PairEndpoint,
+        peer: &PairEndpoint,
         other_side: OtherSide,
         reason: &str,
     ) -> String {
@@ -364,7 +364,7 @@ impl PairingCoordinator {
     /// rather than one compensated for by a rollback request that can itself
     /// fail. At least one endpoint of a pair in this registry is local, so this
     /// only ever reorders the two sides; it never leaves the remote one out.
-    async fn deliver_pair(&self, pairing: &Pairing) -> std::result::Result<(), String> {
+    async fn deliver_pair(&self, pairing: &Pairing) -> Result<(), String> {
         let sides = local_first_delivery_order(pairing, self.updates.core_node_name());
         for (idx, (endpoint, peer)) in sides.into_iter().enumerate() {
             let outcome = if endpoint.slot.is_on(self.updates.core_node_name()) {
@@ -411,7 +411,7 @@ impl PairingCoordinator {
     fn slots_from_commit_request(
         request: &PairCommitRequest,
         local_core_node: &str,
-    ) -> std::result::Result<(SlotAddr, SlotAddr, RemoteSlotMeta), String> {
+    ) -> Result<(SlotAddr, SlotAddr, RemoteSlotMeta), String> {
         if request.local.core_node != local_core_node {
             return Err(format!(
                 "this request names `{}` as the daemon hosting `{}`, but it was answered by \
@@ -452,10 +452,10 @@ impl PairingCoordinator {
     async fn commit_pair_remotely(
         &self,
         pairing: &Pairing,
-        endpoint: &node_stack::PairEndpoint,
-        peer: &node_stack::PairEndpoint,
+        endpoint: &PairEndpoint,
+        peer: &PairEndpoint,
         held: bool,
-    ) -> std::result::Result<(), PairFailure> {
+    ) -> Result<(), PairFailure> {
         // The peer is this daemon's own endpoint of the pair, so its slot's
         // cardinality is read from the manifest here and carried across: the
         // receiver holds the far half of every pair that slot takes part in.
@@ -538,10 +538,7 @@ impl PairingCoordinator {
     /// - `precondition_failed` otherwise: a restart's request for a pair the
     ///   local endpoint no longer keeps, whatever that endpoint's state, or
     ///   any other refusal of the stack.
-    pub async fn commit_pair_from_peer(
-        &self,
-        request: &PairCommitRequest,
-    ) -> std::result::Result<(), Failure> {
+    pub async fn commit_pair_from_peer(&self, request: &PairCommitRequest) -> Result<(), Failure> {
         let _guard = self.op_lock.lock().await;
         let (local, remote, remote_meta) =
             Self::slots_from_commit_request(request, self.updates.core_node_name())
@@ -702,7 +699,7 @@ impl PairingCoordinator {
     /// owning instance, as the registry records them right now. `Ok` on an
     /// accepted or stale reply (stale means a newer absolute state already
     /// landed, which is exactly the invariant we want).
-    async fn send_peer_update(&self, slot: &SlotAddr) -> std::result::Result<(), String> {
+    async fn send_peer_update(&self, slot: &SlotAddr) -> Result<(), String> {
         let members = self
             .updates
             .node_stack()
@@ -749,7 +746,7 @@ impl PairingCoordinator {
 fn local_first_delivery_order<'a>(
     pairing: &'a Pairing,
     local_core_node: &str,
-) -> [(&'a node_stack::PairEndpoint, &'a node_stack::PairEndpoint); 2] {
+) -> [(&'a PairEndpoint, &'a PairEndpoint); 2] {
     let mut sides = [(&pairing.a, &pairing.b), (&pairing.b, &pairing.a)];
     // `false` sorts first, and the sort is stable, so a pair with both
     // endpoints on this daemon keeps its declared order.
@@ -843,9 +840,7 @@ impl From<PairFailure> for Failure {
 /// What the stack's refusal to reserve a pair means, on either daemon: a pair
 /// the stack holds already is made, and any other refusal is
 /// [`pair_failure`]'s.
-fn reservation_outcome(
-    refusal: node_stack::NodeStackError,
-) -> std::result::Result<(), PairFailure> {
+fn reservation_outcome(refusal: node_stack::NodeStackError) -> Result<(), PairFailure> {
     match refusal {
         node_stack::NodeStackError::PairAlreadyHeld { .. } => Ok(()),
         other => Err(pair_failure(other)),
@@ -966,7 +961,7 @@ pub fn plan_requested_pairs(
     request: &PairingRequest<'_>,
     local_core_node: &str,
     clocks: &ResolvedClocks,
-) -> std::result::Result<Vec<PlannedPair>, String> {
+) -> Result<Vec<PlannedPair>, String> {
     let &PairingRequest {
         node_name,
         node_tag,
@@ -1124,7 +1119,7 @@ pub fn plan_requested_pairs(
                 })
                 .collect()
         })
-        .collect::<std::result::Result<_, String>>()?;
+        .collect::<Result<_, String>>()?;
 
     let mut items: Vec<PairingValidationItem<'_>> = snapshot
         .iter()
@@ -1215,7 +1210,7 @@ fn remote_planned_pair(
     instance_id: &str,
     link_id: &str,
     target: &PairTarget,
-) -> std::result::Result<PlannedPair, String> {
+) -> Result<PlannedPair, String> {
     let peer_core_node = target.peer.core_node.as_str();
     let peer_instance_id = target.peer.instance_id.as_str();
     let peer_link_id = target.peer_link_id.as_deref().ok_or_else(|| {
@@ -1592,7 +1587,7 @@ mod tests {
         deps: &[PairingParticipantDependency],
         req: &BTreeMap<String, Vec<PairTarget>>,
         vacant: &[&str],
-    ) -> std::result::Result<Vec<PlannedPair>, String> {
+    ) -> Result<Vec<PlannedPair>, String> {
         let vacant = vacant_slots(vacant);
         plan_requested_pairs(
             snapshot,
@@ -1858,7 +1853,7 @@ mod tests {
     fn plan_covered(
         deps: &[PairingParticipantDependency],
         covered: &BTreeMap<String, Vec<PairTarget>>,
-    ) -> std::result::Result<Vec<PlannedPair>, String> {
+    ) -> Result<Vec<PlannedPair>, String> {
         plan_requested_pairs(
             &arm_snapshot(),
             &[],

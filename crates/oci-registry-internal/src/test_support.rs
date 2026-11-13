@@ -150,7 +150,7 @@ impl LocalRegistry {
 
     /// The directory the registry stores its blobs and manifests in, with
     /// the layout of the filesystem driver of distribution.
-    pub fn storage_dir(&self) -> std::path::PathBuf {
+    pub fn storage_dir(&self) -> PathBuf {
         self.dir.path().join("storage")
     }
 

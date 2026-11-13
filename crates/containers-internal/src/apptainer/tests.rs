@@ -199,7 +199,7 @@ fn run_bundled_binary_or_skip(binary: &Path, args: &[&str]) -> Option<std::proce
 /// restricted-state tests gate on `SetupStatus::apparmor_restricted` instead.
 #[cfg(target_os = "linux")]
 fn apparmor_restricts_userns() -> bool {
-    std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+    fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
         .map(|v| v.trim() == "1")
         .unwrap_or(false)
 }
@@ -573,7 +573,7 @@ fn test_a_bind_path_holding_a_separator_is_refused() {
             .bind(src, dest, None)
             .build_args()
             .expect_err("a separator in a bind path is refused");
-        assert_matches!(&error, crate::Error::BindPathHoldsDelimiter { delimiter, .. }
+        assert_matches!(&error, Error::BindPathHoldsDelimiter { delimiter, .. }
                 if *delimiter == ':' || *delimiter == ',',
             "got: {error}"
         );
@@ -2441,10 +2441,7 @@ impl GuestKillChild for FakeKillChild {
 /// A clock that advances by `step` on each call, starting at `base`, so a test
 /// can drive `await_guest_kill` deterministically past its deadline.
 #[cfg(unix)]
-fn stepping_clock(
-    base: std::time::Instant,
-    step: std::time::Duration,
-) -> impl FnMut() -> std::time::Instant {
+fn stepping_clock(base: std::time::Instant, step: Duration) -> impl FnMut() -> std::time::Instant {
     let mut n: u32 = 0;
     move || {
         let now = base + step * n;

@@ -261,19 +261,19 @@ impl RepoRefreshResult {
 }
 
 impl crate::encoding::Wire for RepoRefreshGoal {
-    type Root = crate::repo_capnp::repo_refresh_goal::Owned;
+    type Root = repo_capnp::repo_refresh_goal::Owned;
 }
 
 impl crate::encoding::Wire for RepoRefreshGoalResponse {
-    type Root = crate::repo_capnp::repo_refresh_goal_response::Owned;
+    type Root = repo_capnp::repo_refresh_goal_response::Owned;
 }
 
 impl crate::encoding::Wire for RepoRefreshFeedback {
-    type Root = crate::repo_capnp::repo_refresh_feedback::Owned;
+    type Root = repo_capnp::repo_refresh_feedback::Owned;
 }
 
 impl crate::encoding::Wire for RepoRefreshResult {
-    type Root = crate::repo_capnp::repo_refresh_result::Owned;
+    type Root = repo_capnp::repo_refresh_result::Owned;
 }
 
 #[cfg(test)]

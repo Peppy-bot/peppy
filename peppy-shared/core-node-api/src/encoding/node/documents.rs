@@ -180,11 +180,11 @@ fn read_documents(
 }
 
 impl crate::encoding::Wire for InstanceDocumentsRequest {
-    type Root = crate::node_capnp::instance_documents_request::Owned;
+    type Root = node_capnp::instance_documents_request::Owned;
 }
 
 impl crate::encoding::Wire for InstanceDocuments {
-    type Root = crate::node_capnp::instance_documents_response::Owned;
+    type Root = node_capnp::instance_documents_response::Owned;
 }
 
 #[cfg(test)]

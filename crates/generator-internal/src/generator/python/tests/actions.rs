@@ -768,7 +768,7 @@ fn consumed_action() {
         !rendered.contains("def bound_producers("),
         "a `one` slot must expose only the singular accessor; got:\n{rendered}"
     );
-    super::topics::assert_no_producer_identity_params(&rendered);
+    topics::assert_no_producer_identity_params(&rendered);
 
     // cancel_goal as self method, mapping the typed cancel reply's state tag.
     assert_contains_all(

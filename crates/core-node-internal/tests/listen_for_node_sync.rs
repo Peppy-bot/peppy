@@ -1230,8 +1230,8 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
     let source_repo_dir = source_repo_parent.path().join("source-repo");
     git2::Repository::init(&source_repo_dir).expect("git init");
     // Commit two nodes.
-    std::fs::create_dir_all(source_repo_dir.join("nodes/dep_a")).expect("dep_a dir");
-    std::fs::write(
+    fs::create_dir_all(source_repo_dir.join("nodes/dep_a")).expect("dep_a dir");
+    fs::write(
         source_repo_dir.join("nodes/dep_a").join(NODE_CONFIG_FILE),
         r#"{
             peppy_schema: "node/v1",
@@ -1246,8 +1246,8 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
         }"#,
     )
     .expect("write dep_a config");
-    std::fs::create_dir_all(source_repo_dir.join("nodes/dep_b")).expect("dep_b dir");
-    std::fs::write(
+    fs::create_dir_all(source_repo_dir.join("nodes/dep_b")).expect("dep_b dir");
+    fs::write(
         source_repo_dir.join("nodes/dep_b").join(NODE_CONFIG_FILE),
         r#"{
             peppy_schema: "node/v1",
@@ -1316,7 +1316,7 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
 
     // Exactly one checkout directory: both deps share the same
     // (repo_url, ref) so `ensure_checkout` reuses the clone.
-    let checkout_count = std::fs::read_dir(started.peppy_dirs.git_checkouts_dir())
+    let checkout_count = fs::read_dir(started.peppy_dirs.git_checkouts_dir())
         .expect("git_checkouts_dir should exist")
         .count();
     assert_eq!(
@@ -1629,8 +1629,8 @@ async fn node_sync_resolves_git_sourced_implements_contract() {
         }
     }"#;
 
-    std::fs::create_dir_all(source_repo_dir.join("cameras")).expect("cameras dir");
-    std::fs::write(
+    fs::create_dir_all(source_repo_dir.join("cameras")).expect("cameras dir");
+    fs::write(
         source_repo_dir.join("cameras/depth_camera.json5"),
         CONTRACT_BODY,
     )
@@ -1678,7 +1678,7 @@ async fn node_sync_resolves_git_sourced_implements_contract() {
     // The contract's checkout should exist on disk now; this proves
     // `ensure_checkout` ran rather than `std::fs::read` silently relying
     // on a path that happened to exist in the daemon's CWD.
-    let checkout_count = std::fs::read_dir(started.peppy_dirs.git_checkouts_dir())
+    let checkout_count = fs::read_dir(started.peppy_dirs.git_checkouts_dir())
         .expect("git_checkouts_dir should exist")
         .count();
     assert_eq!(

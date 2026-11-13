@@ -48,7 +48,7 @@ struct BootedCoreNode {
     core_node: Arc<CoreNode>,
     /// Second handle on the boot messenger, for presence queries.
     presence_handle: MessengerHandle,
-    boot_task: tokio::task::JoinHandle<crate::Result<()>>,
+    boot_task: JoinHandle<Result<()>>,
 }
 
 impl BootedCoreNode {
@@ -63,7 +63,7 @@ impl BootedCoreNode {
         )));
 
         let boot = Arc::clone(&core_node);
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (ready_tx, ready_rx) = oneshot::channel();
         let boot_task = tokio::spawn(async move { boot.start_with_ready(Some(ready_tx)).await });
         tokio::time::timeout(Duration::from_secs(5), ready_rx)
             .await
@@ -113,8 +113,8 @@ fn test_node_arguments() -> CoreNodeArguments {
         // there is no propagation lag for a settle window to cover; the
         // settling behavior has its own dedicated presence tests.
         name_claim_settle: Duration::ZERO,
-        time_source: crate::TimeSource::System,
-        reply_bounds: crate::ReplyBounds::DEFAULT,
+        time_source: TimeSource::System,
+        reply_bounds: ReplyBounds::DEFAULT,
     }
 }
 
@@ -134,7 +134,7 @@ fn test_core_node_config(
         peppy_dirs,
         peppy_config: daemon_config::peppy_config::PeppyConfig::default(),
         namespace: config::namespace::Namespace::local(),
-        shutdown_token: tokio_util::sync::CancellationToken::new(),
+        shutdown_token: CancellationToken::new(),
         log_exporter: log_export::LogExporter::disabled(),
         machine_certificate: None,
     }
@@ -273,7 +273,7 @@ async fn start_with_ready_rejects_a_second_start() {
     // the session closes. The ready signal is a deterministic barrier: once it
     // fires, the `started` flag is set.
     let first = Arc::clone(&core_node);
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let (ready_tx, ready_rx) = oneshot::channel();
     let first_task = tokio::spawn(async move { first.start_with_ready(Some(ready_tx)).await });
     ready_rx
         .await
@@ -368,8 +368,8 @@ async fn simultaneous_daemons_with_same_derived_name_allow_exactly_one_claim() {
     assert_eq!(second.node_name(), core_node_name);
 
     let barrier = Arc::new(tokio::sync::Barrier::new(3));
-    let (first_ready_tx, first_ready_rx) = tokio::sync::oneshot::channel();
-    let (second_ready_tx, second_ready_rx) = tokio::sync::oneshot::channel();
+    let (first_ready_tx, first_ready_rx) = oneshot::channel();
+    let (second_ready_tx, second_ready_rx) = oneshot::channel();
     let first_task = {
         let core_node = Arc::clone(&first);
         let barrier = Arc::clone(&barrier);

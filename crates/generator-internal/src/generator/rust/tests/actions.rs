@@ -815,7 +815,7 @@ fn reach_failure_kinds() -> config::failure_kind::ContractKinds {
         )])
         .unwrap(),
         [(
-            config::failure_kind::MemberSection::Action,
+            MemberSection::Action,
             "move_arm".to_owned(),
             vec![unreachable],
         )],
@@ -833,11 +833,11 @@ fn a_consumed_contract_action_declares_the_kinds_of_its_contract() {
         .add_consumed_action(
             &action,
             &move_arm_action_messages(),
-            &crate::DependencyContext::contract(
+            &DependencyContext::contract(
                 "arm_contract",
                 "v2",
                 "brain",
-                config::node::Cardinality::One,
+                Cardinality::One,
                 reach_failure_kinds(),
             ),
         )
@@ -862,7 +862,7 @@ fn a_consumed_contract_action_declares_the_kinds_of_its_contract() {
 #[test]
 fn an_exposed_contract_action_declares_the_kinds_of_its_contract() {
     let action: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let origin = crate::ContractOrigin {
+    let origin = ContractOrigin {
         link_id: "arm".to_string(),
         contract_name: "arm_contract".to_string(),
         contract_tag: "v2".to_string(),

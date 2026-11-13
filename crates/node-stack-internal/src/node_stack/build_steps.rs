@@ -168,7 +168,7 @@ fn failed_fetching_base_image(stderr_tail: &[String]) -> bool {
 /// [`move_sif_to_storage`] to relocate.
 pub(super) async fn build_container_image(
     inputs: ContainerBuildInputs<'_>,
-) -> std::result::Result<PathBuf, String> {
+) -> Result<PathBuf, String> {
     // Validate the tag *before* it gets spliced into the SIF filename and
     // joined onto the working dir. Without this, a tag like `../evil` would
     // make `output_path` escape `working_dir` and apptainer would happily
@@ -442,7 +442,7 @@ fn spawn_piped(std_cmd: std::process::Command) -> std::io::Result<Box<dyn ChildW
 async fn begin_uv_cache_use(
     cache_root: &Path,
     inputs: &ContainerBuildInputs<'_>,
-) -> std::result::Result<UvCacheUse, String> {
+) -> Result<UvCacheUse, String> {
     if let Some(uv_cache_use) = UvCacheUse::try_begin(cache_root) {
         return Ok(uv_cache_use);
     }
@@ -484,7 +484,7 @@ async fn prune_uv_cache(
     image: &Path,
     inputs: &ContainerBuildInputs<'_>,
     build_key: Option<String>,
-) -> std::result::Result<(), String> {
+) -> Result<(), String> {
     let outcome = match uv_cache_use.end() {
         Some(sole_use) => {
             inputs
@@ -505,7 +505,7 @@ async fn run_uv_cache_prune(
     image: &Path,
     inputs: &ContainerBuildInputs<'_>,
     build_key: Option<String>,
-) -> std::result::Result<UvCachePruneOutcome, String> {
+) -> Result<UvCachePruneOutcome, String> {
     let command = container_build_cache::uv_cache_prune_command();
     let command: Vec<&str> = command.iter().map(String::as_str).collect();
     let mut cmd_builder = apptainer
@@ -560,7 +560,7 @@ async fn run_uv_cache_prune_child(
     stop_grace: Duration,
     log: ActionLog,
     cancel_token: &CancellationToken,
-) -> std::result::Result<UvCachePruneOutcome, String> {
+) -> Result<UvCachePruneOutcome, String> {
     let child = match spawn_piped(std_cmd) {
         Ok(child) => child,
         Err(e) => {
@@ -642,7 +642,7 @@ pub(super) async fn run_build_cmd(
     env_vars: &[(String, String)],
     announcer: &Announcer,
     cancel_token: &CancellationToken,
-) -> std::result::Result<(), String> {
+) -> Result<(), String> {
     let Some(cmd) = build_cmd else {
         return Ok(());
     };
@@ -791,7 +791,7 @@ mod tests {
         // exist on disk: spawning apptainer with a missing cwd would
         // surface a different error (a spawn IO error), whereas the
         // up-front validation rejects with the "invalid node tag" prefix.
-        let working_dir = std::path::Path::new("/nonexistent-peppy-test-dir");
+        let working_dir = Path::new("/nonexistent-peppy-test-dir");
         let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
         let cancel_token = CancellationToken::new();
         let peppy_dirs = PeppyDirs::new("/nonexistent-peppy-test-root");
@@ -843,7 +843,7 @@ mod tests {
         deadline: impl Future<Output = ()>,
         stop_grace: Duration,
         cancel_token: &CancellationToken,
-    ) -> (std::result::Result<UvCachePruneOutcome, String>, String) {
+    ) -> (Result<UvCachePruneOutcome, String>, String) {
         let log_dir = tempfile::tempdir().expect("create the build log directory");
         let log = ActionLog::create(
             log_dir.path(),
@@ -1009,7 +1009,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_build_cmd_names_a_missing_working_dir() {
-        let working_dir = std::path::Path::new("/nonexistent-peppy-build-cwd");
+        let working_dir = Path::new("/nonexistent-peppy-build-cwd");
         let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
         let cmd = vec!["true".to_string()];
         let err = run_build_cmd(
@@ -1055,7 +1055,7 @@ mod tests {
     async fn run_build_cmd_resolves_the_program_via_the_child_path() {
         use std::os::unix::fs::PermissionsExt;
 
-        let stub = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        let stub = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("fixtures")
             .join("stub_tool.sh");
@@ -1321,7 +1321,7 @@ mod tests {
     /// while the download is held. In a build, the next repaint is that byte.
     async fn first_remaining_bytes_repaint(
         stderr: &mut tokio::process::ChildStderr,
-    ) -> std::result::Result<String, String> {
+    ) -> Result<String, String> {
         use tokio::io::AsyncReadExt;
 
         let mut output = Vec::new();
@@ -1468,7 +1468,7 @@ mod tests {
             archive_dir_to_storage(source.path(), &destination).expect("archive should publish");
 
         assert_eq!(published, destination);
-        let file = std::fs::File::open(&published).expect("open archive");
+        let file = File::open(&published).expect("open archive");
         let decoder = zstd::stream::read::Decoder::new(file).expect("zstd decoder");
         let mut archive = tar::Archive::new(decoder);
         let names: Vec<PathBuf> = archive

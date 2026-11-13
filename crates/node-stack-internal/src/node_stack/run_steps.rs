@@ -64,7 +64,7 @@ fn write_runtime_config_temp(peppy_dirs: &PeppyDirs, json5: &str) -> std::io::Re
 pub(super) fn create_instance_dir(
     instance_id: &str,
     peppy_dirs: &PeppyDirs,
-) -> std::result::Result<PathBuf, String> {
+) -> Result<PathBuf, String> {
     let instances_dir = peppy_dirs.instances_dir();
     std::fs::create_dir_all(&instances_dir).map_err(|e| {
         format!(
@@ -111,7 +111,7 @@ pub(super) fn extract_node_archive(
     archive_path: &Path,
     instance_id: &str,
     peppy_dirs: &PeppyDirs,
-) -> std::result::Result<PathBuf, String> {
+) -> Result<PathBuf, String> {
     let instance_dir = create_instance_dir(instance_id, peppy_dirs)?;
     if let Err(e) = extract_tar_zst(archive_path, &instance_dir) {
         // Best-effort cleanup of the partially-extracted instance dir so a

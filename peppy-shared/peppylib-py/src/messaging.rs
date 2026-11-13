@@ -333,9 +333,8 @@ impl PyMessengerHandle {
         crate::py_future::future_into_py(py, async move {
             let namespace = match namespace {
                 None => Namespace::local(),
-                Some(raw) => Namespace::parse(&raw).map_err(|error| {
-                    PyErr::new::<pyo3::exceptions::PyValueError, _>(error.to_string())
-                })?,
+                Some(raw) => Namespace::parse(&raw)
+                    .map_err(|error| PyErr::new::<PyValueError, _>(error.to_string()))?,
             };
             let handle = MessengerHandle::connect(&host, port)
                 .scope(SessionScope::Namespace(namespace))

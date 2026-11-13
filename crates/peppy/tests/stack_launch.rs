@@ -230,7 +230,7 @@ async fn stack_launch_command_succeeds() {
     // The launched instance has to survive the post-launch
     // `instance_count() == 1` check and the explicit stop that follows, so tie
     // it to the test instead of a fixed `sleep`.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(&node_b_peppy_json5_path, &instances.sentinel());
 
     let messenger_handle = ctx
@@ -686,7 +686,7 @@ async fn stack_launch_fails_when_the_max_timeout_is_hit() {
 async fn stack_launch_binds_the_consumer_slot_from_launcher_links() {
     // Instances must stay in the stack until the assertions below have read
     // them; a fixed `sleep` would make that a race against machine load.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -845,7 +845,7 @@ async fn stack_launch_binds_the_consumer_slot_from_launcher_links() {
 async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
     // Instances must stay in the stack until the assertions below have read
     // them; a fixed `sleep` would make that a race against machine load.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -973,7 +973,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
 /// validation, before any node is added, built, or spawned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_launch_rejects_array_binding_on_a_one_slot() {
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -1220,7 +1220,7 @@ fn write_contract_v1_doc_with_topic(
 async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     // Instances must stay in the stack until the assertions below have read
     // them; a fixed `sleep` would make that a race against machine load.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -1621,7 +1621,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
 async fn stack_launch_binds_contract_slots_in_both_directions() {
     // Instances must stay in the stack until the assertions below have read
     // them; a fixed `sleep` would make that a race against machine load.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -1837,7 +1837,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
 async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
     // Instances must stay in the stack until the assertions below have read
     // their dumps; a fixed `sleep` would make that a race against machine load.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -2139,7 +2139,7 @@ async fn stack_launch_establishes_launcher_pairings() {
     // Keep-alive rather than `sleep 30`: both instances must be live for the
     // pin assertions, and the teardown below ends them explicitly instead of
     // leaving the daemon to wait out its force-kill deadline once per instance.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let run_cmd = instances.keep_alive_argv();
     let arm_path = write_node_config_for_helper(
         nodes_dir.path(),
@@ -2272,7 +2272,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
     super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
 
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let run_cmd = instances.keep_alive_argv();
     // One arm manifest, whose `controller` slot the node itself declares
     // optional: some rigs drive the arm, some only watch it.
@@ -2437,7 +2437,7 @@ async fn stack_launch_delivers_observer_member_sets() {
     // member-set assertions, and the teardown below ends them explicitly
     // instead of leaving the daemon to wait out its force-kill deadline once
     // per instance.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let run_cmd = instances.keep_alive_argv();
     // The recorder copies the boot config the daemon wrote before keeping alive,
     // so the spawn seed survives the live delivery that replaces it in memory.
@@ -2755,7 +2755,7 @@ async fn stack_launch_rejects_a_path_shaped_deployment_source() {
 /// member going down moves only its own member.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_serves_a_commander_panels_observer_slots() {
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -3041,7 +3041,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
 async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot() {
     // Instances must stay in the stack until the assertions below have read
     // them; a fixed `sleep` would make that a race against machine load.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -3299,7 +3299,7 @@ async fn stack_launch_flattens_a_composed_launcher() {
     );
     // The launched instance must outlive the post-launch stack-list check,
     // so tie it to the test instead of a fixed sleep.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(
         &node_path.join(NODE_CONFIG_FILE),
         &instances.sentinel(),
@@ -3575,8 +3575,8 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
 #[test]
 fn stack_resolve_prints_the_flat_launcher_and_report() {
     let dir = tempfile::tempdir().expect("temp dir");
-    std::fs::create_dir_all(dir.path().join("fragments")).expect("fragments dir");
-    std::fs::write(
+    fs::create_dir_all(dir.path().join("fragments")).expect("fragments dir");
+    fs::write(
         dir.path().join("fragments/recorder.json5"),
         r#"{
             peppy_schema: "launcher_fragment/v1",
@@ -3588,7 +3588,7 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
     )
     .expect("fragment");
     let launcher = dir.path().join("panel.json5");
-    std::fs::write(
+    fs::write(
         &launcher,
         r#"{
             peppy_schema: "launcher/v1",
@@ -3669,8 +3669,8 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
 #[test]
 fn stack_resolve_prints_the_launch_variables_after_the_adjustments() {
     let dir = tempfile::tempdir().expect("temp dir");
-    std::fs::create_dir_all(dir.path().join("fragments")).expect("fragments dir");
-    std::fs::write(
+    fs::create_dir_all(dir.path().join("fragments")).expect("fragments dir");
+    fs::write(
         dir.path().join("fragments/brain.json5"),
         r#"{
             peppy_schema: "launcher_fragment/v1",
@@ -3682,7 +3682,7 @@ fn stack_resolve_prints_the_launch_variables_after_the_adjustments() {
     )
     .expect("fragment");
     let launcher = dir.path().join("arm.json5");
-    std::fs::write(
+    fs::write(
         &launcher,
         r#"{
             peppy_schema: "launcher/v1",
@@ -3723,9 +3723,9 @@ fn stack_resolve_prints_the_launch_variables_after_the_adjustments() {
         "{report_text}"
     );
 
-    std::fs::write(
+    fs::write(
         &launcher,
-        std::fs::read_to_string(&launcher)
+        fs::read_to_string(&launcher)
             .unwrap()
             .replace(r#"["GEMINI_API_KEY"]"#, r#"["PYTHONPATH"]"#),
     )
@@ -3748,7 +3748,7 @@ fn stack_resolve_prints_the_launch_variables_after_the_adjustments() {
 fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
     let dir = tempfile::tempdir().expect("temp dir");
     let launcher = dir.path().join("family.json5");
-    std::fs::write(
+    fs::write(
         &launcher,
         r#"{
             peppy_schema: "launcher/v1",

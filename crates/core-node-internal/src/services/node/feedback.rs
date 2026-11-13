@@ -87,7 +87,7 @@ pub(crate) fn unlogged_step_sink(
 /// in `core-node-api` already return that type via
 /// `encode_message_non_empty`.
 pub(crate) fn spawn_feedback_forwarder<F>(
-    mut feedback_rx: tokio::sync::mpsc::UnboundedReceiver<FeedbackLine>,
+    mut feedback_rx: mpsc::UnboundedReceiver<FeedbackLine>,
     publisher: peppylib::messaging::ActionFeedbackPublisher,
     encode: F,
 ) -> tokio::task::JoinHandle<()>

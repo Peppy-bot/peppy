@@ -1287,12 +1287,7 @@ mod tests {
     #[test]
     fn dependency_context_constructors_set_origin_and_link_id() {
         // native: no origin.
-        let native = DependencyContext::native(
-            "uvc_camera",
-            "v1",
-            "cam_left",
-            config::node::Cardinality::One,
-        );
+        let native = DependencyContext::native("uvc_camera", "v1", "cam_left", Cardinality::One);
         assert_eq!(native.producer_name, "uvc_camera");
         assert_eq!(native.producer_tag, "v1");
         assert!(native.origin.is_none());
@@ -1303,7 +1298,7 @@ mod tests {
             "camera_contract",
             "v2",
             "cam_left",
-            config::node::Cardinality::One,
+            Cardinality::One,
             lens_failure_kinds(),
         );
         assert_eq!(contract.producer_name, "camera_contract");
@@ -1341,8 +1336,7 @@ mod tests {
 
     #[test]
     fn a_contract_member_gives_the_kinds_it_lists_and_a_native_member_those_of_peppy() {
-        let native =
-            DependencyContext::native("uvc_camera", "v1", "cam", config::node::Cardinality::One);
+        let native = DependencyContext::native("uvc_camera", "v1", "cam", Cardinality::One);
         assert_eq!(
             native.member_failure_kinds(MemberSection::Service, "capture"),
             MemberFailureKinds::peppy_only()
@@ -1352,7 +1346,7 @@ mod tests {
             "camera_contract",
             "v2",
             "cam",
-            config::node::Cardinality::One,
+            Cardinality::One,
             lens_failure_kinds(),
         );
         let kinds = contract.member_failure_kinds(MemberSection::Service, "capture");

@@ -9,7 +9,7 @@ use zstd::stream::read::Decoder;
 /// Extracts a `.tar.zst` archive into `destination` with path safety checks.
 /// Rejects entries containing `..`, root, or prefix path components.
 /// Directories are applied last to avoid permission interference during extraction.
-pub fn extract_tar_zst(archive_path: &Path, destination: &Path) -> std::result::Result<(), String> {
+pub fn extract_tar_zst(archive_path: &Path, destination: &Path) -> Result<(), String> {
     let file = std::fs::File::open(archive_path)
         .map_err(|e| format!("Failed to open archive {}: {}", archive_path.display(), e))?;
 
@@ -85,7 +85,7 @@ fn unpack_entry<R: std::io::Read>(
     entry_path: &Path,
     destination: &Path,
     archive_path: &Path,
-) -> std::result::Result<(), String> {
+) -> Result<(), String> {
     let unpacked = entry.unpack_in(destination).map_err(|e| {
         format!(
             "Failed to unpack entry {} from {}: {}",

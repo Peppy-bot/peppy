@@ -298,7 +298,7 @@ impl SliceOwnership {
     /// restart.
     pub(crate) fn try_begin_change(
         &self,
-    ) -> std::result::Result<crate::services::node::gate::StackHold, Failure> {
+    ) -> Result<crate::services::node::gate::StackHold, Failure> {
         self.stack
             .try_begin_change()
             .map_err(|busy| busy.refusal(&self.admitted_restarts(), &self.core_node_name))
@@ -411,14 +411,14 @@ impl SliceOwnership {
     pub fn admit_node_goal(
         &self,
         goal: &impl LaunchScoped,
-    ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Failure> {
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Failure> {
         self.admit_node_change(goal.launch_id())
     }
 
     pub(crate) fn admit_node_change(
         &self,
         launch_id: Option<&str>,
-    ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Failure> {
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Failure> {
         let admission = self
             .stack
             .try_admit_node_goal()

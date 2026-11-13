@@ -90,8 +90,8 @@ struct RenderedSurface {
 
 fn render_test_surfaces(mut generator: RustGenerator) -> RenderedSurface {
     let registry = std::mem::take(&mut generator.testgen);
-    super::super::mock::render(&mut generator, &registry).unwrap();
-    super::super::fixtures::render(&mut generator, &registry).unwrap();
+    mock::render(&mut generator, &registry).unwrap();
+    fixtures::render(&mut generator, &registry).unwrap();
     let mut schemas: Vec<CapnpSchema> = std::mem::take(&mut generator.schemas)
         .into_values()
         .collect();

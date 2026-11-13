@@ -685,7 +685,7 @@ MCP endpoints:
     #[test]
     fn block_on_runs_a_future_without_an_ambient_runtime() {
         // The no-current-handle branch builds a fresh runtime.
-        let value = block_on(async { Ok::<_, crate::error::Error>(7) }).expect("future resolves");
+        let value = block_on(async { Ok::<_, Error>(7) }).expect("future resolves");
         assert_eq!(value, 7);
     }
 
@@ -702,9 +702,9 @@ MCP endpoints:
                 .start_session()
                 .await
                 .expect("mock session should start");
-            let handle = MessengerHandle::from_shared(std::sync::Arc::new(
-                tokio::sync::Mutex::new(instance.take_messenger()),
-            ));
+            let handle = MessengerHandle::from_shared(Arc::new(tokio::sync::Mutex::new(
+                instance.take_messenger(),
+            )));
             let conn = |target: &str| DaemonConnection {
                 messenger: &handle,
                 core_node_name: "local-daemon".to_string(),

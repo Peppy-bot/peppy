@@ -89,7 +89,7 @@ pub struct NodeInstanceInfo {
     /// whose manifest declares none.
     pub endpoints: Vec<InstanceEndpoint>,
     /// The instance's restart policy and how its restarts went.
-    pub restart_status: crate::graph::RestartStatus,
+    pub restart_status: RestartStatus,
 }
 
 /// Body of a successful `node_info` lookup: carries all metadata about a
@@ -403,11 +403,11 @@ fn read_exit_cause(reader: node_capnp::exit_cause::Reader<'_>) -> Result<Option<
 }
 
 impl crate::encoding::Wire for NodeInfoRequest {
-    type Root = crate::node_capnp::node_info_request::Owned;
+    type Root = node_capnp::node_info_request::Owned;
 }
 
 impl crate::encoding::Wire for NodeInfoResponse {
-    type Root = crate::node_capnp::node_info_response::Owned;
+    type Root = node_capnp::node_info_response::Owned;
 }
 
 #[cfg(test)]
@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn node_info_response_roundtrips_instance_slot_bindings() {
-        let bindings_a: config::runtime::SlotBindings = [
+        let bindings_a: SlotBindings = [
             (
                 "wrist_left_camera".to_string(),
                 config::runtime::BoundProducers::from(ProducerRef::new("core_a", "cam1")),
@@ -538,7 +538,7 @@ mod tests {
                             config::runtime::CoreNodeName::new("cn-sim").expect("valid name"),
                             config::runtime::ClockIncarnation::try_from(7).expect("non-zero"),
                         ),
-                        config::runtime::ProducerRef::new("cn-sim", "sim_inst"),
+                        ProducerRef::new("cn-sim", "sim_inst"),
                     ),
                     endpoints: crate::encoding::endpoints::sample_endpoints(),
                     restart_status: RestartStatus {

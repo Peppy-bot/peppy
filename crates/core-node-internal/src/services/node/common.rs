@@ -87,10 +87,7 @@ impl SlotUpdateClient {
         self.seq.fetch_add(1, Ordering::Relaxed) + 1
     }
 
-    pub(crate) fn resolve_target(
-        &self,
-        instance_id: &str,
-    ) -> std::result::Result<SlotUpdateTarget, String> {
+    pub(crate) fn resolve_target(&self, instance_id: &str) -> Result<SlotUpdateTarget, String> {
         let instance_name =
             Name::new(instance_id).map_err(|error| format!("invalid instance id: {error}"))?;
         let (node_name, node_tag) = self
@@ -110,7 +107,7 @@ impl SlotUpdateClient {
         payload: peppylib::types::Payload,
         timeout: Duration,
         rejection_message: &str,
-    ) -> std::result::Result<SlotDelivery, String> {
+    ) -> Result<SlotDelivery, String> {
         let target = self.resolve_target(instance_id)?;
         self.send_to(&target, service_name, payload, timeout, rejection_message)
             .await
@@ -123,7 +120,7 @@ impl SlotUpdateClient {
         payload: peppylib::types::Payload,
         timeout: Duration,
         rejection_message: &str,
-    ) -> std::result::Result<SlotDelivery, String> {
+    ) -> Result<SlotDelivery, String> {
         let reply = self
             .node_stack
             .time()

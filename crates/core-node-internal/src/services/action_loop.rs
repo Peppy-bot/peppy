@@ -374,15 +374,13 @@ mod tests {
     async fn accepted_goal() -> (
         GoalContext,
         peppylib::messaging::ActionGoalHandle,
-        peppylib::MessengerHandle,
+        MessengerHandle,
         ConcurrentAction,
     ) {
         use peppylib::messaging::FeedbackBound;
         let messenger = crate::services::tests::started_mock_messenger().await;
-        let target = || {
-            SenderTarget::node(CORE_NODE, core_node_api::names::CORE_NODE_TAG)
-                .expect("a core node identity")
-        };
+        let target =
+            || SenderTarget::node(CORE_NODE, names::CORE_NODE_TAG).expect("a core node identity");
         let mut engine =
             ConcurrentAction::expose(&messenger, CORE_NODE, "core_root", target(), ACTION, true)
                 .await
@@ -397,7 +395,7 @@ mod tests {
                 None,
                 Payload::new(),
                 FeedbackBound::new(std::num::NonZeroUsize::MIN),
-                std::time::Duration::from_secs(30),
+                Duration::from_secs(30),
             ),
             async {
                 engine
@@ -457,13 +455,9 @@ mod tests {
             "a reset alone gives its reason"
         );
 
-        peppylib::ActionMessenger::cancel_goal(
-            &messenger,
-            &handle,
-            std::time::Duration::from_secs(30),
-        )
-        .await
-        .expect("the daemon answers the cancel");
+        peppylib::ActionMessenger::cancel_goal(&messenger, &handle, Duration::from_secs(30))
+            .await
+            .expect("the daemon answers the cancel");
         assert_eq!(
             cancel_reason(&context, &reset).as_deref(),
             Some(CancelCause::Caller.reason()),
@@ -497,13 +491,9 @@ mod tests {
         });
 
         polled_rx.await.expect("the work is polled");
-        peppylib::ActionMessenger::cancel_goal(
-            &messenger,
-            &handle,
-            std::time::Duration::from_secs(30),
-        )
-        .await
-        .expect("the daemon answers the cancel");
+        peppylib::ActionMessenger::cancel_goal(&messenger, &handle, Duration::from_secs(30))
+            .await
+            .expect("the daemon answers the cancel");
         answered_tx.send(()).expect("the work waits for the answer");
 
         assert!(

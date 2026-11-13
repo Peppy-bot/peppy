@@ -216,11 +216,11 @@ impl RepoListResponse {
 }
 
 impl crate::encoding::Wire for RepoListRequest {
-    type Root = crate::repo_capnp::repo_list_request::Owned;
+    type Root = repo_capnp::repo_list_request::Owned;
 }
 
 impl crate::encoding::Wire for RepoListResponse {
-    type Root = crate::repo_capnp::repo_list_response::Owned;
+    type Root = repo_capnp::repo_list_response::Owned;
 }
 
 #[cfg(test)]

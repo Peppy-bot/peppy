@@ -79,11 +79,11 @@ impl NodeStopResponse {
 }
 
 impl crate::encoding::Wire for NodeStopRequest {
-    type Root = crate::node_capnp::node_stop_request::Owned;
+    type Root = node_capnp::node_stop_request::Owned;
 }
 
 impl crate::encoding::Wire for NodeStopResponse {
-    type Root = crate::node_capnp::node_stop_response::Owned;
+    type Root = node_capnp::node_stop_response::Owned;
 }
 
 #[cfg(test)]

@@ -98,7 +98,7 @@ fn extract_carried_binary() -> Result<PathBuf, CompilerError> {
 /// The bytes of the compiler that the process carries.
 fn carried_bytes() -> Result<Cow<'static, [u8]>, CompilerError> {
     if let Some(path) = CARRIED_FILE.get() {
-        return std::fs::read(path).map(Cow::Owned).map_err(|err| {
+        return fs::read(path).map(Cow::Owned).map_err(|err| {
             CompilerError(format!(
                 "cannot read the Cap'n Proto compiler at {}: {err}",
                 path.display()
@@ -242,8 +242,8 @@ fn ensure_executable(path: &Path) -> Result<(), CompilerError> {
 /// rejected without reading its contents; only a same-size file is fully
 /// compared.
 fn matches_carried(path: &Path, expected: &[u8]) -> bool {
-    match std::fs::metadata(path) {
-        Ok(metadata) if metadata.len() == expected.len() as u64 => std::fs::read(path)
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.len() == expected.len() as u64 => fs::read(path)
             .map(|actual| actual.as_slice() == expected)
             .unwrap_or(false),
         _ => false,
@@ -279,7 +279,7 @@ fn install_carried_binary(
     }
 
     let result = config::atomic_write::publish_atomic(binary_path, |tmp_path| {
-        std::fs::write(tmp_path, binary_bytes)?;
+        fs::write(tmp_path, binary_bytes)?;
         #[cfg(unix)]
         {
             fs::set_permissions(tmp_path, fs::Permissions::from_mode(0o755))?;
@@ -356,14 +356,14 @@ mod tests {
         );
 
         let wrong_size = dir.path().join("wrong_size");
-        std::fs::write(&wrong_size, b"capnp v2 longer bytes").expect("write");
+        fs::write(&wrong_size, b"capnp v2 longer bytes").expect("write");
         assert!(
             !matches_carried(&wrong_size, embedded),
             "a different-length file (e.g. a new capnp version) must be rejected"
         );
 
         let same_size_diff = dir.path().join("same_size_diff");
-        std::fs::write(&same_size_diff, b"capnp X bytes!").expect("write");
+        fs::write(&same_size_diff, b"capnp X bytes!").expect("write");
         assert_eq!(
             same_size_diff.metadata().unwrap().len(),
             embedded.len() as u64
@@ -374,7 +374,7 @@ mod tests {
         );
 
         let identical = dir.path().join("identical");
-        std::fs::write(&identical, embedded).expect("write");
+        fs::write(&identical, embedded).expect("write");
         assert!(
             matches_carried(&identical, embedded),
             "a byte-for-byte identical file must match"
@@ -384,7 +384,7 @@ mod tests {
     #[cfg(unix)]
     fn write_executable(dir: &Path, name: &str, contents: &[u8]) -> PathBuf {
         let path = dir.join(name);
-        std::fs::write(&path, contents).expect("write stub");
+        fs::write(&path, contents).expect("write stub");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod stub");
         path
     }
@@ -440,7 +440,7 @@ mod tests {
     fn verify_runs_retries_a_temporarily_busy_executable() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = write_executable(dir.path(), "busy", b"#!/bin/sh\nexit 0\n");
-        let writable = std::fs::OpenOptions::new()
+        let writable = fs::OpenOptions::new()
             .write(true)
             .open(&path)
             .expect("hold executable open for writing");
@@ -466,16 +466,9 @@ mod tests {
         let installed = install_carried_binary(&path, expected).expect("install carried binary");
 
         assert_eq!(installed, path);
-        assert_eq!(
-            std::fs::read(&path).expect("read installed binary"),
-            expected
-        );
+        assert_eq!(fs::read(&path).expect("read installed binary"), expected);
         assert_ne!(
-            std::fs::metadata(&path)
-                .expect("metadata")
-                .permissions()
-                .mode()
-                & 0o111,
+            fs::metadata(&path).expect("metadata").permissions().mode() & 0o111,
             0,
             "installed binary must be executable"
         );
@@ -494,7 +487,7 @@ mod tests {
 
         install_carried_binary(&path, expected).expect("replace stale runnable binary");
 
-        assert_eq!(std::fs::read(path).expect("read replacement"), expected);
+        assert_eq!(fs::read(path).expect("read replacement"), expected);
     }
 
     #[cfg(unix)]
@@ -503,17 +496,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("capnp");
         let expected = b"#!/bin/sh\nexit 0\n";
-        std::fs::write(&path, expected).expect("write non-executable binary");
+        fs::write(&path, expected).expect("write non-executable binary");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("chmod fixture");
 
         install_carried_binary(&path, expected).expect("repair executable permissions");
 
         assert_ne!(
-            std::fs::metadata(path)
-                .expect("metadata")
-                .permissions()
-                .mode()
-                & 0o111,
+            fs::metadata(path).expect("metadata").permissions().mode() & 0o111,
             0,
             "matching bytes with broken permissions must be republished"
         );
@@ -523,7 +512,7 @@ mod tests {
     fn install_carried_binary_reports_an_unusable_destination() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("capnp");
-        std::fs::create_dir(&path).expect("create conflicting destination directory");
+        fs::create_dir(&path).expect("create conflicting destination directory");
 
         let error = install_carried_binary(&path, b"not published")
             .expect_err("a destination directory cannot become the binary");
@@ -541,7 +530,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("capnp");
         let expected = b"expected bytes";
-        std::fs::write(&path, expected).expect("write concurrent result");
+        fs::write(&path, expected).expect("write concurrent result");
 
         accept_publication_result(
             &path,
@@ -553,7 +542,7 @@ mod tests {
         )
         .expect("matching concurrent publication should be accepted");
 
-        std::fs::write(&path, b"different bytes").expect("write mismatched result");
+        fs::write(&path, b"different bytes").expect("write mismatched result");
         let error = accept_publication_result(
             &path,
             expected,

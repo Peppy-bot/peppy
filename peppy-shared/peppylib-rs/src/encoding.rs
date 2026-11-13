@@ -116,7 +116,7 @@ pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload
 /// by the [`capnp_empty_message!`] macro and the action cancel-ack codec.
 pub(crate) fn decode_message(
     mut data: &[u8],
-) -> Result<capnp::message::Reader<capnp::serialize::BufferSegments<&[u8]>>> {
+) -> Result<capnp::message::Reader<serialize::BufferSegments<&[u8]>>> {
     serialize::read_message_from_flat_slice(&mut data, ReaderOptions::default())
         .map_err(|e| crate::error::Error::Deserialization(e.to_string()))
 }

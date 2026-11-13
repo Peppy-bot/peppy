@@ -146,7 +146,7 @@ fn time_until(then_unix: i64, now_unix: i64) -> Duration {
 /// Logs the result of a renewal and says when the next check is.
 fn step_after_renewal(
     enrollment: &Enrollment,
-    renewed: std::result::Result<Enrollment, BlockingCallFailure>,
+    renewed: Result<Enrollment, BlockingCallFailure>,
 ) -> Step {
     let peer = &enrollment.document.peer_id;
     let failure = match renewed {

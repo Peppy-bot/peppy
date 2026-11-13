@@ -50,11 +50,11 @@ impl StackResetResponse {
 }
 
 impl crate::encoding::Wire for StackResetRequest {
-    type Root = crate::node_capnp::stack_reset_request::Owned;
+    type Root = node_capnp::stack_reset_request::Owned;
 }
 
 impl crate::encoding::Wire for StackResetResponse {
-    type Root = crate::node_capnp::stack_reset_response::Owned;
+    type Root = node_capnp::stack_reset_response::Owned;
 }
 
 #[cfg(test)]

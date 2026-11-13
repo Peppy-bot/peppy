@@ -130,6 +130,6 @@ mod tests {
         // The filesystem root has no parent, so staging a sibling is impossible.
         let err = publish_atomic(Path::new("/"), |tmp| std::fs::write(tmp, b"x"))
             .expect_err("root path has no parent");
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
     }
 }

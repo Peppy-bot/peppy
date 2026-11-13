@@ -610,7 +610,7 @@ mod tests {
                             urls: vec!["http://127.0.0.1:8900/sensor/v1/mcp".to_string()],
                         },
                     ],
-                    restart_status: core_node_api::RestartStatus::default(),
+                    restart_status: RestartStatus::default(),
                 },
                 NodeInstanceInfo {
                     clock: Default::default(),
@@ -620,7 +620,7 @@ mod tests {
                     slot_bindings: std::collections::BTreeMap::new(),
                     pairing_slots: std::collections::BTreeMap::new(),
                     endpoints: Vec::new(),
-                    restart_status: core_node_api::RestartStatus::default(),
+                    restart_status: RestartStatus::default(),
                 },
             ],
             add_log_path: Some(PathBuf::from("/tmp/peppy/logs/add/sensor_node.log")),

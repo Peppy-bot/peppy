@@ -66,7 +66,7 @@ fn golden_schemas_match_committed_output() {
 }
 
 fn compiled_validator(format_json5: &str) -> jsonschema::Validator {
-    let schema: serde_json::Value =
+    let schema: Value =
         serde_json::from_str(&rendered_schema(format_json5)).expect("schema parses back");
     jsonschema::validator_for(&schema).expect("the derived schema is a valid JSON Schema")
 }
@@ -136,7 +136,7 @@ fn golden_schemas_judge_canonical_instances() {
     let mut missing = full.as_object().expect("object").clone();
     missing.remove("flag");
     assert!(
-        !all_primitives.is_valid(&serde_json::Value::Object(missing)),
+        !all_primitives.is_valid(&Value::Object(missing)),
         "every non-optional field is required"
     );
     let mut extra = full.clone();

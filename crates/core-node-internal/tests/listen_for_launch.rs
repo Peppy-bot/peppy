@@ -1771,7 +1771,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
     );
 
     // Create a temp bin directory with a `printout` script that sleeps
-    let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
+    let bin_dir = tempdir().expect("failed to create temp bin dir");
     write_executable_script(
         bin_dir.path(),
         "printout",
@@ -2236,7 +2236,7 @@ async fn launch_scripted_node_above(
         .filter(|record| matches!(record.origin, log_export::LineOrigin::Captured(_)))
         .map(|record| record.body.as_str())
         .collect();
-    common::poll_until(
+    poll_until(
         RESULT_TIMEOUT,
         "the launch log should hold the output it relays",
         || {
@@ -2356,7 +2356,7 @@ async fn a_launch_relays_run_output_to_its_file() {
 }
 
 /// The entries of the log at `path`.
-fn log_entries(path: &std::path::Path) -> Vec<String> {
+fn log_entries(path: &Path) -> Vec<String> {
     let content = fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("{} should be readable: {error}", path.display()));
     node_stack::action_log::test_support::log_entries(&content)
@@ -2381,7 +2381,7 @@ async fn each_log_of_a_launch_exports_its_own_entries_once() {
         "failed to start node scripted_node:v1 instance s1",
     );
 
-    let mut bodies_by_file: BTreeMap<&std::path::Path, Vec<&str>> = BTreeMap::new();
+    let mut bodies_by_file: BTreeMap<&Path, Vec<&str>> = BTreeMap::new();
     for record in &records {
         bodies_by_file
             .entry(record.identity.file_path.as_path())

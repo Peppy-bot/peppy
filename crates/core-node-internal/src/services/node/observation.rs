@@ -805,7 +805,7 @@ impl ObservationCoordinator {
         &self,
         target: &SlotUpdateTarget,
         delivery: &Delivery,
-    ) -> std::result::Result<(), String> {
+    ) -> Result<(), String> {
         let request = ObservationUpdateRequest {
             link_id: delivery.slot.observer_link_id.clone(),
             sequence: self.updates.next_sequence(),
@@ -858,7 +858,7 @@ mod tests {
             .expect("test root config parses");
         let stack = Arc::new(NodeStack::new(
             root_config,
-            Some(config::runtime::Name::new(SOURCE_INSTANCE).expect("valid test instance id")),
+            Some(Name::new(SOURCE_INSTANCE).expect("valid test instance id")),
             temp_dir.path(),
         ));
         let messenger = MessengerHandle::from_shared(Arc::new(tokio::sync::Mutex::new(

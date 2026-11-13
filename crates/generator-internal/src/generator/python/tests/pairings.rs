@@ -18,12 +18,12 @@ const JOINT_STATES: &str = r#"
 }
 "#;
 
-fn peer_context() -> crate::generator::types::PeerContext {
-    crate::generator::types::PeerContext {
+fn peer_context() -> PeerContext {
+    PeerContext {
         link_id: "controller".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        cardinality: config::node::Cardinality::One,
+        cardinality: Cardinality::One,
     }
 }
 
@@ -274,7 +274,7 @@ fn peer_slot_state_is_cardinality_typed() {
             ],
         ),
     ] {
-        let peer = crate::generator::types::PeerContext {
+        let peer = PeerContext {
             cardinality,
             ..peer_context()
         };

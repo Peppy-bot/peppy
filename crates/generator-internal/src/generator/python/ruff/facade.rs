@@ -115,7 +115,7 @@ impl RuffFacade {
         // processes (e.g. parallel `cargo test` binaries) still extract the same
         // machine-global path concurrently, so the exec is retried on the resulting
         // transient ENOENT / ETXTBSY in `RuffFacade::run`.
-        static EXTRACTED: OnceLock<std::result::Result<PathBuf, String>> = OnceLock::new();
+        static EXTRACTED: OnceLock<Result<PathBuf, String>> = OnceLock::new();
 
         let result = EXTRACTED
             .get_or_init(|| Self::extract_bundled_ruff_binary().map_err(|e| e.to_string()));

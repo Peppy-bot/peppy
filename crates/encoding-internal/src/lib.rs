@@ -383,7 +383,7 @@ mod tests {
         value.chars().filter(|ch| !ch.is_whitespace()).collect()
     }
 
-    fn params_to_map(params: &[FunctionParam]) -> std::collections::HashMap<String, String> {
+    fn params_to_map(params: &[FunctionParam]) -> HashMap<String, String> {
         params
             .iter()
             .map(|param| (param.ident.to_string(), canonicalize_tokens(&param.ty)))
@@ -459,7 +459,7 @@ mod tests {
             .type_mapping()
             .iter()
             .map(|(key, value)| (key.clone(), canonicalize_literal(value)))
-            .collect::<std::collections::HashMap<_, _>>();
+            .collect::<HashMap<_, _>>();
 
         assert_eq!(
             canonical_type_map.len(),
@@ -649,7 +649,7 @@ mod tests {
             .type_mapping()
             .iter()
             .map(|(key, value)| (key.clone(), canonicalize_literal(value)))
-            .collect::<std::collections::HashMap<_, _>>();
+            .collect::<HashMap<_, _>>();
 
         assert_eq!(
             canonical_type_map.get("points[].coords"),

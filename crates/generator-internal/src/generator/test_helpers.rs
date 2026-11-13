@@ -60,9 +60,7 @@ pub const STUB_NODE_CONFIG: &str = r#"{
 }
 "#;
 
-pub fn prepare_directories(
-    temp_dir: &TempDir,
-) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+pub fn prepare_directories(temp_dir: &TempDir) -> (PathBuf, PathBuf, PathBuf) {
     let user_node = temp_dir.path().join("user_node");
     let output_dir = user_node.join(PEPPYGEN_OUTPUT_PATH);
     let peppy_node_config = user_node.join(NODE_CONFIG_FILE);
@@ -72,19 +70,12 @@ pub fn prepare_directories(
     (output_dir, user_node, peppy_node_config)
 }
 
-pub fn init_test_env<G: Default>(
-    temp_dir: &TempDir,
-) -> (
-    G,
-    std::path::PathBuf,
-    std::path::PathBuf,
-    std::path::PathBuf,
-) {
+pub fn init_test_env<G: Default>(temp_dir: &TempDir) -> (G, PathBuf, PathBuf, PathBuf) {
     let (output_dir, user_node, peppy_node_config_path) = prepare_directories(temp_dir);
     (G::default(), output_dir, user_node, peppy_node_config_path)
 }
 
-pub fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::PathBuf {
+pub fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> PathBuf {
     let source = user_node.join(NODE_CONFIG_FILE);
     let destination = output_dir.join(NODE_CONFIG_FILE);
     fs::copy(&source, &destination).unwrap();

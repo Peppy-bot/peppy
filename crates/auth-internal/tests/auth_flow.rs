@@ -112,7 +112,7 @@ fn resolver_needs_a_session() {
     let Err(err) = resolver::resolve(&creds_path(&dir), &HttpClient::new()) else {
         panic!("no session on disk must not resolve");
     };
-    assert_matches!(err, auth::AuthError::NotAuthenticated);
+    assert_matches!(err, AuthError::NotAuthenticated);
 }
 
 #[test]

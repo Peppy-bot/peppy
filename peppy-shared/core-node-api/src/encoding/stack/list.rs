@@ -445,11 +445,11 @@ fn decode_identity(
 }
 
 impl crate::encoding::Wire for StackListRequest {
-    type Root = crate::node_capnp::stack_list_request::Owned;
+    type Root = node_capnp::stack_list_request::Owned;
 }
 
 impl crate::encoding::Wire for StackListResponse {
-    type Root = crate::node_capnp::stack_list_response::Owned;
+    type Root = node_capnp::stack_list_response::Owned;
 }
 
 #[cfg(test)]

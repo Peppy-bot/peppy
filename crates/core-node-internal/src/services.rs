@@ -185,7 +185,7 @@ pub struct CoreNodeConfig {
     /// Where the daemon reads the addresses of its machine, which the
     /// endpoints of every instance it starts expand against: the system's
     /// interfaces in production, a fixed list under test.
-    pub host_addresses: node::endpoints::HostAddressSource,
+    pub host_addresses: HostAddressSource,
     /// Where the log files of the node stack send their lines.
     pub log_exporter: log_export::LogExporter,
     /// The certificate of this machine, which proves the calls of this
@@ -219,7 +219,7 @@ pub struct CoreNode {
     namespace: config::namespace::Namespace,
     /// Where this daemon reads its machine's addresses, which every started
     /// instance's endpoints expand against.
-    host_addresses: node::endpoints::HostAddressSource,
+    host_addresses: HostAddressSource,
     /// Cancelled on shutdown to stop the clock + heartbeat publishers cleanly.
     /// Cloned into each publisher task in [`CoreNode::start_with_ready`].
     shutdown_token: CancellationToken,
@@ -499,7 +499,7 @@ impl CoreNode {
     /// core node's own future is still pinned. See
     /// [`node::teardown_all_instances`].
     pub async fn teardown_node_stack(&self) {
-        node::teardown_all_instances(
+        teardown_all_instances(
             &self.messenger,
             self.node_name(),
             self.instance_id(),

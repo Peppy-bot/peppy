@@ -2024,7 +2024,7 @@ mod tests {
         // instance and never repeated at the point of use.
         let placements = Placements::new(
             core_node("daemon_west"),
-            std::collections::BTreeMap::from([("prod2".to_owned(), core_node("daemon_east"))]),
+            BTreeMap::from([("prod2".to_owned(), core_node("daemon_east"))]),
         );
         let out = validate_bindings(&items, &placements, &no_copies());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);

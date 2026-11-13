@@ -701,8 +701,8 @@ mod apptainer_build {
     /// Set `PEPPY_NO_ROSETTA=1` to force the QEMU fallback.
     fn rosetta_available() -> bool {
         env::var("PEPPY_NO_ROSETTA").unwrap_or_default() != "1"
-            && std::env::consts::ARCH == "aarch64"
-            && std::env::consts::OS == "macos"
+            && env::consts::ARCH == "aarch64"
+            && env::consts::OS == "macos"
             && Path::new("/Library/Apple/usr/libexec/oah").exists()
     }
 
@@ -1608,7 +1608,7 @@ mod apptainer_build {
     /// installs through `run_command` instead. Returns false on an I/O error,
     /// failing the build rather than shipping an identifying tree.
     fn scrub_man_page_builder_home(install_dir: &Path) -> bool {
-        let Some(home) = std::env::var_os("HOME") else {
+        let Some(home) = env::var_os("HOME") else {
             // Without a home directory nothing was baked into the pages.
             return true;
         };
@@ -1676,7 +1676,7 @@ mod apptainer_build {
             }
         };
 
-        let is_cross = target_arch != std::env::consts::ARCH;
+        let is_cross = target_arch != env::consts::ARCH;
         let use_rosetta = is_cross && target_arch == "x86_64" && rosetta_available();
         // Only the QEMU cross-arch fallback needs `--arch` (and a matching guest
         // agent). The Rosetta path runs a native aarch64 VZ VM.
@@ -2141,7 +2141,7 @@ echo "=== Apptainer build complete ==="
     /// (used by the release script) to also build for non-native architectures.
     fn build_lima_targets(lima: &LimaConfig) {
         let cross_arch = env::var("PEPPY_CROSS_ARCH").unwrap_or_default() == "1";
-        let native_arch: &str = std::env::consts::ARCH;
+        let native_arch: &str = env::consts::ARCH;
         let targets: Vec<&str> = if cross_arch {
             vec!["aarch64", "x86_64"]
         } else {

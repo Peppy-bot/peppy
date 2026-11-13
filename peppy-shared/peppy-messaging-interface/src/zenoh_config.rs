@@ -201,7 +201,7 @@ fn read_pem_certificates(
     let bytes = std::fs::read(path)
         .map_err(|e| format!("read {label} `{}` failed: {e}", path.display()))?;
     let certs = rustls_pemfile::certs(&mut &bytes[..])
-        .collect::<std::result::Result<Vec<_>, _>>()
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("parse {label} `{}` failed: {e}", path.display()))?;
     if certs.is_empty() {
         return Err(format!(

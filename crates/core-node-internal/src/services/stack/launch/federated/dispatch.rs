@@ -103,10 +103,10 @@ pub(in crate::services::stack) trait RemoteGoal: ActionGoal {
     fn label() -> &'static str;
     /// Decodes the goal response of a peer that accepted the goal: the log
     /// file the peer created for it, on its own filesystem.
-    fn decode_acceptance(payload: &[u8]) -> std::result::Result<PathBuf, String>;
+    fn decode_acceptance(payload: &[u8]) -> Result<PathBuf, String>;
     fn decode_feedback_line(payload: &[u8]) -> Option<String>;
     /// Decodes the result of a goal the peer completed.
-    fn decode_outcome(payload: &[u8]) -> std::result::Result<Self::Outcome, String>;
+    fn decode_outcome(payload: &[u8]) -> Result<Self::Outcome, String>;
 }
 
 macro_rules! impl_remote_goal {
@@ -181,7 +181,7 @@ impl_remote_goal!(
 /// explains it.
 pub(in crate::services::stack) struct RemoteGoalRun<T> {
     pub(in crate::services::stack) log_path: PathBuf,
-    pub(in crate::services::stack) outcome: std::result::Result<T, RemoteGoalFailure>,
+    pub(in crate::services::stack) outcome: Result<T, RemoteGoalFailure>,
 }
 
 /// Why an accepted goal produced no outcome.
@@ -264,7 +264,7 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
     core_node: &str,
     goal: &G,
     idle_timeout: Duration,
-) -> std::result::Result<RemoteGoalRun<G::Outcome>, Failure> {
+) -> Result<RemoteGoalRun<G::Outcome>, Failure> {
     let label = G::label();
     let mut handle = send_goal(
         goal,
@@ -490,7 +490,7 @@ pub(in crate::services::stack) async fn begin_participant_slices(
     watchers: &LifecycleWatchers,
     placements: &daemon_config::launcher::Placements,
     slice: SliceBegin,
-) -> std::result::Result<(), SliceBeginRefusal> {
+) -> Result<(), SliceBeginRefusal> {
     set_local_watchers(ctx, watchers, placements);
     ask_participant_slices(ctx, participants, |core_node| {
         let mut request = ParticipantSliceBeginRequest::new(
@@ -586,7 +586,7 @@ async fn ask_participant_slices(
     ctx: &StackChangeContext,
     participants: &[String],
     request: impl Fn(&str) -> ParticipantSliceBeginRequest,
-) -> std::result::Result<(), SliceRefusals> {
+) -> Result<(), SliceRefusals> {
     let outcomes = futures::future::join_all(participants.iter().map(|core_node| {
         let request = request(core_node);
         async move {

@@ -1805,7 +1805,7 @@ mod tests {
         assert_eq!(peppy_schema, crate::schema::PeppySchema::NodeV1);
         assert_eq!(manifest.name.as_str(), "my_node");
         assert_eq!(manifest.tag, "v1");
-        assert_eq!(interfaces, crate::node::Interfaces::default());
+        assert_eq!(interfaces, Interfaces::default());
         assert_eq!(framework, crate::node::NodeFramework::default());
         assert_eq!(
             execution.run_cmd.as_deref(),

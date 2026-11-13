@@ -32,7 +32,7 @@ fn is_local_url(repo_url: &str) -> bool {
     repo_url.starts_with('/') || repo_url.starts_with("file://")
 }
 
-pub(crate) fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
+pub(crate) fn sanitize_repo_path(repo_path: &str) -> Result<PathBuf, String> {
     let trimmed = repo_path.trim().trim_start_matches(['/', '\\']);
     if trimmed.is_empty() {
         return Err("repo_path must not be empty".to_string());
@@ -55,10 +55,7 @@ pub(crate) fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf
     Ok(path)
 }
 
-pub(crate) fn checkout_repo_ref(
-    repo: &Repository,
-    repo_ref: &str,
-) -> std::result::Result<(), git2::Error> {
+pub(crate) fn checkout_repo_ref(repo: &Repository, repo_ref: &str) -> Result<(), git2::Error> {
     let repo_ref = repo_ref.trim();
     if repo_ref.is_empty() {
         return Ok(());
@@ -156,7 +153,7 @@ fn advertised_name_of(advertised: &[git2::RemoteHead<'_>], commit: &GitCommit) -
 /// It names no remote: each fetch reads its URL through an anonymous
 /// remote, so the URL, and any credentials it embeds, is never written to
 /// the repository.
-pub(crate) fn init_empty_repository(dst: &Path) -> std::result::Result<Repository, String> {
+pub(crate) fn init_empty_repository(dst: &Path) -> Result<Repository, String> {
     Repository::init(dst)
         .map_err(|e| format!("Failed to create a repository at {}: {e}", dst.display()))
 }
@@ -171,7 +168,7 @@ pub(crate) fn shallow_checkout_of_read_ref(
     read_ref: Option<&ReadRef>,
     dst: &Path,
     on_progress: &mut dyn FnMut(&str),
-) -> std::result::Result<GitCommit, ShallowCheckoutError> {
+) -> Result<GitCommit, ShallowCheckoutError> {
     use ShallowCheckoutError::Unreachable;
 
     let repo = init_empty_repository(dst).map_err(Unreachable)?;
@@ -187,7 +184,7 @@ pub(crate) fn fetch_commit_shallow(
     repo_url: &str,
     commit: &GitCommit,
     on_progress: &mut dyn FnMut(&str),
-) -> std::result::Result<(), ShallowCheckoutError> {
+) -> Result<(), ShallowCheckoutError> {
     let target = ShallowTarget::Commit(commit.clone());
     fetch_shallow(repo, repo_url, &target, on_progress).map(drop)
 }
@@ -212,7 +209,7 @@ fn fetch_shallow(
     repo_url: &str,
     target: &ShallowTarget,
     on_progress: &mut dyn FnMut(&str),
-) -> std::result::Result<String, ShallowCheckoutError> {
+) -> Result<String, ShallowCheckoutError> {
     use ShallowCheckoutError::{RefNotServed, Unreachable};
 
     let shown_url = SourceUrl::new(repo_url);
@@ -268,7 +265,7 @@ fn fetch_shallow(
 /// The one place a `git2::Oid` becomes a [`GitCommit`], so a caller that
 /// wants to know which bytes a checkout holds compares validated commits
 /// rather than rendered strings.
-pub(crate) fn head_commit(repo: &Repository) -> std::result::Result<GitCommit, String> {
+pub(crate) fn head_commit(repo: &Repository) -> Result<GitCommit, String> {
     let head = repo
         .head()
         .map_err(|e| format!("the repository has no HEAD to read a commit from: {e}"))?;
@@ -291,7 +288,7 @@ pub(crate) fn clone_with_progress(
     repo_ref: Option<&str>,
     dst: &Path,
     on_progress: &mut dyn FnMut(&str),
-) -> std::result::Result<Repository, String> {
+) -> Result<Repository, String> {
     let mut builder = RepoBuilder::new();
     builder.fetch_options(fetch_options(repo_url, false, "Cloning", on_progress));
 
@@ -321,7 +318,7 @@ pub(crate) fn fetch_with_progress(
     refspec: &str,
     shallow: bool,
     on_progress: &mut dyn FnMut(&str),
-) -> std::result::Result<(), git2::Error> {
+) -> Result<(), git2::Error> {
     let mut fetch_opts = fetch_options(repo_url, shallow, "Fetching", on_progress);
     fetch_opts.download_tags(git2::AutotagOption::None);
     fetch_opts.update_fetchhead(false);

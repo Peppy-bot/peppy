@@ -66,11 +66,10 @@ async fn action_messenger_communication() {
     // Server uses declare_from_wire to unwrap the envelope + declare the
     // per-goal feedback publisher in one call, matching the goal_id the
     // client emits below.
-    let (publisher_tx, publisher_rx) =
-        tokio::sync::oneshot::channel::<peppylib::messaging::ActionFeedbackPublisher>();
+    let (publisher_tx, publisher_rx) = tokio::sync::oneshot::channel::<ActionFeedbackPublisher>();
     let factory = action.feedback_publisher_factory.clone();
     let server = tokio::spawn(async move {
-        let publisher_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(publisher_tx)));
+        let publisher_tx = Arc::new(std::sync::Mutex::new(Some(publisher_tx)));
         action
             .goal_service
             .handle_next_request(move |req_ctx| {

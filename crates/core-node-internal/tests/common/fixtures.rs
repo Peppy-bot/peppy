@@ -496,7 +496,7 @@ impl TestPackagesCache {
         self
     }
 
-    pub fn write(self, peppy_dirs: &daemon_config::consts::PeppyDirs) {
+    pub fn write(self, peppy_dirs: &PeppyDirs) {
         let cache_dir = peppy_dirs.cache_dir();
         std::fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
         for manifest in &self.oci_node_manifests {

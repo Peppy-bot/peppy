@@ -101,7 +101,7 @@ pub struct NonEmptyPayload(Payload);
 impl NonEmptyPayload {
     /// Construct a `NonEmptyPayload`, returning [`EmptyPayloadError`] if
     /// `payload` is empty.
-    pub fn try_new(payload: Payload) -> core::result::Result<Self, EmptyPayloadError> {
+    pub fn try_new(payload: Payload) -> Result<Self, EmptyPayloadError> {
         if payload.is_empty() {
             Err(EmptyPayloadError)
         } else {
@@ -118,7 +118,7 @@ impl NonEmptyPayload {
 impl TryFrom<Payload> for NonEmptyPayload {
     type Error = EmptyPayloadError;
 
-    fn try_from(payload: Payload) -> core::result::Result<Self, Self::Error> {
+    fn try_from(payload: Payload) -> Result<Self, Self::Error> {
         Self::try_new(payload)
     }
 }

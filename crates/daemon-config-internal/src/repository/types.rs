@@ -422,7 +422,7 @@ where
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: de::Deserializer<'de>,
+        D: Deserializer<'de>,
     {
         deserializer.deserialize_map(UniqueMapVisitor(PhantomData))
     }
@@ -440,7 +440,7 @@ mod tests {
     impl<'de> Deserialize<'de> for CountingMap {
         fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
         where
-            D: de::Deserializer<'de>,
+            D: Deserializer<'de>,
         {
             struct CountingVisitor;
 

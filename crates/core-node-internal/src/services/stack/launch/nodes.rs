@@ -111,10 +111,7 @@ fn platform_lines(
 /// The add source a deployment dispatches with: its root, encoded at the
 /// point of dispatch beside the closure pins, so the local arm and the goal a
 /// peer receives cannot disagree on how the pins travel.
-fn pinned_source(
-    key: &NodeKey,
-    item: &PlannedDeployment,
-) -> std::result::Result<NodeSource, String> {
+fn pinned_source(key: &NodeKey, item: &PlannedDeployment) -> Result<NodeSource, String> {
     match &item.root {
         DeploymentRoot::Node(pin) => serde_json5::to_string(pin)
             .map(|pin_json5| NodeSource::Pinned { pin_json5 })

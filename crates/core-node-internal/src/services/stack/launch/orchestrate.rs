@@ -304,7 +304,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
     placements: &daemon_config::launcher::Placements,
     copies: &daemon_config::launcher::CopyMembership,
     clocks: &daemon_config::launcher::ResolvedClocks,
-) -> std::result::Result<ValidatedPlan, String> {
+) -> Result<ValidatedPlan, String> {
     let root_config = ctx.node_stack.root().read().config().clone();
     publish_stdout(
         ctx,
@@ -484,7 +484,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
 fn topological_sort(
     planned: &[PlannedDeployment],
     deps_for: &HashMap<NodeKey, HashSet<NodeKey>>,
-) -> std::result::Result<Vec<NodeKey>, String> {
+) -> Result<Vec<NodeKey>, String> {
     let mut in_degree: HashMap<NodeKey, usize> = HashMap::new();
     let mut dependents: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
 

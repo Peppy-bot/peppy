@@ -769,7 +769,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
 async fn prepare_stack_publish(
     ctx: &StackChangeContext,
     request: &core_node_api::encoding::StackPublish,
-) -> std::result::Result<PhasePublish, peppylib::messaging::Failure> {
+) -> Result<PhasePublish, peppylib::messaging::Failure> {
     let repository =
         crate::services::node::publish::configured_repository(ctx.node_stack.publish_settings())
             .map_err(precondition_failed)?;

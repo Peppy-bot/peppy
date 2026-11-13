@@ -155,7 +155,7 @@ async fn sync_node(
     }
 
     // Collect consumed interfaces with resolved message formats
-    let consumed_interfaces = interfaces::collect_all_deployment_interfaces(
+    let consumed_interfaces = collect_all_deployment_interfaces(
         &node_config.manifest,
         &node_config.interfaces,
         &resolve_dep,

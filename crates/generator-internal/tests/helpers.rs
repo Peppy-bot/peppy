@@ -572,7 +572,7 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread", "time"] }}
 /// `dir`, with piped stdout and stderr. The binary runs directly rather than
 /// through `cargo run`, which would contend for cargo's global package-cache
 /// lock.
-pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std::process::Child {
+pub fn spawn_cargo_run(dir: &Path, env_vars: &[(&str, &str)]) -> std::process::Child {
     let binary_path = dir
         .join("target")
         .join("debug")
@@ -652,12 +652,7 @@ impl CapturedChild {
 
     /// Blocks until captured stdout contains `pattern` (as a substring).
     /// Panics if the child exits first or if `timeout` elapses.
-    pub fn wait_for_stdout_contains(
-        &mut self,
-        pattern: &str,
-        timeout: Duration,
-        dir: &std::path::Path,
-    ) {
+    pub fn wait_for_stdout_contains(&mut self, pattern: &str, timeout: Duration, dir: &Path) {
         let start = Instant::now();
         let needle = pattern.as_bytes();
         loop {
@@ -705,11 +700,7 @@ impl CapturedChild {
     /// Mirrors [`wait_for_child`] but pulls from the background buffers
     /// instead of reading the pipes directly (the drainer threads own
     /// them).
-    pub fn wait(
-        mut self,
-        timeout: Option<Duration>,
-        dir: &std::path::Path,
-    ) -> std::process::Output {
+    pub fn wait(mut self, timeout: Option<Duration>, dir: &Path) -> std::process::Output {
         let start = Instant::now();
         loop {
             if let Some(limit) = timeout
@@ -829,7 +820,7 @@ pub fn assert_exited_successfully(label: &str, output: &std::process::Output) ->
 pub fn wait_for_child(
     child: &mut std::process::Child,
     timeout: Option<Duration>,
-    dir: &std::path::Path,
+    dir: &Path,
 ) -> std::process::Output {
     let start = Instant::now();
     loop {
@@ -1001,7 +992,7 @@ pub fn run_generate_peppygen_lib_test(
     let node_dir = temp_dir.path();
 
     // Write the peppy.json5 config
-    let config_path = node_dir.join(config::consts::NODE_CONFIG_FILE);
+    let config_path = node_dir.join(NODE_CONFIG_FILE);
     fs::write(&config_path, json_config_content).expect("failed to write peppy.json5");
 
     // Generate the library
@@ -1074,7 +1065,7 @@ pub async fn wait_for_service_reachable_or_exit(
     to_service_name: &str,
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
-    dir: &std::path::Path,
+    dir: &Path,
     timeout: Duration,
 ) {
     let start = Instant::now();
@@ -1145,7 +1136,7 @@ pub async fn wait_for_action_service_reachable_or_exit(
     to_action_name: &str,
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
-    dir: &std::path::Path,
+    dir: &Path,
     timeout: Duration,
 ) {
     wait_for_action_reachable_via_target_or_exit(
@@ -1170,7 +1161,7 @@ pub async fn wait_for_action_reachable_via_target_or_exit(
     to_action_name: &str,
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
-    dir: &std::path::Path,
+    dir: &Path,
     timeout: Duration,
 ) {
     let start = Instant::now();
@@ -1238,7 +1229,7 @@ pub async fn wait_for_health_service_reachable_or_exit(
     to_node_name: &str,
     target_instance_id: &str,
     child: &mut std::process::Child,
-    dir: &std::path::Path,
+    dir: &Path,
     timeout: Duration,
 ) {
     wait_for_service_reachable_or_exit(
@@ -1484,7 +1475,7 @@ pub fn run_python_check(project_dir: &Path, script: &str, what: &str) {
 }
 
 /// Spawns `uv run python main.py` inside the given project directory.
-pub fn spawn_python_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std::process::Child {
+pub fn spawn_python_run(dir: &Path, env_vars: &[(&str, &str)]) -> std::process::Child {
     let mut command = Command::new("uv");
     command
         .args(["run", "python", "main.py"])

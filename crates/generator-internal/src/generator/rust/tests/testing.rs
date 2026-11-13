@@ -29,7 +29,7 @@ fn registry_with_pairing(cardinality: Cardinality) -> TestGenRegistry {
 
 fn rendered_harness(registry: &TestGenRegistry) -> String {
     let mut generator = RustGenerator::new();
-    super::super::fixtures::render(&mut generator, registry).unwrap();
+    fixtures::render(&mut generator, registry).unwrap();
     generator
         .into_artifacts()
         .into_iter()
@@ -230,7 +230,7 @@ fn registry_with_camera_topics(names: &[&str]) -> TestGenRegistry {
 #[test]
 fn a_member_named_after_one_of_the_mock_s_own_bindings_takes_its_link_qualified_name() {
     let mut generator = RustGenerator::new();
-    super::super::mock::render(&mut generator, &registry_with_camera_topics(&["session"]))
+    mock::render(&mut generator, &registry_with_camera_topics(&["session"]))
         .expect("a member named after the mock's own `session` renders");
     let camera = generator
         .into_artifacts()
@@ -252,14 +252,14 @@ fn a_member_named_after_one_of_the_mock_s_own_bindings_takes_its_link_qualified_
 #[test]
 fn a_link_qualified_name_still_collides_with_a_member_that_carries_it() {
     let mut generator = RustGenerator::new();
-    let error = super::super::mock::render(
+    let error = mock::render(
         &mut generator,
         &registry_with_camera_topics(&["session", "camera_session"]),
     )
     .expect_err("two members on one module must not render");
     assert_matches!(
             &error,
-            crate::error::Error::ModuleNameCollision { sanitized, first, second, .. }
+            Error::ModuleNameCollision { sanitized, first, second, .. }
                 if sanitized == "camera_session"
                     && first == "camera/session"
                     && second == "camera/camera_session",
@@ -273,23 +273,22 @@ fn a_link_qualified_name_still_collides_with_a_member_that_carries_it() {
 fn a_retaining_topic_reaches_its_mock_publisher_and_its_fixture_subscription() {
     let registry = TestGenRegistry::with_retaining_topics();
 
-    let rendered_by =
-        |render: fn(&mut RustGenerator, &TestGenRegistry) -> crate::error::Result<()>| {
-            let mut generator = RustGenerator::new();
-            render(&mut generator, &registry).unwrap();
-            generator
-                .into_artifacts()
-                .iter()
-                .flat_map(|artifact| artifact.code_output.chars())
-                .filter(|character| !character.is_whitespace())
-                .collect::<String>()
-        };
-    let mocks = rendered_by(super::super::mock::render);
+    let rendered_by = |render: fn(&mut RustGenerator, &TestGenRegistry) -> Result<()>| {
+        let mut generator = RustGenerator::new();
+        render(&mut generator, &registry).unwrap();
+        generator
+            .into_artifacts()
+            .iter()
+            .flat_map(|artifact| artifact.code_output.chars())
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
+    };
+    let mocks = rendered_by(mock::render);
     assert!(
         mocks.contains("QoSProfile::Standard,{constRETENTION:peppylib::config::TopicRetention=matchpeppylib::config::TopicRetention::latest(3,)"),
         "the mock publisher declares the retention:\n{mocks}"
     );
-    let fixtures = rendered_by(super::super::fixtures::render);
+    let fixtures = rendered_by(fixtures::render);
     assert!(
         fixtures.contains("QoSProfile::Reliable,{constRETENTION:peppylib::config::TopicRetention=matchpeppylib::config::TopicRetention::latest(3,)"),
         "the fixture subscription declares the retention:\n{fixtures}"
@@ -343,14 +342,14 @@ fn harness_of_a_node_with_retaining_topics_lints_clean() {
         )
         .unwrap();
         generator.add_emitted_topic(&status, None).unwrap();
-        let robot_mode: config::node::ConsumedTopic =
+        let robot_mode: ConsumedTopic =
             serde_json5::from_str(r#"{ link_id: "robot", name: "robot_mode" }"#).unwrap();
         generator
             .add_consumed_topic(
                 &robot_mode,
                 serde_json5::from_str(r#"{ mode: "string" }"#).unwrap(),
                 TopicRetention::latest(3).unwrap(),
-                &crate::DependencyContext::native("robot_state", "v1", "robot", Cardinality::One),
+                &DependencyContext::native("robot_state", "v1", "robot", Cardinality::One),
             )
             .unwrap();
     });
@@ -376,7 +375,7 @@ fn harness_of_a_node_with_rust_keyword_names_lints_clean() {
         }"#,
     )
     .unwrap();
-    let keyword_action: config::node::NativeExposedAction = serde_json5::from_str(
+    let keyword_action: NativeExposedAction = serde_json5::from_str(
         r#"{
           name: "move",
           description: "A test member.",
@@ -395,7 +394,7 @@ fn harness_of_a_node_with_rust_keyword_names_lints_clean() {
     .unwrap();
 
     assert_generated_node_lints_clean(|generator| {
-        let exposed_service = config::node::NativeExposedService {
+        let exposed_service = NativeExposedService {
             name: "type".to_string(),
             description: config::description::Description::new("A test service.").unwrap(),
             request_message_format: Some(keyword_fields.clone()),
@@ -407,33 +406,33 @@ fn harness_of_a_node_with_rust_keyword_names_lints_clean() {
         generator.add_exposed_action(&keyword_action, None).unwrap();
         generator.add_emitted_topic(&keyword_topic, None).unwrap();
 
-        let consumed_topic: config::node::ConsumedTopic =
+        let consumed_topic: ConsumedTopic =
             serde_json5::from_str(r#"{ link_id: "ref", name: "static" }"#).unwrap();
         generator
             .add_consumed_topic(
                 &consumed_topic,
                 keyword_fields.clone(),
                 TopicRetention::LiveOnly,
-                &crate::DependencyContext::native("ref_node", "v1", "ref", Cardinality::ZeroOrOne),
+                &DependencyContext::native("ref_node", "v1", "ref", Cardinality::ZeroOrOne),
             )
             .unwrap();
-        let consumed_service: config::node::ConsumedService =
+        let consumed_service: ConsumedService =
             serde_json5::from_str(r#"{ link_id: "dyn", name: "where" }"#).unwrap();
         generator
             .add_consumed_service(
                 &consumed_service,
                 &keyword_fields,
                 &keyword_fields,
-                &crate::DependencyContext::native("dyn_node", "v1", "dyn", Cardinality::OneOrMore),
+                &DependencyContext::native("dyn_node", "v1", "dyn", Cardinality::OneOrMore),
             )
             .unwrap();
-        let consumed_action: config::node::ConsumedAction =
+        let consumed_action: ConsumedAction =
             serde_json5::from_str(r#"{ link_id: "for", name: "move" }"#).unwrap();
         generator
             .add_consumed_action(
                 &consumed_action,
                 &(&keyword_action).into(),
-                &crate::DependencyContext::native("for_node", "v1", "for", Cardinality::ZeroOrMore),
+                &DependencyContext::native("for_node", "v1", "for", Cardinality::ZeroOrMore),
             )
             .unwrap();
 
