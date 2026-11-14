@@ -2021,6 +2021,32 @@ mod tests {
         );
     }
 
+    /// The node summary names every state an instance can be in, in one
+    /// order, whatever the order of the instances.
+    #[test]
+    fn compact_instance_counts_name_every_state_in_one_order() {
+        let every_state = binding_node(
+            "arm",
+            vec![
+                ("arm-1", InstanceState::Failed, vec![]),
+                ("arm-2", InstanceState::Finished, vec![]),
+                ("arm-3", InstanceState::Restarting, vec![]),
+                ("arm-4", InstanceState::Starting, vec![]),
+                ("arm-5", InstanceState::Running, vec![]),
+                ("arm-6", InstanceState::Running, vec![]),
+            ],
+        );
+        assert_eq!(
+            format_instances_compact(&every_state),
+            "6 (2 running, 1 starting, 1 restarting, 1 finished, 1 failed)"
+        );
+    }
+
+    #[test]
+    fn compact_instance_counts_show_zero_for_a_node_without_instance() {
+        assert_eq!(format_instances_compact(&binding_node("arm", vec![])), "0");
+    }
+
     #[test]
     fn bindings_table_renders_status_column() {
         let nodes = vec![
