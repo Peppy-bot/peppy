@@ -25,15 +25,18 @@
 //! passes no flag ([`UserNamespace::ApptainerDefault`]), so a root daemon on
 //! a kernel with zstd squashfs keeps the capabilities of the real root.
 //!
-//! The namespace maps user 0 and group 0 only. In it:
+//! The namespace maps user 0 and the effective group of the daemon only. In
+//! it:
 //!
 //! - A container has no capability of the real root. It cannot, for example,
 //!   take a real-time priority.
-//! - Root has its rights on the files of root only, and is one of the other
-//!   users for every other file. An apptainer installation below a directory
-//!   that is closed to the other users (the home directory of another user,
-//!   of mode 750) is thus out of its reach, and
-//!   [`UserNamespace::for_this_daemon`] reports that directory.
+//! - Root has the rights of root only on a file of user 0 and of that group,
+//!   and the permission bits decide for every other file. An apptainer
+//!   installation below a directory that those bits close to root (the home
+//!   directory of another user, of mode 750) is thus out of its reach
+//!   ([`UserNamespace::OutOfReach`]): each `run` and each `exec` fails with
+//!   an error that names that directory. The daemon itself, a build and a
+//!   process node use no user namespace, so they work there.
 
 use crate::error::{Error, Result};
 use flate2::read::GzDecoder;
@@ -45,7 +48,7 @@ use std::sync::Once;
 
 /// The flag of `apptainer run` and `apptainer exec` that puts the container
 /// in a user namespace.
-pub(crate) const USER_NAMESPACE_FLAG: &str = "--userns";
+const USER_NAMESPACE_FLAG: &str = "--userns";
 
 /// The configuration of the running kernel, compressed with gzip. A kernel
 /// built with `CONFIG_IKCONFIG_PROC` has it, and a container reads it too.
@@ -74,12 +77,12 @@ const UID_MAP_FILE: &str = "/proc/self/uid_map";
 /// namespace: every user maps to itself.
 const INITIAL_USER_NAMESPACE_MAP: [&str; 3] = ["0", "0", "4294967295"];
 
-/// The user and the group of root.
-const ROOT_ID: u32 = 0;
+/// The user root.
+const ROOT_USER: u32 = 0;
 
-/// Whether peppy asks apptainer for a user namespace for a `run` or an
+/// What peppy asks of apptainer for the user namespace of a `run` or an
 /// `exec`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum UserNamespace {
     /// peppy passes no flag: apptainer uses a user namespace for a user that
     /// is not root, and none for root.
@@ -87,80 +90,222 @@ pub(crate) enum UserNamespace {
     /// peppy passes [`USER_NAMESPACE_FLAG`]: the daemon is the real root and
     /// its kernel cannot mount the zstd squashfs of an image.
     Forced,
+    /// The daemon needs the user namespace as for [`UserNamespace::Forced`],
+    /// and root cannot reach the apptainer installation from it: no `run`
+    /// and no `exec` can start a container.
+    OutOfReach(ClosedInstallDir),
 }
 
 impl UserNamespace {
     /// The choice for the daemon of this process on this host.
     ///
-    /// # Errors
-    ///
-    /// When the choice is [`UserNamespace::Forced`] and root cannot reach
-    /// `apptainer_dir` from the user namespace, or the permissions of a
-    /// directory on the way to it cannot be read.
-    pub(crate) fn for_this_daemon(apptainer_dir: &Path) -> Result<Self> {
+    /// It does not fail for [`UserNamespace::OutOfReach`]: the daemon, a
+    /// build and a process node use no user namespace. The commands that run
+    /// an image fail, through [`UserNamespace::flag`].
+    pub(crate) fn for_this_daemon(apptainer_dir: &Path) -> Self {
         let user_namespace = Self::for_daemon(
-            daemon_is_real_root(),
+            RealRoot::of_this_process().as_ref(),
             &KernelConfigFiles::of_this_host(),
             apptainer_dir,
             DirectoryAccess::of,
-        )?;
-        if user_namespace == Self::Forced {
-            announce_forced_user_namespace();
-        }
-        Ok(user_namespace)
+        );
+        user_namespace.announce();
+        user_namespace
     }
 
     /// [`UserNamespace::for_this_daemon`] for a daemon and a host that the
-    /// arguments describe. `access_of` reads the owner, the group and the
+    /// arguments describe: `real_root` is `None` for a daemon that is not the
+    /// real root, and `access_of` reads the owner, the group and the
     /// permission bits of a directory.
     fn for_daemon(
-        daemon_is_real_root: bool,
+        real_root: Option<&RealRoot>,
         kernel_config_files: &KernelConfigFiles,
         apptainer_dir: &Path,
         access_of: impl Fn(&Path) -> io::Result<DirectoryAccess>,
-    ) -> Result<Self> {
-        if !daemon_is_real_root {
-            return Ok(Self::ApptainerDefault);
-        }
+    ) -> Self {
+        let Some(real_root) = real_root else {
+            return Self::ApptainerDefault;
+        };
         // Without a configuration to read, the kernel is taken to mount zstd
         // squashfs, as the kernel of each Ubuntu and Debian release does.
         let Some(kernel_config) = kernel_config_files.read() else {
-            return Ok(Self::ApptainerDefault);
+            return Self::ApptainerDefault;
         };
         if kernel_config.mounts_zstd_squashfs() {
-            return Ok(Self::ApptainerDefault);
+            return Self::ApptainerDefault;
         }
-        ensure_root_reaches_from_user_namespace(apptainer_dir, access_of)?;
-        Ok(Self::Forced)
+        match real_root.closed_dir_on_the_way_to(apptainer_dir, access_of) {
+            Some(closed_dir) => Self::OutOfReach(closed_dir),
+            None => Self::Forced,
+        }
+    }
+
+    /// The flag that a `run` or an `exec` passes to apptainer, if any.
+    ///
+    /// # Errors
+    ///
+    /// For [`UserNamespace::OutOfReach`]: the command cannot start a
+    /// container, and the error names the directory to open.
+    pub(crate) fn flag(&self) -> Result<Option<&'static str>> {
+        match self {
+            Self::ApptainerDefault => Ok(None),
+            Self::Forced => Ok(Some(USER_NAMESPACE_FLAG)),
+            Self::OutOfReach(closed_dir) => Err(closed_dir.to_error()),
+        }
+    }
+
+    /// Tells the operator, once for the process and for each choice, what
+    /// the user namespace changes for the containers of this root daemon.
+    fn announce(&self) {
+        static FORCED: Once = Once::new();
+        static OUT_OF_REACH: Once = Once::new();
+        match self {
+            Self::ApptainerDefault => {}
+            Self::Forced => FORCED.call_once(|| {
+                tracing::info!(
+                    "This daemon runs as root and the kernel cannot mount zstd squashfs, so \
+                     apptainer runs each container in a user namespace ({USER_NAMESPACE_FLAG}): \
+                     a node has no capability of the real root"
+                );
+            }),
+            Self::OutOfReach(closed_dir) => OUT_OF_REACH.call_once(|| {
+                tracing::warn!(
+                    "No container of this daemon can start. {}",
+                    closed_dir.to_error()
+                );
+            }),
+        }
     }
 }
 
-/// Whether this process is the real root: user 0 of the initial user
-/// namespace. A process whose user namespace cannot be read is taken not to
-/// be, so that peppy passes no flag for it.
-fn daemon_is_real_root() -> bool {
-    rustix::process::geteuid().is_root()
-        && fs::read_to_string(UID_MAP_FILE)
-            .is_ok_and(|uid_map| is_initial_user_namespace_map(&uid_map))
+/// A directory on the way to the apptainer installation that root cannot
+/// enter from the user namespace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClosedInstallDir {
+    /// The apptainer installation, with its symbolic links resolved.
+    pub(crate) apptainer_dir: PathBuf,
+    /// The outermost directory that root cannot enter: the first one to
+    /// open.
+    pub(crate) closed_dir: PathBuf,
+    /// The permission bits of `closed_dir` that the kernel reads for root.
+    pub(crate) class_of_root: PermissionClass,
+}
+
+impl ClosedInstallDir {
+    /// The error of a command that runs an image.
+    fn to_error(&self) -> Error {
+        Error::InstallDirClosedToRootInUserNamespace {
+            apptainer_dir: self.apptainer_dir.display().to_string(),
+            closed_dir: self.closed_dir.display().to_string(),
+            chmod_class: self.class_of_root.chmod_letter(),
+        }
+    }
+}
+
+/// A daemon that is the real root: user 0 of the initial user namespace. Its
+/// groups decide which directories it enters from the user namespace of
+/// apptainer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RealRoot {
+    /// The effective group: the one group that apptainer maps into the user
+    /// namespace.
+    effective_group: u32,
+    /// The supplementary groups. The user namespace maps none of them, and
+    /// the kernel still reads the group bits of their directories for root.
+    supplementary_groups: Vec<u32>,
+}
+
+impl RealRoot {
+    /// The daemon of this process, or `None` when it is not the real root. A
+    /// process whose user namespace or groups cannot be read is taken not to
+    /// be, so that peppy passes no flag for it.
+    fn of_this_process() -> Option<Self> {
+        if !rustix::process::geteuid().is_root() {
+            return None;
+        }
+        let uid_map = fs::read_to_string(UID_MAP_FILE).ok()?;
+        if !is_initial_user_namespace_map(&uid_map) {
+            return None;
+        }
+        let supplementary_groups = rustix::process::getgroups().ok()?;
+        Some(Self {
+            effective_group: rustix::process::getegid().as_raw(),
+            supplementary_groups: supplementary_groups
+                .into_iter()
+                .map(rustix::process::Gid::as_raw)
+                .collect(),
+        })
+    }
+
+    /// Whether `group` is one of the groups of this root.
+    fn is_in_group(&self, group: u32) -> bool {
+        group == self.effective_group || self.supplementary_groups.contains(&group)
+    }
+
+    /// The class of permission bits that the kernel reads for this root on
+    /// `dir`: the bits of the owner for a directory of root, the bits of the
+    /// group for a directory of one of its groups, and the bits of the other
+    /// users for every other directory.
+    fn permission_class_on(&self, dir: DirectoryAccess) -> PermissionClass {
+        if dir.owner == ROOT_USER {
+            PermissionClass::Owner
+        } else if self.is_in_group(dir.group) {
+            PermissionClass::Group
+        } else {
+            PermissionClass::Others
+        }
+    }
+
+    /// Whether this root can enter `dir` from the user namespace of
+    /// apptainer, which maps user 0 and the effective group only.
+    ///
+    /// Outside a user namespace, the capability `CAP_DAC_READ_SEARCH` lets
+    /// root enter a directory whatever its permission bits. In the namespace
+    /// the capability holds only for a directory whose owner and group are
+    /// both mapped, so the bits of
+    /// [`permission_class_on`](Self::permission_class_on) decide for every
+    /// other directory.
+    fn enters_from_user_namespace(&self, dir: DirectoryAccess) -> bool {
+        let owner_and_group_are_mapped =
+            dir.owner == ROOT_USER && dir.group == self.effective_group;
+        let bits_admit_root = dir.mode & self.permission_class_on(dir).search_bit() != 0;
+        owner_and_group_are_mapped || bits_admit_root
+    }
+
+    /// The outermost directory, from the root of the file system down to
+    /// `apptainer_dir`, that this root cannot enter from the user namespace,
+    /// or `None` when it reaches the installation.
+    ///
+    /// An installation that cannot be resolved and a directory whose
+    /// permissions cannot be read decide nothing: apptainer reports a path
+    /// that it cannot reach.
+    fn closed_dir_on_the_way_to(
+        &self,
+        apptainer_dir: &Path,
+        access_of: impl Fn(&Path) -> io::Result<DirectoryAccess>,
+    ) -> Option<ClosedInstallDir> {
+        // The kernel resolves symbolic links, so the search reads the
+        // directories of the resolved path.
+        let resolved_dir = apptainer_dir.canonicalize().ok()?;
+        // From the root of the file system down, so that the result is the
+        // outermost closed directory: the first one to open.
+        let mut dirs: Vec<&Path> = resolved_dir.ancestors().collect();
+        dirs.reverse();
+        dirs.into_iter()
+            .filter_map(|dir| access_of(dir).ok().map(|access| (dir, access)))
+            .find(|(_, access)| !self.enters_from_user_namespace(*access))
+            .map(|(dir, access)| ClosedInstallDir {
+                apptainer_dir: resolved_dir.clone(),
+                closed_dir: dir.to_path_buf(),
+                class_of_root: self.permission_class_on(access),
+            })
+    }
 }
 
 /// Whether `uid_map`, the text of a [`UID_MAP_FILE`], is the map of the
 /// initial user namespace.
 fn is_initial_user_namespace_map(uid_map: &str) -> bool {
     uid_map.split_whitespace().eq(INITIAL_USER_NAMESPACE_MAP)
-}
-
-/// Tells the operator, once for the process, why the containers of this root
-/// daemon run without the capabilities of the real root.
-fn announce_forced_user_namespace() {
-    static ANNOUNCED: Once = Once::new();
-    ANNOUNCED.call_once(|| {
-        tracing::info!(
-            "This daemon runs as root and the kernel cannot mount zstd squashfs, so \
-             apptainer runs each container in a user namespace ({USER_NAMESPACE_FLAG}): a \
-             node has no capability of the real root"
-        );
-    });
 }
 
 /// The files that can hold the configuration of the running kernel, in the
@@ -233,7 +378,7 @@ impl KernelConfig {
 
 /// The users that one group of three permission bits of a file is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PermissionClass {
+pub(crate) enum PermissionClass {
     Owner,
     Group,
     Others,
@@ -277,66 +422,6 @@ impl DirectoryAccess {
             mode: metadata.mode(),
         })
     }
-
-    /// The class of permission bits that the kernel reads for root: the bits
-    /// of the owner for a directory of root, the bits of the group for a
-    /// directory of the group of root, and the bits of the other users for
-    /// every other directory.
-    fn class_of_root(self) -> PermissionClass {
-        if self.owner == ROOT_ID {
-            PermissionClass::Owner
-        } else if self.group == ROOT_ID {
-            PermissionClass::Group
-        } else {
-            PermissionClass::Others
-        }
-    }
-
-    /// Whether root can enter the directory from a user namespace that maps
-    /// user 0 and group 0 only.
-    ///
-    /// Outside a user namespace, the capability `CAP_DAC_READ_SEARCH` lets
-    /// root enter a directory whatever its permission bits. In the namespace
-    /// the capability holds only for a directory whose owner and group are
-    /// both mapped, so the bits of [`class_of_root`](Self::class_of_root)
-    /// decide for every other directory.
-    fn admits_root_in_user_namespace(self) -> bool {
-        let owner_and_group_are_mapped = self.owner == ROOT_ID && self.group == ROOT_ID;
-        let bits_admit_root = self.mode & self.class_of_root().search_bit() != 0;
-        owner_and_group_are_mapped || bits_admit_root
-    }
-}
-
-/// Checks that root can reach `apptainer_dir` from the user namespace: that
-/// it can enter the directory and each directory above it.
-fn ensure_root_reaches_from_user_namespace(
-    apptainer_dir: &Path,
-    access_of: impl Fn(&Path) -> io::Result<DirectoryAccess>,
-) -> Result<()> {
-    let unreadable = |path: &Path, source: io::Error| Error::InstallDirAccessUnreadable {
-        path: path.display().to_string(),
-        source,
-    };
-    // The kernel resolves symbolic links, so the check reads the directories
-    // of the resolved path.
-    let resolved_dir = apptainer_dir
-        .canonicalize()
-        .map_err(|source| unreadable(apptainer_dir, source))?;
-    // From the root of the file system down, so that the error names the
-    // outermost closed directory: the first one to open.
-    let mut dirs: Vec<&Path> = resolved_dir.ancestors().collect();
-    dirs.reverse();
-    for dir in dirs {
-        let access = access_of(dir).map_err(|source| unreadable(dir, source))?;
-        if !access.admits_root_in_user_namespace() {
-            return Err(Error::InstallDirClosedToRootInUserNamespace {
-                apptainer_dir: resolved_dir.display().to_string(),
-                closed_dir: dir.display().to_string(),
-                chmod_class: access.class_of_root().chmod_letter(),
-            });
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -367,20 +452,38 @@ CONFIG_SQUASHFS_XZ=y
 # CONFIG_SQUASHFS_ZSTD is not set
 ";
 
+    /// The group root.
+    const ROOT_GROUP: u32 = 0;
+
+    /// A user of the host that is not root.
+    const OTHER_USER: u32 = 1000;
+
+    /// The group of [`OTHER_USER`].
+    const OTHER_GROUP: u32 = 1000;
+
     /// A directory that every user can enter.
     const OPEN_DIR: DirectoryAccess = DirectoryAccess {
-        owner: 1000,
-        group: 1000,
+        owner: OTHER_USER,
+        group: OTHER_GROUP,
         mode: 0o755,
     };
 
     /// The home directory of a user of Ubuntu 24.04: closed to the other
     /// users.
     const PRIVATE_HOME: DirectoryAccess = DirectoryAccess {
-        owner: 1000,
-        group: 1000,
+        owner: OTHER_USER,
+        group: OTHER_GROUP,
         mode: 0o750,
     };
+
+    /// Root as a system service runs it: in the group root and in no other
+    /// group.
+    fn root_of_the_root_group() -> RealRoot {
+        RealRoot {
+            effective_group: ROOT_GROUP,
+            supplementary_groups: Vec::new(),
+        }
+    }
 
     fn kernel_config(text: &str) -> KernelConfig {
         KernelConfig::parse(text.to_string()).expect("the text sets an option")
@@ -421,16 +524,13 @@ CONFIG_SQUASHFS_XZ=y
     /// [`UserNamespace::for_daemon`] for an installation in a scratch
     /// directory that every user can enter.
     fn user_namespace_for(
-        daemon_is_real_root: bool,
+        real_root: Option<&RealRoot>,
         proc_text: Option<&str>,
         boot_text: Option<&str>,
     ) -> UserNamespace {
         let scratch = scratch_dir();
         let files = kernel_config_files(scratch.path(), proc_text, boot_text);
-        UserNamespace::for_daemon(daemon_is_real_root, &files, scratch.path(), |_| {
-            Ok(OPEN_DIR)
-        })
-        .expect("root reaches a directory that every user can enter")
+        UserNamespace::for_daemon(real_root, &files, scratch.path(), |_| Ok(OPEN_DIR))
     }
 
     #[test]
@@ -547,8 +647,10 @@ CONFIG_SQUASHFS_XZ=y
 
     #[test]
     fn the_real_root_on_a_kernel_without_zstd_squashfs_forces_the_user_namespace() {
-        let from_proc = user_namespace_for(true, Some(CONFIG_WITHOUT_ZSTD), None);
-        let from_boot = user_namespace_for(true, None, Some(CONFIG_WITHOUT_ZSTD));
+        let root = root_of_the_root_group();
+
+        let from_proc = user_namespace_for(Some(&root), Some(CONFIG_WITHOUT_ZSTD), None);
+        let from_boot = user_namespace_for(Some(&root), None, Some(CONFIG_WITHOUT_ZSTD));
 
         assert_eq!(from_proc, UserNamespace::Forced);
         assert_eq!(from_boot, UserNamespace::Forced);
@@ -556,21 +658,25 @@ CONFIG_SQUASHFS_XZ=y
 
     #[test]
     fn the_real_root_on_a_kernel_with_zstd_squashfs_keeps_the_default_of_apptainer() {
-        let user_namespace = user_namespace_for(true, Some(CONFIG_WITH_ZSTD), None);
+        let root = root_of_the_root_group();
+
+        let user_namespace = user_namespace_for(Some(&root), Some(CONFIG_WITH_ZSTD), None);
 
         assert_eq!(user_namespace, UserNamespace::ApptainerDefault);
     }
 
     #[test]
     fn the_real_root_with_no_kernel_configuration_keeps_the_default_of_apptainer() {
-        let user_namespace = user_namespace_for(true, None, None);
+        let root = root_of_the_root_group();
+
+        let user_namespace = user_namespace_for(Some(&root), None, None);
 
         assert_eq!(user_namespace, UserNamespace::ApptainerDefault);
     }
 
     #[test]
     fn a_daemon_that_is_not_the_real_root_keeps_the_default_of_apptainer() {
-        let user_namespace = user_namespace_for(false, Some(CONFIG_WITHOUT_ZSTD), None);
+        let user_namespace = user_namespace_for(None, Some(CONFIG_WITHOUT_ZSTD), None);
 
         assert_eq!(user_namespace, UserNamespace::ApptainerDefault);
     }
@@ -581,66 +687,122 @@ CONFIG_SQUASHFS_XZ=y
         let files = kernel_config_files(scratch.path(), Some(CONFIG_WITHOUT_ZSTD), None);
 
         let user_namespace =
-            UserNamespace::for_daemon(false, &files, Path::new("/no/such/apptainer"), |dir| {
+            UserNamespace::for_daemon(None, &files, Path::new("/no/such/apptainer"), |dir| {
                 panic!("the permissions of {} must not be read", dir.display())
             });
 
-        assert_matches!(user_namespace, Ok(UserNamespace::ApptainerDefault));
+        assert_eq!(user_namespace, UserNamespace::ApptainerDefault);
     }
 
     #[test]
-    fn root_enters_a_directory_of_root_whatever_its_bits() {
+    fn the_real_root_on_a_kernel_with_zstd_squashfs_reads_no_directory() {
+        let scratch = scratch_dir();
+        let files = kernel_config_files(scratch.path(), Some(CONFIG_WITH_ZSTD), None);
+        let root = root_of_the_root_group();
+
+        let user_namespace =
+            UserNamespace::for_daemon(Some(&root), &files, scratch.path(), |dir| {
+                panic!("the permissions of {} must not be read", dir.display())
+            });
+
+        assert_eq!(user_namespace, UserNamespace::ApptainerDefault);
+    }
+
+    #[test]
+    fn root_enters_a_directory_of_root_and_of_its_effective_group_whatever_its_bits() {
         let closed_to_all = DirectoryAccess {
-            owner: ROOT_ID,
-            group: ROOT_ID,
+            owner: ROOT_USER,
+            group: ROOT_GROUP,
             mode: 0o000,
         };
 
-        assert!(closed_to_all.admits_root_in_user_namespace());
+        assert!(root_of_the_root_group().enters_from_user_namespace(closed_to_all));
     }
 
     #[test]
     fn root_enters_a_directory_of_another_user_by_the_bits_of_the_other_users() {
-        assert!(OPEN_DIR.admits_root_in_user_namespace());
-        assert!(!PRIVATE_HOME.admits_root_in_user_namespace());
+        let root = root_of_the_root_group();
+
+        assert!(root.enters_from_user_namespace(OPEN_DIR));
+        assert!(!root.enters_from_user_namespace(PRIVATE_HOME));
     }
 
     #[test]
-    fn root_enters_a_directory_of_the_group_of_root_by_the_bits_of_the_group() {
+    fn root_enters_a_directory_of_its_effective_group_by_the_bits_of_the_group() {
+        let root = root_of_the_root_group();
         let open_to_group = DirectoryAccess {
-            owner: 1000,
-            group: ROOT_ID,
+            owner: OTHER_USER,
+            group: ROOT_GROUP,
             mode: 0o750,
         };
         let open_to_others_only = DirectoryAccess {
-            owner: 1000,
-            group: ROOT_ID,
+            owner: OTHER_USER,
+            group: ROOT_GROUP,
             mode: 0o705,
         };
 
-        assert!(open_to_group.admits_root_in_user_namespace());
-        assert!(!open_to_others_only.admits_root_in_user_namespace());
+        assert!(root.enters_from_user_namespace(open_to_group));
+        assert!(!root.enters_from_user_namespace(open_to_others_only));
+    }
+
+    #[test]
+    fn root_enters_a_directory_of_a_supplementary_group_by_the_bits_of_the_group() {
+        let root = RealRoot {
+            effective_group: ROOT_GROUP,
+            supplementary_groups: vec![OTHER_GROUP],
+        };
+        let closed_to_group = DirectoryAccess {
+            mode: 0o700,
+            ..PRIVATE_HOME
+        };
+
+        assert!(root.enters_from_user_namespace(PRIVATE_HOME));
+        assert!(!root.enters_from_user_namespace(closed_to_group));
     }
 
     #[test]
     fn root_enters_its_own_directory_of_another_group_by_the_bits_of_the_owner() {
+        let root = root_of_the_root_group();
         let open_to_owner = DirectoryAccess {
-            owner: ROOT_ID,
-            group: 1000,
+            owner: ROOT_USER,
+            group: OTHER_GROUP,
             mode: 0o700,
         };
         let closed_to_owner = DirectoryAccess {
-            owner: ROOT_ID,
-            group: 1000,
+            owner: ROOT_USER,
+            group: OTHER_GROUP,
             mode: 0o077,
         };
 
-        assert!(open_to_owner.admits_root_in_user_namespace());
-        assert!(!closed_to_owner.admits_root_in_user_namespace());
+        assert!(root.enters_from_user_namespace(open_to_owner));
+        assert!(!root.enters_from_user_namespace(closed_to_owner));
+    }
+
+    /// The user namespace maps the effective group of the daemon, so the
+    /// group root is not in it for a root of another effective group.
+    #[test]
+    fn root_of_another_effective_group_has_the_rights_of_root_on_that_group_only() {
+        let root = RealRoot {
+            effective_group: OTHER_GROUP,
+            supplementary_groups: Vec::new(),
+        };
+        let of_root_and_its_effective_group = DirectoryAccess {
+            owner: ROOT_USER,
+            group: OTHER_GROUP,
+            mode: 0o000,
+        };
+        let of_root_and_the_root_group = DirectoryAccess {
+            owner: ROOT_USER,
+            group: ROOT_GROUP,
+            mode: 0o000,
+        };
+
+        assert!(root.enters_from_user_namespace(of_root_and_its_effective_group));
+        assert!(!root.enters_from_user_namespace(of_root_and_the_root_group));
     }
 
     #[test]
-    fn an_installation_below_a_closed_directory_names_the_outermost_one() {
+    fn an_installation_below_a_closed_directory_is_out_of_reach_of_the_outermost_one() {
         let scratch = scratch_dir();
         let install_dir = scratch.path().join("home/.peppy/bin/apptainer");
         fs::create_dir_all(&install_dir).expect("create the installation directory");
@@ -648,12 +810,122 @@ CONFIG_SQUASHFS_XZ=y
         let home = resolved_scratch.join("home");
         let peppy_home = home.join(".peppy");
         let files = kernel_config_files(scratch.path(), Some(CONFIG_WITHOUT_ZSTD), None);
+        let root = root_of_the_root_group();
 
-        let error = UserNamespace::for_daemon(true, &files, &install_dir, |dir| {
+        let user_namespace = UserNamespace::for_daemon(Some(&root), &files, &install_dir, |dir| {
             let is_closed = dir == home || dir == peppy_home;
             Ok(if is_closed { PRIVATE_HOME } else { OPEN_DIR })
-        })
-        .expect_err("root cannot enter the home directory");
+        });
+
+        assert_eq!(
+            user_namespace,
+            UserNamespace::OutOfReach(ClosedInstallDir {
+                apptainer_dir: resolved_scratch.join("home/.peppy/bin/apptainer"),
+                closed_dir: home,
+                class_of_root: PermissionClass::Others,
+            })
+        );
+    }
+
+    #[test]
+    fn the_same_installation_is_in_reach_of_a_root_in_the_group_of_the_closed_directory() {
+        let scratch = scratch_dir();
+        let files = kernel_config_files(scratch.path(), Some(CONFIG_WITHOUT_ZSTD), None);
+        let root = RealRoot {
+            effective_group: ROOT_GROUP,
+            supplementary_groups: vec![OTHER_GROUP],
+        };
+
+        let user_namespace =
+            UserNamespace::for_daemon(Some(&root), &files, scratch.path(), |_| Ok(PRIVATE_HOME));
+
+        assert_eq!(user_namespace, UserNamespace::Forced);
+    }
+
+    #[test]
+    fn a_closed_directory_of_a_group_of_root_is_opened_for_the_group() {
+        let scratch = scratch_dir();
+        let files = kernel_config_files(scratch.path(), Some(CONFIG_WITHOUT_ZSTD), None);
+        let root = root_of_the_root_group();
+
+        let user_namespace = UserNamespace::for_daemon(Some(&root), &files, scratch.path(), |_| {
+            Ok(DirectoryAccess {
+                owner: OTHER_USER,
+                group: ROOT_GROUP,
+                mode: 0o700,
+            })
+        });
+
+        assert_matches!(
+            user_namespace,
+            UserNamespace::OutOfReach(ClosedInstallDir {
+                class_of_root: PermissionClass::Group,
+                ..
+            })
+        );
+    }
+
+    #[test]
+    fn a_directory_whose_permissions_cannot_be_read_decides_nothing() {
+        let scratch = scratch_dir();
+        let resolved_scratch = scratch.path().canonicalize().expect("resolve the scratch");
+        let files = kernel_config_files(scratch.path(), Some(CONFIG_WITHOUT_ZSTD), None);
+        let root = root_of_the_root_group();
+        let unreadable = || Err(io::Error::from(io::ErrorKind::PermissionDenied));
+
+        let all_unreadable =
+            UserNamespace::for_daemon(Some(&root), &files, scratch.path(), |_| unreadable());
+        let closed_below_an_unreadable_one =
+            UserNamespace::for_daemon(Some(&root), &files, scratch.path(), |dir| {
+                if dir == resolved_scratch {
+                    Ok(PRIVATE_HOME)
+                } else {
+                    unreadable()
+                }
+            });
+
+        assert_eq!(all_unreadable, UserNamespace::Forced);
+        assert_matches!(
+            closed_below_an_unreadable_one,
+            UserNamespace::OutOfReach(ClosedInstallDir { closed_dir, .. })
+                if closed_dir == resolved_scratch
+        );
+    }
+
+    #[test]
+    fn an_installation_that_cannot_be_resolved_decides_nothing() {
+        let scratch = scratch_dir();
+        let missing = scratch.path().join("no-such-installation");
+        let files = kernel_config_files(scratch.path(), Some(CONFIG_WITHOUT_ZSTD), None);
+        let root = root_of_the_root_group();
+
+        let user_namespace =
+            UserNamespace::for_daemon(Some(&root), &files, &missing, |_| Ok(PRIVATE_HOME));
+
+        assert_eq!(user_namespace, UserNamespace::Forced);
+    }
+
+    #[test]
+    fn the_default_of_apptainer_passes_no_flag() {
+        assert_matches!(UserNamespace::ApptainerDefault.flag(), Ok(None));
+    }
+
+    #[test]
+    fn a_forced_user_namespace_passes_the_flag() {
+        assert_matches!(UserNamespace::Forced.flag(), Ok(Some("--userns")));
+    }
+
+    #[test]
+    fn an_installation_out_of_reach_gives_the_command_that_opens_the_directory() {
+        let out_of_reach = UserNamespace::OutOfReach(ClosedInstallDir {
+            apptainer_dir: PathBuf::from("/home/user/.peppy/bin/apptainer"),
+            closed_dir: PathBuf::from("/home/user"),
+            class_of_root: PermissionClass::Others,
+        });
+
+        let error = out_of_reach
+            .flag()
+            .expect_err("no container can start from an installation out of reach");
 
         assert_matches!(
             &error,
@@ -661,68 +933,12 @@ CONFIG_SQUASHFS_XZ=y
                 apptainer_dir,
                 closed_dir,
                 chmod_class: 'o',
-            } if *closed_dir == home.display().to_string()
-                && *apptainer_dir == resolved_scratch.join("home/.peppy/bin/apptainer").display().to_string()
+            } if closed_dir == "/home/user" && apptainer_dir == "/home/user/.peppy/bin/apptainer"
         );
         let message = error.to_string();
         assert!(
-            message.contains(&format!("chmod o+x {}", home.display())),
+            message.contains("chmod o+x /home/user\n"),
             "the message gives the command that opens the directory: {message}"
-        );
-    }
-
-    #[test]
-    fn a_closed_directory_of_the_group_of_root_is_opened_for_the_group() {
-        let scratch = scratch_dir();
-        let files = kernel_config_files(scratch.path(), Some(CONFIG_WITHOUT_ZSTD), None);
-
-        let error = UserNamespace::for_daemon(true, &files, scratch.path(), |_| {
-            Ok(DirectoryAccess {
-                owner: 1000,
-                group: ROOT_ID,
-                mode: 0o700,
-            })
-        })
-        .expect_err("root cannot enter a directory that is closed to its group");
-
-        assert_matches!(
-            error,
-            Error::InstallDirClosedToRootInUserNamespace {
-                chmod_class: 'g',
-                ..
-            }
-        );
-    }
-
-    #[test]
-    fn a_directory_whose_permissions_cannot_be_read_is_named() {
-        let scratch = scratch_dir();
-        let files = kernel_config_files(scratch.path(), Some(CONFIG_WITHOUT_ZSTD), None);
-
-        let error = UserNamespace::for_daemon(true, &files, scratch.path(), |_| {
-            Err(io::Error::from(io::ErrorKind::PermissionDenied))
-        })
-        .expect_err("the permissions cannot be read");
-
-        assert_matches!(
-            error,
-            Error::InstallDirAccessUnreadable { path, .. } if path == "/"
-        );
-    }
-
-    #[test]
-    fn an_installation_that_does_not_exist_is_named() {
-        let scratch = scratch_dir();
-        let missing = scratch.path().join("no-such-installation");
-        let files = kernel_config_files(scratch.path(), Some(CONFIG_WITHOUT_ZSTD), None);
-
-        let error = UserNamespace::for_daemon(true, &files, &missing, |_| Ok(OPEN_DIR))
-            .expect_err("the installation cannot be resolved");
-
-        assert_matches!(
-            error,
-            Error::InstallDirAccessUnreadable { path, .. }
-                if path == missing.display().to_string()
         );
     }
 

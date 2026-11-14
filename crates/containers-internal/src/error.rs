@@ -129,8 +129,9 @@ pub enum Error {
 
     /// A root daemon whose kernel cannot mount the zstd squashfs of an image
     /// runs its containers in a user namespace, and root cannot enter
-    /// `closed_dir` from it. `chmod_class` is the `chmod` letter of the
-    /// permission bits that the kernel reads for root on that directory.
+    /// `closed_dir` from it, so a command that runs an image cannot start
+    /// its container. `chmod_class` is the `chmod` letter of the permission
+    /// bits that the kernel reads for root on that directory.
     #[error(
         "This daemon runs as root on a kernel that cannot mount the zstd squashfs of an \
          image, so apptainer runs each container in a user namespace. In that namespace \
@@ -146,15 +147,6 @@ pub enum Error {
         apptainer_dir: String,
         closed_dir: String,
         chmod_class: char,
-    },
-
-    #[error(
-        "Failed to read the permissions of {path}, which holds the apptainer installation: \
-         {source}"
-    )]
-    InstallDirAccessUnreadable {
-        path: String,
-        source: std::io::Error,
     },
 
     #[error(transparent)]

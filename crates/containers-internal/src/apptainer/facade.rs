@@ -3,7 +3,7 @@ use super::absent_bind_paths::{self, NO_MOUNT_FLAG};
 use super::l4t_manifest::{self, L4T_MANIFEST_DIR, NVLIBLIST_PATH, NvliblistSync};
 use super::lima;
 use super::registry_auth::{APPTAINER_AUTH_FILE_ENV, RegistryAuth};
-use super::root_user_namespace::{USER_NAMESPACE_FLAG, UserNamespace};
+use super::root_user_namespace::UserNamespace;
 use core_node_api::encoding::ArtifactPlatform;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -147,8 +147,9 @@ pub(crate) enum Backend {
         /// [`l4t_manifest`]. The Lima backend has no
         /// counterpart: its guest is a VM on a Mac, never a Jetson.
         l4t_manifest_dir: PathBuf,
-        /// Whether a `run` or an `exec` asks apptainer for a user namespace;
-        /// see [`root_user_namespace`](super::root_user_namespace). The Lima
+        /// Whether a `run` or an `exec` asks apptainer for a user namespace,
+        /// and whether root reaches the apptainer installation from it; see
+        /// [`root_user_namespace`](super::root_user_namespace). The Lima
         /// backend has no counterpart: the user of its guest is not root, so
         /// apptainer uses a user namespace there on its own.
         user_namespace: UserNamespace,
@@ -578,7 +579,7 @@ impl Apptainer {
                 tmp_dir: apptainer_scratch_dir(),
                 registry_auth: RegistryAuth::from_env()?,
                 l4t_manifest_dir: PathBuf::from(L4T_MANIFEST_DIR),
-                user_namespace: UserNamespace::for_this_daemon(&apptainer_dir)?,
+                user_namespace: UserNamespace::for_this_daemon(&apptainer_dir),
                 absent_bind_paths: absent_bind_paths::of_installation(&apptainer_dir),
             }
         };
@@ -859,26 +860,28 @@ impl Apptainer {
     /// the user namespace of a root daemon whose kernel cannot mount the
     /// image, then one `--no-mount` for each `bind path` entry whose source
     /// the host does not have. The Lima backend needs none.
-    fn flags_to_run_an_image(&self) -> Vec<String> {
+    ///
+    /// # Errors
+    ///
+    /// When the daemon needs the user namespace and root cannot reach the
+    /// apptainer installation from it: no container can start.
+    fn flags_to_run_an_image(&self) -> Result<Vec<String>> {
         let Backend::Native {
             user_namespace,
             absent_bind_paths,
             ..
         } = &self.backend
         else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        let user_namespace_flag = match user_namespace {
-            UserNamespace::Forced => Some(USER_NAMESPACE_FLAG.to_string()),
-            UserNamespace::ApptainerDefault => None,
-        };
+        let user_namespace_flag = user_namespace.flag()?.map(str::to_string);
         let no_mount_flags = absent_bind_paths
             .iter()
             .flat_map(|destination| [NO_MOUNT_FLAG.to_string(), destination.clone()]);
-        user_namespace_flag
+        Ok(user_namespace_flag
             .into_iter()
             .chain(no_mount_flags)
-            .collect()
+            .collect())
     }
 
     /// Start building an `apptainer run` command.
@@ -1956,6 +1959,10 @@ impl<'a> ApptainerCommand<'a> {
     /// host's NVIDIA L4T container manifest into the `--nv` library list (see
     /// [`l4t_manifest`]), so it also fails here when the
     /// manifest cannot be read or the list cannot be written.
+    ///
+    /// A command that runs an image fails here when root cannot reach the
+    /// apptainer installation from the user namespace that the daemon needs
+    /// (see [`root_user_namespace`](super::root_user_namespace)).
     fn assemble_command(&self) -> Result<Command> {
         if passes_nv(&self.flags) {
             self.facade.prepare_nv_library_list()?;
@@ -2028,7 +2035,7 @@ impl<'a> ApptainerCommand<'a> {
 
         // 2. What this host needs to run an image
         if self.kind.runs_an_image() {
-            args.extend(self.facade.flags_to_run_an_image());
+            args.extend(self.facade.flags_to_run_an_image()?);
         }
 
         // 3. Accumulated flags (no translation needed)

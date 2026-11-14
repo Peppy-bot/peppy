@@ -56,7 +56,7 @@ Peppy packs each image with zstd, and some kernels cannot mount a zstd squashfs.
 In that user namespace:
 
 - A node has none of the capabilities of the real root. It cannot, for example, take a real-time priority.
-- Root has its rights on the files of root only. The Peppy installation must be in directories that root owns or that every user can enter, and not below the private home directory of another user. When it is not, the daemon stops with an error that names the directory and how to open it.
+- Root has its rights on the files of root only. The Peppy installation must be in directories that root owns, that a group of the daemon can enter, or that every user can enter, and not below the private home directory of another user. When it is not, the daemon starts and writes a warning in its log, and each container stops at its start with an error that names the directory and how to open it. A build and a process node do not use the user namespace, so they work.
 
 A root daemon on a kernel that mounts zstd squashfs runs its containers without a user namespace, with the capabilities of the real root.
 

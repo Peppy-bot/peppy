@@ -9,7 +9,7 @@ use super::facade::{
 };
 use super::facade::{Apptainer, Backend, GuestSignal, is_uri, prepare_scratch_dir};
 use super::registry_auth::{RegistryAuth, RegistryAuthSource};
-use super::root_user_namespace::UserNamespace;
+use super::root_user_namespace::{ClosedInstallDir, PermissionClass, UserNamespace};
 use crate::error::Error;
 use std::assert_matches;
 use std::fs;
@@ -120,6 +120,22 @@ fn native_facade_forcing_user_namespace() -> Apptainer {
         unreachable!("native_facade builds the native backend");
     };
     *user_namespace = UserNamespace::Forced;
+    facade
+}
+
+/// [`native_facade`] of a root daemon whose kernel cannot mount the zstd
+/// squashfs of an image, with its apptainer installation below a home
+/// directory that root cannot enter from the user namespace.
+fn native_facade_out_of_reach_of_the_user_namespace() -> Apptainer {
+    let mut facade = native_facade();
+    let Backend::Native { user_namespace, .. } = &mut facade.backend else {
+        unreachable!("native_facade builds the native backend");
+    };
+    *user_namespace = UserNamespace::OutOfReach(ClosedInstallDir {
+        apptainer_dir: PathBuf::from("/home/user/.peppy/bin/apptainer"),
+        closed_dir: PathBuf::from("/home/user"),
+        class_of_root: PermissionClass::Others,
+    });
     facade
 }
 
@@ -323,6 +339,43 @@ fn a_build_that_forces_the_user_namespace_passes_no_userns() {
         !args.iter().any(|arg| arg == "--userns"),
         "a build should not ask for a user namespace, got: {args:?}"
     );
+}
+
+#[test]
+fn a_run_and_an_exec_out_of_reach_of_the_user_namespace_name_the_closed_directory() {
+    let facade = native_facade_out_of_reach_of_the_user_namespace();
+
+    let run_error = facade
+        .run("/images/node.sif")
+        .build_args()
+        .expect_err("a run cannot start its container");
+    let exec_error = facade
+        .exec("/images/node.sif", &["echo", "hello"])
+        .build_args()
+        .expect_err("an exec cannot start its container");
+
+    for error in [run_error, exec_error] {
+        assert_matches!(
+            error,
+            Error::InstallDirClosedToRootInUserNamespace {
+                closed_dir,
+                chmod_class: 'o',
+                ..
+            } if closed_dir == "/home/user"
+        );
+    }
+}
+
+/// A build uses no user namespace, so it works where no container can start.
+#[test]
+fn a_build_out_of_reach_of_the_user_namespace_is_assembled() {
+    let facade = native_facade_out_of_reach_of_the_user_namespace();
+
+    let (output, def) = build_paths_under_home();
+    let cmd = facade.build(&output, &def);
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    assert_eq!(args.first().map(String::as_str), Some("build"));
 }
 
 #[test]
