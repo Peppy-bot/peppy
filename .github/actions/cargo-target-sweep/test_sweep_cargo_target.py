@@ -238,6 +238,22 @@ class SweepTestCase(unittest.TestCase):
     def recorded(self):
         return sweep.read_record(self.target.root)
 
+    def outside_directory(self):
+        """A directory outside the target dir, with a file in a directory and
+        a hidden file, and the two files."""
+        outside = self.scratch / "outside"
+        files = (outside / "kept" / "file", outside / ".hidden")
+        for file in files:
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text("outside")
+        return outside, files
+
+    def assertNotFollowed(self, symlink, files):
+        """The sweep removed `symlink` and none of `files`, which it leads to."""
+        self.assertFalse(symlink.is_symlink(), symlink)
+        for file in files:
+            self.assertTrue(file.is_file(), file)
+
 
 class ReadListingTest(unittest.TestCase):
     def test_lists_unit_outputs_and_build_script_outputs_under_the_build_root(self):
@@ -472,6 +488,38 @@ class SweepTest(SweepTestCase):
         self.assertEqual(self.target.entries(), {unit_dir("serde", OLD_SERDE)})
         self.assertFalse((self.target.profile / ".hidden").exists())
 
+    def test_removes_a_profile_dir_that_is_a_symlink_without_following_it(self):
+        outside, files = self.outside_directory()
+        self.target.profile.rmdir()
+        self.target.profile.symlink_to(outside)
+        sweep.write_record(self.target.root, sweep.LiveUnits(frozenset(), frozenset()))
+        removed = sweep.sweep(self.target.root)
+        self.assertEqual(removed.entries, 1)
+        self.assertNotFollowed(self.target.profile, files)
+
+    def test_removes_a_cargo_directory_that_is_a_symlink_without_following_it(self):
+        outside, files = self.outside_directory()
+        for cargo_dir in (sweep.UNITS_DIR, sweep.EXAMPLES_DIR, "incremental"):
+            with self.subTest(cargo_dir=cargo_dir):
+                symlink = self.target.profile / cargo_dir
+                symlink.symlink_to(outside)
+                sweep.write_record(
+                    self.target.root, sweep.LiveUnits(frozenset(), frozenset())
+                )
+                removed = sweep.sweep(self.target.root)
+                self.assertEqual(removed.entries, 1)
+                self.assertNotFollowed(symlink, files)
+
+    def test_the_command_follows_a_target_dir_that_is_a_symlink(self):
+        old_build(self.target)
+        given = self.scratch / "given"
+        given.symlink_to(self.target.root)
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = sweep.main(["sweep", str(given)])
+        self.assertEqual(status, 0)
+        self.assertTrue(given.is_symlink())
+        self.assertEqual(list(self.target.root.iterdir()), [])
+
     def test_leaves_the_locks_and_what_is_not_named_by_unit(self):
         old_build(self.target)
         sweep.write_record(self.target.root, sweep.LiveUnits(frozenset(), frozenset()))
@@ -561,6 +609,30 @@ class RecordTest(SweepTestCase):
         self.assertEqual(self.target.entries(), before)
         self.assertIsNone(self.recorded())
         self.assertIn("::warning::", self.output)
+
+    def test_a_cargo_directory_that_is_a_symlink_is_an_unknown_layout(self):
+        outside, files = self.outside_directory()
+        for cargo_dir in (".", sweep.UNITS_DIR, sweep.EXAMPLES_DIR):
+            with self.subTest(cargo_dir=cargo_dir):
+                target = self.target_dir(f"target-{len(cargo_dir)}")
+                sweep.write_record(
+                    target.root, sweep.LiveUnits(frozenset(), frozenset())
+                )
+                symlink = target.profile / cargo_dir
+                if cargo_dir == ".":
+                    symlink = target.profile
+                    symlink.rmdir()
+                symlink.symlink_to(outside)
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    removed = sweep.record(
+                        target.root, target.listing([build_finished(True)]), BUILD_ROOT
+                    )
+                self.assertEqual(removed, sweep.NOTHING_REMOVED)
+                self.assertTrue(symlink.is_symlink())
+                self.assertIsNone(sweep.read_record(target.root))
+                self.assertIn("::warning::", output.getvalue())
+                for file in files:
+                    self.assertTrue(file.is_file(), file)
 
     def test_replaces_an_unreadable_record_with_the_units_the_build_used(self):
         for content in UNREADABLE_RECORDS:
@@ -663,6 +735,17 @@ class PruneTest(unittest.TestCase):
         self.prune("node/member")
         self.assertEqual(list(self.root.iterdir()), [])
         self.assertIntact(outside_target.root)
+
+    def test_the_command_follows_a_target_root_that_is_a_symlink(self):
+        kept = self.project_target("a")
+        self.project_target("b")
+        given = self.scratch / "given"
+        given.symlink_to(self.root)
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = sweep.main(["prune", str(given), "a"])
+        self.assertEqual(status, 0)
+        self.assertTrue(given.is_symlink())
+        self.assertEqual(list(self.root.iterdir()), [kept])
 
     def test_without_live_dirs_removes_every_target_dir(self):
         self.project_target("a")
