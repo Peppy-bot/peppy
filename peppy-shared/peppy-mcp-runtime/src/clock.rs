@@ -31,7 +31,7 @@ impl Clock {
             let since_epoch = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default();
-            u64::try_from(since_epoch.as_nanos()).unwrap_or(u64::MAX)
+            peppy_config_model::duration::saturating_nanos(since_epoch)
         })
     }
 

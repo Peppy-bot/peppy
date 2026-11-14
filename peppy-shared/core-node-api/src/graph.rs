@@ -134,9 +134,7 @@ pub fn duplicate_instance_id_message(
 /// A time as the wire carries it: milliseconds since the Unix epoch.
 pub fn unix_ms(time: std::time::SystemTime) -> u64 {
     time.duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
+        .map_or(0, config::duration::saturating_millis)
 }
 
 /// Why the last start of an instance ended: its process's exit, or a start

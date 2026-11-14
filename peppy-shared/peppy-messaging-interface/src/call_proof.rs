@@ -278,9 +278,8 @@ impl CallSigner {
 
 /// The milliseconds of `time` since the Unix epoch; 0 before it.
 pub fn unix_millis(time: SystemTime) -> u64 {
-    time.duration_since(UNIX_EPOCH).map_or(0, |since| {
-        u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-    })
+    time.duration_since(UNIX_EPOCH)
+        .map_or(0, config::duration::saturating_millis)
 }
 
 /// How a sender signs one call: with which signer, for which receiver. It

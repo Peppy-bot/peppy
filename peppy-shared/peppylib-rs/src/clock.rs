@@ -148,8 +148,8 @@ fn invalid_clock_request(
 /// rather than in `core-node-api`: reading the system clock is a side effect a
 /// pure wire-codec crate should not perform.
 pub fn wall_now_ns() -> Result<u64> {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    Ok(u64::try_from(nanos).unwrap_or(u64::MAX))
+    let since_epoch = SystemTime::now().duration_since(UNIX_EPOCH)?;
+    Ok(config::duration::saturating_nanos(since_epoch))
 }
 
 /// Result of an NTP-style clock-sync exchange with the core node.

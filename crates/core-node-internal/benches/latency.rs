@@ -34,6 +34,7 @@ mod helpers;
 
 use std::time::Duration;
 
+use config::duration::saturating_nanos;
 use harness::{ALL_SCENARIOS, DEFAULT_SAMPLES, DEFAULT_WARMUP, Lang, Transport, ceiling_ms};
 use latency_report::baseline::{self, StoredStats};
 use latency_report::environment::CpuEnvironment;
@@ -150,12 +151,6 @@ fn main() {
             baseline_path.display()
         );
     }
-}
-
-/// The whole nanoseconds of `duration`. A count that does not fit stops at
-/// `u64::MAX`.
-fn saturating_nanos(duration: Duration) -> u64 {
-    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// Times the proof of a call to a daemon, `samples` times after `warmup`: the

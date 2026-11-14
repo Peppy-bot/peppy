@@ -34,6 +34,7 @@ pub use stack::{
 use crate::Result;
 use config::{
     DefaultValue, ParameterSpec,
+    duration::saturating_millis,
     node::{Execution, Manifest, NodeConfig, PeppygenLanguage, TypeToken},
     runtime::Name,
     schema::PeppySchema,
@@ -85,12 +86,6 @@ fn clear_instances_dir(peppy_dirs: &PeppyDirs) {
     {
         tracing::warn!("Failed to clear instances directory: {}", e);
     }
-}
-
-/// The whole milliseconds of `duration`. A count that does not fit stops at
-/// `u64::MAX`.
-pub(crate) fn saturating_millis(duration: Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Returns this daemon's hostname for operator-facing annotations.

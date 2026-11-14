@@ -26,6 +26,7 @@ use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::resolve_contract_doc;
 use crate::services::raw_calls::RawCallGate;
+use config::duration::saturating_nanos;
 use config::node::{
     DependsOn, MessageSizeEstimate, NodeConfig, QoSProfile, estimate_serialized_size,
     node_implements,
@@ -895,7 +896,7 @@ async fn measure_probe(
             consecutive_errors = 0;
             honored_full |= resp_bytes >= edge.probe_response_size;
             if i >= warmup {
-                out.push(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+                out.push(saturating_nanos(d));
             }
         } else {
             consecutive_errors += 1;

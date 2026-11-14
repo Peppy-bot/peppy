@@ -55,7 +55,7 @@ static MINTED: AtomicU64 = AtomicU64::new(0);
 pub fn mint_incarnation() -> ClockIncarnation {
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or_default(|since_epoch| u64::try_from(since_epoch.as_millis()).unwrap_or(u64::MAX));
+        .map_or_default(config::duration::saturating_millis);
     MINTED.fetch_max(seed, Ordering::Relaxed);
     let value = MINTED.fetch_add(1, Ordering::Relaxed) + 1;
     ClockIncarnation::try_from(value).expect("a counter seeded from unix-millis is in range")
