@@ -350,8 +350,8 @@ jobs:
   # them, on any change under scripts/ and to the resolve.py of the
   # hub-ci-peppy action, which the scripts load. The install.sh tests need a
   # release archive and a fresh machine, so they run in the install-script
-  # jobs, on the archives the install-archive jobs build, gated on the far
-  # narrower set of files that decide what gets installed and how.
+  # jobs, on the archives the install-archive jobs build, and start for a
+  # change of scripts/install.sh alone.
   release-scripts:
     needs: changes
     if: needs.changes.outputs.scripts == 'true'
@@ -419,7 +419,7 @@ jobs:
   # It runs on every pull request and on every push to dev: the action finds
   # the dev build of a peppy branch by the commit at its head, and takes the
   # one of the head of dev for a set that has no peppy branch. A push to main
-  # builds it for install-script alone, when the install inputs changed.
+  # builds it for install-script alone, when scripts/install.sh changed.
   install-archive:
     needs: changes
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/dev' || needs.changes.outputs.install_script == 'true'
@@ -467,7 +467,10 @@ jobs:
   # container path of install.sh in Docker (see install-tests.yml and the
   # install-test action). The release workflow runs the same tests on every
   # platform before it publishes; this job and install-script-aarch64 are the
-  # early warning for the two Linux platforms.
+  # early warning for the two Linux platforms. They start for a change of
+  # scripts/install.sh alone (see the detection): the release is the first
+  # install test of a change to the tests, to the action or to the build of
+  # the archive.
   install-script:
     needs: [changes, install-archive]
     if: needs.changes.outputs.install_script == 'true'
@@ -480,7 +483,7 @@ jobs:
 
   # Builds the release archive of this change for aarch64 Linux, natively on
   # Graviton, as install-archive builds the x86_64 one. No hub reads it, so
-  # it builds only for install-script-aarch64, when the install inputs
+  # it builds only for install-script-aarch64, when scripts/install.sh
   # changed. release-arm64 (.github/runs-on.yml) is the runner that boots
   # peppy-ubuntu24-aarch64; the labels give this job the disk and the sticky
   # disk of install-archive.

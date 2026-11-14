@@ -138,7 +138,8 @@ class Detection(unittest.TestCase):
             select(detect.PEPPY_SHARED + "/Cargo.lock")
         )
 
-    def test_a_change_to_what_every_job_runs_through_runs_everything(self):
+    def test_the_ci_plumbing_runs_every_suite_but_the_install_tests(self):
+        # The install tests start for install.sh alone.
         for path in (
             ".github/workflows/tests.yml",
             ".github/runs-on.yml",
@@ -148,15 +149,16 @@ class Detection(unittest.TestCase):
                 selection = select(path)
                 self.assert_every_peppy_shared_package_runs(selection)
                 everything = detect.select_everything()
-                self.assertEqual(selected(selection).keys(), everything.keys())
+                self.assertEqual(
+                    selected(selection).keys(),
+                    everything.keys() - {detect.INSTALL_SCRIPT_SUITE},
+                )
 
     def test_a_change_to_the_cargo_plumbing_runs_the_cargo_suites(self):
-        # The install suite builds its archive through the cargo cache too,
-        # which runs the sticky disk report, and never through cargo-suite.
-        for path, install_script in (
-            (".github/actions/cargo-cache/action.yml", "true"),
-            (".github/actions/sticky-disk-report/report.py", "true"),
-            (".github/actions/cargo-suite/action.yml", "false"),
+        for path in (
+            ".github/actions/cargo-cache/action.yml",
+            ".github/actions/sticky-disk-report/report.py",
+            ".github/actions/cargo-suite/action.yml",
         ):
             with self.subTest(path=path):
                 selection = select(path)
@@ -168,7 +170,7 @@ class Detection(unittest.TestCase):
                 self.assertEqual(selection["cross_check"], "true")
                 self.assertEqual(selection["lint"], "true")
                 self.assertEqual(selection["scripts"], "false")
-                self.assertEqual(selection["install_script"], install_script)
+                self.assertEqual(selection["install_script"], "false")
 
     def test_the_detection_and_the_release_plumbing_gate_no_suite(self):
         # The detection decides what runs, never how a suite runs, and the
@@ -326,47 +328,47 @@ class Detection(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(select(path)["concepts_video"], "false")
 
-    def test_the_install_tests_run_for_what_reaches_the_runner(self):
+    def test_the_install_tests_run_for_install_sh(self):
+        self.assertEqual(select("scripts/install.sh")["install_script"], "true")
+        self.assertEqual(
+            select("Readme.md", "scripts/install.sh")["install_script"], "true"
+        )
+
+    def test_the_install_tests_stay_off_for_every_other_file(self):
+        # What drives install.sh, what builds the archive that it installs and
+        # the workflows that run the tests: the release runs the install
+        # tests before it publishes, and that run is the first install test of
+        # a change to one of these.
         for path in (
-            "scripts/install.sh",
             "scripts/build_release.sh",
             "scripts/run_installer.sh",
             "scripts/run_tests.sh",
+            "scripts/tests/conftest.py",
             "scripts/tests/install_helpers.py",
             "scripts/tests/raspberry_pi_os.py",
             "scripts/tests/test_install.py",
             "scripts/tests/test_install_in_docker.py",
             "scripts/tests/test_install_raspberry_pi.py",
+            "scripts/functions/build.py",
             "scripts/functions/build_release.py",
             "scripts/functions/verify_release.py",
-            "scripts/pixi.toml",
-            ".github/actions/install-test/action.yml",
-        ):
-            with self.subTest(path=path):
-                self.assertEqual(select(path)["install_script"], "true")
-
-    def test_the_install_tests_stay_off_for_the_rest_of_the_tree(self):
-        # The modules that churn most: none of them can change what install.sh
-        # does to a machine, and a release build to prove it is the whole cost
-        # of this suite on a typical release-scripts change. functions/lima.py
-        # builds the Linux archives of a macOS release host and never runs on
-        # the Linux box that builds the one these tests install.
-        for path in (
-            "scripts/functions/docs.py",
-            "scripts/functions/docker.py",
-            "scripts/functions/github.py",
-            "scripts/functions/lima.py",
             "scripts/functions/parallel_release.py",
-            "scripts/functions/release_notes.py",
-            "scripts/functions/release_summary.py",
-            "scripts/functions/claude.py",
-            "scripts/tests/test_docs.py",
-            "scripts/tests/test_github.py",
+            "scripts/pixi.toml",
+            "scripts/pixi.lock",
         ):
             with self.subTest(path=path):
                 selection = select(path)
                 self.assertEqual(selection["install_script"], "false")
                 self.assertEqual(selection["scripts"], "true")
+        for path in (
+            ".github/actions/install-test/action.yml",
+            ".github/workflows/install-tests.yml",
+            ".github/workflows/parallel-release.yml",
+            "crates/peppy/src/main.rs",
+            "Cargo.lock",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(select(path)["install_script"], "false")
 
     def test_an_unknowable_change_set_runs_everything(self):
         selection = detect.select_everything()
