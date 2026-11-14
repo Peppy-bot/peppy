@@ -46,6 +46,13 @@ A listed output this script cannot attribute to a unit means cargo uses a
 layout the script does not know. `record` then deletes the record and prints
 a warning, so the next `sweep` clears the dir: each build starts cold, and
 the dir stays bounded.
+
+A command follows the directory it is given when that is a symlink, and no
+symlink below it: a build or a test can write one into the target dir. A
+symlink there is an entry like a file, which the command removes or keeps
+by its name, and what it leads to stays. Cargo writes the profile dir and its
+directories of units and of examples as directories, so `record` takes a
+symlink in the place of one of them for a layout it does not know.
 """
 
 from __future__ import annotations
@@ -168,6 +175,9 @@ def relative_to_build_root(path: str, build_root: PurePosixPath) -> PurePosixPat
 def live_units(target_dir: Path, outputs: Iterable[PurePosixPath]) -> LiveUnits:
     """Attributes each listed output to the unit that built it."""
     profile_dir = target_dir / PROFILE_DIR
+    for cargo_dir in (profile_dir, profile_dir / UNITS_DIR, profile_dir / EXAMPLES_DIR):
+        if cargo_dir.is_symlink():
+            raise UnknownLayout(f"{cargo_dir} is a symlink, not a directory")
     hashes: set[str] = set()
     copies: set[str] = set()
     unit_of_inode: dict[tuple[int, int], str] | None = None
@@ -291,7 +301,9 @@ def size_of(path: Path) -> int:
 
 
 def children(directory: Path) -> list[Path]:
-    if not directory.is_dir():
+    """The entries of `directory`, which has none when it is not a directory
+    itself: the sweep lists nothing through a symlink."""
+    if not is_directory_not_symlink(directory):
         return []
     return sorted(directory.iterdir())
 
@@ -312,9 +324,12 @@ def sweep_to(target_dir: Path, live: LiveUnits) -> Removal:
     """Removes from the profile dir every unit and copy that `live` does not
     keep, and every directory that cargo does not write.
 
-    The hidden files of the profile dir stay: they are cargo's locks.
+    The hidden files of the profile dir stay: they are cargo's locks. A
+    profile dir that is a symlink is removed, and what it leads to stays.
     """
     profile_dir = target_dir / PROFILE_DIR
+    if profile_dir.is_symlink():
+        return remove(profile_dir)
     removed = NOTHING_REMOVED
     for package_dir in children(profile_dir / UNITS_DIR):
         removed += sweep_package_dir(package_dir, live)
@@ -407,6 +422,12 @@ def prune(target_root: Path, live_dirs: Iterable[PurePosixPath]) -> Removal:
     return removed
 
 
+def given_directory(argument: str) -> Path:
+    """The directory that a command is given, which the command follows when
+    it is a symlink."""
+    return Path(argument).resolve()
+
+
 def describe(removed: Removal, directory: Path) -> str:
     return f"removed {removed.entries} stale entries ({removed.size / 2**30:.1f} GiB) from {directory}"
 
@@ -420,9 +441,11 @@ usage: sweep-cargo-target.py sweep <target dir>
 def main(arguments: list[str]) -> int:
     match arguments:
         case ["sweep", target_dir]:
-            removed = sweep(Path(target_dir))
+            removed = sweep(given_directory(target_dir))
         case ["record", target_dir, listing, build_root]:
-            removed = record(Path(target_dir), Path(listing), PurePosixPath(build_root))
+            removed = record(
+                given_directory(target_dir), Path(listing), PurePosixPath(build_root)
+            )
         case ["prune", target_root, *live_dir_arguments]:
             try:
                 live_dirs = [
@@ -431,7 +454,7 @@ def main(arguments: list[str]) -> int:
             except ValueError as invalid:
                 print(f"{invalid}\n{USAGE}", file=sys.stderr)
                 return 2
-            removed = prune(Path(target_root), live_dirs)
+            removed = prune(given_directory(target_root), live_dirs)
         case _:
             print(USAGE, file=sys.stderr)
             return 2
