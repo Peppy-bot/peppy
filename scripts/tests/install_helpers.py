@@ -23,13 +23,14 @@ run_in_container.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import os
 import platform
 import shlex
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -59,9 +60,10 @@ SSH_DIR = TEST_ROOT / "ssh"
 # a freshly booted runner holds it for its own apt runs.
 APT_GET = "apt-get -o DPkg::Lock::Timeout=300"
 
-# The AppArmor profile that gives a user namespace to a program with no
-# profile of its own, and the listing of the profiles the kernel has loaded.
-USER_NAMESPACE_PROFILE = "/etc/apparmor.d/unprivileged_userns"
+# The file of the AppArmor profile that gives a user namespace to a program
+# with no profile of its own, and the listing of the profiles the kernel has
+# loaded.
+DEFAULT_USER_NAMESPACE_PROFILE = Path("/etc/apparmor.d/unprivileged_userns")
 _LOADED_APPARMOR_PROFILES = "/sys/kernel/security/apparmor/policy/profiles"
 
 IS_LINUX = sys.platform == "linux"
@@ -229,6 +231,11 @@ def run_as_root(script: str, *, timeout: int = 600) -> None:
 # second, so both belong to the baseline rather than to any test. A user
 # manager that started before dbus-user-session was installed does not serve
 # the bus, hence the restart.
+#
+# The runner image may also leave apparmor.service stopped, as the stock
+# images of RunsOn do. A user's Ubuntu machine starts it at boot, and it
+# loads the AppArmor profiles of the packages. A test that needs a kernel
+# without one of them removes that profile itself.
 _LOGIN_BASELINE_SCRIPT = f"""
 set -eu
 if ! command -v sshd >/dev/null 2>&1; then
@@ -236,6 +243,7 @@ if ! command -v sshd >/dev/null 2>&1; then
     {APT_GET} install -y -qq openssh-server
 fi
 systemctl start ssh
+systemctl start apparmor
 if ! dpkg -s dbus-user-session >/dev/null 2>&1; then
     {APT_GET} update -qq
     {APT_GET} install -y -qq dbus-user-session
@@ -514,28 +522,58 @@ def apparmor_restricts_user_namespaces() -> bool:
     """Whether AppArmor restricts user namespaces on this machine.
 
     Ubuntu 24.04 and later restrict them. The kernel then gives a user
-    namespace to a program that has no AppArmor profile of its own through the
-    profile `unprivileged_userns` only.
+    namespace to a program through an AppArmor profile only: the profile of
+    the program, or `unprivileged_userns` for a program that has none.
     """
     knob = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
     return knob.is_file() and knob.read_text().strip() == "1"
 
 
-def set_user_namespace_profile_loaded(loaded: bool) -> None:
-    """Load the AppArmor profile `unprivileged_userns` into the kernel, or remove it.
+def install_apparmor_profile(home: Path) -> Path:
+    """The file of the AppArmor profile that the install in *home* wrote.
 
-    apparmor.service loads the profile at boot, so a machine whose service is
-    stopped boots without it, as the stock images of RunsOn do. apptainer asks
-    the kernel for a user namespace before each container build, and gets
-    none on such a machine.
+    `peppy container setup` writes one profile for each install, and the
+    profile names the `apptainer` program of that install.
     """
-    is_loaded = f"ls {_LOADED_APPARMOR_PROFILES} | grep -q '^unprivileged_userns\\.'"
-    if loaded:
-        run_as_root(f"apparmor_parser -r {USER_NAMESPACE_PROFILE} && {is_loaded}")
-        return
-    run_as_root(
-        f"! {is_loaded} || apparmor_parser -R {USER_NAMESPACE_PROFILE}; ! {is_loaded}"
+    result = login_shell(
+        f"grep -l -F '{home}/bin/apptainer/bin/apptainer ' "
+        "/etc/apparmor.d/peppy-apptainer-*"
     )
+    files = result.stdout.split()
+    if result.returncode != 0 or len(files) != 1:
+        pytest.fail(
+            f"expected one AppArmor profile for the install in {home}{diagnostic(result)}"
+        )
+    return Path(files[0])
+
+
+def _set_apparmor_profile_loaded(profile: Path, loaded: bool) -> None:
+    """Load the AppArmor profile of the file *profile* into the kernel, or remove it.
+
+    The name of a profile is the name of its file.
+    """
+    is_loaded = f"ls {_LOADED_APPARMOR_PROFILES} | grep -q '^{profile.name}\\.'"
+    if loaded:
+        run_as_root(f"apparmor_parser -r {profile} && {is_loaded}")
+        return
+    run_as_root(f"! {is_loaded} || apparmor_parser -R {profile}; ! {is_loaded}")
+
+
+@contextlib.contextmanager
+def apparmor_profile_unloaded(profile: Path) -> Iterator[None]:
+    """Run a block on a kernel that does not have the AppArmor profile of the file *profile*.
+
+    apparmor.service loads each profile at boot, so this is the kernel of a
+    machine whose service is stopped, as on the stock images of RunsOn. The
+    profile is loaded again when the block ends, also when it ends with an
+    error: a block that fails then fails one test alone, and the tests after
+    it start from a kernel that has the profile.
+    """
+    _set_apparmor_profile_loaded(profile, False)
+    try:
+        yield
+    finally:
+        _set_apparmor_profile_loaded(profile, True)
 
 
 def set_fuse2fs_installed(installed: bool) -> None:

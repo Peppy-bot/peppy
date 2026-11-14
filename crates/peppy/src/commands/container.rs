@@ -5,6 +5,9 @@ use std::io::IsTerminal;
 
 use clap::Subcommand;
 
+#[cfg(target_os = "linux")]
+use containers::SetupVerdict;
+
 use super::Command;
 use crate::context::AppContext;
 #[cfg(target_os = "linux")]
@@ -33,13 +36,17 @@ impl Command for ContainerCommand {
     }
 }
 
+/// The installation directory of Apptainer that the checks are for.
+#[cfg(target_os = "linux")]
+fn apptainer_dir() -> Result<std::path::PathBuf> {
+    containers::Apptainer::resolve_apptainer_dir().map_err(|e| {
+        Error::ExecutionFailed(format!("Could not locate Apptainer installation: {e}"))
+    })
+}
+
 #[cfg(target_os = "linux")]
 fn status() -> Result<()> {
-    let apptainer_dir = containers::Apptainer::resolve_apptainer_dir().map_err(|e| {
-        Error::ExecutionFailed(format!("Could not locate Apptainer installation: {e}"))
-    })?;
-
-    let status = containers::check_setup_status(&apptainer_dir);
+    let status = containers::check_setup_status(&apptainer_dir()?);
 
     println!("Container prerequisites");
     println!("----------------------");
@@ -78,58 +85,82 @@ fn status() -> Result<()> {
     );
     println!();
 
-    if status.is_ok() {
+    let Some(advice) = advice_for_failing_checks(&status.verdict) else {
         println!("All checks passed. Container support is ready.");
         return Ok(());
-    }
-    Err(Error::ExecutionFailed(advice_for_failing_status(&status)))
+    };
+    Err(Error::ExecutionFailed(advice))
 }
 
-/// What the user does about a status that fails: run the setup when it has a
-/// fix to make, and read the cause of a failure that has none.
+/// What the user does about checks that fail, or `None` when each check
+/// passes: run the setup when it has a fix to make, and read the cause of a
+/// failure that has none.
 #[cfg(target_os = "linux")]
-fn advice_for_failing_status(status: &containers::SetupStatus) -> String {
-    let run_the_setup = status
-        .fix_script
-        .as_ref()
-        .map(|_| "Some checks failed. Run `peppy container setup` to fix.".to_string());
-    let cause_with_no_fix = status.user_namespace.refusal_without_repair();
-    [run_the_setup, cause_with_no_fix]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join("\n")
+fn advice_for_failing_checks(verdict: &SetupVerdict) -> Option<String> {
+    const RUN_THE_SETUP: &str = "Some checks failed. Run `peppy container setup` to fix.";
+
+    match verdict {
+        SetupVerdict::Ready => None,
+        SetupVerdict::Fixable { .. } => Some(RUN_THE_SETUP.to_string()),
+        SetupVerdict::Unfixable {
+            refusal,
+            fix_script: Some(_),
+        } => Some(format!("{RUN_THE_SETUP}\n{refusal}")),
+        SetupVerdict::Unfixable {
+            refusal,
+            fix_script: None,
+        } => Some(refusal.clone()),
+    }
 }
 
 /// The state that the `User namespace` line of `peppy container status`
-/// shows: what the kernel answered to the request of a user namespace that
-/// Apptainer makes before a build.
+/// shows: what the kernel answered to the request of a user namespace for a
+/// container build.
 #[cfg(target_os = "linux")]
 fn user_namespace_state(user_namespace: &containers::UnprivilegedUserNamespace) -> String {
-    use containers::UnprivilegedUserNamespace::{
-        Granted, NotRequired, Refused, RefusedWithoutProfile,
-    };
+    use containers::UnprivilegedUserNamespace::{Granted, NotRequired, Refused, Untested};
 
     match user_namespace {
         NotRequired => "not required (root builds with no user namespace)".to_string(),
         Granted => "OK".to_string(),
-        RefusedWithoutProfile { answer } | Refused { answer } => format!("FAILED ({answer})"),
+        Refused { answer } => format!("FAILED ({answer})"),
+        Untested { reason } => format!("not tested ({reason})"),
     }
 }
 
-/// The error of a setup whose checks fail with no fix left to make. A user
-/// namespace that the kernel refuses for a cause with no fix explains itself.
+/// The warning of a setup on a machine whose kernel refuses the user
+/// namespace of a container build: `refusal` explains the cause, for which
+/// the setup has no fix.
 #[cfg(target_os = "linux")]
-fn failure_with_no_fix_left(status: &containers::SetupStatus) -> Error {
-    Error::ExecutionFailed(
-        status
-            .user_namespace
-            .refusal_without_repair()
-            .unwrap_or_else(|| {
-                "Some checks still failing after running fixes. Check permissions manually."
-                    .to_string()
-            }),
+fn refusal_warning(refusal: &str) -> String {
+    format!(
+        "Warning: {refusal}\n\
+         Each container build fails on this machine. The daemon runs the nodes that are not \
+         containers."
     )
+}
+
+/// How the setup ends after its fixes, for the verdict of the checks made
+/// again: with success, with success and a warning to show when the one
+/// failure left is a refusal that has no fix, or with an error when a check
+/// that has a fix fails again.
+#[cfg(target_os = "linux")]
+fn end_after_fixes(verdict: &SetupVerdict) -> Result<Option<String>> {
+    match verdict {
+        SetupVerdict::Ready => Ok(None),
+        SetupVerdict::Unfixable {
+            refusal,
+            fix_script: None,
+        } => Ok(Some(refusal_warning(refusal))),
+        SetupVerdict::Fixable { .. }
+        | SetupVerdict::Unfixable {
+            fix_script: Some(_),
+            ..
+        } => Err(Error::ExecutionFailed(
+            "Some checks still failing after running fixes. Check permissions manually."
+                .to_string(),
+        )),
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -147,27 +178,41 @@ fn status() -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn setup() -> Result<()> {
-    let apptainer_dir = containers::Apptainer::resolve_apptainer_dir().map_err(|e| {
-        Error::ExecutionFailed(format!("Could not locate Apptainer installation: {e}"))
-    })?;
-
+    let apptainer_dir = apptainer_dir()?;
     let status = containers::check_setup_status(&apptainer_dir);
 
-    if status.is_ok() {
-        if !status.apparmor_manageable {
-            println!(
-                "AppArmor is not manageable on this system (security filesystem not mounted)."
-            );
-            println!("Skipping AppArmor profile checks.");
+    let fix_script = match &status.verdict {
+        SetupVerdict::Ready => {
+            if !status.apparmor_manageable {
+                println!(
+                    "AppArmor is not manageable on this system (security filesystem not mounted)."
+                );
+                println!("Skipping AppArmor profile checks.");
+            }
+            println!("All container prerequisites are already met. Nothing to do.");
+            return Ok(());
         }
-        println!("All container prerequisites are already met. Nothing to do.");
-        return Ok(());
-    }
-
-    // The one failing check with no fix is a user namespace that the kernel
-    // refuses for a cause other than the AppArmor profile.
-    let Some(script) = status.fix_script.as_deref() else {
-        return Err(failure_with_no_fix_left(&status));
+        // The setup has no fix to make, so it changes nothing and ends with
+        // success: a second run has no other result.
+        SetupVerdict::Unfixable {
+            refusal,
+            fix_script: None,
+        } => {
+            eprintln!("{}", refusal_warning(refusal));
+            return Ok(());
+        }
+        // The user reads, before a change of the machine, that the fixes
+        // leave the container builds failing.
+        SetupVerdict::Unfixable {
+            refusal,
+            fix_script: Some(fix_script),
+        } => {
+            eprintln!("{}", refusal_warning(refusal));
+            eprintln!("The fixes below do not repair this cause. The daemon needs them to start.");
+            eprintln!();
+            fix_script
+        }
+        SetupVerdict::Fixable { fix_script } => fix_script,
     };
 
     println!("The following fixes are needed:");
@@ -175,15 +220,9 @@ fn setup() -> Result<()> {
         println!("  - Install uidmap package (provides newuidmap for fakeroot)");
     }
     if status.apparmor_restricted && !status.apparmor_ok {
-        println!("  - Install/update AppArmor profile for Apptainer starter");
+        println!("  - Install/update AppArmor profile for Apptainer");
     } else if status.apparmor_restricted && !status.apparmor_loaded {
-        println!("  - Load AppArmor profile for Apptainer starter into the kernel");
-    }
-    if status.user_namespace.needs_profile() {
-        println!(
-            "  - Load AppArmor profile `unprivileged_userns` into the kernel \
-             (gives Apptainer the user namespace of a build)"
-        );
+        println!("  - Load AppArmor profile for Apptainer into the kernel");
     }
     println!();
 
@@ -200,14 +239,14 @@ fn setup() -> Result<()> {
             println!();
             println!("Skipped. You can apply the fixes manually:");
             println!();
-            println!("{script}");
+            println!("{fix_script}");
             return Ok(());
         }
     }
 
     let exit_status = std::process::Command::new("sh")
         .arg("-c")
-        .arg(script)
+        .arg(fix_script)
         .status()
         .map_err(|e| Error::ExecutionFailed(format!("Failed to run fix script: {e}")))?;
 
@@ -220,11 +259,13 @@ fn setup() -> Result<()> {
     // Re-check to confirm
     let recheck = containers::check_setup_status(&apptainer_dir);
 
-    if !recheck.is_ok() {
-        return Err(failure_with_no_fix_left(&recheck));
-    }
-    println!();
-    println!("Container setup completed successfully.");
+    let Some(warning) = end_after_fixes(&recheck.verdict)? else {
+        println!();
+        println!("Container setup completed successfully.");
+        return Ok(());
+    };
+    eprintln!();
+    eprintln!("{warning}");
     Ok(())
 }
 
@@ -241,21 +282,24 @@ fn setup() -> Result<()> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    use containers::{SetupStatus, UnprivilegedUserNamespace};
+    use containers::UnprivilegedUserNamespace;
 
-    const REFUSAL: &str = "unshare: unshare failed: Permission denied";
+    const ANSWER: &str = "unshare: unshare failed: Operation not permitted";
+    const REFUSAL: &str = "The kernel refuses a user namespace.";
+    const FIX_SCRIPT: &str = "sudo apt-get install -y uidmap";
 
-    /// A status whose every check passes but the user namespace, which is
-    /// `user_namespace`.
-    fn status_with(user_namespace: UnprivilegedUserNamespace) -> SetupStatus {
-        SetupStatus {
-            newuidmap_ok: true,
-            apparmor_restricted: true,
-            apparmor_ok: true,
-            apparmor_loaded: true,
-            apparmor_manageable: true,
-            user_namespace,
-            fix_script: None,
+    fn fixable() -> SetupVerdict {
+        SetupVerdict::Fixable {
+            fix_script: FIX_SCRIPT.to_string(),
+        }
+    }
+
+    /// The verdict of a refusal that has no fix, with or without another
+    /// check that fails and has one.
+    fn unfixable(fix_script: Option<&str>) -> SetupVerdict {
+        SetupVerdict::Unfixable {
+            refusal: REFUSAL.to_string(),
+            fix_script: fix_script.map(str::to_owned),
         }
     }
 
@@ -268,7 +312,6 @@ mod tests {
 
     #[test]
     fn the_user_namespace_line_shows_the_answer_of_the_kernel() {
-        let refused = || REFUSAL.to_string();
         let cases = [
             (UnprivilegedUserNamespace::Granted, "OK".to_string()),
             (
@@ -276,12 +319,16 @@ mod tests {
                 "not required (root builds with no user namespace)".to_string(),
             ),
             (
-                UnprivilegedUserNamespace::RefusedWithoutProfile { answer: refused() },
-                format!("FAILED ({REFUSAL})"),
+                UnprivilegedUserNamespace::Refused {
+                    answer: ANSWER.to_string(),
+                },
+                format!("FAILED ({ANSWER})"),
             ),
             (
-                UnprivilegedUserNamespace::Refused { answer: refused() },
-                format!("FAILED ({REFUSAL})"),
+                UnprivilegedUserNamespace::Untested {
+                    reason: "cannot run `unshare`: no such program".to_string(),
+                },
+                "not tested (cannot run `unshare`: no such program)".to_string(),
             ),
         ];
         for (user_namespace, state) in cases {
@@ -294,69 +341,67 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_status_tells_to_run_the_setup_that_has_a_fix() {
-        let status = SetupStatus {
-            fix_script: Some("sudo apparmor_parser -r /etc/apparmor.d/unprivileged_userns".into()),
-            ..status_with(UnprivilegedUserNamespace::RefusedWithoutProfile {
-                answer: REFUSAL.to_string(),
-            })
-        };
+    fn a_status_that_passes_has_no_advice() {
+        assert_eq!(advice_for_failing_checks(&SetupVerdict::Ready), None);
+    }
 
+    #[test]
+    fn a_failing_status_tells_to_run_the_setup_that_has_a_fix() {
         assert_eq!(
-            advice_for_failing_status(&status),
-            "Some checks failed. Run `peppy container setup` to fix."
+            advice_for_failing_checks(&fixable()).as_deref(),
+            Some("Some checks failed. Run `peppy container setup` to fix.")
         );
     }
 
     #[test]
     fn a_failing_status_explains_the_refusal_that_has_no_fix() {
-        let refused = UnprivilegedUserNamespace::Refused {
-            answer: REFUSAL.to_string(),
-        };
-        let explanation = refused
-            .refusal_without_repair()
-            .expect("a refusal with no repair explains itself");
-
         assert_eq!(
-            advice_for_failing_status(&status_with(refused.clone())),
-            explanation
+            advice_for_failing_checks(&unfixable(None)).as_deref(),
+            Some(REFUSAL)
         );
 
         // A second check that fails, with a fix: the advice has the two.
-        let with_a_fix_also = SetupStatus {
-            newuidmap_ok: false,
-            fix_script: Some("sudo apt-get install -y uidmap".into()),
-            ..status_with(refused)
-        };
         assert_eq!(
-            advice_for_failing_status(&with_a_fix_also),
-            format!("Some checks failed. Run `peppy container setup` to fix.\n{explanation}")
+            advice_for_failing_checks(&unfixable(Some(FIX_SCRIPT))),
+            Some(format!(
+                "Some checks failed. Run `peppy container setup` to fix.\n{REFUSAL}"
+            ))
         );
     }
 
     #[test]
-    fn a_refusal_with_no_fix_is_the_error_of_the_setup() {
-        let status = status_with(UnprivilegedUserNamespace::Refused {
-            answer: REFUSAL.to_string(),
-        });
-
-        let message = message_of(failure_with_no_fix_left(&status));
-
+    fn the_warning_of_a_refusal_tells_what_runs_and_what_fails() {
         assert_eq!(
-            Some(message),
-            status.user_namespace.refusal_without_repair()
+            refusal_warning(REFUSAL),
+            "Warning: The kernel refuses a user namespace.\n\
+             Each container build fails on this machine. The daemon runs the nodes that are \
+             not containers."
+        );
+    }
+
+    #[test]
+    fn a_setup_whose_fixes_leave_each_check_passing_ends_with_success() {
+        assert_eq!(end_after_fixes(&SetupVerdict::Ready).unwrap(), None);
+    }
+
+    /// A refusal has no fix, so a setup that made each of its fixes ends
+    /// with success and the warning.
+    #[test]
+    fn a_setup_whose_fixes_leave_a_refusal_ends_with_success_and_a_warning() {
+        assert_eq!(
+            end_after_fixes(&unfixable(None)).unwrap(),
+            Some(refusal_warning(REFUSAL))
         );
     }
 
     #[test]
     fn a_check_that_fails_after_its_fix_is_the_error_of_the_setup() {
-        let status = status_with(UnprivilegedUserNamespace::RefusedWithoutProfile {
-            answer: REFUSAL.to_string(),
-        });
-
-        assert_eq!(
-            message_of(failure_with_no_fix_left(&status)),
-            "Some checks still failing after running fixes. Check permissions manually."
-        );
+        for verdict in [fixable(), unfixable(Some(FIX_SCRIPT))] {
+            assert_eq!(
+                message_of(end_after_fixes(&verdict).unwrap_err()),
+                "Some checks still failing after running fixes. Check permissions manually.",
+                "{verdict:?}"
+            );
+        }
     }
 }

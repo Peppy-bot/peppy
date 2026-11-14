@@ -14,19 +14,34 @@ fn print_container_setup_status() {
     match containers::Apptainer::resolve_apptainer_dir() {
         Ok(dir) => {
             let status = containers::check_setup_status(&dir);
-            if status.is_ok() {
-                println!("Container setup: OK");
-            } else if status.fix_script.is_some() {
-                println!("Container setup: INCOMPLETE (run `peppy container setup`)");
-            } else {
-                // The one failure that the setup has no fix for: the status
-                // command shows what the kernel answered.
-                println!("Container setup: INCOMPLETE (see `peppy container status`)");
-            }
+            println!(
+                "Container setup: {}",
+                container_setup_state(&status.verdict)
+            );
         }
         Err(e) => {
             println!("Container setup: ERROR ({e})");
         }
+    }
+}
+
+/// The state of the container setup that `peppy info` shows: the command
+/// that makes the fixes when the setup has one to make, and the command that
+/// shows the cause of a failure that has none.
+#[cfg(target_os = "linux")]
+fn container_setup_state(verdict: &containers::SetupVerdict) -> &'static str {
+    use containers::SetupVerdict::{Fixable, Ready, Unfixable};
+
+    match verdict {
+        Ready => "OK",
+        Fixable { .. }
+        | Unfixable {
+            fix_script: Some(_),
+            ..
+        } => "INCOMPLETE (run `peppy container setup`)",
+        Unfixable {
+            fix_script: None, ..
+        } => "INCOMPLETE (see `peppy container status`)",
     }
 }
 
@@ -90,4 +105,42 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
     println!("Lima version: {}", response.container_info.lima_version);
 
     Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use containers::SetupVerdict;
+
+    #[test]
+    fn the_container_setup_line_names_the_command_to_run_next() {
+        let fix_script = || "sudo apt-get install -y uidmap".to_string();
+        let refusal = || "The kernel refuses a user namespace.".to_string();
+        let cases = [
+            (SetupVerdict::Ready, "OK"),
+            (
+                SetupVerdict::Fixable {
+                    fix_script: fix_script(),
+                },
+                "INCOMPLETE (run `peppy container setup`)",
+            ),
+            (
+                SetupVerdict::Unfixable {
+                    refusal: refusal(),
+                    fix_script: Some(fix_script()),
+                },
+                "INCOMPLETE (run `peppy container setup`)",
+            ),
+            (
+                SetupVerdict::Unfixable {
+                    refusal: refusal(),
+                    fix_script: None,
+                },
+                "INCOMPLETE (see `peppy container status`)",
+            ),
+        ];
+        for (verdict, state) in cases {
+            assert_eq!(container_setup_state(&verdict), state, "{verdict:?}");
+        }
+    }
 }

@@ -4,8 +4,9 @@ use super::activity::{
 };
 #[cfg(target_os = "linux")]
 use super::facade::{
-    ApparmorProfileRef, SetupStatus, apparmor_profile_ref, check_setup_status, require_fixes_made,
-    setup_fix_script, shell_escape_single_quoted,
+    ApparmorProfileRef, SetupVerdict, apparmor_profile_ref, check_setup_status,
+    profile_file_names_programs, setup_fix_script, shell_escape_single_quoted,
+    unmet_prerequisites_error,
 };
 use super::facade::{Apptainer, Backend, GuestSignal, is_uri, prepare_scratch_dir};
 use super::registry_auth::{RegistryAuth, RegistryAuthSource};
@@ -59,7 +60,7 @@ fn ready_facade() -> Option<Apptainer> {
 fn host_meets_userns_prerequisites() -> bool {
     #[cfg(target_os = "linux")]
     {
-        check_setup_status(&ready_apptainer_dir()).is_ok()
+        check_setup_status(&ready_apptainer_dir()).verdict == SetupVerdict::Ready
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -1225,16 +1226,16 @@ fn check_setup_status_reports_real_installation() {
     let status = check_setup_status(&apptainer_dir);
 
     // On systems with newuidmap, without AppArmor restrictions and with a
-    // kernel that gives a user namespace, everything should pass.
-    if status.newuidmap_ok && !status.apparmor_restricted && status.user_namespace.is_usable() {
-        assert!(
-            status.is_ok(),
-            "is_ok should be true when newuidmap is available, AppArmor does not restrict \
-             and the kernel gives a user namespace"
-        );
-        assert!(
-            status.fix_script.is_none(),
-            "fix_script should be None when all checks pass"
+    // kernel that does not refuse a user namespace, everything should pass.
+    if status.newuidmap_ok
+        && !status.apparmor_restricted
+        && status.user_namespace.refusal().is_none()
+    {
+        assert_eq!(
+            status.verdict,
+            SetupVerdict::Ready,
+            "the setup should be ready when newuidmap is available, AppArmor does not \
+             restrict and the kernel does not refuse a user namespace"
         );
     }
 }
@@ -1264,9 +1265,8 @@ fn check_setup_status_no_apparmor_restriction() {
         status.apparmor_loaded,
         "apparmor_loaded should be true when not restricted"
     );
-    if status.newuidmap_ok && status.user_namespace.is_usable() {
-        assert!(status.is_ok());
-        assert!(status.fix_script.is_none());
+    if status.newuidmap_ok && status.user_namespace.refusal().is_none() {
+        assert_eq!(status.verdict, SetupVerdict::Ready);
     }
 }
 
@@ -1287,66 +1287,47 @@ fn check_setup_status_requires_apparmor_profile_loaded() {
         return;
     }
 
-    // If the profile file exists but isn't loaded, is_ok() must be false.
+    // If the profile file exists but isn't loaded, the setup has a fix to make.
     if status.apparmor_ok && !status.apparmor_loaded {
-        assert!(
-            !status.is_ok(),
-            "is_ok() should be false when profile is installed but not loaded"
-        );
-        let script = status.fix_script.as_ref().expect("fix_script should exist");
+        let script = fix_script_of(&status.verdict).expect("fix_script should exist");
         assert!(
             script.contains("apparmor_parser"),
             "fix script should include apparmor_parser to load the profile, got: {script}"
         );
     }
 
-    // If both are true (and newuidmap is present, and the kernel gives a
-    // user namespace), the full check passes.
+    // If both are true (and newuidmap is present, and the kernel does not
+    // refuse a user namespace), the full check passes.
     if status.apparmor_ok
         && status.apparmor_loaded
         && status.newuidmap_ok
-        && status.user_namespace.is_usable()
+        && status.user_namespace.refusal().is_none()
     {
-        assert!(
-            status.is_ok(),
-            "is_ok() should be true when all checks pass"
+        assert_eq!(
+            status.verdict,
+            SetupVerdict::Ready,
+            "the setup should be ready when all checks pass"
         );
     }
 }
 
-/// A user namespace that the kernel refuses fails the status, with or
-/// without a fix, and the fix script has a step only for the refusal that
-/// the profile `unprivileged_userns` repairs.
+/// The script of `verdict` that fixes the checks that fail, or `None` when
+/// the verdict holds none.
 #[cfg(target_os = "linux")]
-#[test]
-fn check_setup_status_fails_on_a_refused_user_namespace() {
-    let status = check_setup_status(&ready_apptainer_dir());
-
-    match &status.user_namespace {
-        UnprivilegedUserNamespace::NotRequired | UnprivilegedUserNamespace::Granted => {
-            eprintln!("SKIPPING: the kernel of this host gives a user namespace");
-        }
-        UnprivilegedUserNamespace::RefusedWithoutProfile { .. } => {
-            assert!(!status.is_ok());
-            let script = status.fix_script.as_ref().expect("fix_script should exist");
-            assert!(
-                script.contains("apparmor_parser -r /etc/apparmor.d/unprivileged_userns"),
-                "fix script should load the profile, got: {script}"
-            );
-        }
-        UnprivilegedUserNamespace::Refused { .. } => {
-            assert!(!status.is_ok());
-            assert!(status.user_namespace.refusal_without_repair().is_some());
-        }
+fn fix_script_of(verdict: &SetupVerdict) -> Option<&str> {
+    match verdict {
+        SetupVerdict::Ready => None,
+        SetupVerdict::Fixable { fix_script } => Some(fix_script),
+        SetupVerdict::Unfixable { fix_script, .. } => fix_script.as_deref(),
     }
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn check_setup_status_detects_stale_apparmor_profile_path() {
-    // When the AppArmor profile references a different starter path than
-    // the current installation (e.g. a previous build artifact), apparmor_ok
-    // must be false so the profile gets regenerated with the correct path.
+    // When the AppArmor profile names other programs than those of the
+    // current installation (e.g. a previous build artifact), apparmor_ok
+    // must be false so the profile gets regenerated with the correct paths.
     // Gate on the status's own apparmor_restricted (procfs flag AND
     // manageability), matching production: inside containers the raw flag can
     // read "1" while no profile can exist, which would fail the asserts below.
@@ -1358,27 +1339,107 @@ fn check_setup_status_detects_stale_apparmor_profile_path() {
         return;
     }
 
-    // Read this install's profile and check if it references the current path.
+    // Read this install's profile and check if it names the current paths.
     let profile = apparmor_profile_ref(&apptainer_dir);
-    let profile_references_current_path = fs::read_to_string(&profile.file)
-        .is_ok_and(|content| content.contains(&profile.starter_path));
 
-    if !profile_references_current_path {
+    if !profile_file_names_programs(&profile) {
         assert!(
             !status.apparmor_ok,
-            "apparmor_ok should be false when profile references a stale path"
+            "apparmor_ok should be false when profile names stale paths"
         );
-        assert!(!status.is_ok(), "is_ok should be false with stale profile");
-        let script = status.fix_script.as_ref().expect("fix_script should exist");
+        let script = fix_script_of(&status.verdict).expect("fix_script should exist");
         assert!(
             script.contains(&format!("tee {}", profile.file.display())),
             "fix script should regenerate this install's profile, got: {script}"
         );
-        assert!(
-            script.contains(&shell_escape_single_quoted(&profile.starter_path)),
-            "fix script should use the current starter path (shell-escaped), got: {script}"
+        for program_path in [&profile.apptainer_path, &profile.starter_path] {
+            assert!(
+                script.contains(&shell_escape_single_quoted(program_path)),
+                "fix script should use the current path {program_path} (shell-escaped), \
+                 got: {script}"
+            );
+        }
+    }
+}
+
+/// A profile file passes when it names the two programs of the
+/// installation, with or without lines that a person added. A file that
+/// names the starter alone, another installation, or that does not exist,
+/// is to write again.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_profile_file_passes_only_when_it_names_the_two_programs() {
+    let scratch = tempfile::tempdir().expect("failed to create temp dir");
+    let profile = ApparmorProfileRef {
+        apptainer_path: "/opt/a/bin/apptainer".to_string(),
+        starter_path: "/opt/a/libexec/apptainer/bin/starter".to_string(),
+        name: "peppy-apptainer-0000000000000000".to_string(),
+        file: scratch.path().join("peppy-apptainer-0000000000000000"),
+    };
+    const WRITTEN_BY_THE_SETUP: &str = "abi <abi/4.0>,\n\
+         include <tunables/global>\n\
+         \n\
+         @{peppy_apptainer_programs} = \"/opt/a/bin/apptainer\" \
+         \"/opt/a/libexec/apptainer/bin/starter\"\n\
+         \n\
+         profile peppy-apptainer-0000000000000000 @{peppy_apptainer_programs} flags=(unconfined) {\n\
+         \x20 userns,\n\
+         }\n";
+
+    assert!(
+        !profile_file_names_programs(&profile),
+        "a profile file that does not exist does not pass"
+    );
+
+    // (content of the file, whether it passes)
+    let cases = [
+        (WRITTEN_BY_THE_SETUP.to_string(), true),
+        (
+            WRITTEN_BY_THE_SETUP.replace(
+                "  userns,\n",
+                "  userns,\n  include if exists <local/peppy>\n",
+            ),
+            true,
+        ),
+        (
+            "abi <abi/4.0>,\n\
+             include <tunables/global>\n\
+             \n\
+             profile peppy-apptainer-0000000000000000 /opt/a/libexec/apptainer/bin/starter \
+             flags=(unconfined) {\n\
+             \x20 userns,\n\
+             }\n"
+            .to_string(),
+            false,
+        ),
+        (WRITTEN_BY_THE_SETUP.replace("/opt/a/", "/opt/b/"), false),
+        (String::new(), false),
+    ];
+    for (content, passes) in cases {
+        fs::write(&profile.file, &content).expect("failed to write the profile file");
+        assert_eq!(
+            profile_file_names_programs(&profile),
+            passes,
+            "profile file:\n{content}"
         );
     }
+}
+
+/// The profile of an installation names the `apptainer` and `starter`
+/// programs of that installation.
+#[cfg(target_os = "linux")]
+#[test]
+fn apparmor_profile_names_the_two_programs_of_the_install() {
+    let profile = apparmor_profile_ref(Path::new("/opt/peppy-a/apptainer"));
+
+    assert_eq!(
+        profile.apptainer_path,
+        "/opt/peppy-a/apptainer/bin/apptainer"
+    );
+    assert_eq!(
+        profile.starter_path,
+        "/opt/peppy-a/apptainer/libexec/apptainer/bin/starter"
+    );
 }
 
 /// Distinct installations must map to distinct AppArmor profiles: the
@@ -1420,7 +1481,7 @@ fn apparmor_profile_is_namespaced_per_install_path() {
     assert_eq!(a.name, a_again.name, "profile naming must be deterministic");
 }
 
-/// The starter path is interpolated inside the single-quoted `echo '...'`
+/// The paths of the programs are interpolated inside the single-quoted
 /// body of the fix script; an embedded quote must not break out of it.
 #[cfg(target_os = "linux")]
 #[test]
@@ -1432,158 +1493,147 @@ fn shell_escape_single_quoted_survives_embedded_quotes() {
     assert_eq!(shell_escape_single_quoted("/plain/path"), "/plain/path");
 }
 
-/// The fix script holds one step per failing check that has a fix, in a
-/// fixed order, and is absent when no check has one. A profile that is
-/// missing or stale is written and loaded in one step, so a profile that only
-/// needs loading gets the load alone. A refused user namespace gets the load
-/// of `unprivileged_userns` when that profile is the repair, and no step when
-/// it is not.
+/// The fix script holds one step per failing prerequisite, in a fixed order,
+/// and is absent when every prerequisite passes. A profile that is missing or
+/// stale is written and loaded in one step, so a profile that only needs
+/// loading gets the load alone.
 #[cfg(target_os = "linux")]
 #[test]
 fn setup_fix_script_holds_a_step_for_each_failing_check() {
     const INSTALL_UIDMAP: &str = "sudo apt-get install -y uidmap";
-    const INSTALL_PROFILE: &str = "echo 'abi <abi/4.0>,\n\
+    const WRITE_PROFILE: &str = "printf '%s\\n' 'abi <abi/4.0>,\n\
          include <tunables/global>\n\
          \n\
-         profile peppy-apptainer-0000000000000000 /opt/a/libexec/apptainer/bin/starter \
-         flags=(unconfined) {\n  userns,\n}' \
-         | sudo tee /etc/apparmor.d/peppy-apptainer-0000000000000000 > /dev/null \\\n  \
+         @{peppy_apptainer_programs} = \"/opt/a/bin/apptainer\" \
+         \"/opt/a/libexec/apptainer/bin/starter\"\n\
+         \n\
+         profile peppy-apptainer-0000000000000000 @{peppy_apptainer_programs} flags=(unconfined) {\n\
+         \x20 userns,\n\
+         }' | sudo tee /etc/apparmor.d/peppy-apptainer-0000000000000000 > /dev/null \\\n  \
          && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
     const LOAD_PROFILE: &str =
         "sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
-    const LOAD_USER_NAMESPACE_PROFILE: &str =
-        "sudo apparmor_parser -r /etc/apparmor.d/unprivileged_userns";
     let profile = ApparmorProfileRef {
+        apptainer_path: "/opt/a/bin/apptainer".to_string(),
         starter_path: "/opt/a/libexec/apptainer/bin/starter".to_string(),
         name: "peppy-apptainer-0000000000000000".to_string(),
         file: PathBuf::from("/etc/apparmor.d/peppy-apptainer-0000000000000000"),
     };
-    let then = |first: &str, second: &str| format!("{first} \\\n  && {second}");
-    let uidmap_then = |step: &str| then(INSTALL_UIDMAP, step);
-    let refusal = || "unshare: unshare failed: Permission denied".to_string();
+    let uidmap_then = |step: &str| format!("{INSTALL_UIDMAP} \\\n  && {step}");
 
     // (newuidmap_ok, apparmor_ok, apparmor_loaded, script)
     let cases = [
         (true, true, true, None),
         (false, true, true, Some(INSTALL_UIDMAP.to_string())),
-        (true, false, true, Some(INSTALL_PROFILE.to_string())),
-        (true, false, false, Some(INSTALL_PROFILE.to_string())),
+        (true, false, true, Some(WRITE_PROFILE.to_string())),
+        (true, false, false, Some(WRITE_PROFILE.to_string())),
         (true, true, false, Some(LOAD_PROFILE.to_string())),
-        (false, false, true, Some(uidmap_then(INSTALL_PROFILE))),
-        (false, false, false, Some(uidmap_then(INSTALL_PROFILE))),
+        (false, false, true, Some(uidmap_then(WRITE_PROFILE))),
+        (false, false, false, Some(uidmap_then(WRITE_PROFILE))),
         (false, true, false, Some(uidmap_then(LOAD_PROFILE))),
     ];
     for (newuidmap_ok, apparmor_ok, apparmor_loaded, script) in cases {
-        let context = format!(
+        assert_eq!(
+            setup_fix_script(newuidmap_ok, apparmor_ok, apparmor_loaded, &profile),
+            script,
             "newuidmap_ok={newuidmap_ok} apparmor_ok={apparmor_ok} \
              apparmor_loaded={apparmor_loaded}"
         );
-        let script_for = |user_namespace: &UnprivilegedUserNamespace| {
-            setup_fix_script(
-                newuidmap_ok,
-                apparmor_ok,
-                apparmor_loaded,
-                user_namespace,
-                &profile,
-            )
-        };
-
-        // A user namespace that needs no repair, or has none, adds no step.
-        for user_namespace in [
-            UnprivilegedUserNamespace::Granted,
-            UnprivilegedUserNamespace::NotRequired,
-            UnprivilegedUserNamespace::Refused { answer: refusal() },
-        ] {
-            assert_eq!(
-                script_for(&user_namespace),
-                script,
-                "{context} {user_namespace:?}"
-            );
-        }
-
-        // The load of `unprivileged_userns` is the last step.
-        let with_profile_load = script.as_deref().map_or_else(
-            || LOAD_USER_NAMESPACE_PROFILE.to_string(),
-            |steps| then(steps, LOAD_USER_NAMESPACE_PROFILE),
-        );
-        assert_eq!(
-            script_for(&UnprivilegedUserNamespace::RefusedWithoutProfile { answer: refusal() }),
-            Some(with_profile_load),
-            "{context} with a refusal that the profile repairs"
-        );
     }
 }
 
-/// A status whose every check passes but the user namespace, which is
-/// `user_namespace`, with the fix script that goes with it.
-#[cfg(target_os = "linux")]
-fn setup_status_with(
-    user_namespace: UnprivilegedUserNamespace,
-    fix_script: Option<&str>,
-) -> SetupStatus {
-    SetupStatus {
-        newuidmap_ok: true,
-        apparmor_restricted: true,
-        apparmor_ok: true,
-        apparmor_loaded: true,
-        apparmor_manageable: true,
-        user_namespace,
-        fix_script: fix_script.map(str::to_owned),
-    }
-}
-
-/// A status that has a fix to make stops the construction of the facade, and
-/// so the daemon, with an error that gives the script.
+/// The profile names each program in quotes, with a backslash before each
+/// character that AppArmor reads as a pattern, so that the profile attaches
+/// to that path alone. A single quote of a path stays inside the
+/// single-quoted body that the fix script writes to the profile file.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_status_with_a_fix_to_make_is_an_error_that_gives_the_script() {
-    const LOAD: &str = "sudo apparmor_parser -r /etc/apparmor.d/unprivileged_userns";
-    let status = setup_status_with(
-        UnprivilegedUserNamespace::RefusedWithoutProfile {
-            answer: "unshare: unshare failed: Permission denied".to_string(),
-        },
-        Some(LOAD),
-    );
-    assert!(!status.is_ok());
+fn setup_fix_script_names_a_path_with_special_characters_as_it_is() {
+    let profile = ApparmorProfileRef {
+        apptainer_path: r#"/home/o'brien/my "apps" [x] {y},z*?^\a/bin/apptainer"#.to_string(),
+        starter_path: "/home/o'brien/a b/libexec/apptainer/bin/starter".to_string(),
+        name: "peppy-apptainer-0000000000000000".to_string(),
+        file: PathBuf::from("/etc/apparmor.d/peppy-apptainer-0000000000000000"),
+    };
 
-    let error = require_fixes_made(status).unwrap_err();
+    let script = setup_fix_script(true, false, true, &profile).expect("a profile to write");
+
+    let programs_line = [
+        "@{peppy_apptainer_programs} =",
+        r#""/home/o'\''brien/my \"apps\" \[x\] \{y\}\,z\*\?\^\\a/bin/apptainer""#,
+        r#""/home/o'\''brien/a b/libexec/apptainer/bin/starter""#,
+    ]
+    .join(" ");
+    assert!(
+        script.contains(&format!("\n{programs_line}\n")),
+        "expected the line:\n{programs_line}\ngot:\n{script}"
+    );
+}
+
+/// Prerequisites that fail stop the construction of the facade, and so the
+/// daemon, with an error that gives the script that fixes them.
+#[cfg(target_os = "linux")]
+#[test]
+fn unmet_prerequisites_are_an_error_that_gives_the_script() {
+    const FIX_SCRIPT: &str = "sudo apt-get install -y uidmap \\\n  \
+         && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
+
+    let error = unmet_prerequisites_error(FIX_SCRIPT);
 
     assert_matches!(
         &error,
         Error::ConfigurationError(message)
-            if message.contains(&format!("  {LOAD}\n"))
-                && message.contains("peppy container setup")
+            if message.contains(
+                "  sudo apt-get install -y uidmap \\\n    \
+                 && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000\n"
+            ) && message.contains("peppy container setup")
     );
 }
 
-/// A user namespace that the kernel refuses for a cause with no fix fails
-/// the status and does not stop the daemon: the nodes that are not
-/// containers run on such a machine.
+/// The verdict of a setup: ready when no prerequisite fails and the kernel
+/// does not refuse the user namespace, fixable when a prerequisite fails, and
+/// unfixable when the kernel refuses, with the script of the prerequisites
+/// that fail beside the refusal.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_refusal_with_no_fix_does_not_stop_the_daemon() {
-    let status = setup_status_with(
-        UnprivilegedUserNamespace::Refused {
-            answer: "unshare: unshare failed: Operation not permitted".to_string(),
-        },
-        None,
-    );
-    assert!(!status.is_ok());
+fn the_verdict_of_a_setup_holds_its_fix_script_and_the_refusal_of_the_kernel() {
+    const FIX_SCRIPT: &str = "sudo apt-get install -y uidmap";
+    let refused = UnprivilegedUserNamespace::Refused {
+        answer: "unshare: unshare failed: Operation not permitted".to_string(),
+    };
+    let refusal = refused
+        .refusal()
+        .expect("a refused user namespace explains itself");
 
-    require_fixes_made(status).unwrap();
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn a_status_that_passes_has_no_fix_to_make() {
-    for user_namespace in [
+    for not_refused in [
         UnprivilegedUserNamespace::Granted,
         UnprivilegedUserNamespace::NotRequired,
+        UnprivilegedUserNamespace::Untested {
+            reason: "cannot run `unshare`: no such program".to_string(),
+        },
     ] {
-        let status = setup_status_with(user_namespace, None);
-        assert!(status.is_ok());
+        assert_eq!(
+            SetupVerdict::of(None, &not_refused),
+            SetupVerdict::Ready,
+            "{not_refused:?}"
+        );
+        assert_eq!(
+            SetupVerdict::of(Some(FIX_SCRIPT.to_string()), &not_refused),
+            SetupVerdict::Fixable {
+                fix_script: FIX_SCRIPT.to_string()
+            },
+            "{not_refused:?}"
+        );
+    }
 
-        require_fixes_made(status).unwrap();
+    for fix_script in [None, Some(FIX_SCRIPT.to_string())] {
+        assert_eq!(
+            SetupVerdict::of(fix_script.clone(), &refused),
+            SetupVerdict::Unfixable {
+                refusal: refusal.clone(),
+                fix_script
+            }
+        );
     }
 }
 
