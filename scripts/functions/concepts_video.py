@@ -49,6 +49,10 @@ TRANSCRIPT_FILE = f"{VIDEO_DIR}/transcript.toml"
 UPLOAD_FILE = f"{VIDEO_DIR}/upload.json"
 VIDEO_README = f"{VIDEO_DIR}/README.md"
 
+# The channel of Peppy in YouTube Studio, where a new render of the video is
+# uploaded.
+YOUTUBE_STUDIO_CHANNEL = "https://studio.youtube.com/channel/UCQzSqGbMBfHIKmuYo1KMAKw"
+
 
 class SegmentStatus(StrEnum):
     """What the update did about one reported segment."""

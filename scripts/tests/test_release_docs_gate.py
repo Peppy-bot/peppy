@@ -1089,6 +1089,11 @@ def test_render_steps_comment_gives_the_build_the_upload_and_the_text_box() -> N
         "pixi run record-upload <link>",
     ):
         assert command in comment
+    # Where the new render goes: the channel of Peppy in YouTube Studio.
+    assert (
+        "Upload it to [the channel of Peppy in YouTube Studio]"
+        "(https://studio.youtube.com/channel/UCQzSqGbMBfHIKmuYo1KMAKw)" in comment
+    )
     # The text box: GitHub's editor of the record, on the branch of the pull
     # request, with the hash the record has to hold.
     assert (

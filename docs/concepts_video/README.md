@@ -29,7 +29,7 @@ It writes these files into `build/`:
 
 Two builds of the same commit on the same machine give the same MP4 file, byte for byte. The build renders with the software renderer of Chrome and with a fixed count of render workers, so the graphics card and the count of processors of a machine do not change the settings of the render.
 
-YouTube gives each upload a new link. After an upload, record it:
+Upload the video to the channel of Peppy, in [YouTube Studio](https://studio.youtube.com/channel/UCQzSqGbMBfHIKmuYo1KMAKw). YouTube gives each upload a new link. After an upload, record it:
 
 ```sh
 pixi run record-upload <link>

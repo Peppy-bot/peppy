@@ -35,6 +35,7 @@ from .concepts_video import (
     UPLOAD_FILE,
     VIDEO_DIR,
     VIDEO_README,
+    YOUTUBE_STUDIO_CHANNEL,
     SegmentFindings,
     SegmentStatus,
     VideoCheck,
@@ -402,7 +403,8 @@ def _render_steps_comment(slug: RepoSlug, branch: str, content_sha256: str) -> s
             "4. Watch `build/concepts_video.mp4`.",
             "",
             (
-                "5. Upload it to YouTube with the captions "
+                "5. Upload it to [the channel of Peppy in YouTube Studio]"
+                + f"({YOUTUBE_STUDIO_CHANNEL}) with the captions "
                 + "`build/concepts_video.en.srt`, and paste "
                 + "`build/concepts_video.chapters.txt` into the description."
             ),
