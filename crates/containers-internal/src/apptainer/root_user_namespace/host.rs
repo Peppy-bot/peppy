@@ -35,13 +35,17 @@ const SCRIPT_ANSWER_ENTERED: &str = "entered";
 /// cannot enter.
 const SCRIPT_ANSWER_CLOSED: &str = "closed";
 
-/// The owner, the group and the permission bits of a directory: what
-/// decides who enters a directory that has no access control list.
+/// What decides who enters a directory: its owner, its group and its
+/// permission bits, and its access control list when it has one.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DirectoryAccess {
     pub(crate) owner: u32,
     pub(crate) group: u32,
     pub(crate) mode: u32,
+    /// Whether the directory has an access control list, of which an entry
+    /// can admit a user where the permission bits do not. This module does
+    /// not read the entries.
+    pub(crate) has_access_control_list: bool,
 }
 
 /// The host as the choice of a user namespace reads it.
@@ -50,10 +54,8 @@ pub(crate) trait Host: fmt::Debug + Send + Sync {
     /// cannot be resolved.
     fn resolved(&self, path: &Path) -> Option<PathBuf>;
 
-    /// The owner, the group and the permission bits of the directory at
-    /// `dir`. `None` for a directory that decides nothing: one whose
-    /// permissions cannot be read, and one with an access control list, of
-    /// which an entry can admit root where the permission bits do not.
+    /// What decides who enters the directory at `dir`, or `None` for a
+    /// directory whose permissions cannot be read.
     fn access_of(&self, dir: &Path) -> Option<DirectoryAccess>;
 
     /// The answer of the kernel: whether a process that is root in a user
@@ -76,14 +78,13 @@ impl Host for ThisHost {
     }
 
     fn access_of(&self, dir: &Path) -> Option<DirectoryAccess> {
-        if has_access_control_list(dir)? {
-            return None;
-        }
+        let has_access_control_list = has_access_control_list(dir)?;
         let metadata = fs::metadata(dir).ok()?;
         Some(DirectoryAccess {
             owner: metadata.uid(),
             group: metadata.gid(),
             mode: metadata.mode(),
+            has_access_control_list,
         })
     }
 
@@ -139,10 +140,11 @@ mod tests {
 
         let access = ThisHost
             .access_of(scratch.path())
-            .expect("a new directory has no access control list");
+            .expect("read the permissions of the scratch directory");
 
         assert_eq!(access.mode & 0o777, 0o750);
         assert_eq!(access.owner, rustix::process::geteuid().as_raw());
+        assert!(!access.has_access_control_list);
     }
 
     /// A user of a host that gives it a user namespace is root in that
@@ -170,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_that_does_not_exist_decides_nothing() {
+    fn the_permissions_of_a_directory_that_does_not_exist_are_not_read() {
         let scratch = scratch_dir();
         let missing = scratch.path().join("no-such-directory");
 

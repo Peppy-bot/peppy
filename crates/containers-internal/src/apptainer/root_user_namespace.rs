@@ -42,12 +42,13 @@
 //!   that directory. Apptainer opens the image before it makes the namespace,
 //!   so the image can be below such a directory.
 //!
-//! The permission bits do not decide on each file system: a network file
-//! system and a FUSE file system can apply rules of their own. So peppy
-//! refuses a command only for a directory that the kernel also reports
-//! closed (see [`Host::root_enters_from_user_namespace`]). Without that
-//! answer peppy passes `--userns`, and apptainer reports a path that it
-//! cannot reach.
+//! The permission bits do not always decide: a network file system and a
+//! FUSE file system can apply rules of their own, and an entry of an access
+//! control list can admit root where the bits do not. So peppy refuses a
+//! command only for a directory that the kernel also reports closed (see
+//! [`Host::root_enters_from_user_namespace`]), and the kernel alone decides
+//! for a directory with a list. Without that answer peppy passes `--userns`,
+//! and apptainer reports a path that it cannot reach.
 
 mod host;
 mod kernel_squashfs;
@@ -58,6 +59,7 @@ use crate::error::{Error, Result};
 use host::{DirectoryAccess, Host, ThisHost};
 use kernel_squashfs::KernelSquashfs;
 pub(crate) use squashfs_image::SquashfsCompression;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
@@ -206,21 +208,38 @@ impl RootDaemon {
             .bind_sources
             .iter()
             .map(|source| (HostPathRole::BindSource, *source));
+        let mut kernel = self.kernel_answers();
         installation
             .into_iter()
             .chain(working_dir)
             .chain(bind_sources)
-            .find_map(|(role, path)| self.out_of_reach(role, path))
+            .find_map(|(role, path)| self.out_of_reach(role, path, &mut kernel))
+    }
+
+    /// The answers of the kernel about this root, for the paths of one
+    /// command.
+    fn kernel_answers(&self) -> KernelAnswers<'_> {
+        KernelAnswers {
+            host: self.host.as_ref(),
+            mapped_group: self.root.mapped_group,
+            answers: HashMap::new(),
+        }
     }
 
     /// The outermost directory that root cannot enter from the user
     /// namespace on the way to `path`, or `None` when root reaches the path.
     ///
-    /// A path that cannot be resolved and a directory that decides nothing
-    /// (see [`Host::access_of`]) close nothing, and neither does a directory
-    /// that the kernel does not report closed: apptainer reports a path that
-    /// it cannot reach.
-    fn out_of_reach(&self, role: HostPathRole, path: &Path) -> Option<PathOutOfReach> {
+    /// A directory closes the path only when its permissions can keep root
+    /// out (see [`RealRoot::obstacle_in`]) and `kernel` reports it closed.
+    /// A path that cannot be resolved and a directory whose permissions
+    /// cannot be read close nothing: apptainer reports a path that it cannot
+    /// reach.
+    fn out_of_reach(
+        &self,
+        role: HostPathRole,
+        path: &Path,
+        kernel: &mut KernelAnswers<'_>,
+    ) -> Option<PathOutOfReach> {
         // The kernel resolves symbolic links, so the search reads the
         // directories of the resolved path.
         let resolved_path = self.host.resolved(path)?;
@@ -232,19 +251,15 @@ impl RootDaemon {
         // outermost closed directory: the first one to open.
         let mut dirs: Vec<&Path> = innermost_dir.ancestors().collect();
         dirs.reverse();
-        let (closed_dir, access) = dirs
-            .into_iter()
-            .filter_map(|dir| Some((dir, self.host.access_of(dir)?)))
-            .find(|(_, access)| !self.root.enters_from_user_namespace(*access))?;
-        let kernel_reports_closed = self
-            .host
-            .root_enters_from_user_namespace(closed_dir, self.root.mapped_group)
-            == Some(false);
-        kernel_reports_closed.then(|| PathOutOfReach {
+        let (closed_dir, obstacle) = dirs.into_iter().find_map(|dir| {
+            let obstacle = self.root.obstacle_in(self.host.access_of(dir)?)?;
+            kernel.reports_closed(dir).then_some((dir, obstacle))
+        })?;
+        Some(PathOutOfReach {
             role,
             path: resolved_path.clone(),
             closed_dir: closed_dir.to_path_buf(),
-            class_of_root: self.root.permission_class_on(access),
+            obstacle,
         })
     }
 
@@ -254,8 +269,12 @@ impl RootDaemon {
         if self.kernel.mounts(COMPRESSION_OF_BUILT_IMAGES) {
             return;
         }
-        let Some(out_of_reach) = self.out_of_reach(HostPathRole::Installation, apptainer_dir)
-        else {
+        let installation_out_of_reach = self.out_of_reach(
+            HostPathRole::Installation,
+            apptainer_dir,
+            &mut self.kernel_answers(),
+        );
+        let Some(out_of_reach) = installation_out_of_reach else {
             tracing::info!(
                 "This daemon runs as root and its kernel cannot mount {} squashfs, the \
                  compression of the images that peppy builds, so apptainer runs their \
@@ -310,6 +329,27 @@ enum Reach {
     Found,
 }
 
+/// The answers of the kernel about one root, for the paths of one command.
+/// Several paths of a command are below the same directories, so the kernel
+/// answers one time for each directory.
+struct KernelAnswers<'a> {
+    host: &'a dyn Host,
+    mapped_group: u32,
+    answers: HashMap<PathBuf, Option<bool>>,
+}
+
+impl KernelAnswers<'_> {
+    /// Whether the kernel reports that root cannot enter the directory at
+    /// `dir` from the user namespace. No answer is not a report.
+    fn reports_closed(&mut self, dir: &Path) -> bool {
+        let answer = self.answers.entry(dir.to_path_buf()).or_insert_with(|| {
+            self.host
+                .root_enters_from_user_namespace(dir, self.mapped_group)
+        });
+        *answer == Some(false)
+    }
+}
+
 /// A path of a command that root cannot reach from the user namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PathOutOfReach {
@@ -319,8 +359,8 @@ struct PathOutOfReach {
     /// The outermost directory that root cannot enter: the first one to
     /// open.
     closed_dir: PathBuf,
-    /// The permission bits of `closed_dir` that the kernel reads for root.
-    class_of_root: PermissionClass,
+    /// What keeps root out of `closed_dir`.
+    obstacle: Obstacle,
 }
 
 impl PathOutOfReach {
@@ -331,11 +371,7 @@ impl PathOutOfReach {
             role: self.role.description(),
             path: self.path.display().to_string(),
             closed_dir: self.closed_dir.display().to_string(),
-            open_command: format!(
-                "chmod {}+x '{}'",
-                self.class_of_root.chmod_letter(),
-                shell_escape_single_quoted(&self.closed_dir.to_string_lossy())
-            ),
+            open_command: self.obstacle.command_that_opens(&self.closed_dir),
         }
     }
 }
@@ -396,20 +432,41 @@ impl RealRoot {
         }
     }
 
-    /// Whether the permissions of `dir` let this root enter it from the
-    /// user namespace of apptainer, which maps user 0 and the real group
-    /// only.
+    /// Whether this root has its capabilities on `dir` in the user namespace
+    /// of apptainer, which maps user 0 and the real group only.
     ///
     /// Outside a user namespace, the capability `CAP_DAC_READ_SEARCH` lets
-    /// root enter a directory whatever its permission bits. In the namespace
-    /// the capability holds only for a directory whose owner and group are
-    /// both mapped, so the bits of
-    /// [`permission_class_on`](Self::permission_class_on) decide for every
-    /// other directory.
+    /// root enter a directory whatever its permissions. In the namespace the
+    /// capability holds only for a directory whose owner and group are both
+    /// mapped.
+    fn has_capabilities_on(&self, dir: DirectoryAccess) -> bool {
+        dir.owner == ROOT_USER && dir.group == self.mapped_group
+    }
+
+    /// Whether the owner, the group and the permission bits of `dir` let
+    /// this root enter it from the user namespace: by its capabilities, or
+    /// by the bits of [`permission_class_on`](Self::permission_class_on),
+    /// which decide for a directory without them.
     fn enters_from_user_namespace(&self, dir: DirectoryAccess) -> bool {
-        let owner_and_group_are_mapped = dir.owner == ROOT_USER && dir.group == self.mapped_group;
         let bits_admit_root = dir.mode & self.permission_class_on(dir).search_bit() != 0;
-        owner_and_group_are_mapped || bits_admit_root
+        self.has_capabilities_on(dir) || bits_admit_root
+    }
+
+    /// What can keep this root out of `dir` in the user namespace, or `None`
+    /// when the permissions of `dir` let it enter.
+    ///
+    /// An access control list comes first: for a directory that has one, the
+    /// kernel reads the entries of the list where this module reads the
+    /// permission bits, so the bits tell nothing.
+    fn obstacle_in(&self, dir: DirectoryAccess) -> Option<Obstacle> {
+        if self.has_capabilities_on(dir) {
+            return None;
+        }
+        if dir.has_access_control_list {
+            return Some(Obstacle::AccessControlList);
+        }
+        (!self.enters_from_user_namespace(dir))
+            .then(|| Obstacle::PermissionBits(self.permission_class_on(dir)))
     }
 }
 
@@ -417,6 +474,28 @@ impl RealRoot {
 /// initial user namespace.
 fn is_initial_user_namespace_map(uid_map: &str) -> bool {
     uid_map.split_whitespace().eq(INITIAL_USER_NAMESPACE_MAP)
+}
+
+/// What keeps root out of a directory in the user namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Obstacle {
+    /// The permission bits of the class that the kernel reads for root.
+    PermissionBits(PermissionClass),
+    /// The entries of the access control list of the directory.
+    AccessControlList,
+}
+
+impl Obstacle {
+    /// The shell command that lets root enter the directory at `dir`.
+    fn command_that_opens(self, dir: &Path) -> String {
+        let quoted_dir = shell_escape_single_quoted(&dir.to_string_lossy());
+        match self {
+            Self::PermissionBits(class) => {
+                format!("chmod {}+x '{quoted_dir}'", class.chmod_letter())
+            }
+            Self::AccessControlList => format!("setfacl -m u:root:x '{quoted_dir}'"),
+        }
+    }
 }
 
 /// The users that one group of three permission bits of a file is for.
@@ -456,6 +535,7 @@ pub(crate) mod fixtures {
     use super::{RealRoot, UserNamespace};
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex, PoisonError};
 
     /// The group root.
     pub(crate) const ROOT_GROUP: u32 = 0;
@@ -471,6 +551,7 @@ pub(crate) mod fixtures {
         owner: OTHER_USER,
         group: OTHER_GROUP,
         mode: 0o755,
+        has_access_control_list: false,
     };
 
     /// The home directory of a user of Ubuntu 24.04: closed to the other
@@ -479,6 +560,13 @@ pub(crate) mod fixtures {
         owner: OTHER_USER,
         group: OTHER_GROUP,
         mode: 0o750,
+        has_access_control_list: false,
+    };
+
+    /// [`PRIVATE_HOME`] with an access control list.
+    pub(crate) const PRIVATE_HOME_WITH_A_LIST: DirectoryAccess = DirectoryAccess {
+        has_access_control_list: true,
+        ..PRIVATE_HOME
     };
 
     /// Root as a system service runs it: in the group root and in no other
@@ -497,8 +585,31 @@ pub(crate) mod fixtures {
     pub(crate) struct FakeHost {
         dirs: HashMap<PathBuf, Option<DirectoryAccess>>,
         kernel_answers: HashMap<PathBuf, Option<bool>>,
+        kernel_questions: KernelQuestions,
         unresolved_paths: Vec<PathBuf>,
         current_dir: Option<PathBuf>,
+    }
+
+    /// The directories that the kernel of a [`FakeHost`] was asked about, in
+    /// the order of the questions.
+    #[derive(Debug, Default, Clone)]
+    pub(crate) struct KernelQuestions(Arc<Mutex<Vec<PathBuf>>>);
+
+    impl KernelQuestions {
+        fn record(&self, dir: &Path) {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(dir.to_path_buf());
+        }
+
+        /// The directories of the questions so far.
+        pub(crate) fn asked(&self) -> Vec<PathBuf> {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
     }
 
     impl FakeHost {
@@ -508,10 +619,16 @@ pub(crate) mod fixtures {
             self
         }
 
-        /// With a directory at `dir` that decides nothing.
-        pub(crate) fn with_dir_that_decides_nothing(mut self, dir: &str) -> Self {
+        /// With a directory at `dir` whose permissions cannot be read.
+        pub(crate) fn with_unreadable_dir(mut self, dir: &str) -> Self {
             self.dirs.insert(PathBuf::from(dir), None);
             self
+        }
+
+        /// The questions that the kernel of this host gets, which a test
+        /// reads after it hands the host to a daemon.
+        pub(crate) fn kernel_questions(&self) -> KernelQuestions {
+            self.kernel_questions.clone()
         }
 
         /// With `answer` as what the kernel tells about root in the
@@ -548,6 +665,7 @@ pub(crate) mod fixtures {
         }
 
         fn root_enters_from_user_namespace(&self, dir: &Path, _mapped_group: u32) -> Option<bool> {
+            self.kernel_questions.record(dir);
             self.kernel_answers.get(dir).copied().unwrap_or(Some(false))
         }
 
@@ -580,8 +698,8 @@ pub(crate) mod fixtures {
 #[cfg(test)]
 mod tests {
     use super::fixtures::{
-        FakeHost, OPEN_DIR, OTHER_GROUP, OTHER_USER, PRIVATE_HOME, ROOT_GROUP,
-        real_root_on_a_kernel_without_zstd, root_daemon_on_a_kernel_without_zstd,
+        FakeHost, OPEN_DIR, OTHER_GROUP, OTHER_USER, PRIVATE_HOME, PRIVATE_HOME_WITH_A_LIST,
+        ROOT_GROUP, real_root_on_a_kernel_without_zstd, root_daemon_on_a_kernel_without_zstd,
         root_of_the_root_group, sif_packed_with,
     };
     use super::kernel_squashfs::fixtures::{
@@ -768,6 +886,7 @@ mod tests {
             owner: ROOT_USER,
             group: ROOT_GROUP,
             mode: 0o000,
+            has_access_control_list: false,
         };
 
         assert!(root_of_the_root_group().enters_from_user_namespace(closed_to_all));
@@ -788,11 +907,13 @@ mod tests {
             owner: OTHER_USER,
             group: ROOT_GROUP,
             mode: 0o750,
+            has_access_control_list: false,
         };
         let open_to_others_only = DirectoryAccess {
             owner: OTHER_USER,
             group: ROOT_GROUP,
             mode: 0o705,
+            has_access_control_list: false,
         };
 
         assert!(root.enters_from_user_namespace(open_to_group));
@@ -821,11 +942,13 @@ mod tests {
             owner: ROOT_USER,
             group: OTHER_GROUP,
             mode: 0o700,
+            has_access_control_list: false,
         };
         let closed_to_owner = DirectoryAccess {
             owner: ROOT_USER,
             group: OTHER_GROUP,
             mode: 0o077,
+            has_access_control_list: false,
         };
 
         assert!(root.enters_from_user_namespace(open_to_owner));
@@ -844,11 +967,13 @@ mod tests {
             owner: ROOT_USER,
             group: OTHER_GROUP,
             mode: 0o000,
+            has_access_control_list: false,
         };
         let of_root_and_the_root_group = DirectoryAccess {
             owner: ROOT_USER,
             group: ROOT_GROUP,
             mode: 0o000,
+            has_access_control_list: false,
         };
 
         assert!(root.enters_from_user_namespace(of_root_and_its_real_group));
@@ -1006,6 +1131,7 @@ mod tests {
             owner: OTHER_USER,
             group: ROOT_GROUP,
             mode: 0o700,
+            has_access_control_list: false,
         };
         let host = FakeHost::default().with_dir("/opt/peppy", closed_to_its_group);
 
@@ -1018,20 +1144,120 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_that_decides_nothing_closes_nothing() {
-        let all_decide_nothing = FakeHost::default()
-            .with_dir_that_decides_nothing("/opt")
-            .with_dir_that_decides_nothing("/opt/peppy");
-        let closed_below_one_that_decides_nothing = FakeHost::default()
-            .with_dir_that_decides_nothing("/opt")
+    fn a_directory_whose_permissions_cannot_be_read_closes_nothing() {
+        let all_unreadable = FakeHost::default()
+            .with_unreadable_dir("/opt")
+            .with_unreadable_dir("/opt/peppy");
+        let closed_below_an_unreadable_one = FakeHost::default()
+            .with_unreadable_dir("/opt")
             .with_dir("/opt/peppy", PRIVATE_HOME);
 
-        let forced = flag_for_a_zstd_image(all_decide_nothing, |_| {});
-        let refused_below = flag_for_a_zstd_image(closed_below_one_that_decides_nothing, |_| {});
+        let forced = flag_for_a_zstd_image(all_unreadable, |_| {});
+        let refused_below = flag_for_a_zstd_image(closed_below_an_unreadable_one, |_| {});
 
         assert_matches!(forced, Ok(Some("--userns")));
         let (_, _, closed_dir) = refused(refused_below);
         assert_eq!(closed_dir, "/opt/peppy");
+    }
+
+    /// An entry of the list can admit root where the permission bits do
+    /// not, so the kernel alone decides for a directory with a list.
+    #[test]
+    fn a_directory_with_a_list_that_the_kernel_lets_root_enter_closes_nothing() {
+        let host = FakeHost::default()
+            .with_dir("/opt/peppy", PRIVATE_HOME_WITH_A_LIST)
+            .with_kernel_answer("/opt/peppy", Some(true));
+
+        let flag = flag_for_a_zstd_image(host, |_| {});
+
+        assert_matches!(flag, Ok(Some("--userns")));
+    }
+
+    /// The list of a directory can also keep root out where its permission
+    /// bits let every user enter.
+    #[test]
+    fn a_directory_with_a_list_that_the_kernel_reports_closed_is_opened_with_a_list_entry() {
+        let open_by_its_bits = DirectoryAccess {
+            has_access_control_list: true,
+            ..OPEN_DIR
+        };
+        for with_a_list in [PRIVATE_HOME_WITH_A_LIST, open_by_its_bits] {
+            let host = FakeHost::default().with_dir("/opt/peppy", with_a_list);
+
+            let error = flag_for_a_zstd_image(host, |_| {}).expect_err("the command is refused");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("setfacl -m u:root:x '/opt/peppy'\n"),
+                "the command adds an entry for root to the list: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_directory_with_a_list_that_the_kernel_gives_no_answer_about_closes_nothing() {
+        let host = FakeHost::default()
+            .with_dir("/opt/peppy", PRIVATE_HOME_WITH_A_LIST)
+            .with_kernel_answer("/opt/peppy", None);
+
+        let flag = flag_for_a_zstd_image(host, |_| {});
+
+        assert_matches!(flag, Ok(Some("--userns")));
+    }
+
+    /// Root has its capabilities on a directory of user 0 and of its real
+    /// group, whatever the list of the directory holds.
+    #[test]
+    fn a_directory_of_root_with_a_list_is_not_a_question_for_the_kernel() {
+        let of_root_with_a_list = DirectoryAccess {
+            owner: ROOT_USER,
+            group: ROOT_GROUP,
+            mode: 0o700,
+            has_access_control_list: true,
+        };
+        let host = FakeHost::default().with_dir("/opt/peppy", of_root_with_a_list);
+        let questions = host.kernel_questions();
+
+        let flag = flag_for_a_zstd_image(host, |_| {});
+
+        assert_matches!(flag, Ok(Some("--userns")));
+        assert!(questions.asked().is_empty());
+    }
+
+    /// Several paths of a command are below the same directory.
+    #[test]
+    fn the_kernel_answers_one_time_for_a_directory_that_several_paths_are_below() {
+        let host = FakeHost::default()
+            .with_dir("/home/user", PRIVATE_HOME_WITH_A_LIST)
+            .with_kernel_answer("/home/user", Some(true));
+        let questions = host.kernel_questions();
+
+        let flag = flag_for_a_zstd_image(host, |command| {
+            command.apptainer_dir = Path::new("/home/user/.peppy/bin/apptainer");
+            command.working_dir = Some(Path::new("/home/user/.peppy/instances/node"));
+            command.bind_sources = vec![
+                Path::new("/home/user/.peppy/logs"),
+                Path::new("/home/user/.peppy/conf"),
+            ];
+        });
+
+        assert_matches!(flag, Ok(Some("--userns")));
+        assert_eq!(questions.asked(), [Path::new("/home/user")]);
+    }
+
+    /// A host where each path is in reach starts no probe.
+    #[test]
+    fn the_kernel_gets_no_question_on_a_host_where_each_directory_is_open() {
+        let host = FakeHost::default();
+        let questions = host.kernel_questions();
+
+        let flag = flag_for_a_zstd_image(host, |command| {
+            command.bind_sources = vec![Path::new("/srv/data")];
+        });
+
+        assert_matches!(flag, Ok(Some("--userns")));
+        assert!(questions.asked().is_empty());
     }
 
     #[test]
