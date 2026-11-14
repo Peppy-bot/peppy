@@ -44,8 +44,9 @@ pytestmark = pytest.mark.install
 # The launch of the quickstart (docs/src/content/docs/quickstart.mdx, step 2).
 QUICKSTART_LAUNCH = "peppy stack launch openarm_simulation --with mujoco"
 # Ends a launch that hangs. A machine that peppy was just installed on has no
-# cache, so each node of the launch builds from nothing.
-QUICKSTART_LAUNCH_TIMEOUT_SECONDS = 90 * 60
+# cache, so each node of the launch builds from nothing: 7 to 10 minutes on
+# the 8 cores of a CI instance.
+QUICKSTART_LAUNCH_TIMEOUT_SECONDS = 30 * 60
 
 
 @pytest.fixture(autouse=True)
