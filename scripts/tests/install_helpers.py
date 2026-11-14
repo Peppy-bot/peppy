@@ -5,8 +5,8 @@ scripts/install.sh with the release archive of this machine's platform. The
 host tests change that machine (apt packages, systemd linger, an AppArmor
 profile, a user service, ~/.bashrc), so every install test runs only on a
 machine that PEPPY_DISPOSABLE_TEST_HOST=1 declares disposable, meaning one
-discarded after the run, such as a GitHub-hosted runner. Anywhere else they
-skip (see conftest).
+discarded after the run, such as the instance that RunsOn starts for a CI
+job. Anywhere else they skip (see conftest).
 
 A user runs the installer from a login session: an SSH session on a robot or
 a terminal on a desktop. On Linux that session is what gives the shell its
@@ -36,11 +36,17 @@ import pytest
 
 from functions.build import release_archive_name, release_dist_dir
 from functions.cli import get_native_triple
+from functions.hub_ci import load_release_set, resolve
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install.sh"
 
 DISPOSABLE_HOST_VARIABLE = "PEPPY_DISPOSABLE_TEST_HOST"
+
+# Names the hub set of a release: the file in which the hub-set job of the
+# release records the commit of each hub that the release tests and tags (see
+# .github/workflows/parallel-release.yml).
+HUB_SET_VARIABLE = "PEPPY_INSTALL_TEST_HUB_SET"
 
 # Everything the tests write outside a user's own files. Short, because a
 # PEPPY_HOME under it holds the daemon's Unix sockets and macOS caps a socket
@@ -61,6 +67,20 @@ linux_only = pytest.mark.skipif(not IS_LINUX, reason="applies to Linux only")
 linux_aarch64_only = pytest.mark.skipif(
     not IS_LINUX_AARCH64, reason="applies to Linux on aarch64 only"
 )
+
+# The background service that `peppy service install` registers (see
+# service_label in crates/peppy/src/commands/service/install.rs): a unit of
+# the systemd user manager on Linux, an agent of launchd on macOS. The
+# command reports the state of the service, and the mark is what it prints
+# only while the service runs. On macOS the command is of the same family as
+# the `launchctl load` that registers the agent, so it reads the session
+# that the agent is in.
+if IS_MACOS:
+    SERVICE_STATUS_COMMAND = "launchctl list bot.peppy"
+    SERVICE_RUNNING_MARK = '"PID" = '
+else:
+    SERVICE_STATUS_COMMAND = "systemctl --user status peppy.service --no-pager"
+    SERVICE_RUNNING_MARK = "Active: active (running)"
 
 # Where each container sees the two files it is given, and where it installs.
 CONTAINER_INSTALL_SCRIPT = "/peppy-test/install.sh"
@@ -96,6 +116,34 @@ def peppy_home(name: str) -> Path:
     return HOMES_ROOT / name
 
 
+def pin_default_hubs(home: Path) -> None:
+    """Make the install into *home* read each default hub at its commit of the
+    hub set of a release, when the environment names one.
+
+    A release build of peppy reads each default hub at its tag of the release,
+    `peppy-release/<version>`, which the release creates when it publishes.
+    The install tests of a release run before that, so the release gives them
+    its hub set: the commits that it tags. The repositories.json5 written here
+    holds each default hub at its bundled id, so install.sh and the daemon add
+    no default to it. Without the variable nothing is written, and the install
+    reads its default hubs as it finds them: `main` for a build without a
+    release version.
+    """
+    hub_set_file = os.environ.get(HUB_SET_VARIABLE)
+    if not hub_set_file:
+        return
+    hub_set = load_release_set(Path(hub_set_file))
+    resolve.write_repositories_file(
+        home, resolve.default_hubs_repositories_file(hub_set)
+    )
+
+
+def peppy_environment(home: Path) -> str:
+    """The shell commands that give a login session the peppy installed in
+    *home*: its `peppy` on PATH, and its PEPPY_HOME."""
+    return f'export PATH="{home}/bin:$PATH" && export PEPPY_HOME={home}'
+
+
 def _stream_text(stream: str | bytes | None) -> str:
     """Render one captured stream.
 
@@ -119,6 +167,27 @@ def diagnostic(
         f"\n--- stdout ---\n{_stream_text(result.stdout)}"
         f"\n--- stderr ---\n{_stream_text(result.stderr)}"
     )
+
+
+def show_step(
+    capsys: pytest.CaptureFixture[str],
+    title: str,
+    result: subprocess.CompletedProcess[str],
+) -> None:
+    """Print what a step of a test printed to the log of the run, which
+    pytest shows for a failed test only."""
+    with capsys.disabled():
+        print(
+            f"\n=== {title} (exit status {result.returncode}) ==={diagnostic(result)}",
+            flush=True,
+        )
+
+
+def daemon_logs(home: Path) -> str:
+    """The end of each log that the daemon of *home* wrote for its launches
+    and its node builds, for the report of a launch that failed."""
+    logs = login_shell(f"tail -n 80 {home}/logs/launch/* {home}/logs/build/* 2>&1")
+    return f"\n--- launch and node build logs of the daemon ---\n{logs.stdout}"
 
 
 def assert_installed(result: subprocess.CompletedProcess[str]) -> None:

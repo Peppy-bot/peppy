@@ -1379,6 +1379,26 @@ class ReleaseSetFile(unittest.TestCase):
             entries[-1]["url"], "git@github.com:Peppy-bot/private-nodes-hub.git"
         )
 
+    def test_the_default_hubs_repositories_file_pins_the_public_hubs_alone(self):
+        hub_set = resolve.parse_release_set(
+            release_set_text(**{"mcp-hub": {"ref": RELEASE_TAG, "commit": "9" * 40}})
+        )
+        entries = json.loads(resolve.default_hubs_repositories_file(hub_set))
+        self.assertEqual(
+            entries,
+            [
+                {
+                    "id": hub.repository_id,
+                    "type": "git",
+                    "url": hub.clone_url,
+                    "ref": "9" * 40
+                    if hub.name == "mcp-hub"
+                    else commit_of(hub, "main"),
+                }
+                for hub in PUBLIC_HUBS
+            ],
+        )
+
     def test_the_index_check_of_mcp_hub_validates_its_exposures(self):
         checkout = Path("/checkouts/hub")
         for hub in resolve.HUBS:
