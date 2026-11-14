@@ -921,6 +921,16 @@ fn copy_label(copy: Option<&config::runtime::Name>) -> String {
     copy.map_or_default(|copy| format!(" [copy {}]", copy.as_str()))
 }
 
+/// The states of an instance, in the order the instance summary of a node
+/// lists them.
+const INSTANCE_SUMMARY_ORDER: [InstanceState; 5] = [
+    InstanceState::Running,
+    InstanceState::Starting,
+    InstanceState::Restarting,
+    InstanceState::Finished,
+    InstanceState::Failed,
+];
+
 /// Compact per-node instance summary. Detailed per-instance info is
 /// intentionally deferred to `peppy node info`; the list view is meant to
 /// fit one node per row. Terminal instances (finished/crashed) are counted too,
@@ -930,33 +940,25 @@ fn format_instances_compact(node: &SerializedNode) -> String {
     if node.instances.is_empty() {
         return "0".to_string();
     }
-    let count = |state: InstanceState| node.instances.iter().filter(|i| i.state == state).count();
-    let running = count(InstanceState::Running);
-    let starting = count(InstanceState::Starting);
-    let restarting = count(InstanceState::Restarting);
-    let finished = count(InstanceState::Finished);
-    let failed = count(InstanceState::Failed);
+    let parts: Vec<String> = INSTANCE_SUMMARY_ORDER
+        .into_iter()
+        .filter_map(|state| {
+            let count = node
+                .instances
+                .iter()
+                .filter(|instance| instance.state == state)
+                .count();
+            (count > 0).then(|| format!("{count} {}", state.as_str()))
+        })
+        .collect();
 
-    let total = running + starting + restarting + finished + failed;
-    let parts: Vec<String> = [
-        (running, "running"),
-        (starting, "starting"),
-        (restarting, "restarting"),
-        (finished, "finished"),
-        (failed, "failed"),
-    ]
-    .into_iter()
-    .filter(|(count, _)| *count > 0)
-    .map(|(count, state)| format!("{count} {state}"))
-    .collect();
-
-    // The common, unambiguous cases use a compact phrasing; any mix (including
-    // instances without a process) is an explicit per-state breakdown so no
-    // instance is silently dropped from the count.
+    // Instances that share one state use a compact phrasing; any mix
+    // (including instances without a process) is an explicit per-state
+    // breakdown under the count of all instances, so no instance is silently
+    // dropped from the count.
     match parts.as_slice() {
-        [] => "0 running".to_owned(),
         [only] => only.clone(),
-        _ => format!("{total} ({})", parts.join(", ")),
+        _ => format!("{} ({})", node.instances.len(), parts.join(", ")),
     }
 }
 
