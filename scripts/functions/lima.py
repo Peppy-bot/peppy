@@ -8,7 +8,13 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from .build import _get_target_dir, build_cache_root
+from .build import (
+    APPTAINER_BUILD_OUTPUT,
+    LIMA_BUILD_OUTPUT,
+    ZENOHD_BUILD_OUTPUT,
+    _get_target_dir,
+    build_cache_root,
+)
 from .cli import ReleaseError, console
 from .download import CURL_DOWNLOAD_OPTIONS
 
@@ -63,15 +69,14 @@ PREBUILT_SO_FILES = (*RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER)
 # Build artifacts the host packaging step reads, as glob patterns relative to
 # {target_dir}/{target_triple}/release/. The in-VM build compiles on the
 # guest's own disk and copies only these back to the host-visible target dir;
-# everything else cargo produced stays (and is deleted) guest-side. Source of
-# truth: find_peppy_binary, find_zenohd_binary, and the find_build_dir calls in
-# build.py's build_and_package (lima-install is macOS-only, so it is never
-# produced by a Linux cross build). Mirrored here because the copy runs in bash
-# inside the guest.
+# everything else cargo produced stays (and is deleted) guest-side. These are
+# what find_peppy_binary, find_zenohd_binary and the find_build_dir calls of
+# build.py's build_and_package read (lima-install is macOS-only, so it is never
+# produced by a Linux cross build).
 GUEST_COPY_BACK_ARTIFACTS = (
     "peppy",
-    "build/pmi-*/out/zenohd",
-    "build/containers-*/out/apptainer-install",
+    f"build/{ZENOHD_BUILD_OUTPUT}",
+    f"build/{APPTAINER_BUILD_OUTPUT}",
 )
 
 
@@ -93,7 +98,7 @@ def find_limactl(repo_root: Path) -> Path:
     build_dir = (
         _get_target_dir(repo_root) / "aarch64-apple-darwin" / "release" / "build"
     )
-    matches = sorted(build_dir.glob("containers-*/out/lima-install/bin/limactl"))
+    matches = sorted(build_dir.glob(f"{LIMA_BUILD_OUTPUT}/bin/limactl"))
     if matches and matches[0].is_file():
         return matches[0]
 

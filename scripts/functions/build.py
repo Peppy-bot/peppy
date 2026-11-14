@@ -17,6 +17,13 @@ from .cli import RELEASE_TRIPLES, ReleaseError, console
 # Commands a release build needs on its host.
 BUILD_COMMANDS = ("git", "cargo", "rustc")
 
+# Where the build script of a package leaves what the release packs, as glob
+# patterns relative to {target_dir}/{target_triple}/release/build. Cargo gives
+# each unit of a package a directory of its own under the name of the package.
+ZENOHD_BUILD_OUTPUT = "pmi/*/out/zenohd"
+APPTAINER_BUILD_OUTPUT = "containers/*/out/apptainer-install"
+LIMA_BUILD_OUTPUT = "containers/*/out/lima-install"
+
 
 @dataclass(frozen=True)
 class BuildArtifact:
@@ -157,19 +164,19 @@ def find_zenohd_binary(
 ) -> Path:
     """Locate the built zenohd binary in the build output.
 
-    Searches {target_dir}/{target_triple}/release/build/pmi-*/out/zenohd.
+    Searches {target_dir}/{target_triple}/release/build/{ZENOHD_BUILD_OUTPUT}.
     Raises ReleaseError if not found.
     """
     target_dir = target_dir or _get_target_dir(repo_root)
     build_dir = target_dir / target_triple / "release" / "build"
 
-    matches = sorted(build_dir.glob("pmi-*/out/zenohd"))
+    matches = sorted(build_dir.glob(ZENOHD_BUILD_OUTPUT))
     if matches:
         return matches[0]
 
     raise ReleaseError(
         f"zenohd binary not found in build output "
-        f"(expected it under '{build_dir}/pmi-*/out/zenohd')"
+        f"(expected it under '{build_dir}/{ZENOHD_BUILD_OUTPUT}')"
     )
 
 
@@ -349,7 +356,7 @@ def build_and_package(
     target_root = _get_target_dir(repo_root)
     target_root.mkdir(parents=True, exist_ok=True)
     # A release invocation gets a fresh cargo output tree, so no pre-existing
-    # `pmi-*`, `containers-*`, or zenohd output on a long-lived builder can be
+    # build output of `pmi` or `containers` on a long-lived builder can be
     # globbed into the archive. The cost is that a release build is always a
     # cold build.
     #
@@ -391,7 +398,7 @@ def build_and_package(
         apptainer_dir = find_build_dir(
             target_triple,
             repo_root,
-            "containers-*/out/apptainer-install",
+            APPTAINER_BUILD_OUTPUT,
             "apptainer install",
             target_dir=target_dir,
         )
@@ -402,7 +409,7 @@ def build_and_package(
             find_build_dir(
                 target_triple,
                 repo_root,
-                "containers-*/out/lima-install",
+                LIMA_BUILD_OUTPUT,
                 "lima install",
                 target_dir=target_dir,
             )
@@ -410,7 +417,7 @@ def build_and_package(
             else find_optional_build_dir(
                 target_triple,
                 repo_root,
-                "containers-*/out/lima-install",
+                LIMA_BUILD_OUTPUT,
                 target_dir=target_dir,
             )
         )
@@ -418,7 +425,7 @@ def build_and_package(
         other_apptainer_dir = find_optional_build_dir(
             target_triple,
             repo_root,
-            f"containers-*/out/apptainer-install-{other_arch}",
+            f"{APPTAINER_BUILD_OUTPUT}-{other_arch}",
             target_dir=target_dir,
         )
 
