@@ -26,7 +26,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::LazyLock;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
@@ -354,19 +354,23 @@ fn build_python_node(main_src: &str) -> PathBuf {
     user_node
 }
 
+// Each node directory is built once for the test binary. A build that fails
+// leaves its cell empty, so each test that needs the node runs the build and
+// reports its failure itself.
+
 fn driver_node_dir() -> &'static Path {
-    static DIR: LazyLock<PathBuf> = LazyLock::new(|| build_rust_node(DRIVER_MAIN_RS));
-    &DIR
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| build_rust_node(DRIVER_MAIN_RS))
 }
 
 fn responder_rust_dir() -> &'static Path {
-    static DIR: LazyLock<PathBuf> = LazyLock::new(|| build_rust_node(RESPONDER_MAIN_RS));
-    &DIR
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| build_rust_node(RESPONDER_MAIN_RS))
 }
 
 fn responder_python_dir() -> &'static Path {
-    static DIR: LazyLock<PathBuf> = LazyLock::new(|| build_python_node(RESPONDER_MAIN_PY));
-    &DIR
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| build_python_node(RESPONDER_MAIN_PY))
 }
 
 // ---------------------------------------------------------------------------

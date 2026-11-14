@@ -15,7 +15,7 @@ use std::fs;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::LazyLock;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -126,10 +126,11 @@ fn native_facade_with_l4t_manifest(apptainer_dir: &Path, manifest_dir: &Path) ->
 
 /// Scratch directory shared by every [`native_facade`] in this test binary.
 /// Held in a static, so it is never dropped: the shared test root reclaims it
-/// once it is stale.
+/// once it is stale. A directory that cannot be made leaves the cell empty, so
+/// each test that needs it tries again and reports the failure itself.
 fn native_fixture_scratch() -> &'static Path {
-    static SCRATCH: LazyLock<TempDir> = LazyLock::new(super::scratch_dir);
-    SCRATCH.path()
+    static SCRATCH: OnceLock<TempDir> = OnceLock::new();
+    SCRATCH.get_or_init(super::scratch_dir).path()
 }
 
 /// Builds a Lima-backend facade for command-assembly and path-translation
