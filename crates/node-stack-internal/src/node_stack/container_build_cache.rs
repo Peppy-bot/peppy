@@ -615,10 +615,19 @@ impl UvCachePruneOutcome {
                 "uv cache not pruned: the prune did not end in {} s",
                 UV_CACHE_PRUNE_TIMEOUT.as_secs()
             ),
-            Self::Failed { reason } => format!("uv cache not pruned: {reason}"),
+            Self::Failed { reason } => {
+                format!("uv cache not pruned: {}", statement_of(reason))
+            }
         };
         cache_line(&what)
     }
+}
+
+/// The statement of `reason`: its first line. An error of the container
+/// runtime gives the ways to fix it on the lines after its statement, and an
+/// outcome is one line of build output.
+fn statement_of(reason: &str) -> &str {
+    reason.lines().next().unwrap_or_default()
 }
 
 /// The directory that uv says it prunes: `Pruning cache at: <dir>`, or
@@ -1516,6 +1525,19 @@ mod tests {
                     reason: "exit status: 1".to_string(),
                 },
                 "Container build cache: uv cache not pruned: exit status: 1",
+            ),
+            // An error of the container runtime that gives the ways to fix
+            // it after its statement.
+            (
+                UvCachePruneOutcome::Failed {
+                    reason: "cannot build the apptainer command: root cannot enter /home/user.\n\
+                             \n\
+                             To fix, do one of these:\n\
+                             \x20 - let root enter the directory: chmod o+x '/home/user'"
+                        .to_string(),
+                },
+                "Container build cache: uv cache not pruned: cannot build the apptainer command: \
+                 root cannot enter /home/user.",
             ),
         ];
         for (outcome, line) in cases {
