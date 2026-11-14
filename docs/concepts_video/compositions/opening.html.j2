@@ -227,7 +227,7 @@
       {# The robot and its programs. #}
       <div id="{{ id }}-robot-scene" class="scene">
         <div class="zone is-full {{ id }}-row">
-          <div class="robot-panel {{ id }}-robot"><canvas id="{{ id }}-robot" class="robot-canvas"></canvas></div>
+          <canvas id="{{ id }}-robot" class="robot-canvas {{ id }}-robot"></canvas>
           <div id="{{ id }}-programs" class="frame {{ id }}-programs">
             <span id="{{ id }}-framework" class="frame-name" data-layout="over">{{ screen.framework }}</span>
             {% for key, icon_name in [("camera_driver", "camera"), ("brain", "brain"), ("motor_driver", "motor")] %}

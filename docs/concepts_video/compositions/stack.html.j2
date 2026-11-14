@@ -7,6 +7,8 @@
    the camera and the arm below it, and the brain, which depends on the two,
    at the bottom. Each number is a left side or a top in the frame. #}
 {% set frame = {"left": 400, "width": 720, "height": 700} %}
+{# The canvas of the robot, which the robot fills when it faces the graph. #}
+{% set robot = {"width": 370, "height": 514} %}
 {% set node_width = 280 %}
 {% set daemon_top = 40 %}
 {% set nodes_top = 302 %}
@@ -20,11 +22,12 @@
       position: absolute;
       inset: 0;
     }
+    {# The script puts the robot at the height of the daemon. #}
     .{{ id }}-robot {
       left: 0;
-      top: 50px;
-      width: 320px;
-      height: 600px;
+      top: 0;
+      width: {{ robot.width }}px;
+      height: {{ robot.height }}px;
     }
     .{{ id }}-frame {
       left: {{ frame.left }}px;
@@ -121,7 +124,7 @@
       <div id="{{ id }}-concept" class="scene">
         <div class="zone">
           {# The robot whose stack this is. #}
-          <div id="{{ id }}-robot-panel" class="robot-panel placed {{ id }}-robot"><canvas id="{{ id }}-robot" class="robot-canvas"></canvas></div>
+          <canvas id="{{ id }}-robot" class="robot-canvas placed {{ id }}-robot"></canvas>
           <div id="{{ id }}-frame" class="frame placed {{ id }}-frame">
             <span id="{{ id }}-stack-name" class="frame-name" data-layout="over">{{ screen.stack }}</span>
             {{ node(id + "-daemon", screen.daemon, "daemon", "is-daemon placed", "left: " ~ middle_left ~ "px; top: " ~ daemon_top ~ "px") }}
@@ -174,10 +177,8 @@
       const grows = { from: { opacity: 0, scale: 0.2, y: 0 } };
       const [OK, FAULT, PEPPY, QUIET] = ["ok", "fault", "peppy", "ink-dim"].map(Motion.colour);
 
-      // The wires. The line from the robot comes to the daemon at its height,
-      // and the line of the daemon comes down to the camera with its instances.
+      // The wires. The line of the daemon comes down to the camera with its instances.
       const daemon = Motion.boxOf(ID + "-daemon");
-      Motion.connect(ID + "-on-machine", [ID + "-robot-panel", "right", daemon.y - Motion.boxOf(ID + "-robot-panel").y], [ID + "-daemon", "left"], { gap: 8, endGap: 8 });
       Motion.connect(ID + "-root-holder", [ID + "-daemon", "bottom"], [ID + "-holder", "top", daemon.x - Motion.boxOf(ID + "-holder").x], { endGap: 0 });
       Motion.connect(ID + "-root-camera", [ID + "-daemon", "bottom", -50], [ID + "-camera", "top"], { endGap: 0 });
       Motion.connect(ID + "-root-arm", [ID + "-daemon", "bottom", 50], [ID + "-arm", "top"], { endGap: 0 });
@@ -214,11 +215,19 @@
         benefit: at.early.start,
         ros2: at.early.end,
       });
+      // The robot turns to the graph. Its shoulder is at the height of the
+      // daemon, and the line from the robot to the daemon is a straight line.
+      const robot = document.querySelector(ID + "-robot");
+      const FACES_THE_GRAPH = 0;
       RobotView.mount({
-        canvas: document.querySelector(ID + "-robot"),
+        canvas: robot,
         segmentStart: {{ start }},
         segmentDuration: DURATION,
-        turns: [[at.daemon.start - 0.3, -35], [at.daemon_work.start, 0]],
+        turns: [[at.daemon.start - 0.3, -35], [at.daemon_work.start, FACES_THE_GRAPH]],
+      }).ready.then(function (view) {
+        robot.style.top = robot.offsetTop + daemon.y - view.pointOnPage("left_shoulder", FACES_THE_GRAPH).y + "px";
+        const shoulder = view.pointOnPage("left_shoulder", FACES_THE_GRAPH);
+        Motion.connect(ID + "-on-machine", [shoulder, "right"], [ID + "-daemon", "left"], { gap: 36, endGap: 8 });
       });
 
       // The daemon runs on the machine: it builds the node, starts its

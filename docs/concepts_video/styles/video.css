@@ -727,17 +727,10 @@ code {
   stroke: var(--ok);
 }
 
-/* The robot: its 3D model on a light panel, as a studio picture. */
-.robot-panel {
-  border-radius: 28px;
-  background: radial-gradient(120% 90% at 50% 38%, #f4f7fd 0%, #d5dcec 62%, #b9c3d9 100%);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
-  overflow: hidden;
-}
+/* The robot: its 3D model, with nothing behind it. A composition gives
+   the canvas its size, and the robot is in the middle of the canvas. */
 .robot-canvas {
   display: block;
-  width: 100%;
-  height: 100%;
 }
 
 /* A message that moves on a wire. The motion moves it from the top left

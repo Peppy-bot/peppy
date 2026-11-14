@@ -1,6 +1,6 @@
 """The rules of the layout of a frame."""
 
-from tools.layout_rules import BOX, TEXT, Part, frame_faults
+from tools.layout_rules import BOX, CANVAS, TEXT, Part, frame_faults
 
 
 def box(name: str, left: float, top: float, width: float, height: float, path: tuple[int, ...], **more: object) -> Part:
@@ -9,6 +9,10 @@ def box(name: str, left: float, top: float, width: float, height: float, path: t
 
 def text(name: str, left: float, top: float, width: float, height: float, path: tuple[int, ...]) -> Part:
     return Part(name=name, kind=TEXT, left=left, top=top, right=left + width, bottom=top + height, path=path)
+
+
+def canvas(name: str, left: float, top: float, width: float, height: float, path: tuple[int, ...]) -> Part:
+    return Part(name=name, kind=CANVAS, left=left, top=top, right=left + width, bottom=top + height, path=path)
 
 
 def test_a_frame_with_each_part_at_its_place_has_no_fault() -> None:
@@ -85,3 +89,44 @@ def test_a_part_in_a_part_of_a_box_is_not_an_overlap_with_the_box() -> None:
     chip = box("the chip", 260, 260, 200, 60, (5,))
 
     assert frame_faults([card, row, chip]) == []
+
+
+def test_a_drawing_in_the_middle_of_its_canvas_is_not_a_fault() -> None:
+    robot = canvas("the robot", 200, 200, 400, 600, (0,))
+    drawing = box("the robot", 212, 260, 376, 480, (0,))
+
+    assert frame_faults([robot, drawing]) == []
+
+
+def test_a_drawing_that_is_nearer_to_one_side_of_its_canvas_is_a_fault() -> None:
+    """The robot is at the left of its canvas, and a little too low in it."""
+    robot = canvas("the robot", 200, 200, 400, 600, (0,))
+    drawing = box("the robot", 220, 262, 270, 480, (0,))
+
+    assert frame_faults([robot, drawing]) == [
+        "the drawing of the robot is 20 px from the left side of its canvas and 110 px from its right side",
+        "the drawing of the robot is 62 px from the top side of its canvas and 58 px from its bottom side",
+    ]
+
+
+def test_a_drawing_that_goes_to_a_side_of_its_canvas_is_a_fault() -> None:
+    robot = canvas("the robot", 200, 200, 400, 600, (0,))
+    drawing = box("the robot", 200, 260, 400, 480, (0,))
+
+    assert frame_faults([robot, drawing]) == ["the drawing of the robot goes to a side of its canvas"]
+
+
+def test_a_canvas_is_not_a_part_that_the_page_shows() -> None:
+    """A canvas with no drawing goes out of the margins and is over a node: the page shows no fault."""
+    robot = canvas("the robot", 40, 200, 400, 600, (0,))
+    node = box("the node", 300, 380, 300, 96, (1,))
+
+    assert frame_faults([robot, node]) == []
+
+
+def test_the_drawing_of_a_canvas_is_a_part_that_the_page_shows() -> None:
+    robot = canvas("the robot", 200, 200, 400, 600, (0,))
+    drawing = box("the robot", 212, 260, 376, 480, (0,))
+    node = box("the node", 500, 380, 300, 96, (1,))
+
+    assert frame_faults([robot, drawing, node]) == ["the robot and the node overlap by 88 px by 96 px"]

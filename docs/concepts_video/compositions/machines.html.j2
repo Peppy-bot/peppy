@@ -83,7 +83,7 @@
     }
     .{{ id }}-picture {
       flex: none;
-      width: 140px;
+      width: 160px;
       height: 240px;
     }
     .{{ id }}-picture.is-cloud {
@@ -92,8 +92,6 @@
       align-items: center;
       justify-content: center;
       gap: 6px;
-      border: 2px solid var(--line);
-      border-radius: 24px;
       color: var(--data);
     }
     .{{ id }}-picture .icon {
@@ -181,7 +179,7 @@
               <div id="{{ id }}-kind-{{ key }}" class="label is-strong {{ id }}-kind">{{ machine.machine }}</div>
               <div class="{{ id }}-inside is-{{ key }}">
                 {% if key == "robot" %}
-                <div id="{{ id }}-picture-{{ key }}" class="robot-panel {{ id }}-picture"><canvas id="{{ id }}-robot" class="robot-canvas"></canvas></div>
+                <canvas id="{{ id }}-picture-{{ key }}" class="robot-canvas {{ id }}-picture"></canvas>
                 {% else %}
                 <div id="{{ id }}-picture-{{ key }}" class="{{ id }}-picture is-cloud">{{ icon("cloud") }}{{ icon("chip") }}</div>
                 {% endif %}
@@ -258,10 +256,10 @@
         ros2: at.local.start + 1.4,
       });
       RobotView.mount({
-        canvas: document.querySelector(ID + "-robot"),
+        canvas: document.querySelector(part("picture", "robot")),
         segmentStart: {{ start }},
         segmentDuration: DURATION,
-        turns: [[at.wish.start, -30], [DURATION, 20]],
+        turns: [[at.wish.start, -55], [DURATION, -20]],
       });
 
       // One stack must run on several machines: the two machines come in,

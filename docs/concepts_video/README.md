@@ -89,7 +89,16 @@ When a sentence of the voice changes, run `pixi run build`: it makes the new voi
 - `footage("<name>")` gives the path of a footage file of `footage.json`.
 - `acts` holds the acts of the video with their chapters, and `act` is the act of the segment.
 
-The parts of `_parts.html.j2` give the header, the map of the acts, the problem scene, the rail, the term card, the comparison of steps, the code window, the node, the command, the icons and the wires. `Motion` (`motion.js`) gives the animation functions. `RobotView` (`robot_view.js`) draws the 3D model of the OpenArm v2 in a canvas. All the views of the video share one WebGL context, and a view draws during its segment only.
+The parts of `_parts.html.j2` give the header, the map of the acts, the problem scene, the rail, the term card, the comparison of steps, the code window, the node, the command, the icons and the wires. `Motion` (`motion.js`) gives the animation functions.
+
+`RobotView` (`robot_view.js`) draws the 3D model of the OpenArm v2 in a canvas, on a turntable. The canvas shows the robot only, so the page shows through around it. A composition gives the canvas its size, and the view does the rest:
+
+- The robot is in the middle of its canvas at each angle of the turntable. The view reads the box of the robot on the picture from the vertices of the model, and it gives the robot the largest size at which it stays in the canvas at each angle of the view.
+- The light is a studio of wide soft lamps (`LAMPS`), with no lamp that makes a hard shadow, so the dark robot is clear on the dark page.
+- With `grid`, the robot is on a floor: a disc that shows the grid of a simulation, or is plain.
+- `pointOnPage` gives the place on the page of a point of the robot, for a label or a wire.
+
+All the views of the video share one WebGL context, and a view draws during its segment only.
 
 ### The structure of the video
 
@@ -120,14 +129,15 @@ A chapter keeps its words in the rail, on the right of its diagram, in the same 
 pixi run layout [segment id]
 ```
 
-The command opens each composition, or the one that it names, in the pinned Chrome. At some times of each sentence of the voice, it reads the place of each box and of each text that the page shows. It fails when it finds one of these faults (`tools/layout_rules.py`):
+The command opens each composition, or the one that it names, in the pinned Chrome. At some times of each sentence of the voice, it reads the place of each box and of each text that the page shows. For a canvas, it reads the box of the drawing: the pixels that are not transparent. It fails when it finds one of these faults (`tools/layout_rules.py`):
 
 - A part is outside the margins of the frame.
 - A part goes out of the box that it is in, or nearly touches one border of that box.
 - The content of a box is nearer to its right side than to its left side, or much nearer to its bottom than to its top.
 - Two parts overlap.
+- The drawing of a canvas is not in the middle of the canvas, or goes to one of its sides.
 
-In a composition, `data-layout="free"` takes a part out of the check: a decoration, or a message that moves on a wire. `data-layout="over"` says that a part is over other parts on purpose: a tab on a border, a mark on an arrow, a label of a picture. Run the command after each change of a composition, then look at the pictures of the next section: the check reads no wire and no picture.
+In a composition, `data-layout="free"` takes a part out of the check: a decoration, or a message that moves on a wire. `data-layout="over"` says that a part is over other parts on purpose: a tab on a border, a mark on an arrow, a label of a picture. Run the command after each change of a composition, then look at the pictures of the next section: the check reads no wire, and it reads the place of a drawing but not its look.
 
 ### The pictures of a composition
 

@@ -88,36 +88,28 @@
       border: 3px solid var(--peppy);
       border-radius: {{ 12 + seat_gap }}px;
     }
-    {# What the first axis runs: the robot in a simulation, or the real robot. #}
+    {# What the first axis runs: the robot on the grid of a simulation, or
+       the real robot on a plain floor. Its name is above it. #}
     .{{ id }}-world {
-      position: relative;
       flex: none;
       width: {{ world_width }}px;
-      border-radius: 28px;
-      overflow: hidden;
-      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
     }
-    .{{ id }}-world-ground {
-      position: absolute;
-      inset: 0;
+    {# The two names are at the same place, and the page shows one of them. #}
+    .{{ id }}-world-names {
+      display: grid;
+      justify-items: center;
     }
-    .{{ id }}-world-ground.is-simulation {
-      background-color: #16223d;
-      background-image:
-        linear-gradient(rgba(95, 212, 240, 0.22) 2px, transparent 2px),
-        linear-gradient(90deg, rgba(95, 212, 240, 0.22) 2px, transparent 2px);
-      background-size: 42px 42px;
+    .{{ id }}-world-names .label {
+      grid-area: 1 / 1;
     }
-    .{{ id }}-world-ground.is-real {
-      background: radial-gradient(120% 90% at 50% 38%, #f4f7fd 0%, #d5dcec 62%, #b9c3d9 100%);
-    }
-    .{{ id }}-world canvas {
-      position: absolute;
-      inset: 0;
-    }
-    .{{ id }}-world-name {
-      left: 22px;
-      top: 22px;
+    .{{ id }}-world-robot {
+      flex: 1;
+      min-height: 0;
+      width: 100%;
     }
     .{{ id }}-word {
       position: absolute;
@@ -158,11 +150,11 @@
             </div>
             {# What the first axis runs. #}
             <div id="{{ id }}-world" class="{{ id }}-world">
-              <div class="{{ id }}-world-ground is-simulation"></div>
-              <div id="{{ id }}-real-ground" class="{{ id }}-world-ground is-real"></div>
-              <canvas id="{{ id }}-robot" class="robot-canvas"></canvas>
-              <span id="{{ id }}-simulation-name" class="label is-tag placed {{ id }}-world-name">{{ screen.simulation }}</span>
-              <span id="{{ id }}-real-name" class="label is-tag placed {{ id }}-world-name">{{ screen.real_robot }}</span>
+              <div class="{{ id }}-world-names">
+                <span id="{{ id }}-simulation-name" class="label is-tag">{{ screen.simulation }}</span>
+                <span id="{{ id }}-real-name" class="label is-tag">{{ screen.real_robot }}</span>
+              </div>
+              <canvas id="{{ id }}-robot" class="robot-canvas {{ id }}-world-robot"></canvas>
             </div>
           </div>
           {{ command(id + "-command", screen.command) }}
@@ -258,16 +250,19 @@
       // The launcher file stays the same.
       Motion.show(tl, ID + "-same", Motion.within(at.select, 0.62), Motion.appears);
 
-      // With no robot, the first axis runs a simulation.
+      // With no robot, the first axis runs a simulation: the robot is on the
+      // grid of a simulation until the launcher runs the real robot.
       const otherAxes = [];
       eachAxis(function (number) {
         if (number > 1) otherAxes.push(axis(number));
       });
+      const swaps = Motion.within(at.later, 0.4);
       RobotView.mount({
         canvas: document.querySelector(ID + "-robot"),
         segmentStart: {{ start }},
         segmentDuration: DURATION,
         turns: [[at.no_robot.start, -50], [DURATION, 30]],
+        grid: [[swaps + 0.5, 1], [swaps + 1.3, 0]],
       });
       tl.to(ID + "-top", { x: 0, duration: 0.6, ease: "power2.inOut" }, at.no_robot.start - 0.3);
       Motion.show(tl, ID + "-world", at.no_robot.start + 0.2, Motion.fromRight);
@@ -277,13 +272,11 @@
 
       // Later, the same launcher runs the real robot: the seat of the first
       // axis goes to the other option, and nothing else in the launcher moves.
-      const swaps = Motion.within(at.later, 0.4);
       Motion.fade(tl, otherAxes.join(", "), 1, at.later.start + 0.1);
       Motion.paint(tl, axis(1, "option-1"), NOT_LIT, swaps);
       moveSeat(1, SEAT_STEP, swaps, 0.6);
       Motion.paint(tl, axis(1, "option-2"), LIT, swaps + 0.5);
       Motion.pulse(tl, axis(1, "option-2"), swaps + 0.5);
-      Motion.show(tl, ID + "-real-ground", swaps + 0.5, { from: { opacity: 0, y: 0 }, duration: 0.8 });
       Motion.hide(tl, ID + "-simulation-name", swaps + 0.8);
       Motion.show(tl, ID + "-real-name", swaps + 0.8, Motion.appears);
 
