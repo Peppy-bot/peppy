@@ -425,9 +425,9 @@ note = "These are the steps of the node that emits the message. In ROS 2 and in 
 # ---------------------------------------------------------------------------
 
 [[segment]]
-id = "alone"
+id = "run_and_test"
 act = "one_node"
-chapter = "One node alone"
+chapter = "Run and test one node"
 
 [[segment.source]]
 page = "guides/first_node.mdx"
@@ -460,11 +460,6 @@ section = "Emitted topics"
 sha256 = "eeedf0d04312ec1c443e8fbdf8ed032c590f7f68bfb58649e9591e348c8b08b7"
 
 [[segment.source]]
-page = "advanced_guides/repositories.mdx"
-section = "Syncing against repositories"
-sha256 = "f7860034e07659481bccaac9c9988ad0d7e0a6e5e9d011e9ce2835fa567254c9"
-
-[[segment.source]]
 page = "reference/coming_from_ros2.mdx"
 section = "Build tools"
 sha256 = "6691d7f8fb3049d6a4f89062bd91f6c175bffd8143da5ab1b70f4b6b20dab23f"
@@ -489,7 +484,7 @@ text = "In Peppy, a node is a regular project of its language: a `cargo` project
 
 [[segment.voice]]
 id = "your_tools"
-text = "Peppy has no build system of its own: you build, run, and test the node with the tools that you know."
+text = "You build, run, and test it with the tools that you know."
 
 [[segment.voice]]
 id = "ros2_tools"
@@ -498,27 +493,34 @@ pause_after_seconds = 2.0
 
 [[segment.voice]]
 id = "standalone"
-text = "In standalone mode, a node runs alone: you start it in your IDE with a debugger, and it communicates with the nodes of the stack."
+text = "In standalone mode, you start one node in your IDE with a debugger, and it communicates with the nodes of the stack."
 
 [[segment.voice]]
 id = "mocks"
-text = "A node also tests alone: `peppy node sync` generates a typed mock of each dependency, and a test harness."
+text = "You can also test a node with mocks of all the nodes that it depends on: `peppy node sync` generates them."
 
 [[segment.voice]]
 id = "one_test"
-text = "One test then gives your node the messages of its dependencies, with no daemon, no stack, and no sleep."
+text = "In a test, a mock gives your node the messages of the node that it replaces."
 
 [[segment.voice]]
-id = "benefit"
-text = "Thus you develop and test one node at your desk."
-pause_after_seconds = 2.0
+id = "not_available"
+text = "This also lets you test a function that needs a node that is not available: a physical camera, or a motor controller."
+
+[[segment.voice]]
+id = "important"
+text = "This is one of the most important features of Peppy."
+
+[[segment.voice]]
+id = "who"
+text = "A person writes tests easily, and an LLM that writes code can check its assumptions."
+pause_after_seconds = 1.5
 
 [segment.screen]
 problem = "To work on one node, you do not want to start the full robot each time."
-benefit = "You develop and test one node at your desk."
+benefit = "You test one node with no other node and no hardware."
 ros2 = "You write each mock."
 other_tools = "Other tools also work: `pip`, `poetry`, `pixi`."
-sync_note = "`peppy node sync -r` reads the interfaces of the dependencies from the repositories."
 
 [segment.screen.comparisons.tools]
 title = "Build, run and test one node in Python"
@@ -554,10 +556,20 @@ standalone_config = StandaloneConfig().with_parameters(params)
 NodeBuilder().standalone(standalone_config).run(setup)
 '''
 
+# The test of one node: a mock is in the place of each node that it depends
+# on, and of the hardware of that node.
 [segment.screen.test]
 mock = "mock"
-camera = "camera"
 node = "your node"
+not_available = "not available"
+
+[segment.screen.test.camera]
+node = "camera"
+hardware = "physical camera"
+
+[segment.screen.test.arm]
+node = "arm"
+hardware = "motor controller"
 
 [segment.screen.test.code]
 language = "python"
@@ -578,8 +590,14 @@ definition = "A node is a regular Python program: run it, and debug it in your I
 
 [segment.screen.cards.mock]
 term = "Generated mock"
-definition = "One test, with no daemon and no camera node: a generated mock is the camera."
+definition = "A generated replacement for a node that your node depends on. A test uses it in the place of the real node."
 equivalent = "A test double."
+
+# Why the tests of one node are important.
+[segment.screen.emphasis]
+title = "One of the most important features of Peppy"
+person = "A person writes tests easily."
+llm = "An LLM that writes code can check its assumptions."
 
 # ---------------------------------------------------------------------------
 
@@ -1052,11 +1070,6 @@ sha256 = "f0f046b12cc126b63b485b063469ca61b07c4d015c479a98b15a0c94cc6df953"
 
 [[segment.source]]
 page = "advanced_guides/federation.mdx"
-section = "The worked example"
-sha256 = "f3368965efd5becce3785a1651f64b021706a3f8d4ff6179d8fdf1403c92ed3a"
-
-[[segment.source]]
-page = "advanced_guides/federation.mdx"
 section = "Ordering, degradation, and failure"
 sha256 = "5174a82d2bbff1b05ca34dffc8a6a1dc941489c8e60f267aa126dd8d5b80c36a"
 
@@ -1064,6 +1077,11 @@ sha256 = "5174a82d2bbff1b05ca34dffc8a6a1dc941489c8e60f267aa126dd8d5b80c36a"
 page = "advanced_guides/platform.mdx"
 section = "Platform"
 sha256 = "0a19a175c2c2b068c752422361b8cc3f3c2b448eb40686fe9063eb56a5d0b310"
+
+[[segment.source]]
+page = "advanced_guides/platform.mdx"
+section = "Running one stack across your project's machines"
+sha256 = "c533ea585556b3d7f1f484af28c83feb56a0b7f07349a0cf87ffd1eb72121f51"
 
 [[segment.source]]
 page = "reference/concepts.mdx"
@@ -1093,15 +1111,15 @@ text = "In Peppy, each machine that runs the daemon is a core node, with a name 
 
 [[segment.voice]]
 id = "links"
-text = "A launcher names no machine: it declares core node links, which are placeholders for core nodes."
-
-[[segment.voice]]
-id = "instance_link"
-text = "Each instance names the link that it runs on."
+text = "A launcher names no machine: it declares core node links, and each instance names the link that it runs on."
 
 [[segment.voice]]
 id = "sign_in"
 text = "On each machine, you install Peppy and sign in one time."
+
+[[segment.voice]]
+id = "enroll"
+text = "This enrolls the machine in your project, and the machines of a project can reach each other."
 
 [[segment.voice]]
 id = "place"
@@ -1125,12 +1143,19 @@ problem = "A large robot brain needs a GPU machine, and a robot cannot carry one
 benefit = "One launch command starts one stack on all its machines."
 ros2 = "The ROS 2 documentation describes no command that starts one launch file on several machines."
 login_command = "`peppy platform login`"
-place_command = "`peppy stack launch --place <link>@<core node> <launcher>`"
+project = "your project, on the Peppy platform"
 local_command = "`peppy stack launch --local <launcher>`"
-tools_note = "Each machine builds its nodes with its own tools, such as `uv`."
 launcher = "launcher"
 workstation = "workstation"
 systems = "The two parts of a brain"
+
+# The launch command that gives each link the name of a core node. The
+# composition puts one `--place` for each machine between its two ends: the
+# link of the machine, `@`, then the name of its core node.
+[segment.screen.place_command]
+start = "`peppy stack launch`"
+flag = "`--place`"
+end = "`<launcher>`"
 
 [segment.screen.robot]
 machine = "board of the robot"
@@ -1274,7 +1299,7 @@ text = "These are the concepts of Peppy."
 
 [[segment.voice]]
 id = "act_one_node"
-text = "One node: one file declares it, Peppy generates its typed code, and you work on it alone."
+text = "One node: one file declares it, Peppy generates its typed code, and you test it with mocks."
 
 [[segment.voice]]
 id = "act_stack"
@@ -1307,7 +1332,7 @@ next_step = "Next: the quickstart below this video. It needs no robot."
 [segment.screen.benefits]
 node = "Small, clear programs"
 file = "One file, typed code"
-alone = "Runs and tests alone"
+run_and_test = "Tests with mocks"
 stack = "Errors before the start"
 contracts = "One brain replaces another"
 launchers = "One launch command"

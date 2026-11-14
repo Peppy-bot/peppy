@@ -139,37 +139,45 @@
     "seconds": 3.7333,
     "spoken_sha256": "da0defa7fc7fcfa1a43428518bae5f2687ea5e666146db325a4092a747f0cc1d"
   },
-  "alone/problem": {
+  "run_and_test/problem": {
     "seconds": 4.224,
     "spoken_sha256": "ace025296e260a2a9087aef9cae32aa3b96b1dee4581f349c9035c332898cf6a"
   },
-  "alone/regular_project": {
+  "run_and_test/regular_project": {
     "seconds": 8.0213,
     "spoken_sha256": "eed5c9b1d690acd5bac1643fad8b243ade10399b9ceecc8866ee705a73f24a9c"
   },
-  "alone/your_tools": {
-    "seconds": 6.2507,
-    "spoken_sha256": "85be51e4eadf984f5a6bdd37641dbfa9e01f85b94a58bf769e7dfb975df4f6a5"
+  "run_and_test/your_tools": {
+    "seconds": 3.1787,
+    "spoken_sha256": "8acfc56c54f8bd898a73aa2a7754e5342a7aa35616ff4bf110b2b4571e4d7f34"
   },
-  "alone/ros2_tools": {
+  "run_and_test/ros2_tools": {
     "seconds": 6.8267,
     "spoken_sha256": "a639b33bf4c8e392ef2f57b461d5b363f0f2d855f6c25ea5201ab59971ab5145"
   },
-  "alone/standalone": {
-    "seconds": 8.5333,
-    "spoken_sha256": "f02b7c6fe47264c5676d7e709e61d8ca509aea8b5927c4307023ae641b49c2c7"
+  "run_and_test/standalone": {
+    "seconds": 7.3813,
+    "spoken_sha256": "cac4725465d54338be39bdf8e7ae70d1092c7ec2417eea79bee274200bbd7f6c"
   },
-  "alone/mocks": {
-    "seconds": 7.232,
-    "spoken_sha256": "a349392ea6aa0b4e0267c400a07f18d32a3f3000d3edd91caf6b5d7f2c83ee2b"
+  "run_and_test/mocks": {
+    "seconds": 6.272,
+    "spoken_sha256": "c42edee005af78af5203c6640682a063c8485c2193fed16b536467c8ef47e140"
   },
-  "alone/one_test": {
-    "seconds": 6.848,
-    "spoken_sha256": "5a0a661b9805c97cfd713bf338d5d3ffd75708925ae0950b8e719f01f22d205f"
+  "run_and_test/one_test": {
+    "seconds": 4.4373,
+    "spoken_sha256": "1013d56dbedf1817f449fcb4142084594c2b77a0b2e5c49c8f8b64c411c33c9f"
   },
-  "alone/benefit": {
-    "seconds": 2.88,
-    "spoken_sha256": "9439b73e516def1e54d7f537c075b64555c91dd3a47cd82f8225f901a707c00b"
+  "run_and_test/not_available": {
+    "seconds": 7.488,
+    "spoken_sha256": "e92e838c2905c7953c890aaf2c920fe87505bbffa32d356f52e794bf27a91031"
+  },
+  "run_and_test/important": {
+    "seconds": 3.0933,
+    "spoken_sha256": "fb94228fd42d19fe74e80fb0cd2cbfb5593aa299be60a2fd290f64f3d565c500"
+  },
+  "run_and_test/who": {
+    "seconds": 5.376,
+    "spoken_sha256": "895941e45d6ff2bca6b39b6c3225b665db0dfbe3692293c00baa3a7f4ef93377"
   },
   "stack/act": {
     "seconds": 1.4293,
@@ -340,16 +348,16 @@
     "spoken_sha256": "c9e222f1a66bb61d89452f604883b4997c78af73c1654b9f8dd3baeaaec17b78"
   },
   "machines/links": {
-    "seconds": 5.952,
-    "spoken_sha256": "7cd0b91ee0b69c89d5f4e8e39b7b64621edb2d23699466c64484a8d7b026a8c0"
-  },
-  "machines/instance_link": {
-    "seconds": 2.6667,
-    "spoken_sha256": "1adcaf8271cf02d460e66ff7246f91ae0b8df1ef8a3c98e35da51b4756edcac0"
+    "seconds": 6.8267,
+    "spoken_sha256": "e0fb8f90d07dbaddb30d0207afca09b5be6de44edda1975319426eecedd7fa87"
   },
   "machines/sign_in": {
     "seconds": 3.5413,
     "spoken_sha256": "4a43163bc50f828316a8f582ef300cdbe0721f084f5a7c0dc642205b4e42d79b"
+  },
+  "machines/enroll": {
+    "seconds": 5.248,
+    "spoken_sha256": "32271451378215db83d3bcfc7d9509df6c42963928f88528b93a57305e5a109b"
   },
   "machines/place": {
     "seconds": 4.032,
@@ -404,8 +412,8 @@
     "spoken_sha256": "ab3ea6846d170b12a300b459d321178dff7f08465d2c97ae956086cc0719da6c"
   },
   "summary/act_one_node": {
-    "seconds": 5.8453,
-    "spoken_sha256": "2d4f8a8415b85ac1b3d531d4d241e5dfa51032b542e626baaf2fb32474648ac9"
+    "seconds": 6.0373,
+    "spoken_sha256": "11449a686eb5b7187b9b0e5fe8bf58d5458f2836c9c005b6de8d9f382d566527"
   },
   "summary/act_stack": {
     "seconds": 6.912,

@@ -1,6 +1,7 @@
 {# Segment 9. One stack runs on several machines. Each machine is a core
-   node. A launcher declares core node links, and the launch command gives
-   each link the name of a core node. #}
+   node. A launcher declares core node links. The sign-in enrolls each
+   machine in one project, and the launch command gives each link the name
+   of a core node. #}
 {% from "_parts.html.j2" import backdrop, header, problem_scene, rail, term_card, terms_card, node, command, icon, wire %}
 {% set id = segment.id %}
 {# The two machines: the board of the robot on the left, and the GPU machine
@@ -16,6 +17,13 @@
       display: flex;
       flex-direction: column;
     }
+    {# Each machine has a colour of its own: its frame, the name of its core
+       node, and each line and each word that belong to it. #}
+    {% for key, machine in machines %}
+    .{{ id }}-of-{{ key }} {
+      --machine: var(--{{ key }}-machine);
+    }
+    {% endfor %}
     {# Two columns of the same width, which a wide part cannot make wider. #}
     .{{ id }}-columns {
       display: grid;
@@ -60,11 +68,16 @@
     .{{ id }}-machine {
       height: 372px;
       padding: 38px 30px 30px;
+      border-color: var(--machine);
     }
     .{{ id }}-machine .frame-name {
       font-family: var(--mono);
-      color: var(--peppy);
-      border-color: var(--peppy);
+      font-weight: 700;
+      color: var(--machine);
+      border-color: var(--machine);
+    }
+    .wire.{{ id }}-wire {
+      stroke: var(--machine);
     }
     .{{ id }}-kind {
       height: 36px;
@@ -92,7 +105,7 @@
       align-items: center;
       justify-content: center;
       gap: 6px;
-      color: var(--data);
+      color: var(--machine);
     }
     .{{ id }}-picture .icon {
       width: 92px;
@@ -119,12 +132,13 @@
       border-color: var(--peppy);
       background: transparent;
     }
-    {# The commands, below the machines. Their text is smaller than the text
-       of a command of another segment, so the longest one fits in the zone. #}
+    {# The commands, below the machines: each one is in the middle of the
+       row. Their text is smaller than the text of a command of another
+       segment, so the longest one fits in the zone. #}
     .{{ id }}-commands {
       position: relative;
-      height: 76px;
-      margin-top: 44px;
+      height: 112px;
+      margin-top: 24px;
     }
     .{{ id }}-commands .command {
       height: 76px;
@@ -137,15 +151,54 @@
     .{{ id }}-login,
     .{{ id }}-launch {
       display: flex;
+      align-items: center;
       justify-content: center;
     }
     .{{ id }}-launch {
       position: absolute;
       inset: 0;
     }
-    .{{ id }}-tools {
-      margin-top: 16px;
-      text-align: center;
+    {# The launch command that places the links: one line for each machine.
+       The link has the colour of the links of the launcher, and the name of
+       the core node has the colour of its machine. #}
+    .{{ id }}-commands .{{ id }}-place {
+      align-items: flex-start;
+      height: 112px;
+      padding: 14px 30px;
+      line-height: 42px;
+    }
+    .{{ id }}-places {
+      display: flex;
+      flex-direction: column;
+    }
+    .{{ id }}-link-name {
+      color: var(--peppy);
+    }
+    .{{ id }}-core-node {
+      display: inline-block;
+      font-weight: 700;
+      color: var(--machine);
+    }
+    .{{ id }}-continues {
+      color: var(--ink-dim);
+    }
+    {# The project that the sign-in enrolls each machine in, below the
+       commands. A line goes from each machine to it. #}
+    .{{ id }}-platform {
+      display: flex;
+      justify-content: center;
+      margin-top: 20px;
+    }
+    .{{ id }}-project {
+      height: 56px;
+      padding: 0 28px;
+      border: 3px solid var(--peppy);
+      border-radius: 28px;
+      background: var(--panel);
+      font-size: 28px;
+      font-weight: 500;
+      line-height: 50px;
+      white-space: nowrap;
     }
   </style>
   <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
@@ -174,7 +227,7 @@
           <div id="{{ id }}-machines" class="{{ id }}-columns {{ id }}-machines">
             <div id="{{ id }}-workstation" class="frame placed {{ id }}-workstation" data-layout="over"><span class="frame-name" data-layout="over">{{ screen.workstation }}</span></div>
             {% for key, machine in machines %}
-            <div id="{{ id }}-machine-{{ key }}" class="frame {{ id }}-machine">
+            <div id="{{ id }}-machine-{{ key }}" class="frame {{ id }}-machine {{ id }}-of-{{ key }}">
               <span id="{{ id }}-name-{{ key }}" class="frame-name" data-layout="over">{{ machine.name }}</span>
               <div id="{{ id }}-kind-{{ key }}" class="label is-strong {{ id }}-kind">{{ machine.machine }}</div>
               <div class="{{ id }}-inside is-{{ key }}">
@@ -198,17 +251,34 @@
               <div class="{{ id }}-login">{{ command(id + "-login-" + key, screen.login_command) }}</div>
               {% endfor %}
             </div>
-            <div class="{{ id }}-launch">{{ command(id + "-place", screen.place_command) }}</div>
+            <div class="{{ id }}-launch">
+              <div id="{{ id }}-place" class="command {{ id }}-place">
+                <span class="command-prompt">$</span>
+                <span>{{ screen.place_command.start | rich }}</span>
+                <span class="{{ id }}-places">
+                  {% for key, machine in machines %}
+                  <span>{{ screen.place_command.flag | rich }} <span class="{{ id }}-link-name">{{ machine.link }}</span>@<span id="{{ id }}-target-{{ key }}" class="{{ id }}-core-node {{ id }}-of-{{ key }}">{{ machine.name }}</span>{% if loop.last %} {{ screen.place_command.end | rich }}{% else %} <span class="{{ id }}-continues">\</span>{% endif %}</span>
+                  {% endfor %}
+                </span>
+              </div>
+            </div>
             <div class="{{ id }}-launch">{{ command(id + "-local", screen.local_command) }}</div>
           </div>
-          <div id="{{ id }}-tools" class="note {{ id }}-tools">{{ screen.tools_note | rich }}</div>
+          {# The project of the two machines. #}
+          <div class="{{ id }}-platform">
+            <div id="{{ id }}-project" class="{{ id }}-project">{{ screen.project }}</div>
+          </div>
         </div>
         <svg class="wires" viewBox="0 0 1920 1080">
           {% for key, machine in machines %}
-          <path id="{{ id }}-bind-{{ key }}" class="wire is-peppy" pathLength="1" />
+          <path id="{{ id }}-bind-{{ key }}" class="wire {{ id }}-wire {{ id }}-of-{{ key }}" pathLength="1" />
+          <path id="{{ id }}-enrolls-{{ key }}" class="wire {{ id }}-wire {{ id }}-of-{{ key }}" pathLength="1" />
+          {# The way of a message from the project to the machine. The page does not show it. #}
+          <path id="{{ id }}-from-project-{{ key }}" fill="none" />
           {% endfor %}
           {{ wire(id + "-between") }}
         </svg>
+        <div id="{{ id }}-signal" class="dot" data-layout="free"></div>
         <div id="{{ id }}-message" class="dot" data-layout="free"></div>
         {{ rail(id, screen, [
           ["core_node", screen.cards.core_node.term, term_card(id + "-card-core_node", screen.cards.core_node)],
@@ -240,16 +310,27 @@
         name.style.left = link.x - machine.left - 3 - name.offsetWidth / 2 + "px";
         Motion.connect(part("bind", key), [part("link", key), "bottom"], [part("name", key), "top"], { gap: 4, endGap: 0 });
       });
+      // The line from each machine to the project goes down from the outer
+      // end of the machine, on the outer side of the commands, then to the
+      // nearest side of the project.
+      const FROM_THE_OUTER_SIDE = 36;
+      [["robot", "left", -1], ["cloud", "right", 1]].forEach(function ([key, side, direction]) {
+        const machine = [part("machine", key), "bottom", direction * (Motion.boxOf(part("machine", key)).width / 2 - FROM_THE_OUTER_SIDE)];
+        const project = [ID + "-project", side];
+        Motion.connect(part("enrolls", key), machine, project, { gap: 4, endGap: 4 });
+        Motion.connect(part("from-project", key), project, machine, { gap: 4, endGap: 4 });
+      });
       // The large brain sends its plan to the small brain.
       Motion.connect(ID + "-between", [part("node", "cloud"), "left"], [part("node", "robot"), "right"], { gap: 6 });
 
       Motion.chapter(tl, ID, {
         duration: DURATION,
         problem: [0.3, at.wish.start - 0.2],
-        // The card of the link comes in when the voice names the links.
+        // The card of the link comes in when the voice names the links,
+        // and it stays during the sign-in.
         terms: [
-          ["core_node", at.core_node.start, Motion.within(at.links, 0.45)],
-          ["link", Motion.within(at.links, 0.45) + 0.2, at.sign_in.start + 0.3],
+          ["core_node", at.core_node.start, Motion.within(at.links, 0.3)],
+          ["link", Motion.within(at.links, 0.3) + 0.2, at.enroll.start],
           ["systems", at.brains.start + 0.2, at.local.start + 0.6],
         ],
         benefit: at.local.start + 0.8,
@@ -277,23 +358,33 @@
 
       // The launcher declares core node links, and each instance names its link.
       Motion.show(tl, ID + "-launcher", at.links.start + 0.1);
-      KEYS.forEach((key, index) => Motion.show(tl, part("link", key), Motion.within(at.links, 0.45) + index * 0.4, Motion.grows));
+      KEYS.forEach((key, index) => Motion.show(tl, part("link", key), Motion.within(at.links, 0.32) + index * 0.4, Motion.grows));
       KEYS.forEach(function (key, index) {
-        const time = Motion.within(at.instance_link, 0.15) + index * 0.5;
+        const time = Motion.within(at.links, 0.62) + index * 0.5;
         Motion.show(tl, part("instance", key), time, Motion.fromSide);
         Motion.show(tl, part("on", key), time + 0.3, Motion.appears);
       });
 
       // On each machine, you install Peppy and sign in one time.
       KEYS.forEach((key, index) => Motion.showBetween(tl, part("login", key), Motion.within(at.sign_in, 0.4) + index * 0.4, at.place.start + 0.1));
-      Motion.show(tl, ID + "-tools", Motion.within(at.sign_in, 0.8), Motion.appears);
+      // The sign-in enrolls each machine in the project: a line goes from
+      // the machine to the project.
+      Motion.show(tl, ID + "-project", at.enroll.start + 0.1, Motion.grows);
+      KEYS.forEach((key, index) => Motion.draw(tl, part("enrolls", key), at.enroll.start + 0.6 + index * 0.4, 0.7));
+      // The machines of the project can reach each other: a message goes
+      // from one machine to the other through the project, then back.
+      const LEG_SECONDS = 0.45;
+      const reaches = Motion.within(at.enroll, 0.52);
+      [part("enrolls", "robot"), part("from-project", "cloud"), part("enrolls", "cloud"), part("from-project", "robot")].forEach(function (leg, index) {
+        Motion.follow(tl, ID + "-signal", leg, reaches + index * LEG_SECONDS, LEG_SECONDS, 1);
+      });
 
       // The launch command gives each link the name of a core node.
       Motion.show(tl, ID + "-place", at.place.start + 0.2);
       KEYS.forEach(function (key, index) {
         const time = Motion.within(at.place, 0.5) + index * 0.4;
         Motion.draw(tl, part("bind", key), time, 0.4);
-        Motion.pulse(tl, part("name", key), time + 0.4);
+        Motion.pulse(tl, [part("name", key), part("target", key)], time + 0.4);
       });
 
       // The large brain runs in the cloud, and the small brain on the robot.
@@ -311,7 +402,7 @@
       const localTime = Motion.within(at.local, 0.3);
       Motion.hide(tl, ID + "-place", localTime);
       Motion.show(tl, ID + "-local", localTime);
-      Motion.hide(tl, [...each("bind"), ...each("name"), ...each("kind"), ...each("picture"), ...each("system"), ID + "-tools"], localTime + 0.2);
+      Motion.hide(tl, [...each("bind"), ...each("name"), ...each("kind"), ...each("picture"), ...each("system"), ...each("enrolls"), ID + "-project"], localTime + 0.2);
       Motion.paint(tl, each("machine"), { borderColor: "rgba(0, 0, 0, 0)", backgroundColor: "rgba(0, 0, 0, 0)" }, localTime);
       Motion.show(tl, ID + "-workstation", localTime + 0.2, Motion.appears);
 

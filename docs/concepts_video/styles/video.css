@@ -58,6 +58,10 @@
   --contract: #b48cff;
   --fault: #ff6b81;
   --ok: #4ade80;
+  /* The two machines of one stack: the board of the robot, and the machine
+     in the cloud. */
+  --robot-machine: #ff8fe0;
+  --cloud-machine: #7fa8ff;
   /* The light ground that the logo is on. */
   --logo-ground: #dfe6f7;
   --sans: "Peppy Sans", sans-serif;
