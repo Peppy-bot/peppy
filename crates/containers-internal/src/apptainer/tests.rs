@@ -1543,14 +1543,14 @@ fn setup_fix_script_holds_a_step_for_each_failing_check() {
 }
 
 /// The profile names each program in quotes, with a backslash before each
-/// character that AppArmor reads as a pattern, so that the profile attaches
-/// to that path alone. A single quote of a path stays inside the
+/// character that AppArmor reads as a pattern or as the start of a variable,
+/// so that the profile attaches to that path alone. A single quote of a path stays inside the
 /// single-quoted body that the fix script writes to the profile file.
 #[cfg(target_os = "linux")]
 #[test]
 fn setup_fix_script_names_a_path_with_special_characters_as_it_is() {
     let profile = ApparmorProfileRef {
-        apptainer_path: r#"/home/o'brien/my "apps" [x] {y},z*?^\a/bin/apptainer"#.to_string(),
+        apptainer_path: r#"/home/o'brien/my "apps" [x] @{y},z*?^\a/bin/apptainer"#.to_string(),
         starter_path: "/home/o'brien/a b/libexec/apptainer/bin/starter".to_string(),
         name: "peppy-apptainer-0000000000000000".to_string(),
         file: PathBuf::from("/etc/apparmor.d/peppy-apptainer-0000000000000000"),
@@ -1560,7 +1560,7 @@ fn setup_fix_script_names_a_path_with_special_characters_as_it_is() {
 
     let programs_line = [
         "@{peppy_apptainer_programs} =",
-        r#""/home/o'\''brien/my \"apps\" \[x\] \{y\}\,z\*\?\^\\a/bin/apptainer""#,
+        r#""/home/o'\''brien/my \"apps\" \[x\] \@\{y\}\,z\*\?\^\\a/bin/apptainer""#,
         r#""/home/o'\''brien/a b/libexec/apptainer/bin/starter""#,
     ]
     .join(" ");

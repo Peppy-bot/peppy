@@ -376,10 +376,10 @@ const PROFILE_PROGRAMS_VARIABLE: &str = "@{peppy_apptainer_programs}";
 /// other.
 #[cfg(target_os = "linux")]
 pub(crate) struct ApparmorProfileRef {
-    /// Canonical path of the `apptainer` program, exactly as embedded in the
-    /// profile body.
+    /// Canonical path of the `apptainer` program, which the profile body
+    /// names.
     pub(crate) apptainer_path: String,
-    /// Canonical starter path, exactly as embedded in the profile body.
+    /// Canonical starter path, which the profile body names.
     pub(crate) starter_path: String,
     /// AppArmor profile name (`peppy-apptainer-<hash>`).
     pub(crate) name: String,
@@ -435,8 +435,8 @@ impl ApparmorProfileRef {
 
 /// `path` as a value of an AppArmor variable that matches that path alone:
 /// in quotes, so that a space does not end the value, with a backslash
-/// before each character that AppArmor reads as a part of a pattern or as
-/// the end of the quotes.
+/// before each character that AppArmor reads as a part of a pattern, as the
+/// start of a variable or as the end of the quotes.
 #[cfg(target_os = "linux")]
 fn apparmor_quoted_literal(path: &str) -> String {
     let mut quoted = String::with_capacity(path.len() + 2);
@@ -444,7 +444,7 @@ fn apparmor_quoted_literal(path: &str) -> String {
     for character in path.chars() {
         if matches!(
             character,
-            '\\' | '"' | '*' | '?' | '[' | ']' | '{' | '}' | '^' | ','
+            '\\' | '"' | '*' | '?' | '[' | ']' | '{' | '}' | '^' | ',' | '@'
         ) {
             quoted.push('\\');
         }
