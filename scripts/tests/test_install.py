@@ -13,24 +13,39 @@ test_install_in_docker.py.
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from .install_helpers import (
+    IS_LINUX,
+    SERVICE_RUNNING_MARK,
+    SERVICE_STATUS_COMMAND,
     assert_installed,
+    daemon_logs,
     diagnostic,
     install_cmd,
     linux_only,
     login_shell,
+    peppy_environment,
     peppy_home,
+    pin_default_hubs,
     remove_peppy,
     set_fuse2fs_installed,
     set_linger,
+    show_step,
 )
 
 # Every test here installs peppy, which is three orders of magnitude dearer
 # than the rest of the suite: `pixi run test-fast` deselects this module,
 # `pixi run test-install` runs it, and CI runs the two in different jobs.
 pytestmark = pytest.mark.install
+
+# The launch of the quickstart (docs/src/content/docs/quickstart.mdx, step 2).
+QUICKSTART_LAUNCH = "peppy stack launch openarm_simulation --with mujoco"
+# Ends a launch that hangs. A machine that peppy was just installed on has no
+# cache, so each node of the launch builds from nothing.
+QUICKSTART_LAUNCH_TIMEOUT_SECONDS = 90 * 60
 
 
 @pytest.fixture(autouse=True)
@@ -194,7 +209,7 @@ def test_container_node_build() -> None:
     is the one a user gets, and install.sh has already waited for it to answer.
     """
     home = peppy_home("ctnode")
-    env_preamble = f'export PATH="{home}/bin:$PATH" && export PEPPY_HOME={home}'
+    env_preamble = peppy_environment(home)
 
     assert_installed(
         login_shell(install_cmd(home, skip_service_install=False), timeout=600)
@@ -215,3 +230,62 @@ def test_container_node_build() -> None:
 
     run = login_shell(f"{env_preamble} && peppy node run test-node:v1")
     assert run.returncode == 0, f"node run failed{diagnostic(run)}"
+
+
+def test_quickstart(capsys: pytest.CaptureFixture[str]) -> None:
+    """The steps of the quickstart, on the machine as install.sh leaves it.
+
+    A full install: no variable of install.sh skips a step. The background
+    service that it registers must then run, and `peppy info` must print its
+    `Daemon Info` block, which is the answer of that service. On Linux, the
+    launch of the quickstart then runs on that service: `peppy stack launch`
+    returns once each node has built its container image, has started and has
+    ended its setup. On macOS, peppy runs each node in a Linux virtual
+    machine, and a macOS runner is a virtual machine that cannot start one,
+    so the test ends before the launch there.
+
+    The log of the run shows what each step printed. The test resets the
+    stack it launched, so the tests after it share the machine with no node.
+    """
+    home = peppy_home("quickstart")
+    environment = peppy_environment(home)
+    pin_default_hubs(home)
+
+    install = login_shell(install_cmd(home, skip_service_install=False), timeout=600)
+    show_step(capsys, "install.sh", install)
+    assert_installed(install)
+
+    service = login_shell(SERVICE_STATUS_COMMAND)
+    show_step(capsys, "The background service", service)
+    assert service.returncode == 0 and SERVICE_RUNNING_MARK in service.stdout, (
+        f"the background service should run after the install{diagnostic(service)}"
+    )
+
+    info = login_shell(f"{environment} && peppy info")
+    show_step(capsys, "peppy info", info)
+    assert info.returncode == 0 and "Daemon Info" in info.stdout, (
+        f"`peppy info` should print the answer of the daemon{diagnostic(info)}"
+    )
+
+    if not IS_LINUX:
+        return
+
+    try:
+        launch = login_shell(
+            f"{environment} && {QUICKSTART_LAUNCH}",
+            timeout=QUICKSTART_LAUNCH_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as hung:
+        pytest.fail(
+            f"`{QUICKSTART_LAUNCH}` did not end within "
+            f"{QUICKSTART_LAUNCH_TIMEOUT_SECONDS} seconds"
+            f"{diagnostic(hung)}{daemon_logs(home)}"
+        )
+    show_step(capsys, QUICKSTART_LAUNCH, launch)
+    assert launch.returncode == 0 and "Launch complete" in launch.stdout, (
+        f"`{QUICKSTART_LAUNCH}` should exit with 0 and print `Launch complete`"
+        f"{diagnostic(launch)}{daemon_logs(home)}"
+    )
+
+    reset = login_shell(f"{environment} && peppy stack reset", timeout=600)
+    assert reset.returncode == 0, f"the stack reset failed{diagnostic(reset)}"
