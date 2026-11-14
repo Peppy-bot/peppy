@@ -283,7 +283,9 @@ pub(crate) fn decode_absolute_fs_path(path: &str, label: &str) -> Result<PathBuf
     Ok(buf)
 }
 
-pub(crate) fn capnp_list_len(len: usize, field: &str) -> Result<u32> {
+/// The length of a Cap'n Proto list of `len` items, which a `u32` holds.
+/// `field` names the list in the error of a list that is too long.
+pub fn capnp_list_len(len: usize, field: &str) -> Result<u32> {
     len.try_into().map_err(|_| {
         crate::Error::Encoding(format!(
             "{field} length {len} exceeds Cap'n Proto u32 list limit"

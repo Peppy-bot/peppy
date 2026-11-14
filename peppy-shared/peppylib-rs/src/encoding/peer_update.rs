@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 use crate::messaging::{PeerInfo, PeerMember};
 use crate::peer_update_capnp;
 use crate::types::Payload;
+use core_node_api::encoding::capnp_list_len;
 
 /// Absolute pairing-slot state pushed by the daemon: every pair the slot
 /// holds, in establishment order. Field-for-field mirror of the capnp
@@ -25,7 +26,7 @@ impl PeerUpdateRequest {
                 builder.init_root::<peer_update_capnp::peer_update_request::Builder<'_>>();
             root.set_link_id(&self.link_id);
             root.set_sequence(self.sequence);
-            let member_count = super::capnp_list_len(self.members.len(), "members")?;
+            let member_count = capnp_list_len(self.members.len(), "members")?;
             let mut members = root.init_members(member_count);
             for (idx, member) in (0_u32..).zip(self.members.iter()) {
                 let mut wire = members.reborrow().get(idx);

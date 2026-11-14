@@ -8,6 +8,7 @@ use crate::endpoints_capnp;
 use crate::error::{Error, Result};
 use crate::runtime::{AnnouncedEndpoint, EndpointBinding};
 use crate::types::Payload;
+use core_node_api::encoding::capnp_list_len;
 
 super::capnp_empty_message!(
     NodeEndpointsRequest,
@@ -30,7 +31,7 @@ impl NodeEndpointsResponse {
         let mut builder = ::capnp::message::Builder::new_default();
         {
             let root = builder.init_root::<endpoints_capnp::node_endpoints_response::Builder<'_>>();
-            let endpoint_count = super::capnp_list_len(self.endpoints.len(), "endpoints")?;
+            let endpoint_count = capnp_list_len(self.endpoints.len(), "endpoints")?;
             let mut wire_endpoints = root.init_endpoints(endpoint_count);
             for (idx, endpoint) in (0_u32..).zip(self.endpoints.iter()) {
                 let mut wire = wire_endpoints.reborrow().get(idx);

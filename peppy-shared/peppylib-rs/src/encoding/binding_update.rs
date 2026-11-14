@@ -6,6 +6,7 @@ use crate::binding_update_capnp;
 use crate::error::{Error, Result};
 use crate::types::Payload;
 use config::runtime::{BoundMember, BoundProducers, CopyTag};
+use core_node_api::encoding::capnp_list_len;
 
 /// Absolute producer-binding state pushed by the daemon: the consumer slot's
 /// complete ordered member set. Field-for-field mirror of the capnp
@@ -27,7 +28,7 @@ impl BindingUpdateRequest {
             root.set_link_id(&self.link_id);
             root.set_sequence(self.sequence);
             let members = self.producers.as_slice();
-            let member_count = super::capnp_list_len(members.len(), "producers")?;
+            let member_count = capnp_list_len(members.len(), "producers")?;
             let mut wire = root.init_producers(member_count);
             for (idx, member) in (0_u32..).zip(members.iter()) {
                 let mut entry = wire.reborrow().get(idx);

@@ -97,15 +97,6 @@ pub fn convert_time_from_capnp(timestamp: CapnpTimestamp) -> SystemTime {
     }
 }
 
-/// The length of a Cap'n Proto list of `len` items, which a `u32` holds.
-pub(crate) fn capnp_list_len(len: usize, field: &str) -> Result<u32> {
-    u32::try_from(len).map_err(|_| {
-        crate::error::Error::Serialization(format!(
-            "{field} length {len} exceeds Cap'n Proto u32 list limit"
-        ))
-    })
-}
-
 /// Encode a Cap'n Proto message builder into bytes. Crate-internal: used by the
 /// [`capnp_empty_message!`] macro and the action cancel-ack codec.
 pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
