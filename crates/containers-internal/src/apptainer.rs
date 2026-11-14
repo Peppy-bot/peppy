@@ -7,6 +7,8 @@ pub(crate) mod lima;
 pub(crate) mod registry_auth;
 #[cfg(target_os = "linux")]
 pub(crate) mod root_user_namespace;
+#[cfg(target_os = "linux")]
+pub(crate) mod unprivileged_user_namespace;
 
 #[cfg(test)]
 mod tests;
@@ -20,5 +22,7 @@ pub(crate) fn scratch_dir() -> tempfile::TempDir {
 pub use activity::{BuildActivity, BuildActivityProbe};
 pub use facade::{Apptainer, ApptainerCommand, emulation_problem};
 #[cfg(target_os = "linux")]
-pub use facade::{SetupStatus, check_setup_status};
+pub use facade::{SetupStatus, SetupVerdict, check_setup_status};
 pub use registry_auth::RegistryAuthFile;
+#[cfg(target_os = "linux")]
+pub use unprivileged_user_namespace::UnprivilegedUserNamespace;

@@ -14,16 +14,21 @@ test_install_in_docker.py.
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from .install_helpers import (
+    DEFAULT_USER_NAMESPACE_PROFILE,
     IS_LINUX,
     SERVICE_RUNNING_MARK,
     SERVICE_STATUS_COMMAND,
+    apparmor_profile_unloaded,
+    apparmor_restricts_user_namespaces,
     assert_installed,
     daemon_logs,
     diagnostic,
+    install_apparmor_profile,
     install_cmd,
     linux_only,
     login_shell,
@@ -157,6 +162,45 @@ def test_standard_install_container_setup() -> None:
     )
 
 
+needs_restricted_user_namespaces = pytest.mark.skipif(
+    not apparmor_restricts_user_namespaces(),
+    reason="AppArmor does not restrict user namespaces on this machine",
+)
+
+
+@linux_only
+@needs_restricted_user_namespaces
+def test_container_setup_loads_the_profile_of_the_install() -> None:
+    """`peppy container status` fails when the kernel lacks the profile of the install, and the setup loads it.
+
+    This is a machine after a boot with apparmor.service stopped: the profile
+    file is in place, and the kernel does not have the profile.
+    """
+    home = peppy_home("profileload")
+    container = f"PEPPY_HOME={home} {home}/bin/peppy container"
+    assert_installed(login_shell(install_cmd(home), timeout=600))
+
+    with apparmor_profile_unloaded(install_apparmor_profile(home)):
+        not_loaded = login_shell(f"{container} status")
+        assert (
+            not_loaded.returncode == 1
+            and "AppArmor profile loaded: FAILED" in not_loaded.stdout
+        ), (
+            f"the status should fail on the profile that is not loaded{diagnostic(not_loaded)}"
+        )
+
+        setup = login_shell(f"{container} setup")
+        assert (
+            setup.returncode == 0
+            and "Load AppArmor profile for Apptainer into the kernel" in setup.stdout
+        ), f"the setup should load the profile{diagnostic(setup)}"
+
+        loaded = login_shell(f"{container} status")
+        assert loaded.returncode == 0, (
+            f"the status should pass after the setup{diagnostic(loaded)}"
+        )
+
+
 @linux_only
 def test_install_skips_container_setup_with_env_var() -> None:
     """PEPPY_NO_CONTAINER_SETUP=1 explicitly skips Apptainer container setup."""
@@ -202,19 +246,13 @@ def test_reinstall_over_existing() -> None:
     )
 
 
-@linux_only
-def test_container_node_build() -> None:
-    """Container node workflow on the installed peppy: init, add and build, run.
+def build_and_run_container_node(home: Path) -> None:
+    """The container node workflow on the peppy installed in *home*: init, add and build, run.
 
     The install includes the service, so the daemon the node commands talk to
     is the one a user gets, and install.sh has already waited for it to answer.
     """
-    home = peppy_home("ctnode")
     env_preamble = peppy_environment(home)
-
-    assert_installed(
-        login_shell(install_cmd(home, skip_service_install=False), timeout=600)
-    )
 
     init = login_shell(
         f"{env_preamble} && cd {home} && peppy node init --container test-node "
@@ -231,6 +269,48 @@ def test_container_node_build() -> None:
 
     run = login_shell(f"{env_preamble} && peppy node run test-node:v1")
     assert run.returncode == 0, f"node run failed{diagnostic(run)}"
+
+
+@linux_only
+def test_container_node_build() -> None:
+    """A container node builds and runs on the installed peppy."""
+    home = peppy_home("ctnode")
+
+    assert_installed(
+        login_shell(install_cmd(home, skip_service_install=False), timeout=600)
+    )
+
+    build_and_run_container_node(home)
+
+
+@linux_only
+@needs_restricted_user_namespaces
+def test_container_node_build_without_the_default_user_namespace_profile() -> None:
+    """A container node builds on a kernel that lacks the profile `unprivileged_userns`.
+
+    AppArmor gives there no user namespace to a program that has no profile
+    of its own. apptainer asks the kernel for one before each container build,
+    and gets it through the profile that the setup of install.sh writes for
+    the install. `peppy container status` cannot make that request for
+    apptainer, so it reports the user namespace as not tested.
+    """
+    home = peppy_home("usernsbuild")
+
+    with apparmor_profile_unloaded(DEFAULT_USER_NAMESPACE_PROFILE):
+        assert_installed(
+            login_shell(install_cmd(home, skip_service_install=False), timeout=600)
+        )
+
+        status = login_shell(f"PEPPY_HOME={home} {home}/bin/peppy container status")
+        assert (
+            status.returncode == 0
+            and "User namespace         : not tested (AppArmor refuses `unshare`"
+            in status.stdout
+        ), (
+            f"the status should pass with a user namespace not tested{diagnostic(status)}"
+        )
+
+        build_and_run_container_node(home)
 
 
 def test_quickstart(capsys: pytest.CaptureFixture[str]) -> None:

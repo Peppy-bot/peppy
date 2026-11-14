@@ -29,10 +29,12 @@ thiserror = "2.0"
 tracing = "0.1"
 
 # `sysconf(_SC_CLK_TCK)`, which converts the clock ticks `/proc/<pid>/stat`
-# accounts a build's CPU time in. nix's safe wrapper keeps the crate free of
-# `unsafe`; `/proc` itself exists only on Linux.
+# accounts a build's CPU time in, and `geteuid`, which tells whether the user
+# is root: apptainer builds as root with no user namespace. nix's safe
+# wrappers keep the crate free of `unsafe`; `/proc` itself exists only on
+# Linux.
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["feature"] }
+nix = { version = "0.31", default-features = false, features = ["feature", "user"] }
 # Reads `/proc/config.gz`, the configuration of the running kernel, which
 # tells the squashfs compressions that the kernel mounts.
 flate2 = "1"

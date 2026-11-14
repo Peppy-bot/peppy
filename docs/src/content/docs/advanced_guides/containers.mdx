@@ -29,7 +29,7 @@ peppy container setup
 This configures the following (prompting for `sudo` when needed):
 
 1. **uidmap package**: installs `newuidmap` (required for fakeroot mode).
-2. **AppArmor profile** (on systems that restrict unprivileged user namespaces via AppArmor): installs a profile that allows Apptainer to create user namespaces and loads it into the kernel. When the profile already exists but is not loaded, it is reloaded without being rewritten.
+2. **AppArmor profile** (on systems that restrict unprivileged user namespaces via AppArmor): installs a profile for the `apptainer` and `starter` programs of the installation, which allows them to create user namespaces, and loads it into the kernel. When the profile already exists but is not loaded, it is reloaded without being rewritten.
 
 To check the current state without making any changes:
 
@@ -38,6 +38,17 @@ peppy container status
 ```
 
 This prints a pass/fail summary of each prerequisite and exits with code `0` (all pass) or `1` (something needs fixing).
+
+The status also asks the kernel for a user namespace, as Apptainer does before each container build: it runs `unshare --user /bin/true` as the user of the builds, which is the caller of `sudo` when `sudo` runs the command. The `User namespace` line shows the answer:
+
+| Line | Meaning |
+|------|---------|
+| `OK` | The kernel gives the namespace. |
+| `FAILED (<message of unshare>)` | The kernel refuses the namespace, for example because a sysctl turns user namespaces off or because of the seccomp profile of a Docker container. |
+| `not required` | The user of the builds is root, which builds with no user namespace. |
+| `not tested (<reason>)` | The request gives no answer for Apptainer. `unshare` did not run, or AppArmor refuses `unshare` on a system whose kernel does not have the profile `unprivileged_userns` (`apparmor.service` is stopped). Apptainer does not need that profile: it has the profile of its installation. |
+
+The setup has no fix for a namespace that the kernel refuses. `peppy container status` then exits with `1`. `peppy container setup` makes the fixes of the other prerequisites, writes a warning with the message of `unshare`, and exits with `0`. The daemon writes the same warning at its start: the nodes that are not containers run, and each container build fails.
 
 :::note
 On macOS, no setup is needed; containers run inside a Lima VM which handles permissions transparently.

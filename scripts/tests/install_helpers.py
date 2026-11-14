@@ -23,13 +23,14 @@ run_in_container.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import os
 import platform
 import shlex
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,12 @@ SSH_DIR = TEST_ROOT / "ssh"
 # Every apt-get the tests run waits for the dpkg lock, as install.sh's own do:
 # a freshly booted runner holds it for its own apt runs.
 APT_GET = "apt-get -o DPkg::Lock::Timeout=300"
+
+# The file of the AppArmor profile that gives a user namespace to a program
+# with no profile of its own, and the listing of the profiles the kernel has
+# loaded.
+DEFAULT_USER_NAMESPACE_PROFILE = Path("/etc/apparmor.d/unprivileged_userns")
+_LOADED_APPARMOR_PROFILES = "/sys/kernel/security/apparmor/policy/profiles"
 
 IS_LINUX = sys.platform == "linux"
 IS_MACOS = sys.platform == "darwin"
@@ -227,10 +234,8 @@ def run_as_root(script: str, *, timeout: int = 600) -> None:
 #
 # The runner image may also leave apparmor.service stopped, as the stock
 # images of RunsOn do. A user's Ubuntu machine starts it at boot, and it
-# loads the AppArmor profiles of the packages, `unprivileged_userns` among
-# them. Ubuntu 24.04 lets a program that has no profile of its own make a
-# user namespace through that profile only, and apptainer makes one before
-# each container build.
+# loads the AppArmor profiles of the packages. A test that needs a kernel
+# without one of them removes that profile itself.
 _LOGIN_BASELINE_SCRIPT = f"""
 set -eu
 if ! command -v sshd >/dev/null 2>&1; then
@@ -511,6 +516,64 @@ def set_linger(enabled: bool) -> None:
     """Enable or disable systemd linger for this user."""
     action = "enable-linger" if enabled else "disable-linger"
     run_as_root(f'loginctl {action} "$SUDO_USER"')
+
+
+def apparmor_restricts_user_namespaces() -> bool:
+    """Whether AppArmor restricts user namespaces on this machine.
+
+    Ubuntu 24.04 and later restrict them. The kernel then gives a user
+    namespace to a program through an AppArmor profile only: the profile of
+    the program, or `unprivileged_userns` for a program that has none.
+    """
+    knob = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+    return knob.is_file() and knob.read_text().strip() == "1"
+
+
+def install_apparmor_profile(home: Path) -> Path:
+    """The file of the AppArmor profile that the install in *home* wrote.
+
+    `peppy container setup` writes one profile for each install, and the
+    profile names the `apptainer` program of that install, in quotes.
+    """
+    result = login_shell(
+        f"grep -l -F '\"{home}/bin/apptainer/bin/apptainer\"' "
+        "/etc/apparmor.d/peppy-apptainer-*"
+    )
+    files = result.stdout.split()
+    if result.returncode != 0 or len(files) != 1:
+        pytest.fail(
+            f"expected one AppArmor profile for the install in {home}{diagnostic(result)}"
+        )
+    return Path(files[0])
+
+
+def _set_apparmor_profile_loaded(profile: Path, loaded: bool) -> None:
+    """Load the AppArmor profile of the file *profile* into the kernel, or remove it.
+
+    The name of a profile is the name of its file.
+    """
+    is_loaded = f"ls {_LOADED_APPARMOR_PROFILES} | grep -q '^{profile.name}\\.'"
+    if loaded:
+        run_as_root(f"apparmor_parser -r {profile} && {is_loaded}")
+        return
+    run_as_root(f"! {is_loaded} || apparmor_parser -R {profile}; ! {is_loaded}")
+
+
+@contextlib.contextmanager
+def apparmor_profile_unloaded(profile: Path) -> Iterator[None]:
+    """Run a block on a kernel that does not have the AppArmor profile of the file *profile*.
+
+    apparmor.service loads each profile at boot, so this is the kernel of a
+    machine whose service is stopped, as on the stock images of RunsOn. The
+    profile is loaded again when the block ends, also when it ends with an
+    error: a block that fails then fails one test alone, and the tests after
+    it start from a kernel that has the profile.
+    """
+    _set_apparmor_profile_loaded(profile, False)
+    try:
+        yield
+    finally:
+        _set_apparmor_profile_loaded(profile, True)
 
 
 def set_fuse2fs_installed(installed: bool) -> None:
