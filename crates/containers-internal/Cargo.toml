@@ -22,9 +22,11 @@ dirs = "7"
 # Reads `/proc/config.gz`, the configuration of the running kernel, which
 # tells whether the kernel mounts the zstd squashfs of an image.
 flate2 = "1"
-# `geteuid`, which tells whether the daemon is root: apptainer mounts the
-# image of a root daemon with the kernel, not with the bundled squashfuse.
-rustix = { version = "1", features = ["process"] }
+# The user and the groups of the daemon process, and the access control list
+# of a directory. They tell whether the daemon is root, for which apptainer
+# mounts an image with the kernel and not with the bundled squashfuse, and
+# which directories root enters from the user namespace of apptainer.
+rustix = { version = "1", features = ["fs", "process"] }
 # Reads the Docker-style registry auth file apptainer would use and writes the
 # copy without Docker CLI's OAuth token entries that the native backend hands
 # to apptainer instead.

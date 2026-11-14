@@ -80,6 +80,9 @@ const INITIAL_USER_NAMESPACE_MAP: [&str; 3] = ["0", "0", "4294967295"];
 /// The user root.
 const ROOT_USER: u32 = 0;
 
+/// The extended attribute that holds the access control list of a file.
+const ACCESS_CONTROL_LIST_ATTRIBUTE: &str = "system.posix_acl_access";
+
 /// What peppy asks of apptainer for the user namespace of a `run` or an
 /// `exec`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,13 +118,12 @@ impl UserNamespace {
 
     /// [`UserNamespace::for_this_daemon`] for a daemon and a host that the
     /// arguments describe: `real_root` is `None` for a daemon that is not the
-    /// real root, and `access_of` reads the owner, the group and the
-    /// permission bits of a directory.
+    /// real root, and `access_of` is [`DirectoryAccess::of`].
     fn for_daemon(
         real_root: Option<&RealRoot>,
         kernel_config_files: &KernelConfigFiles,
         apptainer_dir: &Path,
-        access_of: impl Fn(&Path) -> io::Result<DirectoryAccess>,
+        access_of: impl Fn(&Path) -> io::Result<Option<DirectoryAccess>>,
     ) -> Self {
         let Some(real_root) = real_root else {
             return Self::ApptainerDefault;
@@ -276,13 +278,13 @@ impl RealRoot {
     /// `apptainer_dir`, that this root cannot enter from the user namespace,
     /// or `None` when it reaches the installation.
     ///
-    /// An installation that cannot be resolved and a directory whose
-    /// permissions cannot be read decide nothing: apptainer reports a path
-    /// that it cannot reach.
+    /// An installation that cannot be resolved, a directory whose
+    /// permissions cannot be read and a directory with an access control
+    /// list decide nothing: apptainer reports a path that it cannot reach.
     fn closed_dir_on_the_way_to(
         &self,
         apptainer_dir: &Path,
-        access_of: impl Fn(&Path) -> io::Result<DirectoryAccess>,
+        access_of: impl Fn(&Path) -> io::Result<Option<DirectoryAccess>>,
     ) -> Option<ClosedInstallDir> {
         // The kernel resolves symbolic links, so the search reads the
         // directories of the resolved path.
@@ -292,7 +294,7 @@ impl RealRoot {
         let mut dirs: Vec<&Path> = resolved_dir.ancestors().collect();
         dirs.reverse();
         dirs.into_iter()
-            .filter_map(|dir| access_of(dir).ok().map(|access| (dir, access)))
+            .filter_map(|dir| Some((dir, access_of(dir).ok()??)))
             .find(|(_, access)| !self.enters_from_user_namespace(*access))
             .map(|(dir, access)| ClosedInstallDir {
                 apptainer_dir: resolved_dir.clone(),
@@ -404,7 +406,8 @@ impl PermissionClass {
     }
 }
 
-/// The owner, the group and the permission bits of a directory.
+/// The owner, the group and the permission bits of a directory: what
+/// decides who enters a directory that has no access control list.
 #[derive(Debug, Clone, Copy)]
 struct DirectoryAccess {
     owner: u32,
@@ -413,14 +416,29 @@ struct DirectoryAccess {
 }
 
 impl DirectoryAccess {
-    /// Reads them from the directory at `dir`.
-    fn of(dir: &Path) -> io::Result<Self> {
+    /// Reads them from the directory at `dir`. `None` for a directory with
+    /// an access control list: an entry of the list can admit root where the
+    /// permission bits do not, and this module does not read the list.
+    fn of(dir: &Path) -> io::Result<Option<Self>> {
+        if has_access_control_list(dir)? {
+            return Ok(None);
+        }
         let metadata = fs::metadata(dir)?;
-        Ok(Self {
+        Ok(Some(Self {
             owner: metadata.uid(),
             group: metadata.gid(),
             mode: metadata.mode(),
-        })
+        }))
+    }
+}
+
+/// Whether the file at `path` has an access control list. A file system
+/// that has no extended attributes has no list.
+fn has_access_control_list(path: &Path) -> io::Result<bool> {
+    match rustix::fs::getxattr_query(path, ACCESS_CONTROL_LIST_ATTRIBUTE) {
+        Ok(_) => Ok(true),
+        Err(rustix::io::Errno::NODATA | rustix::io::Errno::NOTSUP) => Ok(false),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -530,7 +548,7 @@ CONFIG_SQUASHFS_XZ=y
     ) -> UserNamespace {
         let scratch = scratch_dir();
         let files = kernel_config_files(scratch.path(), proc_text, boot_text);
-        UserNamespace::for_daemon(real_root, &files, scratch.path(), |_| Ok(OPEN_DIR))
+        UserNamespace::for_daemon(real_root, &files, scratch.path(), |_| Ok(Some(OPEN_DIR)))
     }
 
     #[test]
@@ -814,7 +832,7 @@ CONFIG_SQUASHFS_XZ=y
 
         let user_namespace = UserNamespace::for_daemon(Some(&root), &files, &install_dir, |dir| {
             let is_closed = dir == home || dir == peppy_home;
-            Ok(if is_closed { PRIVATE_HOME } else { OPEN_DIR })
+            Ok(Some(if is_closed { PRIVATE_HOME } else { OPEN_DIR }))
         });
 
         assert_eq!(
@@ -836,8 +854,9 @@ CONFIG_SQUASHFS_XZ=y
             supplementary_groups: vec![OTHER_GROUP],
         };
 
-        let user_namespace =
-            UserNamespace::for_daemon(Some(&root), &files, scratch.path(), |_| Ok(PRIVATE_HOME));
+        let user_namespace = UserNamespace::for_daemon(Some(&root), &files, scratch.path(), |_| {
+            Ok(Some(PRIVATE_HOME))
+        });
 
         assert_eq!(user_namespace, UserNamespace::Forced);
     }
@@ -849,11 +868,11 @@ CONFIG_SQUASHFS_XZ=y
         let root = root_of_the_root_group();
 
         let user_namespace = UserNamespace::for_daemon(Some(&root), &files, scratch.path(), |_| {
-            Ok(DirectoryAccess {
+            Ok(Some(DirectoryAccess {
                 owner: OTHER_USER,
                 group: ROOT_GROUP,
                 mode: 0o700,
-            })
+            }))
         });
 
         assert_matches!(
@@ -878,7 +897,7 @@ CONFIG_SQUASHFS_XZ=y
         let closed_below_an_unreadable_one =
             UserNamespace::for_daemon(Some(&root), &files, scratch.path(), |dir| {
                 if dir == resolved_scratch {
-                    Ok(PRIVATE_HOME)
+                    Ok(Some(PRIVATE_HOME))
                 } else {
                     unreadable()
                 }
@@ -893,6 +912,37 @@ CONFIG_SQUASHFS_XZ=y
     }
 
     #[test]
+    fn a_directory_with_an_access_control_list_decides_nothing() {
+        let scratch = scratch_dir();
+        let resolved_scratch = scratch.path().canonicalize().expect("resolve the scratch");
+        let files = kernel_config_files(scratch.path(), Some(CONFIG_WITHOUT_ZSTD), None);
+        let root = root_of_the_root_group();
+        let parent_of_scratch = resolved_scratch
+            .parent()
+            .expect("the scratch directory has a parent");
+
+        let all_with_a_list =
+            UserNamespace::for_daemon(Some(&root), &files, scratch.path(), |_| Ok(None));
+        let closed_below_one_with_a_list =
+            UserNamespace::for_daemon(Some(&root), &files, scratch.path(), |dir| {
+                if dir == parent_of_scratch {
+                    Ok(None)
+                } else if dir == resolved_scratch {
+                    Ok(Some(PRIVATE_HOME))
+                } else {
+                    Ok(Some(OPEN_DIR))
+                }
+            });
+
+        assert_eq!(all_with_a_list, UserNamespace::Forced);
+        assert_matches!(
+            closed_below_one_with_a_list,
+            UserNamespace::OutOfReach(ClosedInstallDir { closed_dir, .. })
+                if closed_dir == resolved_scratch
+        );
+    }
+
+    #[test]
     fn an_installation_that_cannot_be_resolved_decides_nothing() {
         let scratch = scratch_dir();
         let missing = scratch.path().join("no-such-installation");
@@ -900,7 +950,7 @@ CONFIG_SQUASHFS_XZ=y
         let root = root_of_the_root_group();
 
         let user_namespace =
-            UserNamespace::for_daemon(Some(&root), &files, &missing, |_| Ok(PRIVATE_HOME));
+            UserNamespace::for_daemon(Some(&root), &files, &missing, |_| Ok(Some(PRIVATE_HOME)));
 
         assert_eq!(user_namespace, UserNamespace::Forced);
     }
@@ -950,7 +1000,9 @@ CONFIG_SQUASHFS_XZ=y
         fs::set_permissions(scratch.path(), fs::Permissions::from_mode(0o750))
             .expect("set the mode of the scratch directory");
 
-        let access = DirectoryAccess::of(scratch.path()).expect("read the scratch directory");
+        let access = DirectoryAccess::of(scratch.path())
+            .expect("read the scratch directory")
+            .expect("a new directory has no access control list");
 
         assert_eq!(access.mode & 0o777, 0o750);
         assert_eq!(access.owner, rustix::process::geteuid().as_raw());
