@@ -676,6 +676,7 @@ pub(super) fn sanitize_rust_module_name(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn sanitize_module_name_escapes_rust_keywords() {
@@ -927,14 +928,32 @@ mod tests {
         }
     }
 
-    /// The table `name` of the `[workspace]` table of the manifest at
-    /// `manifest_path`, as text.
-    fn workspace_table(manifest_path: &Path, name: &str) -> String {
+    /// The lints of the tool `tool` (`rust` or `clippy`) that the
+    /// `[workspace.lints]` table of the manifest at `manifest_path` sets, each
+    /// with its value as text. `[workspace.lints]` itself holds no key of its
+    /// own, so its text is empty: the lints are in its table of each tool.
+    fn workspace_lints(manifest_path: &Path, tool: &str) -> BTreeMap<String, String> {
         let manifest: DocumentMut = fs::read_to_string(manifest_path)
             .unwrap_or_else(|error| panic!("read {}: {error}", manifest_path.display()))
             .parse()
             .unwrap_or_else(|error| panic!("parse {}: {error}", manifest_path.display()));
-        manifest["workspace"][name].to_string()
+        let lints = manifest["workspace"]["lints"][tool]
+            .as_table()
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} has no [workspace.lints.{tool}] table",
+                    manifest_path.display()
+                )
+            });
+        assert!(
+            !lints.is_empty(),
+            "[workspace.lints.{tool}] of {} sets no lint",
+            manifest_path.display()
+        );
+        lints
+            .iter()
+            .map(|(lint, level)| (lint.to_owned(), level.to_string().trim().to_owned()))
+            .collect()
     }
 
     /// A vendored crate takes its `rust-version` from this workspace, and the
@@ -957,10 +976,13 @@ mod tests {
             sealed_manifest["workspace"]["package"]["rust-version"].as_str(),
             Some(WorkspacePackageMetadata::embedded().rust_version)
         );
-        assert_eq!(
-            workspace_table(&sealed, "lints"),
-            workspace_table(&own, "lints")
-        );
+        for tool in ["rust", "clippy"] {
+            assert_eq!(
+                workspace_lints(&sealed, tool),
+                workspace_lints(&own, tool),
+                "[workspace.lints.{tool}]"
+            );
+        }
     }
 
     #[test]
