@@ -62,7 +62,8 @@
      in the cloud. */
   --robot-machine: #ff8fe0;
   --cloud-machine: #7fa8ff;
-  /* The light ground that the logo is on. */
+  /* The light ground that the logo is on. The logo file is the logo of the
+     docs for light pages, `docs/src/assets/logo-light-512.webp`. */
   --logo-ground: #dfe6f7;
   --sans: "Peppy Sans", sans-serif;
   --mono: "Peppy Mono", monospace;
