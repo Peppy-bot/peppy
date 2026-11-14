@@ -2,6 +2,7 @@ use super::super::error::{Error, Result};
 use super::l4t_manifest::{self, L4T_MANIFEST_DIR, NVLIBLIST_PATH, NvliblistSync};
 use super::lima;
 use super::registry_auth::{APPTAINER_AUTH_FILE_ENV, RegistryAuth};
+use super::root_user_namespace::{USER_NAMESPACE_FLAG, UserNamespace};
 use core_node_api::encoding::ArtifactPlatform;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -34,7 +35,9 @@ const MKSQUASHFS_ARGS_FLAG: &str = "--mksquashfs-args";
 /// apptainer's default, at the same size: an 850 MB Rust node image takes 5 s
 /// instead of 35 s on 14 cores. The bundled `squashfuse_ll` that mounts the
 /// image at run time reads zstd, and so does every `mksquashfs` of
-/// squashfs-tools 4.4 or later.
+/// squashfs-tools 4.4 or later. For a root daemon apptainer mounts the image
+/// with the kernel, and not every kernel reads zstd: see
+/// [`root_user_namespace`](super::root_user_namespace).
 const SQUASHFS_COMPRESSION: &str = "-comp zstd -Xcompression-level 3";
 
 /// Whether `flags` turn on apptainer's `--nv`. As in apptainer's flag parser,
@@ -143,6 +146,11 @@ pub(crate) enum Backend {
         /// [`l4t_manifest`]. The Lima backend has no
         /// counterpart: its guest is a VM on a Mac, never a Jetson.
         l4t_manifest_dir: PathBuf,
+        /// Whether a `run` or an `exec` asks apptainer for a user namespace;
+        /// see [`root_user_namespace`](super::root_user_namespace). The Lima
+        /// backend has no counterpart: the user of its guest is not root, so
+        /// apptainer uses a user namespace there on its own.
+        user_namespace: UserNamespace,
     },
     /// macOS, and a build for another architecture: route commands through
     /// a Lima VM.
@@ -480,7 +488,9 @@ impl Apptainer {
     /// # Blocking
     ///
     /// Construction runs `ensure_ready`, so it is not free.
-    /// On Linux it only checks user namespace prerequisites. On macOS it boots the
+    /// On Linux it checks the user namespace prerequisites, and a root daemon
+    /// also reads the kernel configuration (see
+    /// [`root_user_namespace`](super::root_user_namespace)). On macOS it boots the
     /// Lima VM and syncs the apptainer install into the guest, which can take
     /// minutes on first run, so call it from a blocking context (e.g.
     /// `tokio::task::spawn_blocking`). Use [`is_lima_ready`](Self::is_lima_ready)
@@ -561,6 +571,7 @@ impl Apptainer {
                 tmp_dir: apptainer_scratch_dir(),
                 registry_auth: RegistryAuth::from_env()?,
                 l4t_manifest_dir: PathBuf::from(L4T_MANIFEST_DIR),
+                user_namespace: UserNamespace::for_this_daemon(&apptainer_dir)?,
             }
         };
 
@@ -835,6 +846,15 @@ impl Apptainer {
     // -----------------------------------------------------------------------
     // Command builders
     // -----------------------------------------------------------------------
+
+    /// Whether a `run` or an `exec` of this facade asks apptainer for a user
+    /// namespace.
+    fn user_namespace(&self) -> UserNamespace {
+        match &self.backend {
+            Backend::Native { user_namespace, .. } => *user_namespace,
+            Backend::Lima { .. } => UserNamespace::ApptainerDefault,
+        }
+    }
 
     /// Start building an `apptainer run` command.
     ///
@@ -1633,6 +1653,16 @@ impl CommandKind {
             Self::Exec { container, .. } => is_uri(container),
         }
     }
+
+    /// Whether apptainer mounts the squashfs of an image to run this command:
+    /// a run and an exec start a container from one, and a build unpacks its
+    /// base image instead.
+    fn mounts_an_image(&self) -> bool {
+        match self {
+            Self::Run { .. } | Self::Exec { .. } => true,
+            Self::Build { .. } => false,
+        }
+    }
 }
 
 /// Builder for an apptainer command with optional flags.
@@ -1951,7 +1981,10 @@ impl<'a> ApptainerCommand<'a> {
     // Internal
     // -----------------------------------------------------------------------
 
-    /// Assemble the full argument vector: `[subcommand, ...flags, ...binds, ...positional]`.
+    /// Assemble the full argument vector:
+    /// `[subcommand, user namespace flag, ...flags, ...binds, ...positional]`.
+    /// The user namespace flag is there only for a command that mounts an
+    /// image, on a facade that forces the namespace.
     ///
     /// Path translation for bind mounts and positional args happens here.
     pub(crate) fn build_args(&self) -> Result<Vec<String>> {
@@ -1967,10 +2000,16 @@ impl<'a> ApptainerCommand<'a> {
             .to_string(),
         );
 
-        // 2. Accumulated flags (no translation needed)
+        // 2. The user namespace of a root daemon whose kernel cannot mount
+        //    the image
+        if self.kind.mounts_an_image() && self.facade.user_namespace() == UserNamespace::Forced {
+            args.push(USER_NAMESPACE_FLAG.to_string());
+        }
+
+        // 3. Accumulated flags (no translation needed)
         args.extend(self.flags.iter().cloned());
 
-        // 3. Bind mounts (translate src paths for Lima)
+        // 4. Bind mounts (translate src paths for Lima)
         for bind in &self.bind_mounts {
             args.push("--bind".to_string());
             let translated_src = self.facade.translate_arg(&bind.src)?;
@@ -2000,7 +2039,7 @@ impl<'a> ApptainerCommand<'a> {
             }
         }
 
-        // 4. Positional args (with path translation)
+        // 5. Positional args (with path translation)
         match &self.kind {
             CommandKind::Run { image, args: extra } => {
                 args.push(self.facade.translate_arg(image)?);

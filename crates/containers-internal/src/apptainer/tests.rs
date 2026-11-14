@@ -9,6 +9,7 @@ use super::facade::{
 };
 use super::facade::{Apptainer, Backend, GuestSignal, is_uri, prepare_scratch_dir};
 use super::registry_auth::{RegistryAuth, RegistryAuthSource};
+use super::root_user_namespace::UserNamespace;
 use crate::error::Error;
 use std::assert_matches;
 use std::fs;
@@ -104,9 +105,21 @@ fn native_facade_with_registry_auth(registry_auth: RegistryAuth) -> Apptainer {
             tmp_dir: PathBuf::from(NATIVE_FIXTURE_TMP_DIR),
             registry_auth,
             l4t_manifest_dir: native_fixture_scratch().join("no-such-l4t-manifest-dir"),
+            user_namespace: UserNamespace::ApptainerDefault,
         },
         extra_mounts: Vec::new(),
     }
+}
+
+/// [`native_facade`] of a root daemon whose kernel cannot mount the zstd
+/// squashfs of an image: it asks apptainer for a user namespace.
+fn native_facade_forcing_user_namespace() -> Apptainer {
+    let mut facade = native_facade();
+    let Backend::Native { user_namespace, .. } = &mut facade.backend else {
+        unreachable!("native_facade builds the native backend");
+    };
+    *user_namespace = UserNamespace::Forced;
+    facade
 }
 
 /// [`native_facade`] with the apptainer install tree and the NVIDIA L4T
@@ -252,6 +265,79 @@ fn test_build_command_builds_correct_args() {
             def.to_str().unwrap(),
         ]
     );
+}
+
+#[test]
+fn a_run_that_forces_the_user_namespace_passes_userns_before_its_other_flags() {
+    let facade = native_facade_forcing_user_namespace();
+
+    let cmd = facade
+        .run("/images/node.sif")
+        .raw_flag("--nv")
+        .args(&["--port", "1"]);
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    assert_eq!(
+        args,
+        ["run", "--userns", "--nv", "/images/node.sif", "--port", "1"]
+    );
+}
+
+#[test]
+fn an_exec_that_forces_the_user_namespace_passes_userns() {
+    let facade = native_facade_forcing_user_namespace();
+
+    let cmd = facade.exec("/images/node.sif", &["echo", "hello"]);
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    assert_eq!(
+        args,
+        ["exec", "--userns", "/images/node.sif", "echo", "hello"]
+    );
+}
+
+/// A build mounts no image, so it needs no user namespace for one.
+#[test]
+fn a_build_that_forces_the_user_namespace_passes_no_userns() {
+    let facade = native_facade_forcing_user_namespace();
+
+    let (output, def) = build_paths_under_home();
+    let cmd = facade.build(&output, &def);
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    assert!(
+        !args.iter().any(|arg| arg == "--userns"),
+        "a build should not ask for a user namespace, got: {args:?}"
+    );
+}
+
+#[test]
+fn a_run_and_an_exec_with_the_default_of_apptainer_pass_no_userns() {
+    let facade = native_facade();
+
+    let run_args = facade
+        .run("/images/node.sif")
+        .build_args()
+        .expect("build_args should succeed");
+    let exec_args = facade
+        .exec("/images/node.sif", &["echo", "hello"])
+        .build_args()
+        .expect("build_args should succeed");
+
+    assert_eq!(run_args, ["run", "/images/node.sif"]);
+    assert_eq!(exec_args, ["exec", "/images/node.sif", "echo", "hello"]);
+}
+
+/// The user of the Lima guest is not root, so apptainer uses a user namespace
+/// there with no flag.
+#[test]
+fn a_lima_run_passes_no_userns() {
+    let facade = lima_facade();
+
+    let cmd = facade.run("docker://alpine");
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    assert_eq!(args, ["run", "docker://alpine"]);
 }
 
 /// A node's own `--mksquashfs-args`, passed as a raw flag, comes after the

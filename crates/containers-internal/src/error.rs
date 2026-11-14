@@ -127,6 +127,36 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// A root daemon whose kernel cannot mount the zstd squashfs of an image
+    /// runs its containers in a user namespace, and root cannot enter
+    /// `closed_dir` from it. `chmod_class` is the `chmod` letter of the
+    /// permission bits that the kernel reads for root on that directory.
+    #[error(
+        "This daemon runs as root on a kernel that cannot mount the zstd squashfs of an \
+         image, so apptainer runs each container in a user namespace. In that namespace \
+         root has its rights on the files of root only, and it cannot enter {closed_dir}, \
+         which the apptainer installation {apptainer_dir} is in.\n\
+         \n\
+         To fix, do one of these:\n\
+         \x20 - install peppy in a directory that root owns, such as the home directory of root\n\
+         \x20 - let root enter the directory: chmod {chmod_class}+x {closed_dir}\n\
+         \x20 - run the daemon as the user that owns the installation"
+    )]
+    InstallDirClosedToRootInUserNamespace {
+        apptainer_dir: String,
+        closed_dir: String,
+        chmod_class: char,
+    },
+
+    #[error(
+        "Failed to read the permissions of {path}, which holds the apptainer installation: \
+         {source}"
+    )]
+    InstallDirAccessUnreadable {
+        path: String,
+        source: std::io::Error,
+    },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 

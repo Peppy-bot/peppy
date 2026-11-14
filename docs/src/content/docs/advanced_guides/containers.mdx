@@ -43,6 +43,23 @@ This prints a pass/fail summary of each prerequisite and exits with code `0` (al
 On macOS, no setup is needed; containers run inside a Lima VM which handles permissions transparently.
 :::
 
+### Running the daemon as root
+
+Apptainer mounts the image of a container in one of two ways. For a daemon that is not root, it runs the container in a user namespace and mounts the image with its bundled `squashfuse_ll`. For a daemon that runs as root, the kernel mounts the image.
+
+Peppy packs each image with zstd, and some kernels cannot mount a zstd squashfs. The WSL2 kernel, which Docker Desktop on Windows also runs on, and the kernel of the NVIDIA Jetson are two of them. When the daemon runs as root on such a kernel, Peppy passes `--userns` to Apptainer, so the containers run in a user namespace as they do for every other user. Peppy reads the kernel configuration from `/proc/config.gz`, then from `/boot/config-<kernel release>`, and looks for the line `CONFIG_SQUASHFS_ZSTD=y`.
+
+In that user namespace:
+
+- A node has none of the capabilities of the real root. It cannot, for example, take a real-time priority.
+- Root has its rights on the files of root only. The Peppy installation must be in directories that root owns or that every user can enter, and not below the private home directory of another user. When it is not, the daemon stops with an error that names the directory and how to open it.
+
+A root daemon on a kernel that mounts zstd squashfs runs its containers without a user namespace, with the capabilities of the real root.
+
+:::note
+When Peppy can read no kernel configuration, it passes no flag. If a node of a root daemon then stops with `kernel reported a bad superblock for squashfs image partition`, set `APPTAINER_USERNS=1` in the environment of the daemon.
+:::
+
 ## Initializing a container node
 
 Pass the `--container` flag to `peppy node init`:
