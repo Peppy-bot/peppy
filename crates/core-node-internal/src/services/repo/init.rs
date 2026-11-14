@@ -40,7 +40,7 @@ fn default_entries() -> Result<Vec<Value>> {
 ///
 /// - If the file does not exist, the default template is written verbatim
 ///   so its comments and formatting are preserved (see
-///   [`write_default_repos`]).
+///   `write_default_repos`).
 /// - If the file exists, default entries whose `id` is not already present
 ///   are appended verbatim, and the file is rewritten with `json5_pretty`,
 ///   which drops its comments. An existing entry with the same `id` claims
@@ -261,7 +261,7 @@ mod tests {
         // Exactly one entry per id 1000 and 1001: the user's entries, not the defaults.
         let id_1000: Vec<_> = repos
             .iter()
-            .filter(|e| e.get("id").and_then(|v| v.as_u64()) == Some(1000))
+            .filter(|e| e.get("id").and_then(Value::as_u64) == Some(1000))
             .collect();
         assert_eq!(
             id_1000.len(),
@@ -276,7 +276,7 @@ mod tests {
 
         let id_1001: Vec<_> = repos
             .iter()
-            .filter(|e| e.get("id").and_then(|v| v.as_u64()) == Some(1001))
+            .filter(|e| e.get("id").and_then(Value::as_u64) == Some(1001))
             .collect();
         assert_eq!(
             id_1001.len(),

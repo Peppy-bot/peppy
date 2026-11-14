@@ -40,6 +40,7 @@ impl HostedDomain {
     }
 }
 
+#[derive(Debug)]
 struct Watch {
     domain: ClockDomainId,
     last_tick: Arc<AtomicU64>,
@@ -53,7 +54,7 @@ impl Drop for Watch {
 }
 
 /// The domains this daemon hosts, keyed by the instance supplying each one.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct ClockWatches {
     watches: Mutex<BTreeMap<Name, Watch>>,
 }

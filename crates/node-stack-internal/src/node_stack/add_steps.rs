@@ -93,10 +93,11 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<Vec<String>> {
         let dest_path = dest.join(file_name);
         let ft = entry.file_type()?;
 
+        // Skip symlinks to avoid infinite recursion with circular links
         if ft.is_symlink() {
-            // Skip symlinks to avoid infinite recursion with circular links
             continue;
-        } else if ft.is_dir() {
+        }
+        if ft.is_dir() {
             copy_dir_recursive(&src_path, &dest_path)?;
         } else {
             std::fs::copy(&src_path, &dest_path)?;
@@ -176,10 +177,7 @@ fn copy_whole_tree(src: &Path, dest: &Path) -> std::io::Result<()> {
 /// by comparing the stored git hash with the expected one.
 ///
 /// Returns `Ok(())` if verification passes, or `Err(error_message)` if it fails.
-pub fn verify_git_hash(
-    source_path: &Path,
-    expected_git_hash: &str,
-) -> std::result::Result<(), String> {
+pub fn verify_git_hash(source_path: &Path, expected_git_hash: &str) -> Result<(), String> {
     let git_hash_path = source_path.join(PEPPY_OUTPUT_DIR).join("git.hash");
     let stored_git_hash = std::fs::read_to_string(&git_hash_path).map_err(|e| {
         format!(
@@ -230,8 +228,7 @@ mod tests {
         ] {
             assert!(
                 is_excluded_dir(std::ffi::OsStr::new(name)),
-                "expected {:?} to be excluded",
-                name
+                "expected {name:?} to be excluded"
             );
         }
     }
@@ -241,8 +238,7 @@ mod tests {
         for name in ["src", "lib", "data", "scripts", "peppy", "my_module"] {
             assert!(
                 !is_excluded_dir(std::ffi::OsStr::new(name)),
-                "expected {:?} to be allowed",
-                name
+                "expected {name:?} to be allowed"
             );
         }
     }
@@ -251,24 +247,24 @@ mod tests {
     fn a_staged_tree_is_copied_whole_with_its_permissions() {
         use std::os::unix::fs::PermissionsExt as _;
         let staged = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(staged.path().join(".peppy/libs/peppylib")).unwrap();
-        std::fs::write(staged.path().join(".peppy/libs/peppylib/x.so"), b"so").unwrap();
-        std::fs::write(staged.path().join("run.sh"), b"#!/bin/sh").unwrap();
-        std::fs::set_permissions(
+        fs::create_dir_all(staged.path().join(".peppy/libs/peppylib")).unwrap();
+        fs::write(staged.path().join(".peppy/libs/peppylib/x.so"), b"so").unwrap();
+        fs::write(staged.path().join("run.sh"), b"#!/bin/sh").unwrap();
+        fs::set_permissions(
             staged.path().join("run.sh"),
-            std::fs::Permissions::from_mode(0o755),
+            fs::Permissions::from_mode(0o755),
         )
         .unwrap();
-        std::fs::create_dir_all(staged.path().join("empty")).unwrap();
+        fs::create_dir_all(staged.path().join("empty")).unwrap();
         let tmp_root = tempfile::tempdir().unwrap();
 
         let copy = copy_staged_tree(staged.path(), tmp_root.path()).unwrap();
 
         assert_eq!(
-            std::fs::read(copy.path().join(".peppy/libs/peppylib/x.so")).unwrap(),
+            fs::read(copy.path().join(".peppy/libs/peppylib/x.so")).unwrap(),
             b"so"
         );
-        let mode = std::fs::metadata(copy.path().join("run.sh"))
+        let mode = fs::metadata(copy.path().join("run.sh"))
             .unwrap()
             .permissions()
             .mode();
@@ -338,7 +334,7 @@ mod tests {
         assert!(excluded.contains(&".venv".to_string()));
 
         // Clean up the kept tempdir
-        fs::remove_dir_all(&working_dir).ok();
+        let _ = fs::remove_dir_all(&working_dir);
     }
 
     #[test]
@@ -348,7 +344,7 @@ mod tests {
         fs::create_dir_all(&peppy_dir).unwrap();
         fs::write(peppy_dir.join("git.hash"), "abc123\n").unwrap();
 
-        assert!(verify_git_hash(dir.path(), "abc123").is_ok());
+        verify_git_hash(dir.path(), "abc123").unwrap();
     }
 
     #[test]

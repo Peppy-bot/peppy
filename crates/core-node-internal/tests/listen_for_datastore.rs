@@ -26,6 +26,7 @@ use core_node_api::encoding::{
 };
 use core_node_api::{InstanceState, stop_command};
 use peppylib::core_node::transport::poll_node_stop;
+use std::assert_matches;
 use tempfile::TempDir;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -180,7 +181,7 @@ async fn store_driver_key_exclusively(
         .unwrap_or_else(|e| panic!("the exclusive store of `{writer}` is answered: {e}"))
 }
 
-fn assert_refused_naming(err: peppylib::PeppyError, started: &StartedCoreNode, owner: &str) {
+fn assert_refused_naming(err: &peppylib::PeppyError, started: &StartedCoreNode, owner: &str) {
     let message = err.to_string();
     assert!(
         message.contains(&format!("is owned by instance '{owner}'")),
@@ -262,7 +263,7 @@ async fn one_running_instance_owns_a_key_and_another_cannot_write_it() {
     let store =
         DatastoreStoreRequest::new(DRIVER_KEY, b"other".to_vec(), "text/plain").expect("valid key");
     assert_refused_naming(
-        poll_core_node_as(&started, other, &store, WAIT)
+        &poll_core_node_as(&started, other, &store, WAIT)
             .await
             .expect_err("another instance owns the key"),
         &started,
@@ -270,7 +271,7 @@ async fn one_running_instance_owns_a_key_and_another_cannot_write_it() {
     );
     let remove = DatastoreRemoveRequest::new(DRIVER_KEY).expect("valid key");
     assert_refused_naming(
-        poll_core_node_as(&started, other, &remove, WAIT)
+        &poll_core_node_as(&started, other, &remove, WAIT)
             .await
             .expect_err("another instance owns the key"),
         &started,
@@ -381,7 +382,7 @@ async fn a_refused_second_start_leaves_the_key_of_the_running_process() {
         DatastoreStoreExclusiveResponse::Stored,
         "the running process still calls with the key of its own start"
     );
-    core_node::test_support::signal_process(pid, "-9");
+    signal_process(pid, "-9");
 }
 
 /// Runs an owner under `restart` on a daemon restarting with `backoff`, has it
@@ -483,11 +484,9 @@ async fn a_restarted_owner_does_not_own_its_previous_processs_key() {
         DatastoreStoreExclusiveResponse::Stored,
         "the first process's key is gone"
     );
-    assert!(
-        matches!(
+    assert_matches!(
             store_driver_key_exclusively(&started, OWNER).await,
-            DatastoreStoreExclusiveResponse::Refused { last_modified_by, .. } if last_modified_by == OTHER
-        ),
+            DatastoreStoreExclusiveResponse::Refused { last_modified_by, .. } if last_modified_by == OTHER,
         "the restarted owner does not own the key"
     );
 }

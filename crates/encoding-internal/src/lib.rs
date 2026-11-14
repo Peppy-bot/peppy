@@ -59,7 +59,7 @@ where
         command.output_path(&capnp_output_dir);
         command.default_parent_module(vec!["capnp".to_string()]);
 
-        if let Some(parent) = capnp_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if let Some(parent) = capnp_path.parent().filter(|p| !p.is_empty()) {
             command.src_prefix(parent);
         }
 
@@ -72,7 +72,7 @@ where
         if let Some(module_name) = capnp_path
             .file_stem()
             .and_then(|stem| stem.to_str())
-            .map(|name| format!("pub mod {}_capnp;", name))
+            .map(|name| format!("pub mod {name}_capnp;"))
         {
             module_exports.push(module_name);
         }
@@ -87,7 +87,8 @@ where
     Ok(())
 }
 
-/// This struct turns a MessageFormat into a capnp proto and its associated Rust types
+/// This struct turns a `MessageFormat` into a capnp proto and its associated Rust types
+#[derive(Debug)]
 pub struct MessageFormatMapper {
     schema_name: String,
     message_format: MessageFormat,
@@ -179,6 +180,7 @@ impl MessageFormatMapper {
     }
 }
 
+#[derive(Debug)]
 pub struct CapnpSchemaArtifacts {
     message_format: MessageFormat,
     schema: String,
@@ -272,16 +274,13 @@ fn collect_struct_fields(
         ))
     })?;
 
-    let struct_reader = match node_reader
+    let node::Struct(struct_reader) = node_reader
         .which()
         .map_err(|err| Error::Encoding(format!("failed to inspect node {struct_id:#x}: {err}")))?
-    {
-        node::Struct(struct_reader) => struct_reader,
-        _ => {
-            return Err(Error::Encoding(format!(
-                "node {struct_id:#x} is not a struct"
-            )));
-        }
+    else {
+        return Err(Error::Encoding(format!(
+            "node {struct_id:#x} is not a struct"
+        )));
     };
 
     for field in struct_reader.get_fields()? {
@@ -372,8 +371,6 @@ fn collect_list_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::node::MessageFormat;
-    use proc_macro2::TokenStream;
     use std::path::PathBuf;
 
     fn canonicalize_tokens(tokens: &TokenStream) -> String {
@@ -388,7 +385,7 @@ mod tests {
         value.chars().filter(|ch| !ch.is_whitespace()).collect()
     }
 
-    fn params_to_map(params: &[FunctionParam]) -> std::collections::HashMap<String, String> {
+    fn params_to_map(params: &[FunctionParam]) -> HashMap<String, String> {
         params
             .iter()
             .map(|param| (param.ident.to_string(), canonicalize_tokens(&param.ty)))
@@ -418,7 +415,7 @@ mod tests {
         )
         .expect("valid format");
 
-        let format_mapper = MessageFormatMapper::new("test_image", msg_format.clone());
+        let format_mapper = MessageFormatMapper::new("test_image", msg_format);
         let artifacts = format_mapper
             .map_message_format_to_capnpn()
             .expect("artifacts generation succeeds");
@@ -464,7 +461,7 @@ mod tests {
             .type_mapping()
             .iter()
             .map(|(key, value)| (key.clone(), canonicalize_literal(value)))
-            .collect::<std::collections::HashMap<_, _>>();
+            .collect::<HashMap<_, _>>();
 
         assert_eq!(
             canonical_type_map.len(),
@@ -589,8 +586,7 @@ mod tests {
 
         assert!(
             schema_path.exists(),
-            "Schema file should exist at {:?}",
-            schema_path
+            "Schema file should exist at {schema_path:?}"
         );
 
         compile_capnp(&[schema_path], output_dir).expect("capnp compilation succeeds");
@@ -598,8 +594,7 @@ mod tests {
         let expected_output = output_dir.join("capnp").join("frame_capnp.rs");
         assert!(
             expected_output.exists(),
-            "Compiled output file should exist at {:?}",
-            expected_output
+            "Compiled output file should exist at {expected_output:?}"
         );
 
         let generated_content =
@@ -614,8 +609,7 @@ mod tests {
         let capnp_module_file = output_dir.join("capnp.rs");
         assert!(
             capnp_module_file.exists(),
-            "capnp.rs module file should exist at {:?}",
-            capnp_module_file
+            "capnp.rs module file should exist at {capnp_module_file:?}"
         );
 
         let capnp_module_content =
@@ -657,7 +651,7 @@ mod tests {
             .type_mapping()
             .iter()
             .map(|(key, value)| (key.clone(), canonicalize_literal(value)))
-            .collect::<std::collections::HashMap<_, _>>();
+            .collect::<HashMap<_, _>>();
 
         assert_eq!(
             canonical_type_map.get("points[].coords"),

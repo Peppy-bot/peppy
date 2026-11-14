@@ -1,7 +1,7 @@
 use crate::internal::node::DocumentKind;
 use thiserror::Error;
 
-pub type Result<T> = core::result::Result<T, Error>;
+pub(crate) type Result<T> = core::result::Result<T, Error>;
 
 /// Deserializes JSON5 content with field-path tracking and an embedded
 /// structured-error bridge, generic over the caller's error types.
@@ -56,7 +56,7 @@ where
 /// On error, prepends the JSON path (e.g. `execution.run_cmd`) to standard
 /// serde error messages. `StructuredError`s (custom validation) are propagated
 /// unchanged since they already contain descriptive messages.
-pub fn deserialize_json5_with_path<'de, T>(content: &'de str) -> Result<T>
+pub(crate) fn deserialize_json5_with_path<'de, T>(content: &'de str) -> Result<T>
 where
     T: serde::de::Deserialize<'de>,
 {
@@ -156,7 +156,7 @@ impl std::error::Error for ContractCoverageMismatch {}
 /// Tier B (raised where documents resolve): one document-backed entry whose
 /// `refine` block names things the resolved document does not admit, every
 /// problem at once. `document` names the resolved document the way the slot
-/// declares it (`contract `limb_motion:v1``, `pairing `joint_link:v1``).
+/// declares it (``contract `limb_motion:v1` ``, ``pairing `joint_link:v1` ``).
 #[derive(Debug, Clone)]
 pub struct RefinementMismatch {
     pub document: String,
@@ -621,50 +621,44 @@ impl StructuredError {
 impl From<StructuredError> for ParsingError {
     fn from(s: StructuredError) -> Self {
         match s {
-            StructuredError::MissingExecutionLanguage => ParsingError::MissingExecutionLanguage,
+            StructuredError::MissingExecutionLanguage => Self::MissingExecutionLanguage,
             StructuredError::LinkedEntryWithInlineShape {
                 section,
                 link_id,
                 name,
                 field,
-            } => ParsingError::LinkedEntryWithInlineShape {
+            } => Self::LinkedEntryWithInlineShape {
                 section,
                 link_id,
                 name,
                 field,
             },
             StructuredError::RefineWithoutLinkId { section, name } => {
-                ParsingError::RefineWithoutLinkId { section, name }
+                Self::RefineWithoutLinkId { section, name }
             }
             StructuredError::NativeEntryWithoutDescription { section, name } => {
-                ParsingError::NativeEntryWithoutDescription { section, name }
+                Self::NativeEntryWithoutDescription { section, name }
             }
-            StructuredError::EmptyInterfaceName { section } => {
-                ParsingError::EmptyInterfaceName { section }
-            }
+            StructuredError::EmptyInterfaceName { section } => Self::EmptyInterfaceName { section },
             StructuredError::OptionalOnPairingSlot { link_id, section } => {
-                ParsingError::OptionalOnPairingSlot { link_id, section }
+                Self::OptionalOnPairingSlot { link_id, section }
             }
             StructuredError::PairingSlotMissingRole { link_id } => {
-                ParsingError::PairingSlotMissingRole { link_id }
+                Self::PairingSlotMissingRole { link_id }
             }
-            StructuredError::InvalidEndpointLabel { label } => {
-                ParsingError::InvalidEndpointLabel { label }
-            }
+            StructuredError::InvalidEndpointLabel { label } => Self::InvalidEndpointLabel { label },
             StructuredError::InvalidEndpointKind { label, kind } => {
-                ParsingError::InvalidEndpointKind { label, kind }
+                Self::InvalidEndpointKind { label, kind }
             }
             StructuredError::EmptyEndpointDescription { label } => {
-                ParsingError::EmptyEndpointDescription { label }
+                Self::EmptyEndpointDescription { label }
             }
             StructuredError::SetupTimeoutOutOfRange { written } => {
-                ParsingError::SetupTimeoutOutOfRange { written }
+                Self::SetupTimeoutOutOfRange { written }
             }
-            StructuredError::PinnedDaemonTarget { link_id } => {
-                ParsingError::PinnedDaemonTarget { link_id }
-            }
+            StructuredError::PinnedDaemonTarget { link_id } => Self::PinnedDaemonTarget { link_id },
             StructuredError::DaemonTargetCardinality { link_id } => {
-                ParsingError::DaemonTargetCardinality { link_id }
+                Self::DaemonTargetCardinality { link_id }
             }
         }
     }
@@ -675,9 +669,9 @@ impl From<serde_json5::Error> for ParsingError {
         match err {
             serde_json5::Error::Message { msg, .. } => {
                 if let Ok(structured) = serde_json5::from_str::<StructuredError>(&msg) {
-                    ParsingError::from(structured)
+                    Self::from(structured)
                 } else {
-                    ParsingError::CannotParseConfig(msg)
+                    Self::CannotParseConfig(msg)
                 }
             }
         }
@@ -730,9 +724,10 @@ mod tests {
         // MissingExecutionLanguage round-trips through the structured bridge.
         let json = serde_json5::to_string(&StructuredError::MissingExecutionLanguage).unwrap();
         let err = ParsingError::from(make_err(&json));
-        if !matches!(err, ParsingError::MissingExecutionLanguage) {
-            panic!("Expected MissingExecutionLanguage, got {:?}", err);
-        }
+        assert!(
+            matches!(err, ParsingError::MissingExecutionLanguage),
+            "Expected MissingExecutionLanguage, got {err:?}"
+        );
     }
 
     #[test]
@@ -746,7 +741,7 @@ mod tests {
         if let ParsingError::CannotParseConfig(msg) = err {
             assert_eq!(msg, raw_msg);
         } else {
-            panic!("Expected CannotParseConfig, got {:?}", err);
+            panic!("Expected CannotParseConfig, got {err:?}");
         }
 
         let broken_json = "{ invalid json";
@@ -754,7 +749,7 @@ mod tests {
         if let ParsingError::CannotParseConfig(msg) = err {
             assert_eq!(msg, broken_json);
         } else {
-            panic!("Expected CannotParseConfig, got {:?}", err);
+            panic!("Expected CannotParseConfig, got {err:?}");
         }
     }
 }

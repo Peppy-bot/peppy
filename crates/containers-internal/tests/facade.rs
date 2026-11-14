@@ -119,8 +119,7 @@ fn build_and_run_container() {
         .expect("should be able to wait on run child process");
     assert!(
         status.success(),
-        "apptainer run should succeed (exit status: {})",
-        status
+        "apptainer run should succeed (exit status: {status})"
     );
 }
 
@@ -146,8 +145,7 @@ fn build_and_exec_in_container() {
         .expect("should be able to wait on exec child process");
     assert!(
         status.success(),
-        "apptainer exec should succeed (exit status: {})",
-        status
+        "apptainer exec should succeed (exit status: {status})"
     );
 }
 
@@ -453,7 +451,7 @@ fn cancel_pgid_run_is_killable_in_guest() {
 
     // The in-VM workload should come up (first run may pull layers/start slowly).
     assert!(
-        poll_until(Duration::from_secs(60), || guest_has_process(
+        poll_until(Duration::from_mins(1), || guest_has_process(
             &facade,
             SLEEP_MARKER
         )),

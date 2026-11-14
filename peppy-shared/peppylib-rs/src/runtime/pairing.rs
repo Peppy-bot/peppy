@@ -35,7 +35,7 @@ pub(crate) fn pairing_shape_panic(link_id: &str, accessor: &str, cardinality: &s
 /// Handle onto a scalar pairing slot's live state (a `one` or `zero_or_one`
 /// slot). Obtained via [`NodeRunner::peer`]; the generated per-slot modules
 /// of those slots expose `paired()` / `wait_paired()` delegating here.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PeerSlot {
     link_id: String,
     cardinality: Cardinality,
@@ -104,7 +104,7 @@ impl PeerSlot {
 /// when either side stops, so a set read now can differ from one read later.
 /// A `one_or_more` slot's floor is a plan-time guarantee that at least one
 /// peer is paired to it; the set still empties when every peer stops.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PeerSlotSet {
     watch_rx: watch::Receiver<PeerSetState>,
 }
@@ -189,6 +189,7 @@ impl FollowedSlot for PeerFollow {
 /// Yields nothing while the slot holds no pair; delivery starts from the
 /// pairing moment, never retroactively: a pairing is a live stream, not a
 /// mailbox.
+#[derive(Debug)]
 pub struct PeerSubscription {
     stream: SlotStream<PeerFollow>,
 }
@@ -199,7 +200,7 @@ impl PeerSubscription {
     /// enumerate) and the message it published. Returns `None` when the
     /// runtime is torn down (slot channel closed). Messages buffered under a
     /// peer the slot has since dropped never surface (see
-    /// [`SlotStream::next`]).
+    /// `SlotStream::next`).
     pub async fn on_next_message(&mut self) -> Option<(PeerInfo, Message)> {
         self.stream
             .next()
@@ -244,7 +245,10 @@ pub async fn subscribe_peer(
 /// publishes to. Prefer [`subscribe_peer`] in nodes; this seam exists for
 /// embedders and tests that manage peer state themselves. The stream ends when
 /// `watch_rx`'s sender drops.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments are the identity of the slot, its watch channel and the options of the stream"
+)]
 pub async fn subscribe_peer_with_watch(
     messenger: MessengerHandle,
     as_core_node: String,
@@ -282,6 +286,7 @@ pub async fn subscribe_peer_with_watch(
 /// peer. A scalar slot publishes through the [`TopicPublisher`] that
 /// [`declare_sole_peer_publisher`] declares over this publisher, to the one
 /// peer that holds its pair at the publish.
+#[derive(Debug)]
 pub struct PeerPublisher {
     messenger: MessengerHandle,
     as_core_node: String,
@@ -421,7 +426,10 @@ pub fn declare_peer_publisher(
 /// Messenger-level core of [`declare_peer_publisher`], driven by an explicit
 /// watch channel; the seam for embedders and tests that manage peer state
 /// themselves.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments are the identity of the slot, its watch channel and the options of the stream"
+)]
 pub fn declare_peer_publisher_with_watch(
     messenger: MessengerHandle,
     as_core_node: String,
@@ -449,6 +457,7 @@ pub fn declare_peer_publisher_with_watch(
 mod tests {
     use super::*;
     use futures::FutureExt;
+    use std::assert_matches;
 
     fn member(instance: &str) -> PeerMember {
         PeerMember {
@@ -557,10 +566,7 @@ mod tests {
         let (tx, rx) = watch::channel(PeerSetState::empty());
         let mut slot = PeerSlot::new("arm", Cardinality::One, rx);
         drop(tx);
-        assert!(matches!(
-            slot.wait_paired().await,
-            Err(Error::PairingSlotClosed)
-        ));
+        assert_matches!(slot.wait_paired().await, Err(Error::PairingSlotClosed));
     }
 
     /// `is_followed` answers as `desired` does for every pair the slot holds

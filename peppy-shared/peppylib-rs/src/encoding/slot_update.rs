@@ -35,7 +35,8 @@ impl SlotUpdateResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = ::capnp::message::Builder::new_default();
         {
-            let mut root = builder.init_root::<slot_update_capnp::slot_update_response::Builder>();
+            let mut root =
+                builder.init_root::<slot_update_capnp::slot_update_response::Builder<'_>>();
             root.set_stale_sequence(self.stale_sequence);
         }
         super::encode_message(&builder)
@@ -44,7 +45,7 @@ impl SlotUpdateResponse {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = super::decode_message(data)?;
         let root = reader
-            .get_root::<slot_update_capnp::slot_update_response::Reader>()
+            .get_root::<slot_update_capnp::slot_update_response::Reader<'_>>()
             .map_err(|e| Error::Deserialization(e.to_string()))?;
         Ok(Self {
             stale_sequence: root.get_stale_sequence(),

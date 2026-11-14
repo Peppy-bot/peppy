@@ -3,6 +3,10 @@ name = "json5-pretty"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 serde = "1.0"

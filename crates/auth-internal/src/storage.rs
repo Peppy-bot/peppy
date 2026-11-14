@@ -179,8 +179,7 @@ pub fn save(path: &Path, creds: &Credentials) -> Result<()> {
 pub fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 #[cfg(test)]
@@ -259,9 +258,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("conf").join("credentials.json5");
         std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
-        std::fs::write(&path, r#"{ session: null }"#).expect("write the file");
+        std::fs::write(&path, r"{ session: null }").expect("write the file");
 
-        assert!(load(&path).is_err());
+        load(&path).unwrap_err();
     }
 
     #[cfg(unix)]

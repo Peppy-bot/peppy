@@ -7,8 +7,8 @@
 //!
 //! Pairing state is daemon-authoritative: stacks are daemon-scoped, so the
 //! only legitimate caller is the node's own daemon, whose identity the node
-//! knows as its bound core_node. Identity stamps are cooperative on the
-//! fabric, so this core_node check guards only against misdirected or
+//! knows as its bound `core_node`. Identity stamps are cooperative on the
+//! fabric, so this `core_node` check guards only against misdirected or
 //! misbehaving callers; transport-level access control remains the security
 //! boundary.
 
@@ -20,7 +20,7 @@ use crate::{MessengerHandle, PeppyResult};
 use config::node::Cardinality;
 
 /// Shared map of one watch channel per declared pairing slot, keyed by the
-/// node's own slot link_id.
+/// node's own slot `link_id`.
 pub(crate) type PairingSlotChannels = SlotChannels<PeerSetState>;
 
 impl SlotUpdate for PeerUpdateRequest {
@@ -30,7 +30,7 @@ impl SlotUpdate for PeerUpdateRequest {
     const SLOT_NOUN: &'static str = "pairing slot";
 
     fn decode_request(payload: &[u8]) -> PeppyResult<Self> {
-        PeerUpdateRequest::decode(payload)
+        Self::decode(payload)
     }
 
     fn link_id(&self) -> &str {

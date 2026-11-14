@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, reason = "each test binary uses a part of these helpers")]
 
 use config::consts::{
     NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION,
@@ -26,14 +26,14 @@ use tokio::time::sleep;
 ///
 /// Uses `PeppyDirs::default()` since generator tests need access to the real
 /// shared cache directories for deploying vendored crates and Python packages.
-pub fn test_peppy_dirs() -> PeppyDirs {
+pub(crate) fn test_peppy_dirs() -> PeppyDirs {
     PeppyDirs::default()
 }
 
 /// Runs [`generate_peppygen_lib`] the way the tests run it: git hash
 /// `test-hash`, the shared [`test_peppy_dirs`], the default (symlink) deploy
 /// mode, the node's own `peppy.json5` and the source node tree.
-pub fn generate_test_peppygen_lib(
+pub(crate) fn generate_test_peppygen_lib(
     language: PeppygenLanguage,
     node_dir: &Path,
     interfaces: Vec<generator::DeploymentInterface>,
@@ -54,7 +54,7 @@ pub fn generate_test_peppygen_lib(
 /// reaches the generator as an empty `MessageFormat`: the daemon defaults the
 /// absent side rather than passing an `Option`. A parsed format is never
 /// empty, so the empty case is built the way the daemon builds it.
-pub fn empty_message_format() -> MessageFormat {
+pub(crate) fn empty_message_format() -> MessageFormat {
     MessageFormat::default()
 }
 
@@ -62,7 +62,11 @@ pub fn empty_message_format() -> MessageFormat {
 /// for tests where cardinality is irrelevant to what is being verified.
 /// Cardinality-specific tests spell out `DependencyContext::native` with
 /// an explicit fourth argument instead.
-pub fn native_dep(node_name: &str, node_tag: &str, link_id: &str) -> generator::DependencyContext {
+pub(crate) fn native_dep(
+    node_name: &str,
+    node_tag: &str,
+    link_id: &str,
+) -> generator::DependencyContext {
     generator::DependencyContext::native(
         node_name,
         node_tag,
@@ -75,7 +79,7 @@ pub fn native_dep(node_name: &str, node_tag: &str, link_id: &str) -> generator::
 /// manifest's default `one` cardinality, so the generated modules address
 /// their producer through `SenderTarget::contract`. The contract declares no
 /// failure kinds of its own.
-pub fn contract_dep(
+pub(crate) fn contract_dep(
     contract_name: &str,
     contract_tag: &str,
     link_id: &str,
@@ -85,7 +89,7 @@ pub fn contract_dep(
 
 /// [`contract_dep`] for a contract whose `failure_kinds` block declares
 /// `kinds`, each a name and its meaning, which `members` each list.
-pub fn contract_dep_with_kinds(
+pub(crate) fn contract_dep_with_kinds(
     contract_name: &str,
     contract_tag: &str,
     link_id: &str,
@@ -104,7 +108,7 @@ pub fn contract_dep_with_kinds(
 /// The kinds of a contract whose `failure_kinds` block declares `kinds`,
 /// each a name and its meaning, in that order, and whose `members` each list
 /// all of them.
-pub fn failure_kinds(
+pub(crate) fn failure_kinds(
     kinds: &[(&str, &str)],
     members: &[(MemberSection, &str)],
 ) -> config::failure_kind::ContractKinds {
@@ -127,27 +131,27 @@ pub fn failure_kinds(
     .expect("each member lists declared kinds")
 }
 
-pub const TEST_NODE_TAG: &str = "v1";
+pub(crate) const TEST_NODE_TAG: &str = "v1";
 
 /// The core node every node instance of the communication tests runs on.
-pub const TEST_CORE_NODE: &str = "test_core";
+pub(crate) const TEST_CORE_NODE: &str = "test_core";
 /// The per-boot instance id of the daemon that the test runtime configs name.
 /// No daemon runs in these tests, so nothing beats under it.
-pub const TEST_CORE_NODE_INSTANCE_ID: &str = "test-core-boot";
+pub(crate) const TEST_CORE_NODE_INSTANCE_ID: &str = "test-core-boot";
 
 /// The instance id the communication tests probe and shut nodes down as. No
 /// node runs under it: it names the test harness on the wire.
-pub const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
+pub(crate) const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 
 /// Re-exported so the communication test files can name the messaging topology
 /// for their `#[case]` parameterization without reaching into the internal path.
-pub use daemon_config::peppy_config::LocalNodesTopology;
+pub(crate) use daemon_config::peppy_config::LocalNodesTopology;
 
 /// Applies a messaging topology to a node's runtime config before it is written
 /// and handed to a spawned node. This is the single seam the dual-topology
 /// communication tests use to run the same body under both the peer (gossip on)
 /// and router (gossip off) topology without duplicating the body.
-pub fn apply_topology(
+pub(crate) fn apply_topology(
     mut config: config::runtime::RuntimeConfig,
     topology: LocalNodesTopology,
 ) -> config::runtime::RuntimeConfig {
@@ -156,15 +160,15 @@ pub fn apply_topology(
 }
 
 /// The `execution` block body of every Rust consumer stub.
-pub const RUST_STUB_EXECUTION: &str = r#"language: "rust",
+pub(crate) const RUST_STUB_EXECUTION: &str = r#"language: "rust",
     run_cmd: ["./target/release/generated_node"]"#;
 
 /// Consumer-side variant of [`STUB_NODE_CONFIG`]: declares one
 /// `depends_on.nodes` slot so the runtime resolves the slot's bound
 /// producers from the boot config's `slot_bindings` (an undeclared slot
 /// would stay silent). `link_id` must match the `DependencyContext`
-/// link_id the test's generator calls use.
-pub fn consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -> String {
+/// `link_id` the test's generator calls use.
+pub(crate) fn consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -> String {
     consumer_stub_node_config_with_execution(
         "nodes",
         dep_name,
@@ -178,7 +182,7 @@ pub fn consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -
 /// Variant of [`consumer_stub_node_config`] whose slot declares an
 /// explicit `cardinality`, so the runtime validates the bound set against
 /// that cardinality instead of the default exactly-one rule.
-pub fn multi_consumer_stub_node_config(
+pub(crate) fn multi_consumer_stub_node_config(
     dep_name: &str,
     dep_tag: &str,
     link_id: &str,
@@ -197,7 +201,7 @@ pub fn multi_consumer_stub_node_config(
 /// Contract-slot variant of [`multi_consumer_stub_node_config`]: the slot is
 /// declared under `depends_on.contracts`, so the generated modules address
 /// their producers through `SenderTarget::contract`.
-pub fn contract_consumer_stub_node_config(
+pub(crate) fn contract_consumer_stub_node_config(
     contract_name: &str,
     contract_tag: &str,
     link_id: &str,
@@ -231,9 +235,8 @@ fn consumer_stub_node_config_with_execution(
     cardinality: Option<&str>,
     execution: &str,
 ) -> String {
-    let cardinality_field = cardinality
-        .map(|cardinality| format!(r#", cardinality: "{cardinality}""#))
-        .unwrap_or_default();
+    let cardinality_field =
+        cardinality.map_or_default(|cardinality| format!(r#", cardinality: "{cardinality}""#));
     format!(
         r#"{{
   peppy_schema: "node/v1",
@@ -256,7 +259,7 @@ fn consumer_stub_node_config_with_execution(
 /// Binds `link_id` to a single producer on the runtime config, exactly
 /// what the launcher's binding validator materializes for
 /// `--link link_id@instance` on a `cardinality: "one"` slot.
-pub fn bind_slot(
+pub(crate) fn bind_slot(
     mut config: config::runtime::RuntimeConfig,
     link_id: &str,
     producer_core_node: &str,
@@ -276,7 +279,7 @@ pub fn bind_slot(
 /// exactly what the binding validator materializes for a multi-cardinality
 /// slot bound to `producer_instance_ids` (in declaration order, possibly
 /// empty for a `zero_or_more` slot).
-pub fn bind_slot_many(
+pub(crate) fn bind_slot_many(
     mut config: config::runtime::RuntimeConfig,
     link_id: &str,
     producer_core_node: &str,
@@ -296,17 +299,17 @@ pub fn bind_slot_many(
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
 /// invalid names; tests use known-good values only.
-pub fn test_node_target(name: &str) -> SenderTarget {
+pub(crate) fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
 }
 
 /// Builds a contract-shaped [`SenderTarget`] with the standard test tag, the
 /// shape both ends of a contract-backed interface address on the wire.
-pub fn test_contract_target(name: &str) -> SenderTarget {
+pub(crate) fn test_contract_target(name: &str) -> SenderTarget {
     SenderTarget::contract(name, TEST_NODE_TAG).expect("test contract target")
 }
 
-pub const STUB_NODE_CONFIG: &str = r#"{
+pub(crate) const STUB_NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
   manifest: {
     name: "generated_node",
@@ -320,7 +323,7 @@ pub const STUB_NODE_CONFIG: &str = r#"{
 }
 "#;
 
-pub fn prepare_directories(
+pub(crate) fn prepare_directories(
     temp_dir: &TempDir,
 ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     let user_node = temp_dir.path().join("user_node");
@@ -332,7 +335,7 @@ pub fn prepare_directories(
     (output_dir, user_node, peppy_node_config)
 }
 
-pub fn init_test_env<G: Default>(
+pub(crate) fn init_test_env<G: Default>(
     temp_dir: &TempDir,
     node_config: &str,
 ) -> (
@@ -346,7 +349,7 @@ pub fn init_test_env<G: Default>(
     (G::default(), output_dir, user_node, peppy_node_config_path)
 }
 
-pub fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::PathBuf {
+pub(crate) fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::PathBuf {
     let source = user_node.join(NODE_CONFIG_FILE);
     let destination = output_dir.join(NODE_CONFIG_FILE);
     fs::copy(&source, &destination).unwrap();
@@ -358,7 +361,7 @@ pub fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::
 /// `register_interfaces` add the node's interfaces, builds the library, and
 /// writes the codegen fingerprint that the runtime checks at boot. Returns the
 /// user node directory.
-pub fn generate_node_project<G: generator::LanguageGenerator + Default>(
+pub(crate) fn generate_node_project<G: generator::LanguageGenerator + Default>(
     temp_dir: &TempDir,
     node_config: &str,
     register_interfaces: impl FnOnce(&mut G),
@@ -385,7 +388,7 @@ pub fn generate_node_project<G: generator::LanguageGenerator + Default>(
 /// The runtime config of one test node instance: `node_name` at the test tag,
 /// deployed as `instance_id` on [`TEST_CORE_NODE`] and connected to the test
 /// router. Callers bind its slots and apply the topology before saving it.
-pub fn test_node_runtime_config(
+pub(crate) fn test_node_runtime_config(
     router_host: &str,
     router_port: u16,
     node_name: &str,
@@ -405,7 +408,7 @@ pub fn test_node_runtime_config(
 
 /// Saves `config` as `peppy_runtime.json5` in `dir` and returns its path, the
 /// value a spawned node reads from `RUNTIME_CONFIG_VAR_NAME`.
-pub fn save_runtime_config(config: &config::runtime::RuntimeConfig, dir: &Path) -> String {
+pub(crate) fn save_runtime_config(config: &config::runtime::RuntimeConfig, dir: &Path) -> String {
     let path = dir.join("peppy_runtime.json5");
     config.save_json5_launch_config(&path).unwrap();
     path.to_str().unwrap().to_owned()
@@ -425,7 +428,7 @@ fn crate_identity_hash(crate_dir: &Path) -> u64 {
     hasher.finish()
 }
 
-pub fn test_wrapper_crate_name(crate_dir: &Path) -> String {
+pub(crate) fn test_wrapper_crate_name(crate_dir: &Path) -> String {
     format!("user_node_{:016x}", crate_identity_hash(crate_dir))
 }
 
@@ -434,7 +437,7 @@ pub fn test_wrapper_crate_name(crate_dir: &Path) -> String {
 /// shared test target dir link one test's cached `peppygen` rlib into another
 /// test's `user_node`. A unique name per crate dir keeps each test's peppygen a
 /// distinct cargo unit. See [`rename_peppygen_package`] and [`compile_project`].
-pub fn peppygen_crate_name(crate_dir: &Path) -> String {
+pub(crate) fn peppygen_crate_name(crate_dir: &Path) -> String {
     format!("peppygen_{:016x}", crate_identity_hash(crate_dir))
 }
 
@@ -443,7 +446,7 @@ pub fn peppygen_crate_name(crate_dir: &Path) -> String {
 /// (written by [`init_cargo_user_node`]) aliases the dependency back to
 /// `peppygen` via `package = "..."`, so generated `use peppygen::…` code is
 /// unaffected. Idempotent. No-op if the peppygen crate was not generated.
-pub fn rename_peppygen_package(user_node_dir: &Path) {
+pub(crate) fn rename_peppygen_package(user_node_dir: &Path) {
     let unique = peppygen_crate_name(user_node_dir);
     let peppygen_cargo = user_node_dir.join(PEPPYGEN_OUTPUT_PATH).join("Cargo.toml");
     let Ok(contents) = fs::read_to_string(&peppygen_cargo) else {
@@ -465,7 +468,7 @@ pub fn rename_peppygen_package(user_node_dir: &Path) {
 
 /// The node-manifest dependency line for this crate dir's per-test-unique
 /// peppygen package, aliased back to `peppygen`.
-pub fn peppygen_dependency_line(crate_dir: &Path) -> String {
+pub(crate) fn peppygen_dependency_line(crate_dir: &Path) -> String {
     format!(
         "peppygen = {{ package = \"{}\", path = \"{}\" }}",
         peppygen_crate_name(crate_dir),
@@ -476,7 +479,7 @@ pub fn peppygen_dependency_line(crate_dir: &Path) -> String {
 /// The dev-dependency section enabling the generated test surfaces
 /// (`peppygen::mock` / `peppygen::fixtures`) the way `peppy node sync`
 /// writes it into real node manifests.
-pub fn peppygen_dev_dependency_line(crate_dir: &Path) -> String {
+pub(crate) fn peppygen_dev_dependency_line(crate_dir: &Path) -> String {
     format!(
         "[dev-dependencies]\npeppygen = {{ package = \"{}\", path = \"{}\", features = [\"testing\"] }}",
         peppygen_crate_name(crate_dir),
@@ -489,13 +492,13 @@ pub fn peppygen_dev_dependency_line(crate_dir: &Path) -> String {
 /// target dir. Forwards the zenohd binary this test toolchain resolved: the
 /// node's vendored pmi is built without `build_zenoh`, so inside the test
 /// environment (no `peppy` on PATH) it has nothing else to resolve.
-pub fn run_cargo_test(dir: impl AsRef<Path>) {
+pub(crate) fn run_cargo_test(dir: impl AsRef<Path>) {
     run_cargo_test_with(dir, |_| {});
 }
 
 /// [`run_cargo_test`], with `adjust` applied to the command last, such as to
 /// set or remove a variable of the environment of the tests.
-pub fn run_cargo_test_with(dir: impl AsRef<Path>, adjust: impl FnOnce(&mut Command)) {
+pub(crate) fn run_cargo_test_with(dir: impl AsRef<Path>, adjust: impl FnOnce(&mut Command)) {
     let dir = dir.as_ref();
     let target_dir = stable_test_target_dir();
     fs::create_dir_all(&target_dir).expect("failed to create stable test target directory");
@@ -524,11 +527,11 @@ pub fn run_cargo_test_with(dir: impl AsRef<Path>, adjust: impl FnOnce(&mut Comma
     );
 }
 
-pub fn executable_filename(name: &str) -> String {
+pub(crate) fn executable_filename(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
-pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
+pub(crate) fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
     let crate_dir = to_dir.as_ref();
     fs::create_dir_all(crate_dir).expect("failed to create user node directory");
     let src_dir = crate_dir.join("src");
@@ -573,7 +576,7 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread", "time"] }}
 /// `dir`, with piped stdout and stderr. The binary runs directly rather than
 /// through `cargo run`, which would contend for cargo's global package-cache
 /// lock.
-pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std::process::Child {
+pub(crate) fn spawn_cargo_run(dir: &Path, env_vars: &[(&str, &str)]) -> std::process::Child {
     let binary_path = dir
         .join("target")
         .join("debug")
@@ -604,7 +607,7 @@ pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std:
 /// wait for a specific line to appear before sending shutdown) without
 /// blocking on the pipe. Helpers that take a plain
 /// `&mut std::process::Child` use the exposed `child` field.
-pub struct CapturedChild {
+pub(crate) struct CapturedChild {
     pub child: std::process::Child,
     stdout: Arc<Mutex<Vec<u8>>>,
     stderr: Arc<Mutex<Vec<u8>>>,
@@ -613,17 +616,17 @@ pub struct CapturedChild {
 }
 
 impl CapturedChild {
-    pub fn new(mut child: std::process::Child) -> Self {
+    pub(crate) fn new(mut child: std::process::Child) -> Self {
         let stdout = Arc::new(Mutex::new(Vec::new()));
         let stderr = Arc::new(Mutex::new(Vec::new()));
 
         let stdout_drainer = child.stdout.take().map(|pipe| {
             let buf = Arc::clone(&stdout);
-            thread::spawn(move || drain_pipe(pipe, buf))
+            thread::spawn(move || drain_pipe(pipe, &buf))
         });
         let stderr_drainer = child.stderr.take().map(|pipe| {
             let buf = Arc::clone(&stderr);
-            thread::spawn(move || drain_pipe(pipe, buf))
+            thread::spawn(move || drain_pipe(pipe, &buf))
         });
 
         Self {
@@ -653,11 +656,11 @@ impl CapturedChild {
 
     /// Blocks until captured stdout contains `pattern` (as a substring).
     /// Panics if the child exits first or if `timeout` elapses.
-    pub fn wait_for_stdout_contains(
+    pub(crate) fn wait_for_stdout_contains(
         &mut self,
         pattern: &str,
         timeout: Duration,
-        dir: &std::path::Path,
+        dir: &Path,
     ) {
         let start = Instant::now();
         let needle = pattern.as_bytes();
@@ -706,11 +709,7 @@ impl CapturedChild {
     /// Mirrors [`wait_for_child`] but pulls from the background buffers
     /// instead of reading the pipes directly (the drainer threads own
     /// them).
-    pub fn wait(
-        mut self,
-        timeout: Option<Duration>,
-        dir: &std::path::Path,
-    ) -> std::process::Output {
+    pub(crate) fn wait(mut self, timeout: Option<Duration>, dir: &Path) -> std::process::Output {
         let start = Instant::now();
         loop {
             if let Some(limit) = timeout
@@ -755,7 +754,7 @@ impl CapturedChild {
     }
 }
 
-fn drain_pipe<R: Read + Send + 'static>(mut pipe: R, buf: Arc<Mutex<Vec<u8>>>) {
+fn drain_pipe<R: Read + Send + 'static>(mut pipe: R, buf: &Arc<Mutex<Vec<u8>>>) {
     let mut chunk = [0u8; 4096];
     while let Ok(n) = pipe.read(&mut chunk) {
         if n == 0 {
@@ -781,7 +780,7 @@ fn lossy_snapshot(buf: &Arc<Mutex<Vec<u8>>>) -> String {
 
 /// What the consumer and the exposer of a two-node communication test
 /// printed, read once both exited successfully.
-pub struct ConsumerExposerOutput {
+pub(crate) struct ConsumerExposerOutput {
     pub consumer_stdout: String,
     pub consumer_stderr: String,
     pub exposer_stdout: String,
@@ -790,7 +789,7 @@ pub struct ConsumerExposerOutput {
 
 /// A generated node project ready to compile and spawn: its directory and
 /// its saved runtime config.
-pub struct NodeProject {
+pub(crate) struct NodeProject {
     /// Keeps the project directory on disk while the node runs.
     _temp_dir: TempDir,
     pub dir: std::path::PathBuf,
@@ -802,7 +801,7 @@ pub struct NodeProject {
 impl NodeProject {
     /// `dir` is the project directory inside `temp_dir`, and `runtime_config`
     /// the path [`save_runtime_config`] returned.
-    pub fn new(temp_dir: TempDir, dir: std::path::PathBuf, runtime_config: String) -> Self {
+    pub(crate) fn new(temp_dir: TempDir, dir: std::path::PathBuf, runtime_config: String) -> Self {
         Self {
             _temp_dir: temp_dir,
             dir,
@@ -814,7 +813,10 @@ impl NodeProject {
 /// Asserts that the process behind `output` exited with success and returns
 /// its stdout and stderr as text for the caller's content checks. `label`
 /// names the process in the failure message.
-pub fn assert_exited_successfully(label: &str, output: &std::process::Output) -> (String, String) {
+pub(crate) fn assert_exited_successfully(
+    label: &str,
+    output: &std::process::Output,
+) -> (String, String) {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
@@ -827,10 +829,10 @@ pub fn assert_exited_successfully(label: &str, output: &std::process::Output) ->
     (stdout, stderr)
 }
 
-pub fn wait_for_child(
+pub(crate) fn wait_for_child(
     child: &mut std::process::Child,
     timeout: Option<Duration>,
-    dir: &std::path::Path,
+    dir: &Path,
 ) -> std::process::Output {
     let start = Instant::now();
     loop {
@@ -921,9 +923,9 @@ fn cargo_build(dir: &Path) -> std::process::Output {
 
 /// Builds the generated crate in `dir`, which must fail to compile, and
 /// returns what the compiler wrote to stderr.
-pub fn compile_project_expecting_failure(dir: impl AsRef<Path>) -> String {
+pub(crate) fn compile_project_expecting_failure(dir: impl AsRef<Path>) -> String {
     let cargo_output = cargo_build(dir.as_ref());
-    let stderr = String::from_utf8_lossy(&cargo_output.stderr).into_owned();
+    let stderr = String::from_utf8_lossy_owned(cargo_output.stderr);
     assert!(
         !cargo_output.status.success(),
         "cargo build succeeded for a crate that must not compile\nstderr:\n{stderr}"
@@ -931,7 +933,7 @@ pub fn compile_project_expecting_failure(dir: impl AsRef<Path>) -> String {
     stderr
 }
 
-pub fn compile_project(dir: impl AsRef<Path>) {
+pub(crate) fn compile_project(dir: impl AsRef<Path>) {
     let dir = dir.as_ref();
     let target_dir = stable_test_target_dir();
     let cargo_output = cargo_build(dir);
@@ -964,17 +966,15 @@ pub fn compile_project(dir: impl AsRef<Path>) {
     .expect("failed to copy compiled binary to local target dir");
 }
 
-pub fn insert_dependency_line(contents: &str, dependency_line: &str) -> String {
+pub(crate) fn insert_dependency_line(contents: &str, dependency_line: &str) -> String {
     let header = "[dependencies]";
     if let Some(section_start) = contents.find(header) {
         let after_header = contents[section_start..]
             .find('\n')
-            .map(|offset| section_start + offset + 1)
-            .unwrap_or(contents.len());
+            .map_or(contents.len(), |offset| section_start + offset + 1);
         let insert_pos = contents[after_header..]
             .find("\n[")
-            .map(|offset| after_header + offset)
-            .unwrap_or(contents.len());
+            .map_or(contents.len(), |offset| after_header + offset);
 
         let mut updated = contents.to_string();
         if insert_pos > 0 && !updated[..insert_pos].ends_with('\n') {
@@ -993,7 +993,7 @@ pub fn insert_dependency_line(contents: &str, dependency_line: &str) -> String {
     }
 }
 
-pub fn run_generate_peppygen_lib_test(
+pub(crate) fn run_generate_peppygen_lib_test(
     language: PeppygenLanguage,
     json_config_content: &str,
 ) -> (TempDir, std::path::PathBuf) {
@@ -1002,7 +1002,7 @@ pub fn run_generate_peppygen_lib_test(
     let node_dir = temp_dir.path();
 
     // Write the peppy.json5 config
-    let config_path = node_dir.join(config::consts::NODE_CONFIG_FILE);
+    let config_path = node_dir.join(NODE_CONFIG_FILE);
     fs::write(&config_path, json_config_content).expect("failed to write peppy.json5");
 
     // Generate the library
@@ -1041,7 +1041,7 @@ pub fn run_generate_peppygen_lib_test(
 /// always knows the generated project's core node (`target_core_node`),
 /// so reachability probes for a known instance carry the full
 /// `(core_node, instance_id)` wire address.
-pub struct WaitContext<'a> {
+pub(crate) struct WaitContext<'a> {
     pub messenger: &'a MessengerHandle,
     pub bound_core_node: &'a str,
     pub caller_instance_id: &'a str,
@@ -1051,7 +1051,7 @@ pub struct WaitContext<'a> {
 /// The wait context of the communication tests: the harness speaks from
 /// [`TEST_CORE_NODE`] as [`SHUTDOWN_SENDER_INSTANCE_ID`], and every node
 /// instance it waits for runs on [`TEST_CORE_NODE`].
-pub fn test_wait_context(messenger: &MessengerHandle) -> WaitContext<'_> {
+pub(crate) fn test_wait_context(messenger: &MessengerHandle) -> WaitContext<'_> {
     WaitContext {
         messenger,
         bound_core_node: TEST_CORE_NODE,
@@ -1067,29 +1067,28 @@ pub fn test_wait_context(messenger: &MessengerHandle) -> WaitContext<'_> {
 /// instead of stalling the whole test binary. Each helper accepts an
 /// explicit `timeout` so call sites can opt into something larger or
 /// smaller; pass [`DEFAULT_WAIT_TIMEOUT`] when no value is meaningful.
-pub const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub async fn wait_for_service_reachable_or_exit(
+pub(crate) async fn wait_for_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
     to_node_name: &str,
     to_service_name: &str,
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
-    dir: &std::path::Path,
+    dir: &Path,
     timeout: Duration,
 ) {
     let start = Instant::now();
     loop {
-        if start.elapsed() > timeout {
-            panic!(
-                "timed out after {:?} waiting for service `{}` (node={}, instance={:?}) to become reachable for project at {}",
-                timeout,
-                to_service_name,
-                to_node_name,
-                target_instance_id,
-                dir.display(),
-            );
-        }
+        assert!(
+            start.elapsed() <= timeout,
+            "timed out after {:?} waiting for service `{}` (node={}, instance={:?}) to become reachable for project at {}",
+            timeout,
+            to_service_name,
+            to_node_name,
+            target_instance_id,
+            dir.display(),
+        );
 
         if let Some(status) = child
             .try_wait()
@@ -1140,13 +1139,13 @@ pub async fn wait_for_service_reachable_or_exit(
     }
 }
 
-pub async fn wait_for_action_service_reachable_or_exit(
+pub(crate) async fn wait_for_action_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
     to_node_name: &str,
     to_action_name: &str,
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
-    dir: &std::path::Path,
+    dir: &Path,
     timeout: Duration,
 ) {
     wait_for_action_reachable_via_target_or_exit(
@@ -1165,27 +1164,26 @@ pub async fn wait_for_action_service_reachable_or_exit(
 /// contract-exposed action is addressed by a contract [`SenderTarget`], so
 /// the contract-slot communication tests probe with the same target shape
 /// their generated consumers fire at.
-pub async fn wait_for_action_reachable_via_target_or_exit(
+pub(crate) async fn wait_for_action_reachable_via_target_or_exit(
     ctx: &WaitContext<'_>,
     to_target: SenderTarget,
     to_action_name: &str,
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
-    dir: &std::path::Path,
+    dir: &Path,
     timeout: Duration,
 ) {
     let start = Instant::now();
     loop {
-        if start.elapsed() > timeout {
-            panic!(
-                "timed out after {:?} waiting for action `{}` (target={:?}, instance={:?}) to become reachable for project at {}",
-                timeout,
-                to_action_name,
-                to_target,
-                target_instance_id,
-                dir.display(),
-            );
-        }
+        assert!(
+            start.elapsed() <= timeout,
+            "timed out after {:?} waiting for action `{}` (target={:?}, instance={:?}) to become reachable for project at {}",
+            timeout,
+            to_action_name,
+            to_target,
+            target_instance_id,
+            dir.display(),
+        );
 
         if let Some(status) = child
             .try_wait()
@@ -1234,12 +1232,12 @@ pub async fn wait_for_action_reachable_via_target_or_exit(
     }
 }
 
-pub async fn wait_for_health_service_reachable_or_exit(
+pub(crate) async fn wait_for_health_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
     to_node_name: &str,
     target_instance_id: &str,
     child: &mut std::process::Child,
-    dir: &std::path::Path,
+    dir: &Path,
     timeout: Duration,
 ) {
     wait_for_service_reachable_or_exit(
@@ -1254,7 +1252,7 @@ pub async fn wait_for_health_service_reachable_or_exit(
     .await;
 }
 
-pub async fn send_shutdown(
+pub(crate) async fn send_shutdown(
     messenger: &MessengerHandle,
     bound_core_node: &str,
     sender_instance_id: &str,
@@ -1275,8 +1273,7 @@ pub async fn send_shutdown(
     .await
     .unwrap_or_else(|err| {
         panic!(
-            "failed to send shutdown to node={} instance={} (project core node={}): {}",
-            to_node_name, target_instance_id, bound_core_node, err
+            "failed to send shutdown to node={to_node_name} instance={target_instance_id} (project core node={bound_core_node}): {err}"
         )
     });
 }
@@ -1284,7 +1281,11 @@ pub async fn send_shutdown(
 /// Shuts down the `instance_id` instance of `node_name` on [`TEST_CORE_NODE`]
 /// with the harness identity of [`test_wait_context`]. Panics when the
 /// request does not reach the instance within 5 seconds.
-pub async fn shut_down_test_node(messenger: &MessengerHandle, node_name: &str, instance_id: &str) {
+pub(crate) async fn shut_down_test_node(
+    messenger: &MessengerHandle,
+    node_name: &str,
+    instance_id: &str,
+) {
     send_shutdown(
         messenger,
         TEST_CORE_NODE,
@@ -1299,7 +1300,7 @@ pub async fn shut_down_test_node(messenger: &MessengerHandle, node_name: &str, i
 
 /// Like `send_shutdown` but doesn't panic if the service is unreachable
 /// (e.g., the process has already exited).
-pub async fn try_send_shutdown(
+pub(crate) async fn try_send_shutdown(
     messenger: &MessengerHandle,
     bound_core_node: &str,
     sender_instance_id: &str,
@@ -1352,7 +1353,7 @@ async fn poll_shutdown(
 // Python-specific helpers
 // ---------------------------------------------------------------------------
 
-pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
+pub(crate) const STUB_PYTHON_NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
   manifest: { name: "generated_node",
     tag: "v1", description: ["A test node."] },
@@ -1363,11 +1364,15 @@ pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
 "#;
 
 /// The `execution` block body of every Python consumer stub.
-pub const PYTHON_STUB_EXECUTION: &str = r#"language: "python",
+pub(crate) const PYTHON_STUB_EXECUTION: &str = r#"language: "python",
     run_cmd: ["uv", "run", "python", "main.py"]"#;
 
 /// Python-toolchain variant of [`consumer_stub_node_config`].
-pub fn python_consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -> String {
+pub(crate) fn python_consumer_stub_node_config(
+    dep_name: &str,
+    dep_tag: &str,
+    link_id: &str,
+) -> String {
     consumer_stub_node_config_with_execution(
         "nodes",
         dep_name,
@@ -1383,7 +1388,7 @@ pub fn python_consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: 
 /// Creates a minimal `pyproject.toml` that depends on the generated `peppygen`
 /// and `peppylib` packages (located at [`PEPPYGEN_OUTPUT_PATH`] and
 /// [`PEPPYLIB_OUTPUT_PATH`] relative to the project root).
-pub fn init_python_user_node(to_dir: impl AsRef<Path>) {
+pub(crate) fn init_python_user_node(to_dir: impl AsRef<Path>) {
     let project_dir = to_dir.as_ref();
     fs::create_dir_all(project_dir).expect("failed to create Python user node directory");
 
@@ -1408,7 +1413,7 @@ peppylib = {{ path = "{PEPPYLIB_OUTPUT_PATH}" }}
 static UV_CACHE_FILLED: OnceLock<()> = OnceLock::new();
 
 /// Runs `uv <args>` in `dir` and returns its output.
-pub fn run_uv(dir: impl AsRef<Path>, args: &[&str]) -> std::process::Output {
+pub(crate) fn run_uv(dir: impl AsRef<Path>, args: &[&str]) -> std::process::Output {
     Command::new("uv")
         .args(args)
         .current_dir(dir.as_ref())
@@ -1438,7 +1443,7 @@ pub fn run_uv(dir: impl AsRef<Path>, args: &[&str]) -> std::process::Output {
 ///
 /// The gate is per process, which is the whole race: cargo runs test binaries
 /// one at a time, so the parallel syncs all come from this binary's threads.
-pub fn init_python_project_venv(dir: impl AsRef<Path>) {
+pub(crate) fn init_python_project_venv(dir: impl AsRef<Path>) {
     let dir = dir.as_ref();
     let mut filled_the_cache = false;
 
@@ -1469,7 +1474,7 @@ fn sync_python_project(dir: &Path) {
 /// into its venv and runs `script` with the venv's interpreter, failing with
 /// both output streams when the script fails. `what` names the check in that
 /// failure.
-pub fn run_python_check(project_dir: &Path, script: &str, what: &str) {
+pub(crate) fn run_python_check(project_dir: &Path, script: &str, what: &str) {
     init_python_user_node(project_dir);
     init_python_project_venv(project_dir);
     let output = Command::new(project_dir.join(".venv/bin/python"))
@@ -1486,7 +1491,7 @@ pub fn run_python_check(project_dir: &Path, script: &str, what: &str) {
 }
 
 /// Spawns `uv run python main.py` inside the given project directory.
-pub fn spawn_python_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std::process::Child {
+pub(crate) fn spawn_python_run(dir: &Path, env_vars: &[(&str, &str)]) -> std::process::Child {
     let mut command = Command::new("uv");
     command
         .args(["run", "python", "main.py"])
@@ -1511,9 +1516,9 @@ pub fn spawn_python_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std
 /// implementing arm's to pin. Shared by the Rust and Python `refine`
 /// wire-compatibility capstones, which are twins of each other: one member,
 /// so the two cannot drift apart and quietly stop testing the same thing.
-pub const JOINTS_CONTRACT_NAME: &str = "limb_motion";
+pub(crate) const JOINTS_CONTRACT_NAME: &str = "limb_motion";
 
-pub const JOINTS_CONTRACT_ACTION: &str = r#"
+pub(crate) const JOINTS_CONTRACT_ACTION: &str = r#"
 {
   name: "move_arm_joints",
   description: "A test member.",
@@ -1536,14 +1541,14 @@ pub const JOINTS_CONTRACT_ACTION: &str = r#"
 "#;
 
 /// The three-joint implementer's `refine` block for that member.
-pub const JOINTS_REFINEMENT: &str = r#"
+pub(crate) const JOINTS_REFINEMENT: &str = r"
 {
   goal_service: { request_message_format: { joint_positions: { $length: 3 } } },
   result_service: { response_message_format: { final_joint_positions: { $length: 3 } } }
 }
-"#;
+";
 
-pub const EXPOSED_ACTION_EXAMPLE: &str = r#"
+pub(crate) const EXPOSED_ACTION_EXAMPLE: &str = r#"
 {
   name: "move_arm",
   description: "A test member.",
@@ -1587,7 +1592,7 @@ pub const EXPOSED_ACTION_EXAMPLE: &str = r#"
 }
 "#;
 
-pub const CONSUMED_ACTION_FEEDBACK_FORMAT: &str = r#"
+pub(crate) const CONSUMED_ACTION_FEEDBACK_FORMAT: &str = r#"
 {
   new_position: {
     $type: "array",
@@ -1597,7 +1602,7 @@ pub const CONSUMED_ACTION_FEEDBACK_FORMAT: &str = r#"
 }
 "#;
 
-pub const CONSUMED_ACTION_RESULT_FORMAT: &str = r#"
+pub(crate) const CONSUMED_ACTION_RESULT_FORMAT: &str = r#"
 {
   success: "bool",
   error_msg: {
@@ -1612,7 +1617,7 @@ pub const CONSUMED_ACTION_RESULT_FORMAT: &str = r#"
 }
 "#;
 
-pub const CONSUMED_ACTION_GOAL_FORMAT: &str = r#"
+pub(crate) const CONSUMED_ACTION_GOAL_FORMAT: &str = r#"
 {
   arm_id: "u16",
   desired_position: {
@@ -1623,7 +1628,7 @@ pub const CONSUMED_ACTION_GOAL_FORMAT: &str = r#"
 }
 "#;
 
-pub const CONSUMED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
+pub(crate) const CONSUMED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
 {
   accepted: "bool"
 }
@@ -1631,7 +1636,7 @@ pub const CONSUMED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
 
 /// The consumer side of the `move_arm` action of [`EXPOSED_ACTION_EXAMPLE`]:
 /// its goal request, goal response, feedback and result formats.
-pub fn consumed_move_arm_action_messages() -> generator::ConsumedActionMessage {
+pub(crate) fn consumed_move_arm_action_messages() -> generator::ConsumedActionMessage {
     generator::ConsumedActionMessage {
         goal_request: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap()),
         goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
@@ -1640,13 +1645,13 @@ pub fn consumed_move_arm_action_messages() -> generator::ConsumedActionMessage {
     }
 }
 
-pub const TOPIC_DEDUP_SHARED_FORMAT: &str = r#"{
+pub(crate) const TOPIC_DEDUP_SHARED_FORMAT: &str = r#"{
   positions: { $type: "array", $items: "f64", $length: 3 },
   velocities: { $type: "array", $items: "f64", $length: 3 },
   timestamp: "time"
 }"#;
 
-pub const EXPOSED_SERVICE_EXAMPLE: &str = r#"
+pub(crate) const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
   name: "enable_camera",
   description: "A test member.",
@@ -1663,7 +1668,7 @@ pub const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 }
 "#;
 
-pub const CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
+pub(crate) const CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 {
     enabled: "bool",
     error_msg: {
@@ -1673,7 +1678,7 @@ pub const CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 }
 "#;
 
-pub const EXPOSED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
+pub(crate) const EXPOSED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
 {
   name: "get_system_status",
   description: "A test member.",
@@ -1683,7 +1688,7 @@ pub const EXPOSED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
 }
 "#;
 
-pub const CONSUMED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
+pub(crate) const CONSUMED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
 {
   link_id: "uvc_camera",
   name: "get_system_status",
@@ -1692,20 +1697,20 @@ pub const CONSUMED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
 
 /// The consumer side of `enable_camera` of [`EXPOSED_SERVICE_EXAMPLE`],
 /// consumed through the `uvc_camera` slot.
-pub const CONSUMED_SERVICE_EXAMPLE: &str = r#"
+pub(crate) const CONSUMED_SERVICE_EXAMPLE: &str = r#"
 {
   link_id: "uvc_camera",
   name: "enable_camera",
 }
 "#;
 
-pub const CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE: &str = r#"
+pub(crate) const CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE: &str = r#"
 {
   enable: "bool"
 }
 "#;
 
-pub const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
+pub(crate) const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 {
   healthy: "bool"
 }
@@ -1713,12 +1718,12 @@ pub const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 
 /// The instance ids of the consumer and the exposer of the single-exposer
 /// service tests.
-pub const SOLE_CONSUMER_INSTANCE_ID: &str = "the_consumer";
-pub const SOLE_EXPOSER_INSTANCE_ID: &str = "the_exposer";
+pub(crate) const SOLE_CONSUMER_INSTANCE_ID: &str = "the_consumer";
+pub(crate) const SOLE_EXPOSER_INSTANCE_ID: &str = "the_exposer";
 
 /// One consumed service and the exposed service that answers it, as the
 /// consumer and the exposers of a service communication test declare them.
-pub struct ServicePair {
+pub(crate) struct ServicePair {
     pub consumed: config::node::ConsumedService,
     pub request_format: MessageFormat,
     pub response_format: MessageFormat,
@@ -1728,7 +1733,7 @@ pub struct ServicePair {
 impl ServicePair {
     /// `enable_camera` of [`EXPOSED_SERVICE_EXAMPLE`], consumed through the
     /// `uvc_camera` slot.
-    pub fn enable_camera() -> Self {
+    pub(crate) fn enable_camera() -> Self {
         Self {
             consumed: serde_json5::from_str(CONSUMED_SERVICE_EXAMPLE).unwrap(),
             request_format: serde_json5::from_str(CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap(),
@@ -1740,7 +1745,7 @@ impl ServicePair {
 
     /// `get_system_status` of [`EXPOSED_SERVICE_NO_REQUEST_EXAMPLE`], which
     /// declares no request, consumed through the `uvc_camera` slot.
-    pub fn get_system_status() -> Self {
+    pub(crate) fn get_system_status() -> Self {
         Self {
             consumed: serde_json5::from_str(CONSUMED_SERVICE_NO_REQUEST_EXAMPLE).unwrap(),
             request_format: empty_message_format(),
@@ -1753,7 +1758,7 @@ impl ServicePair {
     }
 }
 
-pub const EMITTED_TOPIC_EXAMPLE: &str = r#"
+pub(crate) const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
   name: "video_stream",
   description: "A test member.",
@@ -1779,7 +1784,7 @@ pub const EMITTED_TOPIC_EXAMPLE: &str = r#"
 }
 "#;
 
-pub const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
+pub(crate) const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
 {
   header: {
     $type: "object",
@@ -1803,7 +1808,7 @@ pub const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
 /// How the emitter of a two-node topic test publishes, and when its receiver
 /// starts.
 #[derive(Clone, Copy)]
-pub enum TopicScenario {
+pub(crate) enum TopicScenario {
     /// A live-only topic published at a rate, with both nodes started together.
     LiveStream,
     /// A retaining topic published once during the emitter's setup, with the
@@ -1812,7 +1817,7 @@ pub enum TopicScenario {
 }
 
 impl TopicScenario {
-    pub fn retention(self) -> config::node::TopicRetention {
+    pub(crate) fn retention(self) -> config::node::TopicRetention {
         match self {
             Self::LiveStream => config::node::TopicRetention::LiveOnly,
             Self::RetainingThenLateJoin => {

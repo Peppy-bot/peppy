@@ -60,7 +60,7 @@ pub(crate) fn subscription_channel(
             (SubscriptionSink::KeepLatest(Arc::new(queue)), rx)
         }
         Buffering::Feedback(buffer) => {
-            let (sink, rx) = FeedbackSink::open(keyexpr, buffer);
+            let (sink, rx) = FeedbackSink::open(keyexpr, &buffer);
             (SubscriptionSink::Feedback(Arc::new(sink)), rx)
         }
     }
@@ -68,7 +68,7 @@ pub(crate) fn subscription_channel(
 
 /// The transport's side of a subscription buffer. Cloning it shares the same
 /// buffer.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) enum SubscriptionSink {
     /// A topic's bounded queue: a message waits while the queue is full.
     Backpressure(flume::Sender<TopicMessage>),
@@ -120,6 +120,7 @@ impl SubscriptionSink {
 /// A bounded topic queue that never makes its sender wait: a message that
 /// arrives while the queue is full drops the oldest unread one. The first
 /// drop of a queue is logged once, with the keyexpr of its subscription.
+#[derive(Debug)]
 pub(crate) struct LatestQueue {
     tx: flume::Sender<TopicMessage>,
     /// A receiver of the queue's own, which takes the oldest unread message
@@ -197,6 +198,7 @@ impl LatestQueue {
 /// unread messages. A message that arrives while `bound` messages wait
 /// overflows the buffer: it drops every unread message, takes nothing more,
 /// and raises its [`FeedbackOverflow`].
+#[derive(Debug)]
 pub(crate) struct FeedbackSink {
     /// Unbounded, so a send never waits: the bound is checked before it.
     tx: flume::Sender<TopicMessage>,
@@ -222,7 +224,7 @@ enum FeedbackState {
 
 impl FeedbackSink {
     /// Opens the buffer and the receiver its reader drains.
-    fn open(keyexpr: &str, buffer: FeedbackBuffer) -> (Self, flume::Receiver<TopicMessage>) {
+    fn open(keyexpr: &str, buffer: &FeedbackBuffer) -> (Self, flume::Receiver<TopicMessage>) {
         let (tx, rx) = flume::unbounded();
         let sink = Self {
             tx,
@@ -481,7 +483,7 @@ mod tests {
     }
 
     /// Polls `future` once, without a runtime.
-    fn poll_once<F: std::future::Future>(future: std::pin::Pin<&mut F>) -> std::task::Poll<()> {
+    fn poll_once<F: Future>(future: std::pin::Pin<&mut F>) -> std::task::Poll<()> {
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         future.poll(&mut context).map(|_| ())
     }
@@ -598,7 +600,9 @@ mod tests {
                 .filter_map(|payload| payload.strip_prefix(&prefix)?.parse().ok())
                 .collect();
             assert!(
-                indexes.windows(2).all(|pair| pair[0] < pair[1]),
+                indexes
+                    .array_windows()
+                    .all(|[previous, next]| previous < next),
                 "publisher {publisher}'s messages keep their order: {kept:?}"
             );
         }

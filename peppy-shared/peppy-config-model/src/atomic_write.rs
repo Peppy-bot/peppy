@@ -117,7 +117,7 @@ mod tests {
         // The staging tmp file must not linger in the parent directory either.
         let leftovers: Vec<_> = std::fs::read_dir(dir.path())
             .expect("read dir")
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .collect();
         assert!(
             leftovers.is_empty(),
@@ -130,6 +130,6 @@ mod tests {
         // The filesystem root has no parent, so staging a sibling is impossible.
         let err = publish_atomic(Path::new("/"), |tmp| std::fs::write(tmp, b"x"))
             .expect_err("root path has no parent");
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
     }
 }

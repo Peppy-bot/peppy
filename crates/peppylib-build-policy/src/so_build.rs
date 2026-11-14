@@ -84,6 +84,10 @@ pub fn cross_build_enabled(profile: BuildProfile, requested: bool) -> bool {
 /// forced, the `.so` is missing, or its recorded state is stale. `force`
 /// (`PEPPYLIB_REBUILD`) alone never triggers a Linux build: it refreshes the host
 /// artifact, while the Linux bindings stay gated on the cross-build decision.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "each flag is one input of the decision that the docs describe"
+)]
 pub fn should_cross_compile(cross_build: bool, present: bool, stale: bool, force: bool) -> bool {
     cross_build && (force || !present || stale)
 }
@@ -98,7 +102,7 @@ pub fn should_cross_compile(cross_build: bool, present: bool, stale: bool, force
 /// bindings (see [`should_cross_compile`]), so after a shared-crate change
 /// the cache can hold Linux `.so` from older sources. Embedding one puts the
 /// schema mismatch inside the container image, where it only surfaces as a
-/// baffling parse error when the node starts (e.g. `unknown field \`implements\``).
+/// baffling parse error when the node starts (e.g. ``unknown field `implements` ``).
 /// Excluding it instead makes the container build fail up front with the
 /// scaffolder's explicit "no embedded native extension" error.
 ///

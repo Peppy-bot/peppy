@@ -82,7 +82,7 @@
 //!     node: &NodeRunner,
 //!     copy: CopyReference,
 //!     window: Duration,
-//!     cancelled: impl std::future::Future<Output = ()>,
+//!     cancelled: impl Future<Output = ()>,
 //!     relay: impl Fn(String),
 //! ) -> Outcome {
 //!     let goal = StackJoinGoal::new(copy, DEFAULT_BUDGETS);
@@ -92,7 +92,7 @@
 //!         Err(error) => return Outcome::NoEnd(error.to_string()),
 //!     };
 //!     relay(format!("launch: the daemon accepted the goal; log file {}", running.log_path().display()));
-//!     tokio::pin!(cancelled);
+//!     let mut cancelled = std::pin::pin!(cancelled);
 //!     loop {
 //!         tokio::select! {
 //!             event = running.next() => match event {

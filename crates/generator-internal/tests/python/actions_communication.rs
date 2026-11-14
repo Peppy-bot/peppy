@@ -36,7 +36,7 @@ const CONSUMED_ACTION_EXAMPLE: &str = r#"
 }
 "#;
 
-/// Runs one native move_arm action flow. The consumer fires goals at the
+/// Runs one native `move_arm` action flow. The consumer fires goals at the
 /// exposer of [`EXPOSED_ACTION_EXAMPLE`] through its `brain` slot, bound to
 /// that exposer, and exposes `flow_done_service`, which its script serves
 /// once it has run the flow. The exposer starts first, and both nodes are
@@ -317,9 +317,7 @@ if __name__ == "__main__":
             && consumer_stdout.contains("feedback message received new_position=[7, 31, 43]")
             && consumer_stdout
                 .contains("result success=True error=None final_position=[98, 4, 26]"),
-        "consumer did not complete the action flow.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "consumer did not complete the action flow.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
     assert!(
@@ -327,9 +325,7 @@ if __name__ == "__main__":
             && exposer_stdout.contains("server emitted feedback message [7, 31, 43]")
             && exposer_stdout
                 .contains("server handled result request. Final position sent: [98, 4, 26]"),
-        "exposer did not process the action endpoints as expected.\nstdout:\n{}\nstderr:\n{}",
-        exposer_stdout,
-        exposer_stderr
+        "exposer did not process the action endpoints as expected.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
     );
 }
 
@@ -417,17 +413,13 @@ if __name__ == "__main__":
     assert!(
         consumer_stdout.contains("goal accepted=True")
             && consumer_stdout.contains("cancel accepted=True error=<none>"),
-        "consumer did not complete the cancel flow.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "consumer did not complete the cancel flow.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
     assert!(
         exposer_stdout.contains("server received goal arm_id=7 desired=[10, 20, 30]")
             && exposer_stdout.contains("server observed cancel for goal"),
-        "exposer did not handle cancel endpoint as expected.\nstdout:\n{}\nstderr:\n{}",
-        exposer_stdout,
-        exposer_stderr
+        "exposer did not handle cancel endpoint as expected.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
     );
 }
 
@@ -536,18 +528,14 @@ if __name__ == "__main__":
         consumer_stdout.contains("goal accepted=True")
             && consumer_stdout.contains("feedback message received new_position=[7, 100, 200]")
             && consumer_stdout.contains("result success=True final_position=[42, 42, 42]"),
-        "consumer did not complete the in-handler feedback flow.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "consumer did not complete the in-handler feedback flow.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
     assert!(
         exposer_stdout.contains("server accepted goal via async decider")
             && exposer_stdout.contains("server emitted feedback")
             && exposer_stdout.contains("server handled result request"),
-        "exposer did not exercise the async-decider path.\nstdout:\n{}\nstderr:\n{}",
-        exposer_stdout,
-        exposer_stderr
+        "exposer did not exercise the async-decider path.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
     );
 }
 
@@ -663,29 +651,24 @@ if __name__ == "__main__":
     .await;
     assert!(
         consumer_stdout.contains("warmup feedback new_position=[1, 2, 3]"),
-        "consumer did not receive warmup feedback before cancel.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive warmup feedback before cancel.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("cancel accepted=True"),
-        "consumer did not receive accepted cancel response.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive accepted cancel response.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("feedback closed after cancel-accept"),
-        "consumer did not receive close signal after cancel-accept.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive close signal after cancel-accept.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         !consumer_stdout.contains("UNEXPECTED feedback after cancel-accept"),
-        "consumer received unexpected feedback after cancel-accept.\nstdout:\n{}",
-        consumer_stdout
+        "consumer received unexpected feedback after cancel-accept.\nstdout:\n{consumer_stdout}"
     );
 
     assert!(
         exposer_stdout.contains("server observed cancel"),
-        "exposer did not exercise the cancel-observed path.\nstdout:\n{}",
-        exposer_stdout
+        "exposer did not exercise the cancel-observed path.\nstdout:\n{exposer_stdout}"
     );
 }
 
@@ -821,28 +804,23 @@ if __name__ == "__main__":
     .await;
     assert!(
         consumer_stdout.contains("pre_cancel feedback new_position=[1, 1, 1]"),
-        "consumer did not receive pre-cancel feedback.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive pre-cancel feedback.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("cancel accepted=True error=<none>"),
-        "consumer did not see the auto-acked cancel.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not see the auto-acked cancel.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("post_cancel feedback new_position=[2, 2, 2]"),
-        "consumer did not receive post-cancel feedback: a worker that ignores the cancel keeps the stream open.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive post-cancel feedback: a worker that ignores the cancel keeps the stream open.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("result success=True"),
-        "consumer did not receive result.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive result.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("feedback closed after result"),
-        "consumer did not receive close signal after result.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive close signal after result.\nstdout:\n{consumer_stdout}"
     );
 
     assert!(
@@ -850,8 +828,7 @@ if __name__ == "__main__":
             && exposer_stdout.contains("server observed cancel but keeps going")
             && exposer_stdout.contains("server emitted post-cancel feedback")
             && exposer_stdout.contains("server handled result request"),
-        "exposer did not exercise the cancel-ignored path.\nstdout:\n{}",
-        exposer_stdout
+        "exposer did not exercise the cancel-ignored path.\nstdout:\n{exposer_stdout}"
     );
 }
 
@@ -981,25 +958,21 @@ if __name__ == "__main__":
         consumer_stdout.contains("feedback #1 new_position=[0, 1, 2]")
             && consumer_stdout.contains("feedback #2 new_position=[1, 2, 3]")
             && consumer_stdout.contains("feedback #3 new_position=[2, 3, 4]"),
-        "consumer did not receive all 3 feedback messages.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive all 3 feedback messages.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("feedback channel closed after 3 messages"),
-        "consumer drain loop did not exit via the close signal.\nstdout:\n{}",
-        consumer_stdout
+        "consumer drain loop did not exit via the close signal.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("result success=True final_position=[99, 99, 99]"),
-        "consumer did not receive result.\nstdout:\n{}",
-        consumer_stdout
+        "consumer did not receive result.\nstdout:\n{consumer_stdout}"
     );
 
     assert!(
         exposer_stdout.contains("server emitted feedback #3 position=[2, 3, 4]")
             && exposer_stdout.contains("server handled result request"),
-        "exposer did not complete the action lifecycle.\nstdout:\n{}",
-        exposer_stdout
+        "exposer did not complete the action lifecycle.\nstdout:\n{exposer_stdout}"
     );
 }
 
@@ -1252,20 +1225,15 @@ if __name__ == "__main__":
         assert_exited_successfully("consumer process", &consumer_output);
     assert!(
         consumer_stdout.contains("FEEDBACK_PRODUCER_GONE"),
-        "consumer drain did not raise ConnectionError for the killed producer.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "consumer drain did not raise ConnectionError for the killed producer.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
     assert!(
         !consumer_stdout.contains("FEEDBACK_CLEAN_CLOSE"),
-        "consumer saw a clean end-of-stream close: a SIGKILLed producer must surface as ConnectionError, not the sentinel path.\nstdout:\n{}",
-        consumer_stdout
+        "consumer saw a clean end-of-stream close: a SIGKILLed producer must surface as ConnectionError, not the sentinel path.\nstdout:\n{consumer_stdout}"
     );
     assert!(
         consumer_stdout.contains("RESULT_STATUS=ABANDONED"),
-        "get_result did not resolve to ResultStatus.ABANDONED for the killed producer.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "get_result did not resolve to ResultStatus.ABANDONED for the killed producer.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 }
 
@@ -1632,9 +1600,7 @@ if __name__ == "__main__":
             && consumer_stdout.contains(
                 "failed result kind=unreachable message=no plan to [500, 500, 500] data_present=False"
             ),
-        "consumer did not complete the contract-addressed action lifecycle.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "consumer did not complete the contract-addressed action lifecycle.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
     let (exposer_stdout, exposer_stderr) =
@@ -1647,9 +1613,7 @@ if __name__ == "__main__":
             && exposer_stdout.contains("server received goal arm_id=8 desired=[1, 2, 3]")
             && exposer_stdout.contains("server observed cancel for goal cause=caller")
             && exposer_stdout.contains("server failed goal"),
-        "exposer did not process the contract-addressed action endpoints as expected.\nstdout:\n{}\nstderr:\n{}",
-        exposer_stdout,
-        exposer_stderr
+        "exposer did not process the contract-addressed action endpoints as expected.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
     );
 }
 

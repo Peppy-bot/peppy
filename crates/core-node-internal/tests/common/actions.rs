@@ -1,4 +1,4 @@
-#![allow(dead_code)] // Each test binary uses only a subset of these shared helpers.
+#![allow(dead_code, reason = "each test binary uses a part of these helpers")]
 
 use super::daemon::StartedCoreNode;
 use super::fixtures::write_peppy_json5;
@@ -27,16 +27,16 @@ use tokio::sync::mpsc::UnboundedSender;
 /// How long a test waits for the daemon to answer a goal. No goal of these
 /// tests comes near it on a host of any speed: a test runs into it only when
 /// the daemon does not answer.
-pub const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long a test waits for a goal to end, on the terms of
 /// [`GOAL_TIMEOUT`].
-pub const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const RESULT_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Source for a node to be added. Used by `send_node_add_and_wait` to support
 /// filesystem paths, git repositories, and HTTP URLs.
 #[derive(Debug)]
-pub enum NodeAddSource<'a> {
+pub(crate) enum NodeAddSource<'a> {
     /// Add from a local filesystem path.
     Path(&'a Path),
     /// Add from a git repository.
@@ -67,21 +67,21 @@ impl<'a> From<&'a PathBuf> for NodeAddSource<'a> {
     }
 }
 
-pub struct NodeRunTestTimeouts {
+pub(crate) struct NodeRunTestTimeouts {
     pub goal: Duration,
     pub result: Duration,
 }
 
 /// The goal and result bounds of a test's `node_run`: [`GOAL_TIMEOUT`] and
 /// [`RESULT_TIMEOUT`].
-pub const TIMEOUTS: NodeRunTestTimeouts = NodeRunTestTimeouts {
+pub(crate) const TIMEOUTS: NodeRunTestTimeouts = NodeRunTestTimeouts {
     goal: GOAL_TIMEOUT,
     result: RESULT_TIMEOUT,
 };
 
 /// How a `node_run` goal that a test sends ends, with the goal response of
 /// an accepted goal.
-pub struct NodeRunTestResponse {
+pub(crate) struct NodeRunTestResponse {
     /// The goal response of an accepted goal; `None` when the daemon refused
     /// the goal.
     pub goal_response: Option<NodeRunGoalResponse>,
@@ -92,7 +92,7 @@ impl NodeRunTestResponse {
     /// The goal response of an accepted goal. Panics when the daemon refused
     /// the goal.
     #[track_caller]
-    pub fn accepted(&self) -> &NodeRunGoalResponse {
+    pub(crate) fn accepted(&self) -> &NodeRunGoalResponse {
         self.goal_response
             .as_ref()
             .unwrap_or_else(|| panic!("the daemon refused the node_run goal: {:?}", self.end))
@@ -101,7 +101,7 @@ impl NodeRunTestResponse {
 
 /// How a daemon goal that a test sends ends, as its client sees it.
 #[derive(Debug)]
-pub enum GoalEnd<R> {
+pub(crate) enum GoalEnd<R> {
     /// The daemon refused the goal.
     Refused(Failure),
     /// The goal completed with this result.
@@ -116,23 +116,23 @@ impl<R: Debug> GoalEnd<R> {
     /// The result of a completed goal. Panics with the ending of any other
     /// goal.
     #[track_caller]
-    pub fn completed(self) -> R {
+    pub(crate) fn completed(self) -> R {
         match self {
-            GoalEnd::Completed(result) => result,
+            Self::Completed(result) => result,
             other => panic!("the goal did not complete: {other:?}"),
         }
     }
 
-    pub fn is_completed(&self) -> bool {
-        matches!(self, GoalEnd::Completed(_))
+    pub(crate) fn is_completed(&self) -> bool {
+        matches!(self, Self::Completed(_))
     }
 
     /// The failure of a refused or failed goal. Panics with the ending of
     /// any other goal.
     #[track_caller]
-    pub fn failure(&self) -> &Failure {
+    pub(crate) fn failure(&self) -> &Failure {
         match self {
-            GoalEnd::Refused(failure) | GoalEnd::Failed(failure) => failure,
+            Self::Refused(failure) | Self::Failed(failure) => failure,
             other => panic!("the goal did not fail: {other:?}"),
         }
     }
@@ -140,16 +140,16 @@ impl<R: Debug> GoalEnd<R> {
     /// The message of the failure of a refused or failed goal. Panics with
     /// the ending of any other goal.
     #[track_caller]
-    pub fn failure_message(&self) -> &str {
+    pub(crate) fn failure_message(&self) -> &str {
         self.failure().message()
     }
 
     /// The failure of a refused goal. Panics with the ending of any other
     /// goal.
     #[track_caller]
-    pub fn refusal(&self) -> &Failure {
+    pub(crate) fn refusal(&self) -> &Failure {
         match self {
-            GoalEnd::Refused(failure) => failure,
+            Self::Refused(failure) => failure,
             other => panic!("the daemon did not refuse the goal: {other:?}"),
         }
     }
@@ -157,9 +157,9 @@ impl<R: Debug> GoalEnd<R> {
     /// The failure of a goal that the daemon accepted and that then failed.
     /// Panics with the ending of any other goal.
     #[track_caller]
-    pub fn failed(&self) -> &Failure {
+    pub(crate) fn failed(&self) -> &Failure {
         match self {
-            GoalEnd::Failed(failure) => failure,
+            Self::Failed(failure) => failure,
             other => panic!("the goal did not fail after its acceptance: {other:?}"),
         }
     }
@@ -167,9 +167,9 @@ impl<R: Debug> GoalEnd<R> {
     /// The reason of a cancelled goal. Panics with the ending of any other
     /// goal.
     #[track_caller]
-    pub fn cancel_reason(&self) -> &str {
+    pub(crate) fn cancel_reason(&self) -> &str {
         match self {
-            GoalEnd::Cancelled(reason) => reason,
+            Self::Cancelled(reason) => reason,
             other => panic!("the goal was not cancelled: {other:?}"),
         }
     }
@@ -177,7 +177,7 @@ impl<R: Debug> GoalEnd<R> {
 
 /// Asserts that `failure` has `kind`, a kind of the daemon.
 #[track_caller]
-pub fn assert_failure_kind(failure: &Failure, kind: impl Into<DaemonFailureKind>) {
+pub(crate) fn assert_failure_kind(failure: &Failure, kind: impl Into<DaemonFailureKind>) {
     assert_eq!(
         failure.kind().as_str(),
         kind.into().name(),
@@ -187,7 +187,7 @@ pub fn assert_failure_kind(failure: &Failure, kind: impl Into<DaemonFailureKind>
 
 /// Asserts that `failure` has `kind` and that its message contains `text`.
 #[track_caller]
-pub fn assert_failure(failure: &Failure, kind: impl Into<DaemonFailureKind>, text: &str) {
+pub(crate) fn assert_failure(failure: &Failure, kind: impl Into<DaemonFailureKind>, text: &str) {
     assert_failure_kind(failure, kind);
     assert!(
         failure.message().contains(text),
@@ -201,7 +201,7 @@ pub fn assert_failure(failure: &Failure, kind: impl Into<DaemonFailureKind>, tex
 /// node identity. Those belong to the daemon that spawns the node, so the
 /// goal has nowhere to put them and a test cannot accidentally pin a node to
 /// the wrong daemon.
-pub fn instance_plan(
+pub(crate) fn instance_plan(
     instance_id: &str,
     arguments: std::collections::BTreeMap<String, config::AnyType>,
 ) -> config::runtime::NodeInstancePlan {
@@ -214,12 +214,13 @@ pub fn instance_plan(
 }
 
 /// [`instance_plan`] with no node arguments: the shape most tests use.
-pub fn default_instance_plan(instance_id: &str) -> config::runtime::NodeInstancePlan {
+pub(crate) fn default_instance_plan(instance_id: &str) -> config::runtime::NodeInstancePlan {
     instance_plan(instance_id, Default::default())
 }
 
 /// Why [`drain_feedback`] returned.
-pub enum FeedbackDrainOutcome {
+#[derive(Debug)]
+pub(crate) enum FeedbackDrainOutcome {
     /// The feedback handler asked to stop after a feedback line.
     Stopped,
     /// The server closed the feedback stream, i.e. the action completed.
@@ -231,7 +232,7 @@ pub enum FeedbackDrainOutcome {
 /// Drains feedback from a live action handle, decoding each line with
 /// `decode` and handing it to `on_feedback`. Returns as soon as `on_feedback`
 /// breaks, the server closes the stream, or the absolute deadline elapses.
-pub async fn drain_feedback<F>(
+pub(crate) async fn drain_feedback<F>(
     action_handle: &mut ActionGoalHandle,
     decode: impl Fn(&[u8]) -> F,
     mut on_feedback: impl FnMut(F) -> ControlFlow<()>,
@@ -270,7 +271,7 @@ fn forward_until_closed<F>(
 
 /// The goal response of an accepted goal, decoded with `decode`, or the
 /// failure of a refused goal. `what` names the goal response in the errors.
-pub fn goal_answer<T, E: Display>(
+pub(crate) fn goal_answer<T, E: Display>(
     action_handle: &ActionGoalHandle,
     decode: impl Fn(&[u8]) -> Result<T, E>,
     what: &str,
@@ -286,7 +287,7 @@ pub fn goal_answer<T, E: Display>(
 /// Fetches how an action ended, and decodes the result of a completed one
 /// with `decode`. `what` names the result in the errors. A goal that ends
 /// without an outcome for its client (abandoned or expired) is an error.
-pub async fn fetch_end<R, E: Display>(
+pub(crate) async fn fetch_end<R, E: Display>(
     messenger: &MessengerHandle,
     action_handle: &ActionGoalHandle,
     fetch_timeout: Duration,
@@ -309,7 +310,7 @@ pub async fn fetch_end<R, E: Display>(
 
 /// Sends `goal` to the daemon action it belongs to on `core_node_name`, from
 /// the test caller.
-pub async fn send_daemon_goal(
+pub(crate) async fn send_daemon_goal(
     messenger: &MessengerHandle,
     core_node_name: &str,
     goal: &impl core_node_api::ActionGoal,
@@ -328,23 +329,23 @@ pub async fn send_daemon_goal(
 
 /// The `--restart never` request: a crash leaves the instance `failed` and
 /// schedules nothing, so a test whose subject is the crash itself passes it.
-pub fn never() -> RestartRequest {
+pub(crate) fn never() -> RestartRequest {
     RestartRequest::Flag(RestartDeclaration::policy_only(RestartPolicy::Never))
 }
 
 /// The `--restart on_failure` request.
-pub fn on_failure() -> RestartRequest {
+pub(crate) fn on_failure() -> RestartRequest {
     RestartRequest::Flag(RestartDeclaration::policy_only(RestartPolicy::OnFailure))
 }
 
 /// The `--restart always` request.
-pub fn always() -> RestartRequest {
+pub(crate) fn always() -> RestartRequest {
     RestartRequest::Flag(RestartDeclaration::policy_only(RestartPolicy::Always))
 }
 
 /// The `node_run` goal of `instance_plan`, whose result the daemon keeps for
 /// the test's result budget.
-pub fn node_run_goal(
+pub(crate) fn node_run_goal(
     instance_plan: config::runtime::NodeInstancePlan,
     node_name: &str,
     tag: &str,
@@ -354,7 +355,7 @@ pub fn node_run_goal(
 }
 
 /// Sends `goal` and waits for its result.
-pub async fn send_node_run_goal_and_wait(
+pub(crate) async fn send_node_run_goal_and_wait(
     messenger: &MessengerHandle,
     core_node_name: &str,
     goal: NodeRunGoal,
@@ -373,7 +374,7 @@ async fn send_node_run_goal_answered(
 ) -> Result<(ActionGoalHandle, Result<NodeRunGoalResponse, Failure>), String> {
     let action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
         .await
-        .map_err(|e| format!("Failed to send goal: {}", e))?;
+        .map_err(|e| format!("Failed to send goal: {e}"))?;
     let answer = goal_answer(&action_handle, NodeRunGoalResponse::decode, "goal response")?;
     Ok((action_handle, answer))
 }
@@ -383,7 +384,7 @@ async fn send_node_run_goal_answered(
 /// it directly when it does work between the goal and the result (e.g.
 /// bringing up a delayed health responder once startup output has streamed)
 /// or never fetches the result at all.
-pub async fn send_node_run_goal(
+pub(crate) async fn send_node_run_goal(
     messenger: &MessengerHandle,
     core_node_name: &str,
     goal: NodeRunGoal,
@@ -437,7 +438,10 @@ async fn drain_node_run_feedback(
 /// observe without a result fetch; the node stack is not one, because the
 /// entity's stage changes while the work task is still winding down, ahead of
 /// the slot release.
-pub async fn wait_until_action_completes(action_handle: &mut ActionGoalHandle, timeout: Duration) {
+pub(crate) async fn wait_until_action_completes(
+    action_handle: &mut ActionGoalHandle,
+    timeout: Duration,
+) {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -447,7 +451,7 @@ pub async fn wait_until_action_completes(action_handle: &mut ActionGoalHandle, t
             Ok(Err(err)) => {
                 panic!("the action's feedback stream failed before it completed: {err}")
             }
-            Err(_) => panic!("the action did not complete within {timeout:?}"),
+            Err(elapsed) => panic!("the action did not complete within {timeout:?}: {elapsed}"),
         }
     }
 }
@@ -504,14 +508,14 @@ async fn send_node_run_and_wait_internal(
 
 /// Sends a `node_run` goal, runs `before_cancel`, cancels the goal as its
 /// client would, and returns how the run ended.
-pub async fn send_node_run_then_cancel(
+pub(crate) async fn send_node_run_then_cancel(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_plan: config::runtime::NodeInstancePlan,
     node_name: &str,
     tag: &str,
     timeouts: &NodeRunTestTimeouts,
-    before_cancel: impl std::future::Future<Output = ()>,
+    before_cancel: impl Future<Output = ()>,
 ) -> Result<GoalEnd<NodeRunResult>, String> {
     let (mut action_handle, _) = send_node_run_goal(
         messenger,
@@ -526,15 +530,17 @@ pub async fn send_node_run_then_cancel(
         .map_err(|err| format!("Failed to cancel the goal: {err}"))?;
     let absolute_deadline = tokio::time::Instant::now() + timeouts.result;
     let mut collected = Vec::new();
-    if let FeedbackDrainOutcome::TimedOut = drain_node_run_feedback(
-        &mut action_handle,
-        None,
-        &mut collected,
-        absolute_deadline,
-        |_| false,
-    )
-    .await
-    {
+    if matches!(
+        drain_node_run_feedback(
+            &mut action_handle,
+            None,
+            &mut collected,
+            absolute_deadline,
+            |_| false,
+        )
+        .await,
+        FeedbackDrainOutcome::TimedOut
+    ) {
         return Err("Timeout waiting for node_run result".to_string());
     }
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -561,8 +567,11 @@ pub async fn send_node_run_then_cancel(
 /// returns it alongside every feedback line observed. The health responder is
 /// kept alive until the result is fetched so health stays answered through
 /// commit.
-#[allow(clippy::too_many_arguments)]
-pub async fn send_node_run_with_delayed_health(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a test helper takes each value that a test varies as one argument"
+)]
+pub(crate) async fn send_node_run_with_delayed_health(
     caller_messenger: &MessengerHandle,
     node_messenger: &MessengerHandle,
     core_node_name: &str,
@@ -706,7 +715,7 @@ async fn send_node_add_and_wait_internal<'a>(
 
     let mut action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
         .await
-        .map_err(|e| format!("Failed to send goal: {}", e))?;
+        .map_err(|e| format!("Failed to send goal: {e}"))?;
 
     // A refused goal ends here, as it does for the CLI, which polls no
     // result of a refused goal.
@@ -744,8 +753,11 @@ async fn send_node_add_and_wait_internal<'a>(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn send_node_build_and_wait(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a test helper takes each value that a test varies as one argument"
+)]
+pub(crate) async fn send_node_build_and_wait(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_name: &str,
@@ -771,8 +783,11 @@ pub async fn send_node_build_and_wait(
 
 /// Like [`send_node_build_and_wait`] but sets the `--force` flag, which cancels
 /// any in-flight build for the node and supersedes it.
-#[allow(clippy::too_many_arguments)]
-pub async fn send_node_build_and_wait_forced(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a test helper takes each value that a test varies as one argument"
+)]
+pub(crate) async fn send_node_build_and_wait_forced(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_name: &str,
@@ -796,7 +811,10 @@ pub async fn send_node_build_and_wait_forced(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a test helper takes each value that a test varies as one argument"
+)]
 async fn send_node_build_and_wait_internal(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -813,7 +831,7 @@ async fn send_node_build_and_wait_internal(
         .with_force(force);
     let mut action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
         .await
-        .map_err(|e| format!("Failed to send build goal: {}", e))?;
+        .map_err(|e| format!("Failed to send build goal: {e}"))?;
 
     if let Err(refusal) = goal_answer(
         &action_handle,
@@ -853,7 +871,7 @@ async fn send_node_build_and_wait_internal(
 
 /// A build that [`send_logged_node_build`] sent: the log path that the goal
 /// response of the accepted goal names, and how the build ended.
-pub struct LoggedBuild {
+pub(crate) struct LoggedBuild {
     pub log_path: PathBuf,
     pub end: GoalEnd<NodeBuildResult>,
 }
@@ -862,7 +880,7 @@ pub struct LoggedBuild {
 /// env overrides, forwards each feedback line of the build to `feedback_tx`
 /// when there is one, and returns the log path of the accepted goal with how
 /// the build ended. Panics when the daemon refuses the goal.
-pub async fn send_logged_node_build(
+pub(crate) async fn send_logged_node_build(
     started: &StartedCoreNode,
     node_name: &str,
     node_tag: &str,
@@ -913,9 +931,9 @@ pub async fn send_logged_node_build(
     }
 }
 
-/// Helper function to send a node_add goal and wait for the result.
+/// Helper function to send a `node_add` goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.
-pub async fn send_node_add_and_wait<'a>(
+pub(crate) async fn send_node_add_and_wait<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
     source: impl Into<NodeAddSource<'a>>,
@@ -938,7 +956,7 @@ pub async fn send_node_add_and_wait<'a>(
 /// Convenience helper for tests that staged a node via `send_node_add_and_wait`
 /// and now need it built so `spawn_real_running_instance` can find a `Ready`
 /// entity. Builds the node and asserts the build succeeded.
-pub async fn build_staged_node(started: &StartedCoreNode, node_name: &str, node_tag: &str) {
+pub(crate) async fn build_staged_node(started: &StartedCoreNode, node_name: &str, node_tag: &str) {
     let result = send_node_build_and_wait(
         &started.caller_handle,
         &started.core_node_name,
@@ -951,16 +969,17 @@ pub async fn build_staged_node(started: &StartedCoreNode, node_name: &str, node_
     )
     .await
     .expect("node_build request should complete");
-    if !result.is_completed() {
-        panic!("build_staged_node failed: {result:?}");
-    }
+    assert!(
+        result.is_completed(),
+        "build_staged_node failed: {result:?}"
+    );
 }
 
 /// Convenience helper for tests that need a node to be both added AND built
 /// (e.g. start/info/stop tests). Performs `send_node_add_and_wait` followed by
 /// `send_node_build_and_wait` and returns the build result. Each goal waits
 /// [`GOAL_TIMEOUT`] for its answer and [`RESULT_TIMEOUT`] for its end.
-pub async fn send_node_add_then_build<'a>(
+pub(crate) async fn send_node_add_then_build<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
     source: impl Into<NodeAddSource<'a>>,
@@ -1003,7 +1022,7 @@ pub async fn send_node_add_then_build<'a>(
 /// waits; all three processes share the node's process group (nodes are
 /// spawned as group leaders). Used by the force-kill tests to prove a group
 /// kill reaps descendants, not just the leader. Returns the source dir guard.
-pub async fn add_and_build_forking_node(
+pub(crate) async fn add_and_build_forking_node(
     started: &StartedCoreNode,
     node_name: &str,
     node_tag: &str,
@@ -1019,7 +1038,7 @@ pub async fn add_and_build_forking_node(
 
 /// Adds and builds a process node that runs `run_cmd`. Returns the source
 /// dir guard.
-pub async fn add_and_build_process_node(
+pub(crate) async fn add_and_build_process_node(
     started: &StartedCoreNode,
     node_name: &str,
     node_tag: &str,
@@ -1057,7 +1076,7 @@ pub async fn add_and_build_process_node(
     source_dir
 }
 
-pub async fn send_node_add_and_wait_with_force<'a>(
+pub(crate) async fn send_node_add_and_wait_with_force<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
     source: impl Into<NodeAddSource<'a>>,
@@ -1077,9 +1096,9 @@ pub async fn send_node_add_and_wait_with_force<'a>(
     .await
 }
 
-/// Helper function to send a node_run goal and wait for the result.
+/// Helper function to send a `node_run` goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.
-pub async fn send_node_run_and_wait(
+pub(crate) async fn send_node_run_and_wait(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_plan: config::runtime::NodeInstancePlan,
@@ -1098,8 +1117,11 @@ pub async fn send_node_run_and_wait(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn send_node_run_and_wait_with_env(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a test helper takes each value that a test varies as one argument"
+)]
+pub(crate) async fn send_node_run_and_wait_with_env(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_plan: config::runtime::NodeInstancePlan,

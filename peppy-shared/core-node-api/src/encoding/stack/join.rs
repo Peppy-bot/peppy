@@ -164,7 +164,7 @@ impl StackJoinGoal {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut message = Builder::new_default();
-        let mut goal = message.init_root::<launch_capnp::stack_join_goal::Builder>();
+        let mut goal = message.init_root::<launch_capnp::stack_join_goal::Builder<'_>>();
         write_copy_reference(goal.reborrow().init_copy(), &self.copy);
         goal.set_node_add_idle_timeout_secs(self.budgets.node_add_idle_timeout_secs);
         goal.set_node_build_idle_timeout_secs(self.budgets.node_build_idle_timeout_secs);
@@ -173,14 +173,14 @@ impl StackJoinGoal {
         let mut selections = goal
             .reborrow()
             .init_selections(capnp_list_len(self.selections.len(), "selections")?);
-        for (index, word) in self.selections.iter().enumerate() {
-            write_selection_word(selections.reborrow().get(index as u32), word);
+        for (index, word) in (0_u32..).zip(self.selections.iter()) {
+            write_selection_word(selections.reborrow().get(index), word);
         }
         let mut arguments = goal
             .reborrow()
             .init_arguments(capnp_list_len(self.arguments.len(), "arguments")?);
-        for (index, argument) in self.arguments.iter().enumerate() {
-            let mut wire = arguments.reborrow().get(index as u32);
+        for (index, argument) in (0_u32..).zip(self.arguments.iter()) {
+            let mut wire = arguments.reborrow().get(index);
             wire.set_instance_id(argument.instance_id().as_str());
             wire.set_argument(argument.argument().as_str());
             wire.set_value(
@@ -199,7 +199,7 @@ impl StackJoinGoal {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let message = decode_message(data)?;
-        let goal = message.get_root::<launch_capnp::stack_join_goal::Reader>()?;
+        let goal = message.get_root::<launch_capnp::stack_join_goal::Reader<'_>>()?;
         if !goal.has_copy() {
             return Err(crate::Error::Decoding(
                 "`StackJoinGoal.copy` is missing".to_owned(),
@@ -270,6 +270,7 @@ impl crate::encoding::Wire for StackJoinGoal {
 mod tests {
     use super::*;
     use crate::encoding::decoding_error;
+    use std::assert_matches;
 
     fn goal(name: &str) -> StackJoinGoal {
         StackJoinGoal::new(
@@ -283,7 +284,7 @@ mod tests {
     fn wire_goal(
         message: &mut Builder<capnp::message::HeapAllocator>,
     ) -> launch_capnp::stack_join_goal::Builder<'_> {
-        let mut goal = message.init_root::<launch_capnp::stack_join_goal::Builder>();
+        let mut goal = message.init_root::<launch_capnp::stack_join_goal::Builder<'_>>();
         let mut copy = goal.reborrow().init_copy();
         copy.set_option("openarm_real");
         copy.set_name("alpha");
@@ -317,7 +318,7 @@ mod tests {
     #[test]
     fn a_goal_without_its_copy_is_refused() {
         let mut message = Builder::new_default();
-        message.init_root::<launch_capnp::stack_join_goal::Builder>();
+        message.init_root::<launch_capnp::stack_join_goal::Builder<'_>>();
         let refusal = decoding_error(StackJoinGoal::decode(&encode_message(&message).unwrap()));
         assert!(
             refusal.contains("`StackJoinGoal.copy` is missing"),
@@ -325,7 +326,7 @@ mod tests {
         );
 
         let mut message = Builder::new_default();
-        let mut wire = message.init_root::<launch_capnp::stack_join_goal::Builder>();
+        let mut wire = message.init_root::<launch_capnp::stack_join_goal::Builder<'_>>();
         let mut copy = wire.reborrow().init_copy();
         copy.set_option("openarm_real");
         copy.set_name("alpha");
@@ -462,7 +463,7 @@ mod tests {
             .unwrap();
         assert_eq!(argument.instance_id().as_str(), "arm_inst");
         assert_eq!(argument.argument().as_str(), "options");
-        assert!(matches!(argument.value(), AnyType::Object(_)));
+        assert_matches!(argument.value(), AnyType::Object(_));
         for word in ["", "arm.speed"] {
             assert_eq!(
                 word.parse::<ArgumentOverride>().unwrap_err(),
@@ -470,20 +471,18 @@ mod tests {
                 "{word}"
             );
         }
-        assert!(matches!(
+        assert_matches!(
             "bad/inst.speed=2".parse::<ArgumentOverride>(),
             Err(ArgumentOverrideError::InstanceName(_))
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             "arm..speed=2".parse::<ArgumentOverride>(),
             Err(ArgumentOverrideError::ArgumentName(_))
-        ));
+        );
         for word in ["arm.speed=", "arm.speed=pose"] {
-            assert!(
-                matches!(
-                    word.parse::<ArgumentOverride>(),
-                    Err(ArgumentOverrideError::Value { .. })
-                ),
+            assert_matches!(
+                word.parse::<ArgumentOverride>(),
+                Err(ArgumentOverrideError::Value { .. }),
                 "{word}"
             );
         }
@@ -515,13 +514,11 @@ mod tests {
             );
             assert!(error.to_string().contains("non-finite"), "{error}");
         }
-        assert!(
-            ArgumentOverride::new(
-                Name::new("arm").unwrap(),
-                Name::new("gain").unwrap(),
-                AnyType::Float(f64::NAN)
-            )
-            .is_err()
-        );
+        ArgumentOverride::new(
+            Name::new("arm").unwrap(),
+            Name::new("gain").unwrap(),
+            AnyType::Float(f64::NAN),
+        )
+        .unwrap_err();
     }
 }

@@ -13,6 +13,7 @@ use peppylib::messaging::{
 };
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
+use std::assert_matches;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -65,17 +66,16 @@ async fn action_messenger_communication() {
     // Server uses declare_from_wire to unwrap the envelope + declare the
     // per-goal feedback publisher in one call, matching the goal_id the
     // client emits below.
-    let (publisher_tx, publisher_rx) =
-        tokio::sync::oneshot::channel::<peppylib::messaging::ActionFeedbackPublisher>();
+    let (publisher_tx, publisher_rx) = tokio::sync::oneshot::channel::<ActionFeedbackPublisher>();
     let factory = action.feedback_publisher_factory.clone();
     let server = tokio::spawn(async move {
-        let publisher_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(publisher_tx)));
+        let publisher_tx = Arc::new(std::sync::Mutex::new(Some(publisher_tx)));
         action
             .goal_service
             .handle_next_request(move |req_ctx| {
                 let resp = goal_resp.clone();
                 let factory = factory.clone();
-                let publisher_tx = publisher_tx.clone();
+                let publisher_tx = publisher_tx;
                 async move {
                     let wire = req_ctx.message().payload().into_inner();
                     let declared = factory
@@ -202,7 +202,7 @@ async fn setup_goal_handshake(
             .goal_service
             .handle_next_request(move |req_ctx| {
                 let factory = factory.clone();
-                let publisher_tx = publisher_tx.clone();
+                let publisher_tx = publisher_tx;
                 async move {
                     let wire = req_ctx.message().payload().into_inner();
                     let declared = factory
@@ -339,9 +339,10 @@ async fn action_feedback_publish_end_signals_channel_closed_via_try_next() {
         match goal_handle.try_next_feedback() {
             Err(PeppyError::ActionFeedbackChannelClosed) => break,
             Ok(None) => {
-                if tokio::time::Instant::now() >= deadline {
-                    panic!("close signal did not arrive via try_next_feedback within timeout");
-                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "close signal did not arrive via try_next_feedback within timeout"
+                );
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             Ok(Some(msg)) => panic!("expected close signal, got message: {msg:?}"),
@@ -360,8 +361,9 @@ async fn action_feedback_publish_end_signals_channel_closed_via_try_next() {
 #[test]
 fn non_empty_payload_rejects_empty_payload() {
     let result = NonEmptyPayload::try_new(Payload::new());
-    assert!(
-        matches!(result, Err(EmptyPayloadError)),
+    assert_matches!(
+        result.err(),
+        Some(EmptyPayloadError),
         "empty payload must be rejected by NonEmptyPayload::try_new",
     );
 }
@@ -537,13 +539,13 @@ async fn concurrent_action_cancel_targets_one_goal() {
             };
             tokio::spawn(async move {
                 tokio::select! {
-                    _ = ctx.cancel_signal() => {
+                    () = ctx.cancel_signal() => {
                         let mut result = b"cancelled:".to_vec();
                         result.extend_from_slice(&request);
                         let reason = ctx.cancel_cause().expect("a cancelled goal has its cause").reason();
                         let _ = ctx.complete_cancelled(reason, Payload::from(result)).await;
                     }
-                    _ = tokio::time::sleep(Duration::from_millis(400)) => {
+                    () = tokio::time::sleep(Duration::from_millis(400)) => {
                         let mut result = b"done:".to_vec();
                         result.extend_from_slice(&request);
                         let _ = ctx.complete(Payload::from(result)).await;
@@ -1127,9 +1129,9 @@ async fn action_contract_scoped_native_and_implemented_do_not_collide() {
         let factory: ActionFeedbackPublisherFactory = action.feedback_publisher_factory.clone();
         let handle = tokio::spawn(async move {
             let ready_tx = std::sync::Mutex::new(Some(ready_tx));
-            let _publisher_keepalive: Arc<std::sync::Mutex<Option<ActionFeedbackPublisher>>> =
+            let publisher_keepalive: Arc<std::sync::Mutex<Option<ActionFeedbackPublisher>>> =
                 Arc::new(std::sync::Mutex::new(None));
-            let kept = Arc::clone(&_publisher_keepalive);
+            let kept = Arc::clone(&publisher_keepalive);
             let _ = action
                 .goal_service
                 .handle_next_request(|req| {
@@ -1349,7 +1351,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
     // Winner has been serviced; release the loser from its `recv_next_request`.
     shutdown_tx.send(true).expect("signal producers to stop");
 
-    let winner_inst = goal_handle.goal_reply().instance_id.to_string();
+    let winner_inst = goal_handle.goal_reply().instance_id.clone();
     assert!(
         winner_inst == producer_a_inst || winner_inst == producer_b_inst,
         "goal response identity must come from one of the producers, got {winner_inst:?}",
@@ -1508,10 +1510,11 @@ mod unread_feedback {
                 .await
                 .expect("the service listens");
         let echo_task = tokio::spawn(async move {
-            while let Ok(true) = echo
-                .handle_next_request(|request| async move { Ok(request.message().payload()) })
-                .await
-            {}
+            while matches!(
+                echo.handle_next_request(async |request| Ok(request.message().payload()))
+                    .await,
+                Ok(true)
+            ) {}
         });
         let mut news = TopicMessenger::subscribe(
             &caller,
@@ -1692,10 +1695,10 @@ mod unread_feedback {
             .expect("the read must cancel the goal")
             .expect("the provider task ends");
         assert_eq!(cause, Some(peppylib::messaging::CancelCause::Caller));
-        assert!(matches!(
+        assert_matches!(
             goal.try_next_feedback(),
             Err(PeppyError::ActionFeedbackOverflow { .. })
-        ));
+        );
     }
 
     /// A caller exactly at its bound keeps every message: only a message past

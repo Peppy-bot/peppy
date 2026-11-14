@@ -7,7 +7,7 @@
 //! [`ObservationState`].
 //!
 //! Observation state is daemon-authoritative, so the only legitimate caller is
-//! the node's own daemon, whose identity the node knows as its bound core_node.
+//! the node's own daemon, whose identity the node knows as its bound `core_node`.
 
 use crate::encoding::observation_update::ObservationUpdateRequest;
 use crate::messaging::{OBSERVATION_UPDATE_SERVICE, ObservationState, SenderTarget};
@@ -17,7 +17,7 @@ use crate::{MessengerHandle, PeppyResult};
 use config::node::Cardinality;
 
 /// Shared map of one watch channel per declared observer slot, keyed by the
-/// node's own observer-slot link_id.
+/// node's own observer-slot `link_id`.
 pub(crate) type ObservationSlotChannels = SlotChannels<ObservationState>;
 
 impl SlotUpdate for ObservationUpdateRequest {
@@ -27,7 +27,7 @@ impl SlotUpdate for ObservationUpdateRequest {
     const SLOT_NOUN: &'static str = "observer slot";
 
     fn decode_request(payload: &[u8]) -> PeppyResult<Self> {
-        ObservationUpdateRequest::decode(payload)
+        Self::decode(payload)
     }
 
     fn link_id(&self) -> &str {

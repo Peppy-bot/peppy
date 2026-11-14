@@ -13,6 +13,7 @@ use daemon_config::launcher::{
     Placements, PlannedObservation, PlannedPairEndpoint, PlannedPairing, PreparedLauncher,
     ResolvedClocks, resolve_clocks, validate_clock_connections,
 };
+use std::assert_matches;
 use std::collections::BTreeMap;
 use std::path::Path;
 use tempfile::tempdir;
@@ -32,10 +33,10 @@ fn resolve(document: &str) -> Result<ResolvedClocks, Vec<String>> {
 }
 
 fn refusal(document: &str) -> String {
-    resolve(document)
-        .err()
-        .map(|errors| errors.join("\n"))
-        .unwrap_or_else(|| panic!("this document must be refused:\n{document}"))
+    resolve(document).err().map_or_else(
+        || panic!("this document must be refused:\n{document}"),
+        |errors| errors.join("\n"),
+    )
 }
 
 /// Two instances of one node, so every case below has something to bind.
@@ -94,8 +95,7 @@ fn assert_arm_follows_the_engine(composed: &ComposedLaunch, origin: &str) {
         .iter()
         .find(|entry| entry.target == "arm_inst")
         .expect("an adjustment binds the arm's clock");
-    assert!(
-        matches!(&bound.change, AppliedChange::Clock { old: None, new } if new.as_str() == "simulation"),
+    assert_matches!(&bound.change, AppliedChange::Clock { old: None, new } if new.as_str() == "simulation",
         "{:?}",
         bound.change
     );
@@ -117,7 +117,7 @@ fn an_options_adjustment_binds_a_clock() {
     let directory = tempdir().unwrap();
     write(
         &directory.path().join("sim.json5"),
-        &fragment_file(r#"deployments: []"#),
+        &fragment_file(r"deployments: []"),
     );
     let launcher = r#"{
         peppy_schema: "launcher/v1",

@@ -43,7 +43,7 @@ use std::time::SystemTime;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-pub async fn listen_for_repo_refresh(
+pub(crate) async fn listen_for_repo_refresh(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
@@ -201,7 +201,7 @@ fn refresh_result(refreshed: &RefreshedRepos) -> RepoRefreshResult {
 /// running four times. `failures` arrives in repository id order, which
 /// is what makes the report reproducible between machines.
 pub(crate) fn failure_report(failures: &[RepoFailure]) -> String {
-    let lines: Vec<String> = failures.iter().map(|f| f.to_string()).collect();
+    let lines: Vec<String> = failures.iter().map(ToString::to_string).collect();
     format!(
         "{} of the configured repositories could not be updated. \
          Every other repository was updated normally.{}",
@@ -434,16 +434,16 @@ impl RepoReadFailure {
     /// prose can be reworded without changing what tools match on.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            RepoReadFailure::Unreachable => "unreachable",
-            RepoReadFailure::Conflict => "conflict",
+            Self::Unreachable => "unreachable",
+            Self::Conflict => "conflict",
         }
     }
 
     /// Predicate that reads as a sentence about the repository.
     fn describe(self) -> &'static str {
         match self {
-            RepoReadFailure::Unreachable => "could not be read",
-            RepoReadFailure::Conflict => "contradicts itself",
+            Self::Unreachable => "could not be read",
+            Self::Conflict => "contradicts itself",
         }
     }
 }
@@ -491,9 +491,8 @@ pub(crate) struct RefreshedRepos {
     /// failed and kept for repositories outside the refresh's scope.
     pub(crate) items: RepoItems,
     /// Reported to the client through [`RepoRefreshFeedback::Excluded`]
-    /// as the scan runs, so the handler has nothing left to do with it;
-    /// kept on the result because the tests assert against it.
-    #[allow(dead_code)]
+    /// as the scan runs, so the handler has nothing left to do with it.
+    #[cfg_attr(not(test), expect(dead_code, reason = "only the tests read the list"))]
     pub(crate) excluded: Vec<ExcludedRepo>,
     pub(crate) failures: Vec<RepoFailure>,
     /// One entry per repository that was actually read (excluded ones are
@@ -630,8 +629,8 @@ pub(crate) enum RefreshScope {
 impl RefreshScope {
     fn includes(&self, id: u64) -> bool {
         match self {
-            RefreshScope::Every => true,
-            RefreshScope::Only(ids) => ids.contains(&id),
+            Self::Every => true,
+            Self::Only(ids) => ids.contains(&id),
         }
     }
 }
@@ -693,14 +692,13 @@ pub(crate) fn process_refresh(
     // A repository outside `scope` keeps its entries from the previous
     // caches. Without them it would keep nothing and vanish until the next
     // full refresh, so the refresh then reads every repository.
-    let (previous, scope) = match load_previous_caches(peppy_dirs) {
-        Some(previous) => (previous, scope),
-        None => {
-            if *scope != RefreshScope::Every {
-                info!("The previous caches cannot be read, so the refresh reads every repository");
-            }
-            (RepoItems::default(), &RefreshScope::Every)
+    let (previous, scope) = if let Some(previous) = load_previous_caches(peppy_dirs) {
+        (previous, scope)
+    } else {
+        if *scope != RefreshScope::Every {
+            info!("The previous caches cannot be read, so the refresh reads every repository");
         }
+        (RepoItems::default(), &RefreshScope::Every)
     };
     // Resolved once for the whole refresh: retention asks which repository
     // owns an entry for every previous entry of all five kinds, of every
@@ -866,8 +864,8 @@ enum PlannedRepo {
 impl PlannedRepo {
     fn source_to_read(&self) -> Option<&RepoSource> {
         match self {
-            PlannedRepo::Read { source, .. } => Some(source),
-            PlannedRepo::Unparseable { .. } | PlannedRepo::Kept { .. } => None,
+            Self::Read { source, .. } => Some(source),
+            Self::Unparseable { .. } | Self::Kept { .. } => None,
         }
     }
 }
@@ -1039,11 +1037,11 @@ fn merge_published<E: RepoCacheEntry>(
 }
 
 /// Count the number of distinct `(name, tag)` identities. Used to
-/// compute `total_*_found` after process_refresh returns every entry
+/// compute `total_*_found` after `process_refresh` returns every entry
 /// (including same-identity duplicates from lower-priority repos).
 fn count_unique<E: RepoCacheEntry>(entries: &[E]) -> u32 {
     let set: HashSet<(&str, &str)> = entries.iter().map(|e| (e.name(), e.tag())).collect();
-    set.len() as u32
+    u32::try_from(set.len()).unwrap_or(u32::MAX)
 }
 
 /// What one repository read yields, or why it failed.
@@ -1136,7 +1134,7 @@ fn read_git_repo(
     // just read resolves to, so donating it is the difference between the
     // daemon fetching one commit of one repository once and fetching it
     // again the first time anything from it is materialized.
-    node_cache::git::adopt_checkout(peppy_dirs, repo_url, &commit, tmp.keep());
+    node_cache::git::adopt_checkout(peppy_dirs, repo_url, &commit, &tmp.keep());
     Ok(items)
 }
 
@@ -1181,6 +1179,7 @@ fn shown_label(source: &RepoSource, build: &PeppyBuild) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn a_label_shows_a_git_url_without_its_credentials_and_keeps_its_ref() {
@@ -1226,7 +1225,7 @@ mod tests {
         let by_id = |id: u64| -> &Value {
             repos
                 .iter()
-                .find(|r| r.get("id").and_then(|v| v.as_u64()) == Some(id))
+                .find(|r| r.get("id").and_then(Value::as_u64) == Some(id))
                 .unwrap_or_else(|| panic!("default repos should include id {id}"))
         };
 
@@ -1378,13 +1377,12 @@ mod tests {
         let tree = repo.find_tree(tree_id).expect("find tree");
         let signature =
             git2::Signature::now("Peppy", "peppy@example.com").expect("create signature");
-        let parents: Vec<git2::Commit> = repo
+        let parents: Vec<git2::Commit<'_>> = repo
             .head()
             .ok()
             .and_then(|head| head.target())
-            .map(|oid| vec![repo.find_commit(oid).expect("find parent commit")])
-            .unwrap_or_default();
-        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+            .map_or_default(|oid| vec![repo.find_commit(oid).expect("find parent commit")]);
+        let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
         repo.commit(
             Some("HEAD"),
             &signature,
@@ -1539,7 +1537,7 @@ mod tests {
 
         assert_eq!(reindex_after_change(&peppy_dirs).await, None);
 
-        let cached = crate::services::repo::cache::load_repo_cache::<NodeCacheEntry>(&peppy_dirs)
+        let cached = load_repo_cache::<NodeCacheEntry>(&peppy_dirs)
             .expect("the re-index published the node cache");
         assert_eq!(cached.len(), 1);
         assert_eq!(cached[0].node_name, "first");
@@ -1624,8 +1622,9 @@ mod tests {
             &mut |line| feedback.push(line),
             Some(&cancel),
         );
-        assert!(
-            matches!(read, Err(crate::Error::RefreshCancelled)),
+        assert_matches!(
+            read.err(),
+            Some(crate::Error::RefreshCancelled),
             "the cancel stops the refresh"
         );
         assert!(feedback.is_empty(), "no repository is read: {feedback:?}");
@@ -1639,12 +1638,13 @@ mod tests {
             Some(&cancel),
         )
         .await;
-        assert!(
-            matches!(published, Err(crate::Error::RefreshCancelled)),
+        assert_matches!(
+            published.err(),
+            Some(crate::Error::RefreshCancelled),
             "the cancel stops the refresh"
         );
         assert!(
-            crate::services::repo::cache::load_repo_cache::<NodeCacheEntry>(&peppy_dirs)
+            load_repo_cache::<NodeCacheEntry>(&peppy_dirs)
                 .unwrap_or_default()
                 .is_empty(),
             "a cancelled refresh publishes no cache"
@@ -1738,7 +1738,7 @@ mod tests {
         // Break it, and refresh much later.
         write_node_json5(&repo.join("vanished"), "vanished", "v1");
         stale_index(&repo, "vanished/peppy.json5");
-        let later = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(99_000);
+        let later = SystemTime::UNIX_EPOCH + std::time::Duration::from_mins(1650);
         let failed = refresh_publishing(&peppy_dirs, &[], later, &mut |_| {}).unwrap();
 
         let status = &failed.statuses[0];
@@ -2207,7 +2207,7 @@ mod tests {
         let repo_url = format!("file://{}", src.display());
         write_repos(
             &peppy_dirs,
-            &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#,),
+            &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#),
         );
 
         let contracts = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
@@ -2304,7 +2304,7 @@ mod tests {
         );
     }
 
-    /// Process_refresh discovers launcher files (any `.json5` filename
+    /// `Process_refresh` discovers launcher files (any `.json5` filename
     /// with `peppy_schema: "launcher/v1"`) alongside node files in the
     /// same FS walk, names them by basename, and dedupes across repos.
     #[test]
@@ -2441,7 +2441,7 @@ mod tests {
         assert!(cache_path.exists(), "launcher cache should be written");
 
         let raw = std::fs::read_to_string(&cache_path).expect("read launcher cache");
-        let parsed: serde_json::Value =
+        let parsed: Value =
             serde_json5::from_str(&raw).expect("launcher cache should be valid JSON5");
         let arr = parsed.as_array().expect("expected JSON array");
         assert_eq!(arr.len(), 1);
@@ -2490,7 +2490,7 @@ mod tests {
         let repo_url = format!("file://{}", src.display());
         write_repos(
             &peppy_dirs,
-            &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#,),
+            &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#),
         );
 
         let launchers = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
@@ -2522,7 +2522,7 @@ mod tests {
         write_repo_cache(&peppy_dirs, &launchers).unwrap();
         let raw = std::fs::read_to_string(launchers_repo_cache_path(&peppy_dirs))
             .expect("read launcher cache");
-        let parsed: serde_json::Value =
+        let parsed: Value =
             serde_json5::from_str(&raw).expect("launcher cache should be valid JSON5");
         let entry = &parsed.as_array().expect("array")[0];
         assert_eq!(entry["launcher_name"], "openarm01_teleop");
@@ -2567,8 +2567,7 @@ mod tests {
             .collect();
         assert!(
             progress_messages.iter().any(|m| m.starts_with("Reading ")),
-            "expected a 'Reading …' progress feedback, got: {:?}",
-            feedbacks
+            "expected a 'Reading …' progress feedback, got: {feedbacks:?}"
         );
 
         let discovered_names: Vec<&str> = feedbacks
@@ -2622,11 +2621,10 @@ mod tests {
             let tree_id = index.write_tree().expect("write tree");
             let tree = repo.find_tree(tree_id).expect("find tree");
 
-            let parent_commits: Vec<git2::Commit> = commits
+            let parent_commits: Vec<git2::Commit<'_>> = commits
                 .last()
-                .map(|oid| vec![repo.find_commit(*oid).expect("find parent")])
-                .unwrap_or_default();
-            let parent_refs: Vec<&git2::Commit> = parent_commits.iter().collect();
+                .map_or_default(|oid| vec![repo.find_commit(*oid).expect("find parent")]);
+            let parent_refs: Vec<&git2::Commit<'_>> = parent_commits.iter().collect();
 
             let oid = repo
                 .commit(
@@ -3119,8 +3117,7 @@ mod tests {
     }
 
     fn cached_node_commit(peppy_dirs: &PeppyDirs) -> String {
-        let nodes: Vec<NodeCacheEntry> =
-            crate::services::repo::cache::load_repo_cache(peppy_dirs).unwrap();
+        let nodes: Vec<NodeCacheEntry> = load_repo_cache(peppy_dirs).unwrap();
         nodes[0].origin.commit().unwrap().as_str().to_owned()
     }
 
@@ -3176,7 +3173,7 @@ mod tests {
             "a version change never writes repositories.json5"
         );
 
-        assert!(matches!(
+        assert_matches!(
             refresh_release_repositories_for_this_version(
                 &peppy_dirs,
                 &release("v0.31.2"),
@@ -3185,7 +3182,7 @@ mod tests {
             .await
             .unwrap(),
             VersionRefresh::NotNeeded
-        ));
+        );
 
         drop(daemon);
         for _ in 0..2 {

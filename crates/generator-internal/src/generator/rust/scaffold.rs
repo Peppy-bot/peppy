@@ -17,6 +17,7 @@ use crate::{
 use encoding::compile_capnp;
 use rust_embed::Embed;
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::io;
 use std::io::ErrorKind;
 use std::{
@@ -27,7 +28,7 @@ use std::{
 use syn::{Attribute, File, Item, parse_file, parse_quote};
 use toml_edit::{DocumentMut, value};
 
-pub fn add_peppylib_dependencies(
+pub(super) fn add_peppylib_dependencies(
     to_path: impl AsRef<Path>,
     peppy_dirs: &daemon_config::consts::PeppyDirs,
     deploy_mode: CrateDeployMode,
@@ -35,8 +36,8 @@ pub fn add_peppylib_dependencies(
 ) -> Result<()> {
     let to_path = to_path.as_ref();
     let libs_dir = to_path.parent().ok_or_else(|| {
-        Error::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
+        Error::Io(io::Error::new(
+            ErrorKind::InvalidInput,
             "peppygen path has no parent directory",
         ))
     })?;
@@ -47,7 +48,7 @@ pub fn add_peppylib_dependencies(
     Ok(())
 }
 
-pub fn add_artifacts_to_lib(
+pub(super) fn add_artifacts_to_lib(
     lib_path: impl AsRef<Path>,
     artifacts: Vec<InterfaceArtifact>,
 ) -> Result<()> {
@@ -76,7 +77,7 @@ pub fn add_artifacts_to_lib(
 ///
 /// This function takes the node's parameters configuration and generates a Rust struct
 /// that can be used to deserialize parameter values at runtime.
-pub fn add_parameters_to_lib(
+pub(super) fn add_parameters_to_lib(
     lib_path: impl AsRef<Path>,
     parameters: &config::ParameterSchema,
 ) -> Result<()> {
@@ -96,7 +97,10 @@ pub fn add_parameters_to_lib(
 /// earlier one, so the earlier `src/capnp` directory is removed first and
 /// `src/capnp.rs` is always written: the crate keeps no schema of an interface
 /// the node no longer has.
-pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, crate_root: &Path) -> Result<()> {
+pub(super) fn add_capnp_schemas(
+    schemas: &HashMap<String, CapnpSchema>,
+    crate_root: &Path,
+) -> Result<()> {
     let src_dir = crate_root.join("src");
     let capnp_dir = src_dir.join("capnp");
     if capnp_dir.exists() {
@@ -133,9 +137,9 @@ fn symlink_dir(original: &Path, link: &Path) -> io::Result<()> {
 
 /// Normalizes a vendored crate's `Cargo.toml` for the flat `.peppy/libs` layout:
 /// replaces workspace-inherited fields (`version.workspace = true`, etc.) with
-/// concrete values, renames the `peppylib-rs` source package back to `peppylib`
-/// (the name every generated node depends on), and flattens inter-crate `path`
-/// dependencies to flat siblings.
+/// concrete values, drops the lint table, renames the `peppylib-rs` source
+/// package back to `peppylib` (the name every generated node depends on), and
+/// flattens inter-crate `path` dependencies to flat siblings.
 fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetadata) -> Result<()> {
     if !cargo_toml_path.exists() {
         return Ok(());
@@ -155,6 +159,10 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
             package.insert("edition", value(metadata.edition));
         }
 
+        if inherits_from_workspace(package, "rust-version") {
+            package.insert("rust-version", value(metadata.rust_version));
+        }
+
         if inherits_from_workspace(package, "authors") {
             package.remove("authors");
         }
@@ -167,6 +175,11 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
             package.insert("name", value(PEPPYLIB_VENDORED_NAME));
         }
     }
+
+    // The lint levels are those of the workspace the crate comes from. A
+    // vendored crate is a dependency of the node and has no workspace to
+    // take them from.
+    doc.remove("lints");
 
     // Vendored crates never run their own tests, and their dev-dependencies
     // can break resolution in the flat layout (peppylib-rs's cyclic
@@ -199,7 +212,7 @@ fn inherits_from_workspace(package: &toml_edit::Table, key: &str) -> bool {
         .get(key)
         .and_then(|field| field.as_table_like())
         .and_then(|table| table.get("workspace"))
-        .and_then(|workspace| workspace.as_bool())
+        .and_then(toml_edit::Item::as_bool)
         == Some(true)
 }
 
@@ -566,9 +579,9 @@ impl TreeWriter for RustTreeWriter<'_> {
         let mut listing = String::new();
         for entry in entries {
             if entry.is_leaf && !entry.raw_name.is_empty() && entry.raw_name != entry.module_name {
-                listing.push_str(&format!("// {}\n", entry.raw_name));
+                let _ = writeln!(listing, "// {}", entry.raw_name);
             }
-            listing.push_str(&format!("pub mod {};\n", entry.module_name));
+            let _ = writeln!(listing, "pub mod {};", entry.module_name);
         }
         let target = if is_root {
             self.category_file.to_path_buf()
@@ -663,6 +676,7 @@ pub(super) fn sanitize_rust_module_name(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn sanitize_module_name_escapes_rust_keywords() {
@@ -822,6 +836,7 @@ mod tests {
     const TEST_METADATA: WorkspacePackageMetadata = WorkspacePackageMetadata {
         version: "1.2.3",
         edition: "2024",
+        rust_version: "1.90",
     };
 
     /// Writes `manifest` to a temporary `Cargo.toml`, localizes it with
@@ -849,11 +864,13 @@ mod tests {
              name = \"core-node-api\"\n\
              version.workspace = true\n\
              authors.workspace = true\n\
-             edition.workspace = true\n",
+             edition.workspace = true\n\
+             rust-version.workspace = true\n",
         );
 
         assert_eq!(package["version"].as_str(), Some("1.2.3"));
         assert_eq!(package["edition"].as_str(), Some("2024"));
+        assert_eq!(package["rust-version"].as_str(), Some("1.90"));
         assert!(package.get("authors").is_none());
     }
 
@@ -864,11 +881,13 @@ mod tests {
              name = \"core-node-api\"\n\
              version = { workspace = true }\n\
              authors = { workspace = true }\n\
-             edition = { workspace = true }\n",
+             edition = { workspace = true }\n\
+             rust-version = { workspace = true }\n",
         );
 
         assert_eq!(package["version"].as_str(), Some("1.2.3"));
         assert_eq!(package["edition"].as_str(), Some("2024"));
+        assert_eq!(package["rust-version"].as_str(), Some("1.90"));
         assert!(package.get("authors").is_none());
     }
 
@@ -879,17 +898,127 @@ mod tests {
              name = \"core-node-api\"\n\
              version = \"0.1.0\"\n\
              authors = [\"Peppy\"]\n\
-             edition = \"2021\"\n",
+             edition = \"2021\"\n\
+             rust-version = \"1.85\"\n",
         );
 
         assert_eq!(package["version"].as_str(), Some("0.1.0"));
         assert_eq!(package["edition"].as_str(), Some("2021"));
+        assert_eq!(package["rust-version"].as_str(), Some("1.85"));
         assert_eq!(
             package["authors"]
                 .as_array()
                 .and_then(|authors| authors.get(0)?.as_str()),
             Some("Peppy")
         );
+    }
+
+    #[test]
+    fn localize_cargo_toml_drops_the_lint_table() {
+        for lints in [
+            "[lints]\nworkspace = true\n",
+            "[lints.rust]\nunsafe_code = \"forbid\"\n",
+        ] {
+            let doc = localized_manifest(&format!(
+                "[package]\nname = \"core-node-api\"\nversion = \"0.1.0\"\n\n{lints}"
+            ));
+
+            assert!(doc.get("lints").is_none(), "{lints}");
+            assert_eq!(doc["package"]["name"].as_str(), Some("core-node-api"));
+        }
+    }
+
+    /// The vendored manifest of a crate has no `[lints]` table, and a table
+    /// leaves a manifest together with the comment above it. A comment above
+    /// the `[lints]` table of a crate of `peppy-shared` would thus not reach
+    /// the node that vendors the crate.
+    #[test]
+    fn no_shared_crate_holds_a_comment_above_its_lint_table() {
+        let shared = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../peppy-shared");
+        let mut lint_tables = 0;
+        for entry in fs::read_dir(&shared).unwrap() {
+            let manifest_path = entry.unwrap().path().join("Cargo.toml");
+            let Ok(manifest) = fs::read_to_string(&manifest_path) else {
+                continue;
+            };
+            let manifest: DocumentMut = manifest.parse().unwrap();
+            let Some(lints) = manifest.get("lints").and_then(toml_edit::Item::as_table) else {
+                continue;
+            };
+            let above = lints
+                .decor()
+                .prefix()
+                .and_then(toml_edit::RawString::as_str)
+                .unwrap_or_default();
+            assert!(
+                !above.contains('#'),
+                "{} holds a comment above [lints]:\n{above}",
+                manifest_path.display()
+            );
+            lint_tables += 1;
+        }
+        assert!(
+            lint_tables > 0,
+            "no crate of {} has a lint table",
+            shared.display()
+        );
+    }
+
+    /// The lints of the tool `tool` (`rust` or `clippy`) that the
+    /// `[workspace.lints]` table of the manifest at `manifest_path` sets, each
+    /// with its value as text. `[workspace.lints]` itself holds no key of its
+    /// own, so its text is empty: the lints are in its table of each tool.
+    fn workspace_lints(manifest_path: &Path, tool: &str) -> BTreeMap<String, String> {
+        let manifest: DocumentMut = fs::read_to_string(manifest_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", manifest_path.display()))
+            .parse()
+            .unwrap_or_else(|error| panic!("parse {}: {error}", manifest_path.display()));
+        let lints = manifest["workspace"]["lints"][tool]
+            .as_table()
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} has no [workspace.lints.{tool}] table",
+                    manifest_path.display()
+                )
+            });
+        assert!(
+            !lints.is_empty(),
+            "[workspace.lints.{tool}] of {} sets no lint",
+            manifest_path.display()
+        );
+        lints
+            .iter()
+            .map(|(lint, level)| (lint.to_owned(), level.to_string().trim().to_owned()))
+            .collect()
+    }
+
+    /// A vendored crate takes its `rust-version` from this workspace, and the
+    /// sealed `peppy-shared` workspace cannot inherit a table of this one, so
+    /// the two manifests repeat the compiler they need and the lints they
+    /// hold their members to. The clippy configuration of the two is the same
+    /// file twice, for the same reason.
+    #[test]
+    fn the_sealed_workspace_declares_the_rust_version_and_the_lints_of_this_one() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let own = repository.join("Cargo.toml");
+        let sealed = repository.join("peppy-shared/Cargo.toml");
+        assert_eq!(
+            fs::read_to_string(repository.join("peppy-shared/clippy.toml")).unwrap(),
+            fs::read_to_string(repository.join("clippy.toml")).unwrap()
+        );
+
+        let sealed_manifest: DocumentMut = fs::read_to_string(&sealed).unwrap().parse().unwrap();
+        assert_eq!(
+            sealed_manifest["workspace"]["package"]["rust-version"].as_str(),
+            Some(WorkspacePackageMetadata::embedded().rust_version)
+        );
+        for tool in ["rust", "clippy"] {
+            assert_eq!(
+                workspace_lints(&sealed, tool),
+                workspace_lints(&own, tool),
+                "[workspace.lints.{tool}]"
+            );
+        }
     }
 
     #[test]
@@ -930,7 +1059,7 @@ mod tests {
         assert_eq!(
             dependencies["peppy-config-model"]["features"]
                 .as_array()
-                .map(|features| features.len()),
+                .map(toml_edit::Array::len),
             Some(1)
         );
         assert_eq!(dependencies["serde"].as_str(), Some("1"));

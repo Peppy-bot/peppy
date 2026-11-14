@@ -5,6 +5,7 @@
 //! tests run in parallel). The command-level flows (`peppy platform login`,
 //! `enroll`, `unenroll`, ...) are covered by the `peppy` crate's own tests.
 
+use std::assert_matches;
 use std::path::PathBuf;
 
 use httpmock::prelude::*;
@@ -111,7 +112,7 @@ fn resolver_needs_a_session() {
     let Err(err) = resolver::resolve(&creds_path(&dir), &HttpClient::new()) else {
         panic!("no session on disk must not resolve");
     };
-    assert!(matches!(err, auth::AuthError::NotAuthenticated));
+    assert_matches!(err, AuthError::NotAuthenticated);
 }
 
 #[test]
@@ -230,7 +231,7 @@ fn a_401_does_not_refresh_the_session_of_another_platform() {
         panic!("the session of another platform must not answer the 401");
     };
 
-    assert!(matches!(err, AuthError::NotAuthenticated), "{err}");
+    assert_matches!(err, AuthError::NotAuthenticated, "{err}");
     assert_eq!(other_token.calls(), 0);
     assert_eq!(leaked.calls(), 0);
     let stored = storage::load(&creds_path(&dir)).unwrap().session.unwrap();
@@ -499,11 +500,11 @@ fn removing_a_peer_is_staged_and_a_missing_peer_is_already_removed() {
         PeerRemoval::Staged(status) => assert!(status.pending_changes),
         PeerRemoval::AlreadyRemoved => panic!("a 202 is a staged removal"),
     }
-    assert!(matches!(
+    assert_matches!(
         api.remove_peer(WORKSPACE, PROJECT, "peer-gone")
             .expect("a 404 is a definite answer"),
         PeerRemoval::AlreadyRemoved
-    ));
+    );
 }
 
 const DAY: i64 = 24 * 60 * 60;
@@ -642,7 +643,7 @@ fn a_renewal_with_no_session_asks_nothing_and_writes_nothing() {
 
     let err = renewal::renew(&dirs, &HttpClient::new()).expect_err("no session");
 
-    assert!(matches!(err, AuthError::NotAuthenticated), "{err}");
+    assert_matches!(err, AuthError::NotAuthenticated, "{err}");
     assert_eq!(renew.calls(), 0);
     assert_eq!(leaf_on_disk(&dirs), first_leaf);
 }

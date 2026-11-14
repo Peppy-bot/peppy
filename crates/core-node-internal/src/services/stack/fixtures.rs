@@ -244,8 +244,7 @@ pub(in crate::services) fn active_launch_running(instances: &[(&str, &str)]) -> 
     let flat = daemon_config::launcher::PeppyLauncherParser::from_content(&document)
         .expect("the plan parses");
     let prepared =
-        daemon_config::launcher::PreparedLauncher::load(&flat, std::path::Path::new("x.json5"))
-            .expect("it loads");
+        PreparedLauncher::load(&flat, std::path::Path::new("x.json5")).expect("it loads");
     let placements = placements_with(
         "cn-desk",
         &instances

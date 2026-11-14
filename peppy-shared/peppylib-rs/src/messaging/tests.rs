@@ -8,6 +8,7 @@ use crate::types::Payload;
 use config::node::{QoSProfile, TopicRetention};
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
+use std::assert_matches;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -608,7 +609,7 @@ async fn bound_set_subscription_merges_bound_producers_and_excludes_unbound() {
             message.instance_id(),
             "the yielded producer tag must match the wire message's producer"
         );
-        received.insert(producer.instance_id.clone(), message.payload().to_vec());
+        received.insert(producer.instance_id, message.payload().to_vec());
     }
     assert_eq!(received.len(), 2, "one message per bound producer");
     assert_eq!(received[front], b"from-front");
@@ -858,10 +859,10 @@ async fn topic_publish_reliable_5000hz_messages() {
     .expect("Should subscribe to the topic");
 
     let message_count = 5000;
-    let mut message_ids: Vec<u32> = (0..message_count as u32).collect();
+    let mut message_ids: Vec<u32> = (0..u32::try_from(message_count).unwrap()).collect();
     // Fixed seed so a failure reproduces the same id ordering run to run, while
     // still exercising out-of-order payload contents.
-    let mut rng = rand::rngs::StdRng::seed_from_u64(0xC0FFEE);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0x00C0_FFEE);
     message_ids.shuffle(&mut rng);
 
     // Deterministically wait for the subscriber before the publish loop so the
@@ -925,11 +926,11 @@ async fn topic_publish_reliable_5000hz_messages() {
         let payload_bytes = payload.as_ref();
         assert_eq!(
             payload_bytes.len(),
-            std::mem::size_of::<u32>(),
+            size_of::<u32>(),
             "Payload should encode the message index"
         );
 
-        let mut id_bytes = [0u8; std::mem::size_of::<u32>()];
+        let mut id_bytes = [0u8; size_of::<u32>()];
         id_bytes.copy_from_slice(payload_bytes.as_ref());
         let received_id = u32::from_le_bytes(id_bytes);
 
@@ -941,8 +942,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     assert_eq!(
         received_ids.len(),
         message_count,
-        "should receive exactly {} messages",
-        message_count
+        "should receive exactly {message_count} messages"
     );
 
     let mut expected_sorted = message_ids.clone();
@@ -1180,7 +1180,7 @@ async fn service_communication_poll_specific_instance_id() {
 
             let outcome = tokio::time::timeout(
                 service_wait_timeout,
-                service.handle_next_request(|_request| async {
+                service.handle_next_request(async |_request| {
                     Ok(Payload::from_static(b"unexpected response"))
                 }),
             )
@@ -1333,7 +1333,7 @@ async fn service_communication_poll_wrong_core_node() {
 /// Starts a `camera` listener at `listener` exposing `enable_camera`, then
 /// polls the service pinned to `pinned`, a pair that matches the listener in
 /// one half only. The poll must fail as unreachable, naming the pinned
-/// instance_id, and the listener's handler must never run. `listener_wait`
+/// `instance_id`, and the listener's handler must never run. `listener_wait`
 /// bounds how long the listener waits for a request, and `poll_timeout` is
 /// the poll's budget.
 async fn assert_poll_to_absent_producer_is_unreachable(
@@ -1396,7 +1396,7 @@ async fn assert_poll_to_absent_producer_is_unreachable(
             // handler) is a failure. `call_count == 0` below is the
             // authoritative guarantee that nothing was processed.
             match handled {
-                Err(_) | Ok(Ok(false)) | Ok(Err(_)) => {}
+                Err(_) | Ok(Ok(false) | Err(_)) => {}
                 Ok(Ok(true)) => {
                     panic!("service handler processed a request despite the wrong target")
                 }
@@ -1443,10 +1443,7 @@ async fn assert_poll_to_absent_producer_is_unreachable(
         service_name: err_service_name,
     } = &err
     else {
-        panic!(
-            "expected ServiceUnreachable error, received unexpected error: {:?}",
-            err
-        );
+        panic!("expected ServiceUnreachable error, received unexpected error: {err:?}");
     };
 
     // The pinned target's instance_id travels in the error
@@ -1545,7 +1542,7 @@ async fn service_communication_poll_core_node_scoped() {
 
         tokio::spawn(async move {
             service
-                .handle_requests(|_request| async move { Ok(Payload::from_static(b"scoped")) })
+                .handle_requests(async |_request| Ok(Payload::from_static(b"scoped")))
                 .await
         })
     };
@@ -1629,10 +1626,7 @@ async fn service_communication_fails_service_not_started() {
         service_name: err_service_name,
     } = err
     else {
-        panic!(
-            "expected ServiceUnreachable error, received unexpected error: {:?}",
-            err
-        );
+        panic!("expected ServiceUnreachable error, received unexpected error: {err:?}");
     };
 
     assert_eq!(err_instance_id, None);
@@ -1784,7 +1778,7 @@ async fn service_communication_fails_service_timeouts() {
                 let call_count = Arc::clone(&call_count);
                 let handled = tokio::time::timeout(
                     service_op_timeout,
-                    service.handle_next_request(move |request| async move {
+                    service.handle_next_request(async move |request| {
                         assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                         assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                         call_count.fetch_add(1, Ordering::SeqCst);
@@ -1807,7 +1801,7 @@ async fn service_communication_fails_service_timeouts() {
                 let call_count = Arc::clone(&call_count);
                 let handled = tokio::time::timeout(
                     service_op_timeout,
-                    service.handle_next_request(move |request| async move {
+                    service.handle_next_request(async move |request| {
                         assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                         assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                         call_count.fetch_add(1, Ordering::SeqCst);
@@ -1889,10 +1883,7 @@ async fn service_communication_fails_service_timeouts() {
         service_name: err_service_name,
     } = &err
     else {
-        panic!(
-            "expected ServiceTimeout error for timeout, received: {:?}",
-            err
-        );
+        panic!("expected ServiceTimeout error for timeout, received: {err:?}");
     };
 
     assert_eq!(
@@ -2075,7 +2066,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                 let call_count = Arc::clone(&call_count);
 
                 let handle = service
-                    .spawn_next_request_handler(move |request| async move {
+                    .spawn_next_request_handler(async move |request| {
                         assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
                         call_count.fetch_add(1, Ordering::SeqCst);
                         Ok(request.message().payload())
@@ -2122,7 +2113,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
         // Fixed seed so a failure reproduces the same request order run to
         // run.
-        let mut rng = rand::rngs::StdRng::seed_from_u64(0xC0FFEE);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x00C0_FFEE);
         caller_requests.shuffle(&mut rng);
 
         let mut handles = Vec::with_capacity(caller_count);
@@ -2269,7 +2260,7 @@ impl OneGoalExchange {
             .expect("action should start");
 
             let (publisher_tx, publisher_rx) =
-                tokio::sync::oneshot::channel::<crate::messaging::ActionFeedbackPublisher>();
+                oneshot::channel::<crate::messaging::ActionFeedbackPublisher>();
             let publisher_tx = std::sync::Mutex::new(Some(publisher_tx));
             let factory_for_handler = action.feedback_publisher_factory.clone();
 
@@ -2486,16 +2477,15 @@ async fn action_communication_with_instance_id_target() {
             let call_count_for_closure = Arc::clone(&call_count);
 
             // Create the goal handler future first (this sets up the subscription)
-            let goal_handler =
-                action
-                    .goal_service
-                    .handle_next_request(move |_request| async move {
-                        // This should never be reached
-                        call_count_for_closure.fetch_add(1, Ordering::SeqCst);
-                        Ok(super::actions::wrap_goal_accepted(
-                            expected_goal_response_payload.as_ref(),
-                        ))
-                    });
+            let goal_handler = action
+                .goal_service
+                .handle_next_request(async move |_request| {
+                    // This should never be reached
+                    call_count_for_closure.fetch_add(1, Ordering::SeqCst);
+                    Ok(super::actions::wrap_goal_accepted(
+                        expected_goal_response_payload.as_ref(),
+                    ))
+                });
 
             let handled_goal = tokio::time::timeout(Duration::from_secs(5), goal_handler).await;
 
@@ -2581,7 +2571,7 @@ async fn action_communication_goal_cancelled() {
             .expect("action should start");
 
             let (publisher_tx, publisher_rx) =
-                tokio::sync::oneshot::channel::<crate::messaging::ActionFeedbackPublisher>();
+                oneshot::channel::<crate::messaging::ActionFeedbackPublisher>();
             let publisher_tx = std::sync::Mutex::new(Some(publisher_tx));
             let factory_for_handler = action.feedback_publisher_factory.clone();
 
@@ -2634,11 +2624,11 @@ async fn action_communication_goal_cancelled() {
                     let mut ticker = tokio::time::interval(Duration::from_millis(50));
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     let stop_notified = stop_feedback.notified();
-                    tokio::pin!(stop_notified);
+                    let mut stop_notified = std::pin::pin!(stop_notified);
                     loop {
                         tokio::select! {
                             biased;
-                            _ = stop_notified.as_mut() => break,
+                            () = stop_notified.as_mut() => break,
                             _ = ticker.tick() => {
                                 feedback_publisher
                                     .publish(
@@ -2755,12 +2745,10 @@ async fn action_communication_goal_cancelled() {
         if now >= quiet_deadline {
             break;
         }
-        if now.duration_since(start) >= overall_timeout {
-            panic!(
-                "feedback did not stop within {:?} after cancellation",
-                overall_timeout
-            );
-        }
+        assert!(
+            now.duration_since(start) < overall_timeout,
+            "feedback did not stop within {overall_timeout:?} after cancellation"
+        );
 
         let remaining = quiet_deadline
             .checked_duration_since(now)
@@ -2770,9 +2758,8 @@ async fn action_communication_goal_cancelled() {
             Ok(Ok(_)) => {
                 quiet_deadline = tokio::time::Instant::now() + quiet_for;
             }
-            Ok(Err(Error::ActionFeedbackChannelClosed)) => break,
+            Ok(Err(Error::ActionFeedbackChannelClosed)) | Err(_) => break,
             Ok(Err(err)) => panic!("unexpected feedback error after cancellation: {err:?}"),
-            Err(_) => break,
         }
     }
 
@@ -2811,9 +2798,9 @@ async fn single_action_communication_multiple_polls() {
     let caller_prefix = "the_brain";
 
     const CLIENT_COUNT: usize = 8;
-    let cases: Vec<_> = (0..CLIENT_COUNT)
-        .map(|idx| ActionClientCase::new(caller_prefix, idx))
-        .collect();
+    let cases: Vec<_> = Vec::from_fn(CLIENT_COUNT, |idx| {
+        ActionClientCase::new(caller_prefix, idx)
+    });
     let cases = Arc::new(cases);
 
     let (action_ready_tx, action_ready_rx) = oneshot::channel();
@@ -2837,10 +2824,10 @@ async fn single_action_communication_multiple_polls() {
 
             let crate::messaging::ActionCreation {
                 mut goal_service,
-                cancel_service: _,
                 feedback_publisher_factory,
                 mut result_service,
                 liveliness_token: _liveliness_token,
+                ..
             } = action;
             let feedback_publisher_factory = Arc::new(feedback_publisher_factory);
 
@@ -2922,7 +2909,7 @@ async fn single_action_communication_multiple_polls() {
             let mut result_handlers = Vec::with_capacity(client_total);
             for _ in 0..client_total {
                 let handler = result_service
-                    .spawn_next_request_handler(move |request| async move {
+                    .spawn_next_request_handler(async move |request| {
                         // A result request carries the goal_id envelope with an empty body.
                         let request_payload = request.message().payload();
                         let (goal_id, body) = super::unwrap_goal_payload(request_payload.as_ref())
@@ -2960,7 +2947,7 @@ async fn single_action_communication_multiple_polls() {
     let total_clients = cases.len();
     let mut shuffled_cases = cases.as_ref().clone();
     // Fixed seed so a failure reproduces the same client order run to run.
-    let mut rng = rand::rngs::StdRng::seed_from_u64(0xC0FFEE);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0x00C0_FFEE);
     shuffled_cases.shuffle(&mut rng);
 
     let mut client_handles = Vec::with_capacity(total_clients);
@@ -3185,8 +3172,8 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
     .await
     .expect("send_goal should succeed");
 
-    let winner_inst = goal_handle.goal_reply().instance_id.to_string();
-    let winner_core = goal_handle.goal_reply().core_node.to_string();
+    let winner_inst = goal_handle.goal_reply().instance_id.clone();
+    let winner_core = goal_handle.goal_reply().core_node.clone();
     assert!(
         winner_inst == server_a_inst || winner_inst == server_b_inst,
         "goal_response identity must come from one of the producers, got {winner_inst:?}",
@@ -3242,7 +3229,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
 /// A FULL-wildcard `poll` (`target: None`) issued against two producers
 /// that share an `instance_id` but live on different `core_node`s must
 /// run discover-then-pin so exactly ONE handler runs. A half-pinned shape
-/// (core_node wildcard plus instance_id pin) is unrepresentable, because
+/// (`core_node` wildcard plus `instance_id` pin) is unrepresentable, because
 /// producer identity travels as a full `(core_node, instance_id)` pair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_communication_poll_full_wildcard_discovers() {
@@ -3384,7 +3371,7 @@ async fn service_communication_poll_full_wildcard_discovers() {
 /// sharing an `instance_id` on different `core_node`s must run
 /// discover-then-pin so exactly ONE goal handler runs; both executing
 /// would violate the safety contract for actions with side effects. A
-/// half-pinned shape (core_node wildcard plus instance_id pin) is
+/// half-pinned shape (`core_node` wildcard plus `instance_id` pin) is
 /// unrepresentable, because producer identity travels as a full
 /// `(core_node, instance_id)` pair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -3491,7 +3478,7 @@ async fn action_send_goal_full_wildcard_discovers() {
     .expect("send_goal should succeed");
 
     assert_eq!(goal_handle.goal_reply().instance_id, shared_inst);
-    let winner_core = goal_handle.goal_reply().core_node.to_string();
+    let winner_core = goal_handle.goal_reply().core_node.clone();
     assert!(
         winner_core == server_a_core || winner_core == server_b_core,
         "goal_response core_node must come from one of the producers, got {winner_core:?}",
@@ -3514,8 +3501,8 @@ async fn action_send_goal_full_wildcard_discovers() {
     router.shutdown().await;
 }
 
-/// Matrix corner from the bimanual field failure: same core_node, two
-/// instances of one node (same `(name, tag)`), distinct instance_ids,
+/// Matrix corner from the bimanual field failure: same `core_node`, two
+/// instances of one node (same `(name, tag)`), distinct `instance_ids`,
 /// caller pinned to each instance in turn. Both producers idle: each
 /// pinned poll must reach exactly the pinned listener and never its
 /// sibling.
@@ -3719,7 +3706,7 @@ async fn service_poll_same_core_pinned_producer_busy_waits_caller_budget() {
 
 /// Action mirror of
 /// [`service_poll_same_core_distinct_instances_pinned_routes_to_pinned`]:
-/// two idle instances of one node on one core_node; a pinned `send_goal`
+/// two idle instances of one node on one `core_node`; a pinned `send_goal`
 /// to each must run exactly that instance's goal handler.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn action_send_goal_same_core_distinct_instances_pinned_routes_to_pinned() {
@@ -3928,11 +3915,11 @@ async fn action_send_goal_same_core_pinned_producer_busy_waits_caller_budget() {
 /// watcher observes exactly the queries the caller puts on the wire.
 /// Dropping the query without replying finalizes it for the watcher, so
 /// the watched calls are not delayed. The mandatory query attachment is
-/// `[0x03 magic, kind]` with kind `0x00` = UserRequest, `0x01` = Probe
+/// `[0x03 magic, kind]` with kind `0x00` = `UserRequest`, `0x01` = Probe
 /// (see `pmi::wire::zenoh_format::ServiceQueryAttachment`), which is what
 /// lets the watcher discriminate probes wire-level.
 ///
-/// The watcher seeing the pinned calls' UserRequests (asserted `>= 1`
+/// The watcher seeing the pinned calls' `UserRequests` (asserted `>= 1`
 /// each) is what makes the zero-probe assertion meaningful: it proves the
 /// watcher observes this traffic at all. The control listener under a
 /// different unique name proves the same watcher counts discovery probes
@@ -4187,8 +4174,8 @@ async fn pinned_calls_issue_zero_probes() {
             .await
             .expect("control service should start");
 
-            let handler = service
-                .handle_next_request(|_request| async move { Ok(Payload::from_static(b"ack")) });
+            let handler =
+                service.handle_next_request(async |_request| Ok(Payload::from_static(b"ack")));
 
             ctrl_ready_tx.send(()).unwrap();
             let handled = tokio::time::timeout(Duration::from_secs(10), handler)
@@ -4267,9 +4254,9 @@ async fn pinned_calls_issue_zero_probes() {
 
 /// Topic subscriptions pin the full `(core_node, instance_id)` pair on the
 /// wire, never `instance_id` alone. Two producers share `instance_id`
-/// "inst1" on different core_nodes; the subscription bound to
-/// `(core_a, inst1)` must never surface core_b's publishes even though they
-/// carry the same instance_id on the same topic.
+/// "inst1" on different `core_nodes`; the subscription bound to
+/// `(core_a, inst1)` must never surface `core_b`'s publishes even though they
+/// carry the same `instance_id` on the same topic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn topic_pinned_subscription_compares_full_pairs() {
     let router = TestRouterContext::start().await;
@@ -4327,7 +4314,7 @@ async fn topic_pinned_subscription_compares_full_pairs() {
             loop {
                 tokio::select! {
                     biased;
-                    _ = stop.cancelled() => break,
+                    () = stop.cancelled() => break,
                     _ = ticker.tick() => {
                         publisher
                             .publish(payload.clone())
@@ -4504,7 +4491,7 @@ async fn probes_answered_while_pinned_producer_is_busy() {
 #[test]
 fn connect_defaults_to_gossip_peer_under_local_namespace() {
     let conn = MessengerHandle::connect("127.0.0.1", 7448);
-    assert!(matches!(conn.kind, super::SessionKind::GossipPeer));
+    assert_matches!(conn.kind, super::SessionKind::GossipPeer);
     assert_eq!(conn.namespace, config::namespace::Namespace::local());
 }
 
@@ -4514,7 +4501,7 @@ fn namespace_scope_selects_client_kind() {
     let ns = config::namespace::Namespace::parse("workspace-a").expect("valid namespace");
     let conn = MessengerHandle::connect("127.0.0.1", 7448)
         .scope(super::SessionScope::Namespace(ns.clone()));
-    assert!(matches!(conn.kind, super::SessionKind::Client));
+    assert_matches!(conn.kind, super::SessionKind::Client);
     assert_eq!(conn.namespace, ns);
 }
 
@@ -4554,7 +4541,7 @@ fn discovery_scope_applies_stamped_namespace() {
     let conn =
         MessengerHandle::connect("127.0.0.1", 7448).scope(super::SessionScope::Discovery(&cfg));
     assert_eq!(conn.namespace, ns);
-    assert!(matches!(conn.kind, super::SessionKind::Discovery(_)));
+    assert_matches!(conn.kind, super::SessionKind::Discovery(_));
 }
 
 /// Chained `scope` calls stay mutually exclusive: the last call wins the kind
@@ -4570,7 +4557,7 @@ fn chained_scopes_last_call_wins() {
     let conn = MessengerHandle::connect("127.0.0.1", 7448)
         .scope(super::SessionScope::Discovery(&cfg))
         .scope(super::SessionScope::Namespace(ns.clone()));
-    assert!(matches!(conn.kind, super::SessionKind::Client));
+    assert_matches!(conn.kind, super::SessionKind::Client);
     assert_eq!(conn.namespace, ns);
 
     let conn = MessengerHandle::connect("127.0.0.1", 7448)

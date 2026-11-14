@@ -10,7 +10,7 @@ fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
             Ok(e) => e,
             Err(e) => {
                 println!(
-                    "cargo:warning=Failed to read directory {}: {}",
+                    "cargo::warning=Failed to read directory {}: {}",
                     current.display(),
                     e
                 );
@@ -43,11 +43,10 @@ fn is_crate_source_file(relative_path: &str, is_config_internal: bool) -> bool {
         return false;
     }
 
-    if relative_path.ends_with(".rs")
-        || relative_path.ends_with(".toml")
-        || relative_path.ends_with(".capnp")
-        || relative_path.ends_with(".j2")
-    {
+    let extension = std::path::Path::new(relative_path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str);
+    if matches!(extension, Some("rs" | "toml" | "capnp" | "j2")) {
         return true;
     }
 
@@ -69,7 +68,7 @@ fn collect_crate_source_files(
             Ok(e) => e,
             Err(e) => {
                 println!(
-                    "cargo:warning=Failed to read directory {}: {}",
+                    "cargo::warning=Failed to read directory {}: {}",
                     current.display(),
                     e
                 );
@@ -78,7 +77,7 @@ fn collect_crate_source_files(
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let rel = path.strip_prefix(crate_dir).unwrap_or(&path);
+            let rel = path.trim_prefix(crate_dir);
             let rel_str = rel.to_string_lossy();
             if path.is_dir() {
                 // Only top-level target/tests/examples are excluded.
@@ -109,7 +108,7 @@ mod ruff_build {
         build_helpers::progress!("Downloading ruff {} for {}...", super::RUFF_VERSION, target);
 
         let temp_dir = dest.parent().unwrap().join("ruff-download-tmp");
-        std::fs::create_dir_all(&temp_dir).ok();
+        let _ = std::fs::create_dir_all(&temp_dir);
         let archive = temp_dir.join("ruff.tar.gz");
 
         let unpacked = build_helpers::download_file(&url, &archive, "the ruff archive")
@@ -124,32 +123,31 @@ mod ruff_build {
 
         if !unpacked {
             println!(
-                "cargo:warning=Failed to download ruff for {} (no pre-built binary available)",
-                target
+                "cargo::warning=Failed to download ruff for {target} (no pre-built binary available)"
             );
-            std::fs::remove_dir_all(&temp_dir).ok();
+            let _ = std::fs::remove_dir_all(&temp_dir);
             return false;
         }
 
         let ruff_bin = temp_dir.join("ruff");
         if ruff_bin.exists() {
             if let Err(e) = std::fs::copy(&ruff_bin, dest) {
-                println!("cargo:warning=Failed to copy downloaded ruff binary: {e}");
-                std::fs::remove_dir_all(&temp_dir).ok();
+                println!("cargo::warning=Failed to copy downloaded ruff binary: {e}");
+                let _ = std::fs::remove_dir_all(&temp_dir);
                 return false;
             }
-            std::fs::remove_dir_all(&temp_dir).ok();
+            let _ = std::fs::remove_dir_all(&temp_dir);
             return true;
         }
 
-        println!("cargo:warning=Downloaded ruff archive did not contain ruff binary");
-        std::fs::remove_dir_all(&temp_dir).ok();
+        println!("cargo::warning=Downloaded ruff archive did not contain ruff binary");
+        let _ = std::fs::remove_dir_all(&temp_dir);
         false
     }
 
-    pub fn run() {
-        println!("cargo:rerun-if-changed=build.rs");
-        println!("cargo:rustc-env=RUFF_VERSION={}", super::RUFF_VERSION);
+    pub(crate) fn run() {
+        println!("cargo::rerun-if-changed=build.rs");
+        println!("cargo::rustc-env=RUFF_VERSION={}", super::RUFF_VERSION);
 
         let target = build_helpers::build_target_triple();
 
@@ -161,7 +159,7 @@ mod ruff_build {
         let cached_ruff_path = cache_dir.join(format!("ruff-{target}"));
 
         let out_dir = env::var("OUT_DIR").unwrap();
-        let ruff_binary_path = format!("{}/ruff", out_dir);
+        let ruff_binary_path = format!("{out_dir}/ruff");
 
         // 1. Check architecture-aware cache
         if cached_ruff_path.exists() {
@@ -202,6 +200,7 @@ mod ruff_build {
 
 mod peppylib_build {
     use std::collections::BTreeMap;
+    use std::fmt::Write as _;
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
@@ -226,8 +225,12 @@ mod peppylib_build {
     fn pixi_home_with_detached_envs() -> PathBuf {
         let cache = build_helpers::cache_dir("peppylib-py");
         let pixi_home = cache.join("pixi-home");
-        std::fs::create_dir_all(&pixi_home)
-            .unwrap_or_else(|e| panic!("failed to create pixi home {pixi_home:?}: {e}"));
+        std::fs::create_dir_all(&pixi_home).unwrap_or_else(|e| {
+            panic!(
+                "failed to create pixi home {pixi_home}: {e}",
+                pixi_home = pixi_home.display()
+            )
+        });
         let config = format!(
             "detached-environments = \"{}\"\n",
             cache.join("pixi-envs").display()
@@ -259,13 +262,12 @@ mod peppylib_build {
             .output()
             .unwrap_or_else(|e| panic!("Failed to run `pixi run {task}`: {e}"));
 
-        if !output.status.success() {
-            panic!(
-                "pixi run {task} failed for peppylib-py:\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
-            );
-        }
+        assert!(
+            output.status.success(),
+            "pixi run {task} failed for peppylib-py:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     /// Extracts `_peppylib.abi3.so` from the newest `.whl` file in the given directory.
@@ -273,15 +275,16 @@ mod peppylib_build {
     fn extract_so_from_wheel(wheels_dir: &Path) -> Vec<u8> {
         let whl_path = std::fs::read_dir(wheels_dir)
             .expect("failed to read wheels directory")
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "whl"))
-            .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
+            .max_by_key(|e| e.metadata().ok()?.modified().ok())
             .map(|e| e.path())
             .expect("no .whl file found in wheels directory");
 
         let wheel = std::fs::File::open(&whl_path).expect("failed to open wheel file");
-        peppylib_build_policy::native_extension_of_wheel(wheel)
-            .unwrap_or_else(|e| panic!("failed to extract the .so from {whl_path:?}: {e}"))
+        peppylib_build_policy::native_extension_of_wheel(wheel).unwrap_or_else(|e| {
+            panic!("failed to extract the .so from {}: {e}", whl_path.display())
+        })
     }
 
     /// A Linux cross-compilation target for peppylib.
@@ -316,9 +319,7 @@ mod peppylib_build {
             .args(["target", "add", target_triple])
             .status()
             .expect("failed to run rustup target add");
-        if !status.success() {
-            panic!("rustup target add {target_triple} failed");
-        }
+        assert!(status.success(), "rustup target add {target_triple} failed");
     }
 
     /// All `.py` files in the peppylib package directory, excluding `__pycache__`.
@@ -353,16 +354,16 @@ mod peppylib_build {
     /// marker is the one exception, registered by [`track_so_cache_presence`].
     fn register_rerun_triggers(peppylib_py_dir: &Path) {
         for file in so_rebuild_input_files(peppylib_py_dir) {
-            println!("cargo:rerun-if-changed={}", file.display());
+            println!("cargo::rerun-if-changed={}", file.display());
         }
         for py_file in peppylib_python_files(&peppylib_py_dir.join("peppylib")) {
-            println!("cargo:rerun-if-changed={}", py_file.display());
+            println!("cargo::rerun-if-changed={}", py_file.display());
         }
-        println!("cargo:rerun-if-env-changed={REBUILD_ENV_VAR}");
-        println!("cargo:rerun-if-env-changed={PREBUILT_SO_DIR_ENV}");
+        println!("cargo::rerun-if-env-changed={REBUILD_ENV_VAR}");
+        println!("cargo::rerun-if-env-changed={PREBUILT_SO_DIR_ENV}");
         // Toggling the cross-build flag must re-run build.rs so the Linux .so are
         // (re)built or skipped to match, instead of replaying a stale decision.
-        println!("cargo:rerun-if-env-changed=PEPPY_CROSS_BUILD");
+        println!("cargo::rerun-if-env-changed=PEPPY_CROSS_BUILD");
     }
 
     /// Registers the shared `.so` cache's presence marker with cargo and writes
@@ -373,7 +374,7 @@ mod peppylib_build {
     /// re-runs this script once, which then leaves the marker alone.
     fn track_so_cache_presence(so_dir: &Path) {
         let marker = so_dir.join(CACHE_PRESENCE_MARKER);
-        println!("cargo:rerun-if-changed={}", marker.display());
+        println!("cargo::rerun-if-changed={}", marker.display());
         if marker.exists() {
             return;
         }
@@ -385,7 +386,7 @@ mod peppylib_build {
              alone rebuilds them too, and removing a .so while leaving this file \
              fails the build of the generator crate.\n",
         )
-        .unwrap_or_else(|e| panic!("failed to write {marker:?}: {e}"));
+        .unwrap_or_else(|e| panic!("failed to write {marker}: {e}", marker = marker.display()));
     }
 
     /// Returns true if `pixi` is available on PATH.
@@ -419,8 +420,8 @@ mod peppylib_build {
 
         assert!(
             so_path.exists(),
-            "Expected _peppylib.abi3.so at {:?} after pixi run {pixi_task}, but not found",
-            so_path,
+            "Expected _peppylib.abi3.so at {so_path} after pixi run {pixi_task}, but not found",
+            so_path = so_path.display(),
         );
 
         let host_suffix = host_platform_suffix();
@@ -469,11 +470,15 @@ mod peppylib_build {
         let linux_so_bytes = extract_so_from_wheel(&wheels_dir);
 
         let linux_so_path = so_dir.join(format!("_peppylib.abi3.{}.so", target.platform_suffix));
-        std::fs::write(&linux_so_path, &linux_so_bytes)
-            .unwrap_or_else(|e| panic!("failed to write linux .so to {:?}: {e}", linux_so_path));
+        std::fs::write(&linux_so_path, &linux_so_bytes).unwrap_or_else(|e| {
+            panic!(
+                "failed to write linux .so to {}: {e}",
+                linux_so_path.display()
+            )
+        });
 
         // Clean up wheel files to avoid stale artifacts between targets
-        std::fs::remove_dir_all(&wheels_dir).ok();
+        let _ = std::fs::remove_dir_all(&wheels_dir);
     }
 
     /// Marker file recording, per platform, the source hash and profile each
@@ -513,7 +518,11 @@ mod peppylib_build {
     /// True for a platform-suffixed native extension (`_peppylib.abi3.<plat>.so`),
     /// excluding the canonical `_peppylib.abi3.so` Python imports at runtime.
     fn is_platform_so_name(name: &str) -> bool {
-        name.starts_with("_peppylib.abi3.") && name.ends_with(".so") && name != "_peppylib.abi3.so"
+        name.starts_with("_peppylib.abi3.")
+            && Path::new(name)
+                .extension()
+                .is_some_and(|extension| extension == "so")
+            && name != "_peppylib.abi3.so"
     }
 
     /// This build script's own source, embedded so it can be mixed into every
@@ -597,7 +606,7 @@ mod peppylib_build {
         let mut hasher = Sha256::new();
         hasher.update(BUILD_SCRIPT_SOURCE.as_bytes());
         for file in files {
-            let rel = file.strip_prefix(&crates_root).unwrap_or(file);
+            let rel = file.trim_prefix(&crates_root);
             if let Ok(bytes) = std::fs::read(file) {
                 hasher.update(rel.to_string_lossy().as_bytes());
                 hasher.update(&bytes);
@@ -644,7 +653,7 @@ mod peppylib_build {
             .collect()
     }
 
-    /// Writes the per-platform build state, using write_if_changed to avoid
+    /// Writes the per-platform build state, using `write_if_changed` to avoid
     /// touching the file (and its mtime) on no-op builds.
     fn write_build_state(so_dir: &Path, state: &BTreeMap<String, (String, String)>) {
         let body: String = state
@@ -659,7 +668,7 @@ mod peppylib_build {
     /// provenance) and therefore must not be embedded — see
     /// [`peppylib_build_policy::should_embed_so`]. In practice these are the
     /// Linux container bindings after a shared-crate change: a debug build
-    /// without PEPPY_CROSS_BUILD rebuilds only the host `.so` and skips the
+    /// without `PEPPY_CROSS_BUILD` rebuilds only the host `.so` and skips the
     /// cross-compile, so the cache keeps Linux bindings from older sources.
     /// The files are left in place
     /// (another checkout at their revision may still embed them; the next
@@ -711,7 +720,7 @@ mod peppylib_build {
             if let Some(suffix) = suffix
                 && !current_platforms.contains(&suffix)
             {
-                std::fs::remove_file(entry.path()).ok();
+                let _ = std::fs::remove_file(entry.path());
             }
         }
         state.retain(|platform, _| current_platforms.contains(platform));
@@ -747,21 +756,25 @@ mod peppylib_build {
 
         let mut hasher = Sha256::new();
         for file in &hashed_files {
-            let bytes = std::fs::read(file)
-                .unwrap_or_else(|e| panic!("failed to read {:?} for hashing: {e}", file));
+            let bytes = std::fs::read(file).unwrap_or_else(|e| {
+                panic!(
+                    "failed to read {file} for hashing: {e}",
+                    file = file.display()
+                )
+            });
             hasher.update(file.file_name().unwrap().as_encoded_bytes());
             hasher.update(&bytes);
         }
         let hash = hasher.finalize();
         let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
-        println!("cargo:rustc-env=PEPPYLIB_SO_HASH={}", &hex[..16]);
+        println!("cargo::rustc-env=PEPPYLIB_SO_HASH={}", &hex[..16]);
     }
 
-    /// Emits `embedded_peppylib_so.rs` into OUT_DIR: a `PEPPYLIB_PLATFORM_SO`
+    /// Emits `embedded_peppylib_so.rs` into `OUT_DIR`: a `PEPPYLIB_PLATFORM_SO`
     /// table mapping each platform-suffixed `.so` filename to its bytes via
     /// `include_bytes!`. The scaffolder consumes this table to write the target
     /// platform's native extension. This mirrors [`embed_ruff_binary`]: build
-    /// artifacts are embedded through OUT_DIR rather than a compile-time source
+    /// artifacts are embedded through `OUT_DIR` rather than a compile-time source
     /// path, so the `.so` can live in a peppy-owned cache dir instead of being
     /// written into the shared source checkout.
     ///
@@ -808,25 +821,37 @@ mod peppylib_build {
             if excluded_so.iter().any(|ex| ex == name) {
                 continue;
             }
-            entries.push_str(&format!("    ({name:?}, include_bytes!({so:?})),\n"));
+            #[expect(
+                clippy::unnecessary_debug_formatting,
+                reason = "the `Debug` form of a path is the string literal that the generated Rust code needs"
+            )]
+            let _ = writeln!(entries, "    ({name:?}, include_bytes!({so:?})),");
             let platform = name
                 .strip_prefix("_peppylib.abi3.")
                 .and_then(|s| s.strip_suffix(".so"))
                 .expect("is_platform_so_name guarantees the prefix and suffix");
             let (hash, profile) = state.get(platform).unwrap_or_else(|| {
-                panic!("embedding {name} without a recorded build state in {so_dir:?}")
+                panic!(
+                    "embedding {name} without a recorded build state in {so_dir}",
+                    so_dir = so_dir.display()
+                )
             });
-            provenance.push_str(&format!(
-                "    {:?},\n",
+            let _ = writeln!(
+                provenance,
+                "    {:?},",
                 format!("{platform}\t{hash}\t{profile}\n")
-            ));
+            );
         }
 
         let marker = so_dir.join(BUILD_STATE_MARKER);
+        #[expect(
+            clippy::unnecessary_debug_formatting,
+            reason = "the `Debug` form of a path is the string literal that the generated Rust code needs"
+        )]
         let content = format!(
             "// @generated by generator-internal/build.rs. Platform-suffixed peppylib\n\
              // native extensions, embedded from a peppy-owned cache dir.\n\
-             pub const PEPPYLIB_PLATFORM_SO: &[(&str, &[u8])] = &[\n{entries}];\n\
+             pub(crate) const PEPPYLIB_PLATFORM_SO: &[(&str, &[u8])] = &[\n{entries}];\n\
              \n\
              // The build state of the shared `.so` cache, read at compile time so\n\
              // cargo tracks it as an input of this crate.\n\
@@ -867,7 +892,12 @@ mod peppylib_build {
     fn verify_prebuilt_so(so_dir: &Path, current_hash: &str) -> BTreeMap<String, (String, String)> {
         let state = read_build_state(so_dir);
         let mut platform_so: Vec<String> = std::fs::read_dir(so_dir)
-            .unwrap_or_else(|e| panic!("{PREBUILT_SO_DIR_ENV}={so_dir:?} cannot be read: {e}"))
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{PREBUILT_SO_DIR_ENV}={so_dir} cannot be read: {e}",
+                    so_dir = so_dir.display()
+                )
+            })
             .flatten()
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .filter(|name| is_platform_so_name(name))
@@ -876,8 +906,9 @@ mod peppylib_build {
 
         assert!(
             !platform_so.is_empty(),
-            "{PREBUILT_SO_DIR_ENV}={so_dir:?} holds no peppylib .so; run the host \
-             build before cross-building"
+            "{PREBUILT_SO_DIR_ENV}={so_dir} holds no peppylib .so; run the host \
+             build before cross-building",
+            so_dir = so_dir.display()
         );
         for name in &platform_so {
             let suffix = name
@@ -887,18 +918,19 @@ mod peppylib_build {
             let recorded = state.get(suffix).map(|(h, _)| h.as_str());
             assert!(
                 recorded == Some(current_hash),
-                "prebuilt peppylib .so {name} in {so_dir:?} was built from stale \
+                "prebuilt peppylib .so {name} in {so_dir} was built from stale \
                  sources (recorded {recorded:?}, current {current_hash}); rebuild \
                  the host artifacts before cross-building. If a rebuild does not \
                  fix this, peppy-shared changed between the host build and \
                  this one: run `git status` in the repository to \
-                 find what is being modified while the build runs"
+                 find what is being modified while the build runs",
+                so_dir = so_dir.display()
             );
         }
         state
     }
 
-    pub fn run() {
+    pub(crate) fn run() {
         // peppylib-py and its `.so` dependency crates live in the shared
         // workspace (peppy-shared), located via build-helpers. Only the Python
         // wrappers are read from here; the compiled `.so` are
@@ -922,7 +954,7 @@ mod peppylib_build {
             peppylib_build_policy::cross_build_requested(),
         );
         println!(
-            "cargo:rustc-env=PEPPYLIB_CROSS_BUILD={}",
+            "cargo::rustc-env=PEPPYLIB_CROSS_BUILD={}",
             u8::from(cross_build)
         );
 
@@ -954,8 +986,12 @@ mod peppylib_build {
         let so_dir = build_helpers::cache_dir("peppylib-py")
             .join("so")
             .join(profile.tag());
-        std::fs::create_dir_all(&so_dir)
-            .unwrap_or_else(|e| panic!("failed to create peppylib .so dir {so_dir:?}: {e}"));
+        std::fs::create_dir_all(&so_dir).unwrap_or_else(|e| {
+            panic!(
+                "failed to create peppylib .so dir {so_dir}: {e}",
+                so_dir = so_dir.display()
+            )
+        });
         track_so_cache_presence(&so_dir);
 
         let host = host_platform_suffix();
@@ -1003,7 +1039,7 @@ mod peppylib_build {
                 unusable.join("\n")
             );
             println!(
-                "cargo:warning=Skipping peppylib-py build (pixi not available). \
+                "cargo::warning=Skipping peppylib-py build (pixi not available). \
                  Using existing .so files."
             );
             // The assert above already failed the build if any binding is
@@ -1042,9 +1078,9 @@ mod peppylib_build {
                 // No cached target yet (e.g. first forced build): nothing to discard.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => panic!(
-                    "failed to clear maturin target dir {:?} for a forced rebuild \
+                    "failed to clear maturin target dir {target_dir} for a forced rebuild \
                      ({REBUILD_ENV_VAR}): {e}",
-                    target_dir
+                    target_dir = target_dir.display()
                 ),
             }
         }
@@ -1065,7 +1101,7 @@ mod peppylib_build {
                 profile.tag(),
                 &target_dir,
             );
-            state.insert(host.clone(), host_state);
+            state.insert(host, host_state);
         } else {
             build_helpers::progress!("Skipping peppylib-py host native build (sources unchanged).");
         }
@@ -1103,7 +1139,7 @@ mod peppylib_build {
         // Guard against `maturin develop` leaving its unsuffixed .so behind in the
         // checkout; the build artifact now lives in `so_dir`.
         if so_path.exists() {
-            std::fs::remove_file(&so_path).ok();
+            let _ = std::fs::remove_file(&so_path);
         }
 
         // Cached bindings this build chose not to rebuild (the Linux
@@ -1115,7 +1151,7 @@ mod peppylib_build {
         let stale = stale_so_names(&so_dir, &state, &current_hash);
         for name in &stale {
             println!(
-                "cargo:warning=Excluding {name} from the embedded peppylib set: it was \
+                "cargo::warning=Excluding {name} from the embedded peppylib set: it was \
                  built from different sources. Container Python nodes for that platform \
                  will fail to build until a cross build refreshes it \
                  (cargo build --release, or PEPPY_CROSS_BUILD=1 for a debug build)."
@@ -1126,7 +1162,7 @@ mod peppylib_build {
     }
 }
 
-/// Generates `embedded_ruff.rs` in OUT_DIR that embeds the ruff binary via `include_bytes!`.
+/// Generates `embedded_ruff.rs` in `OUT_DIR` that embeds the ruff binary via `include_bytes!`.
 /// This allows the binary to be extracted at runtime on any machine, rather than relying
 /// on a stale compile-time filesystem path.
 fn embed_ruff_binary() {
@@ -1136,11 +1172,11 @@ fn embed_ruff_binary() {
 
     let content = if ruff_binary_path.exists() {
         format!(
-            r#"pub const RUFF_BINARY: Option<&[u8]> = Some(include_bytes!("{}"));"#,
+            r#"pub(crate) const RUFF_BINARY: Option<&[u8]> = Some(include_bytes!("{}"));"#,
             ruff_binary_path.display()
         )
     } else {
-        r#"pub const RUFF_BINARY: Option<&[u8]> = None;"#.to_string()
+        r"pub(crate) const RUFF_BINARY: Option<&[u8]> = None;".to_string()
     };
 
     // Use write_if_changed to avoid bumping mtime: this file is
@@ -1154,7 +1190,7 @@ fn main() {
     // `#[folder = "$PEPPY_SHARED_DIR/…"]` attributes in src/ expand this at
     // compile time.
     println!(
-        "cargo:rustc-env=PEPPY_SHARED_DIR={}",
+        "cargo::rustc-env=PEPPY_SHARED_DIR={}",
         build_helpers::peppy_shared_dir().display()
     );
 

@@ -52,11 +52,13 @@ impl ParticipantReserveRequest {
         }
     }
 
+    #[must_use]
     pub fn with_deployment_pins(mut self, pins: Vec<String>) -> Self {
         self.deployment_pins_json5 = pins;
         self
     }
 
+    #[must_use]
     pub fn with_publish_repository(
         mut self,
         repository: Option<crate::encoding::OciRepository>,
@@ -69,7 +71,7 @@ impl ParticipantReserveRequest {
         let mut builder = Builder::new_default();
         {
             let mut request =
-                builder.init_root::<federation_capnp::participant_reserve_request::Builder>();
+                builder.init_root::<federation_capnp::participant_reserve_request::Builder<'_>>();
             request.set_launch_id(&self.launch_id);
             request.set_coordinator_core_node(&self.coordinator_core_node);
             let count = capnp_list_len(
@@ -89,7 +91,8 @@ impl ParticipantReserveRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<federation_capnp::participant_reserve_request::Reader>()?;
+        let request =
+            reader.get_root::<federation_capnp::participant_reserve_request::Reader<'_>>()?;
 
         Ok(Self {
             launch_id: required_text(request.get_launch_id()?.to_str()?, "launch_id")?,
@@ -134,7 +137,7 @@ impl ParticipantReserveResponse {
         let mut builder = Builder::new_default();
         {
             let mut response =
-                builder.init_root::<federation_capnp::participant_reserve_response::Builder>();
+                builder.init_root::<federation_capnp::participant_reserve_response::Builder<'_>>();
             response.set_peppy_version(&self.peppy_version);
             response.set_root_instance_id(&self.root_instance_id);
         }
@@ -144,7 +147,7 @@ impl ParticipantReserveResponse {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let response =
-            reader.get_root::<federation_capnp::participant_reserve_response::Reader>()?;
+            reader.get_root::<federation_capnp::participant_reserve_response::Reader<'_>>()?;
 
         Ok(Self {
             peppy_version: response.get_peppy_version()?.to_str()?.to_owned(),
@@ -188,8 +191,8 @@ impl ParticipantSliceBeginRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request =
-                builder.init_root::<federation_capnp::participant_slice_begin_request::Builder>();
+            let mut request = builder
+                .init_root::<federation_capnp::participant_slice_begin_request::Builder<'_>>();
             request.set_launch_id(&self.launch_id);
             request.set_append(self.append);
             let count = capnp_list_len(
@@ -202,12 +205,12 @@ impl ParticipantSliceBeginRequest {
             );
             let count = capnp_list_len(self.lifecycle_watchers.len(), "lifecycle_watchers")?;
             let mut entries = request.init_lifecycle_watchers(count);
-            for (index, (instance, watchers)) in self.lifecycle_watchers.iter().enumerate() {
-                let mut entry = entries.reborrow().get(index as u32);
+            for (index, (instance, watchers)) in (0_u32..).zip(self.lifecycle_watchers.iter()) {
+                let mut entry = entries.reborrow().get(index);
                 entry.set_instance_id(instance.as_str());
                 write_text_list(
                     entry.init_core_nodes(capnp_list_len(watchers.len(), "core_nodes")?),
-                    watchers.iter().map(|watcher| watcher.as_str()),
+                    watchers.iter().map(CoreNodeName::as_str),
                 );
             }
         }
@@ -221,7 +224,7 @@ impl ParticipantSliceBeginRequest {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let request =
-            reader.get_root::<federation_capnp::participant_slice_begin_request::Reader>()?;
+            reader.get_root::<federation_capnp::participant_slice_begin_request::Reader<'_>>()?;
         let mut lifecycle_watchers = BTreeMap::new();
         for entry in request.get_lifecycle_watchers()? {
             let instance = read_name(
@@ -278,8 +281,8 @@ impl ParticipantSliceBeginResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response =
-                builder.init_root::<federation_capnp::participant_slice_begin_response::Builder>();
+            let mut response = builder
+                .init_root::<federation_capnp::participant_slice_begin_response::Builder<'_>>();
             let count = capnp_list_len(
                 self.auto_created_mount_sources.len(),
                 "ParticipantSliceBeginResponse.auto_created_mount_sources",
@@ -295,7 +298,7 @@ impl ParticipantSliceBeginResponse {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let response =
-            reader.get_root::<federation_capnp::participant_slice_begin_response::Reader>()?;
+            reader.get_root::<federation_capnp::participant_slice_begin_response::Reader<'_>>()?;
         Ok(Self {
             auto_created_mount_sources: required_text_list(
                 read_text_list(response.get_auto_created_mount_sources()?)?,
@@ -353,8 +356,8 @@ pub struct ParticipantInstancesRemoveRequest {
 impl ParticipantInstancesRemoveRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        let mut request =
-            builder.init_root::<federation_capnp::participant_instances_remove_request::Builder>();
+        let mut request = builder
+            .init_root::<federation_capnp::participant_instances_remove_request::Builder<'_>>();
         request.set_launch_id(&self.launch_id);
         let instance_ids = self.instance_ids.as_slice();
         let count = capnp_list_len(instance_ids.len(), "instance_ids")?;
@@ -364,8 +367,8 @@ impl ParticipantInstancesRemoveRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request =
-            reader.get_root::<federation_capnp::participant_instances_remove_request::Reader>()?;
+        let request = reader
+            .get_root::<federation_capnp::participant_instances_remove_request::Reader<'_>>()?;
         Ok(Self {
             launch_id: required_text(request.get_launch_id()?.to_str()?, "launch_id")?,
             instance_ids: RemovedInstances::try_from(read_name_list(
@@ -409,12 +412,12 @@ impl ParticipantSetsUpdateRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request =
-                builder.init_root::<federation_capnp::participant_sets_update_request::Builder>();
+            let mut request = builder
+                .init_root::<federation_capnp::participant_sets_update_request::Builder<'_>>();
             request.set_launch_id(&self.launch_id);
             let mut sets = request.init_sets(capnp_list_len(self.sets.len(), "sets")?);
-            for (index, set) in self.sets.iter().enumerate() {
-                write_slot_set(sets.reborrow().get(index as u32), set)?;
+            for (index, set) in (0_u32..).zip(self.sets.iter()) {
+                write_slot_set(sets.reborrow().get(index), set)?;
             }
         }
         encode_message(&builder)
@@ -423,7 +426,7 @@ impl ParticipantSetsUpdateRequest {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let request =
-            reader.get_root::<federation_capnp::participant_sets_update_request::Reader>()?;
+            reader.get_root::<federation_capnp::participant_sets_update_request::Reader<'_>>()?;
         let sets = request
             .get_sets()?
             .iter()
@@ -448,14 +451,14 @@ fn write_slot_set(mut wire: federation_capnp::slot_set::Builder<'_>, set: &SlotS
     match &set.members {
         SlotMembers::Producers(producers) => {
             let mut list = members.init_producers(capnp_list_len(producers.len(), "producers")?);
-            for (member_index, member) in producers.iter().enumerate() {
-                write_bound_member(list.reborrow().get(member_index as u32), member);
+            for (member_index, member) in (0_u32..).zip(producers.iter()) {
+                write_bound_member(list.reborrow().get(member_index), member);
             }
         }
         SlotMembers::Observed(targets) => {
             let mut list = members.init_observed(capnp_list_len(targets.len(), "observed")?);
-            for (member_index, target) in targets.iter().enumerate() {
-                write_observation_member(list.reborrow().get(member_index as u32), target);
+            for (member_index, target) in (0_u32..).zip(targets.iter()) {
+                write_observation_member(list.reborrow().get(member_index), target);
             }
         }
     }
@@ -517,13 +520,13 @@ impl FederationAck {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<federation_capnp::federation_ack::Builder>();
+        builder.init_root::<federation_capnp::federation_ack::Builder<'_>>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<federation_capnp::federation_ack::Reader>()?;
+        reader.get_root::<federation_capnp::federation_ack::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -651,7 +654,7 @@ pub struct PairCommitRequest {
     /// taken by one pair.
     pub peer_cardinality: config::node::Cardinality,
     /// The copy the peer's instance belongs to; `None` outside a copy.
-    pub peer_copy: Option<config::runtime::Name>,
+    pub peer_copy: Option<Name>,
     /// Whether the peer held this pair before its restart and asks for it
     /// again, which the receiver makes only while its own endpoint still
     /// keeps it; `false` for a pair a start's link names.
@@ -662,7 +665,8 @@ impl PairCommitRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<federation_capnp::pair_commit_request::Builder>();
+            let mut request =
+                builder.init_root::<federation_capnp::pair_commit_request::Builder<'_>>();
             request.set_pairing_name(&self.pairing_name);
             request.set_pairing_tag(&self.pairing_tag);
             request.set_local_link_id(&self.local_link_id);
@@ -670,12 +674,7 @@ impl PairCommitRequest {
             request.set_peer_link_id(&self.peer_link_id);
             request.set_peer_role(&self.peer_role);
             request.set_peer_cardinality(self.peer_cardinality.as_str());
-            request.set_peer_copy(
-                self.peer_copy
-                    .as_ref()
-                    .map(|copy| copy.as_str())
-                    .unwrap_or(""),
-            );
+            request.set_peer_copy(self.peer_copy.as_ref().map_or("", |copy| copy.as_str()));
             request.set_held(self.held);
             write_instance_address(request.reborrow().init_local(), &self.local);
             write_instance_address(request.init_peer(), &self.peer);
@@ -685,7 +684,7 @@ impl PairCommitRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<federation_capnp::pair_commit_request::Reader>()?;
+        let request = reader.get_root::<federation_capnp::pair_commit_request::Reader<'_>>()?;
         Ok(Self {
             pairing_name: required_text(request.get_pairing_name()?.to_str()?, "pairing_name")?,
             pairing_tag: required_text(request.get_pairing_tag()?.to_str()?, "pairing_tag")?,
@@ -724,7 +723,7 @@ impl ParticipantReleaseRequest {
         let mut builder = Builder::new_default();
         {
             builder
-                .init_root::<federation_capnp::launch_scoped_request::Builder>()
+                .init_root::<federation_capnp::launch_scoped_request::Builder<'_>>()
                 .set_launch_id(&self.launch_id);
         }
         encode_message(&builder)
@@ -734,7 +733,7 @@ impl ParticipantReleaseRequest {
     /// and a defaulted id names none.
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<federation_capnp::launch_scoped_request::Reader>()?;
+        let request = reader.get_root::<federation_capnp::launch_scoped_request::Reader<'_>>()?;
         Ok(Self {
             launch_id: required_text(request.get_launch_id()?.to_str()?, "launch_id")?,
         })
@@ -789,7 +788,7 @@ impl RelationshipNotification {
         let mut builder = Builder::new_default();
         {
             let mut notification =
-                builder.init_root::<federation_capnp::relationship_notification::Builder>();
+                builder.init_root::<federation_capnp::relationship_notification::Builder<'_>>();
             let mut event = notification.reborrow().init_event();
             match self.event {
                 RelationshipEvent::ReachedRunning => event.set_reached_running(()),
@@ -806,7 +805,7 @@ impl RelationshipNotification {
 
         let reader = decode_message(data)?;
         let notification =
-            reader.get_root::<federation_capnp::relationship_notification::Reader>()?;
+            reader.get_root::<federation_capnp::relationship_notification::Reader<'_>>()?;
 
         let event = match notification.get_event().which()? {
             Which::ReachedRunning(()) => RelationshipEvent::ReachedRunning,
@@ -835,7 +834,7 @@ impl RelationshipNotificationAck {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            builder.init_root::<federation_capnp::relationship_notification_ack::Builder>();
+            builder.init_root::<federation_capnp::relationship_notification_ack::Builder<'_>>();
         }
         encode_message(&builder)
     }
@@ -844,45 +843,45 @@ impl RelationshipNotificationAck {
         let reader = decode_message(data)?;
         // Validate the framing decodes as the ack; the struct is empty, so
         // there is nothing else to read back.
-        reader.get_root::<federation_capnp::relationship_notification_ack::Reader>()?;
+        reader.get_root::<federation_capnp::relationship_notification_ack::Reader<'_>>()?;
         Ok(Self)
     }
 }
 
 impl crate::encoding::Wire for ParticipantReserveRequest {
-    type Root = crate::federation_capnp::participant_reserve_request::Owned;
+    type Root = federation_capnp::participant_reserve_request::Owned;
 }
 
 impl crate::encoding::Wire for ParticipantReserveResponse {
-    type Root = crate::federation_capnp::participant_reserve_response::Owned;
+    type Root = federation_capnp::participant_reserve_response::Owned;
 }
 
 impl crate::encoding::Wire for ParticipantSliceBeginRequest {
-    type Root = crate::federation_capnp::participant_slice_begin_request::Owned;
+    type Root = federation_capnp::participant_slice_begin_request::Owned;
 }
 
 impl crate::encoding::Wire for ParticipantSliceBeginResponse {
-    type Root = crate::federation_capnp::participant_slice_begin_response::Owned;
+    type Root = federation_capnp::participant_slice_begin_response::Owned;
 }
 
 impl crate::encoding::Wire for ParticipantReleaseRequest {
-    type Root = crate::federation_capnp::launch_scoped_request::Owned;
+    type Root = federation_capnp::launch_scoped_request::Owned;
 }
 
 impl crate::encoding::Wire for PairCommitRequest {
-    type Root = crate::federation_capnp::pair_commit_request::Owned;
+    type Root = federation_capnp::pair_commit_request::Owned;
 }
 
 impl crate::encoding::Wire for FederationAck {
-    type Root = crate::federation_capnp::federation_ack::Owned;
+    type Root = federation_capnp::federation_ack::Owned;
 }
 
 impl crate::encoding::Wire for RelationshipNotification {
-    type Root = crate::federation_capnp::relationship_notification::Owned;
+    type Root = federation_capnp::relationship_notification::Owned;
 }
 
 impl crate::encoding::Wire for RelationshipNotificationAck {
-    type Root = crate::federation_capnp::relationship_notification_ack::Owned;
+    type Root = federation_capnp::relationship_notification_ack::Owned;
 }
 
 #[cfg(test)]
@@ -975,7 +974,7 @@ mod tests {
             let mut builder = Builder::new_default();
             {
                 let mut request = builder
-                    .init_root::<federation_capnp::participant_sets_update_request::Builder>();
+                    .init_root::<federation_capnp::participant_sets_update_request::Builder<'_>>();
                 request.set_launch_id("launch-abc123");
                 let mut set = request.init_sets(1).get(0);
                 set.set_instance_id("planner_inst");
@@ -1002,7 +1001,7 @@ mod tests {
             let mut builder = Builder::new_default();
             {
                 let mut request = builder
-                    .init_root::<federation_capnp::participant_sets_update_request::Builder>();
+                    .init_root::<federation_capnp::participant_sets_update_request::Builder<'_>>();
                 request.set_launch_id("launch-abc123");
                 let mut set = request.init_sets(1).get(0);
                 set.set_instance_id("planner_inst");
@@ -1028,8 +1027,8 @@ mod tests {
     fn sets_update_refuses_a_set_of_neither_kind() {
         let mut builder = Builder::new_default();
         {
-            let mut request =
-                builder.init_root::<federation_capnp::participant_sets_update_request::Builder>();
+            let mut request = builder
+                .init_root::<federation_capnp::participant_sets_update_request::Builder<'_>>();
             request.set_launch_id("launch-abc123");
             let mut set = request.init_sets(1).get(0);
             set.set_instance_id("planner_inst");
@@ -1230,12 +1229,13 @@ mod tests {
             (vec!["arm_inst"], "robot/cloud"),
         ] {
             let mut message = Builder::new_default();
-            let mut request =
-                message.init_root::<federation_capnp::participant_slice_begin_request::Builder>();
+            let mut request = message
+                .init_root::<federation_capnp::participant_slice_begin_request::Builder<'_>>();
             request.set_launch_id("launch-abc123");
-            let mut watchers = request.init_lifecycle_watchers(instances.len() as u32);
-            for (index, instance) in instances.iter().enumerate() {
-                let mut entry = watchers.reborrow().get(index as u32);
+            let mut watchers =
+                request.init_lifecycle_watchers(u32::try_from(instances.len()).unwrap());
+            for (index, instance) in (0_u32..).zip(instances.iter()) {
+                let mut entry = watchers.reborrow().get(index);
                 entry.set_instance_id(instance);
                 entry.init_core_nodes(1).set(0, host);
             }
@@ -1274,12 +1274,12 @@ mod tests {
         ] {
             let mut message = Builder::new_default();
             let mut request = message
-                .init_root::<federation_capnp::participant_instances_remove_request::Builder>(
+                .init_root::<federation_capnp::participant_instances_remove_request::Builder<'_>>(
             );
             request.set_launch_id(launch);
-            let mut ids = request.init_instance_ids(names.len() as u32);
-            for (index, name) in names.iter().enumerate() {
-                ids.set(index as u32, name);
+            let mut ids = request.init_instance_ids(u32::try_from(names.len()).unwrap());
+            for (index, name) in (0_u32..).zip(names.iter()) {
+                ids.set(index, name);
             }
             assert!(
                 ParticipantInstancesRemoveRequest::decode(&encode_message(&message).unwrap())
@@ -1300,7 +1300,7 @@ mod tests {
             peer_link_id: "delegation".to_owned(),
             peer_role: "planner".to_owned(),
             peer_cardinality: config::node::Cardinality::ZeroOrMore,
-            peer_copy: Some(config::runtime::Name::new("bravo").unwrap()),
+            peer_copy: Some(Name::new("bravo").unwrap()),
             held: true,
         }
     }
@@ -1366,13 +1366,13 @@ mod tests {
         message
             .set_root(
                 reader
-                    .get_root::<federation_capnp::pair_commit_request::Reader>()
+                    .get_root::<federation_capnp::pair_commit_request::Reader<'_>>()
                     .expect("root"),
             )
             .expect("copy the request");
         edit(
             message
-                .get_root::<federation_capnp::pair_commit_request::Builder>()
+                .get_root::<federation_capnp::pair_commit_request::Builder<'_>>()
                 .expect("root"),
         );
         encode_message(&message).expect("encode")
@@ -1459,11 +1459,11 @@ mod tests {
 
     #[test]
     fn decode_rejects_malformed_bytes() {
-        assert!(ParticipantReserveRequest::decode(b"not capnp").is_err());
-        assert!(ParticipantReserveResponse::decode(b"not capnp").is_err());
-        assert!(ParticipantReleaseRequest::decode(b"not capnp").is_err());
-        assert!(FederationAck::decode(b"not capnp").is_err());
-        assert!(RelationshipNotification::decode(b"not capnp").is_err());
-        assert!(RelationshipNotificationAck::decode(b"not capnp").is_err());
+        ParticipantReserveRequest::decode(b"not capnp").unwrap_err();
+        ParticipantReserveResponse::decode(b"not capnp").unwrap_err();
+        ParticipantReleaseRequest::decode(b"not capnp").unwrap_err();
+        FederationAck::decode(b"not capnp").unwrap_err();
+        RelationshipNotification::decode(b"not capnp").unwrap_err();
+        RelationshipNotificationAck::decode(b"not capnp").unwrap_err();
     }
 }

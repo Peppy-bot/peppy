@@ -27,11 +27,11 @@ pub enum ZenohNetProtocol {
 impl fmt::Display for ZenohNetProtocol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ZenohNetProtocol::Tcp => write!(f, "tcp"),
-            ZenohNetProtocol::Udp => write!(f, "udp"),
-            ZenohNetProtocol::Quic => write!(f, "quic"),
-            ZenohNetProtocol::Ws => write!(f, "ws"),
-            ZenohNetProtocol::Tls => write!(f, "tls"),
+            Self::Tcp => write!(f, "tcp"),
+            Self::Udp => write!(f, "udp"),
+            Self::Quic => write!(f, "quic"),
+            Self::Ws => write!(f, "ws"),
+            Self::Tls => write!(f, "tls"),
         }
     }
 }

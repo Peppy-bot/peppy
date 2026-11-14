@@ -113,11 +113,11 @@ pub(crate) fn struct_size(shape: StructShape) -> StructSize {
 
 /// Initialises a struct list of `count` elements shaped like `shape` behind
 /// `pointer` and opens it for element access.
-pub(crate) fn init_struct_list<'a>(
-    mut pointer: PointerBuilder<'a>,
+pub(crate) fn init_struct_list(
+    mut pointer: PointerBuilder<'_>,
     count: u32,
     shape: StructShape,
-) -> Result<struct_list::Builder<'a, DynamicStruct>> {
+) -> Result<struct_list::Builder<'_, DynamicStruct>> {
     pointer
         .reborrow()
         .init_struct_list(count, struct_size(shape));
@@ -126,8 +126,8 @@ pub(crate) fn init_struct_list<'a>(
 
 /// Opens the struct list behind `pointer` for reading; a null pointer reads
 /// as an empty list.
-pub(crate) fn read_struct_list<'a>(
-    pointer: PointerReader<'a>,
-) -> Result<struct_list::Reader<'a, DynamicStruct>> {
+pub(crate) fn read_struct_list(
+    pointer: PointerReader<'_>,
+) -> Result<struct_list::Reader<'_, DynamicStruct>> {
     struct_list::Reader::get_from_pointer(&pointer, None)
 }

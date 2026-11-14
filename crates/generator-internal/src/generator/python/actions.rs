@@ -24,7 +24,7 @@ use config::node::{ConsumedAction, NativeExposedAction};
 /// `handle_goal_next_request` receives a goal, runs the user decider, and
 /// accepts/refuses it, returning a per-goal `GoalContext` on accept. All
 /// routing/cancel/result/feedback behavior lives in the shared Rust engine.
-pub fn build_exposed_action(
+pub(super) fn build_exposed_action(
     action: &NativeExposedAction,
     goal_request_schema_info: Option<&PythonSchemaInfo>,
     goal_response_schema_info: Option<&PythonSchemaInfo>,
@@ -273,11 +273,11 @@ if decision.refusal is not None:
                     ],
                     ")",
                 );
-                builder.py(r#"
+                builder.py(r"
 handle = cls()
 handle._inner = inner
 return handle
-"#);
+");
             },
         );
         builder.blank_line();
@@ -315,11 +315,11 @@ async def set_sender_grace(self, seconds: float) -> None:
                     doc,
                 );
                 builder.block("while True:", |builder| {
-                    builder.py(r#"
+                    builder.py(r"
 pending = await self._inner.recv_next_goal()
 if pending is None:
     return None  # goal stream closed (node shutting down)
-"#);
+");
                     if has_goal_request {
                         // A request that does not fit this server's declared
                         // shape is refused with the kind `rejected` and the
@@ -365,11 +365,11 @@ return GoalContext(ctx, request)
     // ---------------------------------------------------------------
 
     builder.block("class GoalContext:", |builder| {
-        builder.py(r#"
+        builder.py(r"
 def __init__(self, inner, request: GoalRequest):
     self._inner = inner
     self._request = request
-"#);
+");
         builder.blank_line();
         builder.add_import("from typing import Literal");
         builder.py(r#"
@@ -417,10 +417,10 @@ async def fail(self, kind: FailureKind, message: str) -> None:
                 ),
                 |builder| {
                     serialization::emit_new_capnp_message(builder, info, fmt, "");
-                    builder.py(r#"
+                    builder.py(r"
 payload = capnp_msg.to_bytes()
 await self._inner.publish_feedback(payload)
-"#);
+");
                 },
             );
         }
@@ -470,7 +470,7 @@ await self._inner.publish_feedback(payload)
 /// the `leading` parameters, then one annotated parameter per field.
 fn method_params(leading: &[&str], fields: &[PythonField]) -> String {
     let mut params = vec![String::from("self")];
-    params.extend(leading.iter().map(|param| param.to_string()));
+    params.extend(leading.iter().map(ToString::to_string));
     params.extend(
         fields
             .iter()
@@ -483,7 +483,8 @@ fn method_params(leading: &[&str], fields: &[PythonField]) -> String {
 // Subscribed actions
 // ---------------------------------------------------------------------------
 
-pub struct ConsumedActionSchemaInfo<'a> {
+#[derive(Clone, Copy)]
+pub(super) struct ConsumedActionSchemaInfo<'a> {
     pub goal_request: Option<&'a PythonSchemaInfo>,
     pub goal_response: Option<&'a PythonSchemaInfo>,
     pub feedback: Option<&'a PythonSchemaInfo>,
@@ -491,7 +492,7 @@ pub struct ConsumedActionSchemaInfo<'a> {
 }
 
 /// Generates Python code for a subscribed (client-side) action.
-pub fn build_consumed_action(
+pub(super) fn build_consumed_action(
     action: &ConsumedAction,
     messages: &ConsumedActionMessage,
     schema_info: ConsumedActionSchemaInfo<'_>,
@@ -544,12 +545,12 @@ pub fn build_consumed_action(
     // cancel-ack, decoded Rust-side (`cancel_goal` returns a typed reply); Python
     // just maps the typed `state` tag. No per-action cancel payload schema.
     builder.add_import("from enum import IntEnum");
-    builder.py(r#"
+    builder.py(r"
 class CancelState(IntEnum):
     SIGNALLED = 0
     ALREADY_TERMINAL = 1
     UNKNOWN = 2
-"#);
+");
     builder.blank_line();
     builder.dataclass(
         "CancelResponse",
@@ -564,14 +565,14 @@ class CancelState(IntEnum):
     // is framed by the engine as a status tag + body, decoded Rust-side; Python
     // maps the typed status, decodes the body only for Completed/Cancelled, and
     // parses the failure of a failed goal.
-    builder.py(r#"
+    builder.py(r"
 class ResultStatus(IntEnum):
     COMPLETED = 0
     CANCELLED = 1
     ABANDONED = 2
     EXPIRED = 3
     FAILED = 4
-"#);
+");
     builder.blank_line();
     builder.add_import("from typing import Optional");
     let mut result_fields = vec![
@@ -710,19 +711,19 @@ class ResultStatus(IntEnum):
                 // of a refusal come from the framework goal-ack envelope,
                 // decoded engine-side; the failure is parsed into this
                 // member's `Failure`.
-                builder.py(r#"
+                builder.py(r"
 handle = cls()
 handle._messenger = node_runner.messenger()
 handle._inner = action_handle
 handle.accepted = action_handle.accepted
 handle.refusal = None if action_handle.accepted else Failure(action_handle.refusal_kind, action_handle.refusal_message)
-"#);
+");
                 if has_goal_response {
                     // An accepted goal carries the declared response; a refused
                     // one carries none.
-                    builder.py(r#"
+                    builder.py(r"
 handle.data = _deserialize_goal_response(action_handle.goal_reply_body) if action_handle.accepted else None
-"#);
+");
                 }
                 builder.line("return handle");
             },
@@ -762,10 +763,10 @@ the goal.
 feedback = await self._inner.on_next_feedback()
 "#);
                     if schema_info.feedback.is_some() {
-                        builder.py(r#"
+                        builder.py(r"
 payload = feedback.payload
 return _deserialize_feedback_payload(payload)
-"#);
+");
                     } else {
                         builder.line("return feedback");
                     }
@@ -783,19 +784,19 @@ return _deserialize_feedback_payload(payload)
                     &["self._messenger,", "self._inner,", "timeout,"],
                     ")",
                 );
-                builder.py(r#"
+                builder.py(r"
 status = ResultStatus(reply.status)
 failure = None
 if status is ResultStatus.FAILED:
     failure = Failure(reply.failure_kind, reply.failure_message)
-"#);
+");
                 if has_result_response {
-                    builder.py(r#"
+                    builder.py(r"
 data = None
 if status in (ResultStatus.COMPLETED, ResultStatus.CANCELLED):
     data = _deserialize_result_response(reply.body)
 return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status, data=data, failure=failure, cancel_reason=reply.cancel_reason)
-"#);
+");
                 } else {
                     builder.line(
                         "return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status, failure=failure, cancel_reason=reply.cancel_reason)",

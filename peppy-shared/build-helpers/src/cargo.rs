@@ -22,9 +22,9 @@ pub fn build_target_triple() -> String {
 
 /// Embed the `PEPPY_GIT_TAG` environment variable into the binary at compile time.
 ///
-/// If `PEPPY_GIT_TAG` is set and non-empty (by build_release.sh), emits a
-/// `cargo:rustc-env` directive so the crate can read it via `env!()`.
-/// Also registers `cargo:rerun-if-env-changed` so cargo rebuilds when the
+/// If `PEPPY_GIT_TAG` is set and non-empty (by `build_release.sh`), emits a
+/// `cargo::rustc-env` directive so the crate can read it via `env!()`.
+/// Also registers `cargo::rerun-if-env-changed` so cargo rebuilds when the
 /// variable changes.
 pub fn embed_git_tag() {
     let tag = std::env::var("PEPPY_GIT_TAG").ok();
@@ -39,9 +39,9 @@ fn git_tag_directives(tag: Option<&str>) -> Vec<String> {
     if let Some(tag) = tag
         && !tag.is_empty()
     {
-        directives.push(format!("cargo:rustc-env=PEPPY_GIT_TAG={tag}"));
+        directives.push(format!("cargo::rustc-env=PEPPY_GIT_TAG={tag}"));
     }
-    directives.push("cargo:rerun-if-env-changed=PEPPY_GIT_TAG".to_string());
+    directives.push("cargo::rerun-if-env-changed=PEPPY_GIT_TAG".to_string());
     directives
 }
 
@@ -135,9 +135,9 @@ fn bundled_tools_dir() -> PathBuf {
 /// serves the one consumer that ships the target's binary inside the
 /// artifact instead of running it.
 ///
-/// Emits a `cargo:rerun-if-changed` directive for the binary so a compiler
+/// Emits a `cargo::rerun-if-changed` directive for the binary so a compiler
 /// update triggers fresh code generation. Panics when the host platform has no
-/// bundled compiler or [`bundled_tools_dir`] does not hold it, because a build
+/// bundled compiler or `bundled_tools_dir` does not hold it, because a build
 /// script cannot recover from either.
 pub fn host_capnp_for_execution() -> PathBuf {
     let platform = CapnpPlatform::current_host().unwrap_or_else(|| {
@@ -149,7 +149,7 @@ pub fn host_capnp_for_execution() -> PathBuf {
         )
     });
     let binary_path = existing_bundled_capnp(platform);
-    println!("cargo:rerun-if-changed={}", binary_path.display());
+    println!("cargo::rerun-if-changed={}", binary_path.display());
     binary_path
 }
 
@@ -161,7 +161,7 @@ pub fn host_capnp_for_execution() -> PathBuf {
 /// Build scripts that run the compiler use [`host_capnp_for_execution`].
 /// Returns [`UnsupportedCapnpTarget`] when `target` has no bundled compiler,
 /// and panics when the target is supported but the binary file is absent from
-/// [`bundled_tools_dir`], because that means the checkout itself is broken.
+/// `bundled_tools_dir`, because that means the checkout itself is broken.
 pub fn bundled_capnp_for_embedding(target: &str) -> Result<PathBuf, UnsupportedCapnpTarget> {
     let platform = CapnpPlatform::try_from(target)?;
     Ok(existing_bundled_capnp(platform))
@@ -172,13 +172,12 @@ pub fn bundled_capnp_for_embedding(target: &str) -> Result<PathBuf, UnsupportedC
 /// file means the tree itself is broken.
 fn existing_bundled_capnp(platform: CapnpPlatform) -> PathBuf {
     let binary_path = bundled_tools_dir().join(platform.binary_name());
-    if !binary_path.exists() {
-        panic!(
-            "bundled capnp binary missing at {}; add it to \
-             peppy-shared/peppy-config-model/tools/",
-            binary_path.display()
-        );
-    }
+    assert!(
+        binary_path.exists(),
+        "bundled capnp binary missing at {}; add it to \
+         peppy-shared/peppy-config-model/tools/",
+        binary_path.display()
+    );
     binary_path
 }
 
@@ -195,7 +194,7 @@ const PEPPY_SHARED_IN_WORKSPACE: &str = "peppy-shared";
 ///
 /// The directory is found when the calling build script or test runs, by
 /// walking up from the `CARGO_MANIFEST_DIR` cargo sets for that run (see
-/// [`find_peppy_shared_dir`]). It is never baked in at compile time: cargo
+/// `find_peppy_shared_dir`). It is never baked in at compile time: cargo
 /// reuses a compiled `build-helpers` across every checkout that shares a
 /// target directory, so a compile-time path would name whichever checkout
 /// compiled the crate instead of the one being built.
@@ -274,15 +273,15 @@ fn cargo_install_binary_with(
     target: &str,
     cache_dir: &Path,
 ) -> Option<PathBuf> {
-    fn use_cached(name: &str, cached_binary: PathBuf) -> Option<PathBuf> {
+    fn use_cached(name: &str, cached_binary: PathBuf) -> PathBuf {
         crate::progress!("Using cached {name} binary from {cached_binary:?}");
-        Some(cached_binary)
+        cached_binary
     }
 
     let cached_binary = cache_dir.join(format!("{name}-{version}-{target}"));
 
     if cached_binary.exists() {
-        return use_cached(name, cached_binary);
+        return Some(use_cached(name, cached_binary));
     }
 
     // Serialize concurrent installs sharing this cache dir, then re-check:
@@ -291,7 +290,7 @@ fn cargo_install_binary_with(
     // shared by all versions and targets of the tool.
     let _lock = acquire_file_lock(&cache_dir.join(format!("{name}.lock")));
     if cached_binary.exists() {
-        return use_cached(name, cached_binary);
+        return Some(use_cached(name, cached_binary));
     }
 
     crate::progress!(
@@ -302,9 +301,9 @@ fn cargo_install_binary_with(
     let cargo_target_dir = cache_dir.join(format!("cargo-build-{name}"));
 
     // Clean up any previous partial install
-    std::fs::remove_dir_all(&install_root).ok();
-    std::fs::create_dir_all(&install_root).ok();
-    std::fs::create_dir_all(&cargo_target_dir).ok();
+    let _ = std::fs::remove_dir_all(&install_root);
+    let _ = std::fs::create_dir_all(&install_root);
+    let _ = std::fs::create_dir_all(&cargo_target_dir);
 
     // Guards ensure temp directories are cleaned up on all exit paths.
     let _install_guard = CleanupDir(install_root.clone());
@@ -325,8 +324,8 @@ fn cargo_install_binary_with(
     let built_binary = install_root.join("bin").join(name);
     if !built_binary.exists() {
         println!(
-            "cargo:warning=cargo install succeeded but binary not found at {:?}",
-            built_binary
+            "cargo::warning=cargo install succeeded but binary not found at {}",
+            built_binary.display()
         );
         return None;
     }
@@ -339,8 +338,8 @@ fn cargo_install_binary_with(
     let published = std::fs::copy(&built_binary, &staged)
         .and_then(|_| std::fs::rename(&staged, &cached_binary));
     if let Err(e) = published {
-        std::fs::remove_file(&staged).ok();
-        println!("cargo:warning=Failed to cache compiled {name} binary: {e}");
+        let _ = std::fs::remove_file(&staged);
+        println!("cargo::warning=Failed to cache compiled {name} binary: {e}");
         return None;
     }
 
@@ -352,7 +351,7 @@ fn cargo_install_binary_with(
 mod tests {
     use super::*;
 
-    const RERUN_DIRECTIVE: &str = "cargo:rerun-if-env-changed=PEPPY_GIT_TAG";
+    const RERUN_DIRECTIVE: &str = "cargo::rerun-if-env-changed=PEPPY_GIT_TAG";
     const SUPPORTED_CAPNP_PLATFORMS: [CapnpPlatform; 3] = [
         CapnpPlatform::LinuxX86_64,
         CapnpPlatform::LinuxAarch64,
@@ -363,7 +362,7 @@ mod tests {
     fn git_tag_directives_emits_rustc_env_then_rerun_for_nonempty_tag() {
         assert_eq!(
             git_tag_directives(Some("v1.2.3")),
-            ["cargo:rustc-env=PEPPY_GIT_TAG=v1.2.3", RERUN_DIRECTIVE]
+            ["cargo::rustc-env=PEPPY_GIT_TAG=v1.2.3", RERUN_DIRECTIVE]
         );
     }
 

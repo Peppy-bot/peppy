@@ -26,20 +26,20 @@ mod container_e2e_tests {
     /// End-to-end test: init a container node, build the container image, and
     /// start it using the real Apptainer runtime, once per toolchain.
     ///
-    /// Exercises the full chain: NodeInitRequest (with_container=true) ->
-    /// node_add (apptainer build) -> node_run (apptainer run).
+    /// Exercises the full chain: `NodeInitRequest` (`with_container=true`) ->
+    /// `node_add` (apptainer build) -> `node_run` (apptainer run).
     #[rstest::rstest]
     #[case::rust(
         "rust_e2e_node",
         "rust_e2e_instance",
         Toolchain::Cargo,
-        Duration::from_secs(600)
+        Duration::from_mins(10)
     )]
     #[case::python(
         "python_e2e_node",
         "python_e2e_instance",
         Toolchain::Uv,
-        Duration::from_secs(300)
+        Duration::from_mins(5)
     )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn container_e2e_init_add_build_start(
@@ -51,7 +51,7 @@ mod container_e2e_tests {
         const NODE_TAG: &str = "v1";
 
         let started = start_core_node_with_real_messenger_and_timeouts(
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             setup_budget(60),
         )
         .await;
@@ -155,19 +155,17 @@ mod container_e2e_tests {
             "instance should be registered in the node stack"
         );
 
-        assert!(log_path.exists(), "log file should exist at {:?}", log_path);
+        assert!(log_path.exists(), "log file should exist at {log_path:?}");
 
         let log_content =
             std::fs::read_to_string(&log_path).expect("should be able to read log file");
         assert!(
             log_content.contains("Executing apptainer run"),
-            "log file should contain apptainer run command, got:\n{}",
-            log_content
+            "log file should contain apptainer run command, got:\n{log_content}"
         );
         assert!(
             !log_content.contains("CodegenFingerprintRead"),
-            "log file should not contain config fingerprint startup errors, got:\n{}",
-            log_content
+            "log file should not contain config fingerprint startup errors, got:\n{log_content}"
         );
     }
 
@@ -187,12 +185,12 @@ mod container_e2e_tests {
         const NODE_TAG: &str = "v1";
 
         let started = start_core_node_with_real_messenger_and_timeouts(
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             setup_budget(60),
         )
         .await;
 
-        let source_dir = tempfile::tempdir().expect("source dir");
+        let source_dir = tempdir().expect("source dir");
         write_peppy_json5(
             source_dir.path(),
             r#"{
@@ -253,7 +251,7 @@ mod container_e2e_tests {
         const INSTANCE_ID: &str = "data_root_view_e2e_instance";
 
         let started = start_core_node_with_real_messenger_and_timeouts(
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             setup_budget(120),
         )
         .await;
@@ -269,7 +267,7 @@ mod container_e2e_tests {
             "the daemon wrote the key of the command line"
         );
 
-        let source_dir = tempfile::tempdir().expect("source dir");
+        let source_dir = tempdir().expect("source dir");
         write_peppy_json5(
             source_dir.path(),
             r#"{
@@ -351,7 +349,7 @@ mod container_e2e_tests {
             .join(INSTANCE_ID)
             .join("view.txt");
         let view = common::poll_until(
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             "the container node writes what it sees of the data root",
             || std::fs::read_to_string(&view_file).ok(),
         )
@@ -385,7 +383,7 @@ mod container_e2e_tests {
         const ORPHAN_ARCHIVE: &str = "peppy-e2e-orphan";
 
         let started = start_core_node_with_real_messenger_and_timeouts(
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             setup_budget(60),
         )
         .await;
@@ -399,7 +397,7 @@ mod container_e2e_tests {
         std::fs::create_dir_all(&orphan_archive).expect("create the orphan archive");
         std::fs::write(orphan_archive.join("marker"), b"").expect("write into the orphan archive");
 
-        let source_dir = tempfile::tempdir().expect("source dir");
+        let source_dir = tempdir().expect("source dir");
         write_peppy_json5(
             source_dir.path(),
             r#"{
@@ -560,7 +558,7 @@ mod container_e2e_tests {
         task: &mut JoinHandle<Result<GoalEnd<NodeBuildResult>, String>>,
         index: usize,
     ) -> HashSet<u32> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        let deadline = std::time::Instant::now() + Duration::from_mins(2);
         loop {
             if task.is_finished() {
                 let outcome = task.await.expect("build task should not panic");
@@ -602,7 +600,7 @@ mod container_e2e_tests {
         const BUILDS: usize = 6;
 
         let started = start_core_node_with_real_messenger_and_timeouts(
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             setup_budget(60),
         )
         .await;
@@ -623,7 +621,7 @@ mod container_e2e_tests {
         // fails takes its build's entity out of the stack with it, and every
         // later `--force` goal is then rejected. Doing it once, up front, in a
         // build whose only job is the fetch, keeps that failure legible.
-        let base_dir = tempfile::tempdir().expect("base source dir");
+        let base_dir = tempdir().expect("base source dir");
         write_peppy_json5(
             base_dir.path(),
             r#"{
@@ -667,7 +665,7 @@ mod container_e2e_tests {
         // A container node whose apptainer build blocks forever in `%post`,
         // leaving a uniquely-named process (`sh /PEPPY_ZOMBIE_E2E_MARKER`, so the
         // marker shows up in `ps args`) for each in-flight build.
-        let source_dir = tempfile::tempdir().expect("source dir");
+        let source_dir = tempdir().expect("source dir");
         write_peppy_json5(
             source_dir.path(),
             r#"{

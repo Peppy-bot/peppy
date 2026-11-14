@@ -187,7 +187,7 @@ fn main() -> Result<()> {
         &router_host,
         router_port,
         NodeInstanceConfig {
-            arguments: serde_json5::from_str(r#"{ frequency: 10.0 }"#).unwrap(),
+            arguments: serde_json5::from_str(r"{ frequency: 10.0 }").unwrap(),
             ..NodeInstanceConfig::new(Name::new(emitter_instance_id).unwrap())
         },
         UVC_CAMERA_NODE_NAME, // Must match the node name expected by the receiver
@@ -325,9 +325,7 @@ fn main() -> Result<()> {
         receiver_stdout.contains(&format!(
             "got 640x480 frame encoded as rgb8 from {TEST_CORE_NODE}/{EMITTER_INSTANCE_ID}"
         )),
-        "receiver did not receive emitter frame with full producer identity.\nstdout:\n{}\nstderr:\n{}",
-        receiver_stdout,
-        receiver_stderr
+        "receiver did not receive emitter frame with full producer identity.\nstdout:\n{receiver_stdout}\nstderr:\n{receiver_stderr}"
     );
 
     assert_exited_successfully("emitter cargo run", &emitter_output);

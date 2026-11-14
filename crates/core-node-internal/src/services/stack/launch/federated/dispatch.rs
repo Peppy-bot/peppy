@@ -53,7 +53,7 @@ const GOAL_ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Bound on the destructive commit. It tears down the peer's running stack, so
 /// it is allowed to take as long as a cooperative shutdown of that stack takes.
-const SLICE_BEGIN_TIMEOUT: Duration = Duration::from_secs(120);
+const SLICE_BEGIN_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Bound on telling a peer to cancel a goal, and on its answer for work it
 /// drops at once: both fit inside the CLI's grace past the change deadline,
@@ -103,10 +103,10 @@ pub(in crate::services::stack) trait RemoteGoal: ActionGoal {
     fn label() -> &'static str;
     /// Decodes the goal response of a peer that accepted the goal: the log
     /// file the peer created for it, on its own filesystem.
-    fn decode_acceptance(payload: &[u8]) -> std::result::Result<PathBuf, String>;
+    fn decode_acceptance(payload: &[u8]) -> Result<PathBuf, String>;
     fn decode_feedback_line(payload: &[u8]) -> Option<String>;
     /// Decodes the result of a goal the peer completed.
-    fn decode_outcome(payload: &[u8]) -> std::result::Result<Self::Outcome, String>;
+    fn decode_outcome(payload: &[u8]) -> Result<Self::Outcome, String>;
 }
 
 macro_rules! impl_remote_goal {
@@ -181,7 +181,7 @@ impl_remote_goal!(
 /// explains it.
 pub(in crate::services::stack) struct RemoteGoalRun<T> {
     pub(in crate::services::stack) log_path: PathBuf,
-    pub(in crate::services::stack) outcome: std::result::Result<T, RemoteGoalFailure>,
+    pub(in crate::services::stack) outcome: Result<T, RemoteGoalFailure>,
 }
 
 /// Why an accepted goal produced no outcome.
@@ -264,7 +264,7 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
     core_node: &str,
     goal: &G,
     idle_timeout: Duration,
-) -> std::result::Result<RemoteGoalRun<G::Outcome>, Failure> {
+) -> Result<RemoteGoalRun<G::Outcome>, Failure> {
     let label = G::label();
     let mut handle = send_goal(
         goal,
@@ -357,14 +357,11 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
             }
         }
 
-        let result_timeout = ctx
-            .change_deadline
-            .map(|deadline| {
-                deadline
-                    .saturating_duration_since(tokio::time::Instant::now())
-                    .max(Duration::from_secs(1))
-            })
-            .unwrap_or(GOAL_ACCEPT_TIMEOUT);
+        let result_timeout = ctx.change_deadline.map_or(GOAL_ACCEPT_TIMEOUT, |deadline| {
+            deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .max(Duration::from_secs(1))
+        });
         let payload = ActionMessenger::request_result_body(&ctx.messenger, &handle, result_timeout)
             .await
             .map_err(|error| ended_without_result::<G>(core_node, error))?;
@@ -490,7 +487,7 @@ pub(in crate::services::stack) async fn begin_participant_slices(
     watchers: &LifecycleWatchers,
     placements: &daemon_config::launcher::Placements,
     slice: SliceBegin,
-) -> std::result::Result<(), SliceBeginRefusal> {
+) -> Result<(), SliceBeginRefusal> {
     set_local_watchers(ctx, watchers, placements);
     ask_participant_slices(ctx, participants, |core_node| {
         let mut request = ParticipantSliceBeginRequest::new(
@@ -586,7 +583,7 @@ async fn ask_participant_slices(
     ctx: &StackChangeContext,
     participants: &[String],
     request: impl Fn(&str) -> ParticipantSliceBeginRequest,
-) -> std::result::Result<(), SliceRefusals> {
+) -> Result<(), SliceRefusals> {
     let outcomes = futures::future::join_all(participants.iter().map(|core_node| {
         let request = request(core_node);
         async move {
@@ -621,20 +618,19 @@ async fn ask_participant_slices(
                     .await;
                 }
             }
-            Err(e) => match e.failure() {
-                Some(refusal) => {
+            Err(e) => {
+                if let Some(refusal) = e.failure() {
                     refusals
                         .lines
                         .push(format!("`{core_node}` refused: {}", refusal.message()));
                     refusals.refusers.push(core_node);
-                }
-                None => {
+                } else {
                     refusals.a_machine_did_not_answer = true;
                     refusals
                         .lines
                         .push(format!("`{core_node}` did not answer: {e}"));
                 }
-            },
+            }
         }
     }
 
@@ -666,7 +662,7 @@ pub(in crate::services::stack) async fn clear_participant_slices(
     )
     .await;
 
-    let failures = futures::future::join_all(participants.iter().map(|core_node| async move {
+    let failures = futures::future::join_all(participants.iter().map(async |core_node| {
         let outcome = poll(
             &core_node_api::encoding::StackResetRequest::new(),
             &ctx.messenger,
@@ -722,7 +718,7 @@ mod tests {
 
     #[test]
     fn a_prompt_answer_or_a_peer_whose_listing_did_not_answer_waits_the_settle_timeout() {
-        let long_grace = Some(Duration::from_secs(600));
+        let long_grace = Some(Duration::from_mins(10));
         assert_eq!(
             cancelled_answer_budget(CancelledAnswer::Prompt, long_grace),
             CANCEL_SETTLE_TIMEOUT

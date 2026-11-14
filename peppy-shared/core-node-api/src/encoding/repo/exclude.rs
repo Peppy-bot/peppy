@@ -35,7 +35,7 @@ impl RepoExcludeRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<repo_capnp::repo_exclude_request::Builder>();
+            let mut request = builder.init_root::<repo_capnp::repo_exclude_request::Builder<'_>>();
             let mut source = request.reborrow().init_source();
             match &self.source {
                 RepoSource::Fs(path) => {
@@ -54,7 +54,7 @@ impl RepoExcludeRequest {
         use crate::repo_capnp::repo_exclude_request::source::Which;
 
         let reader = decode_message(data)?;
-        let request = reader.get_root::<repo_capnp::repo_exclude_request::Reader>()?;
+        let request = reader.get_root::<repo_capnp::repo_exclude_request::Reader<'_>>()?;
         let source = match request.get_source().which()? {
             Which::Fs(path) => RepoSource::Fs(crate::encoding::decode_fs_path(
                 path?.to_str()?,
@@ -94,7 +94,8 @@ impl RepoExcludeResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<repo_capnp::repo_exclude_response::Builder>();
+            let mut response =
+                builder.init_root::<repo_capnp::repo_exclude_response::Builder<'_>>();
             response.set_refresh_report(&self.refresh_report);
         }
         encode_message(&builder)
@@ -102,7 +103,7 @@ impl RepoExcludeResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<repo_capnp::repo_exclude_response::Reader>()?;
+        let response = reader.get_root::<repo_capnp::repo_exclude_response::Reader<'_>>()?;
         Ok(Self {
             refresh_report: response.get_refresh_report()?.to_str()?.to_owned(),
         })
@@ -110,11 +111,11 @@ impl RepoExcludeResponse {
 }
 
 impl crate::encoding::Wire for RepoExcludeRequest {
-    type Root = crate::repo_capnp::repo_exclude_request::Owned;
+    type Root = repo_capnp::repo_exclude_request::Owned;
 }
 
 impl crate::encoding::Wire for RepoExcludeResponse {
-    type Root = crate::repo_capnp::repo_exclude_response::Owned;
+    type Root = repo_capnp::repo_exclude_response::Owned;
 }
 
 #[cfg(test)]

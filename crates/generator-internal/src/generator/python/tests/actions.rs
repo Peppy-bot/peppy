@@ -1,6 +1,4 @@
 use super::*;
-use config::node::{ConsumedAction, MessageFormat, NativeExposedAction};
-use std::collections::HashMap;
 
 // --- Exposes examples
 const EXPOSED_ACTION_EXAMPLE: &str = r#"
@@ -555,7 +553,7 @@ fn expose_two_actions() {
     );
 }
 
-/// A real manifest dep (link_id present) wires the runtime binding into
+/// A real manifest dep (`link_id` present) wires the runtime binding into
 /// the module: this `one` slot's `bound_producer()` reads
 /// `node_runner.bound_producer(<link_id>)`, and the caller-selected
 /// `target` is membership-checked against the same slot before `send_goal`
@@ -770,7 +768,7 @@ fn consumed_action() {
         !rendered.contains("def bound_producers("),
         "a `one` slot must expose only the singular accessor; got:\n{rendered}"
     );
-    super::topics::assert_no_producer_identity_params(&rendered);
+    topics::assert_no_producer_identity_params(&rendered);
 
     // cancel_goal as self method, mapping the typed cancel reply's state tag.
     assert_contains_all(

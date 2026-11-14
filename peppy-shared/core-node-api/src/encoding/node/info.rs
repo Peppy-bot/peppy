@@ -41,7 +41,7 @@ impl NodeInfoRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<node_capnp::node_info_request::Builder>();
+            let mut request = builder.init_root::<node_capnp::node_info_request::Builder<'_>>();
             request.set_node_name(&self.node_name);
             request.set_node_tag(&self.node_tag);
         }
@@ -50,7 +50,7 @@ impl NodeInfoRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<node_capnp::node_info_request::Reader>()?;
+        let request = reader.get_root::<node_capnp::node_info_request::Reader<'_>>()?;
         Ok(Self {
             node_name: request.get_node_name()?.to_str()?.to_owned(),
             node_tag: request.get_node_tag()?.to_str()?.to_owned(),
@@ -89,16 +89,16 @@ pub struct NodeInstanceInfo {
     /// whose manifest declares none.
     pub endpoints: Vec<InstanceEndpoint>,
     /// The instance's restart policy and how its restarts went.
-    pub restart_status: crate::graph::RestartStatus,
+    pub restart_status: RestartStatus,
 }
 
 /// Body of a successful `node_info` lookup: carries all metadata about a
 /// node that was found in the stack.
 #[derive(Debug, Clone)]
 pub struct NodeInfo {
-    /// Resolved NodeConfig as stored in the node stack.
+    /// Resolved `NodeConfig` as stored in the node stack.
     pub config: NodeConfig,
-    /// SHA256 of the serialized NodeConfig at the time of the response.
+    /// SHA256 of the serialized `NodeConfig` at the time of the response.
     pub config_integrity: String,
     pub stage: NodeStage,
     /// All tracked instances of this entity, including in-flight `Starting`
@@ -131,11 +131,11 @@ impl NodeInfoResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_info_response::Builder>();
+            let mut response = builder.init_root::<node_capnp::node_info_response::Builder<'_>>();
             match self {
                 // Select the `notInStack :Void` arm of the union.
-                NodeInfoResponse::NotInStack => response.set_not_in_stack(()),
-                NodeInfoResponse::Found(info) => write_node_info(response.init_found(), info)?,
+                Self::NotInStack => response.set_not_in_stack(()),
+                Self::Found(info) => write_node_info(response.init_found(), info)?,
             }
         }
         encode_message(&builder)
@@ -143,13 +143,11 @@ impl NodeInfoResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_info_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::node_info_response::Reader<'_>>()?;
         match response.which()? {
-            node_capnp::node_info_response::Which::NotInStack(()) => {
-                Ok(NodeInfoResponse::NotInStack)
-            }
+            node_capnp::node_info_response::Which::NotInStack(()) => Ok(Self::NotInStack),
             node_capnp::node_info_response::Which::Found(found) => {
-                Ok(NodeInfoResponse::Found(Box::new(read_node_info(found)?)))
+                Ok(Self::Found(Box::new(read_node_info(found)?)))
             }
         }
     }
@@ -171,15 +169,15 @@ fn write_node_info(
         )));
     }
     let config_json5 = serde_json5::to_string(&info.config)
-        .map_err(|e| crate::Error::Encoding(format!("failed to serialize config: {}", e)))?;
+        .map_err(|e| crate::Error::Encoding(format!("failed to serialize config: {e}")))?;
     found.set_config_json5(&config_json5);
     found.set_config_sha256(&info.config_integrity);
     found.set_stage(info.stage.as_str());
     found.set_reported_at_ms(info.reported_at_ms);
     let instance_count = capnp_list_len(info.instances.len(), "NodeInfo.instances")?;
     let mut instances = found.reborrow().init_instances(instance_count);
-    for (index, instance) in info.instances.iter().enumerate() {
-        write_node_instance(instances.reborrow().get(index as u32), instance)?;
+    for (index, instance) in (0_u32..).zip(info.instances.iter()) {
+        write_node_instance(instances.reborrow().get(index), instance)?;
     }
     // Only set the field when present; leaving it unset writes capnp's
     // empty-text default, which `optional_text` decodes back to `None`.
@@ -199,7 +197,7 @@ fn write_node_info(
 /// Inverse of [`write_node_info`].
 fn read_node_info(found: node_capnp::node_info_response::found::Reader<'_>) -> Result<NodeInfo> {
     let config: NodeConfig = serde_json5::from_str(found.get_config_json5()?.to_str()?)
-        .map_err(|e| crate::Error::Decoding(format!("failed to deserialize config: {}", e)))?;
+        .map_err(|e| crate::Error::Decoding(format!("failed to deserialize config: {e}")))?;
     let config_integrity = found.get_config_sha256()?.to_str()?.to_owned();
     let stage = NodeStage::from_str(found.get_stage()?.to_str()?)
         .map_err(|e| crate::Error::Decoding(e.to_string()))?;
@@ -377,7 +375,7 @@ fn write_exit_cause(mut builder: node_capnp::exit_cause::Builder<'_>, cause: Opt
             group.set_core_dumped(*core_dumped);
         }
         Some(ExitCause::HealthKill { unanswered_secs }) => {
-            builder.set_health_kill_secs(*unanswered_secs)
+            builder.set_health_kill_secs(*unanswered_secs);
         }
         Some(ExitCause::Message(text)) => builder.set_message(text),
     }
@@ -403,11 +401,11 @@ fn read_exit_cause(reader: node_capnp::exit_cause::Reader<'_>) -> Result<Option<
 }
 
 impl crate::encoding::Wire for NodeInfoRequest {
-    type Root = crate::node_capnp::node_info_request::Owned;
+    type Root = node_capnp::node_info_request::Owned;
 }
 
 impl crate::encoding::Wire for NodeInfoResponse {
-    type Root = crate::node_capnp::node_info_response::Owned;
+    type Root = node_capnp::node_info_response::Owned;
 }
 
 #[cfg(test)]
@@ -469,7 +467,7 @@ mod tests {
 
     #[test]
     fn node_info_response_roundtrips_instance_slot_bindings() {
-        let bindings_a: config::runtime::SlotBindings = [
+        let bindings_a: SlotBindings = [
             (
                 "wrist_left_camera".to_string(),
                 config::runtime::BoundProducers::from(ProducerRef::new("core_a", "cam1")),
@@ -538,7 +536,7 @@ mod tests {
                             config::runtime::CoreNodeName::new("cn-sim").expect("valid name"),
                             config::runtime::ClockIncarnation::try_from(7).expect("non-zero"),
                         ),
-                        config::runtime::ProducerRef::new("cn-sim", "sim_inst"),
+                        ProducerRef::new("cn-sim", "sim_inst"),
                     ),
                     endpoints: crate::encoding::endpoints::sample_endpoints(),
                     restart_status: RestartStatus {
@@ -692,7 +690,7 @@ mod tests {
     ) -> Payload {
         let mut builder = Builder::new_default();
         {
-            let response = builder.init_root::<node_capnp::node_info_response::Builder>();
+            let response = builder.init_root::<node_capnp::node_info_response::Builder<'_>>();
             let mut found = response.init_found();
             found.set_config_json5(
                 serde_json5::to_string(&sample_config_for_roundtrip()).expect("serialize config"),
@@ -715,10 +713,10 @@ mod tests {
         type Corrupt = fn(node_capnp::node_instance_info::Builder<'_>);
         let fields: [(&str, Corrupt); 3] = [
             ("slot_bindings", |mut entry| {
-                entry.set_slot_bindings_json("{")
+                entry.set_slot_bindings_json("{");
             }),
             ("pairing_slots", |mut entry| {
-                entry.set_pairing_slots_json("{")
+                entry.set_pairing_slots_json("{");
             }),
             ("clock", |mut entry| entry.set_clock_json("{")),
         ];
@@ -775,7 +773,7 @@ mod tests {
 
     #[test]
     fn node_info_response_decode_rejects_malformed_bytes() {
-        assert!(NodeInfoResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeInfoResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     /// The restart fields survive the wire for every exit cause, and an
@@ -895,13 +893,13 @@ mod tests {
         builder
             .set_root(
                 reader
-                    .get_root::<node_capnp::node_info_response::Reader>()
+                    .get_root::<node_capnp::node_info_response::Reader<'_>>()
                     .expect("a response"),
             )
             .expect("a copy");
         {
             let root = builder
-                .get_root::<node_capnp::node_info_response::Builder>()
+                .get_root::<node_capnp::node_info_response::Builder<'_>>()
                 .expect("a response");
             let node_capnp::node_info_response::Which::Found(found) =
                 root.which().expect("a union")

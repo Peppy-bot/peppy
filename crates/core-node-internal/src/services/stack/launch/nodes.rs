@@ -23,13 +23,12 @@ use daemon_config::repository::{DeploymentRoot, EntryOrigin};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::{BTreeMap, HashMap};
-use std::future::Future;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Marker git_hash for an add whose bytes a pin already vouched for: the ones
+/// Marker `git_hash` for an add whose bytes a pin already vouched for: the ones
 /// stack launch issues, and the per-node sub-goals `add_batch` issues for any
-/// pinned add (`peppy node add <name>:<tag>` included). The node_add service
+/// pinned add (`peppy node add <name>:<tag>` included). The `node_add` service
 /// skips git hash and codegen-fingerprint verification for it and generates
 /// fresh peppygen files: those checks belong to `peppy node sync` workflows,
 /// and these adds operate on a tree materialized from an already-verified pin.
@@ -112,10 +111,7 @@ fn platform_lines(
 /// The add source a deployment dispatches with: its root, encoded at the
 /// point of dispatch beside the closure pins, so the local arm and the goal a
 /// peer receives cannot disagree on how the pins travel.
-fn pinned_source(
-    key: &NodeKey,
-    item: &PlannedDeployment,
-) -> std::result::Result<NodeSource, String> {
+fn pinned_source(key: &NodeKey, item: &PlannedDeployment) -> Result<NodeSource, String> {
     match &item.root {
         DeploymentRoot::Node(pin) => serde_json5::to_string(pin)
             .map(|pin_json5| NodeSource::Pinned { pin_json5 })
@@ -186,7 +182,10 @@ const MAX_CONCURRENT_LOCAL_BUILDS: usize = 2;
 ///
 /// `unresolved` collects the nodes whose add on a peer outlived its budget:
 /// whether each landed is known only by asking that peer.
-#[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input, and a struct of them only moves the list"
+)]
 pub(in crate::services::stack) async fn add_nodes_to_stack(
     ctx: &StackChangeContext,
     phase: &PhaseGoal,
@@ -686,6 +685,7 @@ mod tests {
     use super::*;
     use core_node_api::encoding::LaunchGoal;
     use daemon_config::launcher::ForwardedEnv;
+    use std::assert_matches;
     use std::sync::Mutex;
     use tokio::sync::{mpsc, oneshot};
 
@@ -702,6 +702,10 @@ mod tests {
     type BuildResult = ChangeResult<NodeBuildResult>;
 
     /// A build that succeeded.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a test shorthand for a value that the code under test gives wrapped"
+    )]
     fn built() -> BuildResult {
         Ok(NodeBuildResult::new("/data/built_nodes/x.sif"))
     }
@@ -916,7 +920,7 @@ mod tests {
         let drive = async {
             assert_eq!(started.recv().await.unwrap(), "waldo");
             tokio::task::yield_now().await;
-            assert!(started.try_recv().is_err());
+            started.try_recv().unwrap_err();
             finish(&mut enders, "waldo", built());
             assert_eq!(started.recv().await.unwrap(), "backbone");
             finish(&mut enders, "backbone", built());
@@ -939,7 +943,7 @@ mod tests {
             std::slice::from_ref(&node),
             "here",
             2,
-            |_| async { (failed("cargo failed"), None) },
+            |_| std::future::ready((failed("cargo failed"), None)),
             &mut outcome,
         )
         .await;
@@ -1013,13 +1017,14 @@ mod tests {
             &nodes,
             "here",
             2,
-            |_| async { (cancelled(), None) },
+            |_| std::future::ready((cancelled(), None)),
             &mut outcome,
         )
         .await;
 
-        assert!(
-            matches!(outcome.failure, Some(WorkStop::Cancelled(_))),
+        assert_matches!(
+            outcome.failure,
+            Some(WorkStop::Cancelled(_)),
             "the cancel stopped the group: {:?}",
             outcome.failure
         );
@@ -1213,7 +1218,7 @@ mod tests {
 
         let plain = remote_build_goal(
             &PhaseGoal {
-                launch_id: launch.launch_id.clone(),
+                launch_id: launch.launch_id,
                 rebuild: false,
                 environment: ForwardedEnv::default(),
                 publish: None,

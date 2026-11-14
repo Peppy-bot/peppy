@@ -56,8 +56,7 @@ impl SlotUpdateClient {
     ) -> Self {
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or(1);
+            .map_or(1, config::duration::saturating_millis);
         Self {
             node_stack,
             messenger,
@@ -87,10 +86,7 @@ impl SlotUpdateClient {
         self.seq.fetch_add(1, Ordering::Relaxed) + 1
     }
 
-    pub(crate) fn resolve_target(
-        &self,
-        instance_id: &str,
-    ) -> std::result::Result<SlotUpdateTarget, String> {
+    pub(crate) fn resolve_target(&self, instance_id: &str) -> Result<SlotUpdateTarget, String> {
         let instance_name =
             Name::new(instance_id).map_err(|error| format!("invalid instance id: {error}"))?;
         let (node_name, node_tag) = self
@@ -110,7 +106,7 @@ impl SlotUpdateClient {
         payload: peppylib::types::Payload,
         timeout: Duration,
         rejection_message: &str,
-    ) -> std::result::Result<SlotDelivery, String> {
+    ) -> Result<SlotDelivery, String> {
         let target = self.resolve_target(instance_id)?;
         self.send_to(&target, service_name, payload, timeout, rejection_message)
             .await
@@ -123,7 +119,7 @@ impl SlotUpdateClient {
         payload: peppylib::types::Payload,
         timeout: Duration,
         rejection_message: &str,
-    ) -> std::result::Result<SlotDelivery, String> {
+    ) -> Result<SlotDelivery, String> {
         let reply = self
             .node_stack
             .time()
@@ -204,7 +200,7 @@ pub(crate) fn encode_response_or_err(
 ) -> peppylib::PeppyResult<peppylib::types::Payload> {
     result.map_err(|e| peppylib::PeppyError::InternalEncodingError {
         identifier: identifier.to_string(),
-        reason: format!("Failed to encode response: {}", e),
+        reason: format!("Failed to encode response: {e}"),
     })
 }
 
@@ -217,5 +213,5 @@ pub(crate) fn generate_random_id() -> String {
 
 /// Lowercase hexadecimal of `bytes`, two digits per byte.
 pub(crate) fn encode_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

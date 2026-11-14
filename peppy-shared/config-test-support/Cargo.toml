@@ -8,6 +8,10 @@ name = "config-test-support"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 # Public API only: `consts::{NODE_CONFIG_FILE, PEPPY_HOME_ENV}`. No dependency

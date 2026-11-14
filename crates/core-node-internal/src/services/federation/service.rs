@@ -305,7 +305,7 @@ async fn reserve_inner(
         // lifetime is the one the existing watch is holding, so watching again would leave
         // a presence subscription per retry.
         ReserveOutcome::Reserved { lifetime } => {
-            watch_coordinator_presence(context, &decoded.coordinator_core_node, lifetime)
+            watch_coordinator_presence(context, &decoded.coordinator_core_node, lifetime);
         }
         ReserveOutcome::TookOverFromSameCoordinator { stale_launch_id } => {
             warn!(
@@ -396,27 +396,23 @@ fn watch_coordinator_presence(
         loop {
             let event = tokio::select! {
                 biased;
-                _ = shutdown.cancelled() => return,
+                () = shutdown.cancelled() => return,
                 // The reservation ended some other way, so there is nothing
                 // left to supervise and the subscription can go.
-                _ = lifetime.ended() => return,
-                event = watch.rx.recv_async() => match event {
-                    Ok(event) => event,
-                    // The presence stream ended, so nothing ends this
-                    // reservation when its coordinator is gone. Same verdict
-                    // as failing to open the watch at all: release rather than
-                    // hold one nothing supervises, which only a daemon restart
-                    // could then clear.
-                    Err(_) => {
-                        warn!(
-                            "presence stream for coordinator `{coordinator}` ended; releasing \
-                             its reservation rather than holding one this daemon can no longer \
-                             supervise"
-                        );
-                        ownership.release_because_coordinator_gone(&lifetime);
-                        return;
-                    }
-                },
+                () = lifetime.ended() => return,
+                event = watch.rx.recv_async() => event,
+            };
+            // The presence stream ended, so nothing ends this reservation when
+            // its coordinator is gone. Same verdict as failing to open the
+            // watch at all: release rather than hold one nothing supervises,
+            // which only a daemon restart could then clear.
+            let Ok(event) = event else {
+                warn!(
+                    "presence stream for coordinator `{coordinator}` ended; releasing its \
+                     reservation rather than holding one this daemon can no longer supervise"
+                );
+                ownership.release_because_coordinator_gone(&lifetime);
+                return;
             };
 
             let LivelinessEvent::Gone(_) = event else {
@@ -593,6 +589,10 @@ async fn pair_commit_inner(
 
 /// Releases the reservation of the launch the request names, or refuses
 /// with `precondition_failed` when this daemon is reserved for another one.
+#[expect(
+    clippy::unused_async,
+    reason = "`federation_endpoint!` awaits the handler of each endpoint"
+)]
 async fn release_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
@@ -604,8 +604,7 @@ async fn release_inner(
         let held = context
             .ownership
             .held_reservation()
-            .map(|(launch_id, _)| launch_id)
-            .unwrap_or_default();
+            .map_or_default(|(launch_id, _)| launch_id);
         return Err(failure(
             PeppyFailureKind::PreconditionFailed,
             format!(
@@ -712,7 +711,7 @@ mod tests {
                   commit: "{}", path: "camera/peppy.json5" }}"#,
             "d".repeat(40)
         ));
-        assert!(validate_deployment_pins(&[raw]).is_ok());
+        validate_deployment_pins(&[raw]).unwrap();
     }
 
     /// A pin that arrived over the wire carrying a filesystem origin names a
@@ -740,7 +739,7 @@ mod tests {
                       origin: {{ source_type: "git", repo_url: "https://example.com/hub",
                       commit: "{commit}", path: "contracts/rgb_camera.json5" }} }}] }}"#
         );
-        assert!(validate_deployment_pins(&[raw]).is_ok());
+        validate_deployment_pins(&[raw]).unwrap();
     }
 
     /// The structural rules fire at decode: a traversal path is refused

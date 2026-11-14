@@ -40,10 +40,10 @@ pub enum Toolchain {
 }
 
 impl fmt::Display for Toolchain {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Toolchain::Uv => write!(f, "uv"),
-            Toolchain::Cargo => write!(f, "cargo"),
+            Self::Uv => write!(f, "uv"),
+            Self::Cargo => write!(f, "cargo"),
         }
     }
 }
@@ -53,9 +53,9 @@ impl FromStr for Toolchain {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.eq_ignore_ascii_case("cargo") {
-            Ok(Toolchain::Cargo)
+            Ok(Self::Cargo)
         } else if s.eq_ignore_ascii_case("uv") {
-            Ok(Toolchain::Uv)
+            Ok(Self::Uv)
         } else {
             Err(ParsingError::InvalidToolchain(s.to_owned()))
         }
@@ -65,8 +65,8 @@ impl FromStr for Toolchain {
 impl Toolchain {
     pub fn map_to_language(&self) -> PeppygenLanguage {
         match self {
-            Toolchain::Cargo => PeppygenLanguage::Rust,
-            Toolchain::Uv => PeppygenLanguage::Python,
+            Self::Cargo => PeppygenLanguage::Rust,
+            Self::Uv => PeppygenLanguage::Python,
         }
     }
 }
@@ -132,17 +132,17 @@ impl TypeToken {
     pub const fn is_scalar(&self) -> bool {
         matches!(
             self,
-            TypeToken::Bool
-                | TypeToken::U8
-                | TypeToken::U16
-                | TypeToken::U32
-                | TypeToken::U64
-                | TypeToken::I8
-                | TypeToken::I16
-                | TypeToken::I32
-                | TypeToken::I64
-                | TypeToken::F32
-                | TypeToken::F64
+            Self::Bool
+                | Self::U8
+                | Self::U16
+                | Self::U32
+                | Self::U64
+                | Self::I8
+                | Self::I16
+                | Self::I32
+                | Self::I64
+                | Self::F32
+                | Self::F64
         )
     }
 }
@@ -231,6 +231,10 @@ fn collect_field_descriptions<'a>(
     }
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde calls a `skip_serializing_if` function with a reference"
+)]
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -257,9 +261,9 @@ impl InterfaceKind {
     /// [`FromStr`]: std::str::FromStr
     pub const fn label(&self) -> &'static str {
         match self {
-            InterfaceKind::Topic => "Topic",
-            InterfaceKind::Service => "Service",
-            InterfaceKind::Action => "Action",
+            Self::Topic => "Topic",
+            Self::Service => "Service",
+            Self::Action => "Action",
         }
     }
 
@@ -267,31 +271,31 @@ impl InterfaceKind {
     /// payloads. Mirrors the `SECTION` const the produced-entry enums carry.
     pub const fn consumed_section(&self) -> &'static str {
         match self {
-            InterfaceKind::Topic => "topics.consumes",
-            InterfaceKind::Service => "services.consumes",
-            InterfaceKind::Action => "actions.consumes",
+            Self::Topic => "topics.consumes",
+            Self::Service => "services.consumes",
+            Self::Action => "actions.consumes",
         }
     }
 }
 
-impl std::fmt::Display for InterfaceKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for InterfaceKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            InterfaceKind::Topic => write!(f, "topic"),
-            InterfaceKind::Service => write!(f, "service"),
-            InterfaceKind::Action => write!(f, "action"),
+            Self::Topic => write!(f, "topic"),
+            Self::Service => write!(f, "service"),
+            Self::Action => write!(f, "action"),
         }
     }
 }
 
-impl std::str::FromStr for InterfaceKind {
+impl FromStr for InterfaceKind {
     type Err = String;
 
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "topic" => Ok(InterfaceKind::Topic),
-            "service" => Ok(InterfaceKind::Service),
-            "action" => Ok(InterfaceKind::Action),
+            "topic" => Ok(Self::Topic),
+            "service" => Ok(Self::Service),
+            "action" => Ok(Self::Action),
             other => Err(format!("unknown interface kind: {other}")),
         }
     }
@@ -355,7 +359,7 @@ impl<'de> Deserialize<'de> for SchemaType {
 /// is accepted only on `string`: the closed set of values the field holds.
 /// `$marks` names the marks of the field, and `$description` says what the
 /// field holds.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(try_from = "RawPrimitiveSchema")]
 pub struct PrimitiveSchema {
     #[serde(rename = "$type")]
@@ -577,18 +581,18 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
 impl SchemaType {
     pub fn is_optional(&self) -> bool {
         match self {
-            SchemaType::Type(_) => false,
-            SchemaType::Primitive(schema) => schema.optional,
-            SchemaType::Array(schema) => schema.optional,
-            SchemaType::Object(schema) => schema.optional,
+            Self::Type(_) => false,
+            Self::Primitive(schema) => schema.optional,
+            Self::Array(schema) => schema.optional,
+            Self::Object(schema) => schema.optional,
         }
     }
 
     pub fn as_type_token(&self) -> Option<&TypeToken> {
         match self {
-            SchemaType::Type(token) => Some(token),
-            SchemaType::Primitive(schema) => Some(&schema.kind),
-            SchemaType::Array(_) | SchemaType::Object(_) => None,
+            Self::Type(token) => Some(token),
+            Self::Primitive(schema) => Some(&schema.kind),
+            Self::Array(_) | Self::Object(_) => None,
         }
     }
 
@@ -596,8 +600,8 @@ impl SchemaType {
     /// `string` field that declares one.
     pub fn enum_values(&self) -> Option<&EnumValues> {
         match self {
-            SchemaType::Primitive(schema) => schema.enum_values.as_ref(),
-            SchemaType::Type(_) | SchemaType::Array(_) | SchemaType::Object(_) => None,
+            Self::Primitive(schema) => schema.enum_values.as_ref(),
+            Self::Type(_) | Self::Array(_) | Self::Object(_) => None,
         }
     }
 
@@ -605,20 +609,20 @@ impl SchemaType {
     pub fn marks(&self) -> &Marks {
         static NO_MARKS: Marks = Marks::none();
         match self {
-            SchemaType::Type(_) => &NO_MARKS,
-            SchemaType::Primitive(schema) => &schema.marks,
-            SchemaType::Array(schema) => &schema.marks,
-            SchemaType::Object(schema) => &schema.marks,
+            Self::Type(_) => &NO_MARKS,
+            Self::Primitive(schema) => &schema.marks,
+            Self::Array(schema) => &schema.marks,
+            Self::Object(schema) => &schema.marks,
         }
     }
 
     /// What the field holds (`$description`), for a field that says it.
     pub fn description(&self) -> Option<&Description> {
         match self {
-            SchemaType::Type(_) => None,
-            SchemaType::Primitive(schema) => schema.description.as_ref(),
-            SchemaType::Array(schema) => schema.description.as_ref(),
-            SchemaType::Object(schema) => schema.description.as_ref(),
+            Self::Type(_) => None,
+            Self::Primitive(schema) => schema.description.as_ref(),
+            Self::Array(schema) => schema.description.as_ref(),
+            Self::Object(schema) => schema.description.as_ref(),
         }
     }
 }
@@ -677,7 +681,7 @@ pub enum QoSProfile {
 /// pairing slots (`depends_on.pairings` for emits and consumes,
 /// `depends_on.pairing_observers` for consumes), whose member shapes come from
 /// the pairing document instead.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LinkedEntry<R> {
     pub link_id: String,
@@ -917,7 +921,7 @@ macro_rules! impl_produced_entry {
                 }
 
                 let raw = Raw::deserialize(deserializer)?;
-                let name = require_interface_name(raw.name, $entry::SECTION)?;
+                let name = require_interface_name(raw.name.as_deref(), $entry::SECTION)?;
                 match raw.link_id {
                     Some(link_id) => {
                         let link_id = validate_non_empty_identifier(
@@ -1005,13 +1009,13 @@ fn require_native_description<E: de::Error>(
 }
 
 /// Validates the (required, non-empty) `name` of a produced-interface entry,
-/// surfacing a [`StructuredError::EmptyInterfaceName`] through the serde
+/// surfacing a `StructuredError::EmptyInterfaceName` through the serde
 /// bridge on failure.
 fn require_interface_name<E: de::Error>(
-    name: Option<String>,
+    name: Option<&str>,
     section: &'static str,
 ) -> Result<String, E> {
-    validate_non_empty_identifier(name.as_deref().unwrap_or_default(), section).map_err(|_| {
+    validate_non_empty_identifier(name.unwrap_or_default(), section).map_err(|_| {
         E::custom(
             crate::error::StructuredError::EmptyInterfaceName {
                 section: section.to_owned(),
@@ -1326,7 +1330,7 @@ pub enum Cardinality {
 
 impl Cardinality {
     pub fn is_one(&self) -> bool {
-        matches!(self, Cardinality::One)
+        matches!(self, Self::One)
     }
 
     /// Whether the slot holds at most one source, so its generated accessor is
@@ -1338,7 +1342,7 @@ impl Cardinality {
     /// what each singular accessor returns is the cardinality's own business,
     /// since `one` always resolves a source and `zero_or_one` may not.
     pub fn is_scalar(&self) -> bool {
-        matches!(self, Cardinality::One | Cardinality::ZeroOrOne)
+        matches!(self, Self::One | Self::ZeroOrOne)
     }
 
     /// Whether an empty bound set satisfies the slot without the deployment
@@ -1346,7 +1350,7 @@ impl Cardinality {
     /// empty set, but only where the deployment wrote the slot vacant, so an
     /// omitted `zero_or_one` slot stays uncovered.
     pub fn allows_empty(&self) -> bool {
-        matches!(self, Cardinality::ZeroOrMore)
+        matches!(self, Self::ZeroOrMore)
     }
 
     /// Whether a pairing slot of this cardinality may hold `len` pairs, at
@@ -1358,8 +1362,8 @@ impl Cardinality {
     /// binding's).
     pub fn admits_pairs(&self, len: usize) -> bool {
         match self {
-            Cardinality::One | Cardinality::ZeroOrOne => len <= 1,
-            Cardinality::OneOrMore | Cardinality::ZeroOrMore => true,
+            Self::One | Self::ZeroOrOne => len <= 1,
+            Self::OneOrMore | Self::ZeroOrMore => true,
         }
     }
 
@@ -1371,10 +1375,10 @@ impl Cardinality {
     /// a set its manifest does not admit.
     pub fn admits(&self, len: usize) -> bool {
         match self {
-            Cardinality::One => len == 1,
-            Cardinality::ZeroOrOne => len <= 1,
-            Cardinality::OneOrMore => len >= 1,
-            Cardinality::ZeroOrMore => true,
+            Self::One => len == 1,
+            Self::ZeroOrOne => len <= 1,
+            Self::OneOrMore => len >= 1,
+            Self::ZeroOrMore => true,
         }
     }
 
@@ -1382,25 +1386,25 @@ impl Cardinality {
     /// `zero_or_more`), for error messages.
     pub fn as_str(&self) -> &'static str {
         match self {
-            Cardinality::One => "one",
-            Cardinality::ZeroOrOne => "zero_or_one",
-            Cardinality::OneOrMore => "one_or_more",
-            Cardinality::ZeroOrMore => "zero_or_more",
+            Self::One => "one",
+            Self::ZeroOrOne => "zero_or_one",
+            Self::OneOrMore => "one_or_more",
+            Self::ZeroOrMore => "zero_or_more",
         }
     }
 }
 
 /// The four spellings [`Cardinality::as_str`] writes, read back; anything
 /// else is the spelling that was refused.
-impl std::str::FromStr for Cardinality {
+impl FromStr for Cardinality {
     type Err = String;
 
     fn from_str(spelling: &str) -> Result<Self, Self::Err> {
         [
-            Cardinality::One,
-            Cardinality::ZeroOrOne,
-            Cardinality::OneOrMore,
-            Cardinality::ZeroOrMore,
+            Self::One,
+            Self::ZeroOrOne,
+            Self::OneOrMore,
+            Self::ZeroOrMore,
         ]
         .into_iter()
         .find(|cardinality| cardinality.as_str() == spelling)
@@ -1449,12 +1453,12 @@ pub struct ContractDependency {
 /// One bindable contract-implementation claim in `manifest.implements`: this
 /// node satisfies `{name}:{tag}` slots. Produced-interface entries reference
 /// the slot via `link_id`, which shares one flat namespace with
-/// `depends_on.{nodes,contracts,pairings}` link_ids. `sha256` optionally pins
+/// `depends_on.{nodes,contracts,pairings}` `link_ids`. `sha256` optionally pins
 /// the contract document, with the same semantics as
-/// [`ContractDependency::sha256`]. Shape-identical to [`ContractDependency`]
+/// `ContractDependency::sha256`. Shape-identical to `ContractDependency`
 /// but deliberately a distinct type, because the two point in opposite
 /// directions.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ImplementsEntry {
     pub name: Name,
@@ -1507,7 +1511,7 @@ pub struct PairingParticipantDependency {
 /// the role being observed rather than one this node plays.
 ///
 /// The `link_id` is a local-only resolution name (never stamped on the wire),
-/// but it stays wire-safe like every other pairing link_id so both slot kinds
+/// but it stays wire-safe like every other pairing `link_id` so both slot kinds
 /// share one parser.
 ///
 /// `cardinality` sizes the slot's observed member set the same way it sizes a
@@ -1637,7 +1641,7 @@ impl<'de> Deserialize<'de> for PairingObserverDependency {
 /// The daemon that runs an instance of the node is the one producer of the
 /// slot, so the entry takes no `cardinality`. The document of the interface
 /// is compiled into peppy, so the entry takes no `sha256`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DaemonTargetDependency {
     pub name: Name,
     pub tag: String,
@@ -1710,9 +1714,9 @@ pub struct DependsOn {
 }
 
 impl DependsOn {
-    /// Every slot link_id of every list, in list order: nodes, contracts,
+    /// Every slot `link_id` of every list, in list order: nodes, contracts,
     /// daemon targets, pairings, pairing observers. The lists share one
-    /// link_id namespace with `manifest.implements`.
+    /// `link_id` namespace with `manifest.implements`.
     pub fn link_ids(&self) -> impl Iterator<Item = &str> {
         self.producer_slots()
             .map(|(link_id, _)| link_id)
@@ -1739,8 +1743,8 @@ impl DependsOn {
         nodes.chain(contracts).chain(daemon)
     }
 
-    /// Every pairing slot link_id, participants first then observers. The two
-    /// lists share one link_id namespace with the rest of `depends_on`, so
+    /// Every pairing slot `link_id`, participants first then observers. The two
+    /// lists share one `link_id` namespace with the rest of `depends_on`, so
     /// namespace-wide rules read them together.
     pub fn pairing_link_ids(&self) -> impl Iterator<Item = &str> {
         self.pairings
@@ -1765,8 +1769,8 @@ impl EndpointKind {
     /// The manifest spelling of the kind.
     pub fn as_str(self) -> &'static str {
         match self {
-            EndpointKind::Page => "page",
-            EndpointKind::Mcp => "mcp",
+            Self::Page => "page",
+            Self::Mcp => "mcp",
         }
     }
 
@@ -1777,8 +1781,8 @@ impl EndpointKind {
 
     fn parse(kind: &str) -> Option<Self> {
         match kind {
-            "page" => Some(EndpointKind::Page),
-            "mcp" => Some(EndpointKind::Mcp),
+            "page" => Some(Self::Page),
+            "mcp" => Some(Self::Mcp),
             _ => None,
         }
     }
@@ -1799,7 +1803,7 @@ impl fmt::Display for EndpointKind {
 pub struct EndpointLabel(String);
 
 impl EndpointLabel {
-    pub fn new(label: impl Into<String>) -> std::result::Result<Self, ParsingError> {
+    pub fn new(label: impl Into<String>) -> Result<Self, ParsingError> {
         let label = label.into();
         if Self::is_valid(&label) {
             Ok(Self(label))
@@ -1994,7 +1998,7 @@ impl<'de> Deserialize<'de> for Execution {
                 crate::error::StructuredError::MissingExecutionLanguage.json5_message(),
             )
         })?;
-        Ok(Execution {
+        Ok(Self {
             language,
             parameters: raw.parameters,
             build_cmd: raw.build_cmd,
@@ -2010,7 +2014,7 @@ impl<'de> Deserialize<'de> for Execution {
 /// The `framework` block of `peppy.json5`: knobs the framework applies the
 /// same way to every node, written by the node author as the default for
 /// every instance of the node.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeFramework {
     /// What the daemon does when the instance's process exits on its own,
@@ -2054,22 +2058,21 @@ impl Manifest {
         let implements = self
             .implements
             .iter()
-            .map(|e| DocumentReference::new(Contract, &e.name, &e.tag, &e.sha256));
+            .map(|e| DocumentReference::new(Contract, &e.name, &e.tag, e.sha256.as_deref()));
         let contracts = depends_on.into_iter().flat_map(|d| {
             d.contracts
                 .iter()
-                .map(|c| DocumentReference::new(Contract, &c.name, &c.tag, &c.sha256))
+                .map(|c| DocumentReference::new(Contract, &c.name, &c.tag, c.sha256.as_deref()))
         });
-        let pairings = depends_on.into_iter().flat_map(|d| {
-            d.pairings
-                .iter()
-                .map(|p| DocumentReference::new(Pairing, &p.name, &p.tag, &p.sha256))
-                .chain(
-                    d.pairing_observers
-                        .iter()
-                        .map(|o| DocumentReference::new(Pairing, &o.name, &o.tag, &o.sha256)),
-                )
-        });
+        let pairings =
+            depends_on.into_iter().flat_map(|d| {
+                d.pairings
+                    .iter()
+                    .map(|p| DocumentReference::new(Pairing, &p.name, &p.tag, p.sha256.as_deref()))
+                    .chain(d.pairing_observers.iter().map(|o| {
+                        DocumentReference::new(Pairing, &o.name, &o.tag, o.sha256.as_deref())
+                    }))
+            });
         implements.chain(contracts).chain(pairings)
     }
 }
@@ -2082,7 +2085,7 @@ pub enum DocumentKind {
 }
 
 impl fmt::Display for DocumentKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Contract => "contract",
             Self::Pairing => "pairing",
@@ -2101,12 +2104,12 @@ pub struct DocumentReference<'a> {
 }
 
 impl<'a> DocumentReference<'a> {
-    fn new(kind: DocumentKind, name: &'a Name, tag: &'a str, sha256: &'a Option<String>) -> Self {
+    fn new(kind: DocumentKind, name: &'a Name, tag: &'a str, sha256: Option<&'a str>) -> Self {
         Self {
             kind,
             name: name.as_str(),
             tag,
-            sha256: sha256.as_deref(),
+            sha256,
         }
     }
 }
@@ -2150,7 +2153,7 @@ fn extract_parameter_refs(mount_path: &str) -> Vec<&str> {
 }
 
 impl ContainerConfig {
-    /// Validate mount_paths, rejecting top-level system directories as mount sources.
+    /// Validate `mount_paths`, rejecting top-level system directories as mount sources.
     ///
     /// Mount paths whose source contains `${parameters:...}` are skipped because
     /// the actual host path is not known until runtime.
@@ -2178,7 +2181,7 @@ impl ContainerConfig {
         Ok(())
     }
 
-    /// Validate that `${parameters:...}` references in mount_paths point to existing
+    /// Validate that `${parameters:...}` references in `mount_paths` point to existing
     /// string-typed parameters in the schema.
     ///
     /// Returns `Err((ref_path, reason))` on the first invalid reference found.
@@ -2377,7 +2380,7 @@ impl Interfaces {
 }
 
 /// Puts a value into canonical form so that derived `PartialEq` becomes
-/// order-independent: vecs are sorted by name, IndexMap keys are sorted
+/// order-independent: vecs are sorted by name, `IndexMap` keys are sorted
 /// recursively, and `Some(default)` is collapsed to `None`.
 trait Normalize {
     fn normalize(&mut self);
@@ -2433,9 +2436,9 @@ fn normalize_opt_vec<T: Normalize>(
 impl Normalize for SchemaType {
     fn normalize(&mut self) {
         match self {
-            SchemaType::Type(_) | SchemaType::Primitive(_) => {}
-            SchemaType::Array(arr) => arr.items.normalize(),
-            SchemaType::Object(obj) => normalize_schema_map(&mut obj.fields),
+            Self::Type(_) | Self::Primitive(_) => {}
+            Self::Array(arr) => arr.items.normalize(),
+            Self::Object(obj) => normalize_schema_map(&mut obj.fields),
         }
     }
 }
@@ -2449,8 +2452,8 @@ impl Normalize for MessageFormat {
 impl Normalize for FieldRefinement {
     fn normalize(&mut self) {
         match self {
-            FieldRefinement::Length(_) => {}
-            FieldRefinement::Items(nested) | FieldRefinement::Object(nested) => nested.normalize(),
+            Self::Length(_) => {}
+            Self::Items(nested) | Self::Object(nested) => nested.normalize(),
         }
     }
 }
@@ -2624,7 +2627,7 @@ impl Normalize for Interfaces {
 impl Interfaces {
     /// Compares two `Interfaces` for equivalence, ignoring the order of items
     /// within each list and the order of fields within message formats.
-    pub fn matches_unordered(&self, other: &Interfaces) -> bool {
+    pub fn matches_unordered(&self, other: &Self) -> bool {
         self.clone().normalized() == other.clone().normalized()
     }
 }
@@ -2632,6 +2635,7 @@ impl Interfaces {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn extract_parameter_refs_pulls_each_dot_path() {
@@ -2661,19 +2665,19 @@ mod tests {
         assert_eq!(topic.name, "video_stream");
 
         let empty_link_id = r#"{ link_id: "", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(empty_link_id).is_err());
+        serde_json5::from_str::<ConsumedTopic>(empty_link_id).unwrap_err();
 
         let missing_name = r#"{ link_id: "uvc_camera", name: "" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(missing_name).is_err());
+        serde_json5::from_str::<ConsumedTopic>(missing_name).unwrap_err();
 
         let whitespace_only = r#"{ link_id: "   ", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(whitespace_only).is_err());
+        serde_json5::from_str::<ConsumedTopic>(whitespace_only).unwrap_err();
 
         let punctuation_only = r#"{ link_id: "--", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(punctuation_only).is_err());
+        serde_json5::from_str::<ConsumedTopic>(punctuation_only).unwrap_err();
 
         let missing_name_field = r#"{ link_id: "uvc_camera" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(missing_name_field).is_err());
+        serde_json5::from_str::<ConsumedTopic>(missing_name_field).unwrap_err();
 
         let trimmed = r#"{ link_id: " uvc_camera ", name: " video_stream " }"#;
         let topic: ConsumedTopic =
@@ -2750,10 +2754,10 @@ mod tests {
         assert_eq!(service.link_id, "uvc_camera");
 
         let without_link_id = r#"{ name: "enable_camera", description: "A test member." }"#;
-        assert!(serde_json5::from_str::<ConsumedService>(without_link_id).is_err());
+        serde_json5::from_str::<ConsumedService>(without_link_id).unwrap_err();
 
         let blank_link_id = r#"{ link_id: "   ", name: "enable_camera" }"#;
-        assert!(serde_json5::from_str::<ConsumedService>(blank_link_id).is_err());
+        serde_json5::from_str::<ConsumedService>(blank_link_id).unwrap_err();
     }
 
     #[test]
@@ -2901,38 +2905,26 @@ mod tests {
             SchemaType::Object(object) => {
                 assert_eq!(object.kind, ObjectKind::Object);
                 let map = &object.fields;
-                assert!(matches!(
-                    map.get("stamp"),
-                    Some(SchemaType::Type(TypeToken::Time))
-                ));
-                assert!(matches!(
-                    map.get("frame_id"),
-                    Some(SchemaType::Type(TypeToken::U32))
-                ));
+                assert_matches!(map.get("stamp"), Some(SchemaType::Type(TypeToken::Time)));
+                assert_matches!(map.get("frame_id"), Some(SchemaType::Type(TypeToken::U32)));
             }
             _ => panic!("header should be an object"),
         }
 
         // encoding
-        assert!(matches!(
+        assert_matches!(
             mf.0.get("encoding"),
             Some(SchemaType::Type(TypeToken::String))
-        ));
+        );
         // dimensions
-        assert!(matches!(
-            mf.0.get("width"),
-            Some(SchemaType::Type(TypeToken::U32))
-        ));
-        assert!(matches!(
-            mf.0.get("height"),
-            Some(SchemaType::Type(TypeToken::U32))
-        ));
+        assert_matches!(mf.0.get("width"), Some(SchemaType::Type(TypeToken::U32)));
+        assert_matches!(mf.0.get("height"), Some(SchemaType::Type(TypeToken::U32)));
 
         // image array of tokens
         match mf.0.get("image").unwrap() {
             SchemaType::Array(array) => {
                 assert_eq!(array.kind, ArrayKind::Array);
-                assert!(matches!(&*array.items, SchemaType::Type(TypeToken::U8)));
+                assert_matches!(&*array.items, SchemaType::Type(TypeToken::U8));
                 assert_eq!(array.length, Some(3));
             }
             _ => panic!("image should be an array"),
@@ -3192,7 +3184,7 @@ mod tests {
             panic!("`action` is a structured primitive");
         };
         assert_eq!(
-            action.enum_values.as_ref().map(|values| values.values()),
+            action.enum_values.as_ref().map(EnumValues::values),
             Some(["join".to_owned(), "remove".to_owned()].as_slice())
         );
         assert!(action.marks.contains("change_kind"));
@@ -3490,7 +3482,7 @@ mod tests {
             r#"{ name: "depth_camera", tag: "v1" }"#,
             r#"{ name: "depth_camera", tag: "v1", link_id: "depth_camera", extra: "bad" }"#,
         ] {
-            let json5 = format!(r#"{{ nodes: [], contracts: [{entry}] }}"#);
+            let json5 = format!(r"{{ nodes: [], contracts: [{entry}] }}");
             assert!(
                 serde_json5::from_str::<DependsOn>(&json5).is_err(),
                 "contracts entry should be rejected: {entry}"
@@ -3769,11 +3761,11 @@ mod tests {
                         ]
                     }}"#
                 );
-                let parsing_err = crate::error::ParsingError::from(
+                let parsing_err = ParsingError::from(
                     serde_json5::from_str::<DependsOn>(&json5)
                         .expect_err("optional on a pairing slot must be rejected"),
                 );
-                let crate::error::ParsingError::OptionalOnPairingSlot {
+                let ParsingError::OptionalOnPairingSlot {
                     link_id: got_link_id,
                     section: got_section,
                 } = &parsing_err
@@ -3798,7 +3790,7 @@ mod tests {
                 { name: "arm_link", tag: "v1", role: "controller", link_id: "arm", extra: true }
             ]
         }"#;
-        assert!(serde_json5::from_str::<DependsOn>(other_unknown).is_err());
+        serde_json5::from_str::<DependsOn>(other_unknown).unwrap_err();
 
         // A well-formed pairing entry still parses.
         let valid = r#"{
@@ -3852,12 +3844,11 @@ mod tests {
             r#"{ pairings: [ { name: "arm_link", tag: "v1", link_id: "x" } ] }"#,
             r#"{ pairing_observers: [ { name: "arm_link", tag: "v1", link_id: "x" } ] }"#,
         ] {
-            let err = crate::error::ParsingError::from(
+            let err = ParsingError::from(
                 serde_json5::from_str::<DependsOn>(json5)
                     .expect_err("a missing role must be rejected"),
             );
-            assert!(
-                matches!(&err, crate::error::ParsingError::PairingSlotMissingRole { link_id } if link_id == "x"),
+            assert_matches!(&err, ParsingError::PairingSlotMissingRole { link_id } if link_id == "x",
                 "expected PairingSlotMissingRole, got {err:?}"
             );
         }
@@ -3953,7 +3944,7 @@ mod tests {
                 { name: "depth_camera", tag: "v1", link_id: "cam", extra: "bad" }
             ]
         }"#;
-        assert!(serde_json5::from_str::<Manifest>(json5).is_err());
+        serde_json5::from_str::<Manifest>(json5).unwrap_err();
     }
 
     #[test]
@@ -3966,7 +3957,7 @@ mod tests {
                 { name: "depth_camera", tag: "v1" }
             ]
         }"#;
-        assert!(serde_json5::from_str::<Interfaces>(json5).is_err());
+        serde_json5::from_str::<Interfaces>(json5).unwrap_err();
     }
 
     /// Each field with a `$description` is found by its path, at any
@@ -4144,40 +4135,28 @@ mod tests {
 
     #[test]
     fn contract_backed_service_and_action_reject_inline_shape() {
-        assert!(
-            serde_json5::from_str::<ExposedService>(
-                r#"{ link_id: "cam", name: "is_ready", request_message_format: {} }"#
-            )
-            .is_err()
-        );
-        assert!(
-            serde_json5::from_str::<ExposedAction>(
-                r#"{ link_id: "arm", name: "do_move", goal_service: {} }"#
-            )
-            .is_err()
-        );
+        serde_json5::from_str::<ExposedService>(
+            r#"{ link_id: "cam", name: "is_ready", request_message_format: {} }"#,
+        )
+        .unwrap_err();
+        serde_json5::from_str::<ExposedAction>(
+            r#"{ link_id: "arm", name: "do_move", goal_service: {} }"#,
+        )
+        .unwrap_err();
     }
 
     #[test]
     fn produced_entries_require_non_empty_name() {
-        assert!(
-            serde_json5::from_str::<EmittedTopic>(r#"{ name: "", description: "A test member." }"#)
-                .is_err()
-        );
-        assert!(serde_json5::from_str::<EmittedTopic>(r#"{}"#).is_err());
-        assert!(serde_json5::from_str::<EmittedTopic>(r#"{ link_id: "cam", name: "" }"#).is_err());
-        assert!(
-            serde_json5::from_str::<ExposedService>(
-                r#"{ name: "   ", description: "A test member." }"#
-            )
-            .is_err()
-        );
-        assert!(
-            serde_json5::from_str::<ExposedAction>(
-                r#"{ name: "", description: "A test member." }"#
-            )
-            .is_err()
-        );
+        serde_json5::from_str::<EmittedTopic>(r#"{ name: "", description: "A test member." }"#)
+            .unwrap_err();
+        serde_json5::from_str::<EmittedTopic>(r"{}").unwrap_err();
+        serde_json5::from_str::<EmittedTopic>(r#"{ link_id: "cam", name: "" }"#).unwrap_err();
+        serde_json5::from_str::<ExposedService>(
+            r#"{ name: "   ", description: "A test member." }"#,
+        )
+        .unwrap_err();
+        serde_json5::from_str::<ExposedAction>(r#"{ name: "", description: "A test member." }"#)
+            .unwrap_err();
     }
 
     #[test]
@@ -4327,7 +4306,7 @@ mod tests {
                 nodes: [{ name: "dep", tag: "v1", link_id: "d", extra: "bad" }]
             }
         }"#;
-        assert!(serde_json5::from_str::<Manifest>(json5).is_err());
+        serde_json5::from_str::<Manifest>(json5).unwrap_err();
     }
 
     /// A manifest of only a name and a tag parses, with no `depends_on` and an
@@ -4447,7 +4426,7 @@ mod tests {
             execution: { language: "rust", run_cmd: ["./run"] },
             extra: "bad"
         }"#;
-        assert!(serde_json5::from_str::<NodeConfig>(json5).is_err());
+        serde_json5::from_str::<NodeConfig>(json5).unwrap_err();
     }
 
     /// A node-shaped document that mislabels itself as a launcher must

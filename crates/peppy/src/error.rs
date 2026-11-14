@@ -32,11 +32,11 @@ impl CallEnd {
     /// command line that does not parse, so the ends start at 3.
     pub const fn exit_code(self) -> i32 {
         match self {
-            CallEnd::Refused => 3,
-            CallEnd::Failed => 4,
-            CallEnd::Cancelled => 5,
-            CallEnd::Abandoned => 6,
-            CallEnd::Expired => 7,
+            Self::Refused => 3,
+            Self::Failed => 4,
+            Self::Cancelled => 5,
+            Self::Abandoned => 6,
+            Self::Expired => 7,
         }
     }
 }
@@ -95,26 +95,25 @@ pub enum Error {
 }
 
 impl Display for Error {
-    fn fmt(&self, fmt: &mut Formatter) -> core::result::Result<(), core::fmt::Error> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> core::result::Result<(), core::fmt::Error> {
         match self {
-            Error::Io(e) => write!(fmt, "IO error: {e}"),
-            Error::Daemon(e) => write!(fmt, "{e}"),
-            Error::ExecutionFailed(msg) => {
+            Self::Io(e) => write!(fmt, "IO error: {e}"),
+            Self::Daemon(e) => write!(fmt, "{e}"),
+            Self::ExecutionFailed(msg) => {
                 // Convert escaped newlines to actual newlines for readable output
                 let readable_msg = msg.replace("\\n", "\n");
                 write!(fmt, "{readable_msg}")
             }
-            Error::Ended { message, .. } => write!(fmt, "{message}"),
-            Error::Interrupted(msg) => write!(fmt, "{msg}"),
-            Error::Sync(msg) => write!(fmt, "Sync error: {msg}"),
-            Error::InvalidNodeName(name) => write!(fmt, "Invalid node name: {name}"),
-            Error::NodeWatcher(msg) => write!(fmt, "Node watcher error: {msg}"),
-            Error::PeppyMessagingInterface(e) => write!(fmt, "Messaging interface error: {e}"),
-            Error::PeppyConfig(e) => write!(fmt, "Config error: {e}"),
-            Error::DaemonConfig(e) => write!(fmt, "Config error: {e}"),
-            Error::Auth(msg) => write!(fmt, "{msg}"),
-            Error::AuthEngine(e) => write!(fmt, "{e}"),
-            Error::Peppy(e) => write!(fmt, "{e}"),
+            Self::Ended { message, .. } => write!(fmt, "{message}"),
+            Self::Interrupted(msg) | Self::Auth(msg) => write!(fmt, "{msg}"),
+            Self::Sync(msg) => write!(fmt, "Sync error: {msg}"),
+            Self::InvalidNodeName(name) => write!(fmt, "Invalid node name: {name}"),
+            Self::NodeWatcher(msg) => write!(fmt, "Node watcher error: {msg}"),
+            Self::PeppyMessagingInterface(e) => write!(fmt, "Messaging interface error: {e}"),
+            Self::PeppyConfig(e) => write!(fmt, "Config error: {e}"),
+            Self::DaemonConfig(e) => write!(fmt, "Config error: {e}"),
+            Self::AuthEngine(e) => write!(fmt, "{e}"),
+            Self::Peppy(e) => write!(fmt, "{e}"),
         }
     }
 }
@@ -122,7 +121,7 @@ impl Display for Error {
 impl Error {
     /// The error of a goal or a service call that ended as `end`.
     pub fn ended(end: CallEnd, message: impl Into<String>) -> Self {
-        Error::Ended {
+        Self::Ended {
             end,
             message: message.into(),
         }
@@ -133,8 +132,8 @@ impl Error {
     /// that stopped the command, and 1 for every other error of the command.
     pub fn exit_code(&self) -> i32 {
         match self {
-            Error::Ended { end, .. } => end.exit_code(),
-            Error::Interrupted(_) => INTERRUPTED_EXIT_CODE,
+            Self::Ended { end, .. } => end.exit_code(),
+            Self::Interrupted(_) => INTERRUPTED_EXIT_CODE,
             _ => 1,
         }
     }

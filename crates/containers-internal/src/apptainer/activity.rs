@@ -270,9 +270,8 @@ impl GuestActivityProbe {
 pub(super) fn parse_guest_activity(output: &str) -> BuildActivity {
     let mut lines = output.lines();
     let mut next_number = || {
-        lines
-            .next()
-            .and_then(|line| line.trim().parse::<u64>().ok())
+        let line = lines.next()?;
+        line.trim().parse::<u64>().ok()
     };
     let bytes_on_disk = next_number().unwrap_or(0);
     let ticks_per_second = next_number()
@@ -378,7 +377,7 @@ fn host_process_table() -> Vec<ProcessCpu> {
     };
     let ticks_per_second = host_clock_ticks_per_second();
     entries
-        .filter_map(|entry| entry.ok())
+        .filter_map(Result::ok)
         .filter(|entry| is_pid_dir_name(&entry.file_name()))
         // A process that exits between the listing and the read is skipped.
         .filter_map(|entry| std::fs::read_to_string(entry.path().join("stat")).ok())
@@ -495,7 +494,7 @@ fn is_pid_dir_name(name: &std::ffi::OsStr) -> bool {
 /// The pid leads the line. The second field, the command name, sits in
 /// parentheses and may itself contain spaces and parentheses, so the fixed
 /// fields are counted from the last closing parenthesis on the line: state,
-/// ppid, pgrp, session, tty_nr, tpgid, flags, minflt, cminflt, majflt,
+/// ppid, pgrp, session, `tty_nr`, tpgid, flags, minflt, cminflt, majflt,
 /// cmajflt, utime, stime, cutime, cstime, in that order (`proc_pid_stat(5)`).
 /// `None` for a line that does not hold them all, which includes either half
 /// of a line a command name holding a newline split in two. The
@@ -541,7 +540,7 @@ fn host_clock_ticks_per_second() -> NonZeroU64 {
 
 /// Converts `/proc` clock ticks to time at `ticks_per_second`.
 fn clock_ticks_to_duration(ticks: u64, ticks_per_second: NonZeroU64) -> Duration {
-    Duration::from_micros(ticks.saturating_mul(1_000_000) / ticks_per_second.get())
+    Duration::from_micros(ticks.saturating_mul(1_000_000) / ticks_per_second)
 }
 
 /// Recursive file-size sum of `root`, never following symlinks (a symlink's
@@ -566,14 +565,12 @@ fn dir_tree_size(dir: &Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
     };
-    entries
-        .filter_map(|entry| entry.ok())
-        .fold(0, |sum, entry| {
-            let size = match entry.file_type() {
-                Ok(file_type) if file_type.is_dir() => dir_tree_size(&entry.path()),
-                Ok(_) => entry.metadata().map_or(0, |meta| meta.len()),
-                Err(_) => 0,
-            };
-            sum.saturating_add(size)
-        })
+    entries.filter_map(Result::ok).fold(0, |sum, entry| {
+        let size = match entry.file_type() {
+            Ok(file_type) if file_type.is_dir() => dir_tree_size(&entry.path()),
+            Ok(_) => entry.metadata().map_or(0, |meta| meta.len()),
+            Err(_) => 0,
+        };
+        sum.saturating_add(size)
+    })
 }

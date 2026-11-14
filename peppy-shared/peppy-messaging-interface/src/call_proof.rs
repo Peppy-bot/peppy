@@ -278,9 +278,8 @@ impl CallSigner {
 
 /// The milliseconds of `time` since the Unix epoch; 0 before it.
 pub fn unix_millis(time: SystemTime) -> u64 {
-    time.duration_since(UNIX_EPOCH).map_or(0, |since| {
-        u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-    })
+    time.duration_since(UNIX_EPOCH)
+        .map_or(0, config::duration::saturating_millis)
 }
 
 /// How a sender signs one call: with which signer, for which receiver. It
@@ -403,6 +402,10 @@ impl CallProof {
         out.extend_from_slice(&self.nonce);
         out.extend_from_slice(&self.signature);
         let machine_proof = self.machine_proof.as_deref().unwrap_or_default();
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a machine proof is a credential of one machine, far shorter than `u32::MAX` bytes"
+        )]
         out.extend_from_slice(&(machine_proof.len() as u32).to_be_bytes());
         out.extend_from_slice(machine_proof);
     }
@@ -554,7 +557,7 @@ mod tests {
         let remote = signer.prove(&call(b"x"), CallReceiver::OtherMachine);
         assert_eq!(local.machine_proof(), None);
         assert_eq!(
-            remote.machine_proof().map(|proof| proof.as_ref()),
+            remote.machine_proof().map(AsRef::as_ref),
             Some(&b"endorsement and boot credential"[..])
         );
     }

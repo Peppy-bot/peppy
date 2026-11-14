@@ -6,6 +6,7 @@ use crate::binding_update_capnp;
 use crate::error::{Error, Result};
 use crate::types::Payload;
 use config::runtime::{BoundMember, BoundProducers, CopyTag};
+use core_node_api::encoding::capnp_list_len;
 
 /// Absolute producer-binding state pushed by the daemon: the consumer slot's
 /// complete ordered member set. Field-for-field mirror of the capnp
@@ -23,13 +24,14 @@ impl BindingUpdateRequest {
         let mut builder = ::capnp::message::Builder::new_default();
         {
             let mut root =
-                builder.init_root::<binding_update_capnp::binding_update_request::Builder>();
+                builder.init_root::<binding_update_capnp::binding_update_request::Builder<'_>>();
             root.set_link_id(&self.link_id);
             root.set_sequence(self.sequence);
             let members = self.producers.as_slice();
-            let mut wire = root.init_producers(members.len() as u32);
-            for (idx, member) in members.iter().enumerate() {
-                let mut entry = wire.reborrow().get(idx as u32);
+            let member_count = capnp_list_len(members.len(), "producers")?;
+            let mut wire = root.init_producers(member_count);
+            for (idx, member) in (0_u32..).zip(members.iter()) {
+                let mut entry = wire.reborrow().get(idx);
                 entry.set_core_node(&member.producer.core_node);
                 entry.set_instance_id(&member.producer.instance_id);
                 let (copy, instance_id_in_copy) = CopyTag::to_wire(member.copy.as_ref());
@@ -43,7 +45,7 @@ impl BindingUpdateRequest {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = super::decode_message(data)?;
         let root = reader
-            .get_root::<binding_update_capnp::binding_update_request::Reader>()
+            .get_root::<binding_update_capnp::binding_update_request::Reader<'_>>()
             .map_err(|e| Error::Deserialization(e.to_string()))?;
         let link_id = super::read_text(root.get_link_id(), "binding_update", "linkId")?;
         let wire = root
@@ -136,8 +138,8 @@ mod tests {
         for (core_node, instance_id) in [("", "front"), ("core_a", "a/b"), ("core_a", "*")] {
             let mut builder = ::capnp::message::Builder::new_default();
             {
-                let mut root =
-                    builder.init_root::<binding_update_capnp::binding_update_request::Builder>();
+                let mut root = builder
+                    .init_root::<binding_update_capnp::binding_update_request::Builder<'_>>();
                 root.set_link_id("cameras");
                 root.set_sequence(1);
                 let mut entry = root.init_producers(1).get(0);
@@ -161,13 +163,13 @@ mod tests {
         let payload = |tags: [(&str, &str); 2]| {
             let mut builder = ::capnp::message::Builder::new_default();
             {
-                let mut root =
-                    builder.init_root::<binding_update_capnp::binding_update_request::Builder>();
+                let mut root = builder
+                    .init_root::<binding_update_capnp::binding_update_request::Builder<'_>>();
                 root.set_link_id("cameras");
                 root.set_sequence(1);
                 let mut wire = root.init_producers(2);
-                for (idx, (copy, instance_id_in_copy)) in tags.into_iter().enumerate() {
-                    let mut entry = wire.reborrow().get(idx as u32);
+                for (idx, (copy, instance_id_in_copy)) in (0_u32..).zip(tags) {
+                    let mut entry = wire.reborrow().get(idx);
                     entry.set_core_node("core_a");
                     entry.set_instance_id("front");
                     entry.set_copy(copy);

@@ -41,7 +41,7 @@ fn measure(rounds: usize, mut run: impl FnMut()) -> Duration {
 }
 
 fn rgb8_frame(width: usize, height: usize) -> Vec<u8> {
-    (0..width * height * 3).map(|i| (i % 251) as u8).collect()
+    (0..251).cycle().take(width * height * 3).collect()
 }
 
 fn frame_value(pixels: &[u8], width: u16, height: u16) -> Value {
@@ -82,7 +82,7 @@ fn main() {
             std::hint::black_box(codec.decode(&wire).expect("decodes"));
         });
         let jpeg = measure(ROUNDS, || {
-            std::hint::black_box(jpeg_bytes(&pixels, width as u32, height as u32));
+            std::hint::black_box(jpeg_bytes(&pixels, u32::from(width), u32::from(height)));
         });
         println!(
             "{:<12} {:>12} {:>12.2?} {:>12.2?} {:>12.2?}",

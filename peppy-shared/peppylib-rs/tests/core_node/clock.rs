@@ -25,7 +25,7 @@ async fn spawn_clock_stub_listener(server: MessengerHandle, response: ClockRespo
 
     tokio::spawn(async move {
         endpoint
-            .handle_next_request(|request| async move {
+            .handle_next_request(async |request| {
                 let payload = request.message().payload();
                 let _inbound = core_node_api::encoding::ClockRequest::decode(payload.as_ref())
                     .expect("decode ClockRequest");
@@ -51,7 +51,8 @@ async fn synchronize_returns_typed_clock_sync() {
     // so the local clock leads the server and the offset must come out negative.
     let response = ClockResponse::new(0, 2_000_000_000_000, 2_000_000_000_005);
 
-    let (_router, _temp_dir, node_runner) = setup_synchronize_stub(response.clone()).await;
+    let (_router, _temp_dir, node_runner) =
+        Box::pin(setup_synchronize_stub(response.clone())).await;
 
     let sync = clock::synchronize(&node_runner, Some(Duration::from_secs(3)))
         .await

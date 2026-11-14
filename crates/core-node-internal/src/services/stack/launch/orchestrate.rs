@@ -304,7 +304,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
     placements: &daemon_config::launcher::Placements,
     copies: &daemon_config::launcher::CopyMembership,
     clocks: &daemon_config::launcher::ResolvedClocks,
-) -> std::result::Result<ValidatedPlan, String> {
+) -> Result<ValidatedPlan, String> {
     let root_config = ctx.node_stack.root().read().config().clone();
     publish_stdout(
         ctx,
@@ -414,15 +414,13 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
                 .manifest
                 .depends_on
                 .as_ref()
-                .map(|d| d.pairings.as_slice())
-                .unwrap_or_default(),
+                .map_or_default(|d| d.pairings.as_slice()),
             observer_deps: p
                 .config
                 .manifest
                 .depends_on
                 .as_ref()
-                .map(|d| d.pairing_observers.as_slice())
-                .unwrap_or_default(),
+                .map_or_default(|d| d.pairing_observers.as_slice()),
             preexisting: false,
         })
         .collect();
@@ -466,7 +464,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
             "Dependency order: {}",
             ordered
                 .iter()
-                .map(|k| k.label())
+                .map(NodeKey::label)
                 .collect::<Vec<_>>()
                 .join(" -> ")
         ),
@@ -486,7 +484,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
 fn topological_sort(
     planned: &[PlannedDeployment],
     deps_for: &HashMap<NodeKey, HashSet<NodeKey>>,
-) -> std::result::Result<Vec<NodeKey>, String> {
+) -> Result<Vec<NodeKey>, String> {
     let mut in_degree: HashMap<NodeKey, usize> = HashMap::new();
     let mut dependents: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
 
@@ -594,9 +592,9 @@ mod tests {
     /// alone: nothing is constructed or run.
     fn future_size<'a, F>(_: impl FnOnce(&'a StackChangeContext, NodeAddGoal) -> F) -> usize
     where
-        F: std::future::Future,
+        F: Future,
     {
-        std::mem::size_of::<F>()
+        size_of::<F>()
     }
 
     /// The most the per-node add future of a launch or a join may occupy.

@@ -3,8 +3,8 @@ mod deps;
 mod interfaces;
 mod pairings;
 
-pub use self::codegen::{AutoSyncParams, auto_sync_if_missing};
-pub use self::interfaces::{collect_all_deployment_interfaces, stack_resolver};
+pub(super) use self::codegen::{AutoSyncParams, auto_sync_if_missing};
+pub(super) use self::interfaces::{collect_all_deployment_interfaces, stack_resolver};
 pub(crate) use self::interfaces::{resolve_contract_doc, stack_then_repo_resolver};
 
 use self::codegen::remove_previous_peppy_dir;
@@ -32,7 +32,7 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-pub async fn listen_for_node_sync(
+pub(crate) async fn listen_for_node_sync(
     messenger: &MessengerHandle,
     core_node_node: &str,
     instance_id: &str,
@@ -97,7 +97,7 @@ async fn sync_node(
         include_repositories,
     } = request;
 
-    if node_root_dir.as_os_str().is_empty() {
+    if node_root_dir.is_empty() {
         return Err(rejected(
             "Missing `node_root_dir` in node_sync request".to_owned(),
         ));
@@ -155,7 +155,7 @@ async fn sync_node(
     }
 
     // Collect consumed interfaces with resolved message formats
-    let consumed_interfaces = interfaces::collect_all_deployment_interfaces(
+    let consumed_interfaces = collect_all_deployment_interfaces(
         &node_config.manifest,
         &node_config.interfaces,
         &resolve_dep,
@@ -194,11 +194,10 @@ async fn sync_node(
     .await
     .map_err(|e| {
         attempt_failed(format!(
-            "Failed to generate peppygen (generate task failed): {}",
-            e
+            "Failed to generate peppygen (generate task failed): {e}"
         ))
     })?;
-    generation.map_err(|e| attempt_failed(format!("Failed to generate peppygen: {}", e)))?;
+    generation.map_err(|e| attempt_failed(format!("Failed to generate peppygen: {e}")))?;
 
     Ok(NodeSyncResponse::new(
         resolved_from_stack,
@@ -216,7 +215,7 @@ fn parse_node_config(node_config_path: &Path) -> std::result::Result<NodeConfig,
         ));
     }
     NodeConfigParser::from_path(node_config_path)
-        .map_err(|e| format!("Failed to parse node config: {}", e))
+        .map_err(|e| format!("Failed to parse node config: {e}"))
 }
 
 /// The failure message for the dependencies and consumed interfaces of
@@ -237,7 +236,7 @@ fn describe_unresolved_dependencies(
                 dependency_tag,
                 ..
             } => {
-                missing_dependencies.insert(format!("{}:{}", dependency, dependency_tag));
+                missing_dependencies.insert(format!("{dependency}:{dependency_tag}"));
             }
             ParsingError::MissingInterface(info) => {
                 missing_interfaces.push(format!(
@@ -249,7 +248,7 @@ fn describe_unresolved_dependencies(
                 ));
             }
             ParsingError::UndeclaredLinkId { link_id, .. } => {
-                missing_interfaces.push(format!("references undeclared link_id `{}`", link_id));
+                missing_interfaces.push(format!("references undeclared link_id `{link_id}`"));
             }
             _ => {}
         }
@@ -296,7 +295,7 @@ fn direct_dependencies_in_stack(manifest: &Manifest, node_stack: &NodeStack) -> 
             continue;
         }
         if node_stack.find(&name, &tag).is_some() {
-            in_stack.push(format!("{}:{}", name, tag));
+            in_stack.push(format!("{name}:{tag}"));
         }
     }
     in_stack

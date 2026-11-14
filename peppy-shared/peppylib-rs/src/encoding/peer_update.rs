@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 use crate::messaging::{PeerInfo, PeerMember};
 use crate::peer_update_capnp;
 use crate::types::Payload;
+use core_node_api::encoding::capnp_list_len;
 
 /// Absolute pairing-slot state pushed by the daemon: every pair the slot
 /// holds, in establishment order. Field-for-field mirror of the capnp
@@ -21,12 +22,14 @@ impl PeerUpdateRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = ::capnp::message::Builder::new_default();
         {
-            let mut root = builder.init_root::<peer_update_capnp::peer_update_request::Builder>();
+            let mut root =
+                builder.init_root::<peer_update_capnp::peer_update_request::Builder<'_>>();
             root.set_link_id(&self.link_id);
             root.set_sequence(self.sequence);
-            let mut members = root.init_members(self.members.len() as u32);
-            for (idx, member) in self.members.iter().enumerate() {
-                let mut wire = members.reborrow().get(idx as u32);
+            let member_count = capnp_list_len(self.members.len(), "members")?;
+            let mut members = root.init_members(member_count);
+            for (idx, member) in (0_u32..).zip(self.members.iter()) {
+                let mut wire = members.reborrow().get(idx);
                 wire.set_peer_core_node(&member.info.producer.core_node);
                 wire.set_peer_instance_id(&member.info.producer.instance_id);
                 wire.set_peer_link_id(&member.info.peer_link_id);
@@ -39,7 +42,7 @@ impl PeerUpdateRequest {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = super::decode_message(data)?;
         let root = reader
-            .get_root::<peer_update_capnp::peer_update_request::Reader>()
+            .get_root::<peer_update_capnp::peer_update_request::Reader<'_>>()
             .map_err(|e| Error::Deserialization(e.to_string()))?;
         let link_id = super::read_text(root.get_link_id(), "peer_update", "linkId")?;
         let sequence = root.get_sequence();
@@ -121,7 +124,7 @@ mod tests {
         }
     }
 
-    /// A peer link_id the wire cannot carry refuses the delivery.
+    /// A peer `link_id` the wire cannot carry refuses the delivery.
     #[test]
     fn a_peer_link_id_the_wire_cannot_carry_is_refused() {
         let mut request = PeerUpdateRequest {

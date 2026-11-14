@@ -3,10 +3,11 @@ use super::l4t_manifest::{self, L4T_MANIFEST_DIR, NVLIBLIST_PATH, NvliblistSync}
 use super::lima;
 use super::registry_auth::{APPTAINER_AUTH_FILE_ENV, RegistryAuth};
 use core_node_api::encoding::ArtifactPlatform;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// Serializes Lima VM initialization to prevent concurrent boot/sync races.
@@ -139,7 +140,7 @@ pub(crate) enum Backend {
         registry_auth: RegistryAuth,
         /// Directory of the host's NVIDIA L4T container manifest, whose shared
         /// libraries a `--nv` command gets; see
-        /// [`l4t_manifest`](super::l4t_manifest). The Lima backend has no
+        /// [`l4t_manifest`]. The Lima backend has no
         /// counterpart: its guest is a VM on a Mac, never a Jetson.
         l4t_manifest_dir: PathBuf,
     },
@@ -150,7 +151,7 @@ pub(crate) enum Backend {
         apptainer_bin: PathBuf,
         /// Path to the bundled `limactl` binary.
         limactl_path: PathBuf,
-        /// LIMA_HOME directory for VM instance data.
+        /// `LIMA_HOME` directory for VM instance data.
         lima_home: PathBuf,
         /// The VM the commands run in.
         vm: lima::LimaVm,
@@ -174,6 +175,10 @@ pub(crate) enum Backend {
 /// instantly; on macOS it boots the Lima VM and syncs apptainer into the guest
 /// (may take minutes on first run).
 #[derive(Debug)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "`apptainer_dir` is the name of the installation directory across the crate"
+)]
 pub struct Apptainer {
     /// Root of the apptainer installation on the host (contains `bin/`, arch dirs, etc.)
     pub(crate) apptainer_dir: PathBuf,
@@ -187,11 +192,10 @@ pub struct Apptainer {
 /// Check if a command is available in PATH.
 #[cfg(target_os = "linux")]
 fn which(cmd: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).find_map(|dir| {
-            let full = dir.join(cmd);
-            full.is_file().then_some(full)
-        })
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths).find_map(|dir| {
+        let full = dir.join(cmd);
+        full.is_file().then_some(full)
     })
 }
 
@@ -225,6 +229,10 @@ fn is_apparmor_manageable() -> bool {
 /// must be installed to allow the `starter` binary to create them.
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is the result of one check of the setup"
+)]
 pub struct SetupStatus {
     /// `newuidmap` is available in PATH (required for fakeroot).
     pub newuidmap_ok: bool,
@@ -300,8 +308,8 @@ pub(crate) fn apparmor_profile_ref(apptainer_dir: &Path) -> ApparmorProfileRef {
 /// not a security boundary).
 #[cfg(target_os = "linux")]
 fn fnv1a_64(bytes: &[u8]) -> u64 {
-    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
     bytes.iter().fold(FNV_OFFSET_BASIS, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
     })
@@ -338,8 +346,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
     // have no access to.
     let apparmor_restricted = apparmor_manageable
         && std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-            .map(|v| v.trim() == "1")
-            .unwrap_or(false);
+            .is_ok_and(|v| v.trim() == "1");
 
     let profile = apparmor_profile_ref(apptainer_dir);
     let apparmor_ok = !apparmor_restricted || profile_references_starter(&profile);
@@ -365,25 +372,22 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
 #[cfg(target_os = "linux")]
 fn profile_references_starter(profile: &ApparmorProfileRef) -> bool {
     std::fs::read_to_string(&profile.file)
-        .map(|content| content.contains(&profile.starter_path))
-        .unwrap_or(false)
+        .is_ok_and(|content| content.contains(&profile.starter_path))
 }
 
 /// Whether the kernel has `profile` loaded. Reads the policy directory
 /// listing, which is world-readable, because
-/// `/sys/kernel/security/apparmor/profiles` requires CAP_MAC_ADMIN.
+/// `/sys/kernel/security/apparmor/profiles` requires `CAP_MAC_ADMIN`.
 #[cfg(target_os = "linux")]
 fn is_profile_loaded(profile: &ApparmorProfileRef) -> bool {
     let kernel_entry_prefix = format!("{}.", profile.name);
-    std::fs::read_dir("/sys/kernel/security/apparmor/policy/profiles")
-        .map(|entries| {
-            entries.filter_map(|e| e.ok()).any(|e| {
-                e.file_name()
-                    .to_str()
-                    .is_some_and(|name| name.starts_with(&kernel_entry_prefix))
-            })
+    std::fs::read_dir("/sys/kernel/security/apparmor/policy/profiles").is_ok_and(|entries| {
+        entries.flatten().any(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(&kernel_entry_prefix))
         })
-        .unwrap_or(false)
+    })
 }
 
 /// The shell script that fixes the failing checks, one step per failure
@@ -475,7 +479,7 @@ impl Apptainer {
     ///
     /// # Blocking
     ///
-    /// Construction runs [`ensure_ready`](Self::ensure_ready), so it is not free.
+    /// Construction runs `ensure_ready`, so it is not free.
     /// On Linux it only checks user namespace prerequisites. On macOS it boots the
     /// Lima VM and syncs the apptainer install into the guest, which can take
     /// minutes on first run, so call it from a blocking context (e.g.
@@ -597,7 +601,7 @@ impl Apptainer {
                 apptainer_bin,
                 vm,
             } => {
-                let _guard = LIMA_INIT.lock().unwrap_or_else(|e| e.into_inner());
+                let _guard = LIMA_INIT.lock().unwrap_or_else(PoisonError::into_inner);
 
                 lima::ensure_lima_instance(limactl_path, lima_home, vm, lima::LIMA_TEMPLATE)?;
                 lima::ensure_guest_userns(limactl_path, lima_home, &vm.name)?;
@@ -653,7 +657,7 @@ impl Apptainer {
                     return Ok(());
                 }
 
-                let _guard = LIMA_INIT.lock().unwrap_or_else(|e| e.into_inner());
+                let _guard = LIMA_INIT.lock().unwrap_or_else(PoisonError::into_inner);
 
                 let limactl_path = limactl_path.clone();
                 let lima_home = lima_home.clone();
@@ -725,7 +729,7 @@ impl Apptainer {
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let output = cmd.output().map_err(Error::from)?;
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let stderr = String::from_utf8_lossy_owned(output.stderr);
             return Err(Error::CommandFailed {
                 command: "apptainer --version".to_string(),
                 status: output.status,
@@ -738,7 +742,7 @@ impl Apptainer {
     /// SIGKILL the guest-side process group recorded for `key` by the Lima
     /// wrapper (see [`ApptainerCommand::cancel_pgid`]). `key` must match the one
     /// passed to `cancel_pgid` for this command; both resolve to the same
-    /// guest-native pgid path via [`lima::guest_pgid_path`]. Used to cancel an
+    /// guest-native pgid path via `lima::guest_pgid_path`. Used to cancel an
     /// in-flight build (`--force` supersede), to stop an `exec` that runs
     /// after a build (when the build is cancelled or the `exec` runs past its
     /// time limit), and to force-stop a run node's in-VM workload on daemon
@@ -807,7 +811,7 @@ impl Apptainer {
     /// [`kill_guest_process_group`](Self::kill_guest_process_group) for diagnostics
     /// and lifecycle checks that need to observe runtime-side processes (the same
     /// kernel the build/run executes in).
-    pub fn guest_command(&self, args: &[&str]) -> Result<std::process::Output> {
+    pub fn guest_command(&self, args: &[&str]) -> Result<Output> {
         let (program, rest) = args.split_first().ok_or_else(|| {
             Error::ConfigurationError("guest_command requires at least one argument".into())
         })?;
@@ -870,7 +874,7 @@ impl Apptainer {
             self,
             CommandKind::Exec {
                 container: container.to_string(),
-                cmd: cmd.iter().map(|s| s.to_string()).collect(),
+                cmd: cmd.iter().map(ToString::to_string).collect(),
             },
             Vec::new(),
         )
@@ -879,7 +883,7 @@ impl Apptainer {
     /// Start building an `apptainer build` command.
     ///
     /// Both paths are translated to guest-visible paths when running under Lima.
-    /// The command packs the image's squashfs with [`SQUASHFS_COMPRESSION`]. A
+    /// The command packs the image's squashfs with `SQUASHFS_COMPRESSION`. A
     /// `--mksquashfs-args` flag added later with [`ApptainerCommand::raw_flag`]
     /// replaces it, as apptainer reads the last one.
     pub fn build(&self, output: &Path, def_file: &Path) -> ApptainerCommand<'_> {
@@ -914,7 +918,7 @@ impl Apptainer {
     /// Puts the shared libraries of the host's NVIDIA L4T container manifest
     /// into the `--nv` library list of the apptainer install, as a command
     /// that passes `--nv` needs them on a Jetson; see
-    /// [`l4t_manifest`](super::l4t_manifest). Does nothing on a host without
+    /// [`l4t_manifest`]. Does nothing on a host without
     /// the manifest, and under Lima.
     fn prepare_nv_library_list(&self) -> Result<()> {
         let Backend::Native {
@@ -961,7 +965,7 @@ impl Apptainer {
     /// [`ensure_host_mounts()`](Self::ensure_host_mounts); otherwise an error is
     /// returned.
     ///
-    /// Host runtime trees ([`is_host_provided_mount_source`]) are deliberately
+    /// Host runtime trees (`is_host_provided_mount_source`) are deliberately
     /// still rejected rather than passed through to the guest. Passing them
     /// through would only defer the failure to Apptainer's own "bind source
     /// does not exist", and would be a lie for the case that matters: a device
@@ -1081,7 +1085,7 @@ impl Apptainer {
                     if apptainer_env.is_empty() {
                         (
                             apptainer_bin,
-                            args.iter().map(|s| s.to_string()).collect(),
+                            args.iter().map(ToString::to_string).collect(),
                             None,
                         )
                     } else {
@@ -1091,7 +1095,7 @@ impl Apptainer {
                             Some(lima::guest_env_lines(apptainer_env)?),
                         )
                     };
-                let guest_args: Vec<&str> = guest_args_owned.iter().map(|s| s.as_str()).collect();
+                let guest_args: Vec<&str> = guest_args_owned.iter().map(String::as_str).collect();
 
                 let guest_workdir = working_dir
                     .map(|dir| self.translate_path(dir))
@@ -1187,7 +1191,7 @@ impl Apptainer {
 }
 
 /// Why this machine cannot build for `platform` under emulation, or `None`
-/// when it can (see [`EmulationToolchain::find`]).
+/// when it can (see `EmulationToolchain::find`).
 pub fn emulation_problem(platform: ArtifactPlatform) -> Option<String> {
     EmulationToolchain::find(platform)
         .err()
@@ -1382,21 +1386,21 @@ impl GuestSignal {
     /// `pgid_file`.
     pub(crate) fn argv(self, pgid_file: &Path) -> Vec<String> {
         match self {
-            GuestSignal::Terminate => lima::lima_terminate_pgid_argv(pgid_file),
-            GuestSignal::Kill => lima::lima_kill_pgid_argv(pgid_file),
+            Self::Terminate => lima::lima_terminate_pgid_argv(pgid_file),
+            Self::Kill => lima::lima_kill_pgid_argv(pgid_file),
         }
     }
 
     /// How the debug line of a failed best-effort signal names it.
     fn name(self) -> &'static str {
         match self {
-            GuestSignal::Terminate => "SIGTERM",
-            GuestSignal::Kill => "kill",
+            Self::Terminate => "SIGTERM",
+            Self::Kill => "kill",
         }
     }
 }
 
-/// The `limactl` binary and the LIMA_HOME of the peppy Lima VM, or `None` when
+/// The `limactl` binary and the `LIMA_HOME` of the peppy Lima VM, or `None` when
 /// no Lima installation resolves or its VM is not running. A VM that is not
 /// running has no guest processes left to signal, and the callers must never
 /// boot one, which a full [`Apptainer::new`] readiness preflight could do.
@@ -1472,7 +1476,7 @@ fn signal_guest_process_groups_best_effort(keys: &[String], signal: GuestSignal)
 }
 
 /// Resolve a relative path to absolute by joining it onto the current working
-/// directory; absolute paths are returned unchanged. Shared by [`translate_path`]
+/// directory; absolute paths are returned unchanged. Shared by `translate_path`
 /// (which propagates a `current_dir()` failure) and [`resolve_absolute`] (which
 /// falls back to the original path), so both normalize identically. That shared
 /// normalization is load-bearing: `ensure_host_mounts` registers extra mounts via
@@ -1519,7 +1523,7 @@ fn resolve_absolute(path: &str) -> PathBuf {
 /// The subset of [`std::process::Child`] that [`await_guest_kill`] needs, behind a
 /// trait so the bounded-wait decision logic can be unit-tested with a fake child
 /// instead of a real `limactl` subprocess (mirroring the injected-closure pattern
-/// of [`lima::stop_instance_inner`]).
+/// of `lima::stop_instance_inner`).
 pub(crate) trait GuestKillChild {
     /// Non-blocking check for the child's exit status.
     fn poll_exit(&mut self) -> Result<Option<ExitStatus>>;
@@ -1600,6 +1604,7 @@ pub(crate) fn await_guest_kill(
 // ---------------------------------------------------------------------------
 
 /// Bind mount specification (path translation deferred to spawn/output).
+#[derive(Debug)]
 struct BindMount {
     src: String,
     dest: Option<String>,
@@ -1607,6 +1612,7 @@ struct BindMount {
 }
 
 /// The kind of apptainer subcommand being built.
+#[derive(Debug)]
 enum CommandKind {
     /// `apptainer run <image> [container-args...]`
     Run { image: String, args: Vec<String> },
@@ -1622,9 +1628,9 @@ impl CommandKind {
     /// run or exec only when its image is a URI rather than a local file.
     fn may_contact_registry(&self) -> bool {
         match self {
-            CommandKind::Build { .. } => true,
-            CommandKind::Run { image, .. } => is_uri(image),
-            CommandKind::Exec { container, .. } => is_uri(container),
+            Self::Build { .. } => true,
+            Self::Run { image, .. } => is_uri(image),
+            Self::Exec { container, .. } => is_uri(container),
         }
     }
 }
@@ -1681,6 +1687,28 @@ pub struct ApptainerCommand<'a> {
     working_dir: Option<PathBuf>,
 }
 
+/// Shows the command. A variable that goes into the container can hold a
+/// secret, so the variables are shown by name.
+impl fmt::Debug for ApptainerCommand<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let env_names: Vec<&str> = self
+            .apptainer_env
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        formatter
+            .debug_struct("ApptainerCommand")
+            .field("kind", &self.kind)
+            .field("flags", &self.flags)
+            .field("bind_mounts", &self.bind_mounts)
+            .field("apptainer_env", &env_names)
+            .field("lima_shell_extra_args", &self.lima_shell_extra_args)
+            .field("cancel_pgid_path", &self.cancel_pgid_path)
+            .field("working_dir", &self.working_dir)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a> ApptainerCommand<'a> {
     /// A command of `kind` that starts with `flags` and none of the optional
     /// settings the builder methods add.
@@ -1707,11 +1735,12 @@ impl<'a> ApptainerCommand<'a> {
     /// when the command is executed. If `dest` is `None`, the container-side
     /// path mirrors the host path. Optional `opts` (e.g. `"ro"`, `"rw"`) are
     /// appended after the destination.
+    #[must_use]
     pub fn bind(mut self, src: &str, dest: Option<&str>, opts: Option<&str>) -> Self {
         self.bind_mounts.push(BindMount {
             src: src.to_string(),
-            dest: dest.map(|d| d.to_string()),
-            opts: opts.map(|o| o.to_string()),
+            dest: dest.map(ToString::to_string),
+            opts: opts.map(ToString::to_string),
         });
         self
     }
@@ -1730,6 +1759,7 @@ impl<'a> ApptainerCommand<'a> {
     /// process environment does not cross `limactl shell`, and a value on a
     /// command line shows in the process list. Under Lima, a key or a value
     /// that would break a line fails the terminal method.
+    #[must_use]
     pub fn apptainer_env(mut self, key: &str, value: &str) -> Self {
         self.apptainer_env
             .push((key.to_string(), value.to_string()));
@@ -1753,6 +1783,7 @@ impl<'a> ApptainerCommand<'a> {
     /// the node's environment explicitly as `APPTAINERENV_` variables (which
     /// still apply under `--cleanenv`) keeps the curated set while removing
     /// both hazards.
+    #[must_use]
     pub fn clean_env(mut self) -> Self {
         self.flags.push("--cleanenv".to_string());
         self
@@ -1762,6 +1793,7 @@ impl<'a> ApptainerCommand<'a> {
     ///
     /// These are only effective when running under the Lima backend (macOS).
     /// On Linux (native backend) they are silently ignored.
+    #[must_use]
     pub fn lima_shell_extra_args(mut self, args: &[String]) -> Self {
         self.lima_shell_extra_args.extend(args.iter().cloned());
         self
@@ -1780,6 +1812,7 @@ impl<'a> ApptainerCommand<'a> {
     /// teardown). On the native backend (Linux) the host process-group
     /// SIGKILL already covers the whole tree in the shared namespace, so this is
     /// ignored.
+    #[must_use]
     pub fn cancel_pgid(mut self, key: &str) -> Self {
         self.cancel_pgid_path = Some(lima::guest_pgid_path(key));
         self
@@ -1799,6 +1832,7 @@ impl<'a> ApptainerCommand<'a> {
     /// Lima mount location in the guest, and falls back to the guest home
     /// directory WITHOUT failing, so a build's `%files .` would copy the
     /// user's entire `$HOME` into the image.
+    #[must_use]
     pub fn working_dir(mut self, dir: &Path) -> Self {
         self.working_dir = Some(dir.to_path_buf());
         self
@@ -1812,6 +1846,7 @@ impl<'a> ApptainerCommand<'a> {
     ///
     /// For flags that take a value, call this twice:
     /// `.raw_flag("--overlay").raw_flag("/path/to/overlay")`.
+    #[must_use]
     pub fn raw_flag(mut self, flag: &str) -> Self {
         self.flags.push(flag.to_string());
         self
@@ -1821,13 +1856,14 @@ impl<'a> ApptainerCommand<'a> {
     ///
     /// For `run`: these become container arguments passed to the runscript.
     /// For `exec`: these are appended to the command.
+    #[must_use]
     pub fn args(mut self, args: &[&str]) -> Self {
         match &mut self.kind {
             CommandKind::Run { args: a, .. } => {
-                a.extend(args.iter().map(|s| s.to_string()));
+                a.extend(args.iter().map(ToString::to_string));
             }
             CommandKind::Exec { cmd: c, .. } => {
-                c.extend(args.iter().map(|s| s.to_string()));
+                c.extend(args.iter().map(ToString::to_string));
             }
             CommandKind::Build { .. } => {
                 debug_assert!(false, "args() is not applicable to build commands");
@@ -1862,14 +1898,14 @@ impl<'a> ApptainerCommand<'a> {
     ///
     /// A command that passes `--nv` first gets the shared libraries of the
     /// host's NVIDIA L4T container manifest into the `--nv` library list (see
-    /// [`l4t_manifest`](super::l4t_manifest)), so it also fails here when the
+    /// [`l4t_manifest`]), so it also fails here when the
     /// manifest cannot be read or the list cannot be written.
     fn assemble_command(&self) -> Result<Command> {
         if passes_nv(&self.flags) {
             self.facade.prepare_nv_library_list()?;
         }
         let args = self.build_args()?;
-        let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let str_args: Vec<&str> = args.iter().map(String::as_str).collect();
         // The pgid path comes from `lima::guest_pgid_path`, i.e. it is already a
         // guest-side path, so it must NOT go through `translate_path` (which
         // would reject `/tmp/...` as outside `$HOME`).
@@ -1958,7 +1994,7 @@ impl<'a> ApptainerCommand<'a> {
                 // Options ride after a destination, so a mirrored bind that
                 // carries options writes its source out as the destination.
                 (None, Some(opts)) => {
-                    args.push(format!("{translated_src}:{translated_src}:{opts}"))
+                    args.push(format!("{translated_src}:{translated_src}:{opts}"));
                 }
                 (None, None) => args.push(translated_src),
             }

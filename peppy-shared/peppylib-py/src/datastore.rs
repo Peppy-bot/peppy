@@ -24,7 +24,7 @@ use crate::runtime::PyNodeRunner;
 /// Python wrapper for `core_node_api::encoding::DatastoreStoreResponse`, an
 /// empty ack. Exposes `encode()` so test stubs can produce wire bytes.
 #[pyclass(name = "DatastoreStoreResponse", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyDatastoreStoreResponse;
 
 #[pymethods]
@@ -34,6 +34,7 @@ impl PyDatastoreStoreResponse {
         Self
     }
 
+    #[expect(clippy::unused_self, reason = "Python calls the method on an instance")]
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         encoded_to_py_bytes(
             py,
@@ -47,7 +48,7 @@ impl PyDatastoreStoreResponse {
 /// used by test stubs to produce capnp wire bytes for the
 /// `DATASTORE_STORE_EXCLUSIVE` service.
 #[pyclass(name = "DatastoreStoreExclusiveResponse", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyDatastoreStoreExclusiveResponse {
     inner: DatastoreStoreExclusiveResponse,
 }
@@ -82,7 +83,7 @@ impl PyDatastoreStoreExclusiveResponse {
 /// Python wrapper for `core_node_api::encoding::DatastoreGetResponse`, used
 /// by test stubs to produce capnp wire bytes for the `DATASTORE_GET` service.
 #[pyclass(name = "DatastoreGetResponse", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyDatastoreGetResponse {
     inner: DatastoreGetResponse,
 }
@@ -130,7 +131,7 @@ impl PyDatastoreGetResponse {
 /// test stubs to produce capnp wire bytes for the `DATASTORE_LIST` service.
 /// Construct it from `(key, encoding, last_modified_by)` triples.
 #[pyclass(name = "DatastoreListResponse", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyDatastoreListResponse {
     inner: DatastoreListResponse,
 }
@@ -160,7 +161,7 @@ impl PyDatastoreListResponse {
 /// Python wrapper for `core_node_api::encoding::DatastoreRemoveResponse`, used
 /// by test stubs to produce capnp wire bytes for the `DATASTORE_REMOVE` service.
 #[pyclass(name = "DatastoreRemoveResponse", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyDatastoreRemoveResponse {
     inner: DatastoreRemoveResponse,
 }
@@ -190,7 +191,7 @@ impl PyDatastoreRemoveResponse {
 /// tags means an arbitrary value may come back); it compares equal to the
 /// `peppylib.datastore.Encoding` members.
 #[pyclass(name = "StoredValue", from_py_object)]
-#[derive(Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PyStoredValue {
     inner: StoredValue,
 }
@@ -225,9 +226,15 @@ impl PyStoredValue {
 /// owner's `instance_id` in `current.last_modified_by`.
 #[pyclass(name = "ExclusiveStore", eq, frozen, skip_from_py_object)]
 #[derive(Clone, PartialEq)]
-pub enum PyExclusiveStore {
+pub(crate) enum PyExclusiveStore {
+    #[expect(
+        clippy::empty_enum_variants_with_brackets,
+        reason = "pyo3 takes a variant without fields of a complex enum in the tuple form"
+    )]
     Stored(),
-    Refused { current: PyStoredValue },
+    Refused {
+        current: PyStoredValue,
+    },
 }
 
 impl From<ExclusiveStore> for PyExclusiveStore {
@@ -246,7 +253,7 @@ impl From<ExclusiveStore> for PyExclusiveStore {
 /// tag of its value, and the `instance_id` of the node that last wrote it. The
 /// value bytes are not included; fetch them with [`peppylib::datastore::get`].
 #[pyclass(name = "DatastoreEntry", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyDatastoreEntry {
     inner: DatastoreEntry,
 }
@@ -290,7 +297,7 @@ fn datastore_store<'py>(
     encoding: String,
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = std::sync::Arc::clone(&node_runner.inner);
     let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     // `future_into_py_unit` resolves to Python `None`: a store that succeeds
     // has nothing to return (see the helper for why a bare `Ok(())` would not).
@@ -319,7 +326,7 @@ fn datastore_store_exclusive<'py>(
     encoding: String,
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = std::sync::Arc::clone(&node_runner.inner);
     let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let answer = peppylib::datastore::store_exclusive(&runner, key, value, encoding, timeout)
@@ -341,7 +348,7 @@ fn datastore_get<'py>(
     key: String,
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = std::sync::Arc::clone(&node_runner.inner);
     let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let value = peppylib::datastore::get(&runner, key, timeout)
@@ -352,7 +359,7 @@ fn datastore_get<'py>(
 }
 
 /// List the metadata of every key in `node_runner`'s bound core node datastore.
-/// Resolves to a list of `DatastoreEntry` (key, encoding, last_modified_by).
+/// Resolves to a list of `DatastoreEntry` (key, encoding, `last_modified_by`).
 /// The value bytes are not included; fetch them with `datastore::get`.
 ///
 /// Python equivalent of `peppylib::datastore::list`.
@@ -363,7 +370,7 @@ fn datastore_list<'py>(
     node_runner: &PyNodeRunner,
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = std::sync::Arc::clone(&node_runner.inner);
     let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let entries = peppylib::datastore::list(&runner, timeout)
@@ -389,7 +396,7 @@ fn datastore_remove<'py>(
     key: String,
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = std::sync::Arc::clone(&node_runner.inner);
     let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let removed = peppylib::datastore::remove(&runner, key, timeout)

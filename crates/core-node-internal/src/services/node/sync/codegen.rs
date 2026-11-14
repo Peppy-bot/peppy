@@ -84,8 +84,7 @@ pub(super) fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
 fn unique_sibling_dir(node_root_dir: &std::path::Path, prefix: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     node_root_dir.join(format!("{prefix}-{}-{nanos}", std::process::id()))
 }
 
@@ -117,7 +116,8 @@ fn needs_sync(node_root_dir: &std::path::Path) -> bool {
 }
 
 /// Parameters for [`auto_sync_if_missing`].
-pub struct AutoSyncParams<'a> {
+#[derive(Clone, Copy)]
+pub(crate) struct AutoSyncParams<'a> {
     pub node_dir: &'a std::path::Path,
     pub execution_language: config::node::PeppygenLanguage,
     pub manifest: &'a config::node::Manifest,
@@ -136,7 +136,7 @@ pub struct AutoSyncParams<'a> {
 /// Directories whose `.peppy` already exists and contains all required files
 /// are skipped (no-op). If `.peppy` exists but is incomplete (e.g. missing
 /// `git.hash` or the peppygen fingerprint), it is removed and regenerated.
-pub fn auto_sync_if_missing(
+pub(crate) fn auto_sync_if_missing(
     params: AutoSyncParams<'_>,
     node_stack: &NodeStack,
     peppy_dirs: &PeppyDirs,
@@ -223,6 +223,7 @@ fn generate_peppy_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn needs_sync_returns_true_when_dir_missing() {
@@ -350,8 +351,9 @@ mod tests {
 
         let result = auto_sync_node_without_config(tmp.path());
 
-        assert!(
-            matches!(result, Err(crate::Error::GeneratorError(_))),
+        assert_matches!(
+            result,
+            Err(crate::Error::GeneratorError(_)),
             "a missing peppy.json5 must fail the generation, got {result:?}"
         );
         assert_eq!(std::fs::read(peppy.join("marker")).unwrap(), b"previous");

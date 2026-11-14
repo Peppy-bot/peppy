@@ -7,7 +7,8 @@ use pyo3::prelude::*;
 
 use crate::messaging::{PyMessengerHandle, to_py_err};
 
-/// Python wrapper for a running service task (TaskHandle).
+/// Python wrapper for a running service task (`TaskHandle`).
+#[derive(Debug)]
 #[pyclass(name = "ServiceTask")]
 pub struct PyServiceTask {
     inner: Mutex<Option<TaskHandle<PeppyResult<()>>>>,
@@ -24,16 +25,18 @@ impl PyServiceTask {
 #[pymethods]
 impl PyServiceTask {
     /// Returns true if the service task has finished.
-    fn is_finished(&self) -> PyResult<bool> {
-        Ok(self.inner.lock().as_ref().is_none_or(|h| h.is_finished()))
+    fn is_finished(&self) -> bool {
+        self.inner
+            .lock()
+            .as_ref()
+            .is_none_or(TaskHandle::is_finished)
     }
 
     /// Abort the service task.
-    fn abort(&self) -> PyResult<()> {
+    fn abort(&self) {
         if let Some(h) = self.inner.lock().take() {
             h.abort();
         }
-        Ok(())
     }
 }
 
@@ -41,6 +44,7 @@ impl PyServiceTask {
 /// delegating to the given `peppylib::services::*` function.
 macro_rules! service_listener {
     ($py_name:literal, $struct_name:ident, $listen_fn:path) => {
+        #[derive(Debug)]
         #[pyclass(name = $py_name)]
         pub struct $struct_name;
 

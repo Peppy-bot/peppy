@@ -4,7 +4,7 @@ use crate::types::PublisherQoS;
 use crate::wire::{SegmentError, SenderTargetError};
 use config::node::TopicRetention;
 
-pub type Result<T> = core::result::Result<T, Error>;
+pub(crate) type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, From)]
 pub enum Error {
@@ -53,7 +53,10 @@ pub enum Error {
 }
 
 impl core::fmt::Display for Error {
-    fn fmt(&self, fmt: &mut core::fmt::Formatter) -> core::result::Result<(), core::fmt::Error> {
+    fn fmt(
+        &self,
+        fmt: &mut core::fmt::Formatter<'_>,
+    ) -> core::result::Result<(), core::fmt::Error> {
         match self {
             Self::RetainingTopicMismatch {
                 topic,

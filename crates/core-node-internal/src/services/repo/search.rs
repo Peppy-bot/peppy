@@ -135,7 +135,7 @@ impl SearchQuery {
 
     /// The tag part as typed, when the query has one.
     pub fn tag_pattern(&self) -> Option<&str> {
-        self.tag.as_ref().map(|pattern| pattern.as_str())
+        self.tag.as_ref().map(regex::Regex::as_str)
     }
 
     /// The digest, when the query pins one.
@@ -330,7 +330,7 @@ pub struct SearchOutcome {
     /// Every identity the query matches, ranked: hits by name first, among
     /// them names the pattern spells out first, then by name, tag and kind.
     pub matches: Vec<MatchedItem>,
-    /// [`excluded_repositories_hint`], so an empty result can say that an
+    /// `excluded_repositories_hint`, so an empty result can say that an
     /// excluded repository may have provided the item without the caller
     /// knowing the cache layout. Empty when nothing is excluded.
     pub excluded_hint: String,
@@ -346,7 +346,7 @@ pub struct ShowOutcome {
     /// published as both a contract and a pairing has two entries in
     /// `matches` and one report covering both.
     pub reports: Vec<SearchReport>,
-    /// [`excluded_repositories_hint`], as on [`SearchOutcome`].
+    /// `excluded_repositories_hint`, as on [`SearchOutcome`].
     pub excluded_hint: String,
 }
 
@@ -601,8 +601,7 @@ fn usage_report(
     // that node asks for. Empty for every other kind.
     let own_slots: Vec<PairingSlot> = lookup_repo_entry(nodes, name, tag)
         .map_err(|ambiguity| ambiguity.to_string())?
-        .map(|entry| entry.links.pairings.clone())
-        .unwrap_or_default();
+        .map_or_default(|entry| entry.links.pairings.clone());
     // Each slot's pairing resolves to its own document, so a peer's pin is
     // checked against the pairing it claims, not against `name:tag`.
     let slot_docs: Vec<Option<PublishedDoc>> = own_slots
@@ -755,11 +754,10 @@ fn indexed(repo: &ListedRepo, node: &AttributedNode<'_>) -> IndexedNode {
 /// The label of the listed repository `repo_id`, or a phrase saying there
 /// is none: a cached entry can outlive its repository's configuration.
 fn label_of(repos: &[ListedRepo], repo_id: u32) -> String {
-    repos
-        .iter()
-        .find(|repo| repo.id == repo_id)
-        .map(|repo| repo.label.clone())
-        .unwrap_or_else(|| "no configured repository".to_owned())
+    repos.iter().find(|repo| repo.id == repo_id).map_or_else(
+        || "no configured repository".to_owned(),
+        |repo| repo.label.clone(),
+    )
 }
 
 /// The document `name:tag` resolves to through `entries`, by the priority

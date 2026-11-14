@@ -345,16 +345,13 @@ impl ActiveLaunch {
 /// and the followers of the fleet read the removal of each of its copies.
 pub(crate) fn drop_active_launch(ownership: &SliceOwnership, cause: &str) {
     let mut record = ownership.active.lock();
-    let removed: Vec<String> = record
-        .take()
-        .map(|active| {
-            active
-                .copies
-                .keys()
-                .map(|name| name.as_str().to_owned())
-                .collect()
-        })
-        .unwrap_or_default();
+    let removed: Vec<String> = record.take().map_or_default(|active| {
+        active
+            .copies
+            .keys()
+            .map(|name| name.as_str().to_owned())
+            .collect()
+    });
     ownership.fleet.with(|book| {
         book.end_every_lease(cause);
         book.set_launch(FleetListing::default(), &[]);

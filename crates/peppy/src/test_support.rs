@@ -44,6 +44,7 @@ fn modify_node_config(peppy_json5: &Path, modify: impl FnOnce(&mut config::node:
 /// outlives its own spawn. Every such instance ends when this value drops, so
 /// a test's instances are tied to the test rather than to a stopwatch.
 #[must_use = "instances stay alive only while this guard is held"]
+#[derive(Debug)]
 pub struct InstanceLifetime {
     dir: TempDir,
 }
@@ -80,7 +81,7 @@ impl InstanceLifetime {
         let argv = keep_alive_argv(&self.sentinel());
         let quoted = argv
             .iter()
-            .map(|a| format!("{:?}", a))
+            .map(|a| format!("{a:?}"))
             .collect::<Vec<_>>()
             .join(", ");
         format!("[{quoted}]")
@@ -225,10 +226,12 @@ pub fn wait_for_log(logs: impl Fn() -> String, needle: &str, timeout: Duration) 
 
 // Held only to keep the messaging router (a child process or in-process task)
 // alive for the emulation's lifetime: the variants are constructed and stored in
-// `_instance`, then dropped with the emulation, but never read. The dead-code
-// lint is allowed here deliberately because the value is a lifetime guard, not
-// data anyone inspects.
-#[allow(dead_code)]
+// `_instance`, then dropped with the emulation, but never read.
+#[expect(
+    dead_code,
+    reason = "the value keeps the router alive, and nothing reads it"
+)]
+#[derive(Debug)]
 enum MessengerInstance {
     Mock(MockInstance),
     Zenoh(ZenohdInstance),
@@ -242,8 +245,11 @@ const DEFAULT_CORE_NODE_NAME: &str = "test-core-node";
 /// share one router take the calls of the command line of each other, as
 /// the machines of a federation do.
 fn emulated_machines_ca() -> &'static auth::test_support::TestMachineCa {
-    static CA: std::sync::OnceLock<auth::test_support::TestMachineCa> = std::sync::OnceLock::new();
-    CA.get_or_init(|| auth::test_support::TestMachineCa::root("emulated machines CA"))
+    static CA: std::sync::LazyLock<auth::test_support::TestMachineCa> =
+        std::sync::LazyLock::new(|| {
+            auth::test_support::TestMachineCa::root("emulated machines CA")
+        });
+    &CA
 }
 
 /// The machine certificate of the emulated daemon `core_node`, written to
@@ -286,6 +292,7 @@ pub fn default_arguments() -> CoreNodeArguments {
     }
 }
 
+#[derive(Debug)]
 pub struct ServeCommandEmulation {
     /// The daemon's data root. Owned when the emulation created it, borrowed
     /// when a test supplied one so that a later emulation can reopen it.

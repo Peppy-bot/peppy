@@ -23,7 +23,7 @@ use config::node::NodeConfig;
 /// Resolved execution mode for the node runtime
 #[derive(Debug, Clone)]
 pub(crate) enum ExecutionMode {
-    /// Daemon mode - managed by CLI via PEPPY_RUNTIME_CONFIG
+    /// Daemon mode - managed by CLI via `PEPPY_RUNTIME_CONFIG`
     Daemon,
     /// Standalone mode with configuration. Boxed because the config carries a
     /// map per daemon-less seeding kind and the sibling variant carries nothing,
@@ -63,8 +63,8 @@ pub enum PinnedInstance {
 /// Configuration for standalone execution.
 ///
 /// All fields are optional with sensible defaults:
-/// - `messaging_host`: DEFAULT_MESSAGING_HOST ("127.0.0.1")
-/// - `messaging_port`: DEFAULT_MESSAGING_PORT (7448)
+/// - `messaging_host`: `DEFAULT_MESSAGING_HOST` ("127.0.0.1")
+/// - `messaging_port`: `DEFAULT_MESSAGING_PORT` (7448)
 /// - `instance_id`: "standalone"
 /// - `node_name`: from peppy.json5 manifest
 /// - `parameters`: empty (must be provided if node requires them)
@@ -76,9 +76,9 @@ pub struct StandaloneConfig {
     pub node_name: Option<String>,
     /// Instance ID (defaults to "standalone")
     pub instance_id: Option<String>,
-    /// Messaging host (defaults to DEFAULT_MESSAGING_HOST)
+    /// Messaging host (defaults to `DEFAULT_MESSAGING_HOST`)
     pub messaging_host: Option<String>,
-    /// Messaging port (defaults to DEFAULT_MESSAGING_PORT)
+    /// Messaging port (defaults to `DEFAULT_MESSAGING_PORT`)
     pub messaging_port: Option<u16>,
     /// Daemon-less stand-in for a launcher's `framework.clock`: the one clock
     /// this node reads, and its role in that clock's domain. Lands verbatim in
@@ -89,19 +89,19 @@ pub struct StandaloneConfig {
     /// harness is the harness's clock stand-in, driven by the test.
     pub clock: config::runtime::ClockBinding,
     /// Daemon-less pairing pins: the pairs each declared pairing slot (keyed
-    /// by its link_id) holds at boot, standing in for the set the daemon
+    /// by its `link_id`) holds at boot, standing in for the set the daemon
     /// stamps into a spawned node's boot config. A scalar slot holds at most
     /// one.
     pub peer_pins: std::collections::BTreeMap<String, Vec<PeerPin>>,
     /// Daemon-less consumer-slot bindings: the ordered producer set bound
-    /// to each declared `depends_on` slot (keyed by its link_id), standing
+    /// to each declared `depends_on` slot (keyed by its `link_id`), standing
     /// in for the launcher's validated binding map during standalone
     /// development. Each slot's set must satisfy the slot's declared
     /// cardinality at startup, exactly as a daemon launch would have
     /// enforced at plan time.
     pub bound_producers: std::collections::BTreeMap<String, Vec<BoundPin>>,
     /// Daemon-less observer membership: the ordered pairing set each declared
-    /// `pairing_observers` slot observes (keyed by its link_id), standing in
+    /// `pairing_observers` slot observes (keyed by its `link_id`), standing in
     /// for the member set the daemon stamps into a spawned node's boot config.
     /// Each slot's set must satisfy the slot's declared cardinality at
     /// startup, exactly as a daemon launch would have enforced at plan time.
@@ -126,6 +126,7 @@ impl StandaloneConfig {
     /// let config = StandaloneConfig::new()
     ///     .with_parameters(&MyParams { threshold: 0.5, enabled: true });
     /// ```
+    #[must_use]
     pub fn with_parameters<T: serde::Serialize>(mut self, params: &T) -> Self {
         self.parameters =
             Some(serde_json::to_value(params).expect("parameters must be serializable"));
@@ -133,36 +134,42 @@ impl StandaloneConfig {
     }
 
     /// Set runtime parameters from a raw JSON value.
+    #[must_use]
     pub fn with_parameters_json(mut self, params: serde_json::Value) -> Self {
         self.parameters = Some(params);
         self
     }
 
     /// Set instance ID (defaults to "standalone")
+    #[must_use]
     pub fn with_instance_id(mut self, id: impl Into<String>) -> Self {
         self.instance_id = Some(id.into());
         self
     }
 
     /// Set node name (defaults to peppy.json5 manifest name)
+    #[must_use]
     pub fn with_node_name(mut self, name: impl Into<String>) -> Self {
         self.node_name = Some(name.into());
         self
     }
 
-    /// Set messaging host (defaults to DEFAULT_MESSAGING_HOST)
+    /// Set messaging host (defaults to `DEFAULT_MESSAGING_HOST`)
+    #[must_use]
     pub fn with_messaging_host(mut self, host: impl Into<String>) -> Self {
         self.messaging_host = Some(host.into());
         self
     }
 
-    /// Set messaging port (defaults to DEFAULT_MESSAGING_PORT)
+    /// Set messaging port (defaults to `DEFAULT_MESSAGING_PORT`)
+    #[must_use]
     pub fn with_messaging_port(mut self, port: u16) -> Self {
         self.messaging_port = Some(port);
         self
     }
 
     /// Set both messaging host and port
+    #[must_use]
     pub fn with_messaging(mut self, host: impl Into<String>, port: u16) -> Self {
         self.messaging_host = Some(host.into());
         self.messaging_port = Some(port);
@@ -172,6 +179,7 @@ impl StandaloneConfig {
     /// Bind the node to `clock`, the standalone spelling of a launcher's
     /// `framework: { clock: "<domain>" }` and of the publisher a domain
     /// declaration names. Wall time is the default.
+    #[must_use]
     pub fn with_clock(mut self, clock: config::runtime::ClockBinding) -> Self {
         self.clock = clock;
         self
@@ -184,6 +192,7 @@ impl StandaloneConfig {
     /// multi slot; a scalar slot takes at most one, and a second one fails
     /// startup. Standalone-mode stand-in for the daemon's pair delivery;
     /// ignored (with a warning) if the manifest declares no such slot.
+    #[must_use]
     pub fn with_peer_pin(
         self,
         link_id: impl Into<String>,
@@ -203,6 +212,7 @@ impl StandaloneConfig {
     /// [`with_peer_pin`](Self::with_peer_pin) for a peer that belongs to the
     /// copy named `copy`, as a `stack join` stamps it: the member the node
     /// reads for this pair carries that copy name.
+    #[must_use]
     pub fn with_peer_pin_in_copy(
         self,
         link_id: impl Into<String>,
@@ -255,6 +265,7 @@ impl StandaloneConfig {
     /// empty says so with [`Self::with_vacant_producer_slot`]).
     /// Standalone-mode stand-in for the launcher's validated binding map;
     /// ignored (with a warning) if the manifest declares no such slot.
+    #[must_use]
     pub fn with_bound_producer(
         self,
         link_id: impl Into<String>,
@@ -273,6 +284,7 @@ impl StandaloneConfig {
     /// the copy's fragment wrote: the producer runs under the id a launch
     /// mints from the two, `<copy>_<instance_id>`, and the member the node
     /// reads for it carries both.
+    #[must_use]
     pub fn with_bound_producer_in_copy(
         self,
         link_id: impl Into<String>,
@@ -313,6 +325,7 @@ impl StandaloneConfig {
     /// a `one` / `one_or_more` slot, exactly as it does for a daemon boot
     /// config. The reason a deployment writes down has no standalone
     /// counterpart, because there is no deployment to write it.
+    #[must_use]
     pub fn with_vacant_producer_slot(mut self, link_id: impl Into<String>) -> Self {
         self.bound_producers.entry(link_id.into()).or_default();
         self
@@ -334,6 +347,7 @@ impl StandaloneConfig {
     /// The seeded members boot live, at the generation the daemon would assign a
     /// first incarnation: there is no daemon to report a source going down, so
     /// standalone liveness never changes.
+    #[must_use]
     pub fn with_observed_source(
         mut self,
         link_id: impl Into<String>,
@@ -371,6 +385,7 @@ impl StandaloneConfig {
 /// The builder automatically detects execution mode:
 /// - If `PEPPY_RUNTIME_CONFIG` is set (by CLI), runs in daemon mode
 /// - Otherwise, runs in standalone mode with the provided config (or defaults)
+#[derive(Debug)]
 pub struct NodeBuilder<Params> {
     standalone_config: Option<StandaloneConfig>,
     manifest: ManifestSource,
@@ -393,7 +408,7 @@ impl<Params> NodeBuilder<Params>
 where
     Params: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
-    /// Create a new NodeBuilder
+    /// Create a new `NodeBuilder`
     pub fn new() -> Self {
         Self {
             standalone_config: None,
@@ -407,12 +422,14 @@ where
     /// This config is used as a fallback when not running in daemon mode.
     /// If the CLI launches this node (setting `PEPPY_RUNTIME_CONFIG`),
     /// daemon mode takes precedence and this config is ignored.
+    #[must_use]
     pub fn standalone(mut self, config: StandaloneConfig) -> Self {
         self.standalone_config = Some(config);
         self
     }
 
     /// Use a custom peppy.json5 path
+    #[must_use]
     pub fn with_config_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.manifest = ManifestSource::File(path.into());
         self
@@ -424,6 +441,7 @@ where
     /// itself. In daemon mode there is no codegen output whose fingerprint
     /// could be checked against the manifest, so it is taken as given;
     /// standalone mode reads it exactly as it would read the file.
+    #[must_use]
     pub fn with_manifest(mut self, node_config: NodeConfig) -> Self {
         self.manifest = ManifestSource::Value(Box::new(node_config));
         self
@@ -433,7 +451,7 @@ where
     ///
     /// Parses and validates parameters eagerly: any type mismatch or missing
     /// field is reported immediately rather than being deferred to
-    /// [`NodeContext::parameters`].
+    /// [`NodeContext::take_parameters`].
     ///
     /// Use this when you need:
     /// - Full debugger/breakpoint support
@@ -498,7 +516,7 @@ where
     pub fn run<F, Fut>(self, setup_fn: F) -> Result<()>
     where
         F: FnOnce(Params, Arc<NodeRunner>) -> Fut,
-        Fut: std::future::Future<Output = Result<()>>,
+        Fut: Future<Output = Result<()>>,
     {
         let context = self.init()?;
         context.run_with_closure(setup_fn)
@@ -538,6 +556,7 @@ where
 /// Returned by `NodeBuilder::init()`. Parameters are parsed eagerly
 /// during construction. Call [`take_parameters`](Self::take_parameters) to
 /// take the already-validated, typed parameters.
+#[derive(Debug)]
 pub struct NodeContext<Params> {
     processor: Processor,
     mode: ExecutionMode,
@@ -549,10 +568,10 @@ impl<Params> NodeContext<Params>
 where
     Params: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
-    /// Create the NodeRunner, connecting to the messaging system.
+    /// Create the `NodeRunner`, connecting to the messaging system.
     ///
     /// If a cancellation token was set via `with_cancellation_token()`, it will be
-    /// used by the NodeRunner. Otherwise, a new token is created.
+    /// used by the `NodeRunner`. Otherwise, a new token is created.
     pub async fn create_node_runner(&self) -> Result<Arc<NodeRunner>> {
         let token = self.cancellation_token.clone().unwrap_or_default();
         let node_runner =
@@ -560,10 +579,11 @@ where
         Ok(Arc::new(node_runner))
     }
 
-    /// Set a cancellation token for the NodeRunner.
+    /// Set a cancellation token for the `NodeRunner`.
     ///
     /// This is useful when using `init()` for manual async execution and you want
     /// to control the cancellation token yourself.
+    #[must_use]
     pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
         self.cancellation_token = Some(token);
         self
@@ -616,7 +636,7 @@ where
     fn run_with_closure<F, Fut>(mut self, setup_fn: F) -> Result<()>
     where
         F: FnOnce(Params, Arc<NodeRunner>) -> Fut,
-        Fut: std::future::Future<Output = Result<()>>,
+        Fut: Future<Output = Result<()>>,
     {
         let rt = tokio::runtime::Runtime::new().map_err(|source| Error::RuntimeInitialization {
             context: "node runner".to_string(),
@@ -672,7 +692,7 @@ where
                     }
                     // Fired during setup by a process signal or by the watchdog
                     // when the daemon has been gone past the grace period.
-                    _ = cancellation_token.cancelled() => {
+                    () = cancellation_token.cancelled() => {
                         info!("Shutdown signal during setup");
                         return Ok(());
                     }
@@ -708,7 +728,7 @@ where
     async fn run_standalone<F, Fut>(mut self, parameters: Params, setup_fn: F) -> Result<()>
     where
         F: FnOnce(Params, Arc<NodeRunner>) -> Fut,
-        Fut: std::future::Future<Output = Result<()>>,
+        Fut: Future<Output = Result<()>>,
     {
         // Create cancellation token for standalone mode
         let cancellation_token = CancellationToken::new();
@@ -990,7 +1010,7 @@ async fn run_post_setup_services(
         // `SHUTDOWN_SERVICE`: the caller cancels the token (idempotent), runs
         // the registered shutdown hooks, and exits, so the node tears down
         // (and reaps its own children) instead of lingering as an orphan.
-        _ = cancellation_token.cancelled() => {
+        () = cancellation_token.cancelled() => {
             info!("Shutdown signal received; shutting down");
         }
     }
@@ -1051,7 +1071,7 @@ mod tests {
 
         let declared = match &shared.lock().await.adapter {
             MessengerAdapter::Mock(adapter) => adapter.queryable_declarations(),
-            _ => unreachable!("the session is a mock"),
+            MessengerAdapter::Zenoh(_) => unreachable!("the session is a mock"),
         };
         let services: Vec<&str> = declared
             .iter()

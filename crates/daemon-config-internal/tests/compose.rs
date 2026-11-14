@@ -5,6 +5,7 @@ use daemon_config::launcher::{
     OptionSpec, PeppyLauncher, PeppyLauncherParser, PreparedLauncher, Selection, SkipReason,
     check_composition,
 };
+use std::assert_matches;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -321,7 +322,7 @@ fn a_null_adjustments_key_is_refused_wherever_it_is_written() {
     let dir = tempdir().unwrap();
     write(
         &dir.path().join("fragments/a.json5"),
-        &fragment_file(r#"deployments: [], adjustments: null"#),
+        &fragment_file(r"deployments: [], adjustments: null"),
     );
     let (launcher, parsed) = write_launcher(
         dir.path(),
@@ -1440,7 +1441,7 @@ fn with_on_a_flat_launcher_is_refused() {
     );
     let err = compose(&launcher, Path::new("/tmp/x.json5"), &words(&["mujoco"]))
         .expect_err("flat launcher has nothing to select");
-    assert!(matches!(err, CompositionError::WithOnFlatLauncher));
+    assert_matches!(err, CompositionError::WithOnFlatLauncher);
 }
 
 // -- a fragment's own axes -------------------------------------------------
@@ -1580,8 +1581,7 @@ fn a_fragment_two_levels_down_declares_no_axes() {
             deployments: [{ robot: "openarm" }] }"#,
     );
     let err = PreparedLauncher::load(&parsed, &launcher).expect_err("two levels down is refused");
-    assert!(
-        matches!(&err, CompositionError::NestedComponents { path, .. } if path == "fragments/deep.json5"),
+    assert_matches!(&err, CompositionError::NestedComponents { path, .. } if path == "fragments/deep.json5",
         "got: {err}"
     );
 }
@@ -1597,9 +1597,8 @@ fn two_selected_fragments_cannot_declare_the_same_axis() {
     );
     let err =
         compose(&launcher, Path::new("l.json5"), &[]).expect_err("one commander axis in reach");
-    assert!(
-        matches!(&err, CompositionError::AxisInReachTwice { axis, first, second }
-            if axis == "commander" && first == "`left=arm`" && second == "`right=arm`"),
+    assert_matches!(&err, CompositionError::AxisInReachTwice { axis, first, second }
+            if axis == "commander" && first == "`left=arm`" && second == "`right=arm`",
         "got: {err}"
     );
 }
@@ -1646,10 +1645,7 @@ fn a_selection_the_constraints_refuse_does_not_launch() {
         &words(&["mujoco", "on"]),
     )
     .expect_err("the constraint must refuse this member");
-    assert!(matches!(
-        err,
-        CompositionError::ConstraintUnsatisfied { .. }
-    ));
+    assert_matches!(err, CompositionError::ConstraintUnsatisfied { .. });
     let message = err.to_string();
     assert!(
         message.contains("robot=mujoco  recorder=on"),
@@ -1676,8 +1672,9 @@ fn a_refusal_lists_every_requires_alternative() {
     );
     let err = compose(&launcher, Path::new("family.json5"), &words(&["mujoco"]))
         .expect_err("no alternative holds for this member");
-    assert!(
-        matches!(err, CompositionError::ConstraintUnsatisfied { .. }),
+    assert_matches!(
+        err,
+        CompositionError::ConstraintUnsatisfied { .. },
         "got: {err}"
     );
     let message = err.to_string();
@@ -1741,7 +1738,7 @@ fn a_forbidden_combination_is_refused_and_names_the_matched_entry() {
         &words(&["mujoco", "on"]),
     )
     .expect_err("the exclusion must refuse this member");
-    assert!(matches!(err, CompositionError::ConstraintForbidden { .. }));
+    assert_matches!(err, CompositionError::ConstraintForbidden { .. });
     let message = err.to_string();
     assert!(message.contains("selecting robot=mujoco"), "got: {message}");
     assert!(message.contains("forbids `recorder=on`"), "got: {message}");

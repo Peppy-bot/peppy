@@ -33,7 +33,6 @@ use peppylib::messaging::{
 use peppylib::runtime::NodeRunner;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -169,7 +168,7 @@ impl Source {
                 (interface.name().to_owned(), interface.tag().to_owned())
             }
         };
-        let contract = SenderTarget::contract(&name, &tag).map_err(peppylib::PeppyError::from)?;
+        let contract = SenderTarget::contract(&name, &tag).map_err(PeppyError::from)?;
         Ok(Self {
             label: format!("{name}:{tag}"),
             contract,
@@ -443,7 +442,7 @@ pub(crate) async fn pump_resource(
 /// resource's policies. Whether the message was admitted, and so decoded.
 fn feed<E: std::fmt::Display>(
     ingest: &ResourceIngest,
-    decode: impl FnOnce() -> Result<serde_json::Value, E>,
+    decode: impl FnOnce() -> Result<Value, E>,
 ) -> bool {
     let Some(token) = ingest.admit() else {
         return false;
@@ -455,7 +454,7 @@ fn feed<E: std::fmt::Display>(
             }
         }
         Err(error) => {
-            tracing::debug!(%error, resource = ingest.resource_name(), "message does not convert")
+            tracing::debug!(%error, resource = ingest.resource_name(), "message does not convert");
         }
     }
     true
@@ -546,7 +545,7 @@ pub(crate) async fn call_service(
     tool.client
         .call(messenger, identity, binding, producer, input, tool.deadline)
         .await
-        .map_err(|error| service_call_error(error, tool.deadline))
+        .map_err(|error| service_call_error(&error, tool.deadline))
 }
 
 /// The tool error of a service call that failed with `error`, under the
@@ -555,7 +554,7 @@ pub(crate) async fn call_service(
 /// not answer in time overran the deadline, and every other error, an
 /// error reply with a kind that the member does not declare included, is
 /// a readable text.
-fn service_call_error(error: ConsumerError, deadline: Duration) -> ToolCallError {
+fn service_call_error(error: &ConsumerError, deadline: Duration) -> ToolCallError {
     let ConsumerError::Messaging(messaging) = &error else {
         return ToolCallError::Error(error.to_string());
     };
@@ -596,11 +595,11 @@ pub(crate) trait TaskSurface: Sync {
 
 impl TaskSurface for ActionContext {
     fn report_feedback(&self, message: String) -> impl Future<Output = ()> + Send {
-        ActionContext::report_feedback(self, message)
+        Self::report_feedback(self, message)
     }
 
     fn cancel_requested(&self) -> impl Future<Output = ()> + Send {
-        ActionContext::cancel_requested(self)
+        Self::cancel_requested(self)
     }
 }
 
@@ -698,7 +697,10 @@ pub(crate) async fn run_task(
 /// on a goal whose admission it did not read: peppylib cancels the goal of
 /// a request that its provider acknowledged and did not answer in time,
 /// and a request that reached no provider started no goal.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input, and a struct of them only moves the list"
+)]
 pub(crate) async fn drive_goal(
     task: &PreparedTask,
     messenger: &MessengerHandle,
@@ -864,6 +866,10 @@ impl Drop for FollowedGoal<'_> {
 /// The end of a goal the bridge could not follow to its end. A refusal or
 /// a failure with a kind that the member does not declare is one: the
 /// error names the kind and gives the message of the provider.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` gives the error by value"
+)]
 fn failed(error: ConsumerError) -> ActionExit {
     ActionExit::Error(error.to_string())
 }
@@ -928,8 +934,9 @@ async fn next_feedback_step(handle: &mut GoalHandle) -> FeedbackStep {
             FeedbackStep::Overflowed { bound }
         }
         Ok(None)
-        | Err(ConsumerError::Messaging(_))
-        | Err(ConsumerError::UndeclaredFailureKind { .. }) => FeedbackStep::Ended,
+        | Err(ConsumerError::Messaging(_) | ConsumerError::UndeclaredFailureKind { .. }) => {
+            FeedbackStep::Ended
+        }
     }
 }
 
@@ -968,7 +975,7 @@ async fn settle_after_feedback(
     // Armed once: the deadline bounds the whole goal, so no message moves
     // it.
     let expiry = tokio::time::sleep(remaining());
-    tokio::pin!(expiry);
+    let mut expiry = std::pin::pin!(expiry);
     loop {
         if cancel_pending {
             cancel_pending = false;
@@ -976,14 +983,14 @@ async fn settle_after_feedback(
             let _ = goal.cancel(remaining()).await;
         }
         tokio::select! {
-            _ = &mut expiry => break,
-            _ = surface.cancel_requested(), if !cancel_forwarded => {
+            () = &mut expiry => break,
+            () = surface.cancel_requested(), if !cancel_forwarded => {
                 cancel_pending = true;
             }
             step = goal.next_feedback_step() => match step {
                 FeedbackStep::Message(message) => tokio::select! {
                     () = surface.report_feedback(message) => {}
-                    _ = &mut expiry => break,
+                    () = &mut expiry => break,
                 },
                 FeedbackStep::Skipped => {}
                 FeedbackStep::Ended => break,
@@ -1019,7 +1026,7 @@ async fn settle_on_result(
         .expect("the follow holds its goal until it drops");
     let messenger = *messenger;
     let result = handle.result(messenger, remaining());
-    tokio::pin!(result);
+    let mut result = std::pin::pin!(result);
     let mut cancel_forwarded = false;
     loop {
         tokio::select! {
@@ -1030,7 +1037,7 @@ async fn settle_on_result(
                 }
                 return outcome;
             }
-            _ = surface.cancel_requested(), if !cancel_forwarded => {
+            () = surface.cancel_requested(), if !cancel_forwarded => {
                 cancel_forwarded = true;
                 stop_cancel.disarm();
                 *cancel_sent = true;

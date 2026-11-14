@@ -13,6 +13,7 @@ use crate::generator::types::{ContractOrigin, InterfaceKind};
 use core_node_api::encoding::ArtifactPlatform;
 use rust_embed::Embed;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -115,7 +116,7 @@ impl PeppylibPlatform {
     }
 }
 
-pub fn add_peppylib_dependencies(
+pub(super) fn add_peppylib_dependencies(
     to_path: &Path,
     peppy_dirs: &daemon_config::consts::PeppyDirs,
     platform: PeppylibPlatform,
@@ -299,7 +300,10 @@ fn write_peppylib_package(
 /// can run over the tree of an earlier one, so the earlier directory is
 /// removed first: the package keeps no schema of an interface the node no
 /// longer has.
-pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path) -> Result<()> {
+pub(super) fn add_capnp_schemas(
+    schemas: &HashMap<String, CapnpSchema>,
+    to_path: &Path,
+) -> Result<()> {
     let capnp_dir = to_path.join("peppygen").join("capnp");
     if capnp_dir.exists() {
         fs::remove_dir_all(&capnp_dir)?;
@@ -317,7 +321,10 @@ pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path)
     Ok(())
 }
 
-pub fn add_parameters_to_lib(parameters: &config::ParameterSchema, to_path: &Path) -> Result<()> {
+pub(super) fn add_parameters_to_lib(
+    parameters: &config::ParameterSchema,
+    to_path: &Path,
+) -> Result<()> {
     let parameters_code = super::parameters::generate_python_parameters(parameters)?;
     let peppygen_dir = to_path.join("peppygen");
     fs::create_dir_all(&peppygen_dir)?;
@@ -326,7 +333,10 @@ pub fn add_parameters_to_lib(parameters: &config::ParameterSchema, to_path: &Pat
     Ok(())
 }
 
-pub fn add_artifacts_to_lib(to_path: &Path, artifacts: Vec<InterfaceArtifact>) -> Result<()> {
+pub(super) fn add_artifacts_to_lib(
+    to_path: &Path,
+    artifacts: Vec<InterfaceArtifact>,
+) -> Result<()> {
     let peppygen_dir = to_path.join("peppygen");
 
     let mut grouped = group_artifacts_by_category(artifacts);
@@ -384,7 +394,7 @@ impl TreeWriter for PythonTreeWriter {
     fn write_index(&mut self, dir: &Path, entries: &[ModuleEntry], _is_root: bool) -> Result<()> {
         let mut init_content = String::new();
         for entry in entries {
-            init_content.push_str(&format!("from . import {}\n", entry.module_name));
+            let _ = writeln!(init_content, "from . import {}", entry.module_name);
         }
         fs::write(dir.join("__init__.py"), init_content)?;
         Ok(())
@@ -636,7 +646,9 @@ mod tests {
         for (name, _) in PEPPYLIB_PLATFORM_SO {
             assert!(
                 name.starts_with(SO_PLATFORM_PREFIX)
-                    && name.ends_with(".so")
+                    && Path::new(name)
+                        .extension()
+                        .is_some_and(|extension| extension == "so")
                     && *name != SO_CANONICAL_NAME,
                 "expected platform-suffixed .so, got: {name}"
             );
@@ -724,9 +736,9 @@ mod tests {
     ///
     /// The Linux container bindings (linux-aarch64 and linux-x86_64) are produced
     /// only when the cross build is enabled: every release build, plus debug
-    /// builds that opt in via PEPPY_CROSS_BUILD (the CI workflows do). Otherwise
+    /// builds that opt in via `PEPPY_CROSS_BUILD` (the CI workflows do). Otherwise
     /// the embedded set lacks every Linux platform and this test has nothing to
-    /// assert and skips. The gate reads PEPPYLIB_CROSS_BUILD, the decision the
+    /// assert and skips. The gate reads `PEPPYLIB_CROSS_BUILD`, the decision the
     /// build script actually took for this compilation, so the two can never
     /// disagree.
     #[test]

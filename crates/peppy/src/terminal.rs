@@ -35,14 +35,12 @@ pub(crate) fn stdout_width() -> Option<usize> {
 
 /// The width of the terminal, or 80 columns when the size cannot be read.
 fn terminal_width() -> usize {
-    crossterm::terminal::size()
-        .map(|(width, _)| width as usize)
-        .unwrap_or(80)
+    crossterm::terminal::size().map_or(80, |(width, _)| width as usize)
 }
 
 /// Whether the `NO_COLOR` convention asks for plain output: the variable set to
 /// a non-empty value. An empty `NO_COLOR` is treated as unset, per the
-/// convention at https://no-color.org.
+/// convention at <https://no-color.org>.
 fn no_color_requested() -> bool {
     no_color_from_env(std::env::var("NO_COLOR").ok())
 }
@@ -90,7 +88,7 @@ pub(crate) fn while_spinning<T>(message: &'static str, work: impl FnOnce() -> T)
 /// This struct manages displaying a fixed number of lines in the terminal,
 /// with new lines pushing old ones up. The text is displayed in a dimmed/greyed
 /// style to visually distinguish it from normal output.
-pub struct ScrollingOutput {
+pub(crate) struct ScrollingOutput {
     /// The lines currently being displayed.
     lines: VecDeque<String>,
     /// Maximum number of lines to display.
@@ -105,7 +103,7 @@ pub struct ScrollingOutput {
 
 impl ScrollingOutput {
     /// Creates a new `ScrollingOutput` that displays at most `max_lines` lines.
-    pub fn new(max_lines: usize) -> Self {
+    pub(crate) fn new(max_lines: usize) -> Self {
         let stdout = std::io::stdout();
         let is_terminal = colors_enabled();
 
@@ -121,7 +119,7 @@ impl ScrollingOutput {
     /// Adds a line to the output and refreshes the display.
     ///
     /// If the buffer is full, the oldest line is removed.
-    pub fn add_line(&mut self, line: &str) {
+    pub(crate) fn add_line(&mut self, line: &str) {
         let line = line.trim_end().to_string();
 
         if self.lines.len() >= self.max_lines {
@@ -161,7 +159,7 @@ impl ScrollingOutput {
         // Without escapes the region cannot be redrawn, so each line is
         // printed once, when it arrives.
         if let Some(line) = self.lines.back() {
-            println!("{}", line);
+            println!("{line}");
         }
     }
 
@@ -183,12 +181,14 @@ impl ScrollingOutput {
     ///
     /// Call this when you're done with the scrolling output to clean up
     /// the display area.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         if !self.is_terminal || self.rendered_lines == 0 {
             return;
         }
 
-        let _ = self.stdout.execute(MoveUp(self.rendered_lines as u16));
+        let _ = self
+            .stdout
+            .execute(MoveUp(saturating_rows(self.rendered_lines)));
         for _ in 0..self.rendered_lines {
             let _ = self.stdout.execute(MoveToColumn(0));
             let _ = self.stdout.execute(Clear(ClearType::CurrentLine));
@@ -196,12 +196,20 @@ impl ScrollingOutput {
         }
 
         // Move back up again so subsequent output starts at the right place
-        let _ = self.stdout.execute(MoveUp(self.rendered_lines as u16));
+        let _ = self
+            .stdout
+            .execute(MoveUp(saturating_rows(self.rendered_lines)));
         let _ = self.stdout.flush();
 
         self.rendered_lines = 0;
         self.lines.clear();
     }
+}
+
+/// `rows` as a count that the cursor can move over. A count that does not fit
+/// stops at `u16::MAX`.
+fn saturating_rows(rows: usize) -> u16 {
+    u16::try_from(rows).unwrap_or(u16::MAX)
 }
 
 /// Draws one frame of a [`ScrollingOutput`] region into `out`: moves up over
@@ -221,7 +229,7 @@ fn draw_frame(
 ) {
     // Move up to overwrite the previous frame.
     if rendered_lines > 0 {
-        let _ = out.queue(MoveUp(rendered_lines as u16));
+        let _ = out.queue(MoveUp(saturating_rows(rendered_lines)));
     }
 
     for line in lines {
@@ -233,7 +241,7 @@ fn draw_frame(
         // move up of the next frame does not count, and the region drifts
         // down one row.
         let truncated = ScrollingOutput::truncate_to_width(line, max_width);
-        let _ = write!(out, "{}", truncated);
+        let _ = write!(out, "{truncated}");
 
         let _ = out.queue(SetAttribute(Attribute::Reset));
         let _ = writeln!(out);

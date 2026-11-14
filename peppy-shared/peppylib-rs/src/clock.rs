@@ -50,6 +50,7 @@ pub trait ClockSource: Send + Sync {
 
 /// Reads OS wall time. Used when the serving side resolves the clock source
 /// to `wall` (the default).
+#[derive(Debug)]
 pub struct WallClockSource;
 
 impl ClockSource for WallClockSource {
@@ -61,6 +62,7 @@ impl ClockSource for WallClockSource {
 /// Serves timestamps from a domain's cache, filled by the subscription a
 /// consumer feeds or by the instant a publisher commits. `0` is reserved as
 /// "no tick observed yet" and reads back as [`ClockSourceError::NotReady`].
+#[derive(Debug)]
 struct SimClockSource {
     cache: Arc<AtomicU64>,
 }
@@ -84,6 +86,10 @@ impl ClockSource for SimClockSource {
 /// NTP-style exchange [`synchronize`] performs. The single implementation of
 /// the t1/t2 stamping discipline, shared by the daemon's clock service and
 /// the test harness's stand-in.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a request handler owns the context of its request"
+)]
 pub fn handle_clock_request(
     source: &dyn ClockSource,
     context: ServiceRequestContext,
@@ -106,6 +112,10 @@ pub fn handle_clock_request(
 /// The error reply of a `clock` request when the source has no time to give.
 /// It is built only on a failure, so the success path pays nothing between
 /// the t1 and t2 stamps.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
 fn clock_unavailable(error: ClockSourceError) -> Failure {
     let kind = match error {
         ClockSourceError::NotReady => PeppyFailureKind::PreconditionFailed,
@@ -138,8 +148,8 @@ fn invalid_clock_request(
 /// rather than in `core-node-api`: reading the system clock is a side effect a
 /// pure wire-codec crate should not perform.
 pub fn wall_now_ns() -> Result<u64> {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    Ok(u64::try_from(nanos).unwrap_or(u64::MAX))
+    let since_epoch = SystemTime::now().duration_since(UNIX_EPOCH)?;
+    Ok(config::duration::saturating_nanos(since_epoch))
 }
 
 /// Result of an NTP-style clock-sync exchange with the core node.
@@ -175,6 +185,7 @@ pub async fn synchronize(
 
 /// Subscription handle returned by [`subscribe`]. Each call to
 /// [`ClockSubscription::on_next_tick`] yields the next decoded [`ClockTick`].
+#[derive(Debug)]
 pub struct ClockSubscription {
     inner: Subscription,
 }
@@ -208,10 +219,12 @@ impl ClockSubscription {
 /// and installs the matching source. The generator emits a pre-bound
 /// `peppygen::clock::now_ns()` free function so user code never threads a
 /// `PeppyClock` around.
+#[derive(Debug)]
 pub struct PeppyClock {
     inner: PeppyClockInner,
 }
 
+#[derive(Debug)]
 enum PeppyClockInner {
     Wall,
     /// Reads the domain's ticks as they arrive, cached by a feeder task.
@@ -231,8 +244,8 @@ enum PeppyClockInner {
 impl Drop for PeppyClockInner {
     fn drop(&mut self) {
         match self {
-            PeppyClockInner::Wall | PeppyClockInner::Publisher { .. } => {}
-            PeppyClockInner::Consumer { feeder, .. } => feeder.abort(),
+            Self::Wall | Self::Publisher { .. } => {}
+            Self::Consumer { feeder, .. } => feeder.abort(),
         }
     }
 }
@@ -314,7 +327,7 @@ pub async fn for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
 /// publishes its own wall ticks. The `link_id` segment tells the two apart: a
 /// domain's carries its name and incarnation, the daemon's is the reserved
 /// default, and each subscription names the one it reads.
-fn domain_target(domain: &ClockDomainId) -> Result<crate::messaging::SenderTarget> {
+fn domain_target(domain: &ClockDomainId) -> Result<SenderTarget> {
     Ok(SenderTarget::node(
         domain.core_node.as_str(),
         names::CORE_NODE_TAG,
@@ -435,6 +448,7 @@ pub async fn subscribe(node_runner: &NodeRunner, buffer: TopicBuffer) -> Result<
 /// being that domain's source. Each `publish` commits the instant locally and
 /// sends one tick on the domain's stream; every instance bound to the domain
 /// reads that stream, wherever it runs.
+#[derive(Debug)]
 pub struct ClockPublisher {
     domain: ClockDomainId,
     cache: Arc<AtomicU64>,
@@ -502,12 +516,19 @@ fn compute_sync(t0: u64, t1: u64, t2: u64, t3: u64) -> (i64, u64) {
         i128::from(t2),
         i128::from(t3),
     );
-    let offset = ((t1 - t0) + (t2 - t3)) / 2;
+    let offset = i128::midpoint(t1 - t0, t2 - t3);
     let delay = (t3 - t0) - (t2 - t1);
 
-    // Each clamp bounds its value to the range of the target type, so the
-    // casts that follow are lossless.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the clamp bounds the value to the range of `i64`"
+    )]
     let offset = offset.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the clamp bounds the value to the range of `u64`"
+    )]
     let delay = delay.clamp(0, i128::from(u64::MAX)) as u64;
     (offset, delay)
 }
@@ -515,6 +536,7 @@ fn compute_sync(t0: u64, t1: u64, t2: u64, t3: u64) -> (i64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn peppy_clock_wall_returns_a_value() {
@@ -558,7 +580,7 @@ mod tests {
         let err = clock
             .now_ns()
             .expect_err("empty cache must surface ClockNotReady");
-        assert!(matches!(err, Error::ClockNotReady), "got {err:?}");
+        assert_matches!(err, Error::ClockNotReady, "got {err:?}");
 
         cache.store(42, Ordering::Relaxed);
         assert_eq!(clock.now_ns().expect("populated cache reads ok"), 42);
@@ -579,7 +601,7 @@ mod tests {
         let err = clock
             .now_ns()
             .expect_err("nothing committed yet is not ready");
-        assert!(matches!(err, Error::ClockNotReady), "got {err:?}");
+        assert_matches!(err, Error::ClockNotReady, "got {err:?}");
 
         cache.store(7, Ordering::Relaxed);
         assert_eq!(clock.now_ns().expect("committed instant reads back"), 7);
@@ -589,6 +611,7 @@ mod tests {
 #[cfg(test)]
 mod clock_source_tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn wall_clock_source_returns_a_value() {
@@ -603,7 +626,7 @@ mod clock_source_tests {
         let err = source
             .now_ns()
             .expect_err("empty cache must surface NotReady");
-        assert!(matches!(err, ClockSourceError::NotReady));
+        assert_matches!(err, ClockSourceError::NotReady);
 
         cache.store(42, Ordering::Relaxed);
         assert_eq!(source.now_ns().expect("cache populated"), 42);

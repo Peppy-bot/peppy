@@ -114,7 +114,7 @@ fn killable_source_config(pidfile: &Path, instances: &InstanceLifetime) -> Strin
 
 /// Emulates a source instance whose process exits the instant the daemon asks it
 /// to shut down cooperatively: the shutdown service, on the daemon's request,
-/// SIGKILLs the run_cmd process whose pid it wrote to `pidfile`. This is what
+/// SIGKILLs the `run_cmd` process whose pid it wrote to `pidfile`. This is what
 /// keeps the reset test deterministic rather than time-based: without it a
 /// `sleep` node ignores the cooperative shutdown and the daemon waits out
 /// `force_kill_deadline` (~12s), which is longer than the reset command's own
@@ -131,7 +131,7 @@ async fn emulate_cooperative_source(
     emulate_cooperative_shutdown(messenger, core_node_name, node_name, instance_id, pidfile).await;
 }
 
-/// Emulates an observer instance's services (ready, health, observation_update)
+/// Emulates an observer instance's services (ready, health, `observation_update`)
 /// and hands back the observer slot's absolute-state watch.
 async fn emulate_observer_services(
     messenger: &MessengerHandle,
@@ -601,7 +601,7 @@ async fn node_remove_source_notifies_running_observer() {
 }
 
 /// On the whole-stack teardown path: `service reset` mass-stops every
-/// instance (bypassing the per-instance seam, since mark_stopping makes the exit
+/// instance (bypassing the per-instance seam, since `mark_stopping` makes the exit
 /// watchers bail), so it must clear the observation registry the same way
 /// `node_stack.reset()` clears the pairing registry. If it did not, the source's
 /// incarnation generation would survive the reset and a re-run of the same

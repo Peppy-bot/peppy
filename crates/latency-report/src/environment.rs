@@ -84,9 +84,7 @@ fn read_trimmed(path: &str) -> Option<String> {
 impl CpuEnvironment {
     /// Read the current environment from `available_parallelism` and sysfs.
     pub fn detect() -> Self {
-        let cores = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(0);
+        let cores = std::thread::available_parallelism().map_or(0, std::num::NonZero::get);
         let governor = read_trimmed("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
             .unwrap_or_else(|| "?".into());
         let turbo = Turbo::detect();

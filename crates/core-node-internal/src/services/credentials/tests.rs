@@ -204,11 +204,9 @@ fn a_timestamp_outside_the_window_and_a_replayed_call_are_refused() {
     let refused = refusal_of(late.verify(&call(DESK, "peppy-cli", Some(&proof))));
     assert!(refused.contains("outside the window of 30 s"), "{refused}");
     let early = check_at(&keys, &stack, signed_at(&proof) - skew);
-    assert!(
-        early
-            .verify(&call(DESK, "peppy-cli", Some(&proof)))
-            .is_err()
-    );
+    early
+        .verify(&call(DESK, "peppy-cli", Some(&proof)))
+        .unwrap_err();
 
     let check = check_at(&keys, &stack, signed_at(&proof) + TIMESTAMP_WINDOW);
     check
@@ -222,7 +220,7 @@ fn a_timestamp_outside_the_window_and_a_replayed_call_are_refused() {
 fn the_nonces_of_the_calls_that_left_the_window_are_dropped() {
     let mut window = NonceWindow::default();
     let key = ClientKey::generate().public_key();
-    let window_ms = TIMESTAMP_WINDOW.as_millis() as u64;
+    let window_ms = config::duration::saturating_millis(TIMESTAMP_WINDOW);
     assert!(window.take(key, [1; NONCE_LEN], 1_000, 1_000, window_ms));
     assert!(!window.take(key, [1; NONCE_LEN], 1_000, 2_000, window_ms));
     assert!(window.take(key, [2; NONCE_LEN], 40_000, 40_000, window_ms));

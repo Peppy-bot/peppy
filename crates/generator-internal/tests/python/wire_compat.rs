@@ -10,7 +10,7 @@
 //! 1. The exposed/emitted `MessageFormat` for the payload under test
 //!    declares its two pointer-typed fields (one `Text` and one
 //!    `List(Float64)`) in an order whose alphabetical sort swaps them.
-//!    Any step that silently re-orders the MessageFormat on one side
+//!    Any step that silently re-orders the `MessageFormat` on one side
 //!    but not the other will land Text where the other side expects
 //!    List, surfacing as a `Schema mismatch: Message contains list
 //!    pointer of non-bytes where text was expected` -class decode
@@ -385,7 +385,7 @@ if __name__ == "__main__":
     init_python_project_venv(&producer.dir);
     init_python_project_venv(&consumer.dir);
 
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+    let messenger = MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
@@ -457,9 +457,7 @@ if __name__ == "__main__":
             && consumer_stdout.contains(
                 "result success=True status=completed measurements=[1.5, 2.5, 3.5] duration=42.0"
             ),
-        "consumer did not decode the action result correctly.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "consumer did not decode the action result correctly.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
     assert_exited_successfully("producer process", &producer_output);
@@ -644,7 +642,7 @@ if __name__ == "__main__":
     init_python_project_venv(&producer.dir);
     init_python_project_venv(&consumer.dir);
 
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+    let messenger = MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
@@ -713,9 +711,7 @@ if __name__ == "__main__":
     assert!(
         consumer_stdout
             .contains("response ok=True status=nominal measurements=[0.1, 0.2, 0.3] elapsed=12.5"),
-        "consumer did not decode the service response correctly.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "consumer did not decode the service response correctly.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
     assert_exited_successfully("producer process", &producer_output);
@@ -907,7 +903,7 @@ if __name__ == "__main__":
     init_python_project_venv(&producer.dir);
     init_python_project_venv(&consumer.dir);
 
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+    let messenger = MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
@@ -965,9 +961,7 @@ if __name__ == "__main__":
         consumer_stdout.contains(&format!(
             "received message status=nominal readings=[1.0, 2.0, 3.0] sequence=1 timestamp=12345.6 from {TEST_CORE_NODE}/{PRODUCER_INSTANCE_ID}"
         )),
-        "consumer did not decode the topic message correctly.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "consumer did not decode the topic message correctly.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
     assert_exited_successfully("producer process", &producer_output);

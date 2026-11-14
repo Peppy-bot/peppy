@@ -15,13 +15,13 @@ impl StackResetRequest {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<node_capnp::stack_reset_request::Builder>();
+        builder.init_root::<node_capnp::stack_reset_request::Builder<'_>>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<node_capnp::stack_reset_request::Reader>()?;
+        reader.get_root::<node_capnp::stack_reset_request::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -38,23 +38,23 @@ impl StackResetResponse {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<node_capnp::stack_reset_response::Builder>();
+        builder.init_root::<node_capnp::stack_reset_response::Builder<'_>>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<node_capnp::stack_reset_response::Reader>()?;
+        reader.get_root::<node_capnp::stack_reset_response::Reader<'_>>()?;
         Ok(Self)
     }
 }
 
 impl crate::encoding::Wire for StackResetRequest {
-    type Root = crate::node_capnp::stack_reset_request::Owned;
+    type Root = node_capnp::stack_reset_request::Owned;
 }
 
 impl crate::encoding::Wire for StackResetResponse {
-    type Root = crate::node_capnp::stack_reset_response::Owned;
+    type Root = node_capnp::stack_reset_response::Owned;
 }
 
 #[cfg(test)]
@@ -69,9 +69,10 @@ mod tests {
         assert_eq!(decoded, request);
     }
 
-    // Round-trips a Default-constructed request; `::default()` on this unit
-    // struct is intentional, hence the lint allow.
-    #[allow(clippy::default_constructed_unit_structs)]
+    #[expect(
+        clippy::default_constructed_unit_structs,
+        reason = "the test encodes a request that `Default` makes"
+    )]
     #[test]
     fn request_default_round_trips() {
         let request = StackResetRequest::default();
@@ -81,7 +82,7 @@ mod tests {
 
     #[test]
     fn request_decode_rejects_malformed() {
-        assert!(StackResetRequest::decode(b"not capnp").is_err());
+        StackResetRequest::decode(b"not capnp").unwrap_err();
     }
 
     #[test]
@@ -93,6 +94,6 @@ mod tests {
 
     #[test]
     fn response_decode_rejects_malformed() {
-        assert!(StackResetResponse::decode(b"not capnp").is_err());
+        StackResetResponse::decode(b"not capnp").unwrap_err();
     }
 }

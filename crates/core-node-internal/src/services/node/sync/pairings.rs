@@ -22,7 +22,7 @@ fn resolve_pairing_doc(
     tag: &str,
     sha256_pin: Option<&str>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<PeppyPairing, String> {
+) -> Result<PeppyPairing, String> {
     let cache = repo_cache::load_pairing_cache(peppy_dirs)
         .map_err(|e| format!("failed to load pairing cache: {e}"))?;
     resolve_pairing_doc_cached(&cache, peppy_dirs, name, tag, sha256_pin, None, on_feedback)
@@ -43,7 +43,7 @@ fn resolve_pairing_doc_cached(
     sha256_pin: Option<&str>,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<PeppyPairing, String> {
+) -> Result<PeppyPairing, String> {
     let parse = |content: &str| {
         daemon_config::pairing::PeppyPairingParser::from_content(content).map_err(|e| e.to_string())
     };
@@ -61,13 +61,13 @@ fn resolve_pairing_doc_cached(
 
 /// Validates every pairing slot of a manifest, participant and observer alike,
 /// against its resolved pairing document and returns the resolved docs keyed by
-/// slot link_id (ready for the codegen collection step):
+/// slot `link_id` (ready for the codegen collection step):
 ///
 /// - the declared `role` must be one of the doc's two roles (the error
 ///   names them).
 ///
 /// No tag-collision rule applies here: pairing slots are addressed by
-/// `link_id` everywhere (module paths, wire segments), and link_id
+/// `link_id` everywhere (module paths, wire segments), and `link_id`
 /// uniqueness is enforced at parse time. The tag identifies the resolved
 /// pairing artifact instead: with the name and sha256 pin it forms the
 /// `(name, tag, sha256)` key each slot's document is looked up and cached
@@ -77,7 +77,7 @@ fn validate_pairing_specs(
     peppy_dirs: &PeppyDirs,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<HashMap<String, PeppyPairing>, String> {
+) -> Result<HashMap<String, PeppyPairing>, String> {
     let slots = pairing_slots(manifest);
     if slots.is_empty() {
         return Ok(HashMap::new());
@@ -108,7 +108,11 @@ fn validate_pairing_specs(
             )?),
         };
         if !doc.has_role(slot.role) {
-            let declared: Vec<&str> = doc.roles.iter().map(|r| r.as_str()).collect();
+            let declared: Vec<&str> = doc
+                .roles
+                .iter()
+                .map(config::runtime::Name::as_str)
+                .collect();
             return Err(format!(
                 "pairing slot `{}`: role `{}` is not declared by pairing `{}:{}` \
                  (declared roles: [{}])",
@@ -223,7 +227,7 @@ pub(super) fn collect_pairing_interfaces(
     peppy_dirs: &PeppyDirs,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<Vec<generator::DeploymentInterface>, PairingError> {
+) -> Result<Vec<generator::DeploymentInterface>, PairingError> {
     let Some(depends_on) = manifest.depends_on.as_ref() else {
         return Ok(Vec::new());
     };
@@ -586,7 +590,7 @@ mod tests {
             pairing_name: daemon_config::repository::ItemName::parse(name).unwrap(),
             tag: daemon_config::repository::ItemTag::parse(tag).unwrap(),
             sha256: daemon_config::repository::ManifestFingerprint::of_bytes(body.as_bytes()),
-            origin: repo_cache::EntryOrigin::Fs { path: path.clone() },
+            origin: repo_cache::EntryOrigin::Fs { path },
             repo_id: 0,
             descriptions: crate::services::repo::cache::test_support::descriptions("test pairing"),
         }
@@ -624,7 +628,7 @@ mod tests {
         manifest: &config::node::Manifest,
         interfaces_cfg: &config::node::Interfaces,
         dirs: &PeppyDirs,
-    ) -> std::result::Result<Vec<generator::DeploymentInterface>, PairingError> {
+    ) -> Result<Vec<generator::DeploymentInterface>, PairingError> {
         collect_pairing_interfaces(manifest, interfaces_cfg, dirs, None, &|_| {})
     }
 
@@ -810,7 +814,7 @@ mod tests {
         );
         let bad_emit = r#"{ link_id: "leader", name: "joint_states", refine: { message_format: { stamp: { $length: 1 } } } }"#;
 
-        let cfg = interfaces(&format!(r#"{{ topics: {{ emits: [{bad_emit}] }} }}"#));
+        let cfg = interfaces(&format!(r"{{ topics: {{ emits: [{bad_emit}] }} }}"));
         let err = collect(&follower, &cfg, &dirs).expect_err("a `time` field has no length to pin");
         let PairingError::Refinement(mismatches) = err else {
             panic!("expected a refinement report, got: {err}");

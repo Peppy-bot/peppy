@@ -73,10 +73,18 @@ mod exceptions {
 
 use exceptions::{ContractError, UndeclaredFailureKindError};
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
 fn codec_err(error: CodecError) -> PyErr {
     exceptions::CodecError::new_err(error.to_string())
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
 fn conversion_err(error: ConversionError) -> PyErr {
     exceptions::ConversionError::new_err(error.to_string())
 }
@@ -141,6 +149,7 @@ fn py_of<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
 /// `"feedback"` and `"result"` of an action), and a field by its path in
 /// the format: the key of each object it sits in, with the items of an
 /// array passed through.
+#[derive(Debug)]
 #[pyclass(name = "Contract", frozen)]
 pub struct PyContract {
     inner: Arc<PeppyContract>,
@@ -204,7 +213,7 @@ impl PyContract {
         let paragraphs = self.inner.description().paragraphs();
         paragraphs
             .iter()
-            .map(|paragraph| paragraph.as_str())
+            .map(config::description::Description::as_str)
             .collect()
     }
 
@@ -253,6 +262,10 @@ impl PyContract {
     /// The closed set of strings of a `string` field (`$enum`), or `None`
     /// for a field with no enum. Raises `KeyError` for a field that the
     /// format does not have.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "pyo3 extracts the list of the caller into an owned `Vec`"
+    )]
     fn field_enum(
         &self,
         kind: &str,
@@ -266,6 +279,10 @@ impl PyContract {
 
     /// The marks of a field (`$marks`), empty for a field with none. Raises
     /// `KeyError` for a field that the format does not have.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "pyo3 extracts the list of the caller into an owned `Vec`"
+    )]
     fn field_marks(
         &self,
         kind: &str,
@@ -274,13 +291,13 @@ impl PyContract {
         path: Vec<String>,
     ) -> PyResult<Vec<String>> {
         let field = self.field(kind, name, side, &path)?;
-        Ok(field.marks().iter().map(|mark| mark.to_string()).collect())
+        Ok(field.marks().iter().map(ToString::to_string).collect())
     }
 
     /// The marks of a member, empty for a member with none.
     fn member_marks(&self, kind: &str, name: &str) -> PyResult<Vec<String>> {
         let marks = self.inner.marks.of(interface_kind(kind)?, name);
-        Ok(marks.iter().map(|mark| mark.to_string()).collect())
+        Ok(marks.iter().map(ToString::to_string).collect())
     }
 
     /// The description of a member. Raises `KeyError` for a member that the
@@ -288,13 +305,17 @@ impl PyContract {
     fn member_description(&self, kind: &str, name: &str) -> PyResult<&str> {
         self.inner
             .member_description(interface_kind(kind)?, name)
-            .map(|description| description.as_str())
+            .map(config::description::Description::as_str)
             .ok_or_else(|| PyKeyError::new_err(format!("the contract has no {kind} `{name}`")))
     }
 
     /// The description of a field (`$description`), or `None` for a field
     /// with none. Raises `KeyError` for a field that the format does not
     /// have.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "pyo3 extracts the list of the caller into an owned `Vec`"
+    )]
     fn field_description(
         &self,
         kind: &str,
@@ -303,7 +324,9 @@ impl PyContract {
         path: Vec<String>,
     ) -> PyResult<Option<&str>> {
         let field = self.field(kind, name, side, &path)?;
-        Ok(field.description().map(|description| description.as_str()))
+        Ok(field
+            .description()
+            .map(config::description::Description::as_str))
     }
 
     /// The failure kinds of the contract that a service or an action lists,
@@ -349,6 +372,7 @@ impl PyContract {
 /// `u8` are base64 strings, `u64` and `i64` are decimal strings, and the
 /// other types are the matching JSON values. An optional field is left out
 /// of the `dict` when it is absent.
+#[derive(Debug)]
 #[pyclass(name = "MessageCodec", frozen)]
 pub struct PyMessageCodec {
     inner: MessageCodec,
@@ -403,6 +427,7 @@ fn identity(as_core_node: String, as_instance_id: String) -> ConsumerIdentity {
 }
 
 /// A client of a service of a contract.
+#[derive(Debug)]
 #[pyclass(name = "ServiceClient", frozen)]
 pub struct PyServiceClient {
     client: ServiceClient,
@@ -430,7 +455,10 @@ impl PyServiceClient {
     /// it takes with `None`. An error reply raises `FailureError` with its
     /// kind and its message.
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, producer, request, response_timeout_secs=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the parameters of the Python method"
+    )]
     fn call<'py>(
         &self,
         py: Python<'py>,
@@ -478,6 +506,7 @@ impl<'py> IntoPyObject<'py> for JsonValue {
 }
 
 /// A client of an action of a contract.
+#[derive(Debug)]
 #[pyclass(name = "ActionClient", frozen)]
 pub struct PyActionClient {
     client: ActionClient,
@@ -513,7 +542,10 @@ impl PyActionClient {
     /// falls behind by more loses the stream, the handle cancels the goal,
     /// and the next read raises `FeedbackOverflowError`.
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, producer, goal, feedback_bound=None, goal_timeout_secs=2.0))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the parameters of the Python method"
+    )]
     fn send_goal<'py>(
         &self,
         py: Python<'py>,
@@ -555,6 +587,7 @@ impl PyActionClient {
 }
 
 /// A goal in flight, sent by `ActionClient.send_goal`.
+#[derive(Debug)]
 #[pyclass(name = "GoalHandle", frozen)]
 pub struct PyGoalHandle {
     /// The handle, for the feedback, which only one reader takes at a time.
@@ -676,6 +709,7 @@ fn cancel_state_name(state: CancelState) -> &'static str {
 /// its result). `result` is the result of a completed or a cancelled goal as
 /// a `dict`, `reason` the reason of a cancel, and `failure_kind` and
 /// `failure_message` the failure of a failed goal.
+#[derive(Debug)]
 #[pyclass(name = "GoalOutcome", frozen)]
 pub struct PyGoalOutcome {
     outcome: GoalOutcome,
@@ -740,6 +774,7 @@ impl PyGoalOutcome {
 }
 
 /// A subscription to a topic of a contract on one producer.
+#[derive(Debug)]
 #[pyclass(name = "TopicConsumer", frozen)]
 pub struct PyTopicConsumer {
     inner: Arc<Mutex<TopicConsumer>>,
@@ -788,7 +823,7 @@ impl PyTopicConsumer {
             )
             .await
             .map_err(to_py_err)?;
-            Ok(PyTopicConsumer {
+            Ok(Self {
                 inner: Arc::new(Mutex::new(consumer)),
             })
         })

@@ -198,8 +198,8 @@ where
         values.len(),
         "a text list is sized for exactly the values written into it"
     );
-    for (index, value) in values.enumerate() {
-        list.set(index as u32, value.as_ref());
+    for (index, value) in (0_u32..).zip(values) {
+        list.set(index, value.as_ref());
     }
 }
 
@@ -283,7 +283,9 @@ pub(crate) fn decode_absolute_fs_path(path: &str, label: &str) -> Result<PathBuf
     Ok(buf)
 }
 
-pub(crate) fn capnp_list_len(len: usize, field: &str) -> Result<u32> {
+/// The length of a Cap'n Proto list of `len` items, which a `u32` holds.
+/// `field` names the list in the error of a list that is too long.
+pub fn capnp_list_len(len: usize, field: &str) -> Result<u32> {
     len.try_into().map_err(|_| {
         crate::Error::Encoding(format!(
             "{field} length {len} exceeds Cap'n Proto u32 list limit"
@@ -299,11 +301,15 @@ pub(crate) fn capnp_list_len(len: usize, field: &str) -> Result<u32> {
 /// header for it. Serializing into a `Vec` cannot fail; the function returns
 /// a `Result` so that every codec calls it the same way as the fallible encode
 /// steps around it.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "each codec calls it the same way as the fallible encode steps around it"
+)]
 pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
     Ok(Payload::from(serialize::write_message_to_words(message)))
 }
 
-/// Encode a Cap'n Proto message builder into a [`NonEmptyPayload`].
+/// Encode a Cap'n Proto message builder into a `NonEmptyPayload`.
 ///
 /// Cap'n Proto's framed wire format always emits at least the segment-table
 /// header, so the produced payload is non-empty by construction. The
@@ -323,7 +329,7 @@ pub(crate) fn encode_message_non_empty(
 /// segments are read in place, not copied out first.
 pub(crate) fn decode_message(
     mut data: &[u8],
-) -> Result<capnp::message::Reader<capnp::serialize::BufferSegments<&[u8]>>> {
+) -> Result<capnp::message::Reader<serialize::BufferSegments<&[u8]>>> {
     Ok(serialize::read_message_from_flat_slice(
         &mut data,
         ReaderOptions::default(),
@@ -409,12 +415,13 @@ mod tests {
             let mut message = Builder::new_default();
             {
                 let request = message
-                    .init_root::<crate::federation_capnp::participant_reserve_request::Builder>();
+                    .init_root::<crate::federation_capnp::participant_reserve_request::Builder<'_>>(
+                    );
                 let len = capnp_list_len(values.len(), "test").expect("len fits");
                 write_text_list(request.init_deployment_pins_json5(len), &values);
             }
             let request = message
-                .get_root_as_reader::<crate::federation_capnp::participant_reserve_request::Reader>(
+                .get_root_as_reader::<crate::federation_capnp::participant_reserve_request::Reader<'_>>(
                 )
                 .expect("root");
             let read = read_text_list(request.get_deployment_pins_json5().expect("list present"))
@@ -450,7 +457,8 @@ mod tests {
             let mut message = Builder::new_default();
             {
                 let request = message
-                    .init_root::<crate::federation_capnp::participant_reserve_request::Builder>();
+                    .init_root::<crate::federation_capnp::participant_reserve_request::Builder<'_>>(
+                    );
                 let mut pins = request.init_deployment_pins_json5(pin_count);
                 for index in 0..pin_count {
                     pins.set(index, "{ node: 'pinned' }");
@@ -472,7 +480,7 @@ mod tests {
         // Any builder serializes to at least the capnp segment-table header, so
         // the non-empty wrapper construction is infallible and the bytes decode.
         let mut builder = Builder::new_default();
-        builder.init_root::<crate::clock_capnp::clock_request::Builder>();
+        builder.init_root::<crate::clock_capnp::clock_request::Builder<'_>>();
         let payload = encode_message_non_empty(&builder)
             .expect("non-empty wrap")
             .into_inner();

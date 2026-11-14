@@ -103,8 +103,7 @@ fn classify_stage(stage: NodeStage, node_name: &str, tag: &str) -> Result<BuildD
         NodeStage::Added => Ok(BuildDecision::Build),
         NodeStage::Building => Ok(BuildDecision::Wait),
         NodeStage::Root => Err(Error::ExecutionFailed(format!(
-            "Node '{}:{}' is a root node and cannot be built or run via `node run`",
-            node_name, tag
+            "Node '{node_name}:{tag}' is a root node and cannot be built or run via `node run`"
         ))),
     }
 }
@@ -142,16 +141,14 @@ async fn wait_for_build_to_finish(
         .await
         .map_err(|e| {
             Error::ExecutionFailed(format!(
-                "Failed to poll node info while waiting for build: {}",
-                e
+                "Failed to poll node info while waiting for build: {e}"
             ))
         })?;
 
         match response {
             NodeInfoResponse::NotInStack => {
                 return Err(Error::ExecutionFailed(format!(
-                    "Node '{}:{}' disappeared from the stack while waiting for build to finish",
-                    node_name, tag
+                    "Node '{node_name}:{tag}' disappeared from the stack while waiting for build to finish"
                 )));
             }
             NodeInfoResponse::Found(info) => match info.stage {
@@ -159,8 +156,7 @@ async fn wait_for_build_to_finish(
                 NodeStage::Building => { /* still in flight; keep polling */ }
                 other => {
                     return Err(Error::ExecutionFailed(format!(
-                        "Node '{}:{}' transitioned to unexpected stage '{}' while waiting for build to finish",
-                        node_name, tag, other
+                        "Node '{node_name}:{tag}' transitioned to unexpected stage '{other}' while waiting for build to finish"
                     )));
                 }
             },
@@ -168,8 +164,7 @@ async fn wait_for_build_to_finish(
 
         if Instant::now() >= deadline {
             return Err(Error::ExecutionFailed(format!(
-                "Timed out waiting for node '{}:{}' build to finish",
-                node_name, tag
+                "Timed out waiting for node '{node_name}:{tag}' build to finish"
             )));
         }
 
@@ -198,7 +193,7 @@ fn args_to_node_arguments(args: &[(String, String)]) -> BTreeMap<String, AnyType
 }
 
 /// Inserts a value at a dot-separated path, given as its parts, into a nested
-/// BTreeMap structure. For example, the parts `["device", "physical"]` with
+/// `BTreeMap` structure. For example, the parts `["device", "physical"]` with
 /// value "foo" create: {"device": {"physical": "foo"}}
 fn insert_at_path(current: &mut BTreeMap<String, AnyType>, path: &[&str], value: AnyType) {
     let Some((key, rest)) = path.split_first() else {
@@ -226,7 +221,7 @@ fn insert_at_path(current: &mut BTreeMap<String, AnyType>, path: &[&str], value:
     }
 }
 
-/// Parses a string value into an AnyType with type inference
+/// Parses a string value into an `AnyType` with type inference
 fn parse_value(value: &str) -> AnyType {
     // Try bool
     if value.eq_ignore_ascii_case("true") {
@@ -678,7 +673,7 @@ async fn validate_links_against_stack(
         .filter(|n| !matches!(n.stage, NodeStage::Root))
         .collect();
 
-    let info_futures = stack_nodes.iter().map(|node| async move {
+    let info_futures = stack_nodes.iter().map(async |node| {
         let info = poll(
             &NodeInfoRequest::new(node.name.clone(), node.tag.clone()),
             messenger,
@@ -737,8 +732,8 @@ async fn validate_links_against_stack(
         // Harvest the target's manifest/interfaces from its snapshot
         // entry so we don't need a second `node_info` call below.
         if node.name == target_name && node.tag == target_tag {
-            target_depends_on = info.config.manifest.depends_on.clone();
-            target_implements = info.config.manifest.implements.clone();
+            target_depends_on.clone_from(&info.config.manifest.depends_on);
+            target_implements.clone_from(&info.config.manifest.implements);
             target_seen_in_stack = true;
         }
         // The validator reads `instance_id` and `bindings` for inert items
@@ -750,7 +745,7 @@ async fn validate_links_against_stack(
         let instances: Vec<DeploymentInstance> = node
             .instances
             .iter()
-            .filter(|inst| inst.state == core_node_api::InstanceState::Running)
+            .filter(|inst| inst.state == InstanceState::Running)
             .filter_map(|inst| {
                 Name::new(inst.instance_id.clone())
                     .ok()
@@ -767,14 +762,12 @@ async fn validate_links_against_stack(
                 .manifest
                 .depends_on
                 .as_ref()
-                .map(|d| d.pairings.clone())
-                .unwrap_or_default(),
+                .map_or_default(|d| d.pairings.clone()),
             observer_deps: info
                 .config
                 .manifest
                 .depends_on
-                .map(|d| d.pairing_observers)
-                .unwrap_or_default(),
+                .map_or_default(|d| d.pairing_observers),
         });
     }
 
@@ -841,12 +834,10 @@ async fn validate_links_against_stack(
     // covered at their own start).
     let target_pairing_deps: Vec<config::node::PairingParticipantDependency> = target_depends_on
         .as_ref()
-        .map(|d| d.pairings.clone())
-        .unwrap_or_default();
+        .map_or_default(|d| d.pairings.clone());
     let target_observer_deps: Vec<config::node::PairingObserverDependency> = target_depends_on
         .as_ref()
-        .map(|d| d.pairing_observers.clone())
-        .unwrap_or_default();
+        .map_or_default(|d| d.pairing_observers.clone());
     let mut pairing_items: Vec<PairingValidationItem<'_>> = snapshot
         .iter()
         .map(|s| PairingValidationItem {
@@ -970,15 +961,18 @@ async fn validate_links_against_stack(
 /// single entry point shared between `peppy node run` and `peppy node add
 /// --run`: both surfaces must accept `--link` and enforce the same binding
 /// rules, so there is exactly one code path responsible for materializing
-/// the instance_id, running `validate_bindings`, and calling
+/// the `instance_id`, running `validate_bindings`, and calling
 /// [`run_instance_async`].
 ///
 /// `instance_id` is materialized up-front so the synthetic
 /// `DeploymentInstance` fed to the validator and the actual spawn refer to
 /// the same id; mismatching them would point validator errors at a
 /// different instance than the one that ends up running.
-#[allow(clippy::too_many_arguments)]
-pub async fn validate_and_run_instance(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input, and a struct of them only moves the list"
+)]
+pub(super) async fn validate_and_run_instance(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_name: &str,
@@ -1022,7 +1016,7 @@ pub async fn validate_and_run_instance(
 }
 
 /// Spawn a node instance with already-resolved `slot_bindings`. Callers must
-/// have validated `slot_bindings` via [`validate_and_run_instance`] first;
+/// have validated `slot_bindings` via `validate_and_run_instance` first;
 /// invoking this directly bypasses every binding rule and exists only as the
 /// lower half of the validate-then-spawn split.
 ///
@@ -1030,7 +1024,17 @@ pub async fn validate_and_run_instance(
 /// this path routes to the local daemon only; the entry points enforce that via
 /// `reject_remote_target_for_local_routing`. Nothing on the goal is host-local,
 /// so the restriction is about routing rather than about the payload.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input, and a struct of them only moves the list"
+)]
+#[cfg_attr(
+    not(feature = "test-support"),
+    expect(
+        unreachable_pub,
+        reason = "the `test-support` feature exports this function"
+    )
+)]
 pub async fn run_instance_async(
     messenger_handle: &MessengerHandle,
     core_node_name: &str,
@@ -1099,7 +1103,7 @@ pub async fn run_instance_async(
         GOAL_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_run goal: {}", e)))?;
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_run goal: {e}")))?;
 
     let start_result = crate::commands::action_poll::run_action_with_feedback::<
         NodeRunGoalResponse,
@@ -1131,7 +1135,7 @@ pub async fn run_instance_async(
 }
 
 /// The flags of `peppy node run`, as `run_node` receives them.
-pub struct RunNodeParams {
+pub(super) struct RunNodeParams {
     pub node_name: String,
     pub tag: String,
     pub args: Vec<(String, String)>,
@@ -1143,7 +1147,7 @@ pub struct RunNodeParams {
     pub build: bool,
 }
 
-pub fn run_node(ctx: &Arc<AppContext>, params: RunNodeParams) -> Result<()> {
+pub(super) fn run_node(ctx: &Arc<AppContext>, params: RunNodeParams) -> Result<()> {
     crate::commands::block_on(run_node_async(ctx, params))
 }
 
@@ -1187,14 +1191,13 @@ async fn run_node_async(ctx: &Arc<AppContext>, params: RunNodeParams) -> Result<
         )
         .await
         .map_err(|e| {
-            Error::ExecutionFailed(format!("Failed to check node info before run: {}", e))
+            Error::ExecutionFailed(format!("Failed to check node info before run: {e}"))
         })?;
 
         let info = match response {
             NodeInfoResponse::NotInStack => {
                 return Err(Error::ExecutionFailed(format!(
-                    "Node '{}:{}' is not in the node stack",
-                    node_name, tag
+                    "Node '{node_name}:{tag}' is not in the node stack"
                 )));
             }
             NodeInfoResponse::Found(info) => info,
@@ -1275,7 +1278,7 @@ mod tests {
             nodes: vec![crate::commands::serialized_node(
                 "arm",
                 "v1",
-                core_node_api::NodeStage::Ready,
+                NodeStage::Ready,
                 &[("arm_1", InstanceState::Failed)],
             )],
             edges: Vec::new(),
@@ -1332,19 +1335,19 @@ mod tests {
     /// free.
     #[test]
     fn a_taken_instance_id_is_refused_naming_its_owner() {
-        let failed = core_node_api::InstanceState::Failed;
+        let failed = InstanceState::Failed;
         let graph = core_node_api::SerializedNodeGraph {
             nodes: vec![
                 crate::commands::serialized_node(
                     "core",
                     "v1",
-                    core_node_api::NodeStage::Root,
+                    NodeStage::Root,
                     &[("cn-sweet-buffalo", failed)],
                 ),
                 crate::commands::serialized_node(
                     "cam",
                     "v1",
-                    core_node_api::NodeStage::Ready,
+                    NodeStage::Ready,
                     &[("cam_inst", failed)],
                 ),
             ],
@@ -1356,7 +1359,7 @@ mod tests {
         );
         assert_eq!(
             taken_instance_id_refusal(&graph, "cam_inst"),
-            Some(core_node_api::duplicate_instance_id_message(
+            Some(duplicate_instance_id_message(
                 "cam_inst", "cam", "v1", "core-a", failed
             ))
         );
@@ -1536,7 +1539,7 @@ mod tests {
         );
 
         // Past budget: same error path.
-        assert!(remaining_max_secs(30, 45, "run").is_err());
+        remaining_max_secs(30, 45, "run").unwrap_err();
     }
 
     fn clock_domain(name: &str, core_node: &str, incarnation: u64) -> ClockDomainId {
@@ -1602,7 +1605,7 @@ mod tests {
                 .as_str(),
             "robot_sim"
         );
-        assert!(parse_clock_domain_name("").is_err());
+        parse_clock_domain_name("").unwrap_err();
     }
 
     /// `wall` binds without asking any daemon, and qualifying it by a machine

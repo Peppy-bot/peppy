@@ -2,7 +2,7 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    println!("cargo:rerun-if-changed=schemas/");
+    println!("cargo::rerun-if-changed=schemas/");
 
     // Canonicalize the manifest directory to handle symlinked source trees.
     // When core-node-api is deployed via symlink (e.g. node/.peppy/libs/core-node-api

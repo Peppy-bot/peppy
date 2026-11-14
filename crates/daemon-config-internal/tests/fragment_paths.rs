@@ -157,11 +157,9 @@ fn internal_symlinks_keep_the_same_repository_boundary() {
     fs::create_dir(root.path().join("robot")).unwrap();
     write_controller_fragment(&root.path().join("shared/controller.json5"));
     std::os::unix::fs::symlink(root.path().join("shared"), root.path().join("alias")).unwrap();
-    assert!(
-        prepare(
-            &root.path().join("robot/fleet.json5"),
-            "../alias/controller.json5"
-        )
-        .is_ok()
-    );
+    prepare(
+        &root.path().join("robot/fleet.json5"),
+        "../alias/controller.json5",
+    )
+    .unwrap();
 }

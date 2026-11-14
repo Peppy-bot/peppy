@@ -7,7 +7,7 @@ use peppygen::{NodeBuilder, Parameters, Result};
 // arm instance currently paired on the slot. If that arm dies, the slot
 // unpairs and the loop simply stops receiving until a new arm is paired.
 fn main() -> Result<()> {
-    NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+    NodeBuilder::new().run(async |_args: Parameters, node_runner| {
         tokio::spawn(async move {
             // Declare the publisher once; every publish below is then lock-free.
             let publisher = match joint_commands::declare_publisher(&node_runner).await {

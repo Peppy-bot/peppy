@@ -49,12 +49,13 @@ struct StackSection {
 /// Rendered `stack list` output plus the core nodes whose section failed.
 /// Callers own the failure policy: the CLI prints the output and exits
 /// non-zero on any failed name, tests assert on the fields directly.
+#[derive(Debug)]
 pub struct StackListReport {
     pub output: String,
     pub failed_names: Vec<String>,
 }
 
-pub fn list_nodes(ctx: &Arc<AppContext>, json: bool) -> Result<()> {
+pub(super) fn list_nodes(ctx: &Arc<AppContext>, json: bool) -> Result<()> {
     let report = if json {
         crate::commands::block_on(list_nodes_json_collecting(ctx))?
     } else {
@@ -76,7 +77,7 @@ pub fn list_nodes(ctx: &Arc<AppContext>, json: bool) -> Result<()> {
     }
 }
 
-/// Like [`list_nodes`] but returns the [`StackListReport`] instead of printing
+/// Like `list_nodes` but returns the `StackListReport` instead of printing
 /// and deciding the exit status. `colorize` is passed in rather than read from
 /// the ambient terminal so the result is deterministic: the CLI passes
 /// [`crate::terminal::colors_enabled`], while integration tests pass `false`
@@ -96,7 +97,7 @@ pub async fn list_nodes_collecting(
 }
 
 /// Like [`list_nodes_collecting`] but renders the sections as one JSON
-/// document ([`render_stack_json`]); colour and width do not apply to it.
+/// document (`render_stack_json`); colour and width do not apply to it.
 pub async fn list_nodes_json_collecting(ctx: &Arc<AppContext>) -> Result<StackListReport> {
     let sections = collect_sections(ctx).await?;
     Ok(StackListReport {
@@ -917,9 +918,18 @@ fn format_slot_binding(bound: &config::runtime::BoundProducers) -> String {
 /// The ` [copy NAME]` a member of a set or a pair carries when a copy brought
 /// it; an instance running outside a copy has none to name.
 fn copy_label(copy: Option<&config::runtime::Name>) -> String {
-    copy.map(|copy| format!(" [copy {}]", copy.as_str()))
-        .unwrap_or_default()
+    copy.map_or_default(|copy| format!(" [copy {}]", copy.as_str()))
 }
+
+/// The states of an instance, in the order the instance summary of a node
+/// lists them.
+const INSTANCE_SUMMARY_ORDER: [InstanceState; 5] = [
+    InstanceState::Running,
+    InstanceState::Starting,
+    InstanceState::Restarting,
+    InstanceState::Finished,
+    InstanceState::Failed,
+];
 
 /// Compact per-node instance summary. Detailed per-instance info is
 /// intentionally deferred to `peppy node info`; the list view is meant to
@@ -930,42 +940,25 @@ fn format_instances_compact(node: &SerializedNode) -> String {
     if node.instances.is_empty() {
         return "0".to_string();
     }
-    let count = |state: InstanceState| node.instances.iter().filter(|i| i.state == state).count();
-    let running = count(InstanceState::Running);
-    let starting = count(InstanceState::Starting);
-    let restarting = count(InstanceState::Restarting);
-    let finished = count(InstanceState::Finished);
-    let failed = count(InstanceState::Failed);
+    let parts: Vec<String> = INSTANCE_SUMMARY_ORDER
+        .into_iter()
+        .filter_map(|state| {
+            let count = node
+                .instances
+                .iter()
+                .filter(|instance| instance.state == state)
+                .count();
+            (count > 0).then(|| format!("{count} {}", state.as_str()))
+        })
+        .collect();
 
-    // The common, unambiguous cases use a compact phrasing; any mix (including
-    // instances without a process) falls through to an explicit per-state
-    // breakdown so no instance is silently dropped from the count.
-    match (running, starting, restarting, finished, failed) {
-        (r, 0, 0, 0, 0) => format!("{r} running"),
-        (0, s, 0, 0, 0) => format!("{s} starting"),
-        (0, 0, w, 0, 0) => format!("{w} restarting"),
-        (0, 0, 0, f, 0) => format!("{f} finished"),
-        (0, 0, 0, 0, x) => format!("{x} failed"),
-        (r, s, w, f, x) => {
-            let total = r + s + w + f + x;
-            let mut parts = Vec::new();
-            if r > 0 {
-                parts.push(format!("{r} running"));
-            }
-            if s > 0 {
-                parts.push(format!("{s} starting"));
-            }
-            if w > 0 {
-                parts.push(format!("{w} restarting"));
-            }
-            if f > 0 {
-                parts.push(format!("{f} finished"));
-            }
-            if x > 0 {
-                parts.push(format!("{x} failed"));
-            }
-            format!("{total} ({})", parts.join(", "))
-        }
+    // Instances that share one state use a compact phrasing; any mix
+    // (including instances without a process) is an explicit per-state
+    // breakdown under the count of all instances, so no instance is silently
+    // dropped from the count.
+    match parts.as_slice() {
+        [only] => only.clone(),
+        _ => format!("{} ({})", node.instances.len(), parts.join(", ")),
     }
 }
 
@@ -1013,7 +1006,6 @@ mod tests {
     use crate::commands::serialized_node;
     use crate::commands::table::strip_ansi;
     use config::runtime::{ClockBinding, ProducerRef};
-    use core_node_api::{NodeStage, SerializedInstance};
     use unicode_width::UnicodeWidthStr;
 
     /// A publisher that stopped leaves its consumers reading the instant it
@@ -1714,20 +1706,18 @@ mod tests {
         let out = format_stack_body(&nodes, &[], false, None);
 
         for header in HEADERS {
-            assert!(out.contains(header), "missing header {}:\n{}", header, out);
+            assert!(out.contains(header), "missing header {header}:\n{out}");
         }
-        assert!(out.contains("sensor:v1"), "missing sensor row:\n{}", out);
-        assert!(out.contains("brain:v1"), "missing brain row:\n{}", out);
+        assert!(out.contains("sensor:v1"), "missing sensor row:\n{out}");
+        assert!(out.contains("brain:v1"), "missing brain row:\n{out}");
         assert!(
             out.contains("1 running"),
-            "instances column missing:\n{}",
-            out
+            "instances column missing:\n{out}"
         );
         // Never prefix table output with [INFO].
         assert!(
             !out.contains("[INFO]"),
-            "output must not contain [INFO]:\n{}",
-            out
+            "output must not contain [INFO]:\n{out}"
         );
     }
 
@@ -1745,8 +1735,7 @@ mod tests {
         let out = format_stack_body(&nodes, &[], false, None);
         assert!(
             out.contains("2 (1 running, 1 starting)"),
-            "mixed breakdown missing:\n{}",
-            out
+            "mixed breakdown missing:\n{out}"
         );
     }
 
@@ -1831,13 +1820,9 @@ mod tests {
     #[test]
     fn empty_stack_renders_empty_marker() {
         let out = format_stack_body(&[], &[], false, None);
-        assert!(out.contains("(empty)"), "empty marker missing:\n{}", out);
-        assert!(
-            out.contains("Dependencies"),
-            "deps heading missing:\n{}",
-            out
-        );
-        assert!(out.contains("(none)"), "deps none marker missing:\n{}", out);
+        assert!(out.contains("(empty)"), "empty marker missing:\n{out}");
+        assert!(out.contains("Dependencies"), "deps heading missing:\n{out}");
+        assert!(out.contains("(none)"), "deps none marker missing:\n{out}");
     }
 
     #[test]
@@ -1852,8 +1837,7 @@ mod tests {
         let out = format_stack_body(&[from, to], &edges, false, None);
         assert!(
             out.contains("brain:v1 ➔ sensor:v1"),
-            "edge line missing:\n{}",
-            out
+            "edge line missing:\n{out}"
         );
     }
 
@@ -1909,8 +1893,7 @@ mod tests {
         let out = format_stack_body(&[consumer, provider], &edges, false, None);
         assert!(
             out.contains("brain:v1 ➔ camera_mock:v1 (via uvc_camera:v1 contract implementation)"),
-            "contract-implementation edge annotation missing:\n{}",
-            out
+            "contract-implementation edge annotation missing:\n{out}"
         );
     }
 
@@ -2036,6 +2019,32 @@ mod tests {
             format_instances_compact(&mixed),
             "3 (1 running, 1 restarting, 1 failed)"
         );
+    }
+
+    /// The node summary names every state an instance can be in, in one
+    /// order, whatever the order of the instances.
+    #[test]
+    fn compact_instance_counts_name_every_state_in_one_order() {
+        let every_state = binding_node(
+            "arm",
+            vec![
+                ("arm-1", InstanceState::Failed, vec![]),
+                ("arm-2", InstanceState::Finished, vec![]),
+                ("arm-3", InstanceState::Restarting, vec![]),
+                ("arm-4", InstanceState::Starting, vec![]),
+                ("arm-5", InstanceState::Running, vec![]),
+                ("arm-6", InstanceState::Running, vec![]),
+            ],
+        );
+        assert_eq!(
+            format_instances_compact(&every_state),
+            "6 (2 running, 1 starting, 1 restarting, 1 finished, 1 failed)"
+        );
+    }
+
+    #[test]
+    fn compact_instance_counts_show_zero_for_a_node_without_instance() {
+        assert_eq!(format_instances_compact(&binding_node("arm", vec![])), "0");
     }
 
     #[test]
@@ -2535,8 +2544,8 @@ mod tests {
         let from = serialized_node("brain", "v1", NodeStage::Ready, &[]);
         let to = serialized_node("sensor", "v1", NodeStage::Ready, &[]);
         let edges = vec![SerializedEdge {
-            from: from.clone(),
-            to: to.clone(),
+            from,
+            to,
             via_contract: None,
         }];
 

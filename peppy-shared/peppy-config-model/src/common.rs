@@ -11,8 +11,8 @@ pub enum AnyType {
     Bool(bool),
     /// A plain string value
     String(String),
-    Array(Vec<AnyType>),
-    Object(BTreeMap<String, AnyType>),
+    Array(Vec<Self>),
+    Object(BTreeMap<String, Self>),
 
     // Numeric values: prefer signed, then unsigned, then float
     Int(i64),
@@ -24,14 +24,14 @@ impl AnyType {
     /// Returns a human-readable name for this value's type
     pub fn type_name(&self) -> &'static str {
         match self {
-            AnyType::Null => "null",
-            AnyType::Bool(_) => "bool",
-            AnyType::String(_) => "string",
-            AnyType::Array(_) => "array",
-            AnyType::Object(_) => "object",
-            AnyType::Int(_) => "int",
-            AnyType::UInt(_) => "uint",
-            AnyType::Float(_) => "float",
+            Self::Null => "null",
+            Self::Bool(_) => "bool",
+            Self::String(_) => "string",
+            Self::Array(_) => "array",
+            Self::Object(_) => "object",
+            Self::Int(_) => "int",
+            Self::UInt(_) => "uint",
+            Self::Float(_) => "float",
         }
     }
 
@@ -48,31 +48,33 @@ impl AnyType {
 
         match token {
             TypeToken::Bool => match self {
-                AnyType::Bool(_) => Ok(()),
+                Self::Bool(_) => Ok(()),
                 other => Err(mismatch(other.type_name())),
             },
             TypeToken::String => match self {
-                AnyType::String(_) => Ok(()),
+                Self::String(_) => Ok(()),
                 other => Err(mismatch(other.type_name())),
             },
             TypeToken::Bytes => match self {
-                AnyType::String(_) | AnyType::Array(_) => Ok(()),
+                Self::String(_) | Self::Array(_) => Ok(()),
                 other => Err(mismatch(other.type_name())),
             },
             TypeToken::Time => match self {
-                AnyType::Int(_) | AnyType::UInt(_) => Ok(()),
+                Self::Int(_) | Self::UInt(_) => Ok(()),
                 other => Err(mismatch(other.type_name())),
             },
-            TypeToken::U8 => check_unsigned_range(self, u8::MAX as u64, path, token),
-            TypeToken::U16 => check_unsigned_range(self, u16::MAX as u64, path, token),
-            TypeToken::U32 => check_unsigned_range(self, u32::MAX as u64, path, token),
+            TypeToken::U8 => check_unsigned_range(self, u64::from(u8::MAX), path, token),
+            TypeToken::U16 => check_unsigned_range(self, u64::from(u16::MAX), path, token),
+            TypeToken::U32 => check_unsigned_range(self, u64::from(u32::MAX), path, token),
             TypeToken::U64 => check_unsigned_range(self, u64::MAX, path, token),
-            TypeToken::I8 => check_signed_range(self, i8::MIN as i64, i8::MAX as i64, path, token),
+            TypeToken::I8 => {
+                check_signed_range(self, i64::from(i8::MIN), i64::from(i8::MAX), path, token)
+            }
             TypeToken::I16 => {
-                check_signed_range(self, i16::MIN as i64, i16::MAX as i64, path, token)
+                check_signed_range(self, i64::from(i16::MIN), i64::from(i16::MAX), path, token)
             }
             TypeToken::I32 => {
-                check_signed_range(self, i32::MIN as i64, i32::MAX as i64, path, token)
+                check_signed_range(self, i64::from(i32::MIN), i64::from(i32::MAX), path, token)
             }
             TypeToken::I64 => check_signed_range(self, i64::MIN, i64::MAX, path, token),
             TypeToken::F32 => match check_f32(self) {
@@ -85,7 +87,7 @@ impl AnyType {
                 )),
             },
             TypeToken::F64 => match self {
-                AnyType::Float(_) | AnyType::Int(_) | AnyType::UInt(_) => Ok(()),
+                Self::Float(_) | Self::Int(_) | Self::UInt(_) => Ok(()),
                 other => Err(mismatch(other.type_name())),
             },
         }
@@ -100,7 +102,7 @@ fn check_unsigned_range(
 ) -> Result<(), TypeMismatch> {
     let v: u64 = match value {
         AnyType::UInt(u) => *u,
-        AnyType::Int(i) if *i >= 0 => *i as u64,
+        AnyType::Int(i) if *i >= 0 => i.unsigned_abs(),
         other => {
             return Err(TypeMismatch {
                 path: path.to_string(),
@@ -113,7 +115,7 @@ fn check_unsigned_range(
         return Err(TypeMismatch {
             path: path.to_string(),
             expected: format!("{} in [0, {}]", type_token_name(token), max),
-            actual: format!("{}", v),
+            actual: format!("{v}"),
         });
     }
     Ok(())
@@ -128,7 +130,7 @@ fn check_signed_range(
 ) -> Result<(), TypeMismatch> {
     let v: i64 = match value {
         AnyType::Int(i) => *i,
-        AnyType::UInt(u) if *u <= i64::MAX as u64 => *u as i64,
+        AnyType::UInt(u) if i64::try_from(*u).is_ok() => u.cast_signed(),
         other => {
             return Err(TypeMismatch {
                 path: path.to_string(),
@@ -141,7 +143,7 @@ fn check_signed_range(
         return Err(TypeMismatch {
             path: path.to_string(),
             expected: format!("{} in [{}, {}]", type_token_name(token), min, max),
-            actual: format!("{}", v),
+            actual: format!("{v}"),
         });
     }
     Ok(())
@@ -169,7 +171,7 @@ pub fn type_token_name(token: &TypeToken) -> &'static str {
 }
 
 /// Error returned when a runtime value doesn't match its type specification
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeMismatch {
     pub path: String,
     pub expected: String,
@@ -206,11 +208,11 @@ impl DefaultValue {
     /// used by `NodeArguments`.
     pub fn to_any(&self) -> AnyType {
         match self {
-            DefaultValue::Bool(b) => AnyType::Bool(*b),
-            DefaultValue::String(s) => AnyType::String(s.clone()),
-            DefaultValue::Int(i) => AnyType::Int(*i),
-            DefaultValue::UInt(u) => AnyType::UInt(*u),
-            DefaultValue::Float(f) => AnyType::Float(*f),
+            Self::Bool(b) => AnyType::Bool(*b),
+            Self::String(s) => AnyType::String(s.clone()),
+            Self::Int(i) => AnyType::Int(*i),
+            Self::UInt(u) => AnyType::UInt(*u),
+            Self::Float(f) => AnyType::Float(*f),
         }
     }
 }
@@ -218,11 +220,11 @@ impl DefaultValue {
 impl Serialize for DefaultValue {
     fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         match self {
-            DefaultValue::Bool(b) => ser.serialize_bool(*b),
-            DefaultValue::String(s) => ser.serialize_str(s),
-            DefaultValue::Int(i) => ser.serialize_i64(*i),
-            DefaultValue::UInt(u) => ser.serialize_u64(*u),
-            DefaultValue::Float(f) => ser.serialize_f64(*f),
+            Self::Bool(b) => ser.serialize_bool(*b),
+            Self::String(s) => ser.serialize_str(s),
+            Self::Int(i) => ser.serialize_i64(*i),
+            Self::UInt(u) => ser.serialize_u64(*u),
+            Self::Float(f) => ser.serialize_f64(*f),
         }
     }
 }
@@ -245,10 +247,10 @@ pub enum ParameterSpec {
         default: Option<DefaultValue>,
     },
     Array {
-        items: Box<ParameterSpec>,
+        items: Box<Self>,
         length: Option<usize>,
     },
-    Group(BTreeMap<String, ParameterSpec>),
+    Group(BTreeMap<String, Self>),
 }
 
 impl ParameterSpec {
@@ -261,18 +263,19 @@ impl ParameterSpec {
     /// missing path.
     fn synthesize_default(&self, path: &str, missing: &mut Vec<String>) -> Option<AnyType> {
         match self {
-            ParameterSpec::Primitive { default, .. } => match default {
-                Some(d) => Some(d.to_any()),
-                None => {
+            Self::Primitive { default, .. } => {
+                if let Some(d) = default {
+                    Some(d.to_any())
+                } else {
                     missing.push(path.to_string());
                     None
                 }
-            },
-            ParameterSpec::Array { .. } => {
+            }
+            Self::Array { .. } => {
                 missing.push(path.to_string());
                 None
             }
-            ParameterSpec::Group(map) => {
+            Self::Group(map) => {
                 let mut out = BTreeMap::new();
                 let mut all_present = true;
                 for (k, sub) in map {
@@ -286,11 +289,7 @@ impl ParameterSpec {
                         }
                     }
                 }
-                if all_present {
-                    Some(AnyType::Object(out))
-                } else {
-                    None
-                }
+                all_present.then_some(AnyType::Object(out))
             }
         }
     }
@@ -300,11 +299,11 @@ impl Serialize for ParameterSpec {
     fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         match self {
-            ParameterSpec::Primitive {
+            Self::Primitive {
                 kind,
                 default: None,
             } => ser.serialize_str(type_token_name(kind)),
-            ParameterSpec::Primitive {
+            Self::Primitive {
                 kind,
                 default: Some(d),
             } => {
@@ -313,7 +312,7 @@ impl Serialize for ParameterSpec {
                 map.serialize_entry("$default", d)?;
                 map.end()
             }
-            ParameterSpec::Array { items, length } => {
+            Self::Array { items, length } => {
                 let len = if length.is_some() { 3 } else { 2 };
                 let mut map = ser.serialize_map(Some(len))?;
                 map.serialize_entry("$type", "array")?;
@@ -323,7 +322,7 @@ impl Serialize for ParameterSpec {
                 }
                 map.end()
             }
-            ParameterSpec::Group(fields) => {
+            Self::Group(fields) => {
                 // Serialize as a naked object (no `$type: "object"` metadata).
                 // Both forms parse back to the same `Group` shape.
                 let mut map = ser.serialize_map(Some(fields.len()))?;
@@ -504,7 +503,7 @@ fn parse_array_spec(map: BTreeMap<String, AnyType>, path: &str) -> Result<Parame
 fn parse_array_length(value: AnyType, path: &str) -> Result<usize, String> {
     let length: u64 = match value {
         AnyType::UInt(u) => u,
-        AnyType::Int(i) if i >= 0 => i as u64,
+        AnyType::Int(i) if i >= 0 => i.unsigned_abs(),
         other => {
             return Err(format!(
                 "at `{}`: `$length` must be a non-negative integer, got {}",
@@ -601,17 +600,27 @@ fn parse_default_value(kind: &TypeToken, raw: AnyType, path: &str) -> Result<Def
         TypeToken::Time => Err(format!(
             "at `{display}`: `$default` is not supported for type `time`"
         )),
-        TypeToken::U8 => bounded_uint_default(raw, u8::MAX as u64, "u8", display),
-        TypeToken::U16 => bounded_uint_default(raw, u16::MAX as u64, "u16", display),
-        TypeToken::U32 => bounded_uint_default(raw, u32::MAX as u64, "u32", display),
+        TypeToken::U8 => bounded_uint_default(raw, u64::from(u8::MAX), "u8", display),
+        TypeToken::U16 => bounded_uint_default(raw, u64::from(u16::MAX), "u16", display),
+        TypeToken::U32 => bounded_uint_default(raw, u64::from(u32::MAX), "u32", display),
         TypeToken::U64 => bounded_uint_default(raw, u64::MAX, "u64", display),
-        TypeToken::I8 => bounded_int_default(raw, i8::MIN as i64, i8::MAX as i64, "i8", display),
-        TypeToken::I16 => {
-            bounded_int_default(raw, i16::MIN as i64, i16::MAX as i64, "i16", display)
+        TypeToken::I8 => {
+            bounded_int_default(raw, i64::from(i8::MIN), i64::from(i8::MAX), "i8", display)
         }
-        TypeToken::I32 => {
-            bounded_int_default(raw, i32::MIN as i64, i32::MAX as i64, "i32", display)
-        }
+        TypeToken::I16 => bounded_int_default(
+            raw,
+            i64::from(i16::MIN),
+            i64::from(i16::MAX),
+            "i16",
+            display,
+        ),
+        TypeToken::I32 => bounded_int_default(
+            raw,
+            i64::from(i32::MIN),
+            i64::from(i32::MAX),
+            "i32",
+            display,
+        ),
         TypeToken::I64 => bounded_int_default(raw, i64::MIN, i64::MAX, "i64", display),
         TypeToken::F32 => match check_f32(&raw) {
             F32Check::Ok(f) => Ok(DefaultValue::Float(f)),
@@ -631,7 +640,15 @@ fn parse_default_value(kind: &TypeToken, raw: AnyType, path: &str) -> Result<Def
         },
         TypeToken::F64 => match raw {
             AnyType::Float(f) => Ok(DefaultValue::Float(f)),
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "an integer default of an `f64` field takes the nearest `f64`"
+            )]
             AnyType::Int(i) => Ok(DefaultValue::Float(i as f64)),
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "an integer default of an `f64` field takes the nearest `f64`"
+            )]
             AnyType::UInt(u) => Ok(DefaultValue::Float(u as f64)),
             other => Err(format!(
                 "at `{display}`: `$default` for type `f64` must be numeric, got {}",
@@ -649,7 +666,7 @@ fn bounded_uint_default(
 ) -> Result<DefaultValue, String> {
     let v: u64 = match raw {
         AnyType::UInt(u) => u,
-        AnyType::Int(i) if i >= 0 => i as u64,
+        AnyType::Int(i) if i >= 0 => i.unsigned_abs(),
         AnyType::Int(i) => {
             return Err(format!(
                 "at `{display}`: `$default` for unsigned type `{name}` must be non-negative, got {i}"
@@ -679,7 +696,7 @@ fn bounded_int_default(
 ) -> Result<DefaultValue, String> {
     let v: i64 = match raw {
         AnyType::Int(i) => i,
-        AnyType::UInt(u) if u <= i64::MAX as u64 => u as i64,
+        AnyType::UInt(u) if i64::try_from(u).is_ok() => u.cast_signed(),
         AnyType::UInt(u) => {
             return Err(format!(
                 "at `{display}`: `$default` value {u} is outside the range of `{name}` [{min}, {max}]"
@@ -716,10 +733,14 @@ enum F32Check {
     IntPrecisionLoss,
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "an integer within `F32_LOSSLESS_INT_LIMIT` is exact as an `f64`"
+)]
 fn check_f32(value: &AnyType) -> F32Check {
     match value {
         AnyType::Float(f) if !f.is_finite() => F32Check::NonFinite,
-        AnyType::Float(f) if f.abs() > f32::MAX as f64 => F32Check::FloatOutOfRange,
+        AnyType::Float(f) if f.abs() > f64::from(f32::MAX) => F32Check::FloatOutOfRange,
         AnyType::Float(f) => F32Check::Ok(*f),
         AnyType::Int(i) if i.unsigned_abs() > F32_LOSSLESS_INT_LIMIT => F32Check::IntPrecisionLoss,
         AnyType::Int(i) => F32Check::Ok(*i as f64),
@@ -1004,7 +1025,7 @@ pub fn apply_parameter_defaults(
 /// returning the leaf [`ParameterSpec`] if found.
 ///
 /// Descends into [`ParameterSpec::Group`] values at each segment boundary.
-pub fn resolve_parameter_path<'a>(
+pub(crate) fn resolve_parameter_path<'a>(
     parameters: &'a ParameterSchema,
     dot_path: &str,
 ) -> Option<&'a ParameterSpec> {
@@ -1074,6 +1095,7 @@ pub fn validate_named_items<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn json5<T: serde::de::DeserializeOwned>(s: &str) -> T {
         serde_json5::from_str(s).unwrap()
@@ -1163,17 +1185,17 @@ mod tests {
                 }
             }"#,
         );
-        let video = parsed.get("video").unwrap();
+        let video = &parsed["video"];
         let ParameterSpec::Group(video_fields) = video else {
             panic!("expected group");
         };
-        assert!(matches!(
+        assert_matches!(
             video_fields.get("fps"),
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::U16,
                 default: None
             })
-        ));
+        );
         let resolution = video_fields.get("resolution").unwrap();
         let ParameterSpec::Group(_) = resolution else {
             panic!("expected nested group");
@@ -1190,23 +1212,23 @@ mod tests {
                 }
             }"#,
         );
-        let ParameterSpec::Group(fields) = parsed.get("device").unwrap() else {
+        let ParameterSpec::Group(fields) = &parsed["device"] else {
             panic!("expected group");
         };
-        assert!(matches!(
+        assert_matches!(
             fields.get("path"),
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::String,
                 default: Some(DefaultValue::String(_))
             })
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             fields.get("serial"),
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::String,
                 default: None
             })
-        ));
+        );
     }
 
     // ---- Parse-time validation errors ----
@@ -1308,7 +1330,7 @@ mod tests {
             parsed,
             ParameterSpec::Primitive {
                 kind: TypeToken::F32,
-                default: Some(DefaultValue::Float(16777216.0))
+                default: Some(DefaultValue::Float(16_777_216.0))
             }
         );
     }
@@ -1336,31 +1358,31 @@ mod tests {
     #[test]
     fn f64_default_accepts_int_above_f32_range() {
         let parsed: ParameterSpec = json5(r#"{ $type: "f64", $default: 16777217 }"#);
-        assert!(matches!(
+        assert_matches!(
             parsed,
             ParameterSpec::Primitive {
                 kind: TypeToken::F64,
                 default: Some(DefaultValue::Float(_))
             }
-        ));
+        );
     }
 
     #[test]
     fn f64_default_accepts_large_float() {
         let parsed: ParameterSpec = json5(r#"{ $type: "f64", $default: 1e100 }"#);
-        assert!(matches!(
+        assert_matches!(
             parsed,
             ParameterSpec::Primitive {
                 kind: TypeToken::F64,
                 default: Some(DefaultValue::Float(_))
             }
-        ));
+        );
     }
 
     #[test]
     fn runtime_f32_rejects_int_above_lossless_range() {
         let s = schema(r#"{ gain: "f32" }"#);
-        let raw = BTreeMap::from([("gain".to_string(), AnyType::Int(16777217))]);
+        let raw = BTreeMap::from([("gain".to_string(), AnyType::Int(16_777_217))]);
         let err = validate_node_arguments(raw, &s).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("f32"), "got: {msg}");
@@ -1371,7 +1393,7 @@ mod tests {
         let s = schema(r#"{ gain: "f32" }"#);
         let raw = BTreeMap::from([("gain".to_string(), AnyType::Float(1e100))]);
         let err = validate_node_arguments(raw, &s).unwrap_err();
-        assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+        assert_matches!(err, NodeArgumentsError::TypeMismatch(_));
     }
 
     #[test]
@@ -1379,10 +1401,10 @@ mod tests {
         let s = schema(r#"{ gain: "f32" }"#);
         let raw = BTreeMap::from([("gain".to_string(), AnyType::Float(f64::INFINITY))]);
         let err = validate_node_arguments(raw, &s).unwrap_err();
-        assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+        assert_matches!(err, NodeArgumentsError::TypeMismatch(_));
 
         let raw_nan = BTreeMap::from([("gain".to_string(), AnyType::Float(f64::NAN))]);
-        assert!(validate_node_arguments(raw_nan, &s).is_err());
+        validate_node_arguments(raw_nan, &s).unwrap_err();
     }
 
     #[test]
@@ -1392,9 +1414,9 @@ mod tests {
             AnyType::Float(0.0),
             AnyType::Float(1.5),
             AnyType::Float(-1.5),
-            AnyType::Int(16777216),
-            AnyType::Int(-16777216),
-            AnyType::UInt(16777216),
+            AnyType::Int(16_777_216),
+            AnyType::Int(-16_777_216),
+            AnyType::UInt(16_777_216),
             AnyType::UInt(0),
         ] {
             let raw = BTreeMap::from([("gain".to_string(), value.clone())]);
@@ -1409,7 +1431,7 @@ mod tests {
     fn runtime_f64_accepts_value_above_f32_range() {
         let s = schema(r#"{ gain: "f64" }"#);
         let raw = BTreeMap::from([("gain".to_string(), AnyType::Float(1e100))]);
-        assert!(validate_node_arguments(raw, &s).is_ok());
+        validate_node_arguments(raw, &s).unwrap();
     }
 
     // ---- Array parameter parsing ----
@@ -1419,13 +1441,13 @@ mod tests {
         let parsed: ParameterSpec = json5(r#"{ $type: "array", $items: "string" }"#);
         match parsed {
             ParameterSpec::Array { items, length } => {
-                assert!(matches!(
+                assert_matches!(
                     *items,
                     ParameterSpec::Primitive {
                         kind: TypeToken::String,
                         ..
                     }
-                ));
+                );
                 assert_eq!(length, None);
             }
             other => panic!("expected array, got: {other:?}"),
@@ -1477,20 +1499,20 @@ mod tests {
         let ParameterSpec::Group(fields) = parsed else {
             panic!("expected group");
         };
-        assert!(matches!(
+        assert_matches!(
             fields.get("enabled"),
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::Bool,
                 ..
             })
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             fields.get("gain"),
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::I64,
                 ..
             })
-        ));
+        );
     }
 
     #[test]
@@ -1582,7 +1604,7 @@ mod tests {
         );
         let raw = BTreeMap::new();
         let args = validate_node_arguments(raw, &s).unwrap();
-        let AnyType::Object(device) = args.0.get("device").unwrap() else {
+        let AnyType::Object(device) = &args.0["device"] else {
             panic!("expected synthesized object");
         };
         assert_eq!(
@@ -1605,7 +1627,7 @@ mod tests {
         );
         let raw = BTreeMap::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
         let args = validate_node_arguments(raw, &s).unwrap();
-        let AnyType::Object(device) = args.0.get("device").unwrap() else {
+        let AnyType::Object(device) = &args.0["device"] else {
             panic!("expected device object");
         };
         assert_eq!(
@@ -1632,7 +1654,7 @@ mod tests {
             )])),
         )]);
         let args = validate_node_arguments(raw, &s).unwrap();
-        let AnyType::Object(device) = args.0.get("device").unwrap() else {
+        let AnyType::Object(device) = &args.0["device"] else {
             panic!("expected device object");
         };
         assert_eq!(
@@ -1683,7 +1705,7 @@ mod tests {
             )])),
         )]);
         let args = validate_node_arguments(raw, &s).unwrap();
-        let AnyType::Object(video) = args.0.get("video").unwrap() else {
+        let AnyType::Object(video) = &args.0["video"] else {
             panic!("expected video object");
         };
         let AnyType::Object(resolution) = video.get("resolution").unwrap() else {
@@ -1706,7 +1728,7 @@ mod tests {
             BTreeMap::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
         let missing = apply_parameter_defaults(&mut args, &s);
         assert!(missing.is_empty(), "got missing: {missing:?}");
-        let AnyType::Object(device) = args.get("device").unwrap() else {
+        let AnyType::Object(device) = &args["device"] else {
             panic!("expected device object");
         };
         assert_eq!(
@@ -1756,7 +1778,7 @@ mod tests {
         let s = schema(r#"{ fps: "u16" }"#);
         let raw = BTreeMap::from([("fps".to_string(), AnyType::String("not a number".into()))]);
         let err = validate_node_arguments(raw, &s).unwrap_err();
-        assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+        assert_matches!(err, NodeArgumentsError::TypeMismatch(_));
     }
 
     #[test]
@@ -1773,7 +1795,7 @@ mod tests {
         let s = schema(r#"{ count: "u32" }"#);
         let raw = BTreeMap::from([("count".to_string(), AnyType::Int(-1))]);
         let err = validate_node_arguments(raw, &s).unwrap_err();
-        assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+        assert_matches!(err, NodeArgumentsError::TypeMismatch(_));
     }
 
     #[test]
@@ -1804,7 +1826,7 @@ mod tests {
             ("extra".to_string(), AnyType::String("b".into())),
         ]);
         let err = validate_node_arguments(raw, &s).unwrap_err();
-        assert!(matches!(err, NodeArgumentsError::UnknownParameter { .. }));
+        assert_matches!(err, NodeArgumentsError::UnknownParameter { .. });
     }
 
     // ---- resolve_parameter_path ----
@@ -1813,34 +1835,34 @@ mod tests {
     fn resolve_parameter_path_simple() {
         let params = schema(r#"{ device_path: "string" }"#);
         let resolved = resolve_parameter_path(&params, "device_path");
-        assert!(matches!(
+        assert_matches!(
             resolved,
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::String,
                 ..
             })
-        ));
+        );
     }
 
     #[test]
     fn resolve_parameter_path_nested() {
         let params = schema(r#"{ video: { device_path: "string", fps: "u16" } }"#);
         let resolved = resolve_parameter_path(&params, "video.device_path");
-        assert!(matches!(
+        assert_matches!(
             resolved,
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::String,
                 ..
             })
-        ));
+        );
         let fps = resolve_parameter_path(&params, "video.fps");
-        assert!(matches!(
+        assert_matches!(
             fps,
             Some(ParameterSpec::Primitive {
                 kind: TypeToken::U16,
                 ..
             })
-        ));
+        );
     }
 
     #[test]
@@ -1905,7 +1927,7 @@ mod tests {
             &s,
         )
         .expect_err("string for u16 should fail");
-        assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+        assert_matches!(err, NodeArgumentsError::TypeMismatch(_));
     }
 
     #[test]
@@ -1919,7 +1941,7 @@ mod tests {
             &s,
         )
         .expect_err("unknown key should fail");
-        assert!(matches!(err, NodeArgumentsError::UnknownParameter { .. }));
+        assert_matches!(err, NodeArgumentsError::UnknownParameter { .. });
     }
 
     #[test]
@@ -1930,7 +1952,7 @@ mod tests {
             actual: "string".to_string(),
         };
         assert_eq!(
-            format!("{}", err),
+            format!("{err}"),
             "type mismatch at `config.timeout`: expected `u32`, got `string`"
         );
     }

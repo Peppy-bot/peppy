@@ -61,54 +61,52 @@ impl AppliedChange {
     /// `env_from_launch`.
     pub fn field(&self) -> String {
         match self {
-            AppliedChange::Argument { key, .. } => format!("arguments.{key}"),
-            AppliedChange::LinkSet { slot, .. }
-            | AppliedChange::LinkAdded { slot, .. }
-            | AppliedChange::LinkRemoved { slot, .. } => format!("links.{slot}"),
-            AppliedChange::Clock { .. } => String::from("framework.clock"),
-            AppliedChange::DaemonScope { daemon_target, .. } => {
+            Self::Argument { key, .. } => format!("arguments.{key}"),
+            Self::LinkSet { slot, .. }
+            | Self::LinkAdded { slot, .. }
+            | Self::LinkRemoved { slot, .. } => format!("links.{slot}"),
+            Self::Clock { .. } => String::from("framework.clock"),
+            Self::DaemonScope { daemon_target, .. } => {
                 format!("daemon_scopes.{daemon_target}")
             }
-            AppliedChange::Restart { .. } => String::from("framework.restart"),
-            AppliedChange::EnvFromLaunch { .. } => String::from("env_from_launch"),
+            Self::Restart { .. } => String::from("framework.restart"),
+            Self::EnvFromLaunch { .. } => String::from("env_from_launch"),
         }
     }
 
     /// The value the change leaves in its field, as a conflict names it.
     pub(super) fn written(&self) -> String {
         match self {
-            AppliedChange::Argument { new, .. } => render(new),
-            AppliedChange::LinkSet { new, .. } => render(new),
-            AppliedChange::LinkAdded { target, .. } => format!("+ {target}"),
-            AppliedChange::LinkRemoved { .. } => String::from("(absent)"),
-            AppliedChange::Clock { new, .. } => new.to_string(),
-            AppliedChange::DaemonScope { new, .. } => render(new),
-            AppliedChange::Restart { new, .. } => new.launcher_spelling(),
-            AppliedChange::EnvFromLaunch { new, .. } => render(new),
+            Self::Argument { new, .. } => render(new),
+            Self::LinkSet { new, .. } => render(new),
+            Self::LinkAdded { target, .. } => format!("+ {target}"),
+            Self::LinkRemoved { .. } => String::from("(absent)"),
+            Self::Clock { new, .. } => new.to_string(),
+            Self::DaemonScope { new, .. } => render(new),
+            Self::Restart { new, .. } => new.launcher_spelling(),
+            Self::EnvFromLaunch { new, .. } => render(new),
         }
     }
 
     fn render(&self) -> String {
         match self {
-            AppliedChange::Argument { old, new, .. } => {
+            Self::Argument { old, new, .. } => {
                 format!("{} -> {}", render_option(old.as_ref()), render(new))
             }
-            AppliedChange::LinkSet { old, new, .. } => {
+            Self::LinkSet { old, new, .. } => {
                 format!("{} -> {}", render_option(old.as_ref()), render(new))
             }
-            AppliedChange::LinkAdded { target, .. } => format!("+ {target}"),
-            AppliedChange::LinkRemoved { old, .. } => format!("removed (was {})", render(old)),
-            AppliedChange::Clock { old, new } => {
-                transition(old.as_ref().map(Name::to_string), new.to_string())
-            }
-            AppliedChange::Restart { old, new } => transition(
+            Self::LinkAdded { target, .. } => format!("+ {target}"),
+            Self::LinkRemoved { old, .. } => format!("removed (was {})", render(old)),
+            Self::Clock { old, new } => transition(old.as_ref().map(Name::to_string), new.as_ref()),
+            Self::Restart { old, new } => transition(
                 old.as_ref().map(RestartDeclaration::launcher_spelling),
-                new.launcher_spelling(),
+                &new.launcher_spelling(),
             ),
-            AppliedChange::DaemonScope { old, new, .. } => {
+            Self::DaemonScope { old, new, .. } => {
                 format!("{} -> {}", render_option(old.as_ref()), render(new))
             }
-            AppliedChange::EnvFromLaunch { old, new } => {
+            Self::EnvFromLaunch { old, new } => {
                 format!("{} -> {}", render(old), render(new))
             }
         }
@@ -117,7 +115,7 @@ impl AppliedChange {
 
 /// `old -> new` for a framework knob, `(absent)` standing for a knob the
 /// entry did not write.
-pub(super) fn transition(old: Option<String>, new: String) -> String {
+pub(super) fn transition(old: Option<String>, new: &str) -> String {
     format!(
         "{} -> {new}",
         old.unwrap_or_else(|| String::from("(absent)"))
@@ -151,9 +149,9 @@ pub enum SkipReason {
 impl SkipReason {
     fn render(&self) -> String {
         match self {
-            SkipReason::TargetAbsent => "target is not in this selection".to_owned(),
-            SkipReason::GuardNotMet(guard) => format!("guard {guard} is not met"),
-            SkipReason::RunsInCopies(axis) => {
+            Self::TargetAbsent => "target is not in this selection".to_owned(),
+            Self::GuardNotMet(guard) => format!("guard {guard} is not met"),
+            Self::RunsInCopies(axis) => {
                 format!("axis {axis} runs as copies; the adjustment runs in each copy")
             }
         }
@@ -268,7 +266,7 @@ impl CompositionReport {
 
     /// Folds one join's whole report in: its copy and the entries that copy
     /// already carries, attributed when it was composed.
-    pub(super) fn absorb(&mut self, joined: CompositionReport) {
+    pub(super) fn absorb(&mut self, joined: Self) {
         self.copies.extend(joined.copies);
         self.part_machines.extend(joined.part_machines);
         self.applied.extend(joined.applied);

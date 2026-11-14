@@ -13,6 +13,7 @@ mod zenoh_tests {
         MessengerBackend, Payload, PresenceScope, PublisherQoS, RouterId, SubscriberBufferSizes,
         SubscriberQoS, TopicBuffer, ZenohAdapter, ZenohNetProtocol,
     };
+    use std::assert_matches;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::time::{Duration, Instant};
 
@@ -331,7 +332,7 @@ mod zenoh_tests {
     /// role delivers unstamped samples, which this test catches.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn peer_mode_samples_carry_source_timestamp() {
-        assert_topic_carries_source_timestamp(true).await;
+        Box::pin(assert_topic_carries_source_timestamp(true)).await;
     }
 
     /// Router mode (gossip off → client sessions relayed through zenohd) stamps
@@ -341,7 +342,7 @@ mod zenoh_tests {
     /// relays through the router, which stays alive for the whole test.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn router_mode_samples_carry_source_timestamp() {
-        assert_topic_carries_source_timestamp(false).await;
+        Box::pin(assert_topic_carries_source_timestamp(false)).await;
     }
 
     /// A peer session built with custom (tiny) subscriber buffers still delivers
@@ -1511,11 +1512,9 @@ mod zenoh_tests {
             .await
             .expect("start a router on the reserved port");
 
-        assert!(
-            matches!(
-                tokio::time::timeout(UNBLOCKS_WITHIN, opened_rx).await,
-                Ok(Ok(true))
-            ),
+        assert_matches!(
+            tokio::time::timeout(UNBLOCKS_WITHIN, opened_rx).await,
+            Ok(Ok(true)),
             "the blocked client open must complete once a router accepts it, \
              which is what makes the retry worth keeping"
         );

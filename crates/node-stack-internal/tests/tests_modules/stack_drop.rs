@@ -133,8 +133,11 @@ async fn a_surviving_stack_handle_keeps_its_instances_alive() {
     // outcome of our SIGTERM proves the instance was untouched: the fixture's
     // `trap 'exit 0' TERM` when the shell had installed it, the raw signal when
     // it had not yet.
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), Signal::SIGTERM)
-        .expect("the instance should still be alive while a stack handle survives");
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(i32::try_from(pid).expect("a pid fits in an i32")),
+        Signal::SIGTERM,
+    )
+    .expect("the instance should still be alive while a stack handle survives");
     let status = reap(&mut child).await;
     assert!(
         status.code() == Some(0) || status.signal() == Some(Signal::SIGTERM as i32),

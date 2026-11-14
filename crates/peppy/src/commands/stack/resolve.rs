@@ -60,13 +60,13 @@ const PREVIEW_CORE_NODE: &str = "cn-preview";
 /// of the checkout the caches materialized for it; when one is not readable
 /// locally the check is skipped and says so, because a partial item list
 /// would misreport rules that need both endpoints.
-pub fn resolve(
+pub(super) fn resolve(
     launcher_config_path: PathBuf,
-    words: Vec<LaunchWord>,
-    joins: Vec<CopyReference>,
+    words: &[LaunchWord],
+    joins: &[CopyReference],
 ) -> Result<()> {
     let (document, report) =
-        resolve_rendered(&PeppyDirs::default(), launcher_config_path, &words, &joins)?;
+        resolve_rendered(&PeppyDirs::default(), launcher_config_path, words, joins)?;
     for line in report {
         eprintln!("{line}");
     }
@@ -125,6 +125,7 @@ pub fn resolve_rendered(
 
 /// Where the checks of daemon scopes read the targets of each deployment:
 /// the exposure documents, and the node manifests of the nodes cache.
+#[derive(Clone, Copy)]
 struct ScopeSources<'a> {
     dirs: &'a PeppyDirs,
     node_cache: &'a std::result::Result<Vec<NodeCacheEntry>, String>,
@@ -458,15 +459,13 @@ fn check_link_plan(
                 .manifest
                 .depends_on
                 .as_ref()
-                .map(|d| d.pairings.as_slice())
-                .unwrap_or_default(),
+                .map_or_default(|d| d.pairings.as_slice()),
             observer_deps: checked
                 .config
                 .manifest
                 .depends_on
                 .as_ref()
-                .map(|d| d.pairing_observers.as_slice())
-                .unwrap_or_default(),
+                .map_or_default(|d| d.pairing_observers.as_slice()),
             preexisting: false,
         })
         .collect();

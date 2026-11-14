@@ -21,12 +21,14 @@ use crate::error::{Error, Result};
 const EXPIRY_SKEW_SECS: i64 = 30;
 
 /// A ready bearer plus the context needed to refresh it on a reactive `401`.
+#[derive(Debug)]
 pub struct Credential {
     pub token: SecretString,
     pub session: SessionContext,
 }
 
 /// Everything needed to refresh a session token and persist the rotation.
+#[derive(Debug)]
 pub struct SessionContext {
     pub issuer: String,
     pub client_id: String,

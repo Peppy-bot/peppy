@@ -6,7 +6,7 @@
 //! to a handler in this module's directory; the OAuth device flow, token
 //! storage, the platform API and the enrollment store they share live in the
 //! separate `auth` engine crate, and the config, URL and credential preamble
-//! they all repeat lives here as [`PlatformSession`].
+//! they all repeat lives here as `PlatformSession`.
 //!
 //! A session is what the CLI needs to call the API; an enrollment is what the
 //! daemon needs to federate its router, and it outlives the session. `login`
@@ -389,7 +389,7 @@ fn stack_has_user_nodes(graph: &SerializedNodeGraph) -> bool {
 /// best-effort and never returns `Err`.
 pub(crate) fn poke_federation_and_report(
     dirs: &PeppyDirs,
-    action: FederationPokeAction,
+    action: &FederationPokeAction,
 ) -> Result<()> {
     let socket = daemon_control::federation_control_socket_path(dirs);
     let read_timeout = daemon_control::POKE_READ_TIMEOUT;
@@ -398,9 +398,9 @@ pub(crate) fn poke_federation_and_report(
             daemon_control::poke_refederate(&socket, read_timeout)
         });
     if matches!(outcome, PokeOutcome::Restarting) {
-        return await_restart(dirs, &socket, read_timeout, &action);
+        return await_restart(dirs, &socket, read_timeout, action);
     }
-    report(outcome, &action)
+    report(outcome, action)
 }
 
 fn report(outcome: PokeOutcome, action: &FederationPokeAction) -> Result<()> {
@@ -479,9 +479,7 @@ fn poll_until_back_under(
             // but its control socket may not have bound yet, so a poke can
             // transiently find no socket or time out. Keep polling until it
             // actually answers (or the deadline above fires).
-            PokeOutcome::Restarting | PokeOutcome::DaemonNotRunning | PokeOutcome::TimedOut => {
-                continue;
-            }
+            PokeOutcome::Restarting | PokeOutcome::DaemonNotRunning | PokeOutcome::TimedOut => {}
             other => break report(other, action),
         }
     }
@@ -543,24 +541,24 @@ fn report_unenroll(outcome: PokeOutcome) {
     match outcome {
         PokeOutcome::Applied(None) => println!("The daemon runs standalone again."),
         PokeOutcome::Applied(Some(locator)) => {
-            println!("Note: the daemon still reports a project link ({locator}).")
+            println!("Note: the daemon still reports a project link ({locator}).");
         }
         PokeOutcome::Pinned => println!("{PINNED_NOTE}"),
         PokeOutcome::Unreachable(msg) | PokeOutcome::DaemonError(msg) => {
             println!(
                 "Note: the daemon could not apply the change now ({msg}); it will on its next start."
-            )
+            );
         }
         PokeOutcome::DaemonNotRunning => {
-            println!("No running daemon; it starts standalone next time.")
+            println!("No running daemon; it starts standalone next time.");
         }
         PokeOutcome::TimedOut => {
             println!(
                 "The daemon did not answer within the timeout; it applies the change on its next start."
-            )
+            );
         }
         PokeOutcome::Restarting => {
-            println!("The daemon is restarting under the local namespace.")
+            println!("The daemon is restarting under the local namespace.");
         }
     }
 }
@@ -573,12 +571,10 @@ pub(crate) fn date(time: &chrono::DateTime<chrono::Utc>) -> String {
 /// A unix timestamp as a calendar date for human output, or the number itself
 /// when it is not a date.
 pub(crate) fn date_of(unix: i64) -> String {
-    chrono::DateTime::from_timestamp(unix, 0)
-        .map(|time| date(&time))
-        .unwrap_or_else(|| unix.to_string())
+    chrono::DateTime::from_timestamp(unix, 0).map_or_else(|| unix.to_string(), |time| date(&time))
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum PlatformCommands {
     /// Sign in to the platform via the browser (OAuth device flow), then enroll this machine in a project
     Login {
@@ -665,6 +661,7 @@ pub enum PlatformCommands {
     },
 }
 
+#[derive(Debug)]
 pub struct PlatformCommand {
     /// The `--api-url` of the group, accepted before and after the subcommand.
     pub api_url: Option<String>,
@@ -982,7 +979,7 @@ mod tests {
             PokeOutcome::Pinned,
             PokeOutcome::DaemonNotRunning,
         ] {
-            assert!(report_enroll(outcome).is_ok());
+            report_enroll(outcome).unwrap();
         }
     }
 

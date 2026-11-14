@@ -23,8 +23,8 @@ pub(super) struct LoadedFragment {
     /// name it, and one per inline body.
     pub(super) id: usize,
     pub(super) body: Fragment,
-    /// The path relative to the launcher's directory for a file, `inline
-    /// option `axis.option`` for a body written where the option is.
+    /// The path relative to the launcher's directory for a file,
+    /// ``inline option `axis.option` `` for a body written where the option is.
     pub(super) origin: String,
     /// The directory a file fragment's own fragment paths resolve against.
     /// `None` for an inline fragment, whose paths resolve where the
@@ -64,10 +64,10 @@ impl LoadedOption {
     /// selection, each with the own axis whose option brings it: its own
     /// fragments first, with no axis, then for each of its axes in
     /// declaration order the fragments of the option `own` picks there.
-    fn selected_fragments<'a, 's>(
+    fn selected_fragments<'a>(
         &'a self,
-        own: &'s UnitSelection,
-    ) -> impl Iterator<Item = (Option<&'a str>, &'a LoadedFragment)> + use<'a, 's> {
+        own: &UnitSelection,
+    ) -> impl Iterator<Item = (Option<&'a str>, &'a LoadedFragment)> {
         self.fragments
             .iter()
             .map(|fragment| (None, fragment))
@@ -204,10 +204,10 @@ impl LoadedComposition {
 /// The label error messages and reports name a launcher by: its file name,
 /// or the path as written when it has no final component.
 pub(super) fn launcher_file_label(launcher_file: &Path) -> String {
-    launcher_file
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| launcher_file.display().to_string())
+    launcher_file.file_name().map_or_else(
+        || launcher_file.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
 }
 
 /// Reads every fragment the launcher references and runs the
@@ -464,7 +464,8 @@ fn check_references(
 }
 
 /// What a refusal over a target offers: the ids in reach, or that there are
-/// none.
+/// none. The ids come from a hash set, so they are listed in order: the
+/// refusal then reads the same on each run.
 fn in_reach<'a>(ids: impl IntoIterator<Item = &'a str>) -> String {
     let listed = crate::error::format_quoted_list(ids.into_iter().collect::<BTreeSet<_>>());
     if listed.is_empty() {
@@ -1032,7 +1033,7 @@ impl FragmentPaths {
 /// working directory when the launcher path itself was elided.
 fn launcher_dir_of(launcher_file: &Path) -> PathBuf {
     match launcher_file.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        Some(parent) if !parent.is_empty() => parent.to_path_buf(),
         _ => PathBuf::from("."),
     }
 }

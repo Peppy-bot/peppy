@@ -36,7 +36,7 @@ pub const STANDALONE_CORE_NODE: &str = "standalone-core";
 const STANDALONE_CORE_NODE_INSTANCE_ID: &str = "standalone-core";
 
 /// Runtime processor that holds configuration for the node.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Processor {
     runtime_config: RuntimeConfig,
     validated_arguments: NodeArguments,
@@ -45,7 +45,7 @@ pub struct Processor {
     /// its deployment bound for a scalar one (see [`BoundSlots`]).
     bound_slots: BoundSlots,
     /// One live pairing-slot channel per `depends_on.pairings` entry, keyed
-    /// by the slot's link_id. The map's key set is fixed at startup (slots
+    /// by the slot's `link_id`. The map's key set is fixed at startup (slots
     /// are declared in the manifest); only the channel values move: the
     /// daemon replaces them over the `peer_update` service, and per-slot
     /// `PeerSubscription`s, `PeerSlot`s, `PeerSlotSet`s and `PeerPublisher`s
@@ -56,7 +56,7 @@ pub struct Processor {
     /// generated module calls.
     pairing_slots: PairingSlotChannels,
     /// One live observation-slot channel per `depends_on.pairing_observers`
-    /// entry, keyed by the slot's link_id. Same lifecycle shape as
+    /// entry, keyed by the slot's `link_id`. Same lifecycle shape as
     /// `pairing_slots`: the key set is fixed at startup and the daemon mutates
     /// the channel values over the `observation_update` service, while per-slot
     /// `ObservedTopicSubscription`s / `ObservationSlot`s observe them.
@@ -143,6 +143,10 @@ impl Processor {
     /// the slot caches from the launch config's bindings and the manifest's
     /// `depends_on`. Public so an embedder holding both documents in memory
     /// builds the same processor a spawned node builds from its files.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the exported constructor takes the manifest that its caller hands over"
+    )]
     pub fn daemon_from_manifest(
         runtime_config: RuntimeConfig,
         node_config: NodeConfig,
@@ -157,10 +161,10 @@ impl Processor {
     /// Create processor for standalone mode.
     ///
     /// Uses provided configuration or defaults:
-    /// - messaging_host: DEFAULT_MESSAGING_HOST or user-provided
-    /// - messaging_port: DEFAULT_MESSAGING_PORT or user-provided
-    /// - instance_id: "standalone" or user-provided
-    /// - node_name: from peppy.json5 or user-provided
+    /// - `messaging_host`: `DEFAULT_MESSAGING_HOST` or user-provided
+    /// - `messaging_port`: `DEFAULT_MESSAGING_PORT` or user-provided
+    /// - `instance_id`: "standalone" or user-provided
+    /// - `node_name`: from peppy.json5 or user-provided
     ///
     /// Skips fingerprint validation for development flexibility.
     pub fn new_standalone(
@@ -173,13 +177,17 @@ impl Processor {
 
     /// [`new_standalone`](Self::new_standalone) for a manifest held in
     /// memory rather than read from `peppy.json5`.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the exported constructor takes the manifest that its caller hands over"
+    )]
     pub fn standalone_from_manifest(
         node_config: NodeConfig,
         config: &StandaloneConfig,
     ) -> Result<Self> {
         let arguments: BTreeMap<String, AnyType> = match &config.parameters {
             Some(params) => serde_json::from_value(params.clone()).map_err(|e| {
-                ParameterDeserializationError::single(format!("failed to parse parameters: {}", e))
+                ParameterDeserializationError::single(format!("failed to parse parameters: {e}"))
             })?,
             None => BTreeMap::new(),
         };
@@ -482,7 +490,7 @@ impl Processor {
 
     /// Checks that `target` is a member of the set currently bound to the slot
     /// declared at `link_id`, returning
-    /// [`Error::TargetNotBound`](crate::error::Error::TargetNotBound)
+    /// [`Error::TargetNotBound`]
     /// otherwise. Generated service `poll` / action `fire_goal` wrappers call
     /// this before anything reaches the wire: `ProducerRef` is plainly
     /// constructible, and this check keeps every directed call on a member the
@@ -525,14 +533,13 @@ impl Processor {
         link_id: &str,
         accessor: Cardinality,
     ) -> Option<&crate::messaging::ProducerRef> {
-        if self.bound_slots.sets.contains_key(link_id) {
-            panic!(
-                "consumer slot `{link_id}` holds a producer set, but the generated accessor \
-                 expects cardinality `{}`: {}",
-                accessor.as_str(),
-                super::RESYNC_REMEDY
-            );
-        }
+        assert!(
+            !self.bound_slots.sets.contains_key(link_id),
+            "consumer slot `{link_id}` holds a producer set, but the generated accessor \
+             expects cardinality `{}`: {}",
+            accessor.as_str(),
+            super::RESYNC_REMEDY
+        );
         let Some(slot) = self.bound_slots.scalars.get(link_id) else {
             undeclared_consumer_slot(link_id)
         };
@@ -545,7 +552,9 @@ impl Processor {
     /// set; the `binding_update` service uses the set slots' sender side via
     /// [`Self::binding_slot_channels`].
     pub(crate) fn bound_set_watch(&self, link_id: &str) -> Option<watch::Receiver<BoundSetState>> {
-        self.bound_slots.channel(link_id).map(|tx| tx.subscribe())
+        self.bound_slots
+            .channel(link_id)
+            .map(watch::Sender::subscribe)
     }
 
     /// Shared handle to the set slots' channels, handed to the pre-setup
@@ -581,7 +590,7 @@ impl Processor {
             .node_instance
             .copy
             .as_ref()
-            .map(|copy| copy.as_str())
+            .map(Name::as_str)
     }
 
     /// The scope of each daemon target this instance serves, keyed by
@@ -652,7 +661,7 @@ fn declared_endpoint_labels(node_config: &NodeConfig) -> BTreeSet<EndpointLabel>
 }
 
 /// Seed one watch channel per **observer** pairing slot declared in
-/// `depends_on.pairing_observers`, keyed by slot link_id, each initialized
+/// `depends_on.pairing_observers`, keyed by slot `link_id`, each initialized
 /// from the boot config's `observation_seeds` entry for that slot: the
 /// launch-time member set the daemon stamped at spawn, at sequence zero, so
 /// `sources()` answers the plan's membership from the node's first
@@ -669,7 +678,7 @@ fn declared_endpoint_labels(node_config: &NodeConfig) -> BTreeSet<EndpointLabel>
 ///
 /// `cardinalities` is [`build_observer_cardinalities`]'s map, so the slots
 /// seeded here and the cardinalities their accessors read are one set of
-/// link_ids by construction rather than by two walks agreeing.
+/// `link_ids` by construction rather than by two walks agreeing.
 fn build_observation_slots(
     runtime_config: &RuntimeConfig,
     cardinalities: &BTreeMap<String, Cardinality>,
@@ -686,8 +695,7 @@ fn build_observation_slots(
         .map(|(link_id, cardinality)| {
             let members: Vec<ObservedMemberState> = seeds
                 .get(link_id)
-                .map(|seeded| seeded.iter().map(ObservedMemberState::from).collect())
-                .unwrap_or_default();
+                .map_or_default(|seeded| seeded.iter().map(ObservedMemberState::from).collect());
             // The wire decoder rejects a repeated observed pairing on a live
             // delivery; the seed path holds the same line, keyed on the whole
             // `ObservedSource`, which is the member identity and carries the
@@ -717,7 +725,7 @@ fn build_observation_slots(
         .map(Arc::new)
 }
 
-/// Each observer slot's declared `cardinality`, keyed by link_id: the link_ids
+/// Each observer slot's declared `cardinality`, keyed by `link_id`: the `link_ids`
 /// [`build_observation_slots`] seeds a channel for, and the ones
 /// [`seed_observations`] accepts a standalone seed on.
 fn build_observer_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Cardinality> {
@@ -759,8 +767,7 @@ fn build_pairing_slots(
         .map(|(link_id, cardinality)| {
             let seeded: Vec<PeerMember> = seeds
                 .get(link_id)
-                .map(|pairs| pairs.iter().map(PeerMember::from).collect())
-                .unwrap_or_default();
+                .map_or_default(|pairs| pairs.iter().map(PeerMember::from).collect());
             // A pair is one peer to this slot, and a slot holds each peer
             // once. The identity is the peer triple, which is what the wire
             // decoder keys its own duplicate refusal on.
@@ -888,7 +895,7 @@ fn one_or_more_slot_is_empty(link_id: &str) -> ! {
 
 /// Daemon-less development: `StandaloneConfig::with_bound_producer` seeds a
 /// consumer slot's producer set, standing in for the launcher's validated
-/// binding map. Undeclared link_ids are ignored with a warning (as
+/// binding map. Undeclared `link_ids` are ignored with a warning (as
 /// [`seed_observations`] and [`seed_pairing_slots`] do); a declared slot
 /// whose seeded set violates its cardinality fails [`build_bound_slots`],
 /// exactly like a daemon boot config with a bad binding. Duplicate seeded
@@ -923,7 +930,7 @@ fn seed_slot_bindings(
 
 /// Daemon-less development: `StandaloneConfig::with_observed_source` seeds an
 /// observer slot's member set, standing in for the set the daemon stamps into
-/// a spawned node's boot config. Undeclared link_ids are ignored with a
+/// a spawned node's boot config. Undeclared `link_ids` are ignored with a
 /// warning, on the same terms as [`seed_slot_bindings`]; a declared slot whose
 /// seeded set violates its cardinality, or that repeats a pairing, fails
 /// [`build_observation_slots`], exactly like a daemon boot config with a bad
@@ -965,7 +972,7 @@ fn seed_observations(
 
 /// Daemon-less development: `StandaloneConfig::with_peer_pin` seeds a pairing
 /// slot's pairs, standing in for the set the daemon stamps into a spawned
-/// node's boot config. Undeclared link_ids are ignored with a warning, on the
+/// node's boot config. Undeclared `link_ids` are ignored with a warning, on the
 /// same terms as [`seed_slot_bindings`]; a scalar slot seeded with two pairs
 /// fails [`build_pairing_slots`].
 fn seed_pairing_slots(
@@ -1011,8 +1018,8 @@ fn seed_bound_member(link_id: &str, pin: &BoundPin) -> Result<config::runtime::B
             let name = seed_copy_name(link_id, copy)?;
             let in_copy = Name::new(instance_id).map_err(|e| Error::InvalidInstanceIdInCopy {
                 link_id: link_id.to_string(),
-                copy: copy.to_string(),
-                instance_id: instance_id.to_string(),
+                copy: copy.clone(),
+                instance_id: instance_id.clone(),
                 reason: e.to_string(),
             })?;
             (
@@ -1045,7 +1052,7 @@ fn seed_copy_name(link_id: &str, copy: &str) -> Result<Name> {
 /// when a copy joins or leaves. A scalar slot (`one`, `zero_or_one`) holds the
 /// producer its deployment bound at launch for the node's lifetime. Behind
 /// `Arc`s so `Processor::clone` shares them.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct BoundSlots {
     sets: BindingSlotChannels,
     scalars: Arc<BTreeMap<String, ScalarSlot>>,
@@ -1056,6 +1063,7 @@ struct BoundSlots {
 /// slot. `producer` is the head of `channel`'s seeded set, held beside it
 /// because the scalar accessors lend a reference to it, which a watch guard
 /// cannot give. Both are written at boot and read from then on.
+#[derive(Debug)]
 struct ScalarSlot {
     producer: Option<crate::messaging::ProducerRef>,
     channel: watch::Sender<BoundSetState>,
@@ -1079,6 +1087,7 @@ mod tests {
     use config::{
         AnyType, ParameterSchema, ParameterSpec, runtime::RuntimeConfig, validate_node_arguments,
     };
+    use std::assert_matches;
     use std::{collections::BTreeMap, path::Path};
     use tempfile::TempDir;
 
@@ -1416,8 +1425,9 @@ mod tests {
         ) else {
             panic!("expected codegen fingerprint read error");
         };
-        assert!(
-            matches!(err, Error::CodegenFingerprintRead { .. }),
+        assert_matches!(
+            err,
+            Error::CodegenFingerprintRead { .. },
             "expected CodegenFingerprintRead error, got: {err:?}"
         );
     }
@@ -1555,8 +1565,7 @@ mod tests {
         .expect("runtime config builds");
 
         let error = Processor::daemon_from_manifest(runtime_config, in_memory_manifest())
-            .err()
-            .expect("a mistyped argument is refused");
+            .expect_err("a mistyped argument is refused");
         assert!(
             error.to_string().contains("port"),
             "the refusal names the argument: {error}"
@@ -1621,10 +1630,7 @@ mod tests {
             in_memory_manifest(),
         )
         .expect("the manifest and the launch config agree");
-        assert_eq!(
-            processor.setup_timeout(),
-            std::time::Duration::from_secs(180)
-        );
+        assert_eq!(processor.setup_timeout(), std::time::Duration::from_mins(3));
 
         let processor = Processor::daemon_from_manifest(
             runtime_config_with_setup_budget(None),
@@ -1648,10 +1654,7 @@ mod tests {
             Some(config::node::SetupTimeout::from_secs(540).expect("in range"));
         let processor = Processor::standalone_from_manifest(declaring, &config)
             .expect("should create processor");
-        assert_eq!(
-            processor.setup_timeout(),
-            std::time::Duration::from_secs(540)
-        );
+        assert_eq!(processor.setup_timeout(), std::time::Duration::from_mins(9));
 
         let processor = Processor::standalone_from_manifest(in_memory_manifest(), &config)
             .expect("should create processor");
@@ -1882,11 +1885,9 @@ mod tests {
         let Err(err) = standalone_processor(PAIRING_SLOTS_CONFIG, &config) else {
             panic!("a scalar slot holds one pair");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
-                crate::error::Error::PairingSeedNotScalar { link_id, count: 2, .. } if link_id == "arm"
-            ),
+                crate::error::Error::PairingSeedNotScalar { link_id, count: 2, .. } if link_id == "arm",
             "got: {err:?}"
         );
         assert!(err.to_string().contains("one_or_more"), "{err}");
@@ -1899,8 +1900,7 @@ mod tests {
         let Err(err) = standalone_processor(PAIRING_SLOTS_CONFIG, &config) else {
             panic!("a copy is a name");
         };
-        assert!(
-            matches!(&err, crate::error::Error::InvalidCopyName { copy, .. } if copy == "robot a"),
+        assert_matches!(&err, crate::error::Error::InvalidCopyName { copy, .. } if copy == "robot a",
             "got: {err:?}"
         );
     }
@@ -1920,8 +1920,9 @@ mod tests {
         let Err(err) = result else {
             panic!("expected error when required parameters are missing");
         };
-        assert!(
-            matches!(err, crate::error::Error::NodeArgumentsValidation(_)),
+        assert_matches!(
+            err,
+            crate::error::Error::NodeArgumentsValidation(_),
             "expected NodeArgumentsValidation error, got: {err:?}"
         );
         let err_string = err.to_string();
@@ -2037,7 +2038,7 @@ mod tests {
 
         let config = StandaloneConfig::new();
         let result = standalone_processor(peppy_config, &config);
-        let err = result.err().expect("missing required leaf should error");
+        let err = result.expect_err("missing required leaf should error");
         let msg = err.to_string();
         assert!(
             msg.contains("device.serial"),
@@ -2083,8 +2084,8 @@ mod tests {
     }"#;
 
     /// Manifest fixture with one slot of each cardinality: `main` (one,
-    /// omitted), `wrist_camera` (zero_or_one), `arms` (one_or_more),
-    /// `spare_cameras` (zero_or_more).
+    /// omitted), `wrist_camera` (`zero_or_one`), `arms` (`one_or_more`),
+    /// `spare_cameras` (`zero_or_more`).
     const MULTI_SLOT_PEPPY_CONFIG: &str = r#"{
         peppy_schema: "node/v1",
         manifest: {
@@ -2178,12 +2179,10 @@ mod tests {
         let Err(err) = daemon_processor_with_bindings(CONSUMER_PEPPY_CONFIG, None) else {
             panic!("expected unbound-slot startup error");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::SlotUnbound { link_id, cardinality }
-                    if link_id == "main" && *cardinality == Cardinality::One
-            ),
+                    if link_id == "main" && *cardinality == Cardinality::One,
             "expected SlotUnbound for `main`, got: {err}"
         );
     }
@@ -2220,20 +2219,18 @@ mod tests {
         let Err(err) = daemon_processor_with_bindings(DAEMON_TARGET_PEPPY_CONFIG, None) else {
             panic!("expected unbound-slot startup error");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::SlotUnbound { link_id, cardinality }
-                    if link_id == "fleet" && *cardinality == Cardinality::One
-            ),
+                    if link_id == "fleet" && *cardinality == Cardinality::One,
             "expected SlotUnbound for `fleet`, got: {err}"
         );
     }
 
     /// Daemon processor over [`MULTI_SLOT_PEPPY_CONFIG`] with the standard
-    /// bindings: `main` (one) -> camera_1, `wrist_camera` (zero_or_one) ->
-    /// camera_2, `arms` (one_or_more) -> [right_arm, left_arm],
-    /// `spare_cameras` (zero_or_more) -> [].
+    /// bindings: `main` (one) -> `camera_1`, `wrist_camera` (`zero_or_one`) ->
+    /// `camera_2`, `arms` (`one_or_more`) -> [`right_arm`, `left_arm`],
+    /// `spare_cameras` (`zero_or_more`) -> [].
     fn multi_slot_processor() -> Processor {
         daemon_processor_with_bindings(
             MULTI_SLOT_PEPPY_CONFIG,
@@ -2296,12 +2293,10 @@ mod tests {
         let err = processor
             .ensure_target_bound("main", &right_arm)
             .expect_err("cross-slot target must fail the membership check");
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::TargetNotBound { link_id, instance_id, .. }
-                    if link_id == "main" && instance_id == "right_arm"
-            ),
+                    if link_id == "main" && instance_id == "right_arm",
             "expected TargetNotBound, got: {err}"
         );
     }
@@ -2436,7 +2431,7 @@ mod tests {
             )
         };
 
-        assert!(deliver(1, vec![camera_3.clone()]).is_ok());
+        deliver(1, vec![camera_3.clone()]).unwrap();
         assert_eq!(
             instance_ids(&processor.bound_producers("spare_cameras")),
             ["camera_3"]
@@ -2445,7 +2440,7 @@ mod tests {
             .ensure_target_bound("spare_cameras", &camera_3)
             .expect("a delivered member passes the membership check");
 
-        assert!(deliver(2, Vec::new()).is_ok());
+        deliver(2, Vec::new()).unwrap();
         assert!(processor.bound_producers("spare_cameras").is_empty());
         assert!(
             processor
@@ -2499,12 +2494,10 @@ mod tests {
         let Err(two_on_a_one_slot) = two_on_a_one_slot else {
             panic!("two producers on a `one` slot must fail startup");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &two_on_a_one_slot,
                 crate::error::Error::SlotCardinalityViolated { link_id, cardinality, bound }
-                    if link_id == "main" && *cardinality == Cardinality::One && *bound == 2
-            ),
+                    if link_id == "main" && *cardinality == Cardinality::One && *bound == 2,
             "expected SlotCardinalityViolated for `main`, got: {two_on_a_one_slot}"
         );
 
@@ -2522,12 +2515,10 @@ mod tests {
         let Err(empty_one_or_more) = empty_one_or_more else {
             panic!("an empty set on a `one_or_more` slot must fail startup");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &empty_one_or_more,
                 crate::error::Error::SlotCardinalityViolated { link_id, cardinality, bound }
-                    if link_id == "arms" && *cardinality == Cardinality::OneOrMore && *bound == 0
-            ),
+                    if link_id == "arms" && *cardinality == Cardinality::OneOrMore && *bound == 0,
             "expected SlotCardinalityViolated for `arms`, got: {empty_one_or_more}"
         );
 
@@ -2548,14 +2539,12 @@ mod tests {
         let Err(two_on_a_zero_or_one_slot) = two_on_a_zero_or_one_slot else {
             panic!("two producers on a `zero_or_one` slot must fail startup");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &two_on_a_zero_or_one_slot,
                 crate::error::Error::SlotCardinalityViolated { link_id, cardinality, bound }
                     if link_id == "wrist_camera"
                         && *cardinality == Cardinality::ZeroOrOne
-                        && *bound == 2
-            ),
+                        && *bound == 2,
             "expected SlotCardinalityViolated for `wrist_camera`, got: \
              {two_on_a_zero_or_one_slot}"
         );
@@ -2580,12 +2569,10 @@ mod tests {
         ) else {
             panic!("a missing zero_or_one entry must fail startup");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::SlotUnbound { link_id, cardinality }
-                    if link_id == "wrist_camera" && *cardinality == Cardinality::ZeroOrOne
-            ),
+                    if link_id == "wrist_camera" && *cardinality == Cardinality::ZeroOrOne,
             "expected SlotUnbound for `wrist_camera`, got: {err}"
         );
     }
@@ -2700,12 +2687,10 @@ mod tests {
         let Err(err) = daemon_processor_with_bindings(OBSERVER_PEPPY_CONFIG, None) else {
             panic!("expected missing-seed startup error");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::ObservationSeedViolated { link_id, cardinality, seeded }
-                    if link_id == "sole_arm" && *cardinality == Cardinality::One && *seeded == 0
-            ),
+                    if link_id == "sole_arm" && *cardinality == Cardinality::One && *seeded == 0,
             "expected ObservationSeedViolated for `sole_arm`, got: {err}"
         );
     }
@@ -2739,14 +2724,12 @@ mod tests {
         ) else {
             panic!("expected oversized-seed startup error");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::ObservationSeedViolated { link_id, cardinality, seeded }
                     if link_id == "maybe_arm"
                         && *cardinality == Cardinality::ZeroOrOne
-                        && *seeded == 2
-            ),
+                        && *seeded == 2,
             "expected ObservationSeedViolated for `maybe_arm`, got: {err}"
         );
     }
@@ -2780,12 +2763,10 @@ mod tests {
         ) else {
             panic!("expected duplicate-seed startup error");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::ObservationSeedDuplicate { link_id, instance_id, .. }
-                    if link_id == "spare_arms" && instance_id == "arm_1"
-            ),
+                    if link_id == "spare_arms" && instance_id == "arm_1",
             "expected ObservationSeedDuplicate, got: {err}"
         );
     }
@@ -2805,11 +2786,9 @@ mod tests {
         ) else {
             panic!("expected undeclared-seed startup error");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
-                crate::error::Error::ObservationSeedUndeclared { link_id } if link_id == "phantom_slot"
-            ),
+                crate::error::Error::ObservationSeedUndeclared { link_id } if link_id == "phantom_slot",
             "expected ObservationSeedUndeclared, got: {err}"
         );
     }
@@ -2946,12 +2925,10 @@ mod tests {
         let Err(err) = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &unnamed) else {
             panic!("a copy is a name");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::InvalidCopyName { link_id, copy, .. }
-                    if link_id == "arms" && copy == "not a name"
-            ),
+                    if link_id == "arms" && copy == "not a name",
             "got: {err:?}"
         );
 
@@ -2964,12 +2941,10 @@ mod tests {
         let Err(err) = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &unnamed_id) else {
             panic!("an id inside a copy is a name");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::InvalidInstanceIdInCopy { link_id, instance_id, .. }
-                    if link_id == "arms" && instance_id == "not a name"
-            ),
+                    if link_id == "arms" && instance_id == "not a name",
             "got: {err:?}"
         );
     }
@@ -2999,8 +2974,9 @@ mod tests {
         .expect("the boot config is written");
         let err = Processor::load_runtime_config(path.to_str().unwrap())
             .expect_err("a bare producer address is no member");
-        assert!(
-            matches!(&err, crate::error::Error::LaunchConfigParse { .. }),
+        assert_matches!(
+            &err,
+            crate::error::Error::LaunchConfigParse { .. },
             "got: {err:?}"
         );
         let message = err.to_string();
@@ -3020,11 +2996,9 @@ mod tests {
         let Err(err) = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &unseeded) else {
             panic!("expected unbound-slot startup error");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
-                crate::error::Error::SlotUnbound { link_id, .. } if link_id == "main"
-            ),
+                crate::error::Error::SlotUnbound { link_id, .. } if link_id == "main",
             "expected SlotUnbound for `main`, got: {err}"
         );
 
@@ -3087,12 +3061,10 @@ mod tests {
         let Err(err) = standalone_processor(MULTI_SLOT_PEPPY_CONFIG, &vacant_one_slot) else {
             panic!("a vacant `one` slot must fail startup");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::SlotCardinalityViolated { link_id, cardinality, bound }
-                    if link_id == "main" && *cardinality == Cardinality::One && *bound == 0
-            ),
+                    if link_id == "main" && *cardinality == Cardinality::One && *bound == 0,
             "expected SlotCardinalityViolated for `main`, got: {err}"
         );
     }
@@ -3107,12 +3079,10 @@ mod tests {
         let Err(err) = standalone_processor(OBSERVER_PEPPY_CONFIG, &unseeded) else {
             panic!("expected an unseeded floored observer slot to fail startup");
         };
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 crate::error::Error::ObservationSeedViolated { link_id, cardinality, seeded }
-                    if link_id == "sole_arm" && *cardinality == Cardinality::One && *seeded == 0
-            ),
+                    if link_id == "sole_arm" && *cardinality == Cardinality::One && *seeded == 0,
             "expected ObservationSeedViolated for `sole_arm`, got: {err}"
         );
 
@@ -3168,7 +3138,7 @@ mod tests {
         );
     }
 
-    /// An undeclared link_id is a standalone typo, not a manifest violation, so
+    /// An undeclared `link_id` is a standalone typo, not a manifest violation, so
     /// it warns and is dropped rather than failing startup, on the same terms as
     /// `with_bound_producer`.
     #[test]
@@ -3184,7 +3154,7 @@ mod tests {
         assert!(processor.observation_slot_watch("not_a_slot").is_none());
     }
 
-    /// A bound producer seeded on an undeclared link_id is dropped, on the same
+    /// A bound producer seeded on an undeclared `link_id` is dropped, on the same
     /// terms, before any part of the seed is parsed: a copy that is not a name
     /// does not fail startup there, and the declared slots boot from their own
     /// seeds.
@@ -3204,7 +3174,7 @@ mod tests {
         );
     }
 
-    /// A peer pin on an undeclared link_id is dropped on the same terms, where
+    /// A peer pin on an undeclared `link_id` is dropped on the same terms, where
     /// the boot-config parse would refuse a pairing seed naming an undeclared
     /// slot.
     #[test]

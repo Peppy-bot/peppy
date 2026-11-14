@@ -8,26 +8,26 @@ use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 use std::collections::HashMap;
 
-pub struct MessageEncodingSpec {
+pub(super) struct MessageEncodingSpec {
     pub builder_type: TokenStream,
     pub assignments: Vec<TokenStream>,
     pub reader_type: TokenStream,
 }
 
 #[derive(Default)]
-pub struct NameGenerator {
+pub(super) struct NameGenerator {
     counter: usize,
 }
 
 impl NameGenerator {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self { counter: 0 }
     }
 
     /// A local named after `hint` (`tmp` when `hint` sanitizes to nothing)
     /// and suffixed with the next number of this generator, so that no two
     /// locals it names are the same.
-    pub fn next(&mut self, hint: &str) -> Ident {
+    pub(super) fn next(&mut self, hint: &str) -> Ident {
         let suffix = self.counter;
         self.counter += 1;
         let base = if sanitize_component(hint).is_empty() {
@@ -39,7 +39,7 @@ impl NameGenerator {
     }
 }
 
-pub fn generate_assignments_for_format(
+pub(super) fn generate_assignments_for_format(
     builder_ident: &Ident,
     format: &MessageFormat,
     params: &[FunctionParam],
@@ -75,7 +75,7 @@ pub fn generate_assignments_for_format(
     Ok(assignments)
 }
 
-pub fn generate_assignments_from_struct(
+pub(super) fn generate_assignments_from_struct(
     builder_ident: &Ident,
     format: &MessageFormat,
     struct_ident: &Ident,
@@ -99,7 +99,7 @@ pub fn generate_assignments_from_struct(
     Ok(assignments)
 }
 
-pub fn generate_field_assignment(
+pub(super) fn generate_field_assignment(
     builder_expr: &TokenStream,
     field_name: &str,
     schema: &SchemaType,
@@ -179,8 +179,8 @@ fn generate_present_field_assignment(
             value_is_ref,
             &primitive.kind,
         )),
-        SchemaType::Array(array) => match array.items.as_ref() {
-            SchemaType::Object(object) => {
+        SchemaType::Array(array) => {
+            if let SchemaType::Object(object) = array.items.as_ref() {
                 let length_expr = make_length_expr(array.length, value_expr, field_name)?;
                 generate_object_list_assignment(
                     builder_expr,
@@ -191,8 +191,7 @@ fn generate_present_field_assignment(
                     value_is_ref,
                     &length_expr,
                 )
-            }
-            _ => {
+            } else {
                 let item_token = array.items.as_ref().as_type_token();
                 if matches!(item_token, Some(TypeToken::U8)) {
                     Ok(quote!(#builder_expr.#set_method(#value_expr.as_ref());))
@@ -212,7 +211,7 @@ fn generate_present_field_assignment(
                     })
                 }
             }
-        },
+        }
         SchemaType::Object(object) => generate_object_assignment(
             builder_expr,
             &init_method,
@@ -445,7 +444,7 @@ fn generate_nested_field_assignments(
 ///
 /// `pre_statements` are emitted before `init_root` (e.g. struct field unpacking).
 /// `error_context` must evaluate to `String` at runtime.
-pub fn build_serialize_payload(
+pub(super) fn build_serialize_payload(
     builder_type: &TokenStream,
     pre_statements: &[TokenStream],
     assignments: &[TokenStream],

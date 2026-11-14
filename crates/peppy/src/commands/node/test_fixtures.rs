@@ -146,8 +146,8 @@ pub(crate) fn codec(format: &str) -> MessageCodec {
 }
 
 /// `value` encoded with the codec of the message format `format`.
-pub(crate) fn payload(format: &str, value: Value) -> Payload {
-    Payload::from(codec(format).encode(&value).expect("the value encodes"))
+pub(crate) fn payload(format: &str, value: &Value) -> Payload {
+    Payload::from(codec(format).encode(value).expect("the value encodes"))
 }
 
 /// A session on in-process mock messaging, which the instance's providers

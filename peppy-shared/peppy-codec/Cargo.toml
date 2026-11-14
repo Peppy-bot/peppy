@@ -9,7 +9,11 @@ name = "peppy-codec"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "The codec API of peppy: the parser of contracts, the run-time codec and its clients"
+
+[lints]
+workspace = true
 
 [features]
 default = ["embedded-compiler"]

@@ -40,7 +40,7 @@ use tracing::{debug, warn};
 
 use super::common::{SlotUpdateClient, unanswered};
 
-pub struct PairingCoordinator {
+pub(crate) struct PairingCoordinator {
     updates: SlotUpdateClient,
     /// Serializes every pairing operation end-to-end (registry commit AND
     /// delivery), so a revert finds the registry as its own reservation left
@@ -54,7 +54,7 @@ pub struct PairingCoordinator {
 }
 
 impl PairingCoordinator {
-    pub fn new(
+    pub(crate) fn new(
         node_stack: Arc<NodeStack>,
         messenger: MessengerHandle,
         core_node_name: impl Into<String>,
@@ -76,7 +76,7 @@ impl PairingCoordinator {
     /// `Starting`, and pins are only delivered once it commits to Running).
     /// All of `pair_slots`' validation applies: existence, liveness,
     /// same-pairing, complementary roles, sha pins, exclusivity.
-    pub async fn reserve(&self, pair: &PlannedPair) -> std::result::Result<(), String> {
+    pub(crate) async fn reserve(&self, pair: &PlannedPair) -> Result<(), String> {
         let _guard = self.op_lock.lock().await;
         // A same-daemon pair validates both halves against local manifests. A
         // cross-daemon one validates the half this daemon owns and takes the
@@ -106,11 +106,11 @@ impl PairingCoordinator {
     /// best-effort Unpaired to whichever side already acked) and an error
     /// naming the pair is returned; pairs already delivered in this call are
     /// left standing (the caller decides whether to dissolve everything).
-    pub async fn deliver_pairs_for_instance(
+    pub(crate) async fn deliver_pairs_for_instance(
         &self,
         instance_id: &str,
         planned: &[PlannedPair],
-    ) -> std::result::Result<(), String> {
+    ) -> Result<(), String> {
         let _guard = self.op_lock.lock().await;
         let pairs: Vec<Pairing> = self
             .updates
@@ -177,12 +177,12 @@ impl PairingCoordinator {
     /// request's wait at once and stops them; either way the outcome of the
     /// request in flight is neither applied nor handed on, and every pair
     /// stays held as it was, for the next process to ask for again.
-    pub async fn pair_again_best_effort(
+    pub(crate) async fn pair_again_best_effort(
         &self,
         held: &[PlannedPair],
         pid: u32,
         cancel: &CancellationToken,
-        mut on_outcome: impl FnMut(&PlannedPair, std::result::Result<(), PairFailure>),
+        mut on_outcome: impl FnMut(&PlannedPair, Result<(), PairFailure>),
     ) {
         let stack = self.updates.node_stack();
         let runs_pid = |pair: &PlannedPair| stack.runs_process(&pair.own.instance_id, pid);
@@ -225,7 +225,7 @@ impl PairingCoordinator {
         pair: &PlannedPair,
         pid: u32,
         cancel: &CancellationToken,
-    ) -> std::result::Result<(), PairFailure> {
+    ) -> Result<(), PairFailure> {
         let stack = self.updates.node_stack();
         let local = self.updates.core_node_name();
         let pairing = {
@@ -261,7 +261,7 @@ impl PairingCoordinator {
         };
         let committed = tokio::select! {
             biased;
-            _ = cancel.cancelled() => Err(PairFailure::Undelivered(
+            () = cancel.cancelled() => Err(PairFailure::Undelivered(
                 "the start was cancelled".to_owned(),
             )),
             committed = self.commit_pair_remotely(&pairing, endpoint, peer, true) => committed,
@@ -291,8 +291,8 @@ impl PairingCoordinator {
     async fn revert_delivery(
         &self,
         pairing: &Pairing,
-        endpoint: &node_stack::PairEndpoint,
-        peer: &node_stack::PairEndpoint,
+        endpoint: &PairEndpoint,
+        peer: &PairEndpoint,
         other_side: OtherSide,
         reason: &str,
     ) -> String {
@@ -310,7 +310,7 @@ impl PairingCoordinator {
     /// stop paths, the process-exit watcher, and the `node_run` unwind
     /// branches (death auto-clears; a restart asks again for the pairs the
     /// instance held, and any other pair is made by a link).
-    pub async fn dissolve_for_instance(&self, instance_id: &str) {
+    pub(crate) async fn dissolve_for_instance(&self, instance_id: &str) {
         let _guard = self.op_lock.lock().await;
         for pairing in self
             .updates
@@ -339,7 +339,10 @@ impl PairingCoordinator {
     /// so it reads the registry as recorded ([`NodeStack::with_pairs`]) rather
     /// than through a liveness-pruning view, which would delete the pair before
     /// [`Self::dissolve_for_instance`] could notify its survivor.
-    pub fn remote_peer_core_nodes(&self, instance_id: &str) -> std::collections::BTreeSet<String> {
+    pub(crate) fn remote_peer_core_nodes(
+        &self,
+        instance_id: &str,
+    ) -> std::collections::BTreeSet<String> {
         let local = self.updates.core_node_name();
         self.updates
             .node_stack()
@@ -364,7 +367,7 @@ impl PairingCoordinator {
     /// rather than one compensated for by a rollback request that can itself
     /// fail. At least one endpoint of a pair in this registry is local, so this
     /// only ever reorders the two sides; it never leaves the remote one out.
-    async fn deliver_pair(&self, pairing: &Pairing) -> std::result::Result<(), String> {
+    async fn deliver_pair(&self, pairing: &Pairing) -> Result<(), String> {
         let sides = local_first_delivery_order(pairing, self.updates.core_node_name());
         for (idx, (endpoint, peer)) in sides.into_iter().enumerate() {
             let outcome = if endpoint.slot.is_on(self.updates.core_node_name()) {
@@ -411,7 +414,7 @@ impl PairingCoordinator {
     fn slots_from_commit_request(
         request: &PairCommitRequest,
         local_core_node: &str,
-    ) -> std::result::Result<(SlotAddr, SlotAddr, RemoteSlotMeta), String> {
+    ) -> Result<(SlotAddr, SlotAddr, RemoteSlotMeta), String> {
         if request.local.core_node != local_core_node {
             return Err(format!(
                 "this request names `{}` as the daemon hosting `{}`, but it was answered by \
@@ -452,10 +455,10 @@ impl PairingCoordinator {
     async fn commit_pair_remotely(
         &self,
         pairing: &Pairing,
-        endpoint: &node_stack::PairEndpoint,
-        peer: &node_stack::PairEndpoint,
+        endpoint: &PairEndpoint,
+        peer: &PairEndpoint,
         held: bool,
-    ) -> std::result::Result<(), PairFailure> {
+    ) -> Result<(), PairFailure> {
         // The peer is this daemon's own endpoint of the pair, so its slot's
         // cardinality is read from the manifest here and carried across: the
         // receiver holds the far half of every pair that slot takes part in.
@@ -501,10 +504,7 @@ impl PairingCoordinator {
                 unanswered(None, PairCommitRequest::ID.name()),
             )
             .await;
-        let error = match committed {
-            Ok(_) => return Ok(()),
-            Err(error) => error,
-        };
+        let Err(error) = committed else { return Ok(()) };
         // The peer's error reply says how it did not make its half; any
         // other error is a peer that did not answer.
         let Some(failure) = error.failure() else {
@@ -541,10 +541,10 @@ impl PairingCoordinator {
     /// - `precondition_failed` otherwise: a restart's request for a pair the
     ///   local endpoint no longer keeps, whatever that endpoint's state, or
     ///   any other refusal of the stack.
-    pub async fn commit_pair_from_peer(
+    pub(crate) async fn commit_pair_from_peer(
         &self,
         request: &PairCommitRequest,
-    ) -> std::result::Result<(), Failure> {
+    ) -> Result<(), Failure> {
         let _guard = self.op_lock.lock().await;
         let (local, remote, remote_meta) =
             Self::slots_from_commit_request(request, self.updates.core_node_name())
@@ -629,7 +629,11 @@ impl PairingCoordinator {
     /// duplicate notification dissolves nothing further, and a lost one leaves
     /// this side holding a pair to an instance that is gone, which the local
     /// node's own staleness handling covers.
-    pub async fn dissolve_pairs_with_remote_instance(&self, core_node: &str, instance_id: &str) {
+    pub(crate) async fn dissolve_pairs_with_remote_instance(
+        &self,
+        core_node: &str,
+        instance_id: &str,
+    ) {
         let _guard = self.op_lock.lock().await;
         for pairing in self
             .updates
@@ -705,7 +709,7 @@ impl PairingCoordinator {
     /// owning instance, as the registry records them right now. `Ok` on an
     /// accepted or stale reply (stale means a newer absolute state already
     /// landed, which is exactly the invariant we want).
-    async fn send_peer_update(&self, slot: &SlotAddr) -> std::result::Result<(), String> {
+    async fn send_peer_update(&self, slot: &SlotAddr) -> Result<(), String> {
         let members = self
             .updates
             .node_stack()
@@ -752,7 +756,7 @@ impl PairingCoordinator {
 fn local_first_delivery_order<'a>(
     pairing: &'a Pairing,
     local_core_node: &str,
-) -> [(&'a node_stack::PairEndpoint, &'a node_stack::PairEndpoint); 2] {
+) -> [(&'a PairEndpoint, &'a PairEndpoint); 2] {
     let mut sides = [(&pairing.a, &pairing.b), (&pairing.b, &pairing.a)];
     // `false` sorts first, and the sort is stable, so a pair with both
     // endpoints on this daemon keeps its declared order.
@@ -813,8 +817,8 @@ impl PairFailure {
     /// The same failure, with `text` as its text.
     fn with_text(self, text: String) -> Self {
         match self {
-            PairFailure::Refused(_) => PairFailure::Refused(text),
-            PairFailure::Undelivered(_) => PairFailure::Undelivered(text),
+            Self::Refused(_) => Self::Refused(text),
+            Self::Undelivered(_) => Self::Undelivered(text),
         }
     }
 }
@@ -822,7 +826,7 @@ impl PairFailure {
 impl std::fmt::Display for PairFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PairFailure::Refused(text) | PairFailure::Undelivered(text) => f.write_str(text),
+            Self::Refused(text) | Self::Undelivered(text) => f.write_str(text),
         }
     }
 }
@@ -833,11 +837,9 @@ impl std::fmt::Display for PairFailure {
 impl From<PairFailure> for Failure {
     fn from(failure: PairFailure) -> Self {
         match failure {
-            PairFailure::Refused(reason) => {
-                Failure::new(PeppyFailureKind::PreconditionFailed, reason)
-            }
+            PairFailure::Refused(reason) => Self::new(PeppyFailureKind::PreconditionFailed, reason),
             PairFailure::Undelivered(reason) => {
-                Failure::new(PeppyFailureKind::ResourceUnavailable, reason)
+                Self::new(PeppyFailureKind::ResourceUnavailable, reason)
             }
         }
     }
@@ -846,9 +848,7 @@ impl From<PairFailure> for Failure {
 /// What the stack's refusal to reserve a pair means, on either daemon: a pair
 /// the stack holds already is made, and any other refusal is
 /// [`pair_failure`]'s.
-fn reservation_outcome(
-    refusal: node_stack::NodeStackError,
-) -> std::result::Result<(), PairFailure> {
+fn reservation_outcome(refusal: node_stack::NodeStackError) -> Result<(), PairFailure> {
     match refusal {
         node_stack::NodeStackError::PairAlreadyHeld { .. } => Ok(()),
         other => Err(pair_failure(other)),
@@ -880,9 +880,9 @@ impl OtherSide {
     /// the second delivery follows the first one's pin.
     fn at_delivery(index: usize) -> Self {
         if index == 0 {
-            OtherSide::Unpinned
+            Self::Unpinned
         } else {
-            OtherSide::Pinned
+            Self::Pinned
         }
     }
 }
@@ -903,7 +903,7 @@ fn find_missing_planned_pair<'a>(
 
 /// The new instance's side of a plan-phase pairing check: its identity plus
 /// the `node_run` goal's pairing arguments.
-pub struct PairingRequest<'a> {
+pub(crate) struct PairingRequest<'a> {
     pub node_name: &'a str,
     pub node_tag: &'a str,
     pub instance_id: &'a str,
@@ -963,13 +963,13 @@ fn flatten_pairs(
 /// launch applies to its own. It judges the local pairs: a pair whose peer
 /// lives on another machine was judged by the coordinator that planned it,
 /// which is the only party holding both sides' clocks.
-pub fn plan_requested_pairs(
+pub(crate) fn plan_requested_pairs(
     snapshot: &[PairingNodeSnapshot],
     live_pairs: &[Pairing],
     request: &PairingRequest<'_>,
     local_core_node: &str,
     clocks: &ResolvedClocks,
-) -> std::result::Result<Vec<PlannedPair>, String> {
+) -> Result<Vec<PlannedPair>, String> {
     let &PairingRequest {
         node_name,
         node_tag,
@@ -1127,7 +1127,7 @@ pub fn plan_requested_pairs(
                 })
                 .collect()
         })
-        .collect::<std::result::Result<_, String>>()?;
+        .collect::<Result<_, String>>()?;
 
     let mut items: Vec<PairingValidationItem<'_>> = snapshot
         .iter()
@@ -1218,7 +1218,7 @@ fn remote_planned_pair(
     instance_id: &str,
     link_id: &str,
     target: &PairTarget,
-) -> std::result::Result<PlannedPair, String> {
+) -> Result<PlannedPair, String> {
     let peer_core_node = target.peer.core_node.as_str();
     let peer_instance_id = target.peer.instance_id.as_str();
     let peer_link_id = target.peer_link_id.as_deref().ok_or_else(|| {
@@ -1253,7 +1253,6 @@ fn remote_planned_pair(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use node_stack::PairEndpoint;
 
     /// Every instance in these tests lives on one daemon, so slot addresses
     /// and pair targets all carry the same core node.
@@ -1338,7 +1337,7 @@ mod tests {
         PairingNodeSnapshot {
             node_name: name.to_string(),
             node_tag: "v1".to_string(),
-            instance_ids: instance_ids.iter().map(|s| s.to_string()).collect(),
+            instance_ids: instance_ids.iter().map(ToString::to_string).collect(),
             pairing_deps: deps.to_vec(),
         }
     }
@@ -1596,7 +1595,7 @@ mod tests {
         deps: &[PairingParticipantDependency],
         req: &BTreeMap<String, Vec<PairTarget>>,
         vacant: &[&str],
-    ) -> std::result::Result<Vec<PlannedPair>, String> {
+    ) -> Result<Vec<PlannedPair>, String> {
         let vacant = vacant_slots(vacant);
         plan_requested_pairs(
             snapshot,
@@ -1862,7 +1861,7 @@ mod tests {
     fn plan_covered(
         deps: &[PairingParticipantDependency],
         covered: &BTreeMap<String, Vec<PairTarget>>,
-    ) -> std::result::Result<Vec<PlannedPair>, String> {
+    ) -> Result<Vec<PlannedPair>, String> {
         plan_requested_pairs(
             &arm_snapshot(),
             &[],

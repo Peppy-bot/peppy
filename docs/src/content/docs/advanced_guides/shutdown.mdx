@@ -59,7 +59,7 @@ Register hooks during setup, as soon as the resource they release exists. A hook
     The hook is any `Future<Output = ()> + Send + 'static`. Capture an `Arc<NodeRunner>` clone if the cleanup needs messaging; a panicking hook is contained and logged, and the remaining hooks still run:
 
     ```rust
-    NodeBuilder::new().run(|params: Parameters, node_runner| async move {
+    NodeBuilder::new().run(async |params: Parameters, node_runner| {
         let runner = node_runner.clone();
         node_runner.on_shutdown(async move {
             if let Err(e) = datastore::remove(&runner, LATEST_KEY, TIMEOUT).await {

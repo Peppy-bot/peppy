@@ -70,9 +70,8 @@ fn robot_entry(active: &ActiveLaunch, copy: &super::state::StackCopy) -> FleetRo
                 .iter()
                 .any(|i| i.instance_id.as_str() == id)
         });
-        let (node, node_tag) = planned
-            .map(|planned| (planned.node_name.clone(), planned.node_tag.clone()))
-            .unwrap_or_default();
+        let (node, node_tag) =
+            planned.map_or_default(|planned| (planned.node_name.clone(), planned.node_tag.clone()));
         if let Some(planned) = planned {
             for (name, tag, sha256) in implemented_contracts(planned) {
                 contracts
@@ -86,7 +85,7 @@ fn robot_entry(active: &ActiveLaunch, copy: &super::state::StackCopy) -> FleetRo
                 every_simulated = false;
                 clocks.insert("wall".to_owned());
             }
-            binding => {
+            binding @ ClockBinding::Sim { .. } => {
                 if let Some(domain) = binding.domain() {
                     clocks.insert(domain.to_string());
                 }
@@ -219,16 +218,18 @@ fn scoped_options(active: &ActiveLaunch) -> Vec<FleetOption> {
                 .collect();
             let kind = trials
                 .join(entry.option(), &every_feature)
-                .map(|trial| kind_of_deployments(&trial.deployments))
-                .unwrap_or(RobotKind::Physical);
+                .map_or(RobotKind::Physical, |trial| {
+                    kind_of_deployments(&trial.deployments)
+                });
             let features = entry
                 .features()
                 .iter()
                 .map(|feature| {
                     let with = trials
                         .join(entry.option(), &[feature.word(None)])
-                        .map(|trial| contracts_of_deployments(active, &trial.deployments))
-                        .unwrap_or_default();
+                        .map_or_default(|trial| {
+                            contracts_of_deployments(active, &trial.deployments)
+                        });
                     FleetFeature {
                         feature: feature.feature().as_str().to_owned(),
                         contracts: with.difference(&base_contracts).cloned().collect(),
@@ -348,11 +349,9 @@ fn nodes_of(active: &ActiveLaunch) -> Vec<FleetNode> {
         .iter()
         .map(|planned| {
             let commit = match &planned.root {
-                DeploymentRoot::Node(pin) => pin
-                    .origin
-                    .commit()
-                    .map(ToString::to_string)
-                    .unwrap_or_default(),
+                DeploymentRoot::Node(pin) => {
+                    pin.origin.commit().map_or_default(ToString::to_string)
+                }
                 DeploymentRoot::Exposures(_) => String::new(),
             };
             let instances: Vec<NodeInstance> = planned
@@ -366,8 +365,7 @@ fn nodes_of(active: &ActiveLaunch) -> Vec<FleetNode> {
                         core_node: active.placements.of(id).to_owned(),
                         robot: active
                             .robot_of(id)
-                            .map(|copy| copy.as_str().to_owned())
-                            .unwrap_or_default(),
+                            .map_or_default(|copy| copy.as_str().to_owned()),
                     }
                 })
                 .collect();

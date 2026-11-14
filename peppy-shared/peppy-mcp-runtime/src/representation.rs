@@ -1,6 +1,6 @@
 //! Topic snapshot policies: image representation and result-size handling.
 //!
-//! [`apply_content_policies`] runs after the update-rate gate admitted a
+//! `apply_content_policies` runs after the update-rate gate admitted a
 //! message and the bridge decoded it to canonical JSON, and on the answer
 //! of a service exposed under a representation. It transcodes
 //! image-carrying snapshots to the declared codec: under `jpeg`, colour
@@ -205,8 +205,7 @@ fn take_frame(value: &mut Value, fields: &ImageFieldMap) -> Result<String, Publi
 fn jpeg_quality(representation: &ImageRepresentation) -> u8 {
     representation
         .quality
-        .map(|quality| quality.get())
-        .unwrap_or(DEFAULT_JPEG_QUALITY)
+        .map_or(DEFAULT_JPEG_QUALITY, peppy_mcp_catalog::JpegQuality::get)
 }
 
 /// Rewrites an uncompressed frame into JPEG in place: a colour frame as it
@@ -474,6 +473,10 @@ fn depth_as_gray8(samples: &Luma16Image, range: DepthRange) -> GrayImage {
 /// The shade one `z16` reading shows under `range`: white at `near` or
 /// nearer, black at `far` or farther, linear between, and black for 0, a
 /// pixel with no reading. Integer arithmetic, rounded to the nearest shade.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the distance to `far` is at most the span, so the shade is at most 255"
+)]
 fn z16_shade(reading: u16, range: DepthRange) -> u8 {
     if reading == 0 {
         return 0;
@@ -570,9 +573,14 @@ fn set_field(value: &mut Value, name: &str, new_value: Value) {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the test frames take the low bits of a counter"
+)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::assert_matches;
 
     fn policies(raw: Value) -> ResourcePolicies {
         serde_json::from_value(raw).expect("valid policies")
@@ -585,6 +593,10 @@ mod tests {
 
     /// Policies under `representation`, with `max_result_bytes` and
     /// `on_oversize` when given.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "each test builds the value in the call"
+    )]
     fn representation_policies(
         representation: Value,
         max_result_bytes: Option<u64>,
@@ -625,9 +637,9 @@ mod tests {
 
     /// A deterministic high-detail frame that JPEG cannot compress well.
     fn noisy_frame(width: u32, height: u32) -> Value {
-        let bytes: Vec<u8> = (0..width as usize * height as usize * 3)
-            .map(|index| ((index * 97 + index / 3 * 31) % 256) as u8)
-            .collect();
+        let bytes: Vec<u8> = Vec::from_fn(width as usize * height as usize * 3, |index| {
+            ((index * 97 + index / 3 * 31) % 256) as u8
+        });
         json!({
             "frame": BASE64.encode(&bytes),
             "encoding": "rgb8",
@@ -760,10 +772,10 @@ mod tests {
             );
             let decoded = decoded_png16(&content);
             assert_eq!((decoded.width(), decoded.height()), (8, 4));
-            for (index, pixel) in decoded.pixels().enumerate() {
+            for (index, pixel) in (0_u32..).zip(decoded.pixels()) {
                 assert_eq!(
                     pixel.0[0],
-                    (index as u32 * 7919) as u16,
+                    (index * 7919) as u16,
                     "{encoding} pixel {index}"
                 );
             }
@@ -787,27 +799,26 @@ mod tests {
 
         let mut eight = Vec::new();
         RgbImage::from_pixel(1, 1, image::Rgb([1, 2, 3]))
-            .write_to(&mut std::io::Cursor::new(&mut eight), ImageFormat::Png)
+            .write_to(&mut Cursor::new(&mut eight), ImageFormat::Png)
             .expect("encodes");
         let png = json!({
             "frame": BASE64.encode(&eight), "encoding": "png", "width": 1, "height": 1,
         });
         let error = apply_content_policies(png16_policies(None, None).content(), png)
             .expect_err("an 8-bit color PNG is not a depth frame");
-        assert!(matches!(error, PublishError::BadFrame { .. }));
+        assert_matches!(error, PublishError::BadFrame { .. });
 
         let color = solid_frame("rgb8", [1, 2, 3], 2, 2);
         let error = apply_content_policies(png16_policies(None, None).content(), color)
             .expect_err("a color frame is not a 16-bit frame");
-        assert!(
-            matches!(error, PublishError::UnsupportedEncoding { encoding } if encoding == "rgb8")
+        assert_matches!(error, PublishError::UnsupportedEncoding { encoding } if encoding == "rgb8"
         );
 
         let mut short = depth_frame("z16", 4, 4);
         short["frame"] = json!(BASE64.encode([0u8; 6]));
         let error = apply_content_policies(png16_policies(None, None).content(), short)
             .expect_err("a short buffer is a bad frame");
-        assert!(matches!(error, PublishError::BadFrame { .. }));
+        assert_matches!(error, PublishError::BadFrame { .. });
     }
 
     #[test]
@@ -1005,10 +1016,7 @@ mod tests {
         });
         let error = apply_content_policies(depth_policies(None, None).content(), value)
             .expect_err("3 bytes are not a 4x4 depth frame");
-        assert!(
-            matches!(error, PublishError::BadFrame { .. }),
-            "got {error:?}"
-        );
+        assert_matches!(error, PublishError::BadFrame { .. }, "got {error:?}");
     }
 
     #[test]
@@ -1032,7 +1040,10 @@ mod tests {
             "dimensions should shrink, got {width}x{height}"
         );
         let gray = decoded_gray(&content);
-        assert_eq!((gray.width() as u64, gray.height() as u64), (width, height));
+        assert_eq!(
+            (u64::from(gray.width()), u64::from(gray.height())),
+            (width, height)
+        );
     }
 
     #[test]
@@ -1058,10 +1069,7 @@ mod tests {
         });
         let error = apply_content_policies(jpeg_policies(None, None).content(), value)
             .expect_err("3 bytes are not a 4x4 frame");
-        assert!(
-            matches!(error, PublishError::BadFrame { .. }),
-            "got {error:?}"
-        );
+        assert_matches!(error, PublishError::BadFrame { .. }, "got {error:?}");
     }
 
     #[test]
@@ -1074,10 +1082,7 @@ mod tests {
         });
         let error = apply_content_policies(jpeg_policies(None, None).content(), value)
             .expect_err("the RGB8 buffer those dimensions ask for exceeds usize");
-        assert!(
-            matches!(error, PublishError::BadFrame { .. }),
-            "got {error:?}"
-        );
+        assert_matches!(error, PublishError::BadFrame { .. }, "got {error:?}");
     }
 
     #[test]
@@ -1118,8 +1123,9 @@ mod tests {
         let value = json!({ "status": "x".repeat(64) });
         let error = apply_content_policies(reject_policies.content(), value)
             .expect_err("oversize snapshot should be rejected");
-        assert!(
-            matches!(error, PublishError::Oversize { limit: 32, .. }),
+        assert_matches!(
+            error,
+            PublishError::Oversize { limit: 32, .. },
             "got {error:?}"
         );
     }
@@ -1198,7 +1204,7 @@ mod tests {
         assert_eq!(document["encoding"], "mjpeg");
         let decoded = decoded_jpeg(&content);
         assert_eq!(
-            (decoded.width() as u64, decoded.height() as u64),
+            (u64::from(decoded.width()), u64::from(decoded.height())),
             (width, height)
         );
     }
@@ -1248,8 +1254,9 @@ mod tests {
         let long = json!({ "message": "x".repeat(160), "frame": "" });
         let error = apply_response_policies(policies.content(), long)
             .expect_err("160 bytes of message exceed the 128 byte limit");
-        assert!(
-            matches!(error, PublishError::Oversize { limit: 128, .. }),
+        assert_matches!(
+            error,
+            PublishError::Oversize { limit: 128, .. },
             "got {error:?}"
         );
     }
@@ -1260,8 +1267,9 @@ mod tests {
         let error =
             apply_content_policies(jpeg_policies(Some(24), Some("downscale")).content(), value)
                 .expect_err("24 bytes can never fit a frame");
-        assert!(
-            matches!(error, PublishError::Oversize { limit: 24, .. }),
+        assert_matches!(
+            error,
+            PublishError::Oversize { limit: 24, .. },
             "got {error:?}"
         );
     }

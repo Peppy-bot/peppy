@@ -402,7 +402,7 @@ fn render_dep_topic(
         builder,
         loaders,
         attr,
-        PublisherVeneer {
+        &PublisherVeneer {
             production: production_module_path(
                 "consumed_topics",
                 &[spec.module_link.as_str(), topic_name],
@@ -461,7 +461,7 @@ fn emit_publisher_member(
     builder: &mut PythonCodeBuilder,
     loaders: &mut HashSet<String>,
     attr: String,
-    veneer: PublisherVeneer<'_>,
+    veneer: &PublisherVeneer<'_>,
 ) -> Result<MockMember> {
     let alias = format!("_{attr}");
     builder.add_import(&production_import_line(&veneer.production, &alias));
@@ -487,10 +487,10 @@ fn emit_publisher_member(
     builder.block(&format!("class {camel}Publisher:"), |builder| {
         builder.docstring(&veneer.class_doc);
         builder.blank_line();
-        builder.py(r#"
+        builder.py(r"
 def __init__(self, core) -> None:
     self._core = core
-"#);
+");
         builder.blank_line();
         builder.line("@classmethod");
         builder.block(
@@ -605,10 +605,10 @@ fn render_dep_service(
     builder.block(&format!("class {camel}Responder:"), |builder| {
         builder.docstring("Answers exactly one parked request; consumed by use.");
         builder.blank_line();
-        builder.py(r#"
+        builder.py(r"
 def __init__(self, inner) -> None:
     self._inner = inner
-"#);
+");
         builder.blank_line();
         builder.block(
             &format!("async def respond(self{response_arg}) -> None:"),
@@ -649,10 +649,10 @@ def __init__(self, inner) -> None:
              requests park for `next_request`."
         ));
         builder.blank_line();
-        builder.py(r#"
+        builder.py(r"
 def __init__(self, core) -> None:
     self._core = core
-"#);
+");
         builder.blank_line();
         builder.line("@classmethod");
         builder.block("async def _listen(cls, session, instance_id):", |builder| {
@@ -858,10 +858,10 @@ fn render_dep_action(
     builder.block(&format!("class {camel}ActiveGoal:"), |builder| {
         builder.docstring("An accepted goal: drives feedback and terminal completion.");
         builder.blank_line();
-        builder.py(r#"
+        builder.py(r"
 def __init__(self, context) -> None:
     self._context = context
-"#);
+");
         builder.blank_line();
         if has_feedback {
             builder.block(
@@ -941,17 +941,17 @@ def __init__(self, context) -> None:
         builder.docstring("A goal received by the mock, awaiting accept/refuse.");
         builder.blank_line();
         if spec.messages.goal_request.is_some() {
-            builder.py(r#"
+            builder.py(r"
 def __init__(self, pending, request) -> None:
     self._pending = pending
     #: The decoded goal request.
     self.request = request
-"#);
+");
         } else {
-            builder.py(r#"
+            builder.py(r"
 def __init__(self, pending) -> None:
     self._pending = pending
-"#);
+");
         }
         builder.blank_line();
         builder.py(r#"
@@ -1003,10 +1003,10 @@ def goal_id(self) -> str:
              producer, plus deterministic producer-loss via the owning mock's `stop()`."
         ));
         builder.blank_line();
-        builder.py(r#"
+        builder.py(r"
 def __init__(self, core) -> None:
     self._core = core
-"#);
+");
         builder.blank_line();
         builder.line("@classmethod");
         builder.block("async def _expose(cls, session, instance_id):", |builder| {
@@ -1199,7 +1199,7 @@ fn render_pair_publisher(
         builder,
         loaders,
         attr,
-        PublisherVeneer {
+        &PublisherVeneer {
             production: production_module_path("paired_topics", &[link_id, topic_name]),
             schema_key: crate::generator::naming::peer_schema_key(link_id, topic_name),
             format: &spec.format,
@@ -1271,21 +1271,21 @@ fn render_pair_subscription(
             ],
         );
         builder.blank_line();
-        builder.py(r#"
+        builder.py(r"
 def __init__(self, inner) -> None:
     self._inner = inner
-"#);
+");
         builder.blank_line();
         builder.line("@classmethod");
         builder.block(
             "async def _open(cls, session, instance_id, node):",
             |builder| {
-                builder.py(r#"
+                builder.py(r"
 # The exact wire shape of a paired peer's subscription: node
 # identity, pairing target, the node's own slot link_id and the
 # mock's own slot all pinned. No pin-following: the mock's peer
 # (the node under test) is known from construction.
-"#);
+");
                 builder.call(
                     "inner = await peppylib.TopicMessenger.subscribe_peer_pinned(",
                     &[
@@ -1312,11 +1312,11 @@ def __init__(self, inner) -> None:
                     "Awaits the node's next message on this topic; `None` once the mock's \
                      session closes.",
                 );
-                builder.py(r#"
+                builder.py(r"
 message = await self._inner.on_next_message()
 if message is None:
     return None
-"#);
+");
                 builder.line(&format!("return {deserialize_fn}(message.payload)"));
             },
         );
@@ -1449,7 +1449,7 @@ fn render_observed_publisher(
         builder,
         loaders,
         attr,
-        PublisherVeneer {
+        &PublisherVeneer {
             production: production_module_path("paired_topics", &[link_id, topic_name]),
             schema_key: crate::generator::naming::peer_schema_key(link_id, topic_name),
             format: &spec.format,

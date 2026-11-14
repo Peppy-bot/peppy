@@ -34,7 +34,7 @@ pub fn test_data_root() -> PathBuf {
 /// removed when its guard drops; normal completion and panics both clean up, and
 /// nothing is carried over to the next run. As a backstop for runs that were
 /// hard-killed before their guards could run, the first call per test binary
-/// reclaims leftovers older than [`STALE_TEST_TMP_AGE`]; that age floor keeps
+/// reclaims leftovers older than `STALE_TEST_TMP_AGE`; that age floor keeps
 /// concurrently-running test binaries from deleting each other's live dirs.
 pub fn test_tmp_root() -> PathBuf {
     let root = test_data_root().join("test-tmp");
@@ -49,7 +49,7 @@ pub fn test_tmp_root() -> PathBuf {
 /// Scratch older than this is treated as abandoned by an earlier run and is
 /// safe to delete. Far longer than any real test run (which finishes in
 /// minutes), so an in-flight run is never affected.
-const STALE_TEST_TMP_AGE: Duration = Duration::from_secs(60 * 60);
+const STALE_TEST_TMP_AGE: Duration = Duration::from_hours(1);
 
 /// Best-effort removal of stale leftovers directly under `root`. Errors are
 /// ignored on purpose: reclaiming scratch must never fail a test.

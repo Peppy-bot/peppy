@@ -18,14 +18,14 @@ impl InfoRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            builder.init_root::<info_capnp::info_request::Builder>();
+            builder.init_root::<info_capnp::info_request::Builder<'_>>();
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<info_capnp::info_request::Reader>()?;
+        reader.get_root::<info_capnp::info_request::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -49,7 +49,10 @@ pub struct InfoResponse {
 }
 
 impl InfoResponse {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor takes one argument for each field"
+    )]
     pub fn new(
         uptime_secs: u64,
         core_node_name: impl Into<String>,
@@ -75,7 +78,7 @@ impl InfoResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<info_capnp::info_response::Builder>();
+            let mut response = builder.init_root::<info_capnp::info_response::Builder<'_>>();
             response.set_uptime_secs(self.uptime_secs);
             response.set_core_node_name(&self.core_node_name);
             response.set_core_node_instance_id(&self.core_node_instance_id);
@@ -92,7 +95,7 @@ impl InfoResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<info_capnp::info_response::Reader>()?;
+        let response = reader.get_root::<info_capnp::info_response::Reader<'_>>()?;
         let container = response.get_container_info()?;
         Ok(Self {
             uptime_secs: response.get_uptime_secs(),
@@ -111,11 +114,11 @@ impl InfoResponse {
 }
 
 impl crate::encoding::Wire for InfoRequest {
-    type Root = crate::info_capnp::info_request::Owned;
+    type Root = info_capnp::info_request::Owned;
 }
 
 impl crate::encoding::Wire for InfoResponse {
-    type Root = crate::info_capnp::info_response::Owned;
+    type Root = info_capnp::info_response::Owned;
 }
 
 #[cfg(test)]
@@ -129,9 +132,10 @@ mod tests {
         }
     }
 
-    // Deliberately calls `::default()` on the unit struct to assert the Default
-    // impl agrees with `new()`; that's what trips `default_constructed_unit_structs`.
-    #[allow(clippy::default_constructed_unit_structs)]
+    #[expect(
+        clippy::default_constructed_unit_structs,
+        reason = "the test asserts that `Default` agrees with `new()`"
+    )]
     #[test]
     fn info_request_new_equals_default() {
         assert_eq!(InfoRequest::new(), InfoRequest);
@@ -148,7 +152,7 @@ mod tests {
 
     #[test]
     fn info_request_decode_rejects_malformed() {
-        assert!(InfoRequest::decode(b"not a capnp message").is_err());
+        InfoRequest::decode(b"not a capnp message").unwrap_err();
     }
 
     #[test]
@@ -244,6 +248,6 @@ mod tests {
 
     #[test]
     fn info_response_decode_rejects_malformed() {
-        assert!(InfoResponse::decode(b"not a capnp message").is_err());
+        InfoResponse::decode(b"not a capnp message").unwrap_err();
     }
 }

@@ -25,7 +25,7 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
 
     tokio::spawn(async move {
         endpoint
-            .handle_next_request(|request| async move {
+            .handle_next_request(async |request| {
                 let payload = request.message().payload();
                 let inbound =
                     StackListRequest::decode(payload.as_ref()).expect("decode StackListRequest");
@@ -107,7 +107,7 @@ async fn stack_list_parses_graph_and_includes_daemon_identity() {
         }],
     };
 
-    let (_router, _temp_dir, node_runner) = setup_stub(graph.clone(), "robo-a").await;
+    let (_router, _temp_dir, node_runner) = Box::pin(setup_stub(graph.clone(), "robo-a")).await;
 
     let result = stack::list(&node_runner, Duration::from_secs(3))
         .await

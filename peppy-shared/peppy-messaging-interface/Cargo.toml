@@ -3,6 +3,10 @@ name = "pmi"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 config = { package = "peppy-config-model", path = "../peppy-config-model" }
@@ -61,12 +65,10 @@ rustls-native-certs = { version = "0.8", optional = true }
 libc = "0.2"
 
 [build-dependencies]
-# Used only by the `build_zenoh` feature's build.rs step (compiling zenohd from
-# source); a no-op dependency otherwise. Left non-optional on purpose: it is
-# already a build-dep of the sibling crates every pmi consumer builds
-# (peppylib-rs, peppy, …), so making it optional removes it from pmi's manifest
-# but not from any real build — not worth the extra optional-dependency wiring.
-build-helpers = { path = "../build-helpers" }
+# Used only by the build.rs step of the `build_zenoh` feature (compiling zenohd
+# from source), so that feature alone turns it on: cargo reports a dependency
+# that no code of a build uses.
+build-helpers = { path = "../build-helpers", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = [
@@ -106,4 +108,4 @@ router = ["zenoh"]
 # Also compile the external zenohd daemon from source at build time (pinned to
 # the workspace-resolved zenoh version) and cache it via build.rs. Off in the
 # default build so ordinary consumers skip the (multi-minute) compile.
-build_zenoh = ["router"]
+build_zenoh = ["router", "dep:build-helpers"]

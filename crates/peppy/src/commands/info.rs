@@ -34,6 +34,7 @@ fn print_container_setup_status() {
 // No need for an excessive timeout here
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[derive(Debug)]
 pub struct InfoCommand;
 
 impl Command for InfoCommand {

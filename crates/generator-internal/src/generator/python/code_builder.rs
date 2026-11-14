@@ -4,7 +4,10 @@ use config::node::{MessageFormat, SchemaType, TypeToken};
 use std::collections::BTreeSet;
 
 /// Emits all nested dataclass definitions collected during field collection.
-pub fn emit_nested_classes(builder: &mut PythonCodeBuilder, nested_classes: &[NestedDataclass]) {
+pub(super) fn emit_nested_classes(
+    builder: &mut PythonCodeBuilder,
+    nested_classes: &[NestedDataclass],
+) {
     for class_def in nested_classes {
         let fields: Vec<(&str, &str)> = class_def
             .fields
@@ -17,7 +20,7 @@ pub fn emit_nested_classes(builder: &mut PythonCodeBuilder, nested_classes: &[Ne
 
 /// Collects fields from a message format, emits any nested dataclasses, adds
 /// `Optional` import when needed, and emits the top-level dataclass.
-pub fn emit_format_as_dataclass(
+pub(super) fn emit_format_as_dataclass(
     builder: &mut PythonCodeBuilder,
     class_name: &str,
     format: &MessageFormat,
@@ -40,12 +43,12 @@ pub fn emit_format_as_dataclass(
 /// `\\`, `\n`, `\uXXXX`) is valid in Python, while Rust's `{:?}` writes
 /// non-printable and grapheme-extending characters as `\u{...}`, which
 /// Python rejects.
-pub fn python_string_literal(value: &str) -> String {
+pub(super) fn python_string_literal(value: &str) -> String {
     serde_json::to_string(value).expect("a str always serializes to a JSON string")
 }
 
 /// Accumulates lines of Python code with proper indentation handling.
-pub struct PythonCodeBuilder {
+pub(super) struct PythonCodeBuilder {
     imports: BTreeSet<String>,
     /// Not `lines`: that name is taken by the [`PythonCodeBuilder::lines`]
     /// helper, and a field shadowed by a method of the same name reads as a
@@ -55,7 +58,7 @@ pub struct PythonCodeBuilder {
 }
 
 impl PythonCodeBuilder {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             imports: BTreeSet::new(),
             body: Vec::new(),
@@ -65,18 +68,18 @@ impl PythonCodeBuilder {
 
     /// Registers an import line (e.g. `"import peppylib"`).
     /// Imports are deduplicated and emitted sorted at the top of the output.
-    pub fn add_import(&mut self, import_line: &str) {
+    pub(super) fn add_import(&mut self, import_line: &str) {
         self.imports.insert(import_line.to_string());
     }
 
     /// Appends a single line at the current indentation level.
-    pub fn line(&mut self, content: &str) {
+    pub(super) fn line(&mut self, content: &str) {
         let indent = "    ".repeat(self.indent_level);
         self.body.push(format!("{indent}{content}"));
     }
 
     /// Appends an empty line (no indentation).
-    pub fn blank_line(&mut self) {
+    pub(super) fn blank_line(&mut self) {
         self.body.push(String::new());
     }
 
@@ -101,7 +104,7 @@ impl PythonCodeBuilder {
     ///
     /// Generic over the body's result so a block can propagate an error with
     /// `?` at the call site, or hand back a value it computed while emitting.
-    pub fn block<R>(&mut self, header: &str, body: impl FnOnce(&mut Self) -> R) -> R {
+    pub(super) fn block<R>(&mut self, header: &str, body: impl FnOnce(&mut Self) -> R) -> R {
         self.line(header);
         self.indent();
         let outcome = body(self);
@@ -116,7 +119,7 @@ impl PythonCodeBuilder {
     /// Relative indentation those lists bake into their strings as literal
     /// spaces is preserved verbatim: `line("    x")` at level N writes the same
     /// bytes as `indent(); line("x")`.
-    pub fn lines<S: AsRef<str>>(&mut self, contents: impl IntoIterator<Item = S>) {
+    pub(super) fn lines<S: AsRef<str>>(&mut self, contents: impl IntoIterator<Item = S>) {
         for content in contents {
             self.line(content.as_ref());
         }
@@ -128,7 +131,7 @@ impl PythonCodeBuilder {
     /// A conditional opening line is an `if` expression in argument position,
     /// which keeps the two arms from each carrying their own copy of the
     /// argument list.
-    pub fn call(&mut self, open: &str, args: &[&str], close: &str) {
+    pub(super) fn call(&mut self, open: &str, args: &[&str], close: &str) {
         self.block(open, |builder| builder.lines(args));
         self.line(close);
     }
@@ -139,13 +142,13 @@ impl PythonCodeBuilder {
     /// wrapped: a docstring is by far the most common emitted line over 100
     /// characters, and unlike text inside a [`Self::py`] block a `&str`
     /// argument can still use Rust's `\` line continuation.
-    pub fn docstring(&mut self, text: &str) {
+    pub(super) fn docstring(&mut self, text: &str) {
         self.line(&format!("\"\"\"{text}\"\"\""));
     }
 
     /// A docstring of several paragraphs: `"""summary`, a blank line, the
     /// body lines, then the closing `"""` on a line of its own.
-    pub fn multiline_docstring<S: AsRef<str>>(
+    pub(super) fn multiline_docstring<S: AsRef<str>>(
         &mut self,
         summary: &str,
         body: impl IntoIterator<Item = S>,
@@ -181,7 +184,7 @@ impl PythonCodeBuilder {
     /// source file and would silently rewrite the generated Python, so they are
     /// rejected rather than repaired. A blank line inside a block must
     /// therefore be genuinely empty, not indented to match its neighbours.
-    pub fn py(&mut self, source: &str) {
+    pub(super) fn py(&mut self, source: &str) {
         let mut source_lines: Vec<&str> = source.split('\n').collect();
         assert!(
             source_lines.first().is_some_and(|first| first.is_empty()),
@@ -224,7 +227,7 @@ impl PythonCodeBuilder {
 
     /// Writes a `@dataclass` decorated class with typed fields.
     /// Automatically registers the `from dataclasses import dataclass` import.
-    pub fn dataclass(&mut self, class_name: &str, fields: &[(&str, &str)]) {
+    pub(super) fn dataclass(&mut self, class_name: &str, fields: &[(&str, &str)]) {
         self.add_import("from dataclasses import dataclass");
         self.line("@dataclass");
         self.class_def(class_name, fields);
@@ -246,7 +249,7 @@ impl PythonCodeBuilder {
 
     /// Consumes the builder and returns the final Python code string.
     /// Registered imports are emitted sorted at the top, followed by a blank line.
-    pub fn build(self) -> String {
+    pub(super) fn build(self) -> String {
         let mut result = Vec::new();
         if !self.imports.is_empty() {
             for import in &self.imports {
@@ -263,7 +266,7 @@ impl PythonCodeBuilder {
 /// the word its length-check message names: `bytes` for `u8` items, `list`
 /// for everything else. One mapping, so the reader and the writer cannot
 /// disagree about what they are counting.
-pub fn container_name(items: &SchemaType) -> &'static str {
+pub(super) fn container_name(items: &SchemaType) -> &'static str {
     match items.as_type_token() {
         Some(TypeToken::U8) => "bytes",
         _ => "list",
@@ -273,7 +276,7 @@ pub fn container_name(items: &SchemaType) -> &'static str {
 /// Takes the next temporary-variable index from `counter`. The readers or
 /// writers of one message share a counter, so every temporary they name is
 /// unique within the generated function.
-pub fn next_temp_index(counter: &mut u32) -> u32 {
+pub(super) fn next_temp_index(counter: &mut u32) -> u32 {
     let index = *counter;
     *counter += 1;
     index
@@ -281,7 +284,7 @@ pub fn next_temp_index(counter: &mut u32) -> u32 {
 
 /// Emits the `ValueError` raised when `var` does not hold exactly `len`
 /// items; `container` names it in the message (`list` or `bytes`).
-pub fn emit_fixed_length_check(
+pub(super) fn emit_fixed_length_check(
     builder: &mut PythonCodeBuilder,
     var: &str,
     field_name: &str,
@@ -353,12 +356,12 @@ mod tests {
     fn py_strips_the_common_indent_and_re_indents_at_the_current_level() {
         let mut builder = PythonCodeBuilder::new();
         builder.indent();
-        builder.py(r#"
+        builder.py(r"
             def f():
                 if ready:
                     return 1
                 return 0
-        "#);
+        ");
         builder.line("after");
         assert_eq!(
             builder.build(),
@@ -372,12 +375,12 @@ mod tests {
     fn py_emits_blank_lines_with_no_indentation() {
         let mut builder = PythonCodeBuilder::new();
         builder.indent();
-        builder.py(r#"
+        builder.py(r"
             class C:
                 x = 1
 
                 y = 2
-        "#);
+        ");
         assert_eq!(
             builder.build(),
             "    class C:\n        x = 1\n\n        y = 2"
@@ -388,11 +391,11 @@ mod tests {
     #[test]
     fn py_takes_the_common_indent_from_the_shallowest_line() {
         let mut builder = PythonCodeBuilder::new();
-        builder.py(r#"
+        builder.py(r"
                 nested = True
         if nested:
             pass
-        "#);
+        ");
         assert_eq!(
             builder.build(),
             "        nested = True\nif nested:\n    pass"

@@ -227,7 +227,7 @@ mod tests {
         assert!(selection.belongs_to("https://api.example", "user-123"));
         assert!(!selection.belongs_to("https://api.example", "user-456"));
         assert!(!selection.belongs_to("https://other.example", "user-123"));
-        let mut unknown = selection.clone();
+        let mut unknown = selection;
         unknown.subject = String::new();
         assert!(
             !unknown.belongs_to("https://api.example", ""),

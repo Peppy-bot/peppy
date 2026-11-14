@@ -53,11 +53,11 @@ pub enum InstanceState {
 impl InstanceState {
     pub fn as_str(self) -> &'static str {
         match self {
-            InstanceState::Starting => "starting",
-            InstanceState::Running => "running",
-            InstanceState::Restarting => "restarting",
-            InstanceState::Finished => "finished",
-            InstanceState::Failed => "failed",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Restarting => "restarting",
+            Self::Finished => "finished",
+            Self::Failed => "failed",
         }
     }
 
@@ -66,7 +66,7 @@ impl InstanceState {
     /// delivery and shutdown requests, and to render an instance without a
     /// process with no health verdict.
     pub fn has_process(self) -> bool {
-        matches!(self, InstanceState::Starting | InstanceState::Running)
+        matches!(self, Self::Starting | Self::Running)
     }
 }
 
@@ -81,11 +81,11 @@ impl FromStr for InstanceState {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "starting" => Ok(InstanceState::Starting),
-            "running" => Ok(InstanceState::Running),
-            "restarting" => Ok(InstanceState::Restarting),
-            "finished" => Ok(InstanceState::Finished),
-            "failed" => Ok(InstanceState::Failed),
+            "starting" => Ok(Self::Starting),
+            "running" => Ok(Self::Running),
+            "restarting" => Ok(Self::Restarting),
+            "finished" => Ok(Self::Finished),
+            "failed" => Ok(Self::Failed),
             other => Err(UnknownInstanceState(other.to_owned())),
         }
     }
@@ -134,9 +134,7 @@ pub fn duplicate_instance_id_message(
 /// A time as the wire carries it: milliseconds since the Unix epoch.
 pub fn unix_ms(time: std::time::SystemTime) -> u64 {
     time.duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
+        .map_or(0, config::duration::saturating_millis)
 }
 
 /// Why the last start of an instance ended: its process's exit, or a start
@@ -165,18 +163,18 @@ impl ExitCause {
     /// The cause of a reaped process's exit.
     pub fn of(status: &std::io::Result<std::process::ExitStatus>) -> Self {
         match status {
-            Ok(status) => match (status.code(), signal_of(status)) {
-                (Some(code), _) => ExitCause::Code(code),
-                (None, Some(signal)) => ExitCause::signal(signal, core_dumped(status)),
-                (None, None) => ExitCause::Message(status.to_string()),
+            Ok(status) => match (status.code(), signal_of(*status)) {
+                (Some(code), _) => Self::Code(code),
+                (None, Some(signal)) => Self::signal(signal, core_dumped(*status)),
+                (None, None) => Self::Message(status.to_string()),
             },
-            Err(e) => ExitCause::Message(format!("could not read exit status: {e}")),
+            Err(e) => Self::Message(format!("could not read exit status: {e}")),
         }
     }
 
     /// The cause of an end by `signal`, named as this machine numbers it.
     pub fn signal(signal: i32, core_dumped: bool) -> Self {
-        ExitCause::Signal {
+        Self::Signal {
             number: signal,
             name: signal_name(signal).map(str::to_owned),
             core_dumped,
@@ -185,27 +183,27 @@ impl ExitCause {
 
     /// Whether the process exited with code 0.
     pub fn is_clean(&self) -> bool {
-        matches!(self, ExitCause::Code(0))
+        matches!(self, Self::Code(0))
     }
 }
 
 #[cfg(unix)]
-fn signal_of(status: &std::process::ExitStatus) -> Option<i32> {
+fn signal_of(status: std::process::ExitStatus) -> Option<i32> {
     status.signal()
 }
 
 #[cfg(not(unix))]
-fn signal_of(_status: &std::process::ExitStatus) -> Option<i32> {
+fn signal_of(_status: std::process::ExitStatus) -> Option<i32> {
     None
 }
 
 #[cfg(unix)]
-fn core_dumped(status: &std::process::ExitStatus) -> bool {
+fn core_dumped(status: std::process::ExitStatus) -> bool {
     status.core_dumped()
 }
 
 #[cfg(not(unix))]
-fn core_dumped(_status: &std::process::ExitStatus) -> bool {
+fn core_dumped(_status: std::process::ExitStatus) -> bool {
     false
 }
 
@@ -254,8 +252,8 @@ fn signal_name(_signal: i32) -> Option<&'static str> {
 impl fmt::Display for ExitCause {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ExitCause::Code(code) => write!(f, "exit code {code}"),
-            ExitCause::Signal {
+            Self::Code(code) => write!(f, "exit code {code}"),
+            Self::Signal {
                 number,
                 name,
                 core_dumped,
@@ -269,13 +267,13 @@ impl fmt::Display for ExitCause {
                 }
                 Ok(())
             }
-            ExitCause::HealthKill { unanswered_secs } => {
+            Self::HealthKill { unanswered_secs } => {
                 write!(
                     f,
                     "killed after {unanswered_secs} s without an answered health check"
                 )
             }
-            ExitCause::Message(text) => f.write_str(text),
+            Self::Message(text) => f.write_str(text),
         }
     }
 }
@@ -294,10 +292,10 @@ pub enum NodeStage {
 impl NodeStage {
     pub fn as_str(self) -> &'static str {
         match self {
-            NodeStage::Added => "Added",
-            NodeStage::Building => "Building",
-            NodeStage::Ready => "Ready",
-            NodeStage::Root => "Root",
+            Self::Added => "Added",
+            Self::Building => "Building",
+            Self::Ready => "Ready",
+            Self::Root => "Root",
         }
     }
 }
@@ -313,10 +311,10 @@ impl FromStr for NodeStage {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "Added" => Ok(NodeStage::Added),
-            "Building" => Ok(NodeStage::Building),
-            "Ready" => Ok(NodeStage::Ready),
-            "Root" => Ok(NodeStage::Root),
+            "Added" => Ok(Self::Added),
+            "Building" => Ok(Self::Building),
+            "Ready" => Ok(Self::Ready),
+            "Root" => Ok(Self::Root),
             other => Err(UnknownNodeStage(other.to_owned())),
         }
     }
@@ -359,7 +357,7 @@ pub struct SerializedInstance {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_bindings: SlotBindings,
     /// Live pairing-slot state for every `depends_on.pairings` entry, keyed
-    /// by the slot's link_id. Overlaid by the daemon from the manifest plus
+    /// by the slot's `link_id`. Overlaid by the daemon from the manifest plus
     /// its pairing registry when serializing the graph: this is the
     /// observability surface behind `peppy stack list`'s pairing rows.
     /// Empty for instances whose manifest declares no pairings, and then
@@ -576,7 +574,6 @@ impl SerializedNodeGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::node::RestartPolicy;
     use std::num::NonZeroU32;
 
     use config::runtime::ProducerRef;
@@ -816,7 +813,7 @@ mod tests {
                 pairing_tag: "v1".to_string(),
                 role: "controller".to_string(),
                 cardinality: Cardinality::One,
-                peers: vec![config::runtime::PairedPeer {
+                peers: vec![PairedPeer {
                     peer: ProducerRef::new("core_a", "arm_1"),
                     peer_link_id: "controller".to_string(),
                     copy: None,
@@ -982,7 +979,7 @@ mod tests {
         );
         assert!(!ExitCause::signal(9, false).is_clean());
         // The core-dump flag is bit 7 of the wait status.
-        let segfault = std::process::ExitStatus::from_raw(11 | 0x80);
+        let segfault = std::process::ExitStatus::from_raw(libc::SIGSEGV | 0x80);
         assert_eq!(
             ExitCause::of(&Ok(segfault)).to_string(),
             "signal 11 (SIGSEGV), core dumped"

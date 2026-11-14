@@ -45,6 +45,7 @@ const SIGN_IN_ONLY: &str = "Do not enroll this machine (sign in only)";
 const SIGNED_IN_ONLY: &str =
     "Signed in only. `peppy platform enroll` enrolls this machine in a project.";
 
+#[derive(Debug)]
 pub struct LoginCommand {
     /// Override the backend base URL (else the build's `resource_servers.api` /
     /// `PEPPY_API_URL`).
@@ -140,6 +141,10 @@ impl Command for LoginCommand {
 }
 
 /// The error of an enrollment that did not happen after a good sign-in.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` gives the error by value"
+)]
 fn not_enrolled(error: Error) -> Error {
     Error::Auth(format!(
         "signed in, but this machine is not enrolled: {error}"
@@ -189,7 +194,7 @@ fn sign_in(session: &PlatformSession, no_browser: bool) -> Result<PlatformApi> {
         Ok(principal) => {
             // Cache display identity against the stored session.
             if let Some(session) = creds.session.as_mut() {
-                session.subject = principal.sub.clone();
+                session.subject.clone_from(&principal.sub);
                 session.username = principal.display_name().to_string();
                 storage::save(creds_path, &creds)?;
             }

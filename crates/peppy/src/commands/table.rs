@@ -103,7 +103,7 @@ pub(super) fn wrap(s: &str, width: usize) -> String {
         lines: &mut Vec<String>,
         cur: &mut String,
         cur_w: &mut usize,
-        active: &Option<String>,
+        active: Option<&str>,
     ) {
         if let Some(code) = active {
             cur.push_str(RESET);
@@ -125,7 +125,7 @@ pub(super) fn wrap(s: &str, width: usize) -> String {
         let ww = col_width(word);
         if ww <= width {
             if cur_w > 0 && cur_w + 1 + ww > width {
-                break_line(&mut lines, &mut cur, &mut cur_w, &active);
+                break_line(&mut lines, &mut cur, &mut cur_w, active.as_deref());
             } else if cur_w > 0 {
                 cur.push(' ');
                 cur_w += 1;
@@ -143,7 +143,7 @@ pub(super) fn wrap(s: &str, width: usize) -> String {
         // A token wider than a whole line: place it character by character,
         // breaking at the column boundary.
         if cur_w > 0 {
-            break_line(&mut lines, &mut cur, &mut cur_w, &active);
+            break_line(&mut lines, &mut cur, &mut cur_w, active.as_deref());
         }
         let mut chars = word.chars();
         while let Some(c) = chars.next() {
@@ -155,7 +155,7 @@ pub(super) fn wrap(s: &str, width: usize) -> String {
             }
             let cw = UnicodeWidthChar::width(c).unwrap_or(0);
             if cur_w + cw > width {
-                break_line(&mut lines, &mut cur, &mut cur_w, &active);
+                break_line(&mut lines, &mut cur, &mut cur_w, active.as_deref());
             }
             cur.push(c);
             cur_w += cw;
@@ -171,9 +171,12 @@ pub(super) fn wrap(s: &str, width: usize) -> String {
 /// columns with [`wrap`]; lines already inside it pass through untouched.
 fn fit_cell(cell: &str, width: usize) -> String {
     cell.split('\n')
-        .map(|line| match col_width(line) > width {
-            true => wrap(line, width),
-            false => line.to_owned(),
+        .map(|line| {
+            if col_width(line) > width {
+                wrap(line, width)
+            } else {
+                line.to_owned()
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -279,7 +282,7 @@ pub(super) fn render_columns<const N: usize>(headers: [&str; N], rows: &[[String
 }
 
 fn write_border(out: &mut String, widths: &[usize], left: char, sep: char, right: char) {
-    let _ = write!(out, "{}", left);
+    let _ = write!(out, "{left}");
     for (i, w) in widths.iter().enumerate() {
         for _ in 0..(w + 2) {
             let _ = write!(out, "─");
@@ -295,7 +298,7 @@ fn write_border(out: &mut String, widths: &[usize], left: char, sep: char, right
 /// have fewer lines so the borders stay aligned.
 fn write_row(out: &mut String, cells: &[String], widths: &[usize]) {
     let split: Vec<Vec<&str>> = cells.iter().map(|c| c.split('\n').collect()).collect();
-    let height = split.iter().map(|c| c.len()).max().unwrap_or(1);
+    let height = split.iter().map(Vec::len).max().unwrap_or(1);
     for line in 0..height {
         let _ = write!(out, "│");
         for (i, w) in widths.iter().enumerate() {
@@ -374,7 +377,9 @@ mod tests {
             .map(|l| UnicodeWidthStr::width(*l))
             .collect();
         assert!(
-            widths.windows(2).all(|w| w[0] == w[1]),
+            widths
+                .array_windows()
+                .all(|[previous, next]| previous == next),
             "rows misaligned: {widths:?}"
         );
     }

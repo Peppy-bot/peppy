@@ -27,7 +27,7 @@ pub const GUEST_FORCE_KILL_BUDGET: Duration = Duration::from_secs(30);
 /// The process group of an instance's process, as a kill addresses it: the
 /// host group its pid leads and, for a container on macOS, the in-VM group
 /// keyed by the instance id.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProcessGroup {
     pub pid: u32,
     pub is_container: bool,

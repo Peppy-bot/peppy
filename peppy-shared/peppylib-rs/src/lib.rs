@@ -1,6 +1,6 @@
 // peppylib's shipped library contains no `unsafe` in production code paths.
 // This denies any new unsafe crate-wide; the only opt-out is the scoped
-// `#[allow(unsafe_code)]` fd-limit helper in the `testing` module (never
+// `#[expect(unsafe_code)]` fd-limit helper in the `testing` module (never
 // compiled into production builds: the `testing` feature is enabled via
 // dev-dependencies only), whose FFI has no safe equivalent.
 #![deny(unsafe_code)]
@@ -41,36 +41,11 @@ pub mod testing;
 
 pub use types::{Message, Payload};
 
-#[allow(clippy::all)]
-mod health_capnp {
-    include!(concat!(env!("OUT_DIR"), "/health_capnp.rs"));
-}
+mod capnp_generated;
 
-#[allow(clippy::all)]
-mod action_cancel_capnp {
-    include!(concat!(env!("OUT_DIR"), "/action_cancel_capnp.rs"));
-}
-
-#[allow(clippy::all)]
-mod binding_update_capnp {
-    include!(concat!(env!("OUT_DIR"), "/binding_update_capnp.rs"));
-}
-
-#[allow(clippy::all)]
-mod peer_update_capnp {
-    include!(concat!(env!("OUT_DIR"), "/peer_update_capnp.rs"));
-}
-
-mod observation_update_capnp {
-    include!(concat!(env!("OUT_DIR"), "/observation_update_capnp.rs"));
-}
-
-#[allow(clippy::all)]
-mod slot_update_capnp {
-    include!(concat!(env!("OUT_DIR"), "/slot_update_capnp.rs"));
-}
-
-#[allow(clippy::all)]
-mod endpoints_capnp {
-    include!(concat!(env!("OUT_DIR"), "/endpoints_capnp.rs"));
-}
+// capnpc writes paths that start at the crate root (`crate::<name>_capnp`), so
+// the generated modules are in scope here.
+use capnp_generated::{
+    action_cancel_capnp, binding_update_capnp, endpoints_capnp, health_capnp,
+    observation_update_capnp, peer_update_capnp, slot_update_capnp,
+};

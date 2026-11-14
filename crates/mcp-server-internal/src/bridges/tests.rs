@@ -32,6 +32,7 @@ use peppylib::testing::{
 };
 use peppylib::types::Payload;
 use serde_json::{Value, json};
+use std::assert_matches;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
@@ -141,8 +142,8 @@ fn unreachable_width_for_the_client() -> ProviderFailure {
     ProviderFailure::new(kind(UNREACHABLE), "no plan reaches 0.09 m")
 }
 
-fn encoded(codec: &MessageCodec, value: Value) -> Payload {
-    Payload::from(codec.encode(&value).expect("the value fits the format"))
+fn encoded(codec: &MessageCodec, value: &Value) -> Payload {
+    Payload::from(codec.encode(value).expect("the value fits the format"))
 }
 
 /// The task as `prepare` lays it out for an action with a result and,
@@ -221,7 +222,7 @@ fn drive_paused(mesh: &Mesh, task: PreparedTask, surface: Arc<ScriptedSurface>) 
     PausedRuntime::spawn(
         mesh.bridge_messenger.clone(),
         bridge_module,
-        move || async move {
+        async move || {
             drive_goal(
                 &task,
                 &messenger,
@@ -243,7 +244,7 @@ fn percent_codec() -> MessageCodec {
 
 /// One feedback message of the goal: how far it got.
 fn percent(feedback: &MessageCodec, percent: u8) -> NonEmptyPayload {
-    NonEmptyPayload::try_new(encoded(feedback, json!({ "percent": percent })))
+    NonEmptyPayload::try_new(encoded(feedback, &json!({ "percent": percent })))
         .expect("an encoded message is never empty")
 }
 
@@ -271,7 +272,7 @@ fn completed_result() -> Value {
 }
 
 fn reached_width() -> Payload {
-    encoded(&result_codec(), completed_result())
+    encoded(&result_codec(), &completed_result())
 }
 
 /// The result the provider ends a cancelled goal with: where the gripper
@@ -289,7 +290,7 @@ async fn end_cancelled(context: &GoalContext) {
     context
         .complete_cancelled(
             PROVIDER_REASON,
-            encoded(&result_codec(), cancelled_result()),
+            encoded(&result_codec(), &cancelled_result()),
         )
         .await
         .expect("the provider settles the goal cancelled");
@@ -460,8 +461,9 @@ async fn a_whole_goal_deadline_is_not_pushed_back_by_feedback_and_cancels_the_go
     }
 
     let outcome = bridge.ended().await;
-    assert!(
-        matches!(outcome, Err(ActionExit::Error(_))),
+    assert_matches!(
+        outcome,
+        Err(ActionExit::Error(_)),
         "the deadline fails the goal: {outcome:?}"
     );
     // The bridge stopped following the goal, so the provider gets a cancel.
@@ -804,7 +806,7 @@ impl super::TaskSurface for HeldSurface {
         hold.await.expect("the test lets the bridge go");
     }
 
-    fn cancel_requested(&self) -> impl std::future::Future<Output = ()> + Send {
+    fn cancel_requested(&self) -> impl Future<Output = ()> + Send {
         self.surface.cancel_requested()
     }
 }
@@ -974,7 +976,7 @@ fn a_service_call_error_says_whether_the_provider_answered() {
     let failure = || unreachable_width();
     assert_eq!(
         service_call_error(
-            ConsumerError::Messaging(PeppyError::ServiceFailed {
+            &ConsumerError::Messaging(PeppyError::ServiceFailed {
                 instance_id: None,
                 service_name: SERVICE.to_owned(),
                 failure: failure(),
@@ -985,7 +987,7 @@ fn a_service_call_error_says_whether_the_provider_answered() {
     );
     assert_eq!(
         service_call_error(
-            ConsumerError::Messaging(PeppyError::ServiceTimeout {
+            &ConsumerError::Messaging(PeppyError::ServiceTimeout {
                 instance_id: None,
                 service_name: SERVICE.to_owned(),
             }),
@@ -999,7 +1001,7 @@ fn a_service_call_error_says_whether_the_provider_answered() {
     };
     let words = unreachable.to_string();
     assert_eq!(
-        service_call_error(ConsumerError::Messaging(unreachable), DEADLINE),
+        service_call_error(&ConsumerError::Messaging(unreachable), DEADLINE),
         ToolCallError::Unavailable(words)
     );
 }

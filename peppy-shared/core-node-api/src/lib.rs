@@ -2,7 +2,7 @@
 //!
 //! Holds capnp-backed request/response types, the method registry, and
 //! parsers for typed views of responses. No transport layer lives here: see
-//! `peppylib::core_node::transport` for the `peppylib`-backed poll / send_goal glue.
+//! `peppylib::core_node::transport` for the `peppylib`-backed poll / `send_goal` glue.
 //!
 //! # Boundary with consumer crates
 //!

@@ -265,6 +265,7 @@ pub enum PeerRemoval {
 /// base URL of the backend, and the bearer of the session. On a `401` the
 /// request is retried once after the bearer is refreshed (and persisted) in
 /// place.
+#[derive(Debug)]
 pub struct PlatformApi {
     http: HttpClient,
     api_url: String,
@@ -450,7 +451,7 @@ fn api_path(api_url: &str, segments: &[&str]) -> Result<String> {
     let mut url = url::Url::parse(api_url)
         .map_err(|e| Error::Auth(format!("invalid platform API `{api_url}`: {e}")))?;
     url.path_segments_mut()
-        .map_err(|_| {
+        .map_err(|()| {
             Error::Auth(format!(
                 "invalid platform API `{api_url}`: cannot be a base"
             ))
@@ -543,6 +544,7 @@ pub fn creds_from_login(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn api_paths_are_joined_as_encoded_segments() {
@@ -608,10 +610,10 @@ mod tests {
                 .to_string()
                 .contains("returned 404")
         );
-        assert!(matches!(
+        assert_matches!(
             interpret_refusal(&response(401, "", None), "GET", "u"),
             Error::NotAuthenticated
-        ));
+        );
     }
 
     /// What a refusal says about the slots a restart frees reaches the caller
@@ -755,10 +757,8 @@ mod tests {
         let ok: RouterPeerEnrolled =
             serde_json::from_str(&enrolled_json("7f3a9c1e", "rtr.example")).expect("parses");
         assert_eq!(ok.zenoh_id.as_str(), "7f3a9c1e");
-        assert!(
-            serde_json::from_str::<RouterPeerEnrolled>(&enrolled_json("0abc", "rtr.example"))
-                .is_err()
-        );
+        serde_json::from_str::<RouterPeerEnrolled>(&enrolled_json("0abc", "rtr.example"))
+            .unwrap_err();
     }
 
     #[test]

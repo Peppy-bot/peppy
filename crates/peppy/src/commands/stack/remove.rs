@@ -43,7 +43,7 @@ pub(super) fn remove(ctx: &Arc<AppContext>, name: CopyName) -> Result<()> {
                 // then.
                 let conn = &conn;
                 let fallback = stack.shutdown_grace_secs;
-                let graces = join_all(copy.core_nodes().into_iter().map(|machine| async move {
+                let graces = join_all(copy.core_nodes().into_iter().map(async |machine| {
                     if machine.as_str() == conn.target_core_node {
                         return fallback;
                     }

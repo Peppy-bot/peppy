@@ -130,11 +130,11 @@ fn file_entries(wheels: &mut Item) -> Vec<&mut dyn TableLike> {
         Item::Value(Value::Array(array)) => array
             .iter_mut()
             .filter_map(Value::as_inline_table_mut)
-            .map(|entry| entry as &mut dyn TableLike)
+            .map(|entry| -> &mut dyn TableLike { entry })
             .collect(),
         Item::ArrayOfTables(tables) => tables
             .iter_mut()
-            .map(|entry| entry as &mut dyn TableLike)
+            .map(|entry| -> &mut dyn TableLike { entry })
             .collect(),
         _ => Vec::new(),
     }
@@ -283,7 +283,7 @@ wheels = [
         assert_eq!(
             lock.pypi_files(),
             [
-                file(IDNA_SDIST, Some(190490)),
+                file(IDNA_SDIST, Some(190_490)),
                 file(IDNA_WHEEL, Some(70442))
             ]
         );

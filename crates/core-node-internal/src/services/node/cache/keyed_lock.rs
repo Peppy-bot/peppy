@@ -27,8 +27,9 @@ impl KeyedLocks {
         // means only the map still references the Arc, so no one can race on
         // rebuilding the slot (the map lock serializes all access).
         map.retain(|_, v| Arc::strong_count(v) > 1);
-        map.entry(key.to_owned())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+        Arc::clone(
+            map.entry(key.to_owned())
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        )
     }
 }

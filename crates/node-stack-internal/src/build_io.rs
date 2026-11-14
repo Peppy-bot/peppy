@@ -19,6 +19,7 @@ use containers::BuildActivity;
 use log_export::Iostream;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
+use std::mem::DropGuard;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
@@ -98,6 +99,10 @@ fn feedback_stream(stream: Iostream) -> FeedbackStream {
 
 /// Renders byte counts in the compact `KB`/`MB`/`GB` form shared by peppy's
 /// progress lines (clone/fetch transfer reports, build disk-growth feedback).
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the count is shown with one decimal, far below the precision of an f64"
+)]
 pub fn format_bytes(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = 1024.0 * 1024.0;
@@ -110,7 +115,7 @@ pub fn format_bytes(bytes: u64) -> String {
     } else if b >= KB {
         format!("{:.0} KB", b / KB)
     } else {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     }
 }
 
@@ -228,7 +233,7 @@ pub(crate) async fn stream_child_output(
     log: ActionLog,
     collect_stderr_tail: bool,
     cancel_token: &CancellationToken,
-) -> std::result::Result<(std::process::ExitStatus, Vec<String>), String> {
+) -> Result<(std::process::ExitStatus, Vec<String>), String> {
     let stderr_tail = collect_stderr_tail.then(StderrTail::new);
 
     let mut reader_handles = Vec::new();
@@ -271,41 +276,29 @@ pub(crate) async fn stream_child_output(
         ));
     }
 
-    // Cancellation safety: if this future is dropped before `child.wait()`
-    // returns, `KillGuard::drop` calls `start_kill`, which targets the whole
-    // process group (see `spawn_in_process_group`) so `sh -c "..."` wrappers
-    // and their descendants all die together.
-    struct KillGuard<'a> {
-        child: &'a mut dyn ChildWrapper,
-        completed: bool,
-    }
-    impl Drop for KillGuard<'_> {
-        fn drop(&mut self) {
-            if !self.completed {
-                let _ = self.child.start_kill();
-            }
-        }
-    }
-    let mut guard = KillGuard {
-        child: child.as_mut(),
-        completed: false,
-    };
+    // A cancellation drops this future before `child.wait()` returns. The
+    // guard then calls `start_kill`, which targets the whole process group
+    // (see `spawn_in_process_group`) so `sh -c "..."` wrappers and their
+    // descendants all die together.
+    let mut child_guard = DropGuard::new(child.as_mut(), |child| {
+        let _ = child.start_kill();
+    });
     let status = tokio::select! {
         biased;
-        wait_result = guard.child.wait() => {
-            wait_result.map_err(|e| format!("failed to wait for process: {}", e))?
+        wait_result = child_guard.wait() => {
+            wait_result.map_err(|e| format!("failed to wait for process: {e}"))?
         }
-        _ = cancel_token.cancelled() => {
+        () = cancel_token.cancelled() => {
             // SIGKILL the whole process group, then *await* the child so it is
             // reaped before we return; the superseding build must not race a
             // dying subprocess over the same working dir.
-            let _ = guard.child.start_kill();
-            let _ = guard.child.wait().await;
-            guard.completed = true;
+            let _ = child_guard.start_kill();
+            let _ = child_guard.wait().await;
+            DropGuard::dismiss(child_guard);
             return Err("build cancelled".to_string());
         }
     };
-    guard.completed = true;
+    DropGuard::dismiss(child_guard);
 
     // Join reader tasks and surface the first error so build diagnostics
     // receive failures instead of masked truncated output. The tasks were
@@ -317,8 +310,8 @@ pub(crate) async fn stream_child_output(
     for handle in reader_handles {
         let outcome = match handle.await {
             Ok(Ok(())) => None,
-            Ok(Err(e)) => Some(format!("output reader I/O error: {}", e)),
-            Err(e) => Some(format!("output reader task join error: {}", e)),
+            Ok(Err(e)) => Some(format!("output reader I/O error: {e}")),
+            Err(e) => Some(format!("output reader task join error: {e}")),
         };
         if reader_error.is_none() {
             reader_error = outcome;
@@ -328,7 +321,7 @@ pub(crate) async fn stream_child_output(
         return Err(err);
     }
 
-    let tail_lines = stderr_tail.map(|tail| tail.lines()).unwrap_or_default();
+    let tail_lines = stderr_tail.map_or_default(|tail| tail.lines());
 
     Ok((status, tail_lines))
 }
@@ -533,7 +526,7 @@ where
             // blocking for more. A reader that is slow to be scheduled never
             // reaches this point, so it never falsely reports being drained.
             let next = reader.read(&mut buf);
-            tokio::pin!(next);
+            let mut next = std::pin::pin!(next);
             let read = match std::future::poll_fn(|cx| Poll::Ready(next.as_mut().poll(cx))).await {
                 Poll::Ready(read) => read,
                 Poll::Pending => {
@@ -653,7 +646,7 @@ mod tests {
             got,
             vec![
                 ("a".to_string(), LineTerminator::Newline),
-                ("".to_string(), LineTerminator::Newline),
+                (String::new(), LineTerminator::Newline),
                 ("b".to_string(), LineTerminator::EndOfStream),
             ]
         );
@@ -663,7 +656,7 @@ mod tests {
 
     #[test]
     fn coalescer_throttles_repaints_but_never_newlines() {
-        let t0 = std::time::Instant::now();
+        let t0 = Instant::now();
         let mut coalescer = RepaintCoalescer::default();
 
         // First repaint forwards; a rapid follow-up is suppressed.
@@ -719,12 +712,13 @@ mod tests {
     async fn read_lines(input: Vec<u8>, publish: bool) -> (Vec<String>, Vec<String>) {
         let log = scratch_log();
         let hooks = Arc::new(LineRecordingHooks::default());
+        let reader_hooks = Arc::clone(&hooks);
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn_output_reader_async(
-            std::io::Cursor::new(input),
+            io::Cursor::new(input),
             tx,
             Arc::new(AtomicBool::new(publish)),
-            Arc::clone(&hooks) as Arc<dyn OutputReaderHooks>,
+            reader_hooks,
             Iostream::Stdout,
             None,
             log,
@@ -762,7 +756,7 @@ mod tests {
             vec![
                 "line1".to_string(),
                 "line2".to_string(),
-                "".to_string(),
+                String::new(),
                 "line3".to_string(),
             ]
         );
@@ -790,10 +784,10 @@ mod tests {
         let tail = StderrTail::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn_output_reader_async(
-            std::io::Cursor::new(input.to_vec()),
+            io::Cursor::new(input.to_vec()),
             tx,
             Arc::new(AtomicBool::new(true)),
-            Arc::new(LineRecordingHooks::default()) as Arc<dyn OutputReaderHooks>,
+            Arc::new(LineRecordingHooks::default()),
             Iostream::Stderr,
             Some(tail.clone()),
             log,
@@ -868,10 +862,10 @@ mod tests {
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn_output_reader_async(
-            std::io::Cursor::new(b"first line\npartial".to_vec()).chain(FailingReader),
+            io::Cursor::new(b"first line\npartial".to_vec()).chain(FailingReader),
             tx,
             Arc::new(AtomicBool::new(true)),
-            Arc::new(LineRecordingHooks::default()) as Arc<dyn OutputReaderHooks>,
+            Arc::new(LineRecordingHooks::default()),
             Iostream::Stdout,
             None,
             scratch_log(),

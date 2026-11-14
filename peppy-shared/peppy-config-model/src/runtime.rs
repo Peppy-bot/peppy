@@ -20,7 +20,7 @@ use std::{
 
 /// Validated identifier for node names, tags, instance ids, and core node
 /// names in runtime configs: non-empty and restricted to
-/// [`ALLOWED_CONFIG_CHARS`](crate::consts::ALLOWED_CONFIG_CHARS).
+/// [`ALLOWED_CONFIG_CHARS`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(into = "String")]
 pub struct Name(String);
@@ -46,8 +46,8 @@ impl TryFrom<String> for Name {
         if value.is_empty() {
             return Err(ParsingError::EmptyName);
         }
-        if value.chars().all(Name::is_valid_char) {
-            return Ok(Name(value));
+        if value.chars().all(Self::is_valid_char) {
+            return Ok(Self(value));
         }
         Err(ParsingError::InvalidName(
             value,
@@ -62,7 +62,7 @@ impl<'de> Deserialize<'de> for Name {
         D: serde::de::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Name::try_from(s).map_err(|err| serde::de::Error::custom(err.to_string()))
+        Self::try_from(s).map_err(|err| serde::de::Error::custom(err.to_string()))
     }
 }
 
@@ -335,7 +335,7 @@ impl<'de> Deserialize<'de> for BoundProducers {
         D: serde::de::Deserializer<'de>,
     {
         let members = Vec::<BoundMember>::deserialize(deserializer)?;
-        BoundProducers::try_from(members).map_err(serde::de::Error::custom)
+        Self::try_from(members).map_err(serde::de::Error::custom)
     }
 }
 
@@ -350,7 +350,7 @@ impl<'de> Deserialize<'de> for BoundProducers {
 pub type SlotBindings = BTreeMap<String, BoundProducers>;
 
 /// One pair a participant pairing slot holds: the peer instance's wire
-/// address, the link_id of the peer's own complementary slot, and the copy
+/// address, the `link_id` of the peer's own complementary slot, and the copy
 /// the peer's instance belongs to (`None` for an instance run outside a
 /// copy). A node holding several pairs from several copies groups them by
 /// `copy`. The boot-config and node-info twin of the wire's `PeerMember`.
@@ -364,7 +364,7 @@ pub struct PairedPeer {
 }
 
 /// The pairs of every participant pairing slot (a `depends_on.pairings`
-/// entry) of a node instance, keyed by slot link_id, each set in
+/// entry) of a node instance, keyed by slot `link_id`, each set in
 /// establishment order. A scalar slot holds zero or one; a multi slot holds
 /// what its cardinality admits. Kept apart from `slot_bindings`, which boots
 /// with the plan's producer sets and is replaced whole over `binding_update`:
@@ -374,7 +374,7 @@ pub struct PairedPeer {
 pub type PairingSlots = BTreeMap<String, Vec<PairedPeer>>;
 
 /// The other end of the pair an observation is pinned to: the peer instance
-/// the observed source publishes to, and the link_id of the peer's slot in
+/// the observed source publishes to, and the `link_id` of the peer's slot in
 /// that pair. An observation the plan names by the peer's end carries one; an
 /// observation named by the source alone observes every pair of the source's
 /// slot and carries none.
@@ -405,7 +405,7 @@ pub struct ObservationSeedMember {
 }
 
 /// Boot-time member sets of every observer slot (a `depends_on.pairing_observers`
-/// entry) of a node instance, keyed by slot link_id, each set in plan order.
+/// entry) of a node instance, keyed by slot `link_id`, each set in plan order.
 ///
 /// Deliberately UNLIKE `pairing_slots` (which boots empty): observer
 /// membership is launch-time configuration the same way `slot_bindings` is,
@@ -417,7 +417,7 @@ pub struct ObservationSeedMember {
 /// deliveries carry strictly larger sequences and replace it wholesale.
 pub type ObservationSeeds = BTreeMap<String, Vec<ObservationSeedMember>>;
 
-/// Represents a node instance at runtime. Used by RuntimeConfig to identify the running node and its configuration
+/// Represents a node instance at runtime. Used by `RuntimeConfig` to identify the running node and its configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeInstanceConfig {
@@ -437,12 +437,12 @@ pub struct NodeInstanceConfig {
     /// with the launching daemon's `core_node`, so the spawned node does
     /// no re-resolution work and always holds a wire-complete producer
     /// address. Empty when the manifest has no `depends_on` entries.
-    /// Read by the generated subscribe / poll / send_goal call sites via
+    /// Read by the generated subscribe / poll / `send_goal` call sites via
     /// the runtime's per-slot bound-producer cache.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_bindings: SlotBindings,
     /// Boot-time pairs of every pairing slot declared in
-    /// `depends_on.pairings`, keyed by slot link_id. Every declared slot boots
+    /// `depends_on.pairings`, keyed by slot `link_id`. Every declared slot boots
     /// empty: pairs requested via `--link` / launcher `links:` are delivered
     /// live over the `peer_update` service after the instance commits to
     /// Running, so there is exactly one delivery mechanism. Empty when the
@@ -738,6 +738,7 @@ impl RuntimeConfig {
 
     /// This configuration, naming `credential` as the key file of the
     /// instance.
+    #[must_use]
     pub fn with_credential(mut self, credential: PathBuf) -> Self {
         self.credential = Some(credential);
         self
@@ -770,6 +771,7 @@ impl RuntimeConfig {
 mod tests {
     use super::*;
     use crate::error::Error;
+    use crate::internal::namespace::Namespace;
     use tempfile::TempDir;
 
     /// The tag a launch stamps on an instance of a copy: the copy's name and
@@ -797,7 +799,7 @@ mod tests {
     fn name_error_message() {
         let err = Name::new("Invalid!").unwrap_err();
         if let ParsingError::InvalidName(_, msg) = err {
-            assert_eq!(msg, crate::consts::ALLOWED_CONFIG_CHARS);
+            assert_eq!(msg, ALLOWED_CONFIG_CHARS);
         } else {
             panic!("Expected InvalidName error");
         }
@@ -1125,7 +1127,7 @@ mod tests {
                 .discovery
                 .namespace
                 .as_ref()
-                .map(|namespace| namespace.as_str()),
+                .map(Namespace::as_str),
             Some("550e8400-e29b-41d4-a716-446655440000")
         );
         let namespace_serialized = serde_json5::to_string(&with_namespace).unwrap();
@@ -1154,7 +1156,7 @@ mod tests {
             },
             DiscoveryConfig::default()
         );
-        assert!(serde_json5::from_str::<DiscoveryConfig>("{ multicast: true }").is_err());
+        serde_json5::from_str::<DiscoveryConfig>("{ multicast: true }").unwrap_err();
 
         let empty: LifecycleRuntimeConfig = serde_json5::from_str("{}").unwrap();
         assert_eq!(empty, LifecycleRuntimeConfig::default());
@@ -1166,7 +1168,7 @@ mod tests {
                 setup_timeout_secs: SetupTimeout::DEFAULT,
             }
         );
-        assert!(serde_json5::from_str::<LifecycleRuntimeConfig>("{ grace: 1 }").is_err());
+        serde_json5::from_str::<LifecycleRuntimeConfig>("{ grace: 1 }").unwrap_err();
     }
 
     #[test]
@@ -1450,7 +1452,7 @@ mod tests {
 
     /// Pin the wire contract of `PairedPeer` (contrast with the plain-array
     /// `slot_bindings` shape pinned above): full `(core_node, instance_id)`
-    /// peer address, the peer's slot link_id, and the peer's copy only when
+    /// peer address, the peer's slot `link_id`, and the peer's copy only when
     /// it has one. This shape travels boot configs and `stack list` output.
     #[test]
     fn paired_peer_serde_contract() {
@@ -1557,7 +1559,7 @@ mod tests {
     fn rejects_invalid_instance_id() {
         let err = runtime_config_from_json("bad id!").unwrap_err();
         assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref msg)) if msg.contains("Invalid name"))
+            matches!(&err, Error::Parsing(ParsingError::CannotParseConfig(msg)) if msg.contains("Invalid name"))
                 || matches!(err, Error::Parsing(ParsingError::InvalidName(_, _))),
             "expected parsing error about invalid name, got: {err}"
         );

@@ -39,12 +39,10 @@ pub fn slow_connection_hint(flag: &str) -> String {
 /// Watches for an idle period: returns when no `notify_one()` arrives for `idle_timeout`.
 /// Each call to `notify_one()` on `notify` resets the clock.
 async fn watch_idle(notify: Arc<Notify>, idle_timeout: Duration) {
-    loop {
-        match tokio::time::timeout(idle_timeout, notify.notified()).await {
-            Ok(()) => continue,
-            Err(_) => return,
-        }
-    }
+    while tokio::time::timeout(idle_timeout, notify.notified())
+        .await
+        .is_ok()
+    {}
 }
 
 /// How a phase that cannot be dropped is asked to end: the token asks it to
@@ -59,6 +57,7 @@ pub(super) struct DrainOnCancel {
 }
 
 /// Outcome of a per-phase operation wrapped with idle + (optional) launch-deadline enforcement.
+#[derive(Debug)]
 enum PhaseOutcome<T> {
     Completed(T),
     IdleTimeout,
@@ -98,7 +97,7 @@ async fn run_phase_with_timeouts<F, T>(
     cancel_and_drain: Option<&DrainOnCancel>,
 ) -> PhaseOutcome<T>
 where
-    F: std::future::Future<Output = T> + ?Sized,
+    F: Future<Output = T> + ?Sized,
 {
     match cancel_and_drain {
         None => {
@@ -126,12 +125,12 @@ async fn run_phase_drop_on_timeout<F, T>(
     change_deadline: Option<Instant>,
 ) -> PhaseOutcome<T>
 where
-    F: std::future::Future<Output = T> + ?Sized,
+    F: Future<Output = T> + ?Sized,
 {
     let inner = async {
         tokio::select! {
             biased;
-            _ = watch_idle(activity_notify, idle_timeout) => None,
+            () = watch_idle(activity_notify, idle_timeout) => None,
             result = phase => Some(result),
         }
     };
@@ -162,7 +161,7 @@ async fn run_phase_cancel_on_timeout<F, T>(
     drain: &DrainOnCancel,
 ) -> PhaseOutcome<T>
 where
-    F: std::future::Future<Output = T> + ?Sized,
+    F: Future<Output = T> + ?Sized,
 {
     // With no deadline this arm waits on a future that never resolves, so
     // only the idle watcher or the phase can end the race.
@@ -172,13 +171,13 @@ where
             None => std::future::pending::<()>().await,
         }
     };
-    tokio::pin!(deadline_sleep);
+    let mut deadline_sleep = std::pin::pin!(deadline_sleep);
 
     let timeout_kind = tokio::select! {
         biased;
         result = phase.as_mut() => return PhaseOutcome::Completed(result),
-        _ = watch_idle(activity_notify, idle_timeout) => PhaseOutcome::IdleTimeout,
-        _ = &mut deadline_sleep => PhaseOutcome::MaxTimeout,
+        () = watch_idle(activity_notify, idle_timeout) => PhaseOutcome::IdleTimeout,
+        () = &mut deadline_sleep => PhaseOutcome::MaxTimeout,
     };
 
     // Timeout fired. Ask the phase to tear itself down, then drive it to
@@ -215,7 +214,10 @@ pub(in crate::services::stack) fn phase_cancelled() -> WorkStop {
 /// `cancel_and_drain` controls what happens to the phase future on timeout
 /// and on a cancel; see [`run_phase_with_timeouts`] for the per-phase
 /// rationale.
-#[allow(clippy::too_many_arguments)] // All args serve distinct, unrelated roles; grouping them adds noise.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input, and a struct of them only moves the list"
+)]
 pub(super) async fn run_phase<F, T>(
     phase: Pin<Box<F>>,
     activity_notify: Arc<Notify>,
@@ -228,7 +230,7 @@ pub(super) async fn run_phase<F, T>(
     cancel_and_drain: Option<DrainOnCancel>,
 ) -> T
 where
-    F: std::future::Future<Output = T> + ?Sized,
+    F: Future<Output = T> + ?Sized,
 {
     let phase = run_phase_with_timeouts(
         phase,
@@ -237,10 +239,10 @@ where
         change_deadline,
         cancel_and_drain.as_ref(),
     );
-    tokio::pin!(phase);
+    let mut phase = std::pin::pin!(phase);
     let outcome = tokio::select! {
         biased;
-        _ = cancel.cancelled() => {
+        () = cancel.cancelled() => {
             if let Some(drain) = &cancel_and_drain {
                 drain.token.cancel();
                 let _ = tokio::time::timeout(drain.budget, phase.as_mut()).await;
@@ -289,6 +291,7 @@ where
 mod tests {
     use super::*;
     use log_export::{LogExporter, LogKind};
+    use std::assert_matches;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::mpsc;
 
@@ -301,16 +304,20 @@ mod tests {
         cleanup_ran: Arc<AtomicBool>,
     ) -> &'static str {
         tokio::select! {
-            _ = cancel.cancelled() => {
+            () = cancel.cancelled() => {
                 cleanup_ran.store(true, Ordering::SeqCst);
                 "cleaned_up"
             }
-            _ = std::future::pending::<()>() => unreachable!("phase should never complete on its own in these tests"),
+            () = std::future::pending::<()>() => unreachable!("phase should never complete on its own in these tests"),
         }
     }
 
     /// How a test reads the stop a phase gives: its cause, its kind and its
     /// message.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the phase runner gives the stop by value"
+    )]
     fn described(stop: WorkStop) -> String {
         let cause = match &stop {
             WorkStop::Failed(_) => "failed",
@@ -378,11 +385,15 @@ mod tests {
         let phase = async {
             // Large enough that inlining the phase into a wrapper would show
             // in the wrapper's own size.
+            #[expect(
+                clippy::large_stack_arrays,
+                reason = "the test measures a future that is large on purpose"
+            )]
             let buffer = [0u8; 64 * 1024];
             tokio::task::yield_now().await;
             borrowed.len() + buffer.len()
         };
-        let inner_size = std::mem::size_of_val(&phase);
+        let inner_size = size_of_val(&phase);
         assert!(
             inner_size >= 64 * 1024,
             "the phase future carries its buffer: {inner_size} bytes"
@@ -396,7 +407,7 @@ mod tests {
             Some(Instant::now() + Duration::from_secs(1)),
             None,
         );
-        let wrapper_size = std::mem::size_of_val(&wrapper);
+        let wrapper_size = size_of_val(&wrapper);
         assert!(
             wrapper_size < 1024,
             "the wrapper owns a pointer to the phase, not the phase: {wrapper_size} bytes"
@@ -423,8 +434,9 @@ mod tests {
         )
         .await;
 
-        assert!(
-            matches!(outcome, PhaseOutcome::IdleTimeout),
+        assert_matches!(
+            outcome,
+            PhaseOutcome::IdleTimeout,
             "idle timeout branch expected",
         );
         assert!(
@@ -445,14 +457,15 @@ mod tests {
             Box::pin(cancellable_phase(token.clone(), Arc::clone(&cleanup_ran))),
             Arc::clone(&notify),
             // Idle much larger than max so only the deadline branch can fire.
-            Duration::from_secs(600),
+            Duration::from_mins(10),
             Some(deadline),
             &drain(token),
         )
         .await;
 
-        assert!(
-            matches!(outcome, PhaseOutcome::MaxTimeout),
+        assert_matches!(
+            outcome,
+            PhaseOutcome::MaxTimeout,
             "max timeout branch expected",
         );
         assert!(
@@ -512,7 +525,7 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(outcome, PhaseOutcome::IdleTimeout));
+        assert_matches!(outcome, PhaseOutcome::IdleTimeout);
         assert!(
             cleanup_ran.load(Ordering::SeqCst),
             "the cleanup ends within the drain budget"
@@ -538,7 +551,7 @@ mod tests {
                 Arc::clone(&cleanup_ran),
             )),
             Arc::new(Notify::new()),
-            Duration::from_secs(600),
+            Duration::from_mins(10),
             None,
             &reset,
             &log,
@@ -590,7 +603,7 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(outcome, PhaseOutcome::IdleTimeout));
+        assert_matches!(outcome, PhaseOutcome::IdleTimeout);
         assert!(
             dropped.load(Ordering::SeqCst),
             "an add or build phase is dropped, not drained, when its idle budget runs out"
@@ -611,7 +624,7 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(outcome, PhaseOutcome::MaxTimeout));
+        assert_matches!(outcome, PhaseOutcome::MaxTimeout);
         assert!(
             dropped.load(Ordering::SeqCst),
             "the phase is dropped when the launch deadline fires"
@@ -667,7 +680,7 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(outcome, PhaseOutcome::IdleTimeout));
+        assert_matches!(outcome, PhaseOutcome::IdleTimeout);
         assert_eq!(feedback_rx.recv().await, Some("working"));
         assert!(
             feedback_rx.recv().await.is_none(),

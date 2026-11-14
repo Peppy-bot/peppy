@@ -10,6 +10,7 @@ use std::path::Path;
 /// (`#[serde(deny_unknown_fields)]` + the typed `PeppySchema` enum), so
 /// callers that walk a repository can just attempt to parse and treat
 /// failures as "not a launcher."
+#[derive(Debug)]
 pub struct PeppyLauncherParser;
 
 impl PeppyLauncherParser {
@@ -167,7 +168,7 @@ mod tests {
             .description
             .paragraphs()
             .iter()
-            .map(|paragraph| paragraph.as_str())
+            .map(config::description::Description::as_str)
             .collect();
         assert_eq!(
             paragraphs,

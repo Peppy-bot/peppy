@@ -52,7 +52,9 @@ fn deadline_is_grace_plus_join_plus_finalize() {
     assert_eq!(force_kill_deadline(grace), expected);
     // The finalize margin is the headroom beyond the node's bounded exit.
     assert_eq!(
-        force_kill_deadline(grace) - node_bounded_exit(grace),
+        force_kill_deadline(grace)
+            .checked_sub(node_bounded_exit(grace))
+            .unwrap(),
         Duration::from_secs(RUNTIME_FINALIZE_MARGIN_SECS),
     );
 }

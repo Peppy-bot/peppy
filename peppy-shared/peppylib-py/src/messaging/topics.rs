@@ -10,7 +10,7 @@ use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Python wrapper for TopicMessage
+/// Python wrapper for `TopicMessage`
 ///
 /// Keeps the received [`Message`] whole instead of destructuring it into owned
 /// fields. The message already owns every string the getters return and its
@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 /// wrapper copies nothing. Python pays a single copy of the wire bytes, in the
 /// [`payload`](Self::payload) getter, and that one is unavoidable: `PyBytes`
 /// owns its buffer and needs the GIL, while reception runs without it.
+#[derive(Debug)]
 #[pyclass(name = "TopicMessage")]
 pub struct PyTopicMessage {
     inner: Message,
@@ -40,11 +41,11 @@ impl PyTopicMessage {
         self.inner.core_node()
     }
 
-    /// The producer's bound link_id, parsed from the inbound topic keyexpr.
-    /// On a pairing subscription this is the peer's own slot link_id, which is
+    /// The producer's bound `link_id`, parsed from the inbound topic keyexpr.
+    /// On a pairing subscription this is the peer's own slot `link_id`, which is
     /// what the Rust forwarding path re-checks against the slot's pin; exposing
     /// it here lets a Python node make the same check. Empty for messages that
-    /// arrived via a non-topic path, where the keyexpr encodes no link_id.
+    /// arrived via a non-topic path, where the keyexpr encodes no `link_id`.
     #[getter]
     fn link_id(&self) -> &str {
         self.inner.link_id()
@@ -69,6 +70,7 @@ impl From<Message> for PyTopicMessage {
 }
 
 /// Python wrapper for Subscription
+#[derive(Debug)]
 #[pyclass(name = "Subscription")]
 pub struct PySubscription {
     inner: Arc<Mutex<Subscription>>,
@@ -96,6 +98,7 @@ impl PySubscription {
 /// [`BoundSetSubscription`] for the merge semantics (per-producer order, fair
 /// polling, drain-before-shutdown, empty-set pending, producers joining and
 /// leaving the set).
+#[derive(Debug)]
 #[pyclass(name = "BoundSetSubscription")]
 pub struct PyBoundSetSubscription {
     pub(crate) inner: Arc<Mutex<BoundSetSubscription>>,
@@ -129,7 +132,7 @@ impl PyBoundSetSubscription {
 /// `KeepLatest` keeps the newest messages and drops the oldest unread one when
 /// the queue is full, so the transport never waits for the reader.
 #[pyclass(name = "TopicBuffer", eq, eq_int, from_py_object)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PyTopicBuffer {
     Backpressure,
     KeepLatest,
@@ -138,13 +141,14 @@ pub enum PyTopicBuffer {
 impl From<PyTopicBuffer> for TopicBuffer {
     fn from(buffer: PyTopicBuffer) -> Self {
         match buffer {
-            PyTopicBuffer::Backpressure => TopicBuffer::Backpressure,
-            PyTopicBuffer::KeepLatest => TopicBuffer::KeepLatest,
+            PyTopicBuffer::Backpressure => Self::Backpressure,
+            PyTopicBuffer::KeepLatest => Self::KeepLatest,
         }
     }
 }
 
-/// Python wrapper for TopicMessenger
+/// Python wrapper for `TopicMessenger`
+#[derive(Debug)]
 #[pyclass(name = "TopicMessenger")]
 pub struct PyTopicMessenger;
 
@@ -166,7 +170,10 @@ impl PyTopicMessenger {
     /// node.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_producer, qos, retention, buffer))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the parameters of the Python method"
+    )]
     fn subscribe<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -209,7 +216,10 @@ impl PyTopicMessenger {
     /// the pair included.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, pairing_target, link_id, as_topic_name, peer, timeout_secs))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the parameters of the Python method"
+    )]
     fn wait_for_pairing_subscriber<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -246,7 +256,10 @@ impl PyTopicMessenger {
     /// (the node under test, on its slot): the wire shape a pairing emission
     /// has, for a mock playing the other end of a pair.
     #[staticmethod]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the parameters of the Python method"
+    )]
     fn declare_pairing_publisher<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -279,7 +292,7 @@ impl PyTopicMessenger {
     }
 
     /// A statically pinned peer-topic subscription: producer, pairing
-    /// target, producer-side link_id and the mock's own slot `as_link_id`
+    /// target, producer-side `link_id` and the mock's own slot `as_link_id`
     /// all pinned, the exact wire shape of a paired peer's subscription,
     /// without the pin-following machinery (a test mock's pin never
     /// changes). Test-support seam (`peppylib::testing`); generated pairing
@@ -287,7 +300,10 @@ impl PyTopicMessenger {
     /// The subscription keeps the newest messages, so a test can leave it
     /// unread without holding up the mock's session.
     #[staticmethod]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the parameters of the Python method"
+    )]
     fn subscribe_peer_pinned<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -359,11 +375,14 @@ impl PyTopicMessenger {
     /// [`wait_for_subscriber`](Self::wait_for_subscriber) for a publisher
     /// bound under a concrete producer-side `link_id` (a pairing slot
     /// publisher): the match is checked against the same keyexpr the
-    /// publisher will emit on, link_id segment included. `link_id` of `None`
+    /// publisher will emit on, `link_id` segment included. `link_id` of `None`
     /// matches the reserved default `_` segment.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, timeout_secs, link_id=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the parameters of the Python method"
+    )]
     fn wait_for_subscriber_with_link_id<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -400,8 +419,8 @@ impl PyTopicMessenger {
     /// lock-free. Declare once, then publish per message (a camera streaming
     /// frames, a sensor at rate).
     ///
-    /// `link_id` binds the publisher under a concrete producer-side link_id
-    /// wire segment (pairing slot publishers pass their own slot link_id);
+    /// `link_id` binds the publisher under a concrete producer-side `link_id`
+    /// wire segment (pairing slot publishers pass their own slot `link_id`);
     /// `None` falls back to the reserved default `_` segment.
     ///
     /// `retention` is the topic's declared policy.
@@ -410,7 +429,10 @@ impl PyTopicMessenger {
     /// join later.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, qos, retention, link_id=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the parameters of the Python method"
+    )]
     fn declare_publisher<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -446,6 +468,7 @@ impl PyTopicMessenger {
 /// Python wrapper for a lock-free per-topic publisher, vended by
 /// [`PyTopicMessenger::declare_publisher`]. Holds the topic binding so each
 /// `publish` skips the central messenger lock; clone-cheap (an `Arc` bump).
+#[derive(Debug)]
 #[pyclass(name = "TopicPublisher")]
 pub struct PyTopicPublisher {
     pub(crate) inner: TopicPublisher,

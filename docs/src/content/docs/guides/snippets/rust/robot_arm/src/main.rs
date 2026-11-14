@@ -8,7 +8,7 @@ use peppygen::{NodeBuilder, Parameters, Result};
 // currently paired on the slot. Unpaired, the subscription stays silent
 // and publishes go nowhere; the code does not change either way.
 fn main() -> Result<()> {
-    NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+    NodeBuilder::new().run(async |_args: Parameters, node_runner| {
         tokio::spawn(async move {
             // Declare the publisher once; every publish below is then lock-free.
             let publisher = match joint_states::declare_publisher(&node_runner).await {

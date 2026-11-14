@@ -102,9 +102,8 @@ pub(super) async fn probe_reachable(
         )
         .await
     {
-        Ok(_) => Ok(true),
+        Ok(_) | Err(Error::ServiceTimeout { .. }) => Ok(true),
         Err(Error::ServiceUnreachable { .. }) => Ok(false),
-        Err(Error::ServiceTimeout { .. }) => Ok(true),
         Err(e) => Err(e),
     }
 }

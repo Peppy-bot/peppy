@@ -42,7 +42,7 @@ pub fn of_file_reporting(
 }
 
 /// An incremental sha256, for bytes that arrive in parts.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Hasher(Sha256);
 
 impl Hasher {
@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn a_file_and_its_bytes_in_parts_have_the_digest_of_the_whole() {
-        let bytes: Vec<u8> = (0..3 * READ_BUFFER_BYTES + 17).map(|i| i as u8).collect();
+        let bytes: Vec<u8> = Vec::from_fn(3 * READ_BUFFER_BYTES + 17, |i| i.to_le_bytes()[0]);
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("blob");
         std::fs::write(&path, &bytes).expect("write");

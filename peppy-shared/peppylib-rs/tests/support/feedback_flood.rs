@@ -2,7 +2,7 @@
 //! feedback stream, for the tests of a caller that reads its feedback late or
 //! never. Each feedback payload is its index, as text.
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "each test binary uses a part of this module")]
 
 use std::time::Duration;
 
@@ -14,13 +14,13 @@ use peppylib::types::Payload;
 use tokio::sync::oneshot;
 
 /// Turns a hang into a failure. No test passes or fails on it otherwise.
-pub const HANG_GUARD: Duration = Duration::from_secs(30);
+pub(crate) const HANG_GUARD: Duration = Duration::from_secs(30);
 
 /// The result every flooded goal completes with.
-pub const FLOOD_RESULT: &[u8] = b"done";
+pub(crate) const FLOOD_RESULT: &[u8] = b"done";
 
 /// The action a flooding provider serves.
-pub struct FloodedAction<'a> {
+pub(crate) struct FloodedAction<'a> {
     pub core_node: &'a str,
     pub instance_id: &'a str,
     pub target: SenderTarget,
@@ -30,7 +30,7 @@ pub struct FloodedAction<'a> {
 /// A running flooding provider. `flooded` fires once the goal is completed,
 /// all its feedback and the end of its stream published. Dropping the value
 /// stops the provider.
-pub struct Flood {
+pub(crate) struct Flood {
     pub flooded: oneshot::Receiver<()>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -45,7 +45,7 @@ impl Drop for Flood {
 /// `feedback_count` feedback messages, then completes it with
 /// [`FLOOD_RESULT`]. The action stays exposed, to answer result requests,
 /// until the returned [`Flood`] drops.
-pub async fn start_flooding_provider(
+pub(crate) async fn start_flooding_provider(
     provider: &MessengerHandle,
     action: FloodedAction<'_>,
     feedback_count: usize,
@@ -90,7 +90,7 @@ pub async fn start_flooding_provider(
 
 /// Reads `goal`'s feedback stream to its end and returns the feedback
 /// indexes in the order they arrived.
-pub async fn read_to_the_end(goal: &mut ActionGoalHandle) -> Vec<usize> {
+pub(crate) async fn read_to_the_end(goal: &mut ActionGoalHandle) -> Vec<usize> {
     let mut indexes = Vec::new();
     loop {
         match tokio::time::timeout(HANG_GUARD, goal.on_next_feedback())

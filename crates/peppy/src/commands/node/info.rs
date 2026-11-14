@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 use peppylib::core_node::transport::poll;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn node_info(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
+pub(super) fn node_info(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
     crate::commands::block_on(node_info_async(ctx, node_name, node_tag))
 }
 
@@ -25,6 +25,13 @@ async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: Str
 }
 
 /// What `peppy node info` prints for `node_name:node_tag`.
+#[cfg_attr(
+    not(feature = "test-support"),
+    expect(
+        unreachable_pub,
+        reason = "the `test-support` feature exports this function"
+    )
+)]
 pub async fn node_info_rendered(
     ctx: &Arc<AppContext>,
     node_name: &str,
@@ -41,7 +48,7 @@ pub async fn node_info_rendered(
         REQUEST_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to get node info: {}", e)))?;
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to get node info: {e}")))?;
 
     // "Not in stack" is a successful outcome of the lookup, not a daemon-side
     // error. Surface it to the user as a clean failure message without the
@@ -49,8 +56,7 @@ pub async fn node_info_rendered(
     let info = match response {
         NodeInfoResponse::NotInStack => {
             return Err(Error::ExecutionFailed(format!(
-                "Node '{}:{}' is not in the node stack",
-                node_name, node_tag
+                "Node '{node_name}:{node_tag}' is not in the node stack"
             )));
         }
         NodeInfoResponse::Found(info) => info,
@@ -246,7 +252,7 @@ fn write_dependencies(out: &mut String, interfaces: &Interfaces) {
     }
     write_section_heading(out, "Dependencies");
     for dep in &dependencies {
-        let _ = writeln!(out, "  - {}", dep);
+        let _ = writeln!(out, "  - {dep}");
     }
 }
 
@@ -356,16 +362,14 @@ fn write_consumed_interfaces(out: &mut String, interfaces: &Interfaces) {
 pub(super) fn retention_note(retention: TopicRetention) -> String {
     match retention {
         TopicRetention::LiveOnly => String::new(),
-        retaining => format!(", retention: {retaining}"),
+        retaining @ TopicRetention::Latest { .. } => format!(", retention: {retaining}"),
     }
 }
 
 /// Suffix naming the `manifest.implements` slot a contract-backed produced
 /// entry resolves through; empty for a native entry.
 fn via_slot(link_id: Option<&str>) -> String {
-    link_id
-        .map(|link_id| format!(" (via implements slot: {link_id})"))
-        .unwrap_or_default()
+    link_id.map_or_default(|link_id| format!(" (via implements slot: {link_id})"))
 }
 
 /// Render a parameter declaration: a primitive shows its type and optional
@@ -388,7 +392,7 @@ fn write_parameter_spec(out: &mut String, key: &str, spec: &ParameterSpec, inden
                     );
                 }
                 None => {
-                    let _ = writeln!(out, "{}{}: {}", pad, key, type_name);
+                    let _ = writeln!(out, "{pad}{key}: {type_name}");
                 }
             }
         }
@@ -396,15 +400,15 @@ fn write_parameter_spec(out: &mut String, key: &str, spec: &ParameterSpec, inden
             let item_type = describe_parameter_spec_inline(items);
             match length {
                 Some(l) => {
-                    let _ = writeln!(out, "{}{}: array[{}; {}]", pad, key, item_type, l);
+                    let _ = writeln!(out, "{pad}{key}: array[{item_type}; {l}]");
                 }
                 None => {
-                    let _ = writeln!(out, "{}{}: array[{}]", pad, key, item_type);
+                    let _ = writeln!(out, "{pad}{key}: array[{item_type}]");
                 }
             }
         }
         ParameterSpec::Group(map) => {
-            let _ = writeln!(out, "{}{}:", pad, key);
+            let _ = writeln!(out, "{pad}{key}:");
             for (child_key, child_spec) in map {
                 write_parameter_spec(out, child_key, child_spec, indent + 1);
             }
@@ -519,8 +523,7 @@ mod tests {
 
     use config::node::NodeConfigParser;
     use config::node::RestartDeclaration;
-    use core_node_api::encoding::NodeInstanceInfo;
-    use core_node_api::{InstanceState, NodeStage};
+    use core_node_api::NodeStage;
     use std::path::PathBuf;
 
     /// A failed instance's restarts ended at the cap once its attempt is past
@@ -614,7 +617,7 @@ mod tests {
                             urls: vec!["http://127.0.0.1:8900/sensor/v1/mcp".to_string()],
                         },
                     ],
-                    restart_status: core_node_api::RestartStatus::default(),
+                    restart_status: RestartStatus::default(),
                 },
                 NodeInstanceInfo {
                     clock: Default::default(),
@@ -624,7 +627,7 @@ mod tests {
                     slot_bindings: std::collections::BTreeMap::new(),
                     pairing_slots: std::collections::BTreeMap::new(),
                     endpoints: Vec::new(),
-                    restart_status: core_node_api::RestartStatus::default(),
+                    restart_status: RestartStatus::default(),
                 },
             ],
             add_log_path: Some(PathBuf::from("/tmp/peppy/logs/add/sensor_node.log")),

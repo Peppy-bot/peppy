@@ -12,6 +12,7 @@ use peppylib::runtime::CancellationToken;
 use peppylib::runtime::{NodeBuilder, StandaloneConfig};
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
+use std::assert_matches;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -167,9 +168,7 @@ async fn wait_until_reachable<T: std::fmt::Debug>(
             return;
         }
 
-        if Instant::now() >= deadline {
-            panic!("{timeout_message}");
-        }
+        assert!(Instant::now() < deadline, "{timeout_message}");
 
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -264,7 +263,7 @@ async fn daemon_runner_succeed() {
 
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<f64>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|parameters: Parameters, _node_runner| async move {
+        NodeBuilder::new().run(async |parameters: Parameters, _node_runner| {
             let _ = setup_tx.send(parameters.frequency_hz);
             Ok(())
         })
@@ -378,22 +377,20 @@ async fn standalone_runner_announces_declared_endpoints_during_setup_only() {
         NodeBuilder::new()
             .with_config_path(&peppy_config_path)
             .standalone(standalone_config)
-            .run(|_parameters: Parameters, node_runner| async move {
+            .run(async |_parameters: Parameters, node_runner| {
                 node_runner
                     .announce_endpoint("panel", binding("http", "0.0.0.0:8765", ""))
                     .expect("a declared label is accepted");
                 let undeclared = node_runner
                     .announce_endpoint("admin", binding("http", "127.0.0.1:9000", ""))
                     .expect_err("an undeclared label is refused");
-                assert!(
-                    matches!(undeclared, PeppyError::UndeclaredEndpoint { ref label } if label == "admin"),
+                assert_matches!(&undeclared, PeppyError::UndeclaredEndpoint { label } if label == "admin",
                     "{undeclared}"
                 );
                 let twice = node_runner
                     .announce_endpoint("panel", binding("http", "0.0.0.0:8766", ""))
                     .expect_err("a second announcement is refused");
-                assert!(
-                    matches!(twice, PeppyError::EndpointAlreadyAnnounced { ref label } if label == "panel"),
+                assert_matches!(&twice, PeppyError::EndpointAlreadyAnnounced { label } if label == "panel",
                     "{twice}"
                 );
                 node_runner
@@ -469,7 +466,7 @@ async fn standalone_runner_fails_when_a_declared_endpoint_is_not_announced() {
         NodeBuilder::new()
             .with_config_path(&peppy_config_path)
             .standalone(standalone_config)
-            .run(|_parameters: Parameters, node_runner| async move {
+            .run(async |_parameters: Parameters, node_runner| {
                 node_runner
                     .announce_endpoint("panel", binding("http", "0.0.0.0:8765", ""))
                     .expect("a declared label is accepted");
@@ -482,8 +479,7 @@ async fn standalone_runner_fails_when_a_declared_endpoint_is_not_announced() {
         .expect("runner should exit")
         .expect("runner task should not panic")
         .expect_err("a declared label left unannounced fails the run");
-    assert!(
-        matches!(error, PeppyError::EndpointNotAnnounced { ref label } if label == "viewer"),
+    assert_matches!(&error, PeppyError::EndpointNotAnnounced { label } if label == "viewer",
         "{error}"
     );
     assert!(error.to_string().contains("`viewer`"), "{error}");
@@ -513,7 +509,7 @@ async fn poll_test_node_until_answered(
         {
             Ok(response) => return response.payload(),
             Err(_) if Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(50)).await
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
             Err(err) => panic!("`{service}` never answered: {err}"),
         }
@@ -530,7 +526,7 @@ async fn daemon_runner_offers_node_endpoints_for_a_manifest_that_declares_them()
     let stack = start_daemon_stack(ENDPOINTS_PEPPY_CONFIG, None).await;
 
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             node_runner
                 .announce_endpoint("panel", binding("http", "0.0.0.0:8765", ""))
                 .expect("declared");
@@ -609,7 +605,7 @@ async fn daemon_runner_offers_no_node_endpoints_for_a_manifest_without_them() {
     let stack = start_daemon_stack(TEST_NODE_PEPPY_CONFIG, None).await;
 
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, _node_runner| async move { Ok(()) })
+        NodeBuilder::new().run(async |_parameters: Parameters, _node_runner| Ok(()))
     });
 
     let messenger = stack.connect_control_messenger().await;
@@ -674,7 +670,7 @@ async fn standalone_runner_succeed() {
         NodeBuilder::new()
             .with_config_path(&peppy_config_path)
             .standalone(standalone_config)
-            .run(|parameters: Parameters, node_runner| async move {
+            .run(async |parameters: Parameters, node_runner| {
                 assert_eq!(parameters.frequency_hz, TEST_FREQUENCY_HZ);
                 let _ = setup_tx.send(node_runner.cancellation_token().clone());
                 Ok(())
@@ -744,7 +740,7 @@ async fn node_ready_but_not_healthy() {
     let (setup_started_tx, setup_started_rx) = tokio::sync::oneshot::channel::<()>();
     let (setup_continue_tx, setup_continue_rx) = tokio::sync::oneshot::channel::<()>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, _node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, _node_runner| {
             let _ = setup_started_tx.send(());
             let _ = setup_continue_rx.await;
             Ok(())
@@ -803,8 +799,8 @@ async fn node_ready_but_not_healthy() {
     .expect_err("health service should not respond while setup is blocked");
 
     match health_err {
-        peppylib::PeppyError::ServiceUnreachable { service_name, .. }
-        | peppylib::PeppyError::ServiceTimeout { service_name, .. } => {
+        PeppyError::ServiceUnreachable { service_name, .. }
+        | PeppyError::ServiceTimeout { service_name, .. } => {
             assert_eq!(service_name, NODE_HEALTH_SERVICE);
         }
         other => panic!("unexpected health error: {other:?}"),
@@ -856,7 +852,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
 
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<CancellationToken>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             let _ = setup_tx.send(node_runner.cancellation_token().clone());
             Ok(())
         })
@@ -914,7 +910,7 @@ async fn daemon_shutdown_during_setup_cancels_token_and_exits() {
 
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<CancellationToken>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             let _ = setup_tx.send(node_runner.cancellation_token().clone());
             // Block setup forever: the shutdown must interrupt it, not wait
             // for it to complete.
@@ -1003,7 +999,7 @@ async fn node_runner_exposes_messenger_and_metadata() {
         NodeBuilder::new()
             .with_config_path(&peppy_config_path)
             .standalone(standalone_config)
-            .run(|_parameters: Parameters, node_runner| async move {
+            .run(async |_parameters: Parameters, node_runner| {
                 let _ = setup_tx.send(RunnerMetadata {
                     bound_core_node: node_runner.processor().bound_core_node().to_string(),
                     bound_instance_id: node_runner.processor().bound_instance_id().to_string(),
@@ -1075,7 +1071,7 @@ async fn daemon_shutdown_awaits_hooks_lifo_before_exit() {
     let order_second = std::sync::Arc::clone(&order);
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<()>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             node_runner.on_shutdown(async move {
                 order_first.lock().expect("order lock").push("first".into());
             });
@@ -1124,7 +1120,7 @@ async fn daemon_shutdown_during_setup_runs_registered_hooks() {
     let (hook_tx, hook_rx) = tokio::sync::oneshot::channel::<()>();
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<()>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             node_runner.on_shutdown(async move {
                 let _ = hook_tx.send(());
             });
@@ -1167,7 +1163,7 @@ async fn daemon_shutdown_hooks_are_bounded_by_grace_window() {
     let order_stuck = std::sync::Arc::clone(&order);
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<()>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             // LIFO: registered first, so it only runs after the stuck hook
             // below, which the grace window never lets finish.
             node_runner.on_shutdown(async move {
@@ -1175,7 +1171,7 @@ async fn daemon_shutdown_hooks_are_bounded_by_grace_window() {
             });
             node_runner.on_shutdown(async move {
                 order_stuck.lock().expect("order lock").push("stuck-start");
-                tokio::time::sleep(Duration::from_secs(600)).await;
+                tokio::time::sleep(Duration::from_mins(10)).await;
                 order_stuck.lock().expect("order lock").push("stuck-end");
             });
             let _ = setup_tx.send(());
@@ -1220,7 +1216,7 @@ async fn daemon_sigint_runs_hooks_and_exits() {
     let (hook_tx, hook_rx) = tokio::sync::oneshot::channel::<()>();
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<()>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             node_runner.on_shutdown(async move {
                 let _ = hook_tx.send(());
             });
@@ -1239,7 +1235,7 @@ async fn daemon_sigint_runs_hooks_and_exits() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     // SAFETY: plain kill(2) targeting our own pid with a handled signal.
     unsafe {
-        libc::kill(std::process::id() as i32, libc::SIGINT);
+        libc::kill(std::process::id().cast_signed(), libc::SIGINT);
     }
 
     tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
@@ -1280,7 +1276,7 @@ async fn standalone_cancel_awaits_hooks_before_exit() {
         NodeBuilder::new()
             .with_config_path(&peppy_config_path)
             .standalone(standalone_config)
-            .run(|_parameters: Parameters, node_runner| async move {
+            .run(async |_parameters: Parameters, node_runner| {
                 node_runner.on_shutdown(async move {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     let _ = hook_tx.send(());
@@ -1355,8 +1351,9 @@ fn init_parameters_can_only_be_taken_once() {
     assert_eq!(params.value, 42);
 
     let err = ctx.take_parameters().expect_err("second take should fail");
-    assert!(
-        matches!(err, PeppyError::ParametersAlreadyTaken),
+    assert_matches!(
+        err,
+        PeppyError::ParametersAlreadyTaken,
         "expected ParametersAlreadyTaken, got: {err:?}"
     );
 }
@@ -1434,14 +1431,15 @@ fn init_takes_a_non_utf8_runtime_config_as_daemon_mode() {
         panic!("init should select daemon mode and fail on the non-UTF-8 value");
     };
 
-    assert!(
-        matches!(err, PeppyError::MissingInstanceIdEnvVar { .. }),
+    assert_matches!(
+        err,
+        PeppyError::MissingInstanceIdEnvVar { .. },
         "expected MissingInstanceIdEnvVar, got: {err:?}"
     );
 }
 
-/// The slot helpers that generated code splices refuse a link_id the manifest
-/// declares no slot for, naming the slot kind and the link_id they were given.
+/// The slot helpers that generated code splices refuse a `link_id` the manifest
+/// declares no slot for, naming the slot kind and the `link_id` they were given.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn slot_helpers_name_an_undeclared_slot() {
     let router = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
@@ -1470,8 +1468,7 @@ async fn slot_helpers_name_an_undeclared_slot() {
     else {
         panic!("subscribe_peer must refuse an undeclared pairing slot");
     };
-    assert!(
-        matches!(&subscribe_error, PeppyError::UnknownPairingSlot { link_id } if link_id == "missing"),
+    assert_matches!(&subscribe_error, PeppyError::UnknownPairingSlot { link_id } if link_id == "missing",
         "expected UnknownPairingSlot for `missing`, got: {subscribe_error:?}"
     );
 
@@ -1485,8 +1482,7 @@ async fn slot_helpers_name_an_undeclared_slot() {
     ) else {
         panic!("declare_peer_publisher must refuse an undeclared pairing slot");
     };
-    assert!(
-        matches!(&publisher_error, PeppyError::UnknownPairingSlot { link_id } if link_id == "missing"),
+    assert_matches!(&publisher_error, PeppyError::UnknownPairingSlot { link_id } if link_id == "missing",
         "expected UnknownPairingSlot for `missing`, got: {publisher_error:?}"
     );
 
@@ -1502,8 +1498,7 @@ async fn slot_helpers_name_an_undeclared_slot() {
     else {
         panic!("subscribe_observed must refuse an undeclared observer slot");
     };
-    assert!(
-        matches!(&observe_error, PeppyError::UnknownObservationSlot { link_id } if link_id == "missing"),
+    assert_matches!(&observe_error, PeppyError::UnknownObservationSlot { link_id } if link_id == "missing",
         "expected UnknownObservationSlot for `missing`, got: {observe_error:?}"
     );
 }
@@ -1520,7 +1515,7 @@ async fn daemon_node_reads_the_setup_budget_of_its_launch_config() {
 
     let (budget_tx, budget_rx) = tokio::sync::oneshot::channel::<Duration>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             let _ = budget_tx.send(node_runner.setup_timeout());
             Ok(())
         })
@@ -1552,7 +1547,7 @@ async fn a_node_that_answers_ready_answers_the_shutdown_request() {
 
     let (hook_tx, hook_rx) = tokio::sync::oneshot::channel::<()>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_parameters: Parameters, node_runner| {
             node_runner.on_shutdown(async move {
                 let _ = hook_tx.send(());
             });

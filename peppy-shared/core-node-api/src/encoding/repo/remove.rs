@@ -18,7 +18,7 @@ impl RepoRemoveRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<repo_capnp::repo_remove_request::Builder>();
+            let mut request = builder.init_root::<repo_capnp::repo_remove_request::Builder<'_>>();
             request.set_id(self.id);
         }
         encode_message(&builder)
@@ -26,7 +26,7 @@ impl RepoRemoveRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<repo_capnp::repo_remove_request::Reader>()?;
+        let request = reader.get_root::<repo_capnp::repo_remove_request::Reader<'_>>()?;
         Ok(Self {
             id: request.get_id(),
         })
@@ -60,7 +60,7 @@ impl RepoRemoveResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<repo_capnp::repo_remove_response::Builder>();
+            let mut response = builder.init_root::<repo_capnp::repo_remove_response::Builder<'_>>();
             response.set_refresh_report(&self.refresh_report);
         }
         encode_message(&builder)
@@ -68,7 +68,7 @@ impl RepoRemoveResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<repo_capnp::repo_remove_response::Reader>()?;
+        let response = reader.get_root::<repo_capnp::repo_remove_response::Reader<'_>>()?;
         Ok(Self {
             refresh_report: response.get_refresh_report()?.to_str()?.to_owned(),
         })
@@ -76,11 +76,11 @@ impl RepoRemoveResponse {
 }
 
 impl crate::encoding::Wire for RepoRemoveRequest {
-    type Root = crate::repo_capnp::repo_remove_request::Owned;
+    type Root = repo_capnp::repo_remove_request::Owned;
 }
 
 impl crate::encoding::Wire for RepoRemoveResponse {
-    type Root = crate::repo_capnp::repo_remove_response::Owned;
+    type Root = repo_capnp::repo_remove_response::Owned;
 }
 
 #[cfg(test)]

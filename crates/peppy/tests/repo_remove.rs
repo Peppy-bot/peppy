@@ -17,7 +17,7 @@ fn find_repo_id(serve: &ServeCommandEmulation, source: &str) -> u64 {
         if field_is_source("path") || field_is_source("url") {
             return entry
                 .get("id")
-                .and_then(|v| v.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .expect("repo entry missing id");
         }
     }

@@ -119,8 +119,7 @@ pub(crate) fn note_process(
     let active = ownership.active.lock();
     let robots = active
         .as_ref()
-        .map(ActiveLaunch::robot_processes)
-        .unwrap_or_default();
+        .map_or_default(ActiveLaunch::robot_processes);
     ownership.fleet.with(|book| {
         book.note_process(ClientRef::new(core_node, instance_id), runs, &robots);
     });
@@ -218,7 +217,7 @@ mod tests {
         );
 
         let cleared = Fleet::default();
-        cleared.keep_halt_in(path.clone());
+        cleared.keep_halt_in(path);
         assert_eq!(
             cleared.with(|book| book.halted_by().map(str::to_owned)),
             None

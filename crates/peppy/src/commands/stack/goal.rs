@@ -37,7 +37,7 @@ use crate::terminal::ScrollingOutput;
 // safety net never fires before the daemon's own per-phase timeout, so users see the daemon's
 // precise error first. When the user omits the flag, no CLI ceiling is installed; the
 // contract is idle-only (daemon-side `max_timeout_secs = None`).
-const CLI_MAX_TIMEOUT_FLOOR: Duration = Duration::from_secs(7200);
+const CLI_MAX_TIMEOUT_FLOOR: Duration = Duration::from_hours(2);
 
 // CLI wall-clock fallback ceiling. `None` means idle-only (daemon-side contract honored).
 // When the user opts into `--max-timeout-secs`, add DAEMON_RESPONSE_GRACE and enforce
@@ -407,8 +407,7 @@ fn watchdog_error(
         Some(step) => (
             format!(" during the {} phase", step.phase_label()),
             idle_timeout_flag(step)
-                .map(|flag| format!("; {}", slow_connection_hint(flag)))
-                .unwrap_or_default(),
+                .map_or_default(|flag| format!("; {}", slow_connection_hint(flag))),
         ),
         None => (String::new(), String::new()),
     };
@@ -541,7 +540,7 @@ mod tests {
             error.to_string(),
             format!("Launch was cancelled by a stack reset. Log file: {LOG_PATH}")
         );
-        assert!(end_of(StackGoalOutcome::Completed(Default::default()), false).is_ok());
+        end_of(StackGoalOutcome::Completed(Default::default()), false).unwrap();
     }
 
     /// A command that fell behind the output of its stack goal says that it

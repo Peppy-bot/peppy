@@ -227,8 +227,8 @@ impl FleetBook {
     /// The fleet listing now.
     pub(crate) fn listing(&self) -> FleetListing {
         let mut listing = self.launch.clone();
-        listing.version = self.version.clone();
-        listing.core_node = self.core_node.clone();
+        listing.version.clone_from(&self.version);
+        listing.core_node.clone_from(&self.core_node);
         listing.halted = self.halt.is_some();
         listing.halted_by = self.halt.clone().unwrap_or_default();
         listing.leases = self.lease_listing();
@@ -257,18 +257,16 @@ impl FleetBook {
                     holder_core_node: lease.holder.core_node.clone(),
                     name: lease.name.clone(),
                     open: lease.open,
-                    giver: giver.map(|g| g.instance_id.clone()).unwrap_or_default(),
-                    giver_core_node: giver.map(|g| g.core_node.clone()).unwrap_or_default(),
+                    giver: giver.map_or_default(|g| g.instance_id.clone()),
+                    giver_core_node: giver.map_or_default(|g| g.core_node.clone()),
                     receiver: lease
                         .offer
                         .as_ref()
-                        .map(|r| r.instance_id.clone())
-                        .unwrap_or_default(),
+                        .map_or_default(|r| r.instance_id.clone()),
                     receiver_core_node: lease
                         .offer
                         .as_ref()
-                        .map(|r| r.core_node.clone())
-                        .unwrap_or_default(),
+                        .map_or_default(|r| r.core_node.clone()),
                 }
             })
             .collect()
@@ -376,8 +374,8 @@ impl FleetBook {
             let _ = holder.events.send(LeaseEvent {
                 event,
                 robot: robot.to_owned(),
-                giver: giver.map(|g| g.instance_id.clone()).unwrap_or_default(),
-                giver_core_node: giver.map(|g| g.core_node.clone()).unwrap_or_default(),
+                giver: giver.map_or_default(|g| g.instance_id.clone()),
+                giver_core_node: giver.map_or_default(|g| g.core_node.clone()),
                 cause: cause.to_owned(),
             });
         }

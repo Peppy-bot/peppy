@@ -5,6 +5,7 @@ use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, TimeoutConfig};
 use peppy::context::AppContext;
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
+use std::assert_matches;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -123,10 +124,9 @@ fn fetch_info(
         .expect("node_info request should succeed");
     match response {
         NodeInfoResponse::Found(info) => *info,
-        NodeInfoResponse::NotInStack => panic!(
-            "node_info unexpectedly reported `{}:{}` as not in the stack",
-            node_name, node_tag
-        ),
+        NodeInfoResponse::NotInStack => {
+            panic!("node_info unexpectedly reported `{node_name}:{node_tag}` as not in the stack")
+        }
     }
 }
 
@@ -339,21 +339,21 @@ fn node_info_no_dependencies_when_no_consumes() {
         .topics
         .as_ref()
         .and_then(|t| t.consumes.as_ref())
-        .is_none_or(|t| t.is_empty());
+        .is_none_or(Vec::is_empty);
     let no_consumed_services = info_response
         .config
         .interfaces
         .services
         .as_ref()
         .and_then(|s| s.consumes.as_ref())
-        .is_none_or(|s| s.is_empty());
+        .is_none_or(Vec::is_empty);
     let no_consumed_actions = info_response
         .config
         .interfaces
         .actions
         .as_ref()
         .and_then(|a| a.consumes.as_ref())
-        .is_none_or(|a| a.is_empty());
+        .is_none_or(Vec::is_empty);
     assert!(
         no_consumed_topics && no_consumed_services && no_consumed_actions,
         "standalone node should have no dependencies"
@@ -390,15 +390,15 @@ fn node_info_returns_not_in_stack_when_node_not_in_stack() {
         ))
         .expect("node_info should return a successful response for an unknown node");
 
-    assert!(
-        matches!(response, NodeInfoResponse::NotInStack),
+    assert_matches!(
+        response,
+        NodeInfoResponse::NotInStack,
         "expected NotInStack for ghost_node:v999, got: {response:?}"
     );
 
     let logs = log_capture.logs();
     assert!(
         !logs.contains("service handler returned error"),
-        "negative node_info lookup must not emit a service-handler error log. Logs:\n{}",
-        logs
+        "negative node_info lookup must not emit a service-handler error log. Logs:\n{logs}"
     );
 }

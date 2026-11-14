@@ -3,6 +3,10 @@ name = "core-node"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }

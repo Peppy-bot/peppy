@@ -33,7 +33,6 @@ use peppylib::PeppyError;
 use peppylib::messaging::{DEFAULT_FEEDBACK_BOUND, MessengerHandle, ProducerRef};
 use serde_json::json;
 use std::fmt;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -50,7 +49,7 @@ const DAEMON_ANSWER_BOUND: Duration = Duration::from_secs(10);
 const RESULT_RETRY_PAUSE: Duration = Duration::from_secs(1);
 
 /// Why the server does not make a call of a member that moves a robot.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MoveRefused {
     /// The daemon refuses the move: the kind and the message of its
     /// refusal, which the call gives.
@@ -93,11 +92,12 @@ impl fmt::Display for FleetStop {
 /// The fleet rules of one server. Every entry of the server shares them, so
 /// one follow of the changes serves every goal on a member that moves a
 /// robot.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct MoveRules {
     inner: Arc<Inner>,
 }
 
+#[derive(Debug)]
 struct Inner {
     messenger: MessengerHandle,
     identity: ConsumerIdentity,
@@ -144,12 +144,11 @@ impl FleetView {
             ));
         }
         match &self.state {
-            ViewState::Waiting => None,
             ViewState::Seen {
                 revision,
                 halted_by: Some(by),
             } if *revision > clearance.revision => Some(FleetStop::Halted(by.clone())),
-            ViewState::Seen { .. } => None,
+            ViewState::Waiting | ViewState::Seen { .. } => None,
             ViewState::Lost(reason) => Some(FleetStop::FollowLost(reason.clone())),
         }
     }
@@ -157,7 +156,7 @@ impl FleetView {
 
 /// The goals on members that move a robot that run, and the follow of the
 /// changes that runs while one does.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Follow {
     goals: usize,
     /// Counts the follows of the changes: a follow changes the view only
@@ -362,6 +361,7 @@ async fn follow_changes(inner: Arc<Inner>, generation: u64, stop: CancellationTo
 
 /// A goal on a member that moves a robot, while it runs: the server follows
 /// the changes of the fleet until the last such goal drops its guard.
+#[derive(Debug)]
 pub struct MarkedGoal {
     rules: MoveRules,
     view: watch::Receiver<FleetView>,

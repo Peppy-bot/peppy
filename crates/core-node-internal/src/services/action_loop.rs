@@ -32,7 +32,6 @@ use peppylib::messaging::{
 };
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult};
-use std::future::Future;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -49,7 +48,7 @@ pub(crate) const STACK_RESET_REASON: &str = "cancelled by a stack reset";
 /// participant daemon goes on through a router restart or a short loss of
 /// the link between two machines. A command line process that is gone gets
 /// its goal cancelled once the grace passes.
-pub const DAEMON_SENDER_GRACE: Duration = Duration::from_secs(60);
+pub const DAEMON_SENDER_GRACE: Duration = Duration::from_mins(1);
 
 /// Exposes the built-in action `id` of the daemon on `messenger`, with
 /// feedback and with the sender grace of the daemon
@@ -200,7 +199,7 @@ impl WorkStop {
     /// cancel stopped every part that stopped, the first of them. A work
     /// whose part failed for a cause of its own failed, whatever stopped
     /// its other parts.
-    pub(crate) fn of_parts(stops: impl IntoIterator<Item = WorkStop>) -> Option<WorkStop> {
+    pub(crate) fn of_parts(stops: impl IntoIterator<Item = Self>) -> Option<Self> {
         let mut first_cancelled = None;
         for stop in stops {
             match stop {
@@ -375,15 +374,13 @@ mod tests {
     async fn accepted_goal() -> (
         GoalContext,
         peppylib::messaging::ActionGoalHandle,
-        peppylib::MessengerHandle,
+        MessengerHandle,
         ConcurrentAction,
     ) {
-        use peppylib::messaging::{FeedbackBound, SenderTarget};
+        use peppylib::messaging::FeedbackBound;
         let messenger = crate::services::tests::started_mock_messenger().await;
-        let target = || {
-            SenderTarget::node(CORE_NODE, core_node_api::names::CORE_NODE_TAG)
-                .expect("a core node identity")
-        };
+        let target =
+            || SenderTarget::node(CORE_NODE, names::CORE_NODE_TAG).expect("a core node identity");
         let mut engine =
             ConcurrentAction::expose(&messenger, CORE_NODE, "core_root", target(), ACTION, true)
                 .await
@@ -398,7 +395,7 @@ mod tests {
                 None,
                 Payload::new(),
                 FeedbackBound::new(std::num::NonZeroUsize::MIN),
-                std::time::Duration::from_secs(30),
+                Duration::from_secs(30),
             ),
             async {
                 engine
@@ -458,13 +455,9 @@ mod tests {
             "a reset alone gives its reason"
         );
 
-        peppylib::ActionMessenger::cancel_goal(
-            &messenger,
-            &handle,
-            std::time::Duration::from_secs(30),
-        )
-        .await
-        .expect("the daemon answers the cancel");
+        peppylib::ActionMessenger::cancel_goal(&messenger, &handle, Duration::from_secs(30))
+            .await
+            .expect("the daemon answers the cancel");
         assert_eq!(
             cancel_reason(&context, &reset).as_deref(),
             Some(CancelCause::Caller.reason()),
@@ -490,7 +483,7 @@ mod tests {
                 // This poll of the work goes on only once the cancel is
                 // answered.
                 tokio::task::block_in_place(|| {
-                    answered_rx.recv().expect("the test tells the answer")
+                    answered_rx.recv().expect("the test tells the answer");
                 });
                 read_by_the_work.is_cancelled()
             })
@@ -498,13 +491,9 @@ mod tests {
         });
 
         polled_rx.await.expect("the work is polled");
-        peppylib::ActionMessenger::cancel_goal(
-            &messenger,
-            &handle,
-            std::time::Duration::from_secs(30),
-        )
-        .await
-        .expect("the daemon answers the cancel");
+        peppylib::ActionMessenger::cancel_goal(&messenger, &handle, Duration::from_secs(30))
+            .await
+            .expect("the daemon answers the cancel");
         answered_tx.send(()).expect("the work waits for the answer");
 
         assert!(

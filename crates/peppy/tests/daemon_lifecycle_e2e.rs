@@ -150,7 +150,10 @@ mod zenohd_dies_with_the_daemon {
     fn attempt(home: &Path) -> Boot {
         let port = free_port();
         let (mut daemon, logs) = spawn_daemon(home, MessagingEngine::Zenoh { port });
-        if let Boot::PortCollision = wait_for_boot(&mut daemon, &logs, ROUTER_STARTED) {
+        if matches!(
+            wait_for_boot(&mut daemon, &logs, ROUTER_STARTED),
+            Boot::PortCollision
+        ) {
             return Boot::PortCollision;
         }
         let daemon_pid = daemon.0.id();
@@ -176,7 +179,7 @@ mod zenohd_dies_with_the_daemon {
     fn a_sigkilled_daemon_takes_its_zenohd_with_it() {
         for _ in 0..PORT_ATTEMPTS {
             let home = tempfile::tempdir().expect("temp home");
-            if let Boot::Ready = attempt(home.path()) {
+            if matches!(attempt(home.path()), Boot::Ready) {
                 return;
             }
         }

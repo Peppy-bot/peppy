@@ -31,6 +31,7 @@ enum NoStructuredRefusal {}
 /// `peppy_schema: "contract/v1"`. Like launchers, they are filename-agnostic:
 /// schema and shape validation are handled by serde so callers walking a
 /// repository can attempt to parse and treat failures as "not a contract."
+#[derive(Debug)]
 pub struct PeppyContractParser;
 
 impl PeppyContractParser {
@@ -61,6 +62,7 @@ impl PeppyContractParser {
 mod tests {
     use super::*;
     use config::schema::PeppySchema;
+    use std::assert_matches;
     use tempfile::NamedTempFile;
 
     #[test]
@@ -98,28 +100,25 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), b"").unwrap();
         let result = PeppyContractParser::from_path(tmp.path());
-        assert!(matches!(
-            result.unwrap_err(),
-            ContractError::EmptyContent(_)
-        ));
+        assert_matches!(result.unwrap_err(), ContractError::EmptyContent(_));
     }
 
     #[test]
     fn missing_file_rejected() {
         let result = PeppyContractParser::from_path("/path/does/not/exist.json5");
-        assert!(matches!(
+        assert_matches!(
             result.unwrap_err(),
             ContractError::CannotRead {
                 kind: std::io::ErrorKind::NotFound,
                 ..
             }
-        ));
+        );
     }
 
     #[test]
     fn malformed_json5_rejected() {
         let result = PeppyContractParser::from_content("{ manifest: [unclosed");
-        assert!(matches!(result.unwrap_err(), ContractError::Invalid(_)));
+        assert_matches!(result.unwrap_err(), ContractError::Invalid(_));
     }
 
     /// A refused key is named by its path in the document.

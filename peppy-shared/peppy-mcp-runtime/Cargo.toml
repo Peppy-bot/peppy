@@ -3,7 +3,11 @@ name = "peppy-mcp-runtime"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "The shared MCP server runtime that generated Peppy MCP server nodes compose"
+
+[lints]
+workspace = true
 
 [dependencies]
 peppy-mcp-catalog = { path = "../peppy-mcp-catalog" }

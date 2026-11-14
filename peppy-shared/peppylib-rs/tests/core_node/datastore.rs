@@ -10,6 +10,7 @@
 //! (from the wire envelope, exactly as the real daemon does) so the
 //! `last_modified_by` contract is exercised too.
 
+use std::assert_matches;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -43,7 +44,7 @@ const OWNER: &str = "owner_inst";
 const OWNER_VALUE: &[u8] = b"held";
 
 /// Spins up a stateful datastore stub serving the five endpoints (store,
-/// store_exclusive, get, list, remove) against a single shared map. Its
+/// `store_exclusive`, get, list, remove) against a single shared map. Its
 /// exclusive store refuses [`OWNED_KEY`], naming [`OWNER`], and stores any
 /// other key. All run for the lifetime of the test (aborted at teardown).
 async fn spawn_datastore_stub(server: MessengerHandle) {
@@ -207,7 +208,7 @@ async fn setup_datastore_stub() -> (EphemeralRouter, TempDir, NodeRunner) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn store_exclusive_stores_an_absent_key() {
-    let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
+    let (_router, _temp_dir, node_runner) = Box::pin(setup_datastore_stub()).await;
 
     let answer = datastore::store_exclusive(
         &node_runner,
@@ -235,7 +236,7 @@ async fn store_exclusive_stores_an_absent_key() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn store_exclusive_on_an_owned_key_answers_with_the_owners_value() {
-    let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
+    let (_router, _temp_dir, node_runner) = Box::pin(setup_datastore_stub()).await;
 
     let answer = datastore::store_exclusive(
         &node_runner,
@@ -261,7 +262,7 @@ async fn store_exclusive_on_an_owned_key_answers_with_the_owners_value() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn store_then_get_round_trips_binary_value() {
-    let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
+    let (_router, _temp_dir, node_runner) = Box::pin(setup_datastore_stub()).await;
 
     // A non-UTF-8 value under a node-name-style key proves the wrappers carry
     // raw bytes intact while still requiring a valid key.
@@ -295,7 +296,7 @@ async fn store_then_get_round_trips_binary_value() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn store_rejects_invalid_key() {
-    let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
+    let (_router, _temp_dir, node_runner) = Box::pin(setup_datastore_stub()).await;
 
     // Datastore keys are arbitrary non-empty strings (slashes, dots, spaces and
     // Unicode are all valid), so the only key the wrapper rejects locally,
@@ -310,20 +311,18 @@ async fn store_rejects_invalid_key() {
     .await
     .expect_err("an empty key should be rejected");
 
-    assert!(
-        matches!(
-            err,
-            peppylib::PeppyError::CoreNodeApi(core_node_api::Error::InvalidDatastoreKey(
-                core_node_api::encoding::DatastoreKeyError::Empty
-            ))
-        ),
+    assert_matches!(
+        err,
+        peppylib::PeppyError::CoreNodeApi(core_node_api::Error::InvalidDatastoreKey(
+            core_node_api::encoding::DatastoreKeyError::Empty
+        )),
         "expected an empty-key datastore error, got: {err:?}"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_missing_key_returns_none() {
-    let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
+    let (_router, _temp_dir, node_runner) = Box::pin(setup_datastore_stub()).await;
 
     let got = datastore::get(&node_runner, "never-stored", Duration::from_secs(3))
         .await
@@ -334,7 +333,7 @@ async fn get_missing_key_returns_none() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn store_overwrites_existing_key() {
-    let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
+    let (_router, _temp_dir, node_runner) = Box::pin(setup_datastore_stub()).await;
 
     datastore::store(
         &node_runner,
@@ -366,7 +365,7 @@ async fn store_overwrites_existing_key() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_returns_entries_with_modifier() {
-    let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
+    let (_router, _temp_dir, node_runner) = Box::pin(setup_datastore_stub()).await;
 
     datastore::store(
         &node_runner,
@@ -411,7 +410,7 @@ async fn list_returns_entries_with_modifier() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remove_deletes_key_and_reports_existence() {
-    let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
+    let (_router, _temp_dir, node_runner) = Box::pin(setup_datastore_stub()).await;
 
     datastore::store(
         &node_runner,

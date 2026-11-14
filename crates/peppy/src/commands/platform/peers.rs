@@ -14,6 +14,7 @@ use crate::context::AppContext;
 use crate::error::Result;
 use auth::client::{PeerStatus, RouterPeer};
 
+#[derive(Debug)]
 pub struct PeersCommand {
     pub api_url: Option<String>,
     pub workspace: Option<String>,

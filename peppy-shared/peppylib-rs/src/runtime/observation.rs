@@ -10,7 +10,7 @@
 //! observer follows `(source generation, source pin)` per member, not the pin
 //! alone: a source's own peer transitions never touch its subscription (the pin
 //! is unchanged), while a source-incarnation change advances that member's
-//! generation and so redeclares, even though a reused instance_id keeps the wire
+//! generation and so redeclares, even though a reused `instance_id` keeps the wire
 //! triple byte-identical, which the keyexpr alone cannot tell apart. This module
 //! supplies only that follow rule; the convergence, the fair merge across
 //! members, and the stale filter live in the engine.
@@ -58,7 +58,7 @@ pub(crate) fn observer_empty_panic(link_id: &str, declared: &str) -> ! {
 /// `zero_or_one` slot). Obtained via [`NodeRunner::observation_slot`]; the
 /// generated per-slot modules of those slots expose `source()` delegating here.
 /// Multi-member slots are read through [`ObservationSlotSet`] instead.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ObservationSlot {
     link_id: String,
     /// The slot's declared cardinality, carried only so a shape panic names the
@@ -127,7 +127,7 @@ impl ObservationSlot {
 /// set, at its position. A copy joining or leaving adds or removes members, and
 /// the planner sizes every set the slot holds, at launch and at each join or
 /// removal, so the slot's declared floor holds on every read.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ObservationSlotSet {
     link_id: String,
     /// The slot's declared cardinality, carried only so a shape panic names the
@@ -266,6 +266,7 @@ impl FollowedSlot for ObservedFollow {
 /// slot's whole member set. Yields nothing while the set is empty or no member
 /// is emitting; delivery is a live stream, never a mailbox, so messages
 /// published before observation became active are never replayed.
+#[derive(Debug)]
 pub struct ObservedTopicSubscription {
     stream: SlotStream<ObservedFollow>,
 }
@@ -276,11 +277,11 @@ impl ObservedTopicSubscription {
     /// message is tagged with the [`ObservedSource`] that published it, the
     /// same type [`ObservationSlotSet::sources`] enumerates, so a multi-member
     /// slot's consumer routes on the source identity (wire address plus
-    /// producer-side link_id) even when several members share one instance.
+    /// producer-side `link_id`) even when several members share one instance.
     /// Returns `None` when the runtime is torn down (slot channel closed). A
     /// message buffered under a superseded source generation, or under a
     /// member the slot has since dropped, never surfaces (see
-    /// [`SlotStream::next`]).
+    /// `SlotStream::next`).
     pub async fn on_next_message(&mut self) -> Option<(ObservedSource, Message)> {
         self.stream
             .next()

@@ -313,7 +313,7 @@ impl From<PeppyContract> for ContractDocument {
 /// manifest: `depends_on` is rejected because a contract is passive. The
 /// description says what the document is for; `labels` are allowed as
 /// descriptive metadata to help discovery and filtering.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub name: Name,
@@ -390,10 +390,8 @@ fn object_field<'a>(field: &'a SchemaType, key: &str) -> Option<&'a SchemaType> 
 mod tests {
     use super::*;
     use config::failure_kind::{FailureKindName, MemberFailureKinds, MemberSection};
-    use config::node::InterfaceKind;
-    use config::node::{
-        ArrayKind, MessageFormat, QoSProfile, SchemaType, TopicRetention, TypeToken,
-    };
+    use config::node::{ArrayKind, QoSProfile, TopicRetention, TypeToken};
+    use std::assert_matches;
 
     /// The depth-camera example from the schema doc parses end-to-end and
     /// exposes every field the way the user wrote it.
@@ -468,10 +466,10 @@ mod tests {
         assert_eq!(topic.name, "video_stream");
         assert_eq!(topic.qos_profile, QoSProfile::SensorData);
         let mf = topic.message_format.as_ref().expect("message_format set");
-        assert!(matches!(
+        assert_matches!(
             mf.0.get("encoding"),
             Some(SchemaType::Type(TypeToken::String))
-        ));
+        );
         let SchemaType::Array(frame) = mf.0.get("frame").unwrap() else {
             panic!("frame should be an array");
         };
@@ -752,7 +750,7 @@ mod tests {
             interfaces: {},
             execution: { language: "rust" }
         }"#;
-        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
+        serde_json5::from_str::<PeppyContract>(json5).unwrap_err();
     }
 
     #[test]
@@ -762,7 +760,7 @@ mod tests {
             manifest: { name: "x", tag: "v1", description: ["A test contract."] },
             interfaces: { mystery: [] }
         }"#;
-        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
+        serde_json5::from_str::<PeppyContract>(json5).unwrap_err();
     }
 
     /// Contract manifests intentionally drop `depends_on`: a contract
@@ -779,7 +777,7 @@ mod tests {
             },
             interfaces: {}
         }"#;
-        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
+        serde_json5::from_str::<PeppyContract>(json5).unwrap_err();
     }
 
     /// `labels` are descriptive metadata on the manifest, accepted so
@@ -812,7 +810,7 @@ mod tests {
             manifest: { name: "bad/name", tag: "v1", description: ["A test contract."] },
             interfaces: {}
         }"#;
-        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
+        serde_json5::from_str::<PeppyContract>(json5).unwrap_err();
     }
 
     /// The manifest tag must satisfy the same repo-ID rules as node
@@ -1008,7 +1006,7 @@ mod tests {
             )
             .expect("the field `mode`");
         assert_eq!(
-            mode.enum_values().map(|values| values.values()),
+            mode.enum_values().map(config::mark::EnumValues::values),
             Some(["idle".to_owned(), "moving".to_owned()].as_slice())
         );
         assert!(mode.marks().is_empty());
@@ -1035,7 +1033,7 @@ mod tests {
         assert!(item.marks().contains("item_id"));
 
         let marks = contract.marks.of(InterfaceKind::Action, "move_gripper");
-        let names: Vec<&str> = marks.iter().map(|mark| mark.as_str()).collect();
+        let names: Vec<&str> = marks.iter().map(config::mark::MarkName::as_str).collect();
         assert_eq!(names, ["moves_robot", "long_motion"]);
         assert!(
             contract
@@ -1206,7 +1204,7 @@ mod tests {
     #[test]
     fn the_parser_refuses_a_missing_or_blank_description_and_names_the_part() {
         let blank_paragraph = r#", description: ["An arm.", " "]"#;
-        let no_paragraph = r#", description: []"#;
+        let no_paragraph = r", description: []";
         let blank_member = r#", description: """#;
         let blank_field = r#", $description: "  ""#;
         let cases = [

@@ -23,7 +23,7 @@ pub use crate::internal::source::DeploymentSource;
 
 /// The rule a slot's link targets keep, whatever kind of slot names them:
 /// every surface that refuses a repeated target ends its message with it.
-pub const EACH_TARGET_ONCE: &str = "a slot lists each target once";
+pub(super) const EACH_TARGET_ONCE: &str = "a slot lists each target once";
 
 #[derive(Debug, Clone)]
 pub struct PeppyLauncher {
@@ -166,7 +166,7 @@ impl<'de> Deserialize<'de> for ClockDeclaration {
         impl<'de> Visitor<'de> for ClockDeclarationVisitor {
             type Value = ClockDeclaration;
 
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str(FORMS)
             }
 
@@ -272,7 +272,7 @@ impl Serialize for PeppyLauncher {
 /// shape parse, cross-checks every `links` target against the
 /// set of `instance_id`s declared across all deployments. A link that
 /// points at an unknown instance is rejected with a structured
-/// [`StructuredError::UnknownInstanceId`] so callers see a path-aware
+/// `StructuredError::UnknownInstanceId` so callers see a path-aware
 /// message instead of a generic serde error.
 ///
 /// A COMPOSED launcher (one declaring `components`) gets the same shape
@@ -348,7 +348,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
                 .map_err(de::Error::custom)?;
         }
 
-        Ok(PeppyLauncher {
+        Ok(Self {
             peppy_schema: raw.peppy_schema,
             description: raw.description,
             core_nodes: raw.core_nodes,
@@ -625,8 +625,8 @@ impl LinkValue {
     /// The slot's selected targets, or `None` when the slot is vacant.
     pub fn selection(&self) -> Option<&Selection> {
         match self {
-            LinkValue::Bound(selection) => Some(selection),
-            LinkValue::Vacant(_) => None,
+            Self::Bound(selection) => Some(selection),
+            Self::Vacant(_) => None,
         }
     }
 
@@ -634,8 +634,8 @@ impl LinkValue {
     /// targets.
     pub fn vacancy(&self) -> Option<&VacantReason> {
         match self {
-            LinkValue::Vacant(reason) => Some(reason),
-            LinkValue::Bound(_) => None,
+            Self::Vacant(reason) => Some(reason),
+            Self::Bound(_) => None,
         }
     }
 }
@@ -644,8 +644,8 @@ impl Selection {
     /// The target ids in declaration order, shape-erased.
     pub fn targets(&self) -> &[String] {
         match self {
-            Selection::Scalar(target) => std::slice::from_ref(target),
-            Selection::Array(targets) | Selection::Flags(targets) => targets.as_slice(),
+            Self::Scalar(target) => std::slice::from_ref(target),
+            Self::Array(targets) | Self::Flags(targets) => targets.as_slice(),
         }
     }
 
@@ -655,15 +655,15 @@ impl Selection {
     /// target and its validator calls this to reject a multi-target value up
     /// front; a multi slot takes every target as one pair. Observer slots are
     /// sized by their `cardinality` instead and go through
-    /// [`check_cardinality_shape`]. A launch-file scalar and a
+    /// `check_cardinality_shape`. A launch-file scalar and a
     /// single CLI `--link KEY@target` occurrence (a one-element
     /// [`Selection::Flags`]) both count as one target; an array or a repeated
     /// flag does not.
     pub fn as_scalar(&self) -> Option<&str> {
         match self {
-            Selection::Scalar(target) => Some(target),
-            Selection::Flags(targets) if targets.len() == 1 => Some(&targets.as_slice()[0]),
-            Selection::Array(_) | Selection::Flags(_) => None,
+            Self::Scalar(target) => Some(target),
+            Self::Flags(targets) if targets.len() == 1 => Some(&targets.as_slice()[0]),
+            Self::Array(_) | Self::Flags(_) => None,
         }
     }
 }
@@ -741,8 +741,8 @@ impl std::error::Error for EmptyVacantReason {}
 /// Why a [`Selection`] does not satisfy its slot's declared `cardinality`,
 /// shape-only and vocabulary-free: the caller turns it into the error variant
 /// its own slot kind speaks (producer binding or observation).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CardinalityShapeViolation {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CardinalityShapeViolation {
     /// A launch-file array value on a scalar slot, of any length.
     ArrayOnScalarSlot {
         cardinality: config::node::Cardinality,
@@ -771,12 +771,16 @@ pub enum CardinalityShapeViolation {
 ///
 /// Takes a [`Selection`] rather than a [`LinkValue`] because a vacant slot
 /// selects nothing and has no shape to size: whether it may be vacant at all is
-/// the legality question [`super::links::validate_link_slots`] answers,
+/// the legality question `super::links::validate_link_slots` answers,
 /// before any of this.
 ///
 /// The one shape rule, shared by producer-binding slots and observer slots so a
 /// deployment writes `["a", "b"]` for the same reason on both.
-pub fn check_cardinality_shape(
+#[expect(
+    clippy::match_same_arms,
+    reason = "the match has one arm for each row of the shape table, in the order of the table"
+)]
+pub(super) fn check_cardinality_shape(
     cardinality: config::node::Cardinality,
     selection: &Selection,
 ) -> Result<(), CardinalityShapeViolation> {
@@ -890,11 +894,11 @@ impl Serialize for LinkValue {
         S: serde::Serializer,
     {
         match self {
-            LinkValue::Bound(Selection::Scalar(target)) => serializer.serialize_str(target),
-            LinkValue::Bound(Selection::Array(targets) | Selection::Flags(targets)) => {
+            Self::Bound(Selection::Scalar(target)) => serializer.serialize_str(target),
+            Self::Bound(Selection::Array(targets) | Selection::Flags(targets)) => {
                 targets.serialize(serializer)
             }
-            LinkValue::Vacant(reason) => {
+            Self::Vacant(reason) => {
                 use serde::ser::SerializeMap;
                 let mut map = serializer.serialize_map(Some(1))?;
                 map.serialize_entry(VACANT_KEY, reason)?;
@@ -911,10 +915,10 @@ impl<'de> Deserialize<'de> for LinkValue {
     {
         struct LinkValueVisitor;
 
-        impl<'de> de::Visitor<'de> for LinkValueVisitor {
+        impl<'de> Visitor<'de> for LinkValueVisitor {
             type Value = LinkValue;
 
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str(
                     "a target instance_id string, an array of instance_id strings, or \
                      { vacant: \"<why>\" }",
@@ -941,7 +945,7 @@ impl<'de> Deserialize<'de> for LinkValue {
             /// `vacant`, holding a reason that says something.
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
             where
-                A: de::MapAccess<'de>,
+                A: MapAccess<'de>,
             {
                 let mut reason: Option<VacantReason> = None;
                 while let Some(key) = map.next_key::<String>()? {
@@ -1233,8 +1237,7 @@ where
     let mut seen = HashSet::with_capacity(instances.len());
     for instance in &instances {
         if !seen.insert(instance.instance_id.as_str()) {
-            let err =
-                crate::error::StructuredError::DuplicateName(instance.instance_id.to_string());
+            let err = StructuredError::DuplicateName(instance.instance_id.to_string());
             return Err(de::Error::custom(err.json5_message()));
         }
     }
@@ -1344,7 +1347,7 @@ mod tests {
     /// Test shorthand: an `Array` binding value from unique literals.
     fn array(targets: &[&str]) -> LinkValue {
         LinkValue::Bound(Selection::Array(
-            LinkTargets::new(targets.iter().map(|t| t.to_string()).collect())
+            LinkTargets::new(targets.iter().map(ToString::to_string).collect())
                 .expect("test targets are unique"),
         ))
     }
@@ -1521,7 +1524,7 @@ mod tests {
                 "carries no `source`",
             ),
             (r#"{ robot: "sim" }"#, "`sim` names no clock source"),
-            (r#"{ robot: {} }"#, "names its `publisher`"),
+            (r"{ robot: {} }", "names its `publisher`"),
             (
                 r#"{ robot: { publisher: "a", extra: "b" } }"#,
                 "carries no `extra`",
@@ -1834,11 +1837,11 @@ mod tests {
         for (json5, expected) in [
             (r#"{ vacant: "" }"#, "a vacancy needs a reason"),
             (r#"{ vacant: "   " }"#, "a vacancy needs a reason"),
-            (r#"{ vacant: 12 }"#, "invalid type"),
-            (r#"{ vacant: null }"#, "invalid type"),
+            (r"{ vacant: 12 }", "invalid type"),
+            (r"{ vacant: null }", "invalid type"),
             (r#"{ vacant: ["a"] }"#, "invalid type"),
-            (r#"{ vacant: { nested: 1 } }"#, "invalid type"),
-            (r#"{}"#, "missing field `vacant`"),
+            (r"{ vacant: { nested: 1 } }", "invalid type"),
+            (r"{}", "missing field `vacant`"),
             (r#"{ nope: "x" }"#, "unknown link key `nope`"),
             (r#"{ vacant: "x", extra: 1 }"#, "unknown link key `extra`"),
         ] {
@@ -2023,8 +2026,8 @@ mod tests {
         }
     }
 
-    fn core_node(name: &str) -> config::runtime::CoreNodeName {
-        config::runtime::CoreNodeName::new(name).expect("valid test core node name")
+    fn core_node(name: &str) -> CoreNodeName {
+        CoreNodeName::new(name).expect("valid test core node name")
     }
 
     /// A placed instance resolves to the machine it was placed on, every

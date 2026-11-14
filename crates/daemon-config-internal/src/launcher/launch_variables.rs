@@ -244,14 +244,11 @@ impl VariableNeed {
         instance: &'a DeploymentInstance,
         starter: &'a Starter,
     ) -> impl Iterator<Item = Self> + 'a {
-        instance
-            .env_from_launch
-            .iter()
-            .map(move |variable| VariableNeed {
-                variable: variable.clone(),
-                instance: shown.to_owned(),
-                starter: starter.clone(),
-            })
+        instance.env_from_launch.iter().map(move |variable| Self {
+            variable: variable.clone(),
+            instance: shown.to_owned(),
+            starter: starter.clone(),
+        })
     }
 }
 
@@ -435,8 +432,8 @@ pub enum VariableChange {
 impl std::fmt::Display for VariableChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            VariableChange::Launch => "the launch",
-            VariableChange::Join => "the join",
+            Self::Launch => "the launch",
+            Self::Join => "the join",
         })
     }
 }
@@ -759,7 +756,7 @@ mod tests {
             variable: variable("PLANNER_KEY"),
             list_origin: None,
         };
-        assert!(VariablesGivenTwoValues::refuse(Vec::new()).is_ok());
+        VariablesGivenTwoValues::refuse(Vec::new()).unwrap();
         assert_eq!(
             VariablesGivenTwoValues::refuse(vec![one.clone()])
                 .expect_err("one")
@@ -854,7 +851,7 @@ mod tests {
              that launches. A value must not be empty, and must hold letters, digits and \
              `_ - . / : , = @ + %` only"
         );
-        assert!(needs.check(VariableChange::Launch, |_| true).is_ok());
+        needs.check(VariableChange::Launch, |_| true).unwrap();
     }
 
     /// The refusal of several variables lists each one, with its own

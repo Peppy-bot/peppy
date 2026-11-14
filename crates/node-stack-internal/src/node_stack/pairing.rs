@@ -8,7 +8,7 @@
 //! `PairingCoordinator` in core-node-internal, which serializes all pairing
 //! operations and calls into this registry to commit.
 
-/// Address of one pairing slot: core node × instance × link_id. A pair is
+/// Address of one pairing slot: core node × instance × `link_id`. A pair is
 /// one peer to one peer between two complementary slots; a slot holds as
 /// many pairs as its cardinality admits, each until cleared.
 ///
@@ -55,7 +55,7 @@ impl std::fmt::Display for SlotAddr {
 
 /// One pair as a start requests it: this instance's slot and the concrete
 /// peer slot it is paired with, ready for the pairing coordinator's reserve.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedPair {
     pub own: SlotAddr,
     pub peer: SlotAddr,
@@ -75,7 +75,7 @@ impl std::fmt::Display for PlannedPair {
 impl PlannedPair {
     /// The pair as each endpoint on this daemon holds it: this one, and its
     /// mirror when the peer is local too.
-    pub fn local_ends(&self) -> Vec<PlannedPair> {
+    pub fn local_ends(&self) -> Vec<Self> {
         match self.peer_remote_meta {
             Some(_) => vec![self.clone()],
             None => vec![self.clone(), self.mirrored()],

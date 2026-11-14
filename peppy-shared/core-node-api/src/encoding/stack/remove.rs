@@ -24,7 +24,7 @@ impl StackRemoveGoal {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut message = Builder::new_default();
-        let mut goal = message.init_root::<launch_capnp::stack_remove_goal::Builder>();
+        let mut goal = message.init_root::<launch_capnp::stack_remove_goal::Builder<'_>>();
         goal.set_name(self.name.as_str());
         if let Some(client) = &self.client {
             client.write(goal.init_client());
@@ -34,7 +34,7 @@ impl StackRemoveGoal {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let message = decode_message(data)?;
-        let goal = message.get_root::<launch_capnp::stack_remove_goal::Reader>()?;
+        let goal = message.get_root::<launch_capnp::stack_remove_goal::Reader<'_>>()?;
         let client = if goal.has_client() {
             Some(GoalClient::read(goal.get_client()?)?)
         } else {
@@ -68,7 +68,7 @@ mod tests {
                 core_node: "cn-one".to_owned(),
                 instance_id: "director_inst".to_owned(),
             }),
-            ..remove.clone()
+            ..remove
         };
         assert_eq!(
             StackRemoveGoal::decode(&for_client.encode().unwrap()).unwrap(),
@@ -77,7 +77,7 @@ mod tests {
         for name in ["", "bad/name", "self"] {
             let mut message = Builder::new_default();
             message
-                .init_root::<launch_capnp::stack_remove_goal::Builder>()
+                .init_root::<launch_capnp::stack_remove_goal::Builder<'_>>()
                 .set_name(name);
             let refusal =
                 decoding_error(StackRemoveGoal::decode(&encode_message(&message).unwrap()));

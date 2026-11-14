@@ -220,7 +220,7 @@ pub(crate) fn lima_guest_pgid_argv(
     }
     argv.push(pgid_file.display().to_string());
     argv.push(apptainer_bin.display().to_string());
-    argv.extend(apptainer_args.iter().map(|arg| arg.to_string()));
+    argv.extend(apptainer_args.iter().map(ToString::to_string));
     argv
 }
 
@@ -254,7 +254,7 @@ pub(crate) fn lima_guest_env_args(apptainer_bin: &Path, apptainer_args: &[&str])
         GUEST_SHELL.to_string(),
         apptainer_bin.display().to_string(),
     ];
-    args.extend(apptainer_args.iter().map(|arg| arg.to_string()));
+    args.extend(apptainer_args.iter().map(ToString::to_string));
     args
 }
 
@@ -316,7 +316,7 @@ pub(crate) fn lima_guest_workdir_argv(
         guest_workdir.display().to_string(),
         apptainer_bin.display().to_string(),
     ];
-    argv.extend(apptainer_args.iter().map(|arg| arg.to_string()));
+    argv.extend(apptainer_args.iter().map(ToString::to_string));
     argv
 }
 
@@ -405,17 +405,17 @@ if [ -n "$leader" ]; then
 fi
 exit 0"#;
 
-/// A `limactl` command pointed at peppy's LIMA_HOME. Every `limactl` command
-/// that reaches an instance goes through here: one without LIMA_HOME talks to
+/// A `limactl` command pointed at peppy's `LIMA_HOME`. Every `limactl` command
+/// that reaches an instance goes through here: one without `LIMA_HOME` talks to
 /// the user's default Lima home instead of the peppy instance. The version
-/// check of [`check_lima_version`] reads no instance and needs no LIMA_HOME.
+/// check of [`check_lima_version`] reads no instance and needs no `LIMA_HOME`.
 fn limactl_command(limactl: &Path, lima_home: &Path) -> Command {
     let mut cmd = Command::new(limactl);
     cmd.env("LIMA_HOME", lima_home);
     cmd
 }
 
-/// Build a `limactl shell <instance>` command pre-configured with LIMA_HOME,
+/// Build a `limactl shell <instance>` command pre-configured with `LIMA_HOME`,
 /// stopping before the `--` separator so callers can inject `limactl`-level flags
 /// (e.g. `lima_shell_extra_args`) between the instance and the guest command.
 pub(crate) fn lima_shell_base(limactl: &Path, lima_home: &Path, instance: &str) -> Command {
@@ -424,7 +424,7 @@ pub(crate) fn lima_shell_base(limactl: &Path, lima_home: &Path, instance: &str) 
     cmd
 }
 
-/// Build a `limactl shell <instance> --` command pre-configured with LIMA_HOME.
+/// Build a `limactl shell <instance> --` command pre-configured with `LIMA_HOME`.
 ///
 /// Callers chain additional `.arg()` / `.args()` for the guest-side command.
 pub(crate) fn lima_shell_cmd(limactl: &Path, lima_home: &Path, instance: &str) -> Command {
@@ -620,8 +620,7 @@ pub(crate) fn ensure_lima_instance(
 
             check_output(&start, |stderr| {
                 Error::LimaInstanceError(format!(
-                    "failed to restart zombie Lima {} instance: {stderr}",
-                    instance
+                    "failed to restart zombie Lima {instance} instance: {stderr}"
                 ))
             })
         }
@@ -633,8 +632,7 @@ pub(crate) fn ensure_lima_instance(
 
             check_output(&start, |stderr| {
                 Error::LimaInstanceError(format!(
-                    "failed to start Lima {} instance: {stderr}",
-                    instance
+                    "failed to start Lima {instance} instance: {stderr}"
                 ))
             })
         }
@@ -650,8 +648,7 @@ pub(crate) fn ensure_lima_instance(
 
             check_output(&create, |stderr| {
                 Error::LimaInstanceError(format!(
-                    "failed to create Lima {} instance: {stderr}",
-                    instance
+                    "failed to create Lima {instance} instance: {stderr}"
                 ))
             })
         }
@@ -988,7 +985,7 @@ pub(crate) fn resolve_lima_dir() -> Result<PathBuf> {
     )
 }
 
-/// Resolve the LIMA_HOME directory for VM instance data.
+/// Resolve the `LIMA_HOME` directory for VM instance data.
 ///
 /// Resolution order:
 /// 1. `{exe_dir}/../lima-data/`: installed layout (`~/.peppy/lima-data/`).
@@ -1072,8 +1069,7 @@ where
 
             check_output(&output, |stderr| {
                 Error::LimaInstanceError(format!(
-                    "failed to stop Lima {} instance: {stderr}",
-                    instance
+                    "failed to stop Lima {instance} instance: {stderr}"
                 ))
             })
         }
@@ -1209,7 +1205,7 @@ fn plan_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<MountPlan> {
             entry
                 .get("location")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
+                .map(ToString::to_string)
         })
         .collect();
 
@@ -1247,7 +1243,6 @@ fn plan_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<MountPlan> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Error;
     use std::fs;
     use tempfile::tempdir;
 
@@ -1397,7 +1392,7 @@ mod tests {
     }
 
     /// Every `limactl` command that reaches an instance carries peppy's
-    /// LIMA_HOME: without it, `limactl` talks to the user's default Lima home
+    /// `LIMA_HOME`: without it, `limactl` talks to the user's default Lima home
     /// instead of the peppy instance.
     #[test]
     fn lima_shell_base_points_limactl_at_the_peppy_lima_home() {
@@ -1494,13 +1489,9 @@ mod tests {
         use std::os::unix::process::ExitStatusExt;
 
         let status = std::process::ExitStatus::from_raw(42 << 8);
-        let err = validate_lima_version_output(
-            std::path::Path::new("/fake/limactl"),
-            status,
-            b"",
-            b"bad lima",
-        )
-        .expect_err("expected version check failure");
+        let err =
+            validate_lima_version_output(Path::new("/fake/limactl"), status, b"", b"bad lima")
+                .expect_err("expected version check failure");
         match err {
             Error::LimaVersionCheckFailed(msg) => {
                 assert!(msg.contains("--version"), "unexpected message: {msg}");
@@ -1517,13 +1508,9 @@ mod tests {
         // `parse_lima_version` returns `None` for garbage, which `unwrap_or_default()`
         // turns into (0, 0, 0); that should fail the MIN_LIMA_VERSION check.
         let status = std::process::ExitStatus::default();
-        let err = validate_lima_version_output(
-            std::path::Path::new("/fake/limactl"),
-            status,
-            b"not a version",
-            b"",
-        )
-        .expect_err("expected version-too-old failure");
+        let err =
+            validate_lima_version_output(Path::new("/fake/limactl"), status, b"not a version", b"")
+                .expect_err("expected version-too-old failure");
         match err {
             Error::LimaVersionTooOld { found, minimum } => {
                 assert_eq!(found, "0.0.0");
@@ -1654,7 +1641,7 @@ mod tests {
             "system path /private/tmp should be removed, got:\n{content}"
         );
         assert!(
-            content.contains("~"),
+            content.contains('~'),
             "home mount should be preserved, got:\n{content}"
         );
     }
@@ -1680,7 +1667,7 @@ mod tests {
             "stale mount should be removed, got:\n{content}"
         );
         assert!(
-            content.contains("~"),
+            content.contains('~'),
             "home mount should be preserved, got:\n{content}"
         );
     }

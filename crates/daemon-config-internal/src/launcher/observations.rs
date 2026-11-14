@@ -74,11 +74,11 @@ impl PlannedObservation {
 /// establishes, recorded from both ends, and every pair the running stack
 /// already holds. Keyed by `(instance_id, link_id)`, valued by the peer slots
 /// that end holds.
-pub type ObservablePairs = BTreeMap<(String, String), Vec<(String, String)>>;
+pub(super) type ObservablePairs = BTreeMap<(String, String), Vec<(String, String)>>;
 
 /// Folds the plan's pairs into the already-held ones, so an observation can
 /// name a pair established in the same plan or one a running instance holds.
-pub fn observable_pairs(
+pub(super) fn observable_pairs(
     planned: &[PlannedPairing],
     already_paired: &AlreadyPairedSlots,
 ) -> ObservablePairs {
@@ -98,7 +98,7 @@ pub fn observable_pairs(
 /// resolved observation plan. The caller must check `errors.is_empty()` before
 /// consuming `planned`.
 #[derive(Debug, Default)]
-pub struct ValidatedObservations {
+pub(super) struct ValidatedObservations {
     pub errors: Vec<ParsingError>,
     pub planned: Vec<PlannedObservation>,
 }
@@ -137,7 +137,7 @@ pub struct ValidatedObservations {
 /// Rules 2-5 are all-or-nothing per slot: a slot with any failing member
 /// contributes no observation at all, so a partially-resolved member set can
 /// never reach the plan.
-pub fn validate_observations(
+pub(super) fn validate_observations(
     items: &[PairingValidationItem<'_>],
     placements: &Placements,
     pairs: &ObservablePairs,
@@ -327,48 +327,47 @@ fn resolve_observation(
         }))
     };
 
-    let end = match requested_link {
-        Some(link) => target_item
+    let end = if let Some(link) = requested_link {
+        target_item
             .pairing_deps
             .iter()
             .filter(on_pairing)
             .find(|dep| dep.link_id == link)
-            .ok_or_else(not_observable)?,
-        None => {
-            // Slots playing the observed role name the source itself; a slot
-            // of the other role names a pair only on an instance that plays
-            // the observed role through none. Observation is not exclusive,
-            // so every slot is a candidate regardless of who else observes it.
-            let (sources, far_ends): (Vec<_>, Vec<_>) = target_item
-                .pairing_deps
-                .iter()
-                .filter(on_pairing)
-                .partition(|dep| dep.role == own_dep.role);
-            let candidates = if sources.is_empty() {
-                far_ends
-            } else {
-                sources
-            };
-            match candidates.as_slice() {
-                [] => return Err(not_observable()),
-                [single] => *single,
-                several => {
-                    return Err(ParsingError::ObservationTargetAmbiguous(Box::new(
-                        ObservationTargetAmbiguous {
-                            owner_instance_id: owner_id.to_string(),
-                            key: key.to_string(),
-                            source_instance_id: target_instance.to_string(),
-                            pairing_name: own_dep.name.as_str().to_string(),
-                            pairing_tag: own_dep.tag.clone(),
-                            candidate_role: several[0].role.clone(),
-                            candidate_link_ids: several
-                                .iter()
-                                .map(|dep| dep.link_id.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                        },
-                    )));
-                }
+            .ok_or_else(not_observable)?
+    } else {
+        // Slots playing the observed role name the source itself; a slot
+        // of the other role names a pair only on an instance that plays
+        // the observed role through none. Observation is not exclusive,
+        // so every slot is a candidate regardless of who else observes it.
+        let (sources, far_ends): (Vec<_>, Vec<_>) = target_item
+            .pairing_deps
+            .iter()
+            .filter(on_pairing)
+            .partition(|dep| dep.role == own_dep.role);
+        let candidates = if sources.is_empty() {
+            far_ends
+        } else {
+            sources
+        };
+        match candidates.as_slice() {
+            [] => return Err(not_observable()),
+            [single] => *single,
+            several => {
+                return Err(ParsingError::ObservationTargetAmbiguous(Box::new(
+                    ObservationTargetAmbiguous {
+                        owner_instance_id: owner_id.to_string(),
+                        key: key.to_string(),
+                        source_instance_id: target_instance.to_string(),
+                        pairing_name: own_dep.name.as_str().to_string(),
+                        pairing_tag: own_dep.tag.clone(),
+                        candidate_role: several[0].role.clone(),
+                        candidate_link_ids: several
+                            .iter()
+                            .map(|dep| dep.link_id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    },
+                )));
             }
         }
     };
@@ -383,8 +382,7 @@ fn resolve_observation(
     } else {
         let held = pairs
             .get(&(target_instance.to_string(), end.link_id.clone()))
-            .map(Vec::as_slice)
-            .unwrap_or_default();
+            .map_or_default(Vec::as_slice);
         let (peer_instance, peer_link_id) = match held {
             [] => {
                 return Err(ParsingError::ObservationTargetUnpaired(Box::new(
@@ -528,12 +526,12 @@ mod tests {
         serde_json5::from_str(json5).expect("instances fixture should parse")
     }
 
-    fn parse_pairing_deps(json5: &str) -> Vec<config::node::PairingParticipantDependency> {
+    fn parse_pairing_deps(json5: &str) -> Vec<PairingParticipantDependency> {
         serde_json5::from_str(json5).expect("pairing deps fixture should parse")
     }
 
     /// A robot arm exposing the `arm` participant role of `arm_link/v1`.
-    fn arm_deps() -> Vec<config::node::PairingParticipantDependency> {
+    fn arm_deps() -> Vec<PairingParticipantDependency> {
         parse_pairing_deps(
             r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }]"#,
         )
@@ -605,7 +603,7 @@ mod tests {
     }
 
     /// The `controller` role of `arm_link/v1`, the far end of an `arm`.
-    fn controller_deps() -> Vec<config::node::PairingParticipantDependency> {
+    fn controller_deps() -> Vec<PairingParticipantDependency> {
         parse_pairing_deps(
             r#"[{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }]"#,
         )
@@ -615,7 +613,7 @@ mod tests {
     fn item<'a>(
         node_name: &'a str,
         instances: &'a [DeploymentInstance],
-        pairing_deps: &'a [config::node::PairingParticipantDependency],
+        pairing_deps: &'a [PairingParticipantDependency],
     ) -> PairingValidationItem<'a> {
         PairingValidationItem {
             node_name,
@@ -1047,7 +1045,7 @@ mod tests {
                 "observed_arm".to_string(),
                 super::super::types::LinkValue::Bound(Selection::Flags(
                     super::super::types::LinkTargets::new(
-                        targets.iter().map(|target| target.to_string()).collect(),
+                        targets.iter().map(ToString::to_string).collect(),
                     )
                     .expect("distinct flag targets"),
                 )),

@@ -25,7 +25,7 @@ impl InstanceDocumentsRequest {
         let mut builder = Builder::new_default();
         {
             let mut request =
-                builder.init_root::<node_capnp::instance_documents_request::Builder>();
+                builder.init_root::<node_capnp::instance_documents_request::Builder<'_>>();
             request.set_instance_id(&self.instance_id);
         }
         encode_message(&builder)
@@ -33,7 +33,7 @@ impl InstanceDocumentsRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<node_capnp::instance_documents_request::Reader>()?;
+        let request = reader.get_root::<node_capnp::instance_documents_request::Reader<'_>>()?;
         Ok(Self {
             instance_id: required_text(request.get_instance_id()?.to_str()?, "instanceId")?,
         })
@@ -133,7 +133,7 @@ impl InstanceDocuments {
         let mut builder = Builder::new_default();
         {
             let mut response =
-                builder.init_root::<node_capnp::instance_documents_response::Builder>();
+                builder.init_root::<node_capnp::instance_documents_response::Builder<'_>>();
             response.set_core_node(&self.core_node);
             response.set_instance_id(&self.instance_id);
             self.manifest.write(response.reborrow().init_manifest());
@@ -153,7 +153,7 @@ impl InstanceDocuments {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::instance_documents_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::instance_documents_response::Reader<'_>>()?;
         Ok(Self {
             core_node: required_text(response.get_core_node()?.to_str()?, "coreNode")?,
             instance_id: required_text(response.get_instance_id()?.to_str()?, "instanceId")?,
@@ -168,8 +168,8 @@ fn write_documents(
     mut list: capnp::struct_list::Builder<'_, node_capnp::pinned_document::Owned>,
     documents: &[PinnedDocument],
 ) {
-    for (index, document) in documents.iter().enumerate() {
-        document.write(list.reborrow().get(index as u32));
+    for (index, document) in (0_u32..).zip(documents.iter()) {
+        document.write(list.reborrow().get(index));
     }
 }
 
@@ -180,11 +180,11 @@ fn read_documents(
 }
 
 impl crate::encoding::Wire for InstanceDocumentsRequest {
-    type Root = crate::node_capnp::instance_documents_request::Owned;
+    type Root = node_capnp::instance_documents_request::Owned;
 }
 
 impl crate::encoding::Wire for InstanceDocuments {
-    type Root = crate::node_capnp::instance_documents_response::Owned;
+    type Root = node_capnp::instance_documents_response::Owned;
 }
 
 #[cfg(test)]
@@ -237,7 +237,7 @@ mod tests {
         let mut builder = Builder::new_default();
         {
             let mut response =
-                builder.init_root::<node_capnp::instance_documents_response::Builder>();
+                builder.init_root::<node_capnp::instance_documents_response::Builder<'_>>();
             response.set_core_node("robot-7");
             response.set_instance_id("arm_inst");
             let mut manifest = response.reborrow().init_manifest();
@@ -257,6 +257,6 @@ mod tests {
     #[test]
     fn a_request_with_no_instance_id_is_refused() {
         let payload = InstanceDocumentsRequest::new("").encode().unwrap();
-        assert!(InstanceDocumentsRequest::decode(payload.as_ref()).is_err());
+        InstanceDocumentsRequest::decode(payload.as_ref()).unwrap_err();
     }
 }

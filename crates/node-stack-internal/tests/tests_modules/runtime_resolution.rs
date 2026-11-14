@@ -1,3 +1,4 @@
+use std::assert_matches;
 use std::path::PathBuf;
 
 use config::runtime::Name;
@@ -49,8 +50,8 @@ async fn add_instance_creates_new_entity() {
     assert!(stack.contains("sensor", "v1"), "entity should be findable");
 
     // Spawn an instance
-    let _guard = fixtures::start_instance_in_stack(&stack, &harness, "sensor", "v1", None).await;
-    let instance_id = _guard.instance_id.clone();
+    let started = fixtures::start_instance_in_stack(&stack, &harness, "sensor", "v1", None).await;
+    let instance_id = started.instance_id.clone();
 
     let entity = stack.find("sensor", "v1").expect("entity should exist");
     let entity_guard = entity.read();
@@ -146,7 +147,7 @@ async fn add_instance_to_existing_entity() {
     fixtures::push_built(&stack, &harness, config).await;
 
     // Spawn first instance
-    let _g1 = fixtures::start_instance_in_stack(
+    let first = fixtures::start_instance_in_stack(
         &stack,
         &harness,
         "sensor",
@@ -154,7 +155,7 @@ async fn add_instance_to_existing_entity() {
         Some(&Name::new("first").expect("valid name")),
     )
     .await;
-    let first_id = _g1.instance_id.clone();
+    let first_id = first.instance_id.clone();
 
     assert_eq!(stack.len(), 2, "stack should have core node + one entity");
     let entity = stack.find("sensor", "v1").expect("entity should exist");
@@ -165,7 +166,7 @@ async fn add_instance_to_existing_entity() {
     );
 
     // Spawn second instance to same entity
-    let _g2 = fixtures::start_instance_in_stack(
+    let second = fixtures::start_instance_in_stack(
         &stack,
         &harness,
         "sensor",
@@ -173,7 +174,7 @@ async fn add_instance_to_existing_entity() {
         Some(&Name::new("second").expect("valid name")),
     )
     .await;
-    let second_id = _g2.instance_id.clone();
+    let second_id = second.instance_id.clone();
 
     assert_eq!(stack.len(), 2, "stack should still have root + one entity");
 
@@ -237,9 +238,9 @@ async fn add_instance_with_specific_id() {
     fixtures::push_built(&stack, &harness, config).await;
 
     // Then spawn an instance with the specific ID
-    let _guard =
+    let started =
         fixtures::start_instance_in_stack(&stack, &harness, "sensor", "v1", Some(&custom_id)).await;
-    let returned_id = _guard.instance_id.clone();
+    let returned_id = started.instance_id.clone();
 
     assert_eq!(
         returned_id, custom_id,
@@ -1019,8 +1020,9 @@ fn removing_a_dependency_and_adding_it_again_rewires_its_dependants() {
         .push_config(dependent, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("dependent dependency is present");
 
-    assert!(
-        matches!(stack.remove_config("lidar", "v1"), Ok(true)),
+    assert_matches!(
+        stack.remove_config("lidar", "v1"),
+        Ok(true),
         "lidar has no instances, so it can be removed"
     );
     stack
@@ -1044,11 +1046,9 @@ fn removing_a_dependency_and_adding_it_again_rewires_its_dependants() {
         false,
         PathBuf::from("/tmp"),
     );
-    assert!(
-        matches!(
-            result,
-            Err(NodeStackError::CannotOverwriteNodeWithDependents { .. })
-        ),
+    assert_matches!(
+        result,
+        Err(NodeStackError::CannotOverwriteNodeWithDependents { .. }),
         "brain still depends on lidar, so its interfaces cannot change, got {result:?}"
     );
 }
@@ -1116,7 +1116,7 @@ fn dependency_fails_when_node_name_mismatches() {
         ..
     }))) = result
     else {
-        panic!("expected MissingDependency error, got {:?}", result);
+        panic!("expected MissingDependency error, got {result:?}");
     };
     assert_eq!(dependency, "uvc_camera");
     assert_eq!(dependency_tag, "v1");
@@ -1188,7 +1188,7 @@ fn dependency_fails_when_node_tag_mismatches() {
         ..
     }))) = result
     else {
-        panic!("expected MissingDependency error, got {:?}", result);
+        panic!("expected MissingDependency error, got {result:?}");
     };
     assert_eq!(dependency, "lidar");
     assert_eq!(dependency_tag, "v1");
@@ -1370,10 +1370,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
         node_tag,
     }) = result
     else {
-        panic!(
-            "expected CannotOverwriteNodeWithDependents error, got {:?}",
-            result
-        );
+        panic!("expected CannotOverwriteNodeWithDependents error, got {result:?}");
     };
     assert_eq!(node_name, "lidar");
     assert_eq!(node_tag, "v1");

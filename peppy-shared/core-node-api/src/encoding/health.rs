@@ -20,7 +20,7 @@ impl HealthRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            builder.init_root::<health_capnp::health_request::Builder>();
+            builder.init_root::<health_capnp::health_request::Builder<'_>>();
         }
         encode_message(&builder)
     }
@@ -29,7 +29,7 @@ impl HealthRequest {
         let reader = decode_message(data)?;
         // Validate the framing decodes as a HealthRequest; the struct is empty,
         // so there is nothing else to read back.
-        reader.get_root::<health_capnp::health_request::Reader>()?;
+        reader.get_root::<health_capnp::health_request::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -53,7 +53,7 @@ impl HealthResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<health_capnp::health_response::Builder>();
+            let mut response = builder.init_root::<health_capnp::health_response::Builder<'_>>();
             response.set_status(&self.status);
             response.set_uptime_secs(self.uptime_secs);
         }
@@ -62,7 +62,7 @@ impl HealthResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<health_capnp::health_response::Reader>()?;
+        let response = reader.get_root::<health_capnp::health_response::Reader<'_>>()?;
         Ok(Self {
             status: response.get_status()?.to_str()?.to_owned(),
             uptime_secs: response.get_uptime_secs(),
@@ -71,11 +71,11 @@ impl HealthResponse {
 }
 
 impl crate::encoding::Wire for HealthRequest {
-    type Root = crate::health_capnp::health_request::Owned;
+    type Root = health_capnp::health_request::Owned;
 }
 
 impl crate::encoding::Wire for HealthResponse {
-    type Root = crate::health_capnp::health_response::Owned;
+    type Root = health_capnp::health_response::Owned;
 }
 
 #[cfg(test)]
@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn health_request_decode_rejects_malformed() {
-        assert!(HealthRequest::decode(b"not a capnp message").is_err());
+        HealthRequest::decode(b"not a capnp message").unwrap_err();
     }
 
     #[test]
@@ -128,6 +128,6 @@ mod tests {
 
     #[test]
     fn health_response_decode_rejects_malformed() {
-        assert!(HealthResponse::decode(b"not a capnp message").is_err());
+        HealthResponse::decode(b"not a capnp message").unwrap_err();
     }
 }

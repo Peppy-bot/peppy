@@ -3,6 +3,10 @@ name = "generator"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [features]
 # In a debug build, rust-embed does not embed: each `#[folder]` is read from
@@ -30,7 +34,6 @@ prettyplease = "0.3"
 syn = { version = "3.0", features = ["full"] }
 thiserror = "2"
 askama = "0.16"
-toml = "1"
 toml_edit = "0.25"
 indexmap = "2.2"
 rust-embed = { version = "8", features = ["include-exclude", "interpolate-folder-path"] }
@@ -54,6 +57,8 @@ config-test-support = { workspace = true }
 pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
 serde_json5 = "0.2.1"
 tempfile = "3.10"
+# Reads the manifests that the generator writes, in the tests that check them.
+toml = "1"
 peppylib = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # The codec wire e2e holds the runtime codec against a generated provider

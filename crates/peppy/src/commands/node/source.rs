@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 /// The refusal of a `--ref` given with a source that is not a git repository.
 const REF_NEEDS_A_GIT_SOURCE: &str = "`--ref` is only supported for git sources";
 
-pub fn is_probably_remote_source(source: &str) -> bool {
+pub(crate) fn is_probably_remote_source(source: &str) -> bool {
     source.contains("://") || source.starts_with("git@")
 }
 
@@ -53,7 +53,7 @@ fn looks_like_repo_node_ref(source: &str) -> bool {
     true
 }
 
-pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSource> {
+pub(crate) fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSource> {
     if is_probably_remote_source(source) {
         if let Ok(url) = url::Url::parse(source)
             && matches!(url.scheme(), "http" | "https")
@@ -111,14 +111,17 @@ pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSo
 
     let from_dir = peppy_json5
         .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+        .map_or_else(|| PathBuf::from("."), PathBuf::from);
 
     let from_dir = resolve_node_root_dir(&from_dir)?;
 
     Ok(NodeSource::Fs(from_dir))
 }
 
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "the path is in lower case here"
+)]
 fn is_supported_http_archive(url: &url::Url) -> bool {
     let path = url.path().to_ascii_lowercase();
     path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")
@@ -126,7 +129,11 @@ fn is_supported_http_archive(url: &url::Url) -> bool {
 
 /// Returns `true` when the source string looks like a git repository URL
 /// (contains `.git` or uses `git@` / `ssh://` scheme).
-pub fn looks_like_git_url(source: &str) -> bool {
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "a git URL writes its `.git` suffix in lower case"
+)]
+pub(crate) fn looks_like_git_url(source: &str) -> bool {
     source.ends_with(".git")
         || source.contains(".git/")
         || source.starts_with("git@")
@@ -134,15 +141,16 @@ pub fn looks_like_git_url(source: &str) -> bool {
         || source.starts_with("git://")
 }
 
-pub fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "a git URL writes its `.git` suffix in lower case"
+)]
+pub(crate) fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
     if let Ok(mut parsed) = url::Url::parse(source) {
         parsed.set_query(None);
         parsed.set_fragment(None);
 
-        let segments: Vec<&str> = parsed
-            .path_segments()
-            .map(|segments| segments.collect())
-            .unwrap_or_default();
+        let segments: Vec<&str> = parsed.path_segments().map_or_default(Iterator::collect);
         let repo_index = segments
             .iter()
             .rposition(|segment| segment.ends_with(".git"));
@@ -152,14 +160,14 @@ pub fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
             let repo_relative_path = segments[repo_index + 1..].join("/");
 
             let mut repo_url = parsed.clone();
-            repo_url.set_path(&format!("/{}", repo_path_segments));
+            repo_url.set_path(&format!("/{repo_path_segments}"));
             (repo_url.to_string(), repo_relative_path)
         } else {
             (parsed.to_string(), String::new())
         };
 
         let repo_url = GitUrl::try_from(repo_url_str.as_str()).map_err(|e| {
-            Error::ExecutionFailed(format!("Invalid git URL '{}': {}", repo_url_str, e))
+            Error::ExecutionFailed(format!("Invalid git URL '{repo_url_str}': {e}"))
         })?;
         return Ok((repo_url, repo_path));
     }
@@ -170,15 +178,14 @@ pub fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
         (source.to_string(), String::new())
     };
 
-    let repo_url = GitUrl::try_from(repo_url_str.as_str()).map_err(|e| {
-        Error::ExecutionFailed(format!("Invalid git URL '{}': {}", repo_url_str, e))
-    })?;
+    let repo_url = GitUrl::try_from(repo_url_str.as_str())
+        .map_err(|e| Error::ExecutionFailed(format!("Invalid git URL '{repo_url_str}': {e}")))?;
     Ok((repo_url, repo_path))
 }
 
 /// Resolves the root node directory from a candidate path. The directory must
 /// contain a parseable `peppy.json5`.
-pub fn resolve_node_root_dir(dir: &Path) -> Result<PathBuf> {
+pub(crate) fn resolve_node_root_dir(dir: &Path) -> Result<PathBuf> {
     let config_path = dir.join(NODE_CONFIG_FILE);
     NodeConfigParser::from_path(&config_path).map_err(|e| {
         Error::ExecutionFailed(format!(
@@ -242,7 +249,7 @@ mod tests {
     fn parse_node_source_recognizes_name_tag() {
         let src = parse_node_source("some_node:v123", None).unwrap();
         let NodeSource::ResolveRef { name, tag } = &src else {
-            panic!("expected ResolveRef, got {:?}", src);
+            panic!("expected ResolveRef, got {src:?}");
         };
         assert_eq!(name, "some_node");
         assert_eq!(tag, "v123");

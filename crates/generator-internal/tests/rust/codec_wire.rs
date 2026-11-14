@@ -274,7 +274,7 @@ fn main() -> Result<()> {
             let publisher = frame::declare_publisher(&runner)
                 .await
                 .expect("declare frame publisher");
-            let pixels: Vec<u8> = (0..640usize * 480 * 3).map(|i| (i % 251) as u8).collect();
+            let pixels: Vec<u8> = Vec::from_fn(640usize * 480 * 3, |i| (i % 251) as u8);
             let stamp = UNIX_EPOCH + Duration::new(1_700_000_000, 500_000_000);
             loop {
                 let payload = frame::build_message(pixels.clone(), "rgb8".to_owned(), 640, 480, stamp)
@@ -304,9 +304,9 @@ fn binding(member: &str) -> MemberBinding {
 }
 
 fn expected_frame() -> Value {
-    let pixels: Vec<u8> = (0..FRAME_WIDTH as usize * FRAME_HEIGHT as usize * 3)
-        .map(|i| (i % 251) as u8)
-        .collect();
+    let pixels: Vec<u8> = Vec::from_fn(FRAME_WIDTH as usize * FRAME_HEIGHT as usize * 3, |i| {
+        u8::try_from(i % 251).unwrap()
+    });
     json!({
         "frame": bytes_to_base64(&pixels),
         "encoding": "rgb8",
@@ -318,7 +318,7 @@ fn expected_frame() -> Value {
 
 /// Bounds a wait on the provider by [`DEFAULT_WAIT_TIMEOUT`]; the provider
 /// answers on its own schedule and the assertion is never about timing.
-async fn bounded<T>(what: &str, future: impl std::future::Future<Output = T>) -> T {
+async fn bounded<T>(what: &str, future: impl Future<Output = T>) -> T {
     tokio::time::timeout(DEFAULT_WAIT_TIMEOUT, future)
         .await
         .unwrap_or_else(|_| panic!("{what} did not happen within {DEFAULT_WAIT_TIMEOUT:?}"))
@@ -585,7 +585,7 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
     );
 
     let mut handle = fire(json!({
-        "steps": 100000,
+        "steps": 100_000,
         "label": "long",
         "options": { "uppercase": false },
     }))

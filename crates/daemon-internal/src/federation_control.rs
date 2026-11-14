@@ -3,7 +3,7 @@
 //!
 //! A [`ServeAsyncCommand`] that binds the per-user Unix-domain socket
 //! ([`crate::control::federation_control_socket_path`]) and, for each
-//! connection, forwards a [`REFEDERATE_VERB`](crate::control::REFEDERATE_VERB)
+//! connection, forwards a [`REFEDERATE_VERB`]
 //! request to the [`RouterFederation`](super::router_federation) task as a
 //! [`RefederateRequest`]. It waits for the reconcile and writes the resulting
 //! [`ControlResponse`] back. When the enrollment changed this generation's
@@ -44,11 +44,11 @@ const ACK_BUDGET: Duration = Duration::from_secs(8);
 impl From<FederationOutcome> for ControlResponse {
     fn from(outcome: FederationOutcome) -> Self {
         match outcome {
-            FederationOutcome::Applied(applied) => ControlResponse::Ok { applied },
-            FederationOutcome::Pinned => ControlResponse::Pinned,
-            FederationOutcome::Failed(message) => ControlResponse::Error { message },
-            FederationOutcome::Unreachable(message) => ControlResponse::Unreachable { message },
-            FederationOutcome::Restart => ControlResponse::Restarting,
+            FederationOutcome::Applied(applied) => Self::Ok { applied },
+            FederationOutcome::Pinned => Self::Pinned,
+            FederationOutcome::Failed(message) => Self::Error { message },
+            FederationOutcome::Unreachable(message) => Self::Unreachable { message },
+            FederationOutcome::Restart => Self::Restarting,
         }
     }
 }
@@ -84,7 +84,7 @@ impl FederationControl {
 
 impl ServeAsyncCommand for FederationControl {
     fn run(self: Box<Self>) -> ServeAsyncHandle {
-        let FederationControl {
+        let Self {
             socket_path,
             trigger_tx,
             restart_tx,
@@ -94,8 +94,8 @@ impl ServeAsyncCommand for FederationControl {
             // Race the accept loop against the shared token so the daemon can
             // exit promptly (the loop is otherwise infinite).
             tokio::select! {
-                _ = serve_control(&socket_path, trigger_tx, restart_tx) => {}
-                _ = teardown_token.cancelled() => {}
+                () = serve_control(&socket_path, trigger_tx, restart_tx) => {}
+                () = teardown_token.cancelled() => {}
             }
             // Best-effort cleanup so a stale socket does not linger (the next start
             // unlinks unconditionally anyway).
@@ -181,7 +181,7 @@ async fn accept_loop(
 }
 
 /// Creates the runtime dir, removes any stale socket from a prior (crashed)
-/// daemon, binds, and restricts the socket to the owner. A leftover AF_UNIX path
+/// daemon, binds, and restricts the socket to the owner. A leftover `AF_UNIX` path
 /// is never connectable, so unconditional unlink-before-bind is safe.
 fn bind_listener(socket_path: &Path) -> std::io::Result<UnixListener> {
     if let Some(parent) = socket_path.parent() {
@@ -301,7 +301,7 @@ mod tests {
         ));
         match resp {
             ControlResponse::Unreachable { message } => {
-                assert_eq!(message, "received fatal alert: UnknownCA")
+                assert_eq!(message, "received fatal alert: UnknownCA");
             }
             other => panic!("expected Unreachable, got {other:?}"),
         }

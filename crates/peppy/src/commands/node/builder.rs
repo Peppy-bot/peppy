@@ -23,14 +23,14 @@ pub struct BuildOptions {
     pub rebuild: bool,
 }
 
-pub struct BuildNodeParams {
+pub(super) struct BuildNodeParams {
     pub node_name: String,
     pub node_tag: String,
     pub timeouts: TimeoutConfig,
     pub options: BuildOptions,
 }
 
-pub fn build_node(ctx: &Arc<AppContext>, params: BuildNodeParams) -> Result<()> {
+pub(super) fn build_node(ctx: &Arc<AppContext>, params: BuildNodeParams) -> Result<()> {
     crate::commands::block_on(build_node_async_with_connect(ctx, params))
 }
 
@@ -55,7 +55,7 @@ async fn build_node_async_with_connect(
 /// Sends a `node_build` goal and polls it to completion, addressed to the
 /// caller's own core node. Kept on the single-name signature for callers that
 /// build where they are bound (integration tests included); anything honoring
-/// a `--core-node` override goes through [`build_node_on`].
+/// a `--core-node` override goes through `build_node_on`.
 pub async fn build_node_async(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -82,7 +82,10 @@ pub async fn build_node_async(
 /// goal rides under), `target_core_node` the daemon that runs the build. They
 /// coincide without a `--core-node` override. `after` says whether the
 /// command sends another goal once the build completed.
-#[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input, and a struct of them only moves the list"
+)]
 pub(crate) async fn build_node_on(
     messenger: &MessengerHandle,
     bound_core_node: &str,
@@ -109,7 +112,7 @@ pub(crate) async fn build_node_on(
         GOAL_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_build goal: {}", e)))?;
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_build goal: {e}")))?;
 
     let build_result = crate::commands::action_poll::run_action_with_feedback::<
         NodeBuildGoalResponse,
@@ -118,14 +121,15 @@ pub(crate) async fn build_node_on(
     >(messenger, &mut action_handle, timeouts, "Node build", after)
     .await?;
 
-    match &build_result.artifact_path {
-        Some(artifact) => info!(
+    if let Some(artifact) = &build_result.artifact_path {
+        info!(
             "Built node {}:{}. Artifact: {}",
             node_name,
             node_tag,
             artifact.to_string_lossy()
-        ),
-        None => info!("Built node {}:{}", node_name, node_tag),
+        );
+    } else {
+        info!("Built node {}:{}", node_name, node_tag);
     }
 
     Ok(())

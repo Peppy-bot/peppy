@@ -48,7 +48,7 @@ pub const SPEC_ENV_VAR: &str = "PEPPY_MCP_SERVE_SPEC";
 /// The link id of the daemon slot of `robot_leases:v1` that the server adds
 /// when no exposure names `robot_leases:v1`: the server asks `check_move` and
 /// follows `changes` through it.
-pub const FLEET_SLOT: &str = "fleet";
+pub(crate) const FLEET_SLOT: &str = "fleet";
 
 /// The members of `robot_leases:v1` that the server calls through its fleet
 /// slot, whatever its exposures give.
@@ -201,6 +201,10 @@ pub struct ArgumentConflict {
     pub second_argument: Option<String>,
 }
 
+#[expect(
+    clippy::ref_option,
+    reason = "thiserror gives a field of the error by reference"
+)]
 fn argument_phrase(argument: &Option<String>) -> String {
     match argument {
         Some(argument) => format!("argument `{argument}`"),
@@ -241,7 +245,7 @@ pub struct McpDeploymentPlan {
     /// scopes read.
     pub targets: DeploymentTargets,
     /// The link id of the daemon slot of `robot_leases:v1`: the target of the
-    /// exposures that names it, or [`FLEET_SLOT`].
+    /// exposures that names it, or `FLEET_SLOT`.
     pub fleet_slot: String,
 }
 
@@ -329,7 +333,7 @@ struct Slot<'a> {
 /// one must name an interface this peppy serves at the tag it names. The
 /// manifest always has a daemon slot of `robot_leases:v1`, through which the
 /// server asks `check_move` and follows `changes`: the target of the
-/// exposures that names it, or a slot [`FLEET_SLOT`] that the planner adds.
+/// exposures that names it, or a slot `FLEET_SLOT` that the planner adds.
 /// An exposure's own `sha256` pin, when present, must agree with the
 /// deployment's contract pin; absent, the deployment's pin fixes the bytes.
 pub fn plan_deployment(
@@ -346,9 +350,12 @@ pub fn plan_deployment(
         .map(|exposure| exposure.reference())
         .collect();
     // Sorted references put a repeated exposure beside its first listing.
-    if let Some(pair) = references.windows(2).find(|pair| pair[0] == pair[1]) {
+    if let Some([_, repeated]) = references
+        .array_windows()
+        .find(|[previous, next]| previous == next)
+    {
         return Err(McpDeploymentError::DuplicateExposure {
-            exposure: pair[1].to_string(),
+            exposure: repeated.to_string(),
         });
     }
     let name = built_in_identity(&references);
@@ -373,7 +380,7 @@ pub fn plan_deployment(
     let targets = DeploymentTargets::of_exposures(exposures)?;
     let fleet_slot = fleet_slot_of(&ordered, &targets)?;
 
-    let mut slots: BTreeMap<String, Slot> = BTreeMap::new();
+    let mut slots: BTreeMap<String, Slot<'_>> = BTreeMap::new();
     let mut topics: BTreeSet<(String, String)> = BTreeSet::new();
     let mut services: BTreeSet<(String, String)> = BTreeSet::new();
     let mut actions: BTreeSet<(String, String)> = BTreeSet::new();
@@ -430,7 +437,7 @@ pub fn plan_deployment(
                             first_exposure: slot.exposure.clone(),
                             first_argument: slot.argument.clone(),
                             second_exposure: label.clone(),
-                            second_argument: argument.clone(),
+                            second_argument: argument,
                         },
                     )));
                 }
@@ -724,6 +731,7 @@ mod tests {
     use crate::internal::repository::{
         EntryOrigin, GitCommit, ItemName, ItemTag, RepoRelativePath,
     };
+    use std::assert_matches;
 
     const CAMERA_CONTRACT: &str = r#"{
         peppy_schema: "contract/v1",
@@ -770,9 +778,7 @@ mod tests {
         sha256: Option<&str>,
         member: &str,
     ) -> String {
-        let pin = sha256
-            .map(|sha| format!(", sha256: \"{sha}\""))
-            .unwrap_or_default();
+        let pin = sha256.map_or_default(|sha| format!(", sha256: \"{sha}\""));
         format!(
             r#"{{
             peppy_schema: "mcp_exposure/v1",
@@ -1025,7 +1031,7 @@ mod tests {
             .execution
             .endpoints
             .keys()
-            .map(|label| label.to_string())
+            .map(ToString::to_string)
             .collect();
         assert_eq!(labels, ["camera_v1", "camera_v2"]);
         assert!(
@@ -1179,14 +1185,8 @@ mod tests {
             DeploymentTargets {
                 linked: BTreeSet::new(),
                 daemon: [
-                    (
-                        "stack".to_owned(),
-                        crate::internal::daemon_interface::DaemonInterface::RobotMembership
-                    ),
-                    (
-                        "fleet".to_owned(),
-                        crate::internal::daemon_interface::DaemonInterface::RobotLeases
-                    ),
+                    ("stack".to_owned(), DaemonInterface::RobotMembership),
+                    ("fleet".to_owned(), DaemonInterface::RobotLeases),
                 ]
                 .into_iter()
                 .collect(),
@@ -1280,8 +1280,7 @@ mod tests {
 
         let refusal = plan_deployment(&[camera("fleet")], &[contract(CAMERA_CONTRACT)])
             .expect_err("a contract target takes the name of the fleet slot");
-        assert!(
-            matches!(&refusal, McpDeploymentError::FleetSlotTaken { target, .. } if target == "fleet"),
+        assert_matches!(&refusal, McpDeploymentError::FleetSlotTaken { target, .. } if target == "fleet",
             "{refusal}"
         );
         assert!(
@@ -1402,8 +1401,7 @@ mod tests {
         ));
         let error = plan_deployment(&[mismatched], &[contract(CAMERA_CONTRACT)])
             .expect_err("the author pin disagrees");
-        assert!(
-            matches!(error, McpDeploymentError::ContractPinMismatch { ref exposure, ref contract, .. } if exposure == "a:v1" && contract == "rgb_camera:v1"),
+        assert_matches!(&error, McpDeploymentError::ContractPinMismatch { exposure, contract, .. } if exposure == "a:v1" && contract == "rgb_camera:v1",
             "{error}"
         );
 
@@ -1430,8 +1428,7 @@ mod tests {
         ));
         let error =
             plan_deployment(&[orphan], &[contract(RECORDING_CONTRACT)]).expect_err("no camera pin");
-        assert!(
-            matches!(error, McpDeploymentError::ContractNotPinned { ref contract, .. } if contract == "rgb_camera:v1"),
+        assert_matches!(&error, McpDeploymentError::ContractNotPinned { contract, .. } if contract == "rgb_camera:v1",
             "{error}"
         );
     }
@@ -1598,10 +1595,10 @@ mod tests {
 
     #[test]
     fn an_empty_list_and_a_repeated_exposure_are_refused() {
-        assert!(matches!(
+        assert_matches!(
             plan_deployment(&[], &[]).expect_err("nothing to serve"),
             McpDeploymentError::NoExposures
-        ));
+        );
         let one = exposure(&exposure_document(
             "a",
             "v1",
@@ -1612,8 +1609,7 @@ mod tests {
         ));
         let error = plan_deployment(&[one.clone(), one], &[contract(CAMERA_CONTRACT)])
             .expect_err("listed twice");
-        assert!(
-            matches!(error, McpDeploymentError::DuplicateExposure { ref exposure } if exposure == "a:v1"),
+        assert_matches!(&error, McpDeploymentError::DuplicateExposure { exposure } if exposure == "a:v1",
             "{error}"
         );
     }

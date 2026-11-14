@@ -24,8 +24,11 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-#[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
-pub async fn listen_for_node_build(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a listener takes the identity of the daemon and the handles that the listeners share"
+)]
+pub(crate) async fn listen_for_node_build(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
@@ -200,29 +203,24 @@ pub(crate) async fn run_node_build_for_entity(
     announcer: Announcer,
 ) -> std::result::Result<NodeBuildResult, WorkStop> {
     let log = announcer.log().clone();
-    let entity_handle = match action_context.node_stack.find(&node_name, &node_tag) {
-        Some(handle) => handle,
-        None => {
-            return Err(WorkStop::Failed(record_build_failure(
-                &log,
-                PeppyFailureKind::Rejected,
-                format!("node `{}:{}` is not in the node stack", node_name, node_tag),
-            )));
-        }
+    let Some(entity_handle) = action_context.node_stack.find(&node_name, &node_tag) else {
+        return Err(WorkStop::Failed(record_build_failure(
+            &log,
+            PeppyFailureKind::Rejected,
+            format!("node `{node_name}:{node_tag}` is not in the node stack"),
+        )));
     };
 
     let (working_dir_guard, captured_generation) = match buildable_working_dir(&entity_handle) {
         Ok(buildable) => buildable,
         Err(unbuildable) => {
             let msg = match unbuildable {
-                Unbuildable::Stage(stage) => format!(
-                    "node `{}:{}` is in stage `{}`; cannot build",
-                    node_name, node_tag, stage
-                ),
-                Unbuildable::NoWorkingDir => format!(
-                    "node `{}:{}` has no staged working directory",
-                    node_name, node_tag
-                ),
+                Unbuildable::Stage(stage) => {
+                    format!("node `{node_name}:{node_tag}` is in stage `{stage}`; cannot build")
+                }
+                Unbuildable::NoWorkingDir => {
+                    format!("node `{node_name}:{node_tag}` has no staged working directory")
+                }
             };
             return Err(WorkStop::Failed(record_build_failure(
                 &log,
@@ -265,7 +263,7 @@ struct NodeBuildGoalHandler {
 
 impl GoalHandler for NodeBuildGoalHandler {
     async fn handle_goal(&self, pending: PendingGoal) {
-        self.handle_goal_request(pending).await
+        self.handle_goal_request(pending).await;
     }
 }
 
@@ -332,27 +330,24 @@ impl NodeBuildGoalHandler {
             goal.node_name, goal.node_tag
         );
 
-        let entity_handle = match self
+        let Some(entity_handle) = self
             .context
             .node_stack
             .find(&goal.node_name, &goal.node_tag)
-        {
-            Some(handle) => handle,
-            None => {
-                self.gate.clear_running();
-                refuse_goal(
-                    pending,
-                    Failure::new(
-                        PeppyFailureKind::Rejected,
-                        format!(
-                            "node `{}:{}` is not in the node stack: run `peppy node add` first",
-                            goal.node_name, goal.node_tag
-                        ),
+        else {
+            self.gate.clear_running();
+            refuse_goal(
+                pending,
+                Failure::new(
+                    PeppyFailureKind::Rejected,
+                    format!(
+                        "node `{}:{}` is not in the node stack: run `peppy node add` first",
+                        goal.node_name, goal.node_tag
                     ),
-                )
-                .await;
-                return;
-            }
+                ),
+            )
+            .await;
+            return;
         };
 
         // A publish checks, before anything else, where it pushes and what
@@ -497,7 +492,7 @@ impl NodeBuildGoalHandler {
             let work = under_goal_cancel(&goal_ctx, &cancel_token_for_task, work);
             // A build stops no instance: its cleanup kills its own build
             // command at once.
-            let result = crate::services::node::gate::finish_on_reset(
+            let result = Box::pin(crate::services::node::gate::finish_on_reset(
                 work,
                 &reset_cancellation,
                 COOPERATIVE_TEARDOWN_BUDGET,
@@ -507,7 +502,7 @@ impl NodeBuildGoalHandler {
                         "node build cancelled by stack reset",
                     )))
                 },
-            )
+            ))
             .await;
             // A build that a cancel stopped ends cancelled, with the reason
             // of the cancel: the goal's caller or its gone sender, a stack
@@ -649,9 +644,8 @@ async fn run_node_build(run: NodeBuildRun) -> std::result::Result<NodeBuildResul
                         &log,
                         PeppyFailureKind::PreconditionFailed,
                         format!(
-                            "node `{}:{}` was replaced by a concurrent push \
-                             (generation {} -> {}); aborting build",
-                            node_name, node_tag, captured_generation, current_gen
+                            "node `{node_name}:{node_tag}` was replaced by a concurrent push \
+                             (generation {captured_generation} -> {current_gen}); aborting build"
                         ),
                     )));
                 }
@@ -738,7 +732,7 @@ async fn run_node_build(run: NodeBuildRun) -> std::result::Result<NodeBuildResul
                 Err(WorkStop::Failed(record_build_failure(
                     &log,
                     PeppyFailureKind::AttemptFailed,
-                    format!("Failed to build node: {}", e),
+                    format!("Failed to build node: {e}"),
                 )))
             }
         }

@@ -41,7 +41,7 @@ pub(crate) struct PythonSchemaInfo {
 }
 
 /// Python-specific implementation of the interface generator.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct PythonGenerator {
     sections: Vec<InterfaceArtifact>,
     parameters: config::ParameterSchema,

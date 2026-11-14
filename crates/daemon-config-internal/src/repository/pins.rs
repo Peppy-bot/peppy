@@ -250,6 +250,7 @@ mod tests {
     use crate::internal::repository::types::GitCommit;
     use crate::internal::repository::types::RepoRelativePath;
     use core_node_api::encoding::ReadRef;
+    use std::assert_matches;
 
     fn pin(kind: PinKind, name: &str, tag: &str) -> PinnedItem {
         PinnedItem {
@@ -326,10 +327,7 @@ mod tests {
         let DeploymentRoot::Node(root) = &decoded.root else {
             panic!("a node root decodes as one");
         };
-        assert!(matches!(
-            &root.origin,
-            EntryOrigin::Git { repo_ref: None, .. }
-        ));
+        assert_matches!(&root.origin, EntryOrigin::Git { repo_ref: None, .. });
     }
 
     /// Decoding is the receiving side's structural validation, so a
@@ -424,7 +422,7 @@ mod tests {
         let DeploymentRoot::Node(root) = &decoded.root else {
             panic!("a node root decodes as one");
         };
-        assert!(matches!(&root.origin, EntryOrigin::Fs { .. }));
+        assert_matches!(&root.origin, EntryOrigin::Fs { .. });
     }
 
     #[test]

@@ -5,6 +5,10 @@ use peppylib::messaging::{
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
 fn sender_target_error_to_py(err: SenderTargetError) -> PyErr {
     PyValueError::new_err(err.to_string())
 }
@@ -18,7 +22,7 @@ fn sender_target_error_to_py(err: SenderTargetError) -> PyErr {
 /// Subscribers that should match any publisher pass `None` for `from_target`
 /// in `subscribe()` rather than constructing a wildcard `SenderTarget`.
 #[pyclass(name = "SenderTarget", frozen, eq, hash, from_py_object)]
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PySenderTarget {
     pub(crate) inner: SenderTarget,
 }
@@ -123,7 +127,7 @@ impl PySenderTarget {
 /// Python wrapper for [`ProducerRef`], the publisher's full
 /// `(core_node, instance_id)` wire identity. Returned alongside every consumed
 /// message, and accepted by every producer-targeting call site (topic
-/// subscribe, service poll, action send_goal) so a consumer can pass the
+/// subscribe, service poll, action `send_goal`) so a consumer can pass the
 /// identity it received straight back. `instance_id` alone is only unique
 /// within one stack, so the pair is what distinguishes producers across the
 /// whole mesh; consumers key per-slot state on it.
@@ -131,7 +135,7 @@ impl PySenderTarget {
 /// Rust `HashMap<ProducerRef, _>` idiom. `from_py_object` lets it be extracted
 /// as a call argument.
 #[pyclass(name = "ProducerRef", frozen, eq, hash, from_py_object)]
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PyProducerRef {
     pub(crate) inner: ProducerRef,
 }

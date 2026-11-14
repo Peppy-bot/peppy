@@ -45,7 +45,7 @@ use parking_lot::Mutex;
 use std::any::Any;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock};
 
 // One vocabulary for "where bytes live and which revision they were read
 // at", shared with the launch pins (`daemon_config::repository::pins`) so
@@ -135,50 +135,44 @@ impl From<&config::node::Manifest> for DeclaredLinks {
                     sha256: claim.sha256.clone(),
                 })
                 .collect(),
-            contracts: depends_on
-                .map(|deps| {
-                    deps.contracts
-                        .iter()
-                        .map(|slot| ContractSlot {
-                            name: slot.name.clone(),
-                            tag: slot.tag.clone(),
-                            link_id: slot.link_id.clone(),
-                            sha256: slot.sha256.clone(),
-                            cardinality: slot.cardinality,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            pairings: depends_on
-                .map(|deps| {
-                    deps.pairings
-                        .iter()
-                        .map(|slot| PairingSlot {
-                            name: slot.name.clone(),
-                            tag: slot.tag.clone(),
-                            role: slot.role.clone(),
-                            link_id: slot.link_id.clone(),
-                            sha256: slot.sha256.clone(),
-                            cardinality: slot.cardinality,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            pairing_observers: depends_on
-                .map(|deps| {
-                    deps.pairing_observers
-                        .iter()
-                        .map(|slot| ObserverSlot {
-                            name: slot.name.clone(),
-                            tag: slot.tag.clone(),
-                            role: slot.role.clone(),
-                            link_id: slot.link_id.clone(),
-                            sha256: slot.sha256.clone(),
-                            cardinality: slot.cardinality,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
+            contracts: depends_on.map_or_default(|deps| {
+                deps.contracts
+                    .iter()
+                    .map(|slot| ContractSlot {
+                        name: slot.name.clone(),
+                        tag: slot.tag.clone(),
+                        link_id: slot.link_id.clone(),
+                        sha256: slot.sha256.clone(),
+                        cardinality: slot.cardinality,
+                    })
+                    .collect()
+            }),
+            pairings: depends_on.map_or_default(|deps| {
+                deps.pairings
+                    .iter()
+                    .map(|slot| PairingSlot {
+                        name: slot.name.clone(),
+                        tag: slot.tag.clone(),
+                        role: slot.role.clone(),
+                        link_id: slot.link_id.clone(),
+                        sha256: slot.sha256.clone(),
+                        cardinality: slot.cardinality,
+                    })
+                    .collect()
+            }),
+            pairing_observers: depends_on.map_or_default(|deps| {
+                deps.pairing_observers
+                    .iter()
+                    .map(|slot| ObserverSlot {
+                        name: slot.name.clone(),
+                        tag: slot.tag.clone(),
+                        role: slot.role.clone(),
+                        link_id: slot.link_id.clone(),
+                        sha256: slot.sha256.clone(),
+                        cardinality: slot.cardinality,
+                    })
+                    .collect()
+            }),
         }
     }
 }
@@ -206,7 +200,7 @@ pub struct NodeCacheEntry {
 /// they are identified by `peppy_schema: "launcher/v1"` and keyed by file
 /// stem.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct LauncherCacheEntry {
+pub(crate) struct LauncherCacheEntry {
     /// Name of the launcher (file stem of the `.json5` file).
     pub launcher_name: ItemName,
     pub sha256: ManifestFingerprint,
@@ -220,7 +214,7 @@ pub struct LauncherCacheEntry {
 /// JSON5 documents (`peppy_schema: "contract/v1"`) describing a reusable
 /// set of topics, services and actions.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ContractCacheEntry {
+pub(crate) struct ContractCacheEntry {
     pub contract_name: ItemName,
     pub tag: ItemTag,
     pub sha256: ManifestFingerprint,
@@ -234,7 +228,7 @@ pub struct ContractCacheEntry {
 /// JSON5 documents (`peppy_schema: "pairing/v1"`) describing a two-role,
 /// topics-only conversation contract.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PairingCacheEntry {
+pub(crate) struct PairingCacheEntry {
     pub pairing_name: ItemName,
     pub tag: ItemTag,
     pub sha256: ManifestFingerprint,
@@ -248,7 +242,7 @@ pub struct PairingCacheEntry {
 /// stand-alone JSON5 documents (`peppy_schema: "mcp_exposure/v1"`)
 /// selecting the contract members the built-in MCP server makes public.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct McpExposureCacheEntry {
+pub(crate) struct McpExposureCacheEntry {
     pub exposure_name: ItemName,
     pub tag: ItemTag,
     pub sha256: ManifestFingerprint,
@@ -297,6 +291,10 @@ pub(crate) trait RepoCacheEntry:
     /// Empty for untagged kinds (launchers), so `(name, tag)` is the
     /// identity key for every kind. Those kinds carry no tag field at all,
     /// so the default is what they use.
+    #[expect(
+        clippy::unnecessary_literal_bound,
+        reason = "a tagged kind returns the tag that the entry holds"
+    )]
     fn tag(&self) -> &str {
         ""
     }
@@ -520,11 +518,12 @@ fn parsed_cache<E: RepoCacheEntry>(path: &Path, content: String) -> Result<Arc<V
             path.display()
         ))
     })?);
+    let kept = Arc::clone(&entries);
     parsed_caches().lock().insert(
         path.to_path_buf(),
         ParsedCache {
             content,
-            entries: Arc::clone(&entries) as Arc<dyn Any + Send + Sync>,
+            entries: kept,
         },
     );
     Ok(entries)
@@ -538,8 +537,9 @@ struct ParsedCache {
 }
 
 fn parsed_caches() -> &'static Mutex<HashMap<PathBuf, ParsedCache>> {
-    static PARSED: OnceLock<Mutex<HashMap<PathBuf, ParsedCache>>> = OnceLock::new();
-    PARSED.get_or_init(|| Mutex::new(HashMap::new()))
+    static PARSED: LazyLock<Mutex<HashMap<PathBuf, ParsedCache>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    &PARSED
 }
 
 /// One identity answered more than once by a single repository. Unlike
@@ -665,7 +665,7 @@ fn lookup_repo_id(owners: &RepoOwners, origin: &EntryOrigin) -> u32 {
 }
 
 /// Returns the highest-priority (lowest `repo_id`) node entry for
-/// `(name, tag)`, `None` when no entry matches, or [`RepoAmbiguity`]
+/// `(name, tag)`, `None` when no entry matches, or `RepoAmbiguity`
 /// when the winning repository claims it more than once.
 pub fn lookup<'a>(
     entries: &'a [NodeCacheEntry],
@@ -678,7 +678,7 @@ pub fn lookup<'a>(
 /// Returns the highest-priority (lowest `repo_id`) launcher entry
 /// matching `name`, `None` when no entry matches, or [`RepoAmbiguity`]
 /// when the winning repository claims it more than once.
-pub fn lookup_launcher<'a>(
+pub(crate) fn lookup_launcher<'a>(
     entries: &'a [LauncherCacheEntry],
     name: &str,
 ) -> std::result::Result<Option<&'a LauncherCacheEntry>, RepoAmbiguity> {
@@ -736,12 +736,12 @@ pub fn repositories_list_path(peppy_dirs: &PeppyDirs) -> PathBuf {
 }
 
 /// Reads `contracts.json5`.
-pub fn load_contract_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<ContractCacheEntry>> {
+pub(crate) fn load_contract_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<ContractCacheEntry>> {
     load_repo_cache(peppy_dirs)
 }
 
 /// Reads `pairings.json5`.
-pub fn load_pairing_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<PairingCacheEntry>> {
+pub(crate) fn load_pairing_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<PairingCacheEntry>> {
     load_repo_cache(peppy_dirs)
 }
 
@@ -1896,7 +1896,7 @@ mod tests {
             &[launcher_entry(
                 "demo",
                 EntryOrigin::Git {
-                    repo_url: repo_url.clone(),
+                    repo_url,
                     read_ref: Some(ReadRef::Named(branch.clone())),
                     repo_ref: Some(branch),
                     commit,
@@ -1921,8 +1921,6 @@ mod tests {
     }
 
     // -- pin resolution tests --
-
-    use daemon_config::repository::{PinKind, PinnedItem};
 
     fn pin_for(
         name: &str,

@@ -13,7 +13,7 @@ use crate::services::action_loop::{
     invalid_payload, refuse_goal, run_action_loop, under_goal_cancel,
 };
 use crate::services::federation::SliceOwnership;
-use crate::services::fleet::ClientRef;
+use crate::services::fleet::{ClientRef, Refusal};
 use crate::services::node::common::{encode_response_or_err, panic_message};
 use crate::services::node::gate::{
     Admission, ConcurrencyGate, finish_on_reset, reset_drain_budget,
@@ -225,7 +225,7 @@ impl StackRequest {
                 }
                 Self::Launch(_) | Self::Build(_) => Ok(None),
             })
-            .map_err(|refusal| refusal.into_daemon_failure())
+            .map_err(Refusal::into_daemon_failure)
     }
 
     fn process(self, ctx: StackChangeContext) -> futures::future::BoxFuture<'static, ChangeEnd> {
@@ -308,13 +308,16 @@ pub(crate) struct StackChangeDefaults {
     pub shutdown_token: CancellationToken,
     /// Which launch this daemon's slice belongs to. Shared with the federation
     /// endpoints so a reservation and the slice it produces are one authority.
-    pub slice_ownership: Arc<crate::services::federation::SliceOwnership>,
+    pub slice_ownership: Arc<SliceOwnership>,
     /// This daemon's peppy version, compared against each participant's during
     /// a federated preflight.
     pub peppy_version: String,
 }
 
-#[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + two shared handles.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a listener takes the identity of the daemon and the handles that the listeners share"
+)]
 pub(crate) async fn listen_for_stack_action(
     action_id: ActionId,
     messenger: &MessengerHandle,
@@ -379,7 +382,7 @@ struct StackActionContext {
     daemon_defaults: DaemonDefaults,
     shutdown_token: CancellationToken,
     relationships: RelationshipCoordinators,
-    slice_ownership: Arc<crate::services::federation::SliceOwnership>,
+    slice_ownership: Arc<SliceOwnership>,
     peppy_version: String,
 }
 
@@ -398,7 +401,7 @@ impl GoalHandler for StackActionHandler {
             self.gate.clone(),
             self.action,
         )
-        .await
+        .await;
     }
 }
 
@@ -451,7 +454,7 @@ pub(super) struct StackChangeContext {
     /// Which launch this daemon's slice belongs to. Recorded once the launch
     /// commits, so `stack list` reports it and a coordinator can rediscover
     /// every participant by query.
-    pub(super) slice_ownership: Arc<crate::services::federation::SliceOwnership>,
+    pub(super) slice_ownership: Arc<SliceOwnership>,
     /// This daemon's peppy version, compared against each participant's during
     /// preflight so a mixed-version federation is refused before any stack is
     /// touched.
@@ -611,8 +614,8 @@ async fn handle_stack_request(
     let reset = action_context.slice_ownership.stack.cancellation();
     let cancellation = reset.child_token();
     tokio::spawn(async move {
-        let _mutation = mutation;
-        let _removal = removal;
+        let held_mutation = mutation;
+        let held_removal = removal;
         // Frees the gate slot on every exit: explicitly before the end on the
         // normal path (via `release_then_end` below), or on unwind for a
         // panic. A no-op if a later goal already took over.
@@ -687,8 +690,8 @@ async fn handle_stack_request(
                 ChangeEnd::stopped(Failure::new(PeppyFailureKind::AttemptFailed, msg))
             }
         };
-        drop(_mutation);
-        drop(_removal);
+        drop(held_mutation);
+        drop(held_removal);
         let ending =
             stack_goal_ending(end, &log, &publisher, cancel_reason(&goal_ctx, &reset)).await;
         slot.release_then_end(&goal_ctx, ending).await;

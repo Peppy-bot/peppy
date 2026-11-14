@@ -29,6 +29,7 @@ use crate::generator::naming::claim_sanitized_name;
 use crate::generator::types::{InterfaceArtifact, InterfaceKind, scoped_schema_key};
 use config::node::Cardinality;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::Path;
 
 /// One `publisher_readiness.append(PublisherReadiness(...))` statement's
@@ -102,7 +103,7 @@ pub(super) fn render(
         &node_tag,
         &emitted_members,
         node_dir.as_deref(),
-    )?;
+    );
     generator.push_section(InterfaceArtifact {
         module_path: vec!["harness".to_string()],
         kind: InterfaceKind::Fixture,
@@ -125,8 +126,7 @@ fn sync_time_node_dir(to_path: &Path) -> String {
                     .components()
                     .count(),
             )
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| canonical.clone())
+            .map_or_else(|| canonical.clone(), Path::to_path_buf)
     } else {
         canonical
     };
@@ -517,12 +517,12 @@ fn render_exposed_action(
 
     // Cancel-ack states, mirroring the runtime's framework envelope (decoded
     // engine-side; no per-action schema).
-    builder.py(r#"
+    builder.py(r"
 class CancelState(IntEnum):
     SIGNALLED = 0
     ALREADY_TERMINAL = 1
     UNKNOWN = 2
-"#);
+");
     builder.blank_line();
     builder.dataclass(
         "CancelResponse",
@@ -533,14 +533,14 @@ class CancelState(IntEnum):
         ],
     );
 
-    builder.py(r#"
+    builder.py(r"
 class ResultStatus(IntEnum):
     COMPLETED = 0
     CANCELLED = 1
     ABANDONED = 2
     EXPIRED = 3
     FAILED = 4
-"#);
+");
     builder.blank_line();
 
     // Result data: fixtures deserialize; production defines no struct.
@@ -642,7 +642,7 @@ if status is ResultStatus.FAILED:
                 // A result-bearing action decodes the body, and only on the two
                 // terminal states that carry one.
                 if spec.result.is_some() {
-                    builder.py(r#"
+                    builder.py(r"
 data = None
 if status in (ResultStatus.COMPLETED, ResultStatus.CANCELLED):
     data = _deserialize_result(reply.body)
@@ -654,9 +654,9 @@ return ResultResponse(
     failure=failure,
     cancel_reason=reply.cancel_reason,
 )
-"#);
+");
                 } else {
-                    builder.py(r#"
+                    builder.py(r"
 return ResultResponse(
     core_node=reply.core_node,
     instance_id=reply.instance_id,
@@ -664,7 +664,7 @@ return ResultResponse(
     failure=failure,
     cancel_reason=reply.cancel_reason,
 )
-"#);
+");
                 }
             },
         );
@@ -723,19 +723,19 @@ return ResultResponse(
                 ],
                 ")",
             );
-            builder.py(r#"
+            builder.py(r"
 handle = GoalHandle()
 handle._messenger = harness.session
 handle._inner = inner
 handle.accepted = inner.accepted
 handle.refusal = None if inner.accepted else Failure(inner.refusal_kind, inner.refusal_message)
-"#);
+");
             if spec.goal_response.is_some() {
                 // An accepted goal carries the declared response; a refused
                 // one carries none.
-                builder.py(r#"
+                builder.py(r"
 handle.data = _deserialize_goal_response(inner.goal_reply_body) if inner.accepted else None
-"#);
+");
             }
             builder.line("return handle");
         },
@@ -803,8 +803,8 @@ fn default_spec_literal(spec: &config::ParameterSpec) -> Option<String> {
             let value = serde_json::to_value(default).ok()?;
             Some(python_json_literal(&value))
         }
-        config::ParameterSpec::Primitive { default: None, .. } => None,
-        config::ParameterSpec::Array { .. } => None,
+        config::ParameterSpec::Primitive { default: None, .. }
+        | config::ParameterSpec::Array { .. } => None,
         config::ParameterSpec::Group(fields) => default_group_literal(fields),
     }
 }
@@ -851,7 +851,7 @@ fn render_harness(
     node_tag: &str,
     emitted_members: &[EmittedMember],
     node_dir: Option<&str>,
-) -> Result<String> {
+) -> String {
     let mut builder = PythonCodeBuilder::new();
     builder.add_import("import os");
     builder.add_import("import peppylib");
@@ -933,12 +933,12 @@ fn render_harness(
     });
     match default_group_literal(parameters) {
         Some(literal) => builder.line(&format!("_DEFAULT_PARAMETERS = {literal}")),
-        None => builder.py(r#"
+        None => builder.py(r"
 # At least one parameter has no schema default: `parameters=None`
 # defers to the node's own boot validation, which raises the
 # canonical missing-parameter error before `setup` runs.
 _DEFAULT_PARAMETERS = None
-"#),
+"),
     }
     builder.blank_line();
 
@@ -974,12 +974,12 @@ def _hydrate_parameters(parameters):
         &observed_attrs,
     );
 
-    builder.py(r#"
+    builder.py(r"
 # Aggregates the three namespace classes above and tears the whole set down.
 # Node-invariant, so it lives in peppylib.testing; bound here under its
 # historical name so `harness.mocks`'s type stays importable from this module.
 Mocks = peppylib.testing.Mocks
-"#);
+");
     builder.blank_line();
 
     emit_namespace_class(
@@ -1064,7 +1064,7 @@ async def shutdown(self) -> None:
              when the test body fails).",
         );
         builder.blank_line();
-        builder.py(r#"
+        builder.py(r"
 def __init__(self, coro) -> None:
     self._coro = coro
     self._harness = None
@@ -1081,7 +1081,7 @@ async def __aexit__(self, exc_type, exc, tb) -> None:
     self._harness = None
     if harness is not None:
         await harness.shutdown()
-"#);
+");
     });
     builder.blank_line();
 
@@ -1089,8 +1089,8 @@ async def __aexit__(self, exc_type, exc, tb) -> None:
     let mut kwarg_params = String::new();
     let mut kwarg_args = String::new();
     for kwarg in &parts.slot_kwargs {
-        kwarg_params.push_str(&format!(", {}={}", kwarg.name, kwarg.default));
-        kwarg_args.push_str(&format!(", {}", kwarg.name));
+        let _ = write!(kwarg_params, ", {}={}", kwarg.name, kwarg.default);
+        let _ = write!(kwarg_args, ", {}", kwarg.name);
     }
 
     builder.block(
@@ -1147,17 +1147,17 @@ test reads late.
              harness_clock{kwarg_args}) -> Harness:"
         ),
         |builder| {
-            builder.py(r#"
+            builder.py(r"
 node_dir = peppylib.testing.resolve_node_dir(node_dir, _SYNC_TIME_NODE_DIR, _NODE_CONFIG_FILE)
 if instance_id is None:
     instance_id = peppylib.testing.unique_test_instance_id()
 router = await peppylib.testing.EphemeralRouter.start()
-"#);
+");
             builder.block("try:", |builder| {
                 builder.lines(&parts.mock_starts);
                 builder.line("session = await router.connect()");
                 builder.lines(&emitted_subscribes);
-                builder.py(r#"
+                builder.py(r"
 # The daemon-clock stand-in lives on the fixture session under the
 # standalone core-node identity, where the node's `synchronize` polls
 # and its clock subscription listens.
@@ -1175,7 +1175,7 @@ standalone = (
 )
 if parameters is not None:
     standalone = standalone.with_parameters(parameters)
-"#);
+");
                 builder.lines(&parts.seeding);
                 builder.line("publisher_readiness = []");
                 for entry in &parts.publisher_readiness {
@@ -1229,10 +1229,10 @@ if parameters is not None:
                 // A failed boot must still release the router (and its
                 // mesh-serialization lock); Rust gets this from Drop, Python has
                 // no async drop hook.
-                builder.py(r#"
+                builder.py(r"
 await router.shutdown()
 raise
-"#);
+");
             });
         },
     );
@@ -1240,7 +1240,7 @@ raise
     let doc = "Generated test harness: ephemeral router + started mocks + seeded \
                StandaloneConfig + the node running in-process behind the readiness \
                barriers. Construct with `start(...)`.";
-    Ok(format!("\"\"\"{doc}\"\"\"\n\n{}", builder.build()))
+    format!("\"\"\"{doc}\"\"\"\n\n{}", builder.build())
 }
 
 /// The default of a set slot's instance-count kwarg: the fewest instances

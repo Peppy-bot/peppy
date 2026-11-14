@@ -116,6 +116,7 @@ fn all_established(endpoints: &[ConfiguredEndpoint], dsts: &[String]) -> bool {
 /// same fail-fast probe config as [`super::RouterHealthChecker`], plus the
 /// active router config's `connect.endpoints`; `None` there means there is
 /// nothing to wait for.
+#[derive(Debug)]
 pub struct RouterLinksProbe {
     probe_config: zenoh::config::Config,
     endpoints: Vec<ConfiguredEndpoint>,
@@ -125,7 +126,7 @@ impl RouterLinksProbe {
     /// Builds a probe for `endpoints`, or `None` when none of them parses (an
     /// unparseable endpoint is the operator's to dial, not ours to wait for:
     /// it is warned about and skipped).
-    pub(crate) fn new(probe_config: zenoh::config::Config, endpoints: Vec<String>) -> Option<Self> {
+    pub(crate) fn new(probe_config: zenoh::config::Config, endpoints: &[String]) -> Option<Self> {
         let endpoints: Vec<ConfiguredEndpoint> = endpoints
             .iter()
             .filter_map(|endpoint| {
@@ -181,11 +182,11 @@ impl RouterLinksProbe {
 
         // One probe session for the whole wait; per-attempt admin queries.
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let session =
-            match tokio::time::timeout(remaining, zenoh::open(self.probe_config.clone())).await {
-                Ok(Ok(session)) => session,
-                Ok(Err(_)) | Err(_) => return false,
-            };
+        let Ok(Ok(session)) =
+            tokio::time::timeout(remaining, zenoh::open(self.probe_config.clone())).await
+        else {
+            return false;
+        };
 
         let established = loop {
             if let Some(dsts) = query_link_dsts(&session).await
@@ -342,15 +343,15 @@ mod tests {
         let config = zenoh::config::Config::default();
         let probe = RouterLinksProbe::new(
             config.clone(),
-            vec!["tcp/172.17.0.2:7447".to_string(), "garbage".to_string()],
+            &["tcp/172.17.0.2:7447".to_string(), "garbage".to_string()],
         )
         .expect("one parseable endpoint keeps the probe");
         assert_eq!(probe.endpoints(), vec!["tcp/172.17.0.2:7447".to_string()]);
 
         assert!(
-            RouterLinksProbe::new(config.clone(), vec!["garbage".to_string()]).is_none(),
+            RouterLinksProbe::new(config.clone(), &["garbage".to_string()]).is_none(),
             "nothing parseable ⇒ nothing to wait for"
         );
-        assert!(RouterLinksProbe::new(config, Vec::new()).is_none());
+        assert!(RouterLinksProbe::new(config, &[]).is_none());
     }
 }

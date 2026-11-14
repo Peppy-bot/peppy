@@ -39,13 +39,13 @@ pub enum PeppySchema {
 impl fmt::Display for PeppySchema {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            PeppySchema::NodeV1 => "node/v1",
-            PeppySchema::LauncherV1 => "launcher/v1",
-            PeppySchema::LauncherFragmentV1 => "launcher_fragment/v1",
-            PeppySchema::ContractV1 => "contract/v1",
-            PeppySchema::PairingV1 => "pairing/v1",
-            PeppySchema::McpExposureV1 => "mcp_exposure/v1",
-            PeppySchema::RepositoryV1 => "repository/v1",
+            Self::NodeV1 => "node/v1",
+            Self::LauncherV1 => "launcher/v1",
+            Self::LauncherFragmentV1 => "launcher_fragment/v1",
+            Self::ContractV1 => "contract/v1",
+            Self::PairingV1 => "pairing/v1",
+            Self::McpExposureV1 => "mcp_exposure/v1",
+            Self::RepositoryV1 => "repository/v1",
         };
         f.write_str(s)
     }
@@ -100,6 +100,6 @@ mod tests {
 
     #[test]
     fn rejects_an_unknown_schema_tag() {
-        assert!(serde_json::from_str::<PeppySchema>("\"repository/v2\"").is_err());
+        serde_json::from_str::<PeppySchema>("\"repository/v2\"").unwrap_err();
     }
 }

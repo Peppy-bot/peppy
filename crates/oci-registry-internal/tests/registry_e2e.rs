@@ -5,6 +5,7 @@ use core_node_api::encoding::{ArtifactPlatform, ArtifactVersion, OciRepository};
 use oci_registry::manifest::{BlobDescriptor, EMPTY_CONFIG, NodeArtifact, NodeArtifactManifest};
 use oci_registry::test_support::{LocalRegistry, RegistryAuth, write_stub_credential_helper};
 use oci_registry::{Access, CredentialStore, RegistryClient, RegistryError, digest};
+use std::assert_matches;
 use std::ffi::OsString;
 use std::path::Path;
 
@@ -79,7 +80,7 @@ async fn an_artifact_pushed_in_chunks_is_listed_read_and_pulled_back() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pusher = client(&registry, store_with_file(dir.path(), None), Access::Push)
         .with_upload_chunk_bytes(1000);
-    let sif: Vec<u8> = (0..4500u32).map(|i| (i % 251) as u8).collect();
+    let sif: Vec<u8> = Vec::from_fn(4500, |i| u8::try_from(i % 251).unwrap());
 
     let pushed = push_artifact(
         &pusher,
@@ -135,7 +136,7 @@ async fn a_chunk_sent_in_parts_reaches_the_registry_whole() {
 
     let pushed = pusher
         .push_blob_file(&sif_path, &sif_digest, sif_size, &mut |sent| {
-            progress.push(sent)
+            progress.push(sent);
         })
         .await
         .expect("push sif");
@@ -220,10 +221,7 @@ async fn a_registry_with_basic_auth_takes_the_credential_of_the_auth_file() {
         Access::Pull,
     );
     let error = anonymous.list_tags().await.expect_err("no credential");
-    assert!(
-        matches!(error, RegistryError::NoCredential { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::NoCredential { .. }, "{error}");
     let error = client(
         &registry,
         store_with_file(anonymous_dir.path(), None),
@@ -232,10 +230,7 @@ async fn a_registry_with_basic_auth_takes_the_credential_of_the_auth_file() {
     .check_push_access()
     .await
     .expect_err("no credential");
-    assert!(
-        matches!(error, RegistryError::NoCredential { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::NoCredential { .. }, "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -285,8 +280,5 @@ async fn a_wrong_password_is_refused_by_the_registry() {
     .await
     .expect_err("wrong password");
 
-    assert!(
-        matches!(error, RegistryError::Unauthorized { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::Unauthorized { .. }, "{error}");
 }

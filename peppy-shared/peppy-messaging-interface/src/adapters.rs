@@ -1,3 +1,3 @@
-pub mod mock;
+pub(crate) mod mock;
 #[cfg(feature = "zenoh")]
-pub mod zenoh;
+pub(crate) mod zenoh;

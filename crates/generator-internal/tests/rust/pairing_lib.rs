@@ -44,7 +44,7 @@ const JOINT_STATES: &str = r#"
 "#;
 
 /// The controller side of `arm_link/v1`: emits `joint_commands`, consumes
-/// `joint_states`, through one slot whose link_id is `arm`.
+/// `joint_states`, through one slot whose `link_id` is `arm`.
 fn controller_peer_context() -> PeerContext {
     PeerContext {
         link_id: "arm".to_string(),
@@ -70,7 +70,7 @@ fn assert_no_modules_under(src_dir: &Path, category: &str) {
     );
     let entries: Vec<String> = fs::read_dir(&dir)
         .expect("category dir reads")
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|name| name != "mod.rs")
         .collect();

@@ -55,13 +55,13 @@ where
     // superseded lets a job that has not started yet skip its work.
     let _cancel_on_drop = cancel.clone().drop_guard();
     let node_label = job.node_label.clone();
-    tokio::task::spawn_blocking(move || job.run(work, cancel))
+    tokio::task::spawn_blocking(move || job.run(work, &cancel))
         .await
         .unwrap_or_else(|join_error| Err(describe_join_error(&node_label, join_error)))
 }
 
 impl StagedJob {
-    fn run<W>(self, work: W, cancel: CancellationToken) -> Result<(), String>
+    fn run<W>(self, work: W, cancel: &CancellationToken) -> Result<(), String>
     where
         W: FnOnce(&Path) -> Result<(), String>,
     {

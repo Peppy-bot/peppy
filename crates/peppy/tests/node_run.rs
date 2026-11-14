@@ -75,8 +75,7 @@ async fn node_run_command_succeeds() {
     let logs = log_capture.logs();
     assert!(
         logs.contains("Started node instance"),
-        "logs should contain success message for starting node instance. Logs:\n{}",
-        logs
+        "logs should contain success message for starting node instance. Logs:\n{logs}"
     );
 
     // Verify the node has 1 instance now
@@ -228,13 +227,11 @@ async fn node_run_command_with_args_succeeds() {
     let logs = log_capture.logs();
     assert!(
         logs.contains("3 argument(s)"),
-        "logs should mention the number of arguments. Logs:\n{}",
-        logs
+        "logs should mention the number of arguments. Logs:\n{logs}"
     );
     assert!(
         logs.contains("Started node instance"),
-        "logs should contain success message for starting node instance. Logs:\n{}",
-        logs
+        "logs should contain success message for starting node instance. Logs:\n{logs}"
     );
 
     // Query the node stack to verify the node now has an instance
@@ -305,14 +302,11 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     let logs = log_capture.logs();
     assert!(
         logs.contains(custom_instance_id),
-        "logs should contain the custom instance_id '{}'. Logs:\n{}",
-        custom_instance_id,
-        logs
+        "logs should contain the custom instance_id '{custom_instance_id}'. Logs:\n{logs}"
     );
     assert!(
         logs.contains("Started node instance"),
-        "logs should contain success message for starting node instance. Logs:\n{}",
-        logs
+        "logs should contain success message for starting node instance. Logs:\n{logs}"
     );
 
     // Query the node stack to verify the node now has an instance
@@ -469,18 +463,15 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
     let logs = log_capture.logs();
     assert!(
         logs.contains("Building node"),
-        "logs should mention that the node is being built. Logs:\n{}",
-        logs
+        "logs should mention that the node is being built. Logs:\n{logs}"
     );
     assert!(
         !logs.contains("has already been built"),
-        "logs should NOT contain the already-built skip message. Logs:\n{}",
-        logs
+        "logs should NOT contain the already-built skip message. Logs:\n{logs}"
     );
     assert!(
         logs.contains("Started node instance"),
-        "logs should mention that the instance was started. Logs:\n{}",
-        logs
+        "logs should mention that the instance was started. Logs:\n{logs}"
     );
 
     assert_instance_count(
@@ -564,13 +555,11 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
     let logs = log_capture.logs();
     assert!(
         logs.contains("has already been built"),
-        "logs should contain the already-built skip message. Logs:\n{}",
-        logs
+        "logs should contain the already-built skip message. Logs:\n{logs}"
     );
     assert!(
         logs.contains("Started node instance"),
-        "logs should mention that the instance was started. Logs:\n{}",
-        logs
+        "logs should mention that the instance was started. Logs:\n{logs}"
     );
 
     assert_instance_count(
@@ -626,8 +615,7 @@ fn write_consumer_with_slots(
         .iter()
         .map(|(link_id, cardinality)| {
             let cardinality = cardinality
-                .map(|c| format!(r#", cardinality: "{c}""#))
-                .unwrap_or_default();
+                .map_or_default(|c| format!(r#", cardinality: "{c}""#));
             format!(
                 r#"            {{ name: "{producer_name}", tag: "v1", link_id: "{link_id}"{cardinality} }}"#
             )

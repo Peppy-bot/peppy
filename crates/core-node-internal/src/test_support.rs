@@ -29,8 +29,8 @@ pub fn instant_restart_backoff() -> RestartBackoff {
 /// wait.
 pub fn parked_restart_backoff() -> RestartBackoff {
     RestartBackoff {
-        first_delay: Duration::from_secs(3600),
-        max_delay: Duration::from_secs(3600),
+        first_delay: Duration::from_hours(1),
+        max_delay: Duration::from_hours(1),
         reset_after: Duration::MAX,
     }
 }
@@ -105,7 +105,7 @@ pub fn signal_process(pid: u32, signal: &str) {
 
 /// Cloneable in-memory sink for `tracing_subscriber`: pass a clone to
 /// `with_writer` and read back everything logged via [`LogCapture::logs`].
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct LogCapture {
     buffer: Arc<parking_lot::Mutex<Vec<u8>>>,
 }
@@ -147,7 +147,7 @@ impl Write for LogCapture {
 }
 
 impl<'a> MakeWriter<'a> for LogCapture {
-    type Writer = LogCapture;
+    type Writer = Self;
 
     fn make_writer(&'a self) -> Self::Writer {
         self.clone()

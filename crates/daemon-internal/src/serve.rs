@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
@@ -45,7 +44,7 @@ const RESTART_EXIT_CODE: i32 = 75;
 /// Wall-clock window and cap for the in-process flap backstop: more than
 /// [`FLAP_CAP`] restarts within [`FLAP_WINDOW`] converts a same-PID busy loop
 /// (otherwise invisible to systemd) into a visible `exit(RESTART_EXIT_CODE)`.
-const FLAP_WINDOW: Duration = Duration::from_secs(60);
+const FLAP_WINDOW: Duration = Duration::from_mins(1);
 const FLAP_CAP: usize = 5;
 
 pub(crate) type ServeFuture = Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>;
@@ -86,7 +85,7 @@ impl CompositeCommand {
     pub(crate) fn execute(self) -> Vec<ServeAsyncHandle> {
         self.async_commands
             .into_iter()
-            .map(|command| command.run())
+            .map(ServeAsyncCommand::run)
             .collect()
     }
 }
@@ -101,7 +100,7 @@ pub(crate) struct Serve {
     shutdown_token: Option<CancellationToken>,
     /// The shared token every serve task observes for teardown. The coordinator
     /// cancels it on its way out so each task runs its real graceful teardown
-    /// (close session, stop_router, SIGKILL nodes, unlink the socket) rather than
+    /// (close session, `stop_router`, SIGKILL nodes, unlink the socket) rather than
     /// being aborted. For a generation built by [`ServeCommandBuilder`] this is
     /// the token cloned into the tasks; a bare [`Serve::new`] (tests) creates a
     /// fresh one its tasks do not observe.
@@ -227,7 +226,7 @@ impl Serve {
         for ready in readiness {
             let gate = tokio::select! {
                 gate = ready => gate,
-                _ = shutdown_signal.recv() => return Startup::ShutdownSignal,
+                () = shutdown_signal.recv() => return Startup::ShutdownSignal,
             };
             if gate.is_ok() {
                 continue;
@@ -238,8 +237,7 @@ impl Serve {
                 }
                 Some(Ok(Err(e))) => e,
                 Some(Err(join_err)) => Error::ExecutionFailed(format!(
-                    "Serve handler panicked before signaling readiness: {}",
-                    join_err
+                    "Serve handler panicked before signaling readiness: {join_err}"
                 )),
                 None => Error::ExecutionFailed(
                     "Serve handler dropped before signaling readiness".into(),
@@ -257,7 +255,7 @@ impl Serve {
     /// `teardown_token`, which the caller cancels next so each runs its real
     /// graceful teardown (no force-abort).
     ///
-    /// Every branch is safe to recreate on each iteration: the JoinSet, the
+    /// Every branch is safe to recreate on each iteration: the `JoinSet`, the
     /// cancellation token and the watch channel hold state, and
     /// [`ShutdownSignal::recv`] is cancel-safe, so a signal that raced a task
     /// completion waits for the next iteration.
@@ -283,7 +281,7 @@ impl Serve {
                         }
                     }
                 }
-                _ = async {
+                () = async {
                     match &external_shutdown {
                         Some(token) => token.cancelled().await,
                         None => std::future::pending::<()>().await,
@@ -292,11 +290,11 @@ impl Serve {
                     info!("External shutdown requested");
                     return Ok(ServeOutcome::Stop);
                 }
-                _ = shutdown_signal.recv() => {
+                () = shutdown_signal.recv() => {
                     info!("Shutdown signal received");
                     return Ok(ServeOutcome::Stop);
                 }
-                _ = async {
+                () = async {
                     match &mut restart_rx {
                         Some(rx) => {
                             // Only an explicit `true` is a restart request. A
@@ -319,6 +317,7 @@ impl Serve {
 }
 
 /// Everything a daemon run needs from its embedding binary.
+#[derive(Debug)]
 pub struct ServeOptions {
     /// The working root the core node resolves node sources against.
     pub root_dir: PathBuf,
@@ -362,7 +361,7 @@ pub struct ServeOptions {
 /// the in-process cap, or when the messaging port stays bound between
 /// generations, the loop cannot recover and exits for the external supervisor
 /// (systemd `Restart=on-failure` / launchd `KeepAlive`) to take over.
-pub fn serve(options: ServeOptions) -> Result<()> {
+pub fn serve(options: &ServeOptions) -> Result<()> {
     // One daemon per peppy data root: held for the WHOLE process lifetime,
     // above the restart loop, so an in-process restart never opens a window
     // for a second daemon. Every exit path releases it (kernel flock),
@@ -370,7 +369,7 @@ pub fn serve(options: ServeOptions) -> Result<()> {
     let _singleton_lock = crate::daemon_lock::acquire_daemon_singleton_lock(&options.peppy_dirs)?;
     let mut flap = FlapWindow::new();
     loop {
-        let (outcome, router_adopted) = run_one_generation(&options)?;
+        let (outcome, router_adopted) = run_one_generation(options)?;
         match outcome {
             ServeOutcome::Stop => return Ok(()),
             ServeOutcome::Restart => {
@@ -417,9 +416,8 @@ fn run_one_generation(options: &ServeOptions) -> Result<(ServeOutcome, bool)> {
     let outcome = executor
         .execute()
         .inspect_err(|e| error!("Serve command failed: {}", e))?;
-    let router_adopted = messenger
-        .map(|messenger| messenger.blocking_lock().router_is_adopted())
-        .unwrap_or(false);
+    let router_adopted =
+        messenger.is_some_and(|messenger| messenger.blocking_lock().router_is_adopted());
     Ok((outcome, router_adopted))
 }
 
@@ -746,7 +744,7 @@ mod tests {
     fn restarts_spaced_beyond_the_window_never_flap() {
         let start = Instant::now();
         let mut flap = FlapWindow::new();
-        for restart in 0..=2 * FLAP_CAP as u32 {
+        for restart in 0..=u32::try_from(2 * FLAP_CAP).unwrap() {
             assert!(
                 !flap.record_and_is_flapping(start + FLAP_WINDOW * restart),
                 "restart {restart} is alone in its window"

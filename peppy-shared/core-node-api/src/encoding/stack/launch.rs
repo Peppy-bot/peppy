@@ -209,16 +209,19 @@ impl LaunchGoal {
         Ok(self)
     }
 
+    #[must_use]
     pub fn with_rebuild(mut self, rebuild: bool) -> Self {
         self.rebuild = rebuild;
         self
     }
 
+    #[must_use]
     pub fn with_prebuild(mut self, prebuild: bool) -> Self {
         self.prebuild = prebuild;
         self
     }
 
+    #[must_use]
     pub fn with_publish(mut self, publish: Option<crate::encoding::StackPublish>) -> Self {
         self.publish = publish;
         self
@@ -239,7 +242,7 @@ impl LaunchGoal {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut goal = builder.init_root::<launch_capnp::launch_goal::Builder>();
+            let mut goal = builder.init_root::<launch_capnp::launch_goal::Builder<'_>>();
 
             let env_var_count = capnp_list_len(self.budgets.env_vars.len(), "LaunchGoal.env_vars")?;
             self.budgets
@@ -259,8 +262,8 @@ impl LaunchGoal {
                 PlacementSpec::Places(places) => {
                     let link_count = capnp_list_len(places.len(), "LaunchGoal.placement.places")?;
                     let mut links = goal.reborrow().init_placement().init_places(link_count);
-                    for (idx, (link_id, core_node)) in places.iter().enumerate() {
-                        let mut link = links.reborrow().get(idx as u32);
+                    for (idx, (link_id, core_node)) in (0_u32..).zip(places.iter()) {
+                        let mut link = links.reborrow().get(idx);
                         link.set_link_id(link_id.as_str());
                         write_core_node_target(link.init_core_node(), core_node);
                     }
@@ -280,16 +283,16 @@ impl LaunchGoal {
 
             let selection_count = capnp_list_len(self.selections.len(), "LaunchGoal.selections")?;
             let mut selections = goal.reborrow().init_selections(selection_count);
-            for (idx, word) in self.selections.iter().enumerate() {
-                write_launch_word(selections.reborrow().get(idx as u32), word);
+            for (idx, word) in (0_u32..).zip(self.selections.iter()) {
+                write_launch_word(selections.reborrow().get(idx), word);
             }
 
             goal.reborrow().set_rebuild(self.rebuild);
 
             let join_count = capnp_list_len(self.joins.len(), "LaunchGoal.joins")?;
             let mut joins = goal.reborrow().init_joins(join_count);
-            for (idx, join) in self.joins.iter().enumerate() {
-                write_copy_reference(joins.reborrow().get(idx as u32), join);
+            for (idx, join) in (0_u32..).zip(self.joins.iter()) {
+                write_copy_reference(joins.reborrow().get(idx), join);
             }
 
             goal.reborrow().set_prebuild(self.prebuild);
@@ -300,8 +303,8 @@ impl LaunchGoal {
                     "LaunchGoal.publish_platforms",
                 )?;
                 let mut platforms = goal.reborrow().init_publish_platforms(count);
-                for (index, platform) in publish.extra_platforms.iter().enumerate() {
-                    platforms.set(index as u32, platform.as_str());
+                for (index, platform) in (0_u32..).zip(publish.extra_platforms.iter()) {
+                    platforms.set(index, platform.as_str());
                 }
             }
         }
@@ -313,7 +316,7 @@ impl LaunchGoal {
         use launch_capnp::launch_goal::placement::Which as PlacementWhich;
 
         let reader = decode_message(data)?;
-        let goal = reader.get_root::<launch_capnp::launch_goal::Reader>()?;
+        let goal = reader.get_root::<launch_capnp::launch_goal::Reader<'_>>()?;
 
         let budgets = StackBudgets::decode(
             goal.get_env_vars()?,
@@ -387,7 +390,7 @@ impl LaunchGoal {
         } else {
             None
         };
-        LaunchGoal::new(launcher_origin, launch_id, budgets)
+        Self::new(launcher_origin, launch_id, budgets)
             .with_rebuild(goal.get_rebuild())
             .with_prebuild(goal.get_prebuild())
             .with_publish(publish)
@@ -458,7 +461,7 @@ impl From<LaunchGoal> for StackBuildGoal {
 }
 
 impl crate::encoding::Wire for StackBuildGoal {
-    type Root = crate::launch_capnp::launch_goal::Owned;
+    type Root = launch_capnp::launch_goal::Owned;
 }
 
 /// The goal response of an accepted stack goal: where the daemon writes the
@@ -479,7 +482,8 @@ impl LaunchGoalResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<launch_capnp::launch_goal_response::Builder>();
+            let mut response =
+                builder.init_root::<launch_capnp::launch_goal_response::Builder<'_>>();
             response.set_log_path(self.log_path.to_string_lossy().as_ref());
         }
         encode_message(&builder)
@@ -487,7 +491,7 @@ impl LaunchGoalResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<launch_capnp::launch_goal_response::Reader>()?;
+        let response = reader.get_root::<launch_capnp::launch_goal_response::Reader<'_>>()?;
         Ok(Self {
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
         })
@@ -593,7 +597,7 @@ impl LaunchFeedback {
     pub fn encode(&self) -> Result<NonEmptyPayload> {
         let mut builder = Builder::new_default();
         {
-            let feedback = builder.init_root::<launch_capnp::launch_feedback::Builder>();
+            let feedback = builder.init_root::<launch_capnp::launch_feedback::Builder<'_>>();
             match self {
                 Self::Output(output) => {
                     let mut wire = feedback.init_output();
@@ -609,7 +613,7 @@ impl LaunchFeedback {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let feedback = reader.get_root::<launch_capnp::launch_feedback::Reader>()?;
+        let feedback = reader.get_root::<launch_capnp::launch_feedback::Reader<'_>>()?;
         match feedback.which()? {
             launch_capnp::launch_feedback::Output(output) => Ok(Self::Output(LaunchOutput {
                 stream: output.get_stream()?.to_str()?.to_owned(),
@@ -663,8 +667,8 @@ impl NodeLogs {
     fn write(&self, mut wire: launch_capnp::node_logs::Builder<'_>) -> Result<()> {
         let add_log_count = capnp_list_len(self.node_add_logs.len(), "NodeLogs.node_add_logs")?;
         let mut add_logs = wire.reborrow().init_node_add_logs(add_log_count);
-        for (i, entry) in self.node_add_logs.iter().enumerate() {
-            let mut e = add_logs.reborrow().get(i as u32);
+        for (i, entry) in (0_u32..).zip(self.node_add_logs.iter()) {
+            let mut e = add_logs.reborrow().get(i);
             e.set_node_label(&entry.node_label);
             e.set_log_path(entry.log_path.to_string_lossy().as_ref());
             e.set_failed(entry.failed);
@@ -674,8 +678,8 @@ impl NodeLogs {
         let build_log_count =
             capnp_list_len(self.node_build_logs.len(), "NodeLogs.node_build_logs")?;
         let mut build_logs = wire.reborrow().init_node_build_logs(build_log_count);
-        for (i, entry) in self.node_build_logs.iter().enumerate() {
-            let mut e = build_logs.reborrow().get(i as u32);
+        for (i, entry) in (0_u32..).zip(self.node_build_logs.iter()) {
+            let mut e = build_logs.reborrow().get(i);
             e.set_node_label(&entry.node_label);
             e.set_log_path(entry.log_path.to_string_lossy().as_ref());
             e.set_failed(entry.failed);
@@ -684,8 +688,8 @@ impl NodeLogs {
 
         let run_log_count = capnp_list_len(self.node_run_logs.len(), "NodeLogs.node_run_logs")?;
         let mut run_logs = wire.reborrow().init_node_run_logs(run_log_count);
-        for (i, entry) in self.node_run_logs.iter().enumerate() {
-            let mut e = run_logs.reborrow().get(i as u32);
+        for (i, entry) in (0_u32..).zip(self.node_run_logs.iter()) {
+            let mut e = run_logs.reborrow().get(i);
             e.set_instance_id(&entry.instance_id);
             e.set_node_label(&entry.node_label);
             e.set_log_path(entry.log_path.to_string_lossy().as_ref());
@@ -698,7 +702,7 @@ impl NodeLogs {
     fn read(wire: launch_capnp::node_logs::Reader<'_>) -> Result<Self> {
         let add_logs_reader = wire.get_node_add_logs()?;
         let mut node_add_logs = Vec::with_capacity(add_logs_reader.len() as usize);
-        for e in add_logs_reader.iter() {
+        for e in add_logs_reader {
             node_add_logs.push(NodeAddLogEntry {
                 node_label: e.get_node_label()?.to_str()?.to_owned(),
                 log_path: PathBuf::from(e.get_log_path()?.to_str()?),
@@ -709,7 +713,7 @@ impl NodeLogs {
 
         let build_logs_reader = wire.get_node_build_logs()?;
         let mut node_build_logs = Vec::with_capacity(build_logs_reader.len() as usize);
-        for e in build_logs_reader.iter() {
+        for e in build_logs_reader {
             node_build_logs.push(NodeBuildLogEntry {
                 node_label: e.get_node_label()?.to_str()?.to_owned(),
                 log_path: PathBuf::from(e.get_log_path()?.to_str()?),
@@ -720,7 +724,7 @@ impl NodeLogs {
 
         let run_logs_reader = wire.get_node_run_logs()?;
         let mut node_run_logs = Vec::with_capacity(run_logs_reader.len() as usize);
-        for e in run_logs_reader.iter() {
+        for e in run_logs_reader {
             node_run_logs.push(NodeRunLogEntry {
                 instance_id: e.get_instance_id()?.to_str()?.to_owned(),
                 node_label: e.get_node_label()?.to_str()?.to_owned(),
@@ -807,6 +811,7 @@ impl LaunchResult {
         }
     }
 
+    #[must_use]
     pub fn with_published(mut self, published: Vec<crate::encoding::NodePublishLine>) -> Self {
         self.published = published;
         self
@@ -815,14 +820,14 @@ impl LaunchResult {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut result = builder.init_root::<launch_capnp::launch_result::Builder>();
+            let mut result = builder.init_root::<launch_capnp::launch_result::Builder<'_>>();
             let instance_count = capnp_list_len(
                 self.instance_endpoints.len(),
                 "LaunchResult.instance_endpoints",
             )?;
             let mut instances = result.reborrow().init_instance_endpoints(instance_count);
-            for (i, entry) in self.instance_endpoints.iter().enumerate() {
-                let mut e = instances.reborrow().get(i as u32);
+            for (i, entry) in (0_u32..).zip(self.instance_endpoints.iter()) {
+                let mut e = instances.reborrow().get(i);
                 e.set_instance_id(&entry.instance_id);
                 e.set_node_label(&entry.node_label);
                 e.set_core_node(&entry.core_node);
@@ -832,8 +837,8 @@ impl LaunchResult {
             }
             let published_count = capnp_list_len(self.published.len(), "LaunchResult.published")?;
             let mut published = result.reborrow().init_published(published_count);
-            for (index, line) in self.published.iter().enumerate() {
-                line.write(published.reborrow().get(index as u32));
+            for (index, line) in (0_u32..).zip(self.published.iter()) {
+                line.write(published.reborrow().get(index));
             }
         }
         encode_message(&builder)
@@ -841,10 +846,10 @@ impl LaunchResult {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let result = reader.get_root::<launch_capnp::launch_result::Reader>()?;
+        let result = reader.get_root::<launch_capnp::launch_result::Reader<'_>>()?;
         let instances_reader = result.get_instance_endpoints()?;
         let mut instance_endpoints = Vec::with_capacity(instances_reader.len() as usize);
-        for e in instances_reader.iter() {
+        for e in instances_reader {
             instance_endpoints.push(InstanceEndpoints {
                 instance_id: required_text(
                     e.get_instance_id()?.to_str()?,
@@ -868,19 +873,19 @@ impl LaunchResult {
 }
 
 impl crate::encoding::Wire for LaunchGoal {
-    type Root = crate::launch_capnp::launch_goal::Owned;
+    type Root = launch_capnp::launch_goal::Owned;
 }
 
 impl crate::encoding::Wire for LaunchGoalResponse {
-    type Root = crate::launch_capnp::launch_goal_response::Owned;
+    type Root = launch_capnp::launch_goal_response::Owned;
 }
 
 impl crate::encoding::Wire for LaunchFeedback {
-    type Root = crate::launch_capnp::launch_feedback::Owned;
+    type Root = launch_capnp::launch_feedback::Owned;
 }
 
 impl crate::encoding::Wire for LaunchResult {
-    type Root = crate::launch_capnp::launch_result::Owned;
+    type Root = launch_capnp::launch_result::Owned;
 }
 
 #[cfg(test)]
@@ -1016,7 +1021,7 @@ mod tests {
     fn launch_wire(
         builder: &mut Builder<capnp::message::HeapAllocator>,
     ) -> launch_capnp::launch_goal::Builder<'_> {
-        let mut wire = builder.init_root::<launch_capnp::launch_goal::Builder>();
+        let mut wire = builder.init_root::<launch_capnp::launch_goal::Builder<'_>>();
         wire.set_launch_id("launch-1");
         wire.set_node_add_idle_timeout_secs(1);
         wire.set_node_build_idle_timeout_secs(1);
@@ -1073,15 +1078,13 @@ mod tests {
         }
         // A copy reference holds the coordinator when it names no machine,
         // so `@self` on a joined copy is the reference with no machine.
-        assert!(
-            repository_goal("fleet")
-                .with_layout(
-                    PlacementSpec::Local,
-                    words(&["alpha.ai_brain_vla", "mujoco"]),
-                    copies(&["openarm_sim:alpha", "so101_sim:bravo@self"]),
-                )
-                .is_ok()
-        );
+        repository_goal("fleet")
+            .with_layout(
+                PlacementSpec::Local,
+                words(&["alpha.ai_brain_vla", "mujoco"]),
+                copies(&["openarm_sim:alpha", "so101_sim:bravo@self"]),
+            )
+            .unwrap();
 
         let mut builder = Builder::new_default();
         {
@@ -1423,8 +1426,8 @@ mod tests {
         let mut builder = Builder::new_default();
         {
             let mut places = launch_wire(&mut builder).init_placement().init_places(2);
-            for (index, core_node) in ["cn-a", "cn-b"].into_iter().enumerate() {
-                let mut link = places.reborrow().get(index as u32);
+            for (index, core_node) in (0_u32..).zip(["cn-a", "cn-b"]) {
+                let mut link = places.reborrow().get(index);
                 link.set_link_id("robot_onboard");
                 link.init_core_node().set_named(core_node);
             }
@@ -1520,7 +1523,7 @@ mod tests {
 
     #[test]
     fn launch_feedback_decode_rejects_malformed() {
-        assert!(LaunchFeedback::decode(b"not capnp").is_err());
+        LaunchFeedback::decode(b"not capnp").unwrap_err();
     }
 
     /// The node logs of a goal ride its feedback, with the phase that
@@ -1578,7 +1581,7 @@ mod tests {
 
     #[test]
     fn launch_result_decode_rejects_malformed() {
-        assert!(LaunchResult::decode(b"not capnp").is_err());
+        LaunchResult::decode(b"not capnp").unwrap_err();
     }
 
     /// The endpoints of every started instance ride the result with the core

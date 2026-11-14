@@ -7,7 +7,7 @@ use crate::encoding::{capnp_list_len, decode_message, encode_message};
 use crate::repo_capnp;
 use crate::{Payload, Result};
 
-/// Request message for the RepoList service (empty: list all).
+/// Request message for the `RepoList` service (empty: list all).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoListRequest;
 
@@ -15,14 +15,14 @@ impl RepoListRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let _req = builder.init_root::<repo_capnp::repo_list_request::Builder>();
+            let _req = builder.init_root::<repo_capnp::repo_list_request::Builder<'_>>();
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let _req = reader.get_root::<repo_capnp::repo_list_request::Reader>()?;
+        let _req = reader.get_root::<repo_capnp::repo_list_request::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -86,15 +86,15 @@ pub enum RepoListRepoReadFailure {
 impl RepoListRepoReadFailure {
     pub fn as_str(self) -> &'static str {
         match self {
-            RepoListRepoReadFailure::Unreachable => "unreachable",
-            RepoListRepoReadFailure::Conflict => "conflict",
+            Self::Unreachable => "unreachable",
+            Self::Conflict => "conflict",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "unreachable" => Some(RepoListRepoReadFailure::Unreachable),
-            "conflict" => Some(RepoListRepoReadFailure::Conflict),
+            "unreachable" => Some(Self::Unreachable),
+            "conflict" => Some(Self::Conflict),
             _ => None,
         }
     }
@@ -130,11 +130,11 @@ impl RepoListResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
+            let mut response = builder.init_root::<repo_capnp::repo_list_response::Builder<'_>>();
             let node_count = capnp_list_len(self.nodes.len(), "RepoListResponse.nodes")?;
             let mut nodes_builder = response.reborrow().init_nodes(node_count);
-            for (i, node) in self.nodes.iter().enumerate() {
-                let mut entry = nodes_builder.reborrow().get(i as u32);
+            for (i, node) in (0_u32..).zip(self.nodes.iter()) {
+                let mut entry = nodes_builder.reborrow().get(i);
                 entry.set_node_name(&node.node_name);
                 entry.set_node_tag(&node.node_tag);
                 entry.set_source_type(node.source_type.as_str());
@@ -145,8 +145,8 @@ impl RepoListResponse {
             }
             let repo_count = capnp_list_len(self.repos.len(), "RepoListResponse.repos")?;
             let mut repos_builder = response.init_repos(repo_count);
-            for (i, repo) in self.repos.iter().enumerate() {
-                let mut entry = repos_builder.reborrow().get(i as u32);
+            for (i, repo) in (0_u32..).zip(self.repos.iter()) {
+                let mut entry = repos_builder.reborrow().get(i);
                 entry.set_id(repo.id);
                 entry.set_label(&repo.label);
                 entry.set_source_type(repo.source_type.as_str());
@@ -154,7 +154,7 @@ impl RepoListResponse {
                 // read at the epoch is not a case worth modelling.
                 entry.set_last_read_unix_secs(repo.last_read_unix_secs.unwrap_or(0));
                 entry.set_retained(repo.retained);
-                if let Some(ref failed_read) = repo.failed_read {
+                if let Some(failed_read) = &repo.failed_read {
                     entry.set_read_failure(failed_read.read_failure.as_str());
                     entry.set_read_failure_detail(&failed_read.detail);
                 }
@@ -165,7 +165,7 @@ impl RepoListResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<repo_capnp::repo_list_response::Reader>()?;
+        let response = reader.get_root::<repo_capnp::repo_list_response::Reader<'_>>()?;
         let nodes_reader = response.get_nodes()?;
         let mut nodes = Vec::with_capacity(nodes_reader.len() as usize);
         for i in 0..nodes_reader.len() {
@@ -216,17 +216,18 @@ impl RepoListResponse {
 }
 
 impl crate::encoding::Wire for RepoListRequest {
-    type Root = crate::repo_capnp::repo_list_request::Owned;
+    type Root = repo_capnp::repo_list_request::Owned;
 }
 
 impl crate::encoding::Wire for RepoListResponse {
-    type Root = crate::repo_capnp::repo_list_response::Owned;
+    type Root = repo_capnp::repo_list_response::Owned;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::encoding::decoding_error;
+    use std::assert_matches;
 
     fn sample_entry() -> RepoListNodeEntry {
         RepoListNodeEntry {
@@ -337,7 +338,7 @@ mod tests {
         // A peer that puts an unrecognized source type on the wire is rejected.
         let mut builder = Builder::new_default();
         {
-            let response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
+            let response = builder.init_root::<repo_capnp::repo_list_response::Builder<'_>>();
             let mut nodes = response.init_nodes(1);
             let mut entry = nodes.reborrow().get(0);
             entry.set_node_name("robot");
@@ -351,8 +352,9 @@ mod tests {
         let payload = encode_message(&builder).expect("encode raw response");
         let err = RepoListResponse::decode(payload.as_ref())
             .expect_err("unknown source type must be rejected");
-        assert!(
-            matches!(err, crate::Error::Decoding(_)),
+        assert_matches!(
+            err,
+            crate::Error::Decoding(_),
             "expected Decoding error, got {err:?}"
         );
     }
@@ -361,7 +363,7 @@ mod tests {
     fn list_response_decode_rejects_unknown_repo_source_type() {
         let mut builder = Builder::new_default();
         {
-            let response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
+            let response = builder.init_root::<repo_capnp::repo_list_response::Builder<'_>>();
             let mut entry = response.init_repos(1).get(0);
             entry.set_id(1);
             entry.set_label("/abs/repo");
@@ -405,7 +407,7 @@ mod tests {
         // silently handed to a caller that has no recovery path for it.
         let mut builder = Builder::new_default();
         {
-            let response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
+            let response = builder.init_root::<repo_capnp::repo_list_response::Builder<'_>>();
             let mut repos = response.init_repos(1);
             let mut entry = repos.reborrow().get(0);
             entry.set_id(1);
@@ -419,8 +421,9 @@ mod tests {
         let payload = encode_message(&builder).expect("encode raw response");
         let err = RepoListResponse::decode(payload.as_ref())
             .expect_err("unknown read failure must be rejected");
-        assert!(
-            matches!(err, crate::Error::Decoding(_)),
+        assert_matches!(
+            err,
+            crate::Error::Decoding(_),
             "expected Decoding error, got {err:?}"
         );
     }

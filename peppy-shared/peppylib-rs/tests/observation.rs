@@ -21,7 +21,7 @@ const PAIRING_NAME: &str = "arm_link";
 const PAIRING_TAG: &str = "v1";
 const TOPIC: &str = "joint_states";
 /// The source-side participant slot the observed role publishes under. The
-/// observer's own link_id never appears on the wire.
+/// observer's own `link_id` never appears on the wire.
 const SOURCE_SLOT_LINK_ID: &str = "controller";
 const OBSERVER_INSTANCE: &str = "commander_1";
 
@@ -109,7 +109,7 @@ async fn subscribe(
 /// Waits until the observer's wire subscription pinned to `source_instance` is
 /// visible to the publisher's session.
 async fn wait_for_source_wire_sub(handle: &MessengerHandle, source_instance: &str) {
-    wait_for_source_wire_sub_on_link(handle, source_instance, SOURCE_SLOT_LINK_ID).await
+    wait_for_source_wire_sub_on_link(handle, source_instance, SOURCE_SLOT_LINK_ID).await;
 }
 
 async fn wait_for_source_wire_sub_on_link(
@@ -154,7 +154,7 @@ async fn expect_message(
         &source_on_link(expected_producer, SOURCE_SLOT_LINK_ID),
         expected_payload,
     )
-    .await
+    .await;
 }
 
 async fn expect_message_from_source(
@@ -343,7 +343,7 @@ async fn a_generation_bump_redeclares_only_that_member() {
 /// Two members of one slot can be the same instance observed through two
 /// different source slots (four `commanded_*` links on one backbone instance
 /// is the canonical deployment). The producer pair is identical for both, so
-/// the source link_id on the yielded tag is what tells them apart.
+/// the source `link_id` on the yielded tag is what tells them apart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn members_sharing_one_instance_are_told_apart_by_source_link_id() {
     let (client, shared) = get_client_server().await;
@@ -423,7 +423,7 @@ async fn an_observation_pinned_to_a_pair_hears_that_pair_only() {
             TOPIC,
             &ctrl(instance),
         )
-        .await
+        .await;
     };
 
     let (tx, watch_rx) = watch::channel(ObservationState::unregistered());

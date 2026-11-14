@@ -57,6 +57,13 @@ impl FirstStart {
 }
 
 /// What the stack keeps of an instance across its processes.
+#[cfg_attr(
+    not(any(test, feature = "test-support")),
+    expect(
+        unreachable_pub,
+        reason = "the `test-support` feature exports this type"
+    )
+)]
 #[derive(Debug, Clone, Default)]
 pub struct Supervision {
     /// `None` for the root instance and a test fixture built without a
@@ -151,7 +158,7 @@ impl Supervision {
 
 /// The observations and lifecycle watchers of an instance, taken at its
 /// exit and kept for its next process.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Registrations {
     pub observations: BTreeMap<String, ObservationTargets>,
     pub watchers: Vec<String>,
@@ -169,7 +176,7 @@ pub struct RestartBackoff {
 }
 
 /// The attempt the backoff yields next and the wait before it.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct NextAttempt {
     pub attempt: NonZeroU32,
     pub delay: Duration,
@@ -240,7 +247,7 @@ pub enum StartRun {
     New(Arc<NodeRunGoal>),
     /// The next process of the `restarting` instance first started from
     /// `goal`, begun when the instance had made `restart_count` restarts
-    /// ([`Supervision::restart_count`]). A restart's commit counts one, and
+    /// (`Supervision::restart_count`). A restart's commit counts one, and
     /// the attempt after a failed start begins only once the failed run
     /// returned, so at any time one run at most is open under the slot at
     /// that count.
@@ -286,7 +293,7 @@ pub struct ExitRecord {
 /// hold, as its slot keeps them: the daemons of the remote peers its held
 /// pairs name, and the watchers kept for its restart. An exit empties the
 /// registries, so a stop reads these off the slot it removes.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct KeptRelations {
     pub pair_daemons: BTreeSet<String>,
     pub watchers: Vec<String>,
@@ -307,7 +314,7 @@ impl KeptRelations {
 }
 
 /// What a claim and removal did with one instance.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SlotRemoval {
     /// The slot is gone, claimed with the relations it kept.
     Removed(KeptRelations),
@@ -318,7 +325,7 @@ pub enum SlotRemoval {
 }
 
 /// What a stop path's claim of a process found.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ProcessClaim {
     /// The slot ran the process unclaimed, and is claimed now.
     Claimed,
@@ -329,7 +336,7 @@ pub enum ProcessClaim {
 }
 
 /// What a stop's claim of a starting instance found.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum StartingClaim {
     /// A restart's start, now claimed, which cancels it; the slot's
     /// relations come back for the stop to tear down.
@@ -343,7 +350,7 @@ pub enum StartingClaim {
 }
 
 /// Why a claim and removal left an instance's slot in place.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotLeft {
     /// Its start is in flight, a restart's when `restart`.
     Starting { restart: bool },
@@ -366,6 +373,7 @@ pub struct RunningHealth {
 mod tests {
     use super::{Attempt, NextAttempt, RestartBackoff, Supervision};
     use config::node::{ResolvedRestart, RestartDeclaration, RestartOrigin, RestartPolicy};
+    use std::assert_matches;
     use std::num::NonZeroU32;
     use std::time::{Duration, Instant};
 
@@ -440,8 +448,7 @@ mod tests {
         };
         let mut supervision = Supervision::default();
         let attempt = supervision.advance_backoff(&unbounded, None, Instant::now());
-        assert!(
-            matches!(attempt, Attempt::Scheduled { delay, .. } if delay == Duration::MAX),
+        assert_matches!(attempt, Attempt::Scheduled { delay, .. } if delay == Duration::MAX,
             "{attempt:?}"
         );
         assert_eq!(supervision.attempt, 1);

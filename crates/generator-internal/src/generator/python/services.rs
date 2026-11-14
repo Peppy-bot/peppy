@@ -63,13 +63,7 @@ pub(crate) fn emit_bound_producer_accessor_fn(
             "Optional[peppylib.ProducerRef]",
             Some("from typing import Optional"),
         ),
-        Cardinality::OneOrMore => (
-            "bound_producers",
-            "bound_producers",
-            "List[peppylib.ProducerRef]",
-            Some("from typing import List"),
-        ),
-        Cardinality::ZeroOrMore => (
+        Cardinality::OneOrMore | Cardinality::ZeroOrMore => (
             "bound_producers",
             "bound_producers",
             "List[peppylib.ProducerRef]",
@@ -122,7 +116,7 @@ fn emit_bound_members_accessor_fn(
 }
 
 /// Emits the per-call membership check ahead of a consumed poll /
-/// send_goal call: the caller-selected `target` must be a member of the
+/// `send_goal` call: the caller-selected `target` must be a member of the
 /// slot's own bound set, rejected before anything reaches the wire
 /// otherwise. `LINK_ID` is a module constant every consumed service /
 /// action module defines.
@@ -131,7 +125,7 @@ pub(crate) fn emit_target_membership_check(builder: &mut PythonCodeBuilder) {
 }
 
 /// Generates Python code for an exposed (handler) service.
-pub fn build_exposed_service(
+pub(super) fn build_exposed_service(
     service: &NativeExposedService,
     request_schema_info: Option<&PythonSchemaInfo>,
     response_schema_info: Option<&PythonSchemaInfo>,
@@ -311,7 +305,7 @@ if isinstance(response, peppylib.FailureError):
 }
 
 /// Generates Python code for a subscribed (polling) service.
-pub fn build_consumed_service(
+pub(super) fn build_consumed_service(
     service: &ConsumedService,
     request_arguments: &MessageFormat,
     response_arguments: &MessageFormat,
@@ -450,11 +444,11 @@ pub fn build_consumed_service(
 
         // Deserialize response and return
         if has_response {
-            builder.py(r#"
+            builder.py(r"
 payload = response_message.payload
 response_data = _deserialize_response(payload)
 return Response(core_node=response_message.core_node, instance_id=response_message.instance_id, data=response_data)
-"#);
+");
         }
     });
 

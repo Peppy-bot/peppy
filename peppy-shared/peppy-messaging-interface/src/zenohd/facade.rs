@@ -30,6 +30,7 @@ pub const ROUTER_START_BOUND: std::time::Duration = ROUTER_PROBE_TIMEOUT
     .saturating_add(READINESS_MAX_BACKOFF)
     .saturating_add(ROUTER_PROBE_TIMEOUT);
 
+#[derive(Debug)]
 enum RouterOwnership {
     /// A router spawned and supervised by peppy from a rendered (or
     /// operator-pinned) config file.
@@ -68,8 +69,7 @@ fn check_process_alive(child: &mut Child, log_path: &Path) -> std::result::Resul
         ))),
         Ok(None) => Ok(()),
         Err(e) => Err(Error::BackendError(format!(
-            "Failed to check zenohd status: {}",
-            e
+            "Failed to check zenohd status: {e}"
         ))),
     }
 }
@@ -200,6 +200,7 @@ fn resolve_zenohd_binary(
 
 /// The Zenoh daemon binary facade. Zenohd is not accessible via the Rust API (or in a very limited fashion).
 /// This facade allows calling the binary in the background.
+#[derive(Debug)]
 pub struct ZenohdFacade {
     ownership: RouterOwnership,
     router_process: Option<Child>,
@@ -210,7 +211,7 @@ impl ZenohdFacade {
     /// Creates a facade for a peppy-managed zenohd process. The router endpoint
     /// is extracted from the exact config that will be passed to zenohd.
     pub fn managed(zenohd_config_path: impl AsRef<Path>) -> Result<Self> {
-        let zenoh_endpoint = ZenohdFacade::get_endpoint_from_config(&zenohd_config_path)?;
+        let zenoh_endpoint = Self::get_endpoint_from_config(&zenohd_config_path)?;
         let zenohd_config_path = zenohd_config_path.as_ref().to_path_buf();
         // The router is operator-pinned when it runs the `ZENOH_CONFIG` file
         // verbatim (`router_config_path` returns that path unchanged). Captured
@@ -408,14 +409,14 @@ impl ZenohdFacade {
 
     fn get_endpoint_from_config(zenohd_config_path: impl AsRef<Path>) -> Result<ZenohEndpoint> {
         let config = Config::from_file(zenohd_config_path).map_err(|e| {
-            Error::ConfigurationError(format!("Failed to load zenoh config file: {}", e))
+            Error::ConfigurationError(format!("Failed to load zenoh config file: {e}"))
         })?;
-        let listen_json = config.get_json("listen").map_err(|e| {
-            Error::ConfigurationError(format!("Failed to get listen config: {}", e))
-        })?;
+        let listen_json = config
+            .get_json("listen")
+            .map_err(|e| Error::ConfigurationError(format!("Failed to get listen config: {e}")))?;
 
         let listen: serde_json::Value = serde_json::from_str(&listen_json).map_err(|e| {
-            Error::ConfigurationError(format!("Failed to parse listen config: {}", e))
+            Error::ConfigurationError(format!("Failed to parse listen config: {e}"))
         })?;
 
         let endpoint_str = router_endpoints(&listen).first().copied().ok_or_else(|| {
@@ -433,35 +434,32 @@ impl ZenohdFacade {
     /// listening socket accepts TCP before the TLS handshake, which is all a
     /// "port already bound / accepting yet?" check needs.
     pub(crate) async fn start_router(&mut self) -> Result<()> {
-        let (zenohd_config_path, zenohd_log_path) =
-            match (&self.ownership, self.router_process.is_some()) {
-                // A managed child already exists (an earlier, e.g. timed-out,
-                // start spawned it): resume waiting on that child instead of
-                // spawning a replacement.
-                (
-                    RouterOwnership::Managed {
-                        zenohd_config_path,
-                        zenohd_log_path,
-                        ..
-                    },
-                    true,
-                ) => (zenohd_config_path.clone(), zenohd_log_path.clone()),
-                _ => {
-                    // Pre-flight (managed routers only, since the external case
-                    // falls through to `spawn_router_process`'s ownership
-                    // error): refuse to spawn onto a port something is already
-                    // listening on.
-                    if !self.is_external()
-                        && self.router_endpoint_reachable(ROUTER_PROBE_TIMEOUT).await
-                    {
-                        return Err(Error::BackendError(format!(
-                            "Zenoh router port already in use: {}",
-                            self.connect_addr()
-                        )));
-                    }
-                    self.spawn_router_process()?
-                }
-            };
+        let (zenohd_config_path, zenohd_log_path) = if let (
+            RouterOwnership::Managed {
+                zenohd_config_path,
+                zenohd_log_path,
+                ..
+            },
+            true,
+        ) =
+            (&self.ownership, self.router_process.is_some())
+        {
+            // A managed child already exists (an earlier, e.g. timed-out,
+            // start spawned it): resume waiting on that child instead of
+            // spawning a replacement.
+            (zenohd_config_path.clone(), zenohd_log_path.clone())
+        } else {
+            // Pre-flight (managed routers only, since the external case falls
+            // through to `spawn_router_process`'s ownership error): refuse to
+            // spawn onto a port something is already listening on.
+            if !self.is_external() && self.router_endpoint_reachable(ROUTER_PROBE_TIMEOUT).await {
+                return Err(Error::BackendError(format!(
+                    "Zenoh router port already in use: {}",
+                    self.connect_addr()
+                )));
+            }
+            self.spawn_router_process()?
+        };
 
         if self.tcp_based() {
             self.wait_until_router_accepts(&zenohd_log_path).await?;
@@ -584,7 +582,7 @@ impl ZenohdFacade {
         })?;
         let stderr_file = log_file
             .try_clone()
-            .map_err(|e| Error::BackendError(format!("Failed to set up zenohd log file: {}", e)))?;
+            .map_err(|e| Error::BackendError(format!("Failed to set up zenohd log file: {e}")))?;
         let zenohd_log_level =
             env::var("PEPPY_ZENOHD_LOG").unwrap_or_else(|_| "zenoh=warn".to_string());
 
@@ -650,9 +648,7 @@ impl ZenohdFacade {
         };
         tokio::task::spawn_blocking(move || Self::terminate_router_process(child))
             .await
-            .map_err(|e| {
-                Error::BackendError(format!("zenohd process-reaper task failed: {}", e))
-            })?;
+            .map_err(|e| Error::BackendError(format!("zenohd process-reaper task failed: {e}")))?;
         Ok(())
     }
 
@@ -989,10 +985,10 @@ mod tests {
             ZenohdFacade::managed(config_file.path()).expect("Failed to create facade");
 
         // First stop should succeed (no process to stop)
-        assert!(facade.stop_router().is_ok());
+        facade.stop_router().unwrap();
 
         // Second stop should also succeed (idempotent)
-        assert!(facade.stop_router().is_ok());
+        facade.stop_router().unwrap();
 
         // Process should remain None
         assert!(facade.router_process.is_none());
@@ -1081,8 +1077,8 @@ mod tests {
         facade.adopt_external_router();
 
         assert!(facade.is_adopted());
-        assert!(facade.stop_router().is_ok());
-        assert!(facade.stop_router().is_ok());
+        facade.stop_router().unwrap();
+        facade.stop_router().unwrap();
         assert!(facade.router_process.is_none());
     }
 

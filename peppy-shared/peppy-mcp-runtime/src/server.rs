@@ -1,5 +1,5 @@
 //! The MCP server: a catalog-driven
-//! [`ServerHandler`](rmcp::ServerHandler) per exposure bundle, and the
+//! [`ServerHandler`] per exposure bundle, and the
 //! [`ExposureSet`] serving several of them side by side over Streamable
 //! HTTP under MCP `2026-07-28`.
 
@@ -39,7 +39,6 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -89,14 +88,14 @@ const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// One validated call handed to a bridge: the canonical-JSON input the
 /// contract member takes, and the provider it goes to.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCall {
     pub input: Value,
     pub recipient: Recipient,
 }
 
 /// The provider a call goes to.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Recipient {
     /// The producer the launcher bound to the entry's target.
     BoundProducer,
@@ -238,9 +237,24 @@ pub struct ExposureServerBuilder {
     fleet_source: Option<Arc<dyn FleetSource>>,
 }
 
+impl std::fmt::Debug for ExposureServerBuilder {
+    /// Shows the names that have a handler: a handler is a trait object,
+    /// which has no text.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExposureServerBuilder")
+            .field("exposure", &self.bundle.exposure.name)
+            .field("tag", &self.bundle.exposure.tag)
+            .field("handlers", &self.handlers.keys())
+            .field("task_handlers", &self.task_handlers.keys())
+            .field("reads_a_fleet", &self.fleet_source.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl ExposureServerBuilder {
     /// Registers where the server reads the fleet of a per-robot bundle:
     /// the members of every target as the stack binds them now.
+    #[must_use]
     pub fn with_fleet(mut self, source: impl FleetSource) -> Self {
         self.fleet_source = Some(Arc::new(source));
         self
@@ -249,6 +263,7 @@ impl ExposureServerBuilder {
     /// Injects the time source for freshness and rate gating. Defaults to
     /// the wall clock; the host passes its sim-time-aware clock so sim time
     /// governs policies too.
+    #[must_use]
     pub fn with_clock(mut self, clock: Clock) -> Self {
         self.clock = clock;
         self
@@ -257,18 +272,21 @@ impl ExposureServerBuilder {
     /// Injects the wall clock the call record stamps its entries on, as
     /// nanoseconds since the Unix epoch. Defaults to the host wall clock;
     /// tests pass a counter.
+    #[must_use]
     pub fn with_wall_clock(mut self, clock: Clock) -> Self {
         self.wall_clock = clock;
         self
     }
 
     /// Registers the bridge behind one tool entry of the bundle.
+    #[must_use]
     pub fn with_tool(mut self, name: impl Into<String>, handler: impl ToolHandler) -> Self {
         self.handlers.insert(name.into(), Arc::new(handler));
         self
     }
 
     /// Registers the action bridge behind one task entry of the bundle.
+    #[must_use]
     pub fn with_task(mut self, name: impl Into<String>, handler: impl TaskHandler) -> Self {
         self.task_handlers.insert(name.into(), Arc::new(handler));
         self
@@ -988,14 +1006,13 @@ impl ExposureServer {
 
     /// Answers the record tool: every kept call, newest first.
     fn recent_calls(
-        &self,
         record: &CallRecord,
-        arguments: JsonObject,
+        arguments: &JsonObject,
     ) -> Result<CallToolResult, McpError> {
         refuse_arguments(
             record.name(),
             "lists the last calls of this endpoint",
-            &arguments,
+            arguments,
         )?;
         Ok(CallToolResult::structured(record.answer()))
     }
@@ -1216,8 +1233,13 @@ impl ProgressReporter {
 impl FeedbackSink for ProgressReporter {
     async fn report(&mut self, message: String) {
         self.reported += 1;
-        let notification = ProgressNotificationParam::new(self.token.clone(), self.reported as f64)
-            .with_message(message);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "the count of the reports of one call is far below 2^53"
+        )]
+        let progress = self.reported as f64;
+        let notification =
+            ProgressNotificationParam::new(self.token.clone(), progress).with_message(message);
         if let Err(error) = self.peer.notify_progress(notification).await {
             // The call's stream is the only route to the client; once it
             // is gone the call is closed and feedback has no reader.
@@ -1637,6 +1659,15 @@ pub struct FleetHandle {
     clock: Clock,
 }
 
+impl std::fmt::Debug for FleetHandle {
+    /// Leaves out the fleet: its source is a trait object, which has no text.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FleetHandle")
+            .field("clock", &self.clock)
+            .finish_non_exhaustive()
+    }
+}
+
 impl FleetHandle {
     /// Registers `member`'s resources and hands back the ingest feeding each
     /// one, with the catalog entry it publishes.
@@ -1858,7 +1889,7 @@ impl ServerHandler for ExposureServer {
         if let Some(record) = &self.state.record
             && name == record.name()
         {
-            return self.recent_calls(record, arguments).map(Into::into);
+            return Self::recent_calls(record, &arguments).map(Into::into);
         }
         if let Some(picture) = self.state.pictures.get(name) {
             return self.look(picture, arguments).await.map(Into::into);
@@ -1914,7 +1945,7 @@ impl ServerHandler for ExposureServer {
         let mut events = self.state.events.subscribe();
         loop {
             let received = tokio::select! {
-                _ = context.cancelled() => return Ok(()),
+                () = context.cancelled() => return Ok(()),
                 received = events.recv() => received,
             };
             let event = match received {
@@ -1928,14 +1959,14 @@ impl ServerHandler for ExposureServer {
                 CatalogEvent::ResourceUpdated { uri } => sink.notify_resource_updated(uri).await,
                 CatalogEvent::ResourceListChanged => sink.notify_resource_list_changed().await,
             };
-            match sent {
-                Ok(()) => {}
-                Err(
-                    SubscriptionSendError::SubscriptionClosed | SubscriptionSendError::Service(_),
-                ) => return Ok(()),
-                // The subscription's accepted filter does not cover this
-                // notification; other listeners may still want it.
-                Err(_) => {}
+            // Any other error means that the accepted filter of the
+            // subscription does not cover this notification; other listeners
+            // may still want it.
+            if let Err(
+                SubscriptionSendError::SubscriptionClosed | SubscriptionSendError::Service(_),
+            ) = sent
+            {
+                return Ok(());
             }
         }
     }
@@ -1949,6 +1980,7 @@ mod tests {
     use crate::failure::test_support::failure;
     use crate::tasks::CancelledGoal;
     use rmcp::model::ErrorCode;
+    use std::assert_matches;
     use std::sync::atomic::Ordering;
 
     fn test_bundle() -> ExposureBundle {
@@ -2034,7 +2066,7 @@ mod tests {
                 "operation": "long_running",
                 "safety_sensitive": true,
                 "confirmation_required": true,
-                "deadline_ms": 900000,
+                "deadline_ms": 900_000,
                 "input_schema": {
                     "type": "object",
                     "properties": { "episode_name": { "type": "string" } },
@@ -2406,7 +2438,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_cancelled_goal_inside_a_call_is_a_tool_error_with_its_reason_and_the_result() {
-        let server = server_with_resume(|_call: ToolCall, _context: ActionContext| async move {
+        let server = server_with_resume(async |_call: ToolCall, _context: ActionContext| {
             Err(ActionExit::Cancelled(CancelledGoal {
                 result: cancelled_resume(),
                 reason: "replaced by a newer goal".to_owned(),
@@ -2465,10 +2497,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_goal_inside_an_open_call_is_not_asked_to_cancel() {
-        let server = server_with_resume(|_call: ToolCall, context: ActionContext| async move {
+        let server = server_with_resume(async |_call: ToolCall, context: ActionContext| {
             assert!(!context.is_cancel_requested());
             let cancel = context.cancel_requested();
-            tokio::pin!(cancel);
+            let mut cancel = std::pin::pin!(cancel);
             assert!(
                 futures::poll!(cancel.as_mut()).is_pending(),
                 "a call that stays open asks for no cancel"
@@ -2498,7 +2530,7 @@ mod tests {
     #[tokio::test]
     async fn feedback_inside_a_call_is_relayed_in_order_before_the_result() {
         let (relayed, mut received) = mpsc::unbounded_channel();
-        let server = server_with_resume(|_call: ToolCall, context: ActionContext| async move {
+        let server = server_with_resume(async |_call: ToolCall, context: ActionContext| {
             context.report_feedback("frame 1").await;
             context.report_feedback("frame 2").await;
             Ok(json!({ "resumed": true }))
@@ -2631,17 +2663,16 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn closing_the_call_reaches_the_goal_while_a_message_waits_for_the_client() {
-        let server =
-            server_with_progress_goal(|_call: ToolCall, context: ActionContext| async move {
-                context.report_feedback("frame 1").await;
-                context.cancel_requested().await;
-                // The relay stopped at the close: a report returns at once.
-                context.report_feedback("frame 2").await;
-                Err(ActionExit::Cancelled(CancelledGoal {
-                    result: cancelled_resume(),
-                    reason: "cancelled by its caller".to_owned(),
-                }))
-            });
+        let server = server_with_progress_goal(async |_call: ToolCall, context: ActionContext| {
+            context.report_feedback("frame 1").await;
+            context.cancel_requested().await;
+            // The relay stopped at the close: a report returns at once.
+            context.report_feedback("frame 2").await;
+            Err(ActionExit::Cancelled(CancelledGoal {
+                result: cancelled_resume(),
+                reason: "cancelled by its caller".to_owned(),
+            }))
+        });
         // The client never takes frame 1.
         let (client, held) = HeldClient::new();
         let closed = CancellationToken::new();
@@ -2654,11 +2685,10 @@ mod tests {
         };
         // Paused time: a goal that does not see the close leaves nothing to
         // run, and the clock jumps to the end of this bound at once.
-        let (result, ()) = tokio::time::timeout(Duration::from_secs(3600), async {
-            tokio::join!(call, close)
-        })
-        .await
-        .expect("the goal sees the close while the client holds a message");
+        let (result, ()) =
+            tokio::time::timeout(Duration::from_hours(1), async { tokio::join!(call, close) })
+                .await
+                .expect("the goal sees the close while the client holds a message");
         let result = result.expect("a cancelled goal is a tool error, not a protocol error");
         assert_eq!(
             tool_error_text(&result),
@@ -2700,7 +2730,7 @@ mod tests {
     #[tokio::test]
     async fn feedback_reports_as_the_status_message_and_a_cancelled_goal_cancels_the_task_saying_why()
      {
-        let server = server_with_resume(|_call: ToolCall, context: ActionContext| async move {
+        let server = server_with_resume(async |_call: ToolCall, context: ActionContext| {
             context.report_feedback("resuming at frame 42").await;
             context.cancel_requested().await;
             Err(ActionExit::Cancelled(CancelledGoal {
@@ -3023,7 +3053,6 @@ mod tests {
     /// times.
     mod per_robot {
         use super::*;
-        use crate::fleet::{FleetMember, MemberAddress};
         use peppy_mcp_catalog::{BundleContractPin, RobotContractPin};
         use std::sync::Mutex;
 
@@ -3204,13 +3233,13 @@ mod tests {
             let source = Arc::clone(&fleet);
             let server = ExposureServer::builder(bundle)
                 .with_fleet(move || source.lock().unwrap().clone())
-                .with_tool("robot.get_identity", |call: ToolCall| async move {
+                .with_tool("robot.get_identity", async |call: ToolCall| {
                     let Recipient::Member(member) = call.recipient else {
                         panic!("a per-robot call names its member");
                     };
                     Ok(json!({ "robot": member.instance_id, "input": call.input }))
                 })
-                .with_tool("camera.set_brightness", |call: ToolCall| async move {
+                .with_tool("camera.set_brightness", async |call: ToolCall| {
                     let Recipient::Member(member) = call.recipient else {
                         panic!("a per-robot call names its member");
                     };
@@ -3303,7 +3332,7 @@ mod tests {
         #[tokio::test]
         async fn refusals_name_the_robots_and_members_present() {
             let (server, fleet) = served();
-            let refused = |arguments: Value| async {
+            let refused = async |arguments: Value| {
                 server
                     .execute_tool("camera.set_brightness", object(arguments), None)
                     .await
@@ -3420,7 +3449,7 @@ mod tests {
             ];
             let server = ExposureServer::builder(bundle())
                 .with_fleet(move || fleet.clone())
-                .with_tool("robot.get_identity", |call: ToolCall| async move {
+                .with_tool("robot.get_identity", async |call: ToolCall| {
                     let Recipient::Member(member) = call.recipient else {
                         panic!("a per-robot call names its member");
                     };
@@ -3466,7 +3495,7 @@ mod tests {
                 .fleet()
                 .resources(&fleet.entries)
                 .iter()
-                .map(|resource| resource.uri.to_string())
+                .map(|resource| resource.uri.clone())
                 .collect();
             assert_eq!(
                 listed,
@@ -3509,10 +3538,10 @@ mod tests {
                 .await
                 .expect("attached and published");
             assert_eq!(read.contents.len(), 1);
-            assert!(matches!(
+            assert_matches!(
                 events.try_recv().expect("the publish is announced"),
                 CatalogEvent::ResourceUpdated { .. }
-            ));
+            );
 
             members
                 .lock()
@@ -3520,10 +3549,10 @@ mod tests {
                 .retain(|member| member.robot.as_deref() != Some("alpha"));
             handle.detach(&camera);
             handle.changed();
-            assert!(matches!(
+            assert_matches!(
                 events.try_recv().expect("the change is announced"),
                 CatalogEvent::ResourceListChanged
-            ));
+            );
             let gone = server
                 .read_snapshot("peppy://resource/alpha/wrist_left/camera.latest_frame")
                 .await
@@ -3940,7 +3969,7 @@ mod tests {
     #[tokio::test]
     async fn a_bridge_failure_is_a_readable_tool_error() {
         let server = ExposureServer::builder(test_bundle())
-            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
+            .with_tool("front_camera.set_brightness", async |_call: ToolCall| {
                 Err(ToolCallError::Unavailable("no producer bound".to_string()))
             })
             .build()
@@ -3964,7 +3993,7 @@ mod tests {
     #[tokio::test]
     async fn an_oversize_result_is_a_tool_error() {
         let server = ExposureServer::builder(test_bundle())
-            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
+            .with_tool("front_camera.set_brightness", async |_call: ToolCall| {
                 Ok(json!({ "applied": "y".repeat(128) }))
             })
             .build()
@@ -3988,8 +4017,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_handler_slower_than_the_deadline_is_a_tool_error() {
         let server = ExposureServer::builder(test_bundle())
-            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
+            .with_tool("front_camera.set_brightness", async |_call: ToolCall| {
+                tokio::time::sleep(Duration::from_hours(1)).await;
                 Ok(json!({ "applied": true }))
             })
             .build()
@@ -4090,7 +4119,7 @@ mod tests {
                         "image": "jpeg",
                         "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
                     },
-                    "max_result_bytes": 524288,
+                    "max_result_bytes": 524_288,
                     "on_oversize": "downscale"
                 },
                 "schema": { "type": "object" }
@@ -4126,7 +4155,7 @@ mod tests {
     /// An 8x8 `rgb8` frame, as the bridge hands a camera message over.
     fn rgb8_frame() -> Value {
         use base64::Engine as _;
-        let pixels: Vec<u8> = (0..8u32 * 8 * 3).map(|index| (index % 251) as u8).collect();
+        let pixels: Vec<u8> = (0..251).cycle().take(8 * 8 * 3).collect();
         json!({
             "header": { "frame_id": 7 },
             "frame": base64::engine::general_purpose::STANDARD.encode(&pixels),
@@ -4396,10 +4425,7 @@ mod tests {
         let no_representation = no_picture_resource(|bundle| {
             bundle.pictures[0].resource = "front_camera.status".to_string();
         });
-        assert!(matches!(
-            no_representation,
-            BuildError::NoPictureResource { .. }
-        ));
+        assert_matches!(no_representation, BuildError::NoPictureResource { .. });
 
         // Nor does one whose frames are data: 16-bit samples.
         let png16 = no_picture_resource(|bundle| {
@@ -4411,13 +4437,13 @@ mod tests {
                 .expect("a representation"),
             );
         });
-        assert!(matches!(png16, BuildError::NoPictureResource { .. }));
+        assert_matches!(png16, BuildError::NoPictureResource { .. });
 
         // The resource of another target is not the picture's.
         let other_target = no_picture_resource(|bundle| {
             bundle.pictures[0].target = "recorder".to_string();
         });
-        assert!(matches!(other_target, BuildError::NoPictureResource { .. }));
+        assert_matches!(other_target, BuildError::NoPictureResource { .. });
 
         let duplicate = no_picture_resource(|bundle| {
             bundle.pictures[0].name = "front_camera.set_brightness".to_string();
@@ -4480,10 +4506,7 @@ mod tests {
         let (server, nanos) = built_picture_server();
         let mut events = server.state.events.subscribe();
         publish_status(&server, 87);
-        assert!(matches!(
-            events.try_recv(),
-            Ok(CatalogEvent::ResourceUpdated { .. })
-        ));
+        assert_matches!(events.try_recv(), Ok(CatalogEvent::ResourceUpdated { .. }));
 
         // 100 ms into the 500 ms gate interval, a read arrives, then a
         // message: the message is admitted for the reader, answers it, and
@@ -4559,6 +4582,10 @@ mod tests {
     /// `test_bundle` plus a service that answers with a frame under
     /// `representation`, and a result larger than 4096 bytes under
     /// `on_oversize`.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "each test builds the value in the call"
+    )]
     fn snap_bundle_under(representation: Value, on_oversize: &str) -> ExposureBundle {
         let mut bundle = test_bundle();
         bundle.tools.push(
@@ -4687,9 +4714,13 @@ mod tests {
     #[tokio::test]
     async fn an_oversize_service_picture_is_downscaled_and_a_bad_frame_is_a_tool_error() {
         use base64::Engine as _;
-        let bytes: Vec<u8> = (0..64usize * 64 * 3)
-            .map(|index| ((index * 97 + index / 3 * 31) % 256) as u8)
-            .collect();
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "each value is a remainder below 256"
+        )]
+        let bytes: Vec<u8> = Vec::from_fn(64usize * 64 * 3, |index| {
+            ((index * 97 + index / 3 * 31) % 256) as u8
+        });
         let noisy = json!({
             "frame": base64::engine::general_purpose::STANDARD.encode(&bytes),
             "encoding": "rgb8",
@@ -4747,7 +4778,7 @@ mod tests {
     fn record_builder_of(bundle: ExposureBundle) -> ExposureServerBuilder {
         ExposureServer::builder(bundle)
             .with_tool("front_camera.set_brightness", brightness_handler)
-            .with_tool("front_camera.get_brightness", |_call: ToolCall| async {
+            .with_tool("front_camera.get_brightness", async |_call: ToolCall| {
                 Ok(json!({ "value": 3 }))
             })
             .with_task("recorder.record_episode", record_handler)
@@ -4774,20 +4805,19 @@ mod tests {
             .record
             .as_ref()
             .expect("the bundle keeps a record");
-        let answer = server
-            .recent_calls(record, JsonObject::new())
-            .expect("the record answers");
+        let answer =
+            ExposureServer::recent_calls(record, &JsonObject::new()).expect("the record answers");
         answer.structured_content.expect("structured")["calls"]
             .as_array()
             .cloned()
             .expect("the calls")
     }
 
-    fn a_client() -> Option<ClientIdentity> {
-        Some(ClientIdentity {
+    fn a_client() -> ClientIdentity {
+        ClientIdentity {
             name: "claude-code".to_string(),
             version: "2.1".to_string(),
-        })
+        }
     }
 
     #[test]
@@ -4820,8 +4850,7 @@ mod tests {
         assert!(tool.output_schema.is_some());
 
         let record = server.state.record.as_ref().expect("a record");
-        let error = server
-            .recent_calls(record, object(json!({ "count": 1 })))
+        let error = ExposureServer::recent_calls(record, &object(json!({ "count": 1 })))
             .expect_err("takes no argument");
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
         assert!(recorded_calls(&server).is_empty());
@@ -4848,12 +4877,16 @@ mod tests {
             .execute_tool(
                 "front_camera.set_brightness",
                 object(json!({ "value": 12 })),
-                a_client(),
+                Some(a_client()),
             )
             .await
             .expect("answers");
         server
-            .execute_tool("front_camera.get_brightness", JsonObject::new(), a_client())
+            .execute_tool(
+                "front_camera.get_brightness",
+                JsonObject::new(),
+                Some(a_client()),
+            )
             .await
             .expect("answers");
         let calls = recorded_calls(&server);
@@ -4882,7 +4915,7 @@ mod tests {
     async fn an_error_reply_is_a_tool_error_with_its_failure_and_is_recorded_as_failed() {
         let (builder, _) = record_builder();
         let server = builder
-            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
+            .with_tool("front_camera.set_brightness", async |_call: ToolCall| {
                 Err(ToolCallError::Failed(failure(
                     "sensor_saturated",
                     "the sensor is saturated at this gain",
@@ -4894,7 +4927,7 @@ mod tests {
             .execute_tool(
                 "front_camera.set_brightness",
                 object(json!({ "value": 1 })),
-                a_client(),
+                Some(a_client()),
             )
             .await
             .expect("an error reply is a tool error, not a protocol error");
@@ -4919,7 +4952,7 @@ mod tests {
     async fn a_failed_call_with_no_kind_is_a_readable_tool_error_recorded_without_a_kind() {
         let (builder, _) = record_builder();
         let server = builder
-            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
+            .with_tool("front_camera.set_brightness", async |_call: ToolCall| {
                 Err(ToolCallError::Error(
                     "the provider of `set_brightness` gave the failure kind `melted`, which \
                      is neither a kind of peppy nor a kind of its contract that the member lists"
@@ -4983,7 +5016,7 @@ mod tests {
         // A provider that cannot be reached is a refusal too.
         let (builder, _) = record_builder();
         let server = builder
-            .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
+            .with_tool("front_camera.set_brightness", async |_call: ToolCall| {
                 Err(ToolCallError::Unavailable("no producer bound".to_string()))
             })
             .build()
@@ -5043,7 +5076,7 @@ mod tests {
             .run_action_in_call(
                 &task_named(&server, "recorder.resume_session"),
                 JsonObject::new(),
-                a_client(),
+                Some(a_client()),
                 CancellationToken::new(),
                 NO_PROGRESS_TOKEN,
             )
@@ -5061,7 +5094,7 @@ mod tests {
             .start_task(
                 &task_named(&server, "recorder.resume_session"),
                 JsonObject::new(),
-                a_client(),
+                Some(a_client()),
             )
             .expect("the task starts");
         let calls = recorded_calls(&server);
@@ -5085,7 +5118,7 @@ mod tests {
         let server = builder
             .with_task(
                 "recorder.resume_session",
-                |_call: ToolCall, context: ActionContext| async move {
+                async |_call: ToolCall, context: ActionContext| {
                     context.cancel_requested().await;
                     Err(ActionExit::Cancelled(CancelledGoal {
                         result: cancelled_resume(),

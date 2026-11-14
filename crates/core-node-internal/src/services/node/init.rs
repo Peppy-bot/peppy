@@ -16,7 +16,7 @@ use peppylib::{MessengerHandle, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-pub async fn listen_for_node_init(
+pub(crate) async fn listen_for_node_init(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
@@ -45,6 +45,10 @@ pub async fn listen_for_node_init(
     Ok(handle)
 }
 
+#[expect(
+    clippy::unused_async,
+    reason = "the listener calls a handler that returns a future"
+)]
 async fn handle_node_init_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,
@@ -127,7 +131,7 @@ fn scaffold_node(
 fn create_gitignore(node_dir: &std::path::Path, build_system: Toolchain) -> std::io::Result<()> {
     let content = match build_system {
         Toolchain::Cargo => {
-            r#"
+            r"
 # Peppy-specific files
 .peppy
 
@@ -147,10 +151,10 @@ fn create_gitignore(node_dir: &std::path::Path, build_system: Toolchain) -> std:
 
 # Logs
 *.log
-"#
+"
         }
         Toolchain::Uv => {
-            r#"
+            r"
 # Peppy-specific files
 .peppy
 
@@ -179,7 +183,7 @@ __pycache__/
 
 # Logs
 *.log
-"#
+"
         }
     };
     std::fs::write(node_dir.join(".gitignore"), content)?;

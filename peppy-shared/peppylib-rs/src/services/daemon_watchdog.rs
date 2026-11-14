@@ -36,7 +36,6 @@
 //! the wire.
 
 use std::collections::HashSet;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -220,7 +219,7 @@ async fn run_watchdog<S: DaemonSignals>(
     let loss = tokio::select! {
         biased;
         // Another shutdown path already fired; stop watching.
-        _ = cancellation_token.cancelled() => return Ok(()),
+        () = cancellation_token.cancelled() => return Ok(()),
         loss = watch_own_daemon(daemons, own, grace) => loss,
     };
     // The session closed: losing the session is not proof that the daemon is
@@ -245,7 +244,7 @@ async fn watch_own_daemon<S: DaemonSignals>(
     let mut own_token_live = false;
     let mut reported_collisions: HashSet<DaemonInstanceId> = HashSet::new();
     let silence = tokio::time::sleep(grace);
-    tokio::pin!(silence);
+    let mut silence = std::pin::pin!(silence);
     loop {
         let signal = tokio::select! {
             biased;
@@ -292,7 +291,7 @@ mod tests {
 
     /// A grace period no scripted test reaches unless it waits for it: a watch
     /// that ends under it ends for a signal, never for the timeout.
-    const LONG_GRACE: Duration = Duration::from_secs(3600);
+    const LONG_GRACE: Duration = Duration::from_hours(1);
 
     fn daemon(instance_id: &str) -> DaemonInstanceId {
         DaemonInstanceId(instance_id.to_owned())
@@ -431,7 +430,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn never_fires_while_beats_arrive() {
         let token = CancellationToken::new();
-        let grace = Duration::from_secs(120);
+        let grace = Duration::from_mins(2);
         // Beat well inside the window.
         let handle = spawn(run_watchdog(
             PeriodicBeats {
@@ -600,15 +599,15 @@ mod tests {
     /// period. The watch goes on until the session closes.
     #[tokio::test(start_paused = true)]
     async fn a_router_restart_does_not_end_the_watch() {
-        let grace = Duration::from_secs(120);
+        let grace = Duration::from_mins(2);
         let mut daemons = ScriptedDaemons::new([
             Step::Present(OWN),
             Step::Beat(OWN),
             Step::Absent(OWN),
-            Step::Silence(grace - Duration::from_secs(1)),
+            Step::Silence(grace.checked_sub(Duration::from_secs(1)).unwrap()),
             Step::Present(OWN),
             Step::Beat(OWN),
-            Step::Silence(grace - Duration::from_secs(1)),
+            Step::Silence(grace.checked_sub(Duration::from_secs(1)).unwrap()),
             Step::Beat(OWN),
         ]);
 
@@ -623,7 +622,7 @@ mod tests {
     /// after its last beat.
     #[tokio::test(start_paused = true)]
     async fn only_the_beats_of_the_own_daemon_restart_the_grace_window() {
-        let grace = Duration::from_secs(120);
+        let grace = Duration::from_mins(2);
         let mut daemons = ScriptedDaemons::new([
             Step::Present(OWN),
             Step::Beat(OWN),

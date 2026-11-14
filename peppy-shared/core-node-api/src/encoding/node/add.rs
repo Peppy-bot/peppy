@@ -1,4 +1,4 @@
-//! Encoding types for the NodeAdd action (streaming version with feedback).
+//! Encoding types for the `NodeAdd` action (streaming version with feedback).
 
 use crate::node_capnp;
 use crate::{NonEmptyPayload, Payload, Result};
@@ -73,7 +73,7 @@ impl NodeSource {
 
     pub fn decode_git(repo_url_str: &str, repo_path: &str, repo_ref: &str) -> Result<Self> {
         let repo_url = GitUrl::try_from(repo_url_str)
-            .map_err(|e| crate::Error::Decoding(format!("invalid git URL: {}", e)))?;
+            .map_err(|e| crate::Error::Decoding(format!("invalid git URL: {e}")))?;
         Ok(Self::Git {
             repo_url,
             repo_path: repo_path.to_owned(),
@@ -90,7 +90,7 @@ impl NodeSource {
 
     pub fn decode_http(url_str: &str, sha256: Option<&str>) -> Result<Self> {
         let url = url::Url::parse(url_str)
-            .map_err(|e| crate::Error::Decoding(format!("invalid HTTP URL: {}", e)))?;
+            .map_err(|e| crate::Error::Decoding(format!("invalid HTTP URL: {e}")))?;
         match url.scheme() {
             "http" | "https" => {}
             scheme => {
@@ -152,7 +152,8 @@ fn validate_repo_node_tag(tag: &str, label: &str) -> Result<()> {
     config::repo_node_id::validate_repo_node_tag(tag, label).map_err(crate::Error::Decoding)
 }
 
-/// Goal message for the NodeAdd action.
+/// Goal message for the `NodeAdd` action.
+#[derive(Debug)]
 pub struct NodeAddGoal {
     pub source: NodeSource,
     pub git_hash: String,
@@ -174,7 +175,7 @@ pub struct NodeAddGoal {
 }
 
 impl NodeAddGoal {
-    /// Creates a new NodeAddGoal from a NodeSource.
+    /// Creates a new `NodeAddGoal` from a `NodeSource`.
     pub fn from_source(source: NodeSource, git_hash: impl Into<String>, timeout_secs: u64) -> Self {
         Self {
             source,
@@ -187,12 +188,12 @@ impl NodeAddGoal {
         }
     }
 
-    /// Creates a new NodeAddGoal from a filesystem path.
+    /// Creates a new `NodeAddGoal` from a filesystem path.
     pub fn new(path: impl Into<PathBuf>, git_hash: impl Into<String>, timeout_secs: u64) -> Self {
         Self::from_source(NodeSource::Fs(path.into()), git_hash, timeout_secs)
     }
 
-    /// Creates a new NodeAddGoal from a Git repository with an optional ref (tag/branch/commit).
+    /// Creates a new `NodeAddGoal` from a Git repository with an optional ref (tag/branch/commit).
     pub fn new_git(
         repo_url: GitUrl,
         repo_path: impl Into<String>,
@@ -211,7 +212,7 @@ impl NodeAddGoal {
         )
     }
 
-    /// Creates a new NodeAddGoal from an HTTP URL (for .tzst archives).
+    /// Creates a new `NodeAddGoal` from an HTTP URL (for .tzst archives).
     pub fn new_http(
         url: url::Url,
         sha256: Option<String>,
@@ -221,7 +222,7 @@ impl NodeAddGoal {
         Self::from_source(NodeSource::Http { url, sha256 }, git_hash, timeout_secs)
     }
 
-    /// Creates a new NodeAddGoal that names a node by `(name, tag)` for the
+    /// Creates a new `NodeAddGoal` that names a node by `(name, tag)` for the
     /// receiving daemon to resolve and pin. Returns an error when the name
     /// or tag fails the repo-node validation rules.
     pub fn new_resolve_ref(
@@ -245,11 +246,13 @@ impl NodeAddGoal {
         Self::from_source(source, git_hash, 0)
     }
 
+    #[must_use]
     pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
         self.env_vars = env_vars;
         self
     }
 
+    #[must_use]
     pub fn with_force(mut self, force: bool) -> Self {
         self.force = force;
         self
@@ -257,6 +260,7 @@ impl NodeAddGoal {
 
     /// Marks this goal as one step of a federated launch's dispatch, so the
     /// receiving daemon accepts it while reserved for that launch.
+    #[must_use]
     pub fn with_launch_id(mut self, launch_id: impl Into<String>) -> Self {
         self.launch_id = Some(launch_id.into());
         self
@@ -264,6 +268,7 @@ impl NodeAddGoal {
 
     /// Attaches the closure pins of a pinned batch; see
     /// [`Self::pins_json5`].
+    #[must_use]
     pub fn with_pins(mut self, pins_json5: Vec<String>) -> Self {
         self.pins_json5 = pins_json5;
         self
@@ -284,7 +289,7 @@ impl NodeAddGoal {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut goal = builder.init_root::<node_capnp::node_add_goal::Builder>();
+            let mut goal = builder.init_root::<node_capnp::node_add_goal::Builder<'_>>();
             goal.set_git_hash(&self.git_hash);
             let mut source = goal.reborrow().init_source();
             match &self.source {
@@ -347,7 +352,7 @@ impl NodeAddGoal {
     pub fn decode(data: &[u8]) -> Result<Self> {
         use crate::node_capnp::node_add_goal::source::Which;
         let reader = decode_message(data)?;
-        let goal = reader.get_root::<node_capnp::node_add_goal::Reader>()?;
+        let goal = reader.get_root::<node_capnp::node_add_goal::Reader<'_>>()?;
         let source = match goal.get_source().which()? {
             Which::Fs(fs) => NodeSource::decode_fs(fs?.to_str()?)?,
             Which::Git(git) => {
@@ -406,7 +411,8 @@ impl NodeAddGoalResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_add_goal_response::Builder>();
+            let mut response =
+                builder.init_root::<node_capnp::node_add_goal_response::Builder<'_>>();
             response.set_log_path(self.log_path.to_string_lossy().as_ref());
         }
         encode_message(&builder)
@@ -414,14 +420,14 @@ impl NodeAddGoalResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_add_goal_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::node_add_goal_response::Reader<'_>>()?;
         Ok(Self {
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
         })
     }
 }
 
-/// Feedback message for the NodeAdd action.
+/// Feedback message for the `NodeAdd` action.
 /// One line the add reports, tagged with the stream it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddFeedback {
@@ -465,7 +471,7 @@ impl NodeAddFeedback {
     pub fn encode(&self) -> Result<NonEmptyPayload> {
         let mut builder = Builder::new_default();
         {
-            let mut feedback = builder.init_root::<node_capnp::node_add_feedback::Builder>();
+            let mut feedback = builder.init_root::<node_capnp::node_add_feedback::Builder<'_>>();
             feedback.set_stream(self.stream.to_capnp());
             feedback.set_line(&self.line);
         }
@@ -474,7 +480,7 @@ impl NodeAddFeedback {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let feedback = reader.get_root::<node_capnp::node_add_feedback::Reader>()?;
+        let feedback = reader.get_root::<node_capnp::node_add_feedback::Reader<'_>>()?;
         Ok(Self {
             stream: FeedbackStream::from_capnp(feedback.get_stream()?),
             line: feedback.get_line()?.to_str()?.to_owned(),
@@ -505,7 +511,7 @@ impl NodeAddResult {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut result = builder.init_root::<node_capnp::node_add_result::Builder>();
+            let mut result = builder.init_root::<node_capnp::node_add_result::Builder<'_>>();
             result.set_node_name(&self.node_name);
             result.set_node_tag(&self.node_tag);
         }
@@ -514,7 +520,7 @@ impl NodeAddResult {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let result = reader.get_root::<node_capnp::node_add_result::Reader>()?;
+        let result = reader.get_root::<node_capnp::node_add_result::Reader<'_>>()?;
         Ok(Self {
             node_name: required_text(result.get_node_name()?.to_str()?, "NodeAddResult.node_name")?,
             node_tag: required_text(result.get_node_tag()?.to_str()?, "NodeAddResult.node_tag")?,
@@ -523,19 +529,19 @@ impl NodeAddResult {
 }
 
 impl crate::encoding::Wire for NodeAddGoal {
-    type Root = crate::node_capnp::node_add_goal::Owned;
+    type Root = node_capnp::node_add_goal::Owned;
 }
 
 impl crate::encoding::Wire for NodeAddGoalResponse {
-    type Root = crate::node_capnp::node_add_goal_response::Owned;
+    type Root = node_capnp::node_add_goal_response::Owned;
 }
 
 impl crate::encoding::Wire for NodeAddFeedback {
-    type Root = crate::node_capnp::node_add_feedback::Owned;
+    type Root = node_capnp::node_add_feedback::Owned;
 }
 
 impl crate::encoding::Wire for NodeAddResult {
-    type Root = crate::node_capnp::node_add_result::Owned;
+    type Root = node_capnp::node_add_result::Owned;
 }
 
 #[cfg(test)]
@@ -689,32 +695,32 @@ mod tests {
     /// from tripping over it later with a worse message.
     #[test]
     fn decode_pinned_rejects_empty_pin() {
-        assert!(NodeSource::decode_pinned("").is_err());
-        assert!(NodeSource::decode_pinned("   ").is_err());
-        assert!(NodeSource::decode_exposures(vec![]).is_err());
-        assert!(NodeSource::decode_exposures(vec!["   ".to_owned()]).is_err());
+        NodeSource::decode_pinned("").unwrap_err();
+        NodeSource::decode_pinned("   ").unwrap_err();
+        NodeSource::decode_exposures(vec![]).unwrap_err();
+        NodeSource::decode_exposures(vec!["   ".to_owned()]).unwrap_err();
     }
 
     #[test]
     fn resolve_ref_rejects_invalid_name() {
-        assert!(NodeSource::resolve_ref("../etc", "1.0").is_err());
-        assert!(NodeSource::resolve_ref("bad name", "1.0").is_err());
+        NodeSource::resolve_ref("../etc", "1.0").unwrap_err();
+        NodeSource::resolve_ref("bad name", "1.0").unwrap_err();
     }
 
     #[test]
     fn resolve_ref_rejects_invalid_tag() {
-        assert!(NodeSource::resolve_ref("node", "").is_err());
-        assert!(NodeSource::resolve_ref("node", "..").is_err());
+        NodeSource::resolve_ref("node", "").unwrap_err();
+        NodeSource::resolve_ref("node", "..").unwrap_err();
     }
 
     #[test]
     fn decode_resolve_ref_rejects_empty_name() {
-        assert!(NodeSource::decode_resolve_ref("", "v1").is_err());
+        NodeSource::decode_resolve_ref("", "v1").unwrap_err();
     }
 
     #[test]
     fn decode_resolve_ref_rejects_empty_tag() {
-        assert!(NodeSource::decode_resolve_ref("node", "").is_err());
+        NodeSource::decode_resolve_ref("node", "").unwrap_err();
     }
 
     #[test]
@@ -801,7 +807,7 @@ mod tests {
 
     #[test]
     fn node_add_goal_response_decode_rejects_malformed_bytes() {
-        assert!(NodeAddGoalResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeAddGoalResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     // --- NodeAddFeedback ---
@@ -836,7 +842,7 @@ mod tests {
 
     #[test]
     fn node_add_feedback_decode_rejects_malformed_bytes() {
-        assert!(NodeAddFeedback::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeAddFeedback::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     // --- NodeAddResult ---
@@ -861,6 +867,6 @@ mod tests {
 
     #[test]
     fn node_add_result_decode_rejects_malformed_bytes() {
-        assert!(NodeAddResult::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeAddResult::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 }

@@ -276,8 +276,8 @@ mod tests {
             ClockIncarnation::try_from(rounded),
             Err(InvalidIncarnation::TooLarge(rounded))
         );
-        assert!(ClockIncarnation::try_from(ClockIncarnation::MAX + 1).is_err());
-        assert!(ClockIncarnation::try_from(u64::MAX).is_err());
+        ClockIncarnation::try_from(ClockIncarnation::MAX + 1).unwrap_err();
+        ClockIncarnation::try_from(u64::MAX).unwrap_err();
     }
 
     #[test]
@@ -293,7 +293,7 @@ mod tests {
         let too_large = (ClockIncarnation::MAX + 2).to_string();
         let error = serde_json::from_str::<ClockIncarnation>(&too_large).expect_err("above MAX");
         assert!(error.to_string().contains("is above"), "{error}");
-        assert!(serde_json::from_str::<ClockIncarnation>("0").is_err());
+        serde_json::from_str::<ClockIncarnation>("0").unwrap_err();
         let largest = ClockIncarnation::MAX.to_string();
         assert_eq!(
             serde_json::from_str::<ClockIncarnation>(&largest).expect("inside the range"),
@@ -308,7 +308,7 @@ mod tests {
         assert_eq!(robot.link_id(), "robot_0000000000001234");
     }
 
-    /// The link_id lands in a zenoh key segment, which forbids `/` and `@`
+    /// The `link_id` lands in a zenoh key segment, which forbids `/` and `@`
     /// and reserves `_` on its own. The rendering must never produce one.
     #[test]
     fn a_link_id_is_a_usable_wire_segment() {

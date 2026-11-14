@@ -16,7 +16,7 @@ use std::time::Instant;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-pub async fn listen_for_info(
+pub(super) async fn listen_for_info(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
@@ -63,6 +63,10 @@ pub async fn listen_for_info(
     Ok(handle)
 }
 
+#[expect(
+    clippy::unused_async,
+    reason = "the listener calls a handler that returns a future"
+)]
 async fn handle_info_request(
     context: ServiceRequestContext,
     core_node_name: &str,
@@ -98,7 +102,7 @@ fn handle_info_request_inner(
 
     let uptime_secs = start_time.elapsed().as_secs();
     let host_name = current_host_name();
-    let node_count = node_stack.len() as u32;
+    let node_count = u32::try_from(node_stack.len()).unwrap_or(u32::MAX);
     let container_info = ContainerInfo {
         apptainer_version: containers::APPTAINER_VERSION.to_owned(),
         lima_version: containers::LIMA_VERSION.to_owned(),

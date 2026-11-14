@@ -55,6 +55,10 @@ fn authorize(
 }
 
 /// Answers one request of a service of `robot_leases:v1`.
+#[expect(
+    clippy::unused_async,
+    reason = "the daemon interfaces answer through one async signature"
+)]
 pub(super) async fn answer(
     ctx: &InterfaceContext,
     member: &str,
@@ -248,16 +252,15 @@ pub(super) async fn run_goal(ctx: &InterfaceContext, member: &str, pending: Pend
             return;
         }
     };
-    let member = match RobotLeasesMember::named(member) {
-        Some(member @ (RobotLeasesMember::Changes | RobotLeasesMember::Lease)) => member,
-        _ => {
-            let refusal = failure(
-                PeppyFailureKind::Rejected,
-                format!("`{member}` is not an action of robot_leases:v1"),
-            );
-            refuse(pending, refusal).await;
-            return;
-        }
+    let Some(member @ (RobotLeasesMember::Changes | RobotLeasesMember::Lease)) =
+        RobotLeasesMember::named(member)
+    else {
+        let refusal = failure(
+            PeppyFailureKind::Rejected,
+            format!("`{member}` is not an action of robot_leases:v1"),
+        );
+        refuse(pending, refusal).await;
+        return;
     };
     if let Err(refusal) = authorize(&caller, member, &sender) {
         refuse(pending, refusal).await;
@@ -270,7 +273,7 @@ pub(super) async fn run_goal(ctx: &InterfaceContext, member: &str, pending: Pend
 }
 
 /// Publishes `feedback` on `goal`, encoded as the feedback of `member`.
-async fn publish<T: serde::Serialize>(
+async fn publish<T: Serialize>(
     ctx: &InterfaceContext,
     goal: &GoalContext,
     member: &str,
@@ -373,7 +376,7 @@ async fn hold_leases(ctx: &InterfaceContext, client: ClientRef, pending: Pending
         Err(error) => {
             tracing::debug!(%error, "a `lease` goal was not accepted");
             ctx.slice_ownership.fleet.with(|book| {
-                book.end_holding(&client, &generation, "its lease goal was not accepted")
+                book.end_holding(&client, &generation, "its lease goal was not accepted");
             });
             return;
         }

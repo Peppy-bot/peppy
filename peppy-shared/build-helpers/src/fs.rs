@@ -249,13 +249,14 @@ pub(crate) struct CleanupDir(pub(crate) PathBuf);
 
 impl Drop for CleanupDir {
     fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).ok();
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn cache_dir_under_creates_and_returns_peppy_tmp_subdir() {
@@ -394,7 +395,7 @@ mod tests {
     /// A payload of `size` bytes whose bytes are not all equal, so a
     /// comparison that skips or repeats a block sees a difference.
     fn multi_block_payload(size: usize) -> Vec<u8> {
-        (0..size).map(|index| (index % 251) as u8).collect()
+        (0..251).cycle().take(size).collect()
     }
 
     /// The skip check at the edges of the block comparison: an empty file, a
@@ -602,10 +603,7 @@ mod tests {
             .write(true)
             .open(&lock_path)
             .expect("open second handle");
-        assert!(matches!(
-            second.try_lock(),
-            Err(std::fs::TryLockError::WouldBlock)
-        ));
+        assert_matches!(second.try_lock(), Err(std::fs::TryLockError::WouldBlock));
 
         drop(first);
         // Blocking acquire rather than try_lock: a child process forked by a

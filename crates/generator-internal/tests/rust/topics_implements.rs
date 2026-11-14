@@ -1,4 +1,4 @@
-//! Reproduces the realsense_d435 example from the implements spec: a node
+//! Reproduces the `realsense_d435` example from the implements spec: a node
 //! that emits its own `video_stream` topic and also implements three
 //! contracts (`depth_camera:v1`, `depth_camera:v2`, `uvc_camera:v1`), each
 //! of which exposes a `video_stream` topic with a distinct shape.
@@ -10,7 +10,7 @@
 //!      `emitted_topics/{link_id}/{topic}.rs` while keeping the native
 //!      artifact at `emitted_topics/{topic}.rs`.
 //!   2. Each `mod.rs` declares the right children.
-//!   3. The rendered declare_publisher inside each leaf passes the matching
+//!   3. The rendered `declare_publisher` inside each leaf passes the matching
 //!      sender target (`SenderTarget::contract("name", "tag")?` for contract-backed,
 //!      `SenderTarget::node("name", "tag")?` for native) to
 //!      `peppylib::TopicMessenger::declare_publisher`.
@@ -47,7 +47,7 @@ const NODE_CONFIG: &str = r#"{
 }
 "#;
 
-/// Realsense_d435 scenario for the Rust generator: one native `video_stream`
+/// `Realsense_d435` scenario for the Rust generator: one native `video_stream`
 /// publisher plus three resolved contract-backed interfaces (`depth_camera:v1`,
 /// `depth_camera:v2`, `uvc_camera:v1`) each shaped as `video_stream` with a
 /// distinguishing marker field. Verifies that:
@@ -211,9 +211,9 @@ fn nests_contract_backed_topics_under_link_id() {
 }
 
 /// Exercises hyphen-to-underscore normalization of the slot `link_id` for the
-/// Rust generator: a link_id `depth-beta` becomes the directory `depth_beta`
+/// Rust generator: a `link_id` `depth-beta` becomes the directory `depth_beta`
 /// (Rust module names can't carry hyphens) while the literal `"v1-beta"` tag is
-/// still embedded in the declare_publisher body; messaging.rs normalizes hyphens
+/// still embedded in the `declare_publisher` body; messaging.rs normalizes hyphens
 /// at the wire boundary, so the generator keeps the raw value.
 #[test]
 fn hyphenated_link_id_lands_in_underscore_directory() {

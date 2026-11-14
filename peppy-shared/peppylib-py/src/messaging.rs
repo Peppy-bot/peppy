@@ -23,7 +23,6 @@ use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -34,8 +33,7 @@ pub(crate) use topics::{
 
 /// A member's copy as the member reprs spell it: the quoted name, or `None`.
 pub(crate) fn repr_copy(copy: Option<&str>) -> String {
-    copy.map(|copy| format!("{copy:?}"))
-        .unwrap_or_else(|| "None".to_string())
+    copy.map_or_else(|| "None".to_string(), |copy| format!("{copy:?}"))
 }
 
 /// A producer as every repr spells it, the `ProducerRef` constructor call.
@@ -82,6 +80,10 @@ pub(crate) fn failure_from_py(kind: &str, message: String) -> PyResult<Failure> 
 
 /// The failure a Python service handler raised: the kind and message of a
 /// `FailureError`, or `attempt_failed` with the text of any other exception.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
 pub(crate) fn failure_of_py_err(err: PyErr) -> Failure {
     let raised = crate::py_future::try_attach_gated(|py| {
         if !err.is_instance_of::<FailureError>(py) {
@@ -109,13 +111,17 @@ pub(crate) fn failure_of_py_err(err: PyErr) -> Failure {
 /// vanished), which keeps it type-distinguishable from the clean
 /// end-of-stream close (`ActionFeedbackChannelClosed` → `RuntimeError`).
 /// `UnknownPairingSlot`, `UnknownObservationSlot`, `UnknownProducerSlot` and
-/// `TargetNotBound` are caller misuse (a link_id the manifest never declared as
+/// `TargetNotBound` are caller misuse (a `link_id` the manifest never declared as
 /// a pairing, observer or consumer slot, or a producer outside the slot's bound
 /// set), so they map to `ValueError`, the same type `peer()` and
 /// `observation_slot()` raise for the same kind of input. A failure a
 /// provider gave (an error reply, or a failed goal) is a `FailureError` that
 /// carries its kind and message, and a feedback overflow is a
 /// `FeedbackOverflowError`.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
 pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
     if let Some(failure) = err.failure() {
         return FailureError::new_err((failure.kind().to_string(), failure.message().to_string()));
@@ -181,7 +187,7 @@ pub(crate) fn encoded_to_py_bytes<'py>(
 /// Wrap a `core_node_api::Error` from a `decode()` call as a Python
 /// `ValueError`: decode failures usually mean the bytes the caller passed in
 /// don't match the expected wire schema.
-pub(crate) fn decode_err(what: &str, err: core_node_api::Error) -> PyErr {
+pub(crate) fn decode_err(what: &str, err: &core_node_api::Error) -> PyErr {
     PyValueError::new_err(format!("failed to decode {what}: {err}"))
 }
 
@@ -193,7 +199,7 @@ pub(crate) fn decode_err(what: &str, err: core_node_api::Error) -> PyErr {
 /// through this helper gives them the Pythonic `None` return. The
 /// `Output = PyResult<()>` bound also means the compiler rejects any non-void
 /// future passed here by mistake.
-pub(crate) fn future_into_py_unit<'py, F>(py: Python<'py>, fut: F) -> PyResult<Bound<'py, PyAny>>
+pub(crate) fn future_into_py_unit<F>(py: Python<'_>, fut: F) -> PyResult<Bound<'_, PyAny>>
 where
     F: Future<Output = PyResult<()>> + Send + 'static,
 {
@@ -203,10 +209,11 @@ where
     })
 }
 
-/// Python wrapper for ZenohdInstance - an ephemeral zenohd router for testing.
+/// Python wrapper for `ZenohdInstance` - an ephemeral zenohd router for testing.
 ///
 /// Use as an async context manager (`async with`) or call `stop()` explicitly
 /// to ensure the router is cleanly shut down.
+#[derive(Debug)]
 #[pyclass(name = "ZenohdInstance")]
 pub struct PyZenohdInstance {
     inner: Arc<Mutex<Option<ZenohdInstance>>>,
@@ -221,14 +228,14 @@ impl PyZenohdInstance {
     /// If port is None, an available port will be automatically selected.
     /// If port is Some, that specific port will be used.
     ///
-    /// Returns a ZenohdInstance that automatically stops the router when dropped.
+    /// Returns a `ZenohdInstance` that automatically stops the router when dropped.
     #[staticmethod]
     #[pyo3(signature = (host, port=None))]
-    fn start_ephemeral<'py>(
-        py: Python<'py>,
+    fn start_ephemeral(
+        py: Python<'_>,
         host: String,
         port: Option<u16>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    ) -> PyResult<Bound<'_, PyAny>> {
         crate::py_future::future_into_py(py, async move {
             let instance = ZenohAdapter::start_router_ephemeral(&host, port)
                 .await
@@ -237,7 +244,7 @@ impl PyZenohdInstance {
             let host = instance.host.clone();
             let port = instance.port;
 
-            Ok(PyZenohdInstance {
+            Ok(Self {
                 inner: Arc::new(Mutex::new(Some(instance))),
                 host,
                 port,
@@ -293,12 +300,12 @@ impl PyZenohdInstance {
     }
 }
 
-/// Python wrapper for MessengerHandle.
+/// Python wrapper for `MessengerHandle`.
 ///
 /// `MessengerHandle` already manages its own internal `Arc<Mutex<Messenger>>`,
 /// so no additional outer lock is needed here. Cloning is a cheap `Arc` bump.
 #[pyclass(name = "MessengerHandle", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyMessengerHandle {
     pub(crate) inner: MessengerHandle,
 }
@@ -307,16 +314,12 @@ pub struct PyMessengerHandle {
 impl PyMessengerHandle {
     /// Connect to a messenger at the specified host and port.
     #[staticmethod]
-    fn from_host_port<'py>(
-        py: Python<'py>,
-        host: String,
-        port: u16,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn from_host_port(py: Python<'_>, host: String, port: u16) -> PyResult<Bound<'_, PyAny>> {
         crate::py_future::future_into_py(py, async move {
             let handle = MessengerHandle::connect(&host, port)
                 .await
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-            Ok(PyMessengerHandle { inner: handle })
+            Ok(Self { inner: handle })
         })
     }
 
@@ -329,24 +332,23 @@ impl PyMessengerHandle {
     /// routes to it.
     #[staticmethod]
     #[pyo3(signature = (host, port, namespace=None))]
-    fn from_host_port_with_namespace<'py>(
-        py: Python<'py>,
+    fn from_host_port_with_namespace(
+        py: Python<'_>,
         host: String,
         port: u16,
         namespace: Option<String>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    ) -> PyResult<Bound<'_, PyAny>> {
         crate::py_future::future_into_py(py, async move {
             let namespace = match namespace {
                 None => Namespace::local(),
-                Some(raw) => Namespace::parse(&raw).map_err(|error| {
-                    PyErr::new::<pyo3::exceptions::PyValueError, _>(error.to_string())
-                })?,
+                Some(raw) => Namespace::parse(&raw)
+                    .map_err(|error| PyErr::new::<PyValueError, _>(error.to_string()))?,
             };
             let handle = MessengerHandle::connect(&host, port)
                 .scope(SessionScope::Namespace(namespace))
                 .await
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-            Ok(PyMessengerHandle { inner: handle })
+            Ok(Self { inner: handle })
         })
     }
 

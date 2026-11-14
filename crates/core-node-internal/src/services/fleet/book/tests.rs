@@ -459,7 +459,7 @@ fn the_software_of_a_robot_runs_while_each_of_its_processes_runs_and_each_change
     );
     let mut listings = book.follow().changes;
     book.note_process(arm.clone(), false, &robots);
-    book.note_process(arm.clone(), true, &robots);
+    book.note_process(arm, true, &robots);
     assert!(
         listings.try_recv().is_err(),
         "the camera still does not run"

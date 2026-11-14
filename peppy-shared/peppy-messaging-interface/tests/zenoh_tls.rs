@@ -190,7 +190,7 @@ mod zenoh_tls_tests {
         const TOPIC: &str = "tls_round_trip";
         let _lock = ZENOH_SERIAL.lock().await;
         let certs = write_certs();
-        let (_router, port) = start_tls_router(&certs).await;
+        let (router, port) = start_tls_router(&certs).await;
         let client_tls = trusting_client_tls(&certs);
 
         let subscriber = open_tls_client(port, &client_tls).await;
@@ -221,7 +221,7 @@ mod zenoh_tls_tests {
             Bytes::from_static(b"tls-hello")
         );
 
-        drop(_router); // stop zenohd
+        drop(router); // stop zenohd
     }
 
     /// Negative path: a client that does NOT trust the router's CA (no
@@ -234,7 +234,7 @@ mod zenoh_tls_tests {
         const TOPIC: &str = "tls_untrusted";
         let _lock = ZENOH_SERIAL.lock().await;
         let certs = write_certs();
-        let (_router, port) = start_tls_router(&certs).await;
+        let (router, port) = start_tls_router(&certs).await;
 
         // Untrusted: no CA provided → WebPKI roots → the minica server cert is
         // not trusted → the TLS link to the router cannot be validated.
@@ -293,7 +293,7 @@ mod zenoh_tls_tests {
             "an untrusted-CA subscriber must not receive any message"
         );
 
-        drop(_router);
+        drop(router);
     }
 
     /// The payload `subscription` reads next, within [`RECV_TIMEOUT`].
@@ -532,7 +532,7 @@ mod zenoh_tls_tests {
     async fn probe_tls_reachable_presents_the_client_identity() {
         let _lock = ZENOH_SERIAL.lock().await;
         let certs = write_certs();
-        let (_remote, remote_port) = start_mtls_router(&certs).await;
+        let (remote, remote_port) = start_mtls_router(&certs).await;
         // Wait for the listener to settle, as the client opens above do.
         drop(open_tls_client(remote_port, &identified_client_tls(&certs)).await);
 
@@ -560,6 +560,6 @@ mod zenoh_tls_tests {
             .await
             .expect_err("a probe that does not trust the router's CA fails the handshake");
 
-        drop(_remote);
+        drop(remote);
     }
 }

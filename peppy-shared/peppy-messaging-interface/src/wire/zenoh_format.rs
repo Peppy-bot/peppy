@@ -50,8 +50,8 @@ impl ZenohWireFormat {
     ///
     /// The publish shape is
     /// `*/{caller_core}/*/{caller_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{topic}`:
-    /// caller_core is segment index 1, caller_inst is segment index 3,
-    /// link_id is segment index 8. The link_id segment is surfaced so a
+    /// `caller_core` is segment index 1, `caller_inst` is segment index 3,
+    /// `link_id` is segment index 8. The `link_id` segment is surfaced so a
     /// consumer can tell which slot of a producer published the message
     /// (peppylib's pairing slot streams match on it).
     pub(crate) fn parse_topic_keyexpr(
@@ -136,7 +136,7 @@ impl ZenohWireFormat {
 
     /// Producer-side queryable keyexpr, declared once per `listen_service`.
     /// Layout `{bound_core}/*/{as_inst}/*/{service_root}`. The `*` slots
-    /// match any caller's `core_node` / `instance_id`, and the link_id slot
+    /// match any caller's `core_node` / `instance_id`, and the `link_id` slot
     /// inside `service_root` is also `*` so a single queryable absorbs the
     /// `*` and `_` literals consumers may send.
     pub(crate) fn service_queryable_declare(r: &ServiceWireReceiver) -> String {
@@ -155,7 +155,7 @@ impl ZenohWireFormat {
     /// Caller-side get selector. Layout
     /// `{to_core|*}/{bound_core_caller}/{to_inst|*}/{caller_inst}/{service_root}`.
     ///
-    /// The link_id slot inside `service_root` is always `*`: producers
+    /// The `link_id` slot inside `service_root` is always `*`: producers
     /// advertise under the reserved `_` segment and Zenoh's matcher unifies
     /// the two. The `to_core` / `to_inst` slots use `*` when the caller
     /// broadcasts.
@@ -193,8 +193,8 @@ impl ZenohWireFormat {
 
     /// Parses a query selector keyexpr (the caller's get-side keyexpr, as
     /// delivered to the producer via `query.key_expr()`) to extract the
-    /// caller's identity slots and the link_id slot. The producer's single
-    /// queryable declares `*` at the link_id position, so the selector
+    /// caller's identity slots and the `link_id` slot. The producer's single
+    /// queryable declares `*` at the `link_id` position, so the selector
     /// carries either `*` (the shape every caller emits) or `_` (the default
     /// literal). [`ParsedInboundQuery::claim`] confirms it's one of the two
     /// and resolves to the default `_` segment.
@@ -244,7 +244,7 @@ impl ZenohWireFormat {
                 .ok_or(ZenohWireParseError::MissingSegment("service_root"))?;
             if got != expected {
                 return Err(ZenohWireParseError::ServiceRootMismatch {
-                    expected: expected.to_string(),
+                    expected: expected.clone(),
                     got: got.to_string(),
                 });
             }
@@ -267,7 +267,7 @@ impl ZenohWireFormat {
     }
 
     /// Caller-side attachment bytes for a service query. Carries the request
-    /// kind (UserRequest vs Probe) so probes can be discriminated from real
+    /// kind (`UserRequest` vs Probe) so probes can be discriminated from real
     /// requests without smuggling sentinels through the payload, and the
     /// proof of a call that `sender` signs: its signature covers `namespace`,
     /// `selector`, `kind` and `payload`.
@@ -294,7 +294,7 @@ impl ZenohWireFormat {
     /// Server-side per-goal feedback publish:
     /// `*/{bound_core}/*/{as_inst}/action/{discriminator}/{name}/{tag}/{link_id}/{as_action}/feedback/{as_inst}/{goal_id}`.
     ///
-    /// `link_id` is the link_id parsed from the goal's request keyexpr: the
+    /// `link_id` is the `link_id` parsed from the goal's request keyexpr: the
     /// adapter's `claim()` resolves it to the producer's default `_` segment
     /// before publishing, so feedback rides on the same wire slot the goal
     /// targeted.
@@ -311,7 +311,7 @@ impl ZenohWireFormat {
     }
 
     /// Client-side per-goal feedback subscribe. Wildcards on server-side fields
-    /// when the target is not pinned. The link_id slot is always `*` to match
+    /// when the target is not pinned. The `link_id` slot is always `*` to match
     /// the producer's `_` advertisement via Zenoh's matcher.
     pub(crate) fn action_feedback_subscribe(s: &ActionWireSender, goal_id: &str) -> String {
         let action_root = action_root(&s.to_target, SINGLE_CHUNK_WILDCARD, &s.to_action_name);
@@ -465,7 +465,7 @@ fn extract_caller_segment(
     Ok(value.to_string())
 }
 
-/// Builds the service_root segment. For action sub-services, appends the
+/// Builds the `service_root` segment. For action sub-services, appends the
 /// `goal` / `cancel` / `result` suffix. The `link_id` segment slots between
 /// the producer `(name, tag)` pair and the service / action `name`.
 ///
@@ -477,7 +477,7 @@ pub(crate) fn service_root(
     name: &str,
     kind: ServiceKind,
 ) -> String {
-    let suffix = kind.suffix().map(|s| format!("/{s}")).unwrap_or_default();
+    let suffix = kind.suffix().map_or_default(|s| format!("/{s}"));
     format!(
         "{}/{}/{}/{}/{link_id}/{name}{suffix}",
         kind.root_segment(),
@@ -487,7 +487,7 @@ pub(crate) fn service_root(
     )
 }
 
-/// Builds the action_root segment
+/// Builds the `action_root` segment
 /// (`action/{discriminator}/{name}/{tag}/{link_id}/{action}`).
 ///
 /// `pub(crate)` so [`crate::wire::templates`] can render the same grammar.
@@ -520,10 +520,10 @@ fn reject_target_mismatch(
 /// Result of parsing the publisher half of a topic keyexpr. Holds the
 /// caller's `core_node` and `instance_id` so the adapter can build a
 /// [`crate::types::TopicMessage`] without re-parsing the wire string.
-/// `link_id` is the producer's bound link_id (segment 8 of the publish
+/// `link_id` is the producer's bound `link_id` (segment 8 of the publish
 /// shape), surfaced so a consumer can tell which slot of a producer
 /// published the message. Service reply keyexprs also populate this slot
-/// (with the responder's claimed link_id inside `service_root`); only
+/// (with the responder's claimed `link_id` inside `service_root`); only
 /// truncated or malformed wire shapes leave it empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedTopicKey {
@@ -534,11 +534,11 @@ pub(crate) struct ParsedTopicKey {
 
 /// Topic-publish attachment marker. One byte on the wire: `0x01` marks a
 /// primary publish, `0x00` a secondary one. A caller that publishes one
-/// message under several link_ids marks one of the publishes primary and the
-/// others secondary. A subscriber that wildcards the link_id slot matches all
+/// message under several `link_ids` marks one of the publishes primary and the
+/// others secondary. A subscriber that wildcards the `link_id` slot matches all
 /// of them and keeps only the primary
 /// ([`TopicWireReceiver::drops_secondary_publishes`]); a subscriber pinned to
-/// one link_id matches one publish and ignores the marker. A missing or empty
+/// one `link_id` matches one publish and ignores the marker. A missing or empty
 /// attachment, or a first byte other than `0x00`, decodes as primary, so a
 /// publish without the marker is delivered, not dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -547,7 +547,7 @@ pub(crate) struct TopicAttachment {
 }
 
 impl TopicAttachment {
-    pub(crate) fn encode(&self) -> bytes::Bytes {
+    pub(crate) fn encode(self) -> bytes::Bytes {
         bytes::Bytes::from_static(if self.is_primary {
             &[0x01u8]
         } else {
@@ -643,7 +643,7 @@ impl ServiceQueryAttachment {
     }
 }
 
-/// Service reply kind, encoded in the [`ServiceReplyAttachment`] that
+/// Service reply kind, encoded in the `ServiceReplyAttachment` that
 /// rides on every `query.reply()`. The consumer's poll loop matches on
 /// this to skip ACKs, return regular responses, and surface failure
 /// replies without inspecting payload bytes.
@@ -722,8 +722,8 @@ impl ServiceReplyAttachment {
 }
 
 /// Result of parsing an inbound queryable selector. Carries the
-/// caller-identity slots plus the link_id slot from the selector. The
-/// producer's single queryable declares `*` at the link_id slot, so the
+/// caller-identity slots plus the `link_id` slot from the selector. The
+/// producer's single queryable declares `*` at the `link_id` slot, so the
 /// adapter inspects this field via [`Self::claim`] to confirm the selector
 /// targeted the producer's default `_` segment (or a `*` wildcard).
 ///
@@ -734,7 +734,7 @@ impl ServiceReplyAttachment {
 pub(crate) struct ParsedInboundQuery {
     pub(crate) caller_core: String,
     pub(crate) caller_inst: String,
-    /// Raw value of the link_id slot in the selector. Either the
+    /// Raw value of the `link_id` slot in the selector. Either the
     /// single-chunk wildcard `*` (the shape every caller emits) or the
     /// default `_` literal.
     pub(crate) link_id: String,
@@ -746,7 +746,7 @@ pub(crate) struct ParsedInboundQuery {
 }
 
 impl ParsedInboundQuery {
-    /// Confirms the inbound link_id slot is one the producer answers to and
+    /// Confirms the inbound `link_id` slot is one the producer answers to and
     /// returns the literal the producer should claim (always
     /// [`DEFAULT_LINK_ID`]). Wildcard `*` and the literal `_` both succeed;
     /// anything else returns `None` so the adapter drops the query without
@@ -861,7 +861,7 @@ impl std::error::Error for ZenohWireParseError {}
 
 impl From<ZenohWireParseError> for crate::error::Error {
     fn from(err: ZenohWireParseError) -> Self {
-        crate::error::Error::BackendError(err.to_string())
+        Self::BackendError(err.to_string())
     }
 }
 

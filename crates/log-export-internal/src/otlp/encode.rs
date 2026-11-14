@@ -20,6 +20,7 @@ const SCOPE_NAME: &str = "peppy";
 
 /// What every record a daemon exports has in common: the machine and the
 /// daemon they come from.
+#[derive(Debug)]
 pub struct ExportResource {
     pub core_node_name: String,
     pub host_name: String,
@@ -27,7 +28,7 @@ pub struct ExportResource {
 }
 
 /// The records of one export request, grouped by the service they belong to.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct RequestBuilder {
     by_service: BTreeMap<String, Vec<OtlpLogRecord>>,
     records: u64,
@@ -139,7 +140,9 @@ fn log_record(record: LogRecord) -> OtlpLogRecord {
             LineOrigin::Captured(_) => 0,
         },
         observed_time_unix_nano: observed,
-        severity_number: record.severity.map_or(0, |severity| severity.number()),
+        severity_number: record
+            .severity
+            .map_or(0, daemon_config::peppy_config::Severity::number),
         severity_text: record.severity_text.unwrap_or_default(),
         body: Some(AnyValue {
             value: Some(any_value::Value::StringValue(record.body)),

@@ -1,5 +1,4 @@
 use super::*;
-use config::node::{ConsumedService, NativeExposedService};
 
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
@@ -583,14 +582,12 @@ fn clippy_single_exposed_service_without_request_body() {
 
     run_clippy(&output_dir);
 
-    let exposed_services_contents =
-        std::fs::read_to_string(output_dir.join("src/exposed_services.rs"))
-            .expect("failed to read exposed_services module");
+    let exposed_services_contents = fs::read_to_string(output_dir.join("src/exposed_services.rs"))
+        .expect("failed to read exposed_services module");
     assert_contains_all(&exposed_services_contents, &["pub mod get_system_status;"]);
 
-    let consumed_actions_contents =
-        std::fs::read_to_string(output_dir.join("src/consumed_actions.rs"))
-            .expect("failed to read consumed_actions module");
+    let consumed_actions_contents = fs::read_to_string(output_dir.join("src/consumed_actions.rs"))
+        .expect("failed to read consumed_actions module");
     assert_contains_all(
         &consumed_actions_contents,
         &["pub mod brain;", "pub mod controller;"],
@@ -661,7 +658,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
     );
 
     let lib_contents =
-        std::fs::read_to_string(output_dir.join("src/lib.rs")).expect("failed to read lib.rs");
+        fs::read_to_string(output_dir.join("src/lib.rs")).expect("failed to read lib.rs");
     assert_contains_all(
         &lib_contents,
         &["pub mod exposed_services;", "pub mod consumed_services;"],

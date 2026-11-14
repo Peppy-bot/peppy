@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// One pairing an observer slot observes: the observed instance's full
-/// `(core_node, instance_id)` wire address plus the producer-side link_id of the
+/// `(core_node, instance_id)` wire address plus the producer-side `link_id` of the
 /// observed pairing slot, and the pair's other end when the plan named the
 /// pair by it. Returned by `ObservationSlot.source()` and
 /// `ObservationSlotSet.sources()`, and tagged onto every message an
@@ -25,7 +25,7 @@ use tokio::sync::Mutex;
 /// is no health-derived helper, because a third node's health is not knowable
 /// here.
 #[pyclass(name = "ObservedSource", frozen, eq, hash, skip_from_py_object)]
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PyObservedSource {
     pub(crate) inner: ObservedSource,
 }
@@ -54,14 +54,14 @@ impl PyObservedSource {
         PyProducerRef::from(self.inner.producer.clone())
     }
 
-    /// The producer-side link_id of the observed pairing slot.
+    /// The producer-side `link_id` of the observed pairing slot.
     #[getter]
     fn source_link_id(&self) -> &str {
         &self.inner.source_link_id
     }
 
     /// The pair's other end when the plan named the pair by it: the peer the
-    /// source publishes to and the link_id of the peer's slot. `None` when
+    /// source publishes to and the `link_id` of the peer's slot. `None` when
     /// this member observes every pair of the source's slot.
     #[getter]
     fn peer(&self) -> Option<PyPeerInfo> {
@@ -94,6 +94,7 @@ impl From<ObservedSource> for PyObservedSource {
 /// always observes a pairing, and `source()` for a `zero_or_one` slot, which
 /// answers `None` where the deployment wrote it vacant. Multi-member slots are
 /// read through [`PyObservationSlotSet`] instead.
+#[derive(Debug)]
 #[pyclass(name = "ObservationSlot")]
 pub struct PyObservationSlot {
     pub(crate) inner: ObservationSlot,
@@ -131,6 +132,7 @@ impl PyObservationSlot {
 /// current, and a member whose source is down stays in the list, at its
 /// position. A copy joining or leaving adds or removes members; a `one_or_more`
 /// slot never reads empty, and only a `zero_or_more` slot does.
+#[derive(Debug)]
 #[pyclass(name = "ObservationSlotSet")]
 pub struct PyObservationSlotSet {
     pub(crate) inner: ObservationSlotSet,
@@ -167,6 +169,7 @@ impl PyObservationSlotSet {
 /// the runtime is torn down. Delivery is a live stream, not a mailbox, and
 /// follows each source instance's lifecycle independently of its peer
 /// relationship.
+#[derive(Debug)]
 #[pyclass(name = "ObservedSubscription")]
 pub struct PyObservedSubscription {
     pub(crate) inner: Arc<Mutex<ObservedTopicSubscription>>,

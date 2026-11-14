@@ -4,7 +4,6 @@ use crate::headers::OtlpHeaders;
 use bytes::Bytes;
 use daemon_config::peppy_config::OtlpEndpoint;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue, RETRY_AFTER};
-use std::future::Future;
 use std::time::Duration;
 
 /// How long one request may take, from the connection to the last byte of
@@ -41,6 +40,7 @@ pub trait Transport: Send + Sync + 'static {
 
 /// The OTLP/HTTP transport: a `POST` of the protobuf request to the logs URL
 /// of the endpoint.
+#[derive(Debug)]
 pub struct HttpTransport {
     client: reqwest::Client,
     logs_url: String,

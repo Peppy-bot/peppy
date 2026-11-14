@@ -26,7 +26,7 @@ pub(in crate::services::stack) fn plan_clocks(
     flat: &PeppyLauncher,
     placements: &Placements,
     known: &ClockIncarnations,
-) -> std::result::Result<(ResolvedClocks, ClockIncarnations), String> {
+) -> Result<(ResolvedClocks, ClockIncarnations), String> {
     let mut incarnations = known.clone();
     for (domain, declaration) in &flat.framework.clocks {
         if declaration.publisher().is_some() && !incarnations.contains_key(domain) {

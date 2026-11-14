@@ -24,7 +24,7 @@ pub type ServiceAnswer = std::result::Result<Payload, Failure>;
 async fn run_handler<F, Fut>(handler: F, context: ServiceRequestContext) -> ServiceAnswer
 where
     F: FnOnce(ServiceRequestContext) -> Fut,
-    Fut: std::future::Future<Output = ServiceAnswer>,
+    Fut: Future<Output = ServiceAnswer>,
 {
     let answer = handler(context).await;
     if let Err(failure) = &answer {
@@ -49,7 +49,7 @@ async fn answer_request<F, Fut>(
     responder: ServiceResponder,
 ) where
     F: FnOnce(ServiceRequestContext) -> Fut,
-    Fut: std::future::Future<Output = ServiceAnswer>,
+    Fut: Future<Output = ServiceAnswer>,
 {
     let request_id = context.request_id().to_string();
     let answer = run_handler(handler, context).await;
@@ -62,6 +62,7 @@ async fn answer_request<F, Fut>(
     }
 }
 
+#[derive(Debug)]
 pub struct ServiceMessenger;
 
 /// Producer scope of a [`ServiceMessenger::poll`] / [`ServiceMessenger::is_reachable`]
@@ -78,7 +79,7 @@ pub enum ServiceTarget<'a> {
     Any,
     /// Scope to producers hosted by this core node, leaving the instance
     /// slot wildcarded. For callers that know which core node must answer
-    /// but cannot know the producer's per-boot instance_id, e.g.
+    /// but cannot know the producer's per-boot `instance_id`, e.g.
     /// `node_stop`, whose service root (node name + tag) is not unique
     /// across daemons. `poll` still discovers, but only among that core
     /// node's producers.
@@ -139,6 +140,17 @@ pub struct ServiceEndpoint {
     call_check: Option<Arc<dyn CallCheck>>,
 }
 
+impl fmt::Debug for ServiceEndpoint {
+    /// Shows whether the endpoint checks its callers: the check is a trait
+    /// object, which has no text.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServiceEndpoint")
+            .field("queryable", &self.queryable)
+            .field("checks_callers", &self.call_check.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl ServiceEndpoint {
     pub(crate) fn new(
         messenger: Arc<Mutex<Messenger>>,
@@ -176,6 +188,7 @@ impl ServiceEndpoint {
 /// Handle returned by [`ServiceEndpoint::recv_next_request`] that must be used
 /// to send the response back to the caller. Wraps the inbound query's
 /// [`ResponseToken`]: `respond` issues a single reply on it.
+#[derive(Debug)]
 pub struct ServiceResponder {
     token: ResponseToken,
 }
@@ -246,7 +259,7 @@ impl ServiceEndpoint {
     pub async fn handle_next_request<F, Fut>(&mut self, handler: F) -> Result<bool>
     where
         F: FnOnce(ServiceRequestContext) -> Fut,
-        Fut: std::future::Future<Output = ServiceAnswer>,
+        Fut: Future<Output = ServiceAnswer>,
     {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(false);
@@ -261,7 +274,7 @@ impl ServiceEndpoint {
     pub async fn handle_requests<F, Fut>(&mut self, mut handler: F) -> Result<()>
     where
         F: FnMut(ServiceRequestContext) -> Fut,
-        Fut: std::future::Future<Output = ServiceAnswer>,
+        Fut: Future<Output = ServiceAnswer>,
     {
         while let Some((context, responder)) = self.recv_next_request().await? {
             answer_request(&mut handler, context, responder).await;
@@ -277,7 +290,7 @@ impl ServiceEndpoint {
     ) -> Result<Option<TaskHandle<Result<()>>>>
     where
         F: FnOnce(ServiceRequestContext) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = ServiceAnswer> + Send + 'static,
+        Fut: Future<Output = ServiceAnswer> + Send + 'static,
     {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(None);
@@ -310,7 +323,6 @@ impl ServiceEndpoint {
                         link_id = %incoming.link_id,
                         "dropping probe that leaked past the adapter dispatch"
                     );
-                    continue;
                 }
                 ServiceQueryKind::UserRequest => {
                     let verified_caller = match self.verify(&incoming) {
@@ -348,9 +360,9 @@ impl ServiceEndpoint {
 pub struct ServiceRequestContext {
     message: Message,
     request_id: String,
-    /// Producer-side link_id that received this request: whichever bound
-    /// link_id's queryable yielded the inbound query. Surfaced so action
-    /// goal handlers can scope per-goal feedback under the link_id the
+    /// Producer-side `link_id` that received this request: whichever bound
+    /// `link_id`'s queryable yielded the inbound query. Surfaced so action
+    /// goal handlers can scope per-goal feedback under the `link_id` the
     /// consumer actually targeted.
     link_id: String,
     /// The caller that the check of the endpoint verified; `None` on an
@@ -395,13 +407,13 @@ impl fmt::Debug for ServiceRequestContext {
             .field("instance_id", &self.message.instance_id())
             .field("request_id", &self.request_id)
             .field("link_id", &self.link_id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 impl ServiceMessenger {
     /// Listen as a service. The producer declares one queryable under the
-    /// reserved default `_` link_id segment; consumers pin a specific
+    /// reserved default `_` `link_id` segment; consumers pin a specific
     /// producer by the `(core_node, instance_id)` target derived from the
     /// consumer's binding map.
     ///
@@ -424,7 +436,7 @@ impl ServiceMessenger {
         messenger.expose_service(&recv).await
     }
 
-    /// Poll a service. The link_id wire slot is always emitted as `*`;
+    /// Poll a service. The `link_id` wire slot is always emitted as `*`;
     /// producers advertise under the reserved `_` segment and Zenoh's
     /// matcher unifies the two.
     ///
@@ -446,7 +458,10 @@ impl ServiceMessenger {
     ///
     /// `to_target` must match the [`SenderTarget`] the responder used in
     /// [`Self::listen`].
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub async fn poll(
         messenger: &MessengerHandle,
         bound_core_node: &str,
@@ -497,7 +512,7 @@ impl ServiceMessenger {
     /// within the [`ServiceTarget`] scope (a full producer pin, one core
     /// node, or any matching producer). The probe is answered by the
     /// transport adapter; the user handler is never invoked. Returns `true`
-    /// if the service replies within [`PROBE_TIMEOUT`](super::PROBE_TIMEOUT)
+    /// if the service replies within `PROBE_TIMEOUT`
     /// or is reached but too slow to answer in time (a probe timeout still
     /// proves the producer is there); `false` only if the service is
     /// unreachable.
@@ -538,7 +553,10 @@ impl ServiceMessenger {
     /// the error otherwise (an unreachable producer or a probe that did not
     /// return within `response_timeout` is not a usable latency sample, and the
     /// caller should drop it rather than record the timeout as latency).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub async fn probe_latency(
         messenger: &MessengerHandle,
         bound_core_node: &str,

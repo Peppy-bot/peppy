@@ -1,9 +1,5 @@
 use super::*;
 use crate::error::Error;
-use config::node::{
-    ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    TopicRetention,
-};
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
@@ -110,9 +106,9 @@ fn parse_message_format(example: &str) -> MessageFormat {
 }
 
 /// Asserts that a rendered consumer module (topic subscriber, service poller
-/// or action caller) takes no core_node or instance_id string parameter. The
+/// or action caller) takes no `core_node` or `instance_id` string parameter. The
 /// producer travels only as the `peppylib.ProducerRef` resolved from the
-/// slot's bound set, so no `from_*` or `target_*` core_node or instance_id
+/// slot's bound set, so no `from_*` or `target_*` `core_node` or `instance_id`
 /// parameter appears, and no `pinned_target_for` accessor is emitted (the
 /// runtime helpers are the bound-producer accessors).
 pub(super) fn assert_no_producer_identity_params(rendered: &str) {
@@ -611,7 +607,7 @@ fn consumed_topic_with_link_id_splices_runtime_binding_target() {
 fn consumed_topic_accessor_is_cardinality_typed() {
     let cases = [
         (
-            config::node::Cardinality::ZeroOrOne,
+            Cardinality::ZeroOrOne,
             "def bound_producer(node_runner: peppylib.NodeRunner) -> Optional[peppylib.ProducerRef]:",
             "return node_runner.optional_bound_producer(\"cam_left\")",
             "from typing import Optional",
@@ -621,7 +617,7 @@ fn consumed_topic_accessor_is_cardinality_typed() {
             false,
         ),
         (
-            config::node::Cardinality::OneOrMore,
+            Cardinality::OneOrMore,
             "def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:",
             "return node_runner.bound_producers(\"cam_left\")",
             "from typing import List",
@@ -631,7 +627,7 @@ fn consumed_topic_accessor_is_cardinality_typed() {
             true,
         ),
         (
-            config::node::Cardinality::ZeroOrMore,
+            Cardinality::ZeroOrMore,
             "def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:",
             "return node_runner.bound_producers(\"cam_left\")",
             "from typing import List",
@@ -661,7 +657,7 @@ fn consumed_topic_accessor_is_cardinality_typed() {
                 &topic,
                 format,
                 TopicRetention::LiveOnly,
-                &crate::DependencyContext::native("uvc_camera", "v1", "cam_left", cardinality),
+                &DependencyContext::native("uvc_camera", "v1", "cam_left", cardinality),
             )
             .unwrap();
         let artifacts = render_artifacts(generator.into_artifacts());
@@ -1006,27 +1002,27 @@ fn consumed_two_topics_same_node() {
 /// parameters. Producer identity travels only as the full
 /// `(core_node, instance_id)` resolved at runtime from the bindings map.
 /// This test fails loudly if any generator exposes a `from_*` / `target_*`
-/// core_node or instance_id parameter.
+/// `core_node` or `instance_id` parameter.
 #[test]
 fn no_user_facing_producer_identity_params() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let topic_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
     let service: ConsumedService =
-        serde_json5::from_str(super::services::SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+        serde_json5::from_str(services::SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
     let request_format: MessageFormat =
-        serde_json5::from_str(super::services::SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
+        serde_json5::from_str(services::SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
     let response_format: MessageFormat =
-        serde_json5::from_str(super::services::SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1).unwrap();
+        serde_json5::from_str(services::SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1).unwrap();
 
     let action: ConsumedAction =
-        serde_json5::from_str(super::actions::SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+        serde_json5::from_str(actions::SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
     let goal_request_format: MessageFormat =
-        serde_json5::from_str(super::actions::SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
+        serde_json5::from_str(actions::SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
     let feedback_format: MessageFormat =
-        serde_json5::from_str(super::actions::SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
+        serde_json5::from_str(actions::SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
     let result_response_format: MessageFormat =
-        serde_json5::from_str(super::actions::SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
+        serde_json5::from_str(actions::SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: None,

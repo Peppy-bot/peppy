@@ -7,7 +7,6 @@
 //! fires only when the test moves the time past it.
 
 use std::collections::BTreeMap;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -341,9 +340,7 @@ mod tests {
     #[tokio::test]
     async fn a_bounded_request_keeps_the_bound_on_the_host_time() {
         let time = TimeSource::System;
-        let kept = time
-            .bounded(SECOND, |bound| async move { bound }, || None)
-            .await;
+        let kept = time.bounded(SECOND, async |bound| bound, || None).await;
         assert_eq!(kept, Some(SECOND));
     }
 
@@ -352,7 +349,7 @@ mod tests {
         let manual = ManualTime::new();
         let time = TimeSource::Manual(manual.clone());
         let answered = time
-            .bounded(SECOND, |bound| async move { Ok(bound) }, || Err("elapsed"))
+            .bounded(SECOND, async |bound| Ok(bound), || Err("elapsed"))
             .await;
         assert_eq!(answered, Ok(None), "the request keeps no deadline itself");
 

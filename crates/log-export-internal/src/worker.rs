@@ -8,6 +8,7 @@ use crate::otlp::messages::ExportLogsServiceResponse;
 use crate::transport::{Transport, TransportError, TransportResponse};
 use bytes::Bytes;
 use prost::Message;
+use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -28,6 +29,7 @@ pub const SHUTDOWN_FLUSH: Duration = Duration::from_secs(3);
 const DISCARD_REPORT_INTERVAL: Duration = Duration::from_secs(60);
 
 /// What an export worker needs besides the queue and the transport.
+#[derive(Debug)]
 pub struct ExportWorkerConfig {
     pub resource: ExportResource,
     /// The host of the endpoint, for the output of the daemon.
@@ -58,8 +60,24 @@ pub struct ExportWorker<T> {
     shown_failure: Option<String>,
 }
 
+/// Shows the state of the worker. The transport and the discard report are
+/// not shown: neither has to be `Debug`.
+impl<T> fmt::Debug for ExportWorker<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ExportWorker")
+            .field("config", &self.config)
+            .field("filling", &self.filling)
+            .field("interrupted", &self.interrupted)
+            .field("unreported", &self.unreported)
+            .field("next_report", &self.next_report)
+            .field("shown_failure", &self.shown_failure)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The records of the request being filled.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Filling {
     builder: RequestBuilder,
     reservations: Vec<Reservation>,
@@ -69,6 +87,7 @@ struct Filling {
 
 /// An encoded request. Its records hold their share of the queue until the
 /// request is dropped.
+#[derive(Debug)]
 struct Request {
     body: Bytes,
     records: u64,
@@ -264,7 +283,7 @@ impl<T: Transport> ExportWorker<T> {
         let post = self
             .transport
             .post(request.body.clone(), &self.config.headers);
-        tokio::pin!(post);
+        let mut post = std::pin::pin!(post);
         tokio::select! {
             biased;
             answer = &mut post => Posted::Answered(answer),

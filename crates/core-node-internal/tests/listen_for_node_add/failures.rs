@@ -234,9 +234,7 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
     let peppy_json5 = minimal_node_config("git_hash_mismatch_node", "v1", &[]);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let peppy_dir = source_dir
-        .path()
-        .join(daemon_config::consts::PEPPY_OUTPUT_DIR);
+    let peppy_dir = source_dir.path().join(PEPPY_OUTPUT_DIR);
     std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
     std::fs::write(peppy_dir.join("git.hash"), "wrong-hash\n")
         .expect("failed to write wrong git hash file");
@@ -278,7 +276,7 @@ const CONFIG_WITH_AN_UNRESOLVED_DEPENDENCY: &str = r#"{
     },
 }"#;
 
-/// Two depends_on.nodes entries sharing the same link_id must be rejected at
+/// Two `depends_on.nodes` entries sharing the same `link_id` must be rejected at
 /// parse time, before any dependency resolution runs.
 const CONFIG_WITH_A_DUPLICATE_LINK_ID: &str = r#"{
     peppy_schema: "node/v1",
@@ -300,8 +298,8 @@ const CONFIG_WITH_A_DUPLICATE_LINK_ID: &str = r#"{
 }"#;
 
 /// A node that consumes a topic of a dependency the stack does not hold. The
-/// add must fail with a missing dependency BEFORE running build_cmd. This
-/// mimics real nodes (e.g. fake_video_reconstruction) where `cargo build`
+/// add must fail with a missing dependency BEFORE running `build_cmd`. This
+/// mimics real nodes (e.g. `fake_video_reconstruction`) where `cargo build`
 /// fails because peppygen interfaces are incomplete when dependencies are
 /// missing.
 const CONFIG_CONSUMING_AN_ABSENT_DEPENDENCY: &str = r#"{
@@ -335,7 +333,7 @@ const CONFIG_CONSUMING_AN_ABSENT_DEPENDENCY: &str = r#"{
 
 #[rstest::rstest]
 #[case::invalid_json5(
-    r#"{ manifest: [unclosed"#.to_string(),
+    r"{ manifest: [unclosed".to_string(),
     PeppyFailureKind::AttemptFailed,
     &["Failed to parse node config"]
 )]

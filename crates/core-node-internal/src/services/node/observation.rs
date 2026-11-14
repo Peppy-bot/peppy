@@ -46,7 +46,7 @@ use super::common::{SlotUpdateClient, SlotUpdateTarget};
 /// incarnation counter and cross-deliver each other's pins.
 ///
 /// Deliberately coarser than the [`ObservedSource`] it is derived from, which
-/// also carries the producer-side link_id: an incarnation counter belongs to
+/// also carries the producer-side `link_id`: an incarnation counter belongs to
 /// the source instance, so an instance observed through two of its own pairing
 /// slots must advance one counter, not two.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -132,7 +132,7 @@ fn slots_of_records(records: &[ObserverRecord]) -> BTreeMap<String, ObservationT
     ObservationTargets::slots_from_plan(members)
 }
 
-/// One observer slot: the instance that declares it and its own link_id. The
+/// One observer slot: the instance that declares it and its own `link_id`. The
 /// unit of delivery, since a slot's update always carries its whole member set.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct SlotKey {
@@ -194,12 +194,13 @@ struct Delivery {
 /// instant this runs, and the one going down may still be in it. Stamping the
 /// event's own source from the event itself is what keeps "came up" and "went
 /// down" from ever disagreeing with the transition that triggered them.
+#[derive(Clone, Copy)]
 struct LivenessVerdict<'a> {
     source: &'a SourceKey,
     live: bool,
 }
 
-pub struct ObservationCoordinator {
+pub(crate) struct ObservationCoordinator {
     updates: SlotUpdateClient,
     /// Serializes lifecycle notifications so a source's generation bump and its
     /// fan-out delivery cannot interleave with a concurrent notify.
@@ -208,7 +209,7 @@ pub struct ObservationCoordinator {
 }
 
 impl ObservationCoordinator {
-    pub fn new(
+    pub(crate) fn new(
         node_stack: Arc<NodeStack>,
         messenger: MessengerHandle,
         core_node_name: impl Into<String>,
@@ -232,7 +233,7 @@ impl ObservationCoordinator {
     /// instance ids inherits stale observations and a source coming back up
     /// would deliver a pin the user never linked this time. `stack launch` does
     /// not need it because [`Self::register_planned`] already replaces the registry.
-    pub fn clear(&self) {
+    pub(crate) fn clear(&self) {
         *self.registry.lock().unwrap() = Registry::default();
     }
 
@@ -241,14 +242,14 @@ impl ObservationCoordinator {
     /// source that comes up first still finds its waiting observers. A launch
     /// replaces the whole stack, so this replaces the registry too (the
     /// previous stack's observers are gone); passing an empty slice clears it.
-    pub fn register_planned(&self, planned: &[PlannedObservation]) {
+    pub(crate) fn register_planned(&self, planned: &[PlannedObservation]) {
         let mut registry = self.registry.lock().unwrap();
         *registry = Registry::default();
         Self::insert_planned(&mut registry, planned);
     }
 
     /// Adds a join's observers while retaining existing registrations and source generations.
-    pub fn extend_planned(&self, planned: &[PlannedObservation]) {
+    pub(crate) fn extend_planned(&self, planned: &[PlannedObservation]) {
         Self::insert_planned(&mut self.registry.lock().unwrap(), planned);
     }
 
@@ -276,7 +277,7 @@ impl ObservationCoordinator {
     /// Register BEFORE the instance reaches Running: the daemon's
     /// `on_instance_running` hook then finds these records and delivers each
     /// source pin whose source is already live, matching the launcher path.
-    pub fn register_instance(
+    pub(crate) fn register_instance(
         &self,
         observer_instance_id: &str,
         observations: &BTreeMap<String, ObservationTargets>,
@@ -306,7 +307,7 @@ impl ObservationCoordinator {
     ///
     /// Returns one line per slot the observer refused or missed, naming it and
     /// why.
-    pub async fn replace_slots(
+    pub(crate) async fn replace_slots(
         &self,
         observer: &Name,
         slots: &BTreeMap<String, ObservationTargets>,
@@ -396,7 +397,7 @@ impl ObservationCoordinator {
     /// flow either way (subscriptions key on the wire address; the generation
     /// only keys redeclares), so a lost delivery costs staleness-filter
     /// precision across a concurrent source restart, not data.
-    pub fn seed_for_spawn(
+    pub(crate) fn seed_for_spawn(
         &self,
         observations: &BTreeMap<String, ObservationTargets>,
     ) -> config::runtime::ObservationSeeds {
@@ -436,7 +437,7 @@ impl ObservationCoordinator {
     /// If it is itself an observer, every slot it declares is delivered, so it
     /// learns its member set even while some members are still down. Both can
     /// hold for one instance.
-    pub async fn on_instance_running(&self, instance_id: &str) {
+    pub(crate) async fn on_instance_running(&self, instance_id: &str) {
         let source = SourceKey::new(self.updates.core_node_name(), instance_id);
         self.source_reached_running(&source, Some(instance_id))
             .await;
@@ -454,7 +455,7 @@ impl ObservationCoordinator {
     /// Idempotent in the sense that matters: a duplicate notification advances
     /// the generation again and redelivers, which the observer treats as a
     /// newer absolute state and converges on.
-    pub async fn remote_source_reached_running(&self, core_node: &str, instance_id: &str) {
+    pub(crate) async fn remote_source_reached_running(&self, core_node: &str, instance_id: &str) {
         self.source_reached_running(&SourceKey::new(core_node, instance_id), None)
             .await;
     }
@@ -462,7 +463,7 @@ impl ObservationCoordinator {
     /// A source on another daemon stopped or died. Its observers are told the
     /// source went down; the generation is retained so a later restart is a
     /// strictly newer incarnation, exactly as for a local source.
-    pub async fn remote_source_stopped(&self, core_node: &str, instance_id: &str) {
+    pub(crate) async fn remote_source_stopped(&self, core_node: &str, instance_id: &str) {
         let _guard = self.op_lock.lock().await;
         self.mark_source_down(&SourceKey::new(core_node, instance_id))
             .await;
@@ -583,7 +584,10 @@ impl ObservationCoordinator {
     /// registry as the instance ends, returning them for its next process.
     /// Only a local instance can be an observer here. Synchronous, so a
     /// slot's state flip can take them under its own lock.
-    pub fn take_observations(&self, instance_id: &str) -> BTreeMap<String, ObservationTargets> {
+    pub(crate) fn take_observations(
+        &self,
+        instance_id: &str,
+    ) -> BTreeMap<String, ObservationTargets> {
         let removed = self
             .registry
             .lock()
@@ -599,7 +603,7 @@ impl ObservationCoordinator {
     /// in the set, at its position). The generation of a source a slot still
     /// observes is retained, so a later restart is a strictly newer
     /// incarnation; one no slot observes is forgotten.
-    pub async fn announce_source_down(&self, instance_id: &str) {
+    pub(crate) async fn announce_source_down(&self, instance_id: &str) {
         let _guard = self.op_lock.lock().await;
         let source = SourceKey::new(self.updates.core_node_name(), instance_id);
         self.mark_source_down(&source).await;
@@ -805,7 +809,7 @@ impl ObservationCoordinator {
         &self,
         target: &SlotUpdateTarget,
         delivery: &Delivery,
-    ) -> std::result::Result<(), String> {
+    ) -> Result<(), String> {
         let request = ObservationUpdateRequest {
             link_id: delivery.slot.observer_link_id.clone(),
             sequence: self.updates.next_sequence(),
@@ -858,7 +862,7 @@ mod tests {
             .expect("test root config parses");
         let stack = Arc::new(NodeStack::new(
             root_config,
-            Some(config::runtime::Name::new(SOURCE_INSTANCE).expect("valid test instance id")),
+            Some(Name::new(SOURCE_INSTANCE).expect("valid test instance id")),
             temp_dir.path(),
         ));
         let messenger = MessengerHandle::from_shared(Arc::new(tokio::sync::Mutex::new(

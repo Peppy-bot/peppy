@@ -12,12 +12,12 @@ use peppylib::encoding::binding_update::BindingUpdateRequest;
 use peppylib::messaging::BINDING_UPDATE_SERVICE;
 use std::sync::Arc;
 
-pub struct BindingCoordinator {
+pub(crate) struct BindingCoordinator {
     updates: SlotUpdateClient,
 }
 
 impl BindingCoordinator {
-    pub fn new(
+    pub(crate) fn new(
         node_stack: Arc<NodeStack>,
         messenger: MessengerHandle,
         core_node_name: impl Into<String>,
@@ -39,7 +39,7 @@ impl BindingCoordinator {
     /// its record. Returns the reason when the set is not in place: this daemon
     /// does not track the instance, it refused or missed the delivery, or it
     /// stopped running as it took it.
-    pub async fn replace_slot(
+    pub(crate) async fn replace_slot(
         &self,
         consumer_instance_id: &Name,
         link_id: &str,

@@ -17,6 +17,7 @@ use super::super::wire::{
 };
 use config::node::{RetentionDepth, TopicRetention};
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -24,6 +25,7 @@ use tokio::sync::mpsc;
 
 /// A mock messenger with its router started, as [`MockAdapter::start_router`]
 /// returns it.
+#[derive(Debug)]
 pub struct MockInstance {
     messenger: Option<Messenger>,
     pub host: String,
@@ -45,9 +47,10 @@ impl MockInstance {
 }
 
 /// One active subscription entry. `drop_secondary` is set when the
-/// subscriber wildcards the link_id slot at the keyexpr level (the topic
+/// subscriber wildcards the `link_id` slot at the keyexpr level (the topic
 /// `from_link_id: None` case): `route_publish` drops non-primary fan-out
 /// for those entries so a multi-link `emit` yields one delivery.
+#[derive(Debug)]
 pub struct MockSubscription {
     sink: SubscriptionSink,
     drop_secondary: bool,
@@ -75,11 +78,11 @@ impl Drop for MockUndeclare {
 /// Shared map of active subscriptions, keyed by pattern. Each pattern maps to
 /// the sinks that should receive a fanout when an intersecting topic is
 /// published.
-pub type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<MockSubscription>>>>;
+pub(crate) type SubscriptionMap = Arc<Mutex<HashMap<String, Vec<MockSubscription>>>>;
 
 /// The messages one retaining mock topic keeps: its newest `depth`, oldest
 /// first.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct RetainedMessages {
     depth: RetentionDepth,
     messages: Arc<Mutex<VecDeque<TopicMessage>>>,
@@ -149,6 +152,16 @@ struct MockLivelinessState {
     watchers: HashMap<String, Vec<MockLivelinessWatcher>>,
 }
 
+impl fmt::Debug for MockLivelinessState {
+    /// Shows the watch patterns: a watcher is a callback, which has no text.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MockLivelinessState")
+            .field("tokens", &self.tokens)
+            .field("watch_patterns", &self.watchers.keys())
+            .finish()
+    }
+}
+
 /// Registration-time callback that types and forwards one liveliness
 /// transition to its watch channel. Each watch domain owns its event
 /// mapping (action watches forward the `()` event as-is, presence watches
@@ -158,7 +171,7 @@ type MockLivelinessWatcher = Box<dyn Fn(&str, LivelinessEvent) + Send>;
 
 type LivelinessState = Arc<Mutex<MockLivelinessState>>;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct MockAdapter {
     is_session_connected: bool,
     subscriptions: SubscriptionMap,
@@ -257,7 +270,6 @@ impl MessengerBackend for MockAdapter {
             drop_secondary,
             retention,
         )
-        .await
     }
 
     async fn publish_topic(
@@ -394,7 +406,6 @@ impl MessengerBackend for MockAdapter {
             false,
             TopicRetention::LiveOnly,
         )
-        .await
     }
 
     async fn declare_action_liveliness(
@@ -575,7 +586,7 @@ impl MockAdapter {
         keyexpr: &str,
         event: LivelinessEvent,
     ) {
-        for (pattern, watchers) in liveliness.watchers.iter() {
+        for (pattern, watchers) in &liveliness.watchers {
             if !Self::key_exprs_intersect(pattern, keyexpr) {
                 continue;
             }
@@ -663,7 +674,7 @@ impl MockAdapter {
             .map(|(keyexpr, _)| keyexpr.as_str())
     }
 
-    /// Creates a new MockAdapter, wraps it in a Messenger, starts its router (the
+    /// Creates a new `MockAdapter`, wraps it in a Messenger, starts its router (the
     /// mock has none, so this does nothing), and returns the messenger in a
     /// [`MockInstance`].
     ///
@@ -812,7 +823,7 @@ impl MockAdapter {
     /// [`MockAdapter::publish_keyexpr`] (which holds the adapter directly)
     /// and [`MockPublisher::publish`] (which clones the same `Arc`s for
     /// lock-free per-topic publishing). `is_primary` is the wire-attachment
-    /// dedup marker: subscribers that wildcarded the link_id slot drop
+    /// dedup marker: subscribers that wildcarded the `link_id` slot drop
     /// non-primary fan-out. A retaining topic keeps the message in
     /// `retained`.
     async fn route_publish(
@@ -837,7 +848,7 @@ impl MockAdapter {
                 if !Self::key_exprs_intersect(pattern, topic) {
                     continue;
                 }
-                for sub in subs.iter() {
+                for sub in subs {
                     if !sub.receives() || (sub.drop_secondary && !is_primary) {
                         continue;
                     }
@@ -870,7 +881,7 @@ impl MockAdapter {
         rx
     }
 
-    async fn subscribe_keyexpr(
+    fn subscribe_keyexpr(
         &self,
         topic: &str,
         qos: SubscriberQoS,
@@ -920,12 +931,12 @@ impl MockAdapter {
 
 /// Per-queryable forwarder for the mock adapter. Mirrors the zenoh
 /// adapter's `process_inbound_query`: drains inbound `MockQuery`s, parses
-/// the caller identity and link_id slot, claims the producer's default `_`
-/// segment via [`ParsedInboundQuery::claim`], builds an [`IncomingRequest`]
+/// the caller identity and `link_id` slot, claims the producer's default `_`
+/// segment via `ParsedInboundQuery::claim`, builds an [`IncomingRequest`]
 /// with a [`ResponseToken::Mock`] carrying the per-query reply channel, and
-/// pushes it to peppylib. Queries whose link_id slot is neither `*` nor `_`
-/// are dropped (the `mock_query`'s reply_tx clone falls out of scope at end
-/// of iteration so the caller's reply stream finalizes once every reply_tx
+/// pushes it to peppylib. Queries whose `link_id` slot is neither `*` nor `_`
+/// are dropped (the `mock_query`'s `reply_tx` clone falls out of scope at end
+/// of iteration so the caller's reply stream finalizes once every `reply_tx`
 /// is dropped).
 async fn handle_mock_queryable(
     mut query_rx: mpsc::Receiver<MockQuery>,
@@ -1003,6 +1014,7 @@ async fn handle_mock_queryable(
 /// [`MockAdapter::declare_action_feedback_publisher`].
 /// Holds `Arc`s into the adapter's in-process matcher state, so `publish` is
 /// independent of the `Arc<Mutex<Messenger>>` global lock that everyone shares.
+#[derive(Debug)]
 pub struct MockPublisher {
     topic: String,
     subscriptions: SubscriptionMap,
@@ -1032,6 +1044,7 @@ impl MockPublisher {
 mod tests {
     use super::*;
     use crate::wire::test_support::seg;
+    use std::assert_matches;
 
     #[test]
     fn test_key_exprs_intersect_exact() {
@@ -1588,11 +1601,9 @@ mod tests {
             old_watch.rx.recv_async().await.expect("gone event"),
             LivelinessEvent::Gone(())
         );
-        assert!(
-            matches!(
-                old_watch.rx.try_recv(),
-                Err(flume::TryRecvError::Disconnected)
-            ),
+        assert_matches!(
+            old_watch.rx.try_recv(),
+            Err(flume::TryRecvError::Disconnected),
             "the stopped session's watch should be retired"
         );
 
@@ -1614,8 +1625,9 @@ mod tests {
         );
 
         drop(old_token);
-        assert!(
-            matches!(new_watch.rx.try_recv(), Err(flume::TryRecvError::Empty)),
+        assert_matches!(
+            new_watch.rx.try_recv(),
+            Err(flume::TryRecvError::Empty),
             "an old token guard must not remove the restarted session's token"
         );
         let probe = adapter
@@ -2238,8 +2250,9 @@ mod tests {
             retaining_publisher(&adapter, 1);
             let refused =
                 adapter.declare_topic_publisher(&sender, PublisherQoS::Standard, latest(3));
-            assert!(
-                matches!(refused, Err(Error::RetainingTopicMismatch { .. })),
+            assert_matches!(
+                refused.err(),
+                Some(Error::RetainingTopicMismatch { .. }),
                 "another depth should be refused"
             );
 
@@ -2256,8 +2269,9 @@ mod tests {
                 PublisherQoS::Standard,
                 latest(1),
             );
-            assert!(
-                matches!(refused, Err(Error::RetainingTopicMismatch { .. })),
+            assert_matches!(
+                refused.err(),
+                Some(Error::RetainingTopicMismatch { .. }),
                 "a retaining declaration after a live-only one should be refused"
             );
             let one_shot = adapter
@@ -2268,8 +2282,9 @@ mod tests {
                     true,
                 )
                 .await;
-            assert!(
-                matches!(one_shot, Err(Error::RetainingTopicMismatch { .. })),
+            assert_matches!(
+                one_shot,
+                Err(Error::RetainingTopicMismatch { .. }),
                 "a one-shot publish on a retaining topic should be refused"
             );
         }

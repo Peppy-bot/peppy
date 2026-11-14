@@ -30,7 +30,7 @@ use daemon_config::repository::GitCommit;
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
@@ -45,25 +45,20 @@ static LOCKS: KeyedLocks = KeyedLocks::new();
 /// doing its job; the dozens after it repeat it, so each checkout is
 /// announced once per population. A checkout removed from the cache and
 /// materialized again is a new population, announced afresh.
-static ANNOUNCED_REUSES: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+static ANNOUNCED_REUSES: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Mutex::default);
 
 /// Whether `dir` has not been announced as reused yet, marking it
 /// announced. Under the checkout's own lock, so the first reuse after each
 /// population is the one that reports.
 fn mark_reuse_announced(dir: &Path) -> bool {
-    ANNOUNCED_REUSES
-        .get_or_init(|| Mutex::new(HashSet::new()))
-        .lock()
-        .insert(dir.to_path_buf())
+    ANNOUNCED_REUSES.lock().insert(dir.to_path_buf())
 }
 
 /// Drops `dir`'s reuse announcement, for a checkout leaving the cache: a
 /// checkout later materialized at the same key is a new population whose
 /// first reuse is worth a line again.
 fn forget_reuse_announced(dir: &Path) {
-    if let Some(announced) = ANNOUNCED_REUSES.get() {
-        announced.lock().remove(dir);
-    }
+    ANNOUNCED_REUSES.lock().remove(dir);
 }
 
 /// How long a checkout that no cache entry names any more is kept.
@@ -73,7 +68,7 @@ fn forget_reuse_announced(dir: &Path) {
 /// referenced mid-add must not vanish underneath it. The window runs from
 /// the last hand-out, which is long enough to cover any single add and
 /// short enough that a superseded pin does not linger for a day.
-const PRUNE_GRACE: Duration = Duration::from_secs(60 * 60);
+const PRUNE_GRACE: Duration = Duration::from_hours(1);
 
 /// Path where the checkout for `(repo_url, commit)` lives (whether or not
 /// it has been populated yet). Exposed for tests and diagnostics.
@@ -125,7 +120,7 @@ fn recently_used(dir: &Path) -> bool {
 ///
 /// Anything already at the key is a checkout that did not finish, since a
 /// finished one at this key is the commit asked for.
-fn clear_dir(dir: &Path) -> std::result::Result<(), String> {
+fn clear_dir(dir: &Path) -> Result<(), String> {
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             format!(
@@ -168,7 +163,7 @@ fn is_checked_out_at(dir: &Path, commit: &GitCommit) -> bool {
 /// Reads the cache and writes nothing: no clone, no fetch, no marker. It is
 /// what a caller that must not reach the network uses to read a file out of
 /// a tree the caches have already brought down, `repo refresh` handing every
-/// clone it makes to [`adopt_checkout`]. A miss is an answer, not a failure:
+/// clone it makes to `adopt_checkout`. A miss is an answer, not a failure:
 /// the caller says what it could not read rather than fetching behind the
 /// operator's back.
 pub fn materialized_checkout(
@@ -193,13 +188,13 @@ pub fn materialized_checkout(
 ///
 /// Blocking; callers inside tokio should run this via
 /// [`tokio::task::spawn_blocking`].
-pub fn ensure_checkout_at_commit(
+pub(crate) fn ensure_checkout_at_commit(
     peppy_dirs: &PeppyDirs,
     repo_url: &str,
     read_ref: Option<&str>,
     commit: &GitCommit,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<PathBuf, String> {
+) -> Result<PathBuf, String> {
     let shown_url = SourceUrl::new(repo_url);
     let dir = checkout_dir_for(peppy_dirs, repo_url, commit);
     let lock_key = dir.to_string_lossy().into_owned();
@@ -248,7 +243,12 @@ pub fn ensure_checkout_at_commit(
 ///
 /// Best-effort, and infallible from the caller's side: whatever goes wrong,
 /// the cache is left as it was and the checkout is cloned again on demand.
-pub fn adopt_checkout(peppy_dirs: &PeppyDirs, repo_url: &str, commit: &GitCommit, dir: PathBuf) {
+pub(crate) fn adopt_checkout(
+    peppy_dirs: &PeppyDirs,
+    repo_url: &str,
+    commit: &GitCommit,
+    dir: &PathBuf,
+) {
     let shown_url = SourceUrl::new(repo_url);
     let dst = checkout_dir_for(peppy_dirs, repo_url, commit);
     let lock = LOCKS.lock_for(&dst.to_string_lossy());
@@ -258,15 +258,15 @@ pub fn adopt_checkout(peppy_dirs: &PeppyDirs, repo_url: &str, commit: &GitCommit
     // the same bytes and the donation is simply not needed.
     if is_checked_out_at(&dst, commit) {
         touch_last_used(&dst);
-        discard(&dir);
+        discard(dir);
         return;
     }
     if let Err(e) = clear_dir(&dst) {
         debug!("Keeping the clone of {shown_url} out of the checkout cache: {e}");
-        discard(&dir);
+        discard(dir);
         return;
     }
-    match std::fs::rename(&dir, &dst) {
+    match std::fs::rename(dir, &dst) {
         Ok(()) => {
             debug!(
                 "Adopted the clone of {shown_url} at {commit} as {}",
@@ -276,7 +276,7 @@ pub fn adopt_checkout(peppy_dirs: &PeppyDirs, repo_url: &str, commit: &GitCommit
         }
         Err(e) => {
             debug!("Keeping the clone of {shown_url} out of the checkout cache: {e}");
-            discard(&dir);
+            discard(dir);
         }
     }
 }
@@ -298,7 +298,7 @@ fn discard(dir: &Path) {
 /// `live` names the pairs the caches still point at. Returns how many
 /// checkouts were removed; a checkout that cannot be removed is reported
 /// and skipped, because it costs disk rather than correctness.
-pub fn prune_checkouts<'a>(
+pub(crate) fn prune_checkouts<'a>(
     peppy_dirs: &PeppyDirs,
     live: impl IntoIterator<Item = (&'a str, &'a GitCommit)>,
 ) -> usize {
@@ -351,10 +351,10 @@ fn fetch_commit(
     read_ref: Option<&str>,
     commit: &GitCommit,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<(), String> {
+) -> Result<(), String> {
     let shown_url = SourceUrl::new(repo_url);
     let shallow = fetch_commit_shallow(repo, repo_url, commit, &mut |line| {
-        on_feedback(Report::Progress(line))
+        on_feedback(Report::Progress(line));
     });
     if shallow.is_ok() && has_commit(repo, commit) {
         return Ok(());
@@ -368,7 +368,7 @@ fn fetch_commit(
     repo.remote_anonymous(repo_url)
         .and_then(|mut remote| {
             fetch_with_progress(&mut remote, repo_url, refspec, false, &mut |line| {
-                on_feedback(Report::Progress(line))
+                on_feedback(Report::Progress(line));
             })
         })
         .map_err(|e| {
@@ -416,13 +416,12 @@ mod tests {
                 index.write().expect("write index");
                 let tree_id = index.write_tree().expect("write tree");
                 let tree = repo.find_tree(tree_id).expect("find tree");
-                let parents: Vec<git2::Commit> = repo
+                let parents: Vec<git2::Commit<'_>> = repo
                     .head()
                     .ok()
                     .and_then(|head| head.target())
-                    .map(|oid| vec![repo.find_commit(oid).expect("find parent commit")])
-                    .unwrap_or_default();
-                let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+                    .map_or_default(|oid| vec![repo.find_commit(oid).expect("find parent commit")]);
+                let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
                 let oid = repo
                     .commit(
                         Some("HEAD"),
@@ -515,7 +514,7 @@ mod tests {
             let lines = std::cell::RefCell::new(Vec::new());
             let checkout =
                 ensure_checkout_at_commit(&self.peppy_dirs, &self.url, read_ref, commit, &|line| {
-                    lines.borrow_mut().push(line.text().to_owned())
+                    lines.borrow_mut().push(line.text().to_owned());
                 });
             (checkout, lines.into_inner())
         }
@@ -824,7 +823,7 @@ mod tests {
         let clone = donor.path().join("clone");
         crate::services::node::shallow_checkout_of_read_ref(&repo.url, None, &clone, &mut |_| {})
             .expect("clone the source");
-        adopt_checkout(&repo.peppy_dirs, &repo.url, commit, clone);
+        adopt_checkout(&repo.peppy_dirs, &repo.url, commit, &clone);
 
         std::fs::remove_dir_all(&repo.source_dir).expect("remove source repo");
         let (checkout, lines) = repo.checkout_recording_lines(None, commit);
@@ -861,7 +860,7 @@ mod tests {
         let clone = donor.path().join("clone");
         crate::services::node::shallow_checkout_of_read_ref(&repo.url, None, &clone, &mut |_| {})
             .expect("clone the source");
-        adopt_checkout(&repo.peppy_dirs, &repo.url, commit, clone.clone());
+        adopt_checkout(&repo.peppy_dirs, &repo.url, commit, &clone);
 
         assert!(
             existing.join("marker.txt").exists(),

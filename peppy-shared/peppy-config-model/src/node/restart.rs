@@ -31,21 +31,21 @@ impl RestartPolicy {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            RestartPolicy::Never => "never",
-            RestartPolicy::OnFailure => "on_failure",
-            RestartPolicy::Always => "always",
+            Self::Never => "never",
+            Self::OnFailure => "on_failure",
+            Self::Always => "always",
         }
     }
 
     /// Whether a failed exit (a non-zero code, a signal, a health kill)
     /// starts the instance again.
     pub fn restarts_after_failure(self) -> bool {
-        matches!(self, RestartPolicy::OnFailure | RestartPolicy::Always)
+        matches!(self, Self::OnFailure | Self::Always)
     }
 
     /// Whether a clean exit (code 0) starts the instance again.
     pub fn restarts_after_clean_exit(self) -> bool {
-        matches!(self, RestartPolicy::Always)
+        matches!(self, Self::Always)
     }
 }
 
@@ -54,9 +54,9 @@ impl FromStr for RestartPolicy {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "never" => Ok(RestartPolicy::Never),
-            "on_failure" => Ok(RestartPolicy::OnFailure),
-            "always" => Ok(RestartPolicy::Always),
+            "never" => Ok(Self::Never),
+            "on_failure" => Ok(Self::OnFailure),
+            "always" => Ok(Self::Always),
             other => Err(ParsingError::InvalidRestartPolicy {
                 value: other.to_owned(),
             }),
@@ -319,22 +319,22 @@ impl RestartOrigin {
     /// The wire spelling.
     pub fn as_str(self) -> &'static str {
         match self {
-            RestartOrigin::Instance => "instance",
-            RestartOrigin::Flag => "flag",
-            RestartOrigin::Node => "node",
-            RestartOrigin::LauncherRoot => "launcher_root",
-            RestartOrigin::Default => "default",
+            Self::Instance => "instance",
+            Self::Flag => "flag",
+            Self::Node => "node",
+            Self::LauncherRoot => "launcher_root",
+            Self::Default => "default",
         }
     }
 
     /// The phrase a listing prints beside the policy.
     fn describe(self) -> &'static str {
         match self {
-            RestartOrigin::Instance => "instance entry",
-            RestartOrigin::Flag => "--restart",
-            RestartOrigin::Node => "peppy.json5",
-            RestartOrigin::LauncherRoot => "launcher root",
-            RestartOrigin::Default => "default",
+            Self::Instance => "instance entry",
+            Self::Flag => "--restart",
+            Self::Node => "peppy.json5",
+            Self::LauncherRoot => "launcher root",
+            Self::Default => "default",
         }
     }
 }
@@ -344,11 +344,11 @@ impl FromStr for RestartOrigin {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "instance" => Ok(RestartOrigin::Instance),
-            "flag" => Ok(RestartOrigin::Flag),
-            "node" => Ok(RestartOrigin::Node),
-            "launcher_root" => Ok(RestartOrigin::LauncherRoot),
-            "default" => Ok(RestartOrigin::Default),
+            "instance" => Ok(Self::Instance),
+            "flag" => Ok(Self::Flag),
+            "node" => Ok(Self::Node),
+            "launcher_root" => Ok(Self::LauncherRoot),
+            "default" => Ok(Self::Default),
             other => Err(ParsingError::UnknownRestartOrigin {
                 value: other.to_owned(),
             }),
@@ -364,7 +364,7 @@ impl fmt::Display for RestartOrigin {
 
 /// The launcher's or the flag's say on an instance's policy; the daemon
 /// resolves it against the node's `peppy.json5`.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RestartRequest {
     #[default]
     Unset,
@@ -394,7 +394,7 @@ impl RestartRequest {
 }
 
 /// An instance's policy once every level has been consulted.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ResolvedRestart {
     pub declaration: RestartDeclaration,
     pub origin: RestartOrigin,
@@ -452,7 +452,7 @@ mod tests {
             ),
             "{err}"
         );
-        let err = parse_declaration(r#"{ policy: 1 }"#).unwrap_err();
+        let err = parse_declaration(r"{ policy: 1 }").unwrap_err();
         assert!(
             err.contains("expected `never`, `on_failure` or `always`"),
             "{err}"
@@ -502,7 +502,7 @@ mod tests {
             err.contains("unknown field `retries`, expected `policy` or `max_restarts`"),
             "{err}"
         );
-        let err = parse_declaration(r#"{ max_restarts: 2 }"#).unwrap_err();
+        let err = parse_declaration(r"{ max_restarts: 2 }").unwrap_err();
         assert!(
             err.contains(
                 "`restart` as an object needs `policy`: `never`, `on_failure` or `always`"
@@ -520,8 +520,8 @@ mod tests {
             ),
             "{err}"
         );
-        assert!(RestartDeclaration::new(RestartPolicy::Never, NonZeroU32::new(2)).is_err());
-        assert!(RestartDeclaration::new(RestartPolicy::Never, None).is_ok());
+        RestartDeclaration::new(RestartPolicy::Never, NonZeroU32::new(2)).unwrap_err();
+        RestartDeclaration::new(RestartPolicy::Never, None).unwrap();
     }
 
     #[test]
@@ -553,7 +553,7 @@ mod tests {
                 format!("\"{}\"", origin.as_str())
             );
         }
-        assert!("elsewhere".parse::<RestartOrigin>().is_err());
+        "elsewhere".parse::<RestartOrigin>().unwrap_err();
         assert_eq!(RestartOrigin::Node.describe(), "peppy.json5");
     }
 

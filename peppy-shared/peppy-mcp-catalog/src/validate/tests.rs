@@ -5,6 +5,7 @@ use peppy_config_model::contract_member::{
 };
 use peppy_config_model::failure_kind::ContractFailureKinds;
 use serde::Deserialize;
+use std::assert_matches;
 use std::num::NonZeroU64;
 use std::path::Path;
 
@@ -240,7 +241,7 @@ fn every_entry_is_bound_to_the_failure_kinds_of_its_member() {
     // lists; the camera declares none.
     let recording = RECORDING_CONTRACT
         .replacen(
-            r#"    interfaces: {"#,
+            r"    interfaces: {",
             r#"    failure_kinds: { disk_full: "The dataset disk is full" },
     interfaces: {"#,
             1,
@@ -1309,8 +1310,9 @@ fn a_fixed_bundle_carries_no_robot_surface() {
         WALKTHROUGH_EXPOSURE,
         &[&fixture(CAMERA_CONTRACT), &fixture(RECORDING_CONTRACT)],
     );
-    assert!(
-        matches!(bundle.surface, BundleSurface::Fixed { .. }),
+    assert_matches!(
+        bundle.surface,
+        BundleSurface::Fixed { .. },
         "a document without `robots` derives a fixed surface"
     );
     assert!(
@@ -1393,7 +1395,7 @@ fn a_pictured_service_publishes_the_schema_of_its_document_and_the_bundle_carrie
         look.representation.as_ref().map(|r| r.image),
         Some(ImageCodec::Jpeg)
     );
-    assert_eq!(look.max_result_bytes.map(NonZeroU64::get), Some(524288));
+    assert_eq!(look.max_result_bytes.map(NonZeroU64::get), Some(524_288));
     assert_eq!(look.on_oversize, Some(OversizePolicy::Downscale));
     assert_eq!(
         look.output_schema["properties"]

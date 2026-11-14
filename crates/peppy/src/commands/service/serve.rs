@@ -18,6 +18,7 @@ pub use tokio_util::sync::CancellationToken;
 /// the build-time env.
 const GIT_HASH: &str = env!("PEPPY_GIT_HASH");
 
+#[derive(Debug)]
 pub struct ServeCommand {
     pub messaging_engine: String,
     pub core_node_name: Option<String>,
@@ -31,7 +32,7 @@ pub struct ServeCommand {
 
 impl Command for ServeCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
-        daemon::serve(daemon::ServeOptions {
+        daemon::serve(&daemon::ServeOptions {
             root_dir: ctx.root_dir.clone(),
             messaging_engine: self.messaging_engine,
             core_node_name: self.core_node_name,

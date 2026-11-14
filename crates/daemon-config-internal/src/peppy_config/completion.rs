@@ -43,7 +43,7 @@ struct EntrySpec {
     key: &'static str,
     snippet: &'static str,
     alternatives: &'static [&'static str],
-    children: &'static [EntrySpec],
+    children: &'static [Self],
 }
 
 /// Every known config entry, in template order. New knobs must be added here
@@ -165,8 +165,8 @@ const SECTIONS: &[EntrySpec] = &[
 /// A completion result: the rewritten file content plus what was spliced in.
 ///
 /// `added_paths` names each spliced entry as a dot-separated path
-/// ("subscriber_buffers" spelled "zenoh.managed.subscriber_buffers", a nested
-/// field "lifecycle.shutdown_grace_secs"), grouped by the block it was spliced into
+/// ("`subscriber_buffers`" spelled "`zenoh.managed.subscriber_buffers`", a nested
+/// field "`lifecycle.shutdown_grace_secs`"), grouped by the block it was spliced into
 /// (outer blocks first) and in template order within a block. It reflects what
 /// was actually inserted, not merely what was absent.
 ///
@@ -662,7 +662,7 @@ fn scan_layout(content: &str) -> Option<DocumentLayout> {
 }
 
 /// Flattens a serialized config document into dot-separated leaf paths
-/// ("lifecycle.daemon_grace_secs"). Objects recurse; everything else (numbers,
+/// ("`lifecycle.daemon_grace_secs`"). Objects recurse; everything else (numbers,
 /// strings, nulls, arrays) is a leaf, matching what completion can splice as a
 /// single value. Test-only: the schema walk behind the struct/table/template
 /// coverage pins here and the end-to-end upgrade test in `peppy_config`.
@@ -688,10 +688,11 @@ pub(super) fn leaf_paths(value: &Value) -> Vec<String> {
 mod tests {
     use super::super::{
         DEFAULT_DAEMON_GRACE_SECS, DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
-        DEFAULT_PEPPY_CONFIG_TEMPLATE, DEFAULT_SHUTDOWN_GRACE_SECS, PEPPY_CONFIG_FILE,
-        PYPI_MIRROR_SECTION_SNIPPET, PeppyConfig, SHUTDOWN_GRACE_FIELD_SNIPPET, TEMPLATE_HEADER,
+        DEFAULT_PEPPY_CONFIG_TEMPLATE, DEFAULT_SHUTDOWN_GRACE_SECS, PEPPY_CONFIG_FILE, PeppyConfig,
+        TEMPLATE_HEADER,
     };
     use super::*;
+    use std::assert_matches;
 
     /// Parses completed content the way `load_or_create` would, so every test
     /// proves its splice result is real loadable config, not just plausible text.
@@ -897,10 +898,10 @@ mod tests {
         let completed = complete_config_content(content)
             .expect("top-level sections are missing")
             .content;
-        assert!(matches!(
+        assert_matches!(
             parse(&completed).zenoh,
             super::super::ZenohConfig::External(_)
-        ));
+        );
         let document: Value = serde_json5::from_str(&completed).unwrap();
         assert_eq!(
             document["zenoh"],
@@ -953,7 +954,7 @@ mod tests {
     #[test]
     fn partial_subscriber_buffers_block_gains_missing_field() {
         let completed = complete_config_content(
-            r#"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_size: 64 } } } }"#,
+            r"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_size: 64 } } } }",
         )
         .expect("high_throughput_buffer_size missing")
         .content;
@@ -975,7 +976,7 @@ mod tests {
     #[test]
     fn empty_subscriber_buffers_block_gains_fields_at_depth_four() {
         let completed =
-            complete_config_content(r#"{ zenoh: { managed: { subscriber_buffers: {} } } }"#)
+            complete_config_content(r"{ zenoh: { managed: { subscriber_buffers: {} } } }")
                 .expect("the buffer sizes and everything else missing")
                 .content;
         let config = parse(&completed);
@@ -989,7 +990,7 @@ mod tests {
 
     #[test]
     fn partial_lifecycle_block_gains_field_with_its_comment() {
-        let completed = complete_config_content(r#"{ lifecycle: { daemon_grace_secs: 600, } }"#)
+        let completed = complete_config_content(r"{ lifecycle: { daemon_grace_secs: 600, } }")
             .expect("shutdown_grace_secs missing")
             .content;
         let config = parse(&completed);
@@ -1036,15 +1037,15 @@ mod tests {
         let expected = format!(
             "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}{}",
             &content[..close],
-            super::super::CORE_NODE_NAME_SECTION_SNIPPET,
-            super::super::ZENOH_SECTION_SNIPPET,
-            super::super::LIFECYCLE_SECTION_SNIPPET,
+            CORE_NODE_NAME_SECTION_SNIPPET,
+            ZENOH_SECTION_SNIPPET,
+            LIFECYCLE_SECTION_SNIPPET,
             PYPI_MIRROR_SECTION_SNIPPET,
             PUBLISH_REPOSITORY_SECTION_SNIPPET,
             OTLP_ENDPOINT_SECTION_SNIPPET,
             OTLP_MIN_SEVERITY_SECTION_SNIPPET,
-            super::super::MACHINE_CERTIFICATE_SECTION_SNIPPET,
-            super::super::RESOURCE_SERVERS_SECTION_SNIPPET,
+            MACHINE_CERTIFICATE_SECTION_SNIPPET,
+            RESOURCE_SERVERS_SECTION_SNIPPET,
             &content[close..]
         );
         assert_eq!(completed, expected);
@@ -1138,9 +1139,9 @@ mod tests {
         );
     }
 
-    /// JSON5 ends a `//` comment at any LineTerminator (LF, CR, U+2028,
+    /// JSON5 ends a `//` comment at any `LineTerminator` (LF, CR, U+2028,
     /// U+2029). A scanner that only honors LF reads code that hides between a
-    /// lone CR and the next LF differently from serde_json5; two such comments
+    /// lone CR and the next LF differently from `serde_json5`; two such comments
     /// make it rotate brace pairings and splice into the wrong user object.
     #[test]
     fn lone_cr_terminates_line_comments_like_serde() {

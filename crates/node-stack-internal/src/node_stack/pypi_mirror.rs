@@ -67,22 +67,22 @@ impl BuildFeedback {
         Self { announcer }
     }
 
-    fn line(&self, line: String) {
+    fn line(&self, line: &str) {
         self.announcer.line(format!("{LINE_PREFIX}{line}"));
     }
 
-    fn warning(&self, line: String) {
+    fn warning(&self, line: &str) {
         self.announcer.warning(format!("{LINE_PREFIX}{line}"));
     }
 }
 
 /// A warning about a problem after which no file comes from the mirror.
-fn every_file_from_pypi(problem: String) -> String {
+fn every_file_from_pypi(problem: &str) -> String {
     format!("{problem}; every locked file comes from {PYPI_FILES_HOST}")
 }
 
 /// A warning about a problem with one lock, whose files then come from PyPI.
-fn its_files_from_pypi(problem: String) -> String {
+fn its_files_from_pypi(problem: &str) -> String {
     format!("{problem}; its files come from {PYPI_FILES_HOST}")
 }
 
@@ -109,12 +109,12 @@ pub(super) async fn apply(
     let locks = match read {
         Ok(read) => {
             for warning in read.warnings {
-                feedback.warning(warning);
+                feedback.warning(&warning);
             }
             read.locks
         }
         Err(e) => {
-            feedback.warning(every_file_from_pypi(format!(
+            feedback.warning(&every_file_from_pypi(&format!(
                 "the uv.lock files could not be read ({e})"
             )));
             Vec::new()
@@ -136,13 +136,13 @@ pub(super) async fn apply(
     let rewritten = redirect_staged_locks(locks, mirror, on_mirror, &mut outcomes, feedback).await;
 
     if outcomes.is_empty() {
-        feedback.line(format!(
+        feedback.line(&format!(
             "{}; no readable uv.lock in the node",
             mirror.host()
         ));
     }
     for outcome in &outcomes {
-        feedback.line(outcome.summary(mirror));
+        feedback.line(&outcome.summary(mirror));
     }
     rewritten
 }
@@ -202,10 +202,10 @@ impl RewrittenLocks {
         match restored {
             Ok(warnings) => {
                 for warning in warnings {
-                    feedback.warning(warning);
+                    feedback.warning(&warning);
                 }
             }
-            Err(e) => feedback.warning(format!(
+            Err(e) => feedback.warning(&format!(
                 "the staged uv.lock files could not be put back ({e})"
             )),
         }
@@ -246,18 +246,14 @@ fn read_staged_locks(working_dir: &Path) -> StagedLocks {
     let paths = match find_uv_locks(working_dir) {
         Ok(paths) => paths,
         Err(e) => {
-            read.warnings.push(every_file_from_pypi(format!(
+            read.warnings.push(every_file_from_pypi(&format!(
                 "cannot search the staged node for uv.lock files ({e})"
             )));
             return read;
         }
     };
     for path in paths {
-        let shown_as = path
-            .strip_prefix(working_dir)
-            .unwrap_or(&path)
-            .display()
-            .to_string();
+        let shown_as = path.trim_prefix(working_dir).display().to_string();
         let parsed = std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
             .and_then(|text| match UvLock::parse(&text) {
@@ -271,7 +267,7 @@ fn read_staged_locks(working_dir: &Path) -> StagedLocks {
                 text,
                 lock,
             }),
-            Err(reason) => read.warnings.push(its_files_from_pypi(format!(
+            Err(reason) => read.warnings.push(its_files_from_pypi(&format!(
                 "cannot read {shown_as} ({reason})"
             ))),
         }
@@ -336,7 +332,7 @@ async fn files_on_mirror(
     let client = match presence::client() {
         Ok(client) => client,
         Err(e) => {
-            feedback.warning(every_file_from_pypi(format!(
+            feedback.warning(&every_file_from_pypi(&format!(
                 "cannot create the HTTP client ({e})"
             )));
             return Some(HashSet::new());
@@ -346,7 +342,7 @@ async fn files_on_mirror(
     let mut progress = ProgressThrottle::new(Instant::now());
     let check = presence::files_on_mirror(&client, mirror, &files, |checked| {
         if progress.line_due(Instant::now()) {
-            feedback.line(format!(
+            feedback.line(&format!(
                 "checked {checked} of {} distinct locked files on {}",
                 files.len(),
                 mirror.host()
@@ -360,7 +356,7 @@ async fn files_on_mirror(
     match result {
         Ok(on_mirror) => Some(on_mirror),
         Err(unreachable) => {
-            feedback.warning(every_file_from_pypi(format!(
+            feedback.warning(&every_file_from_pypi(&format!(
                 "{} does not answer ({unreachable})",
                 mirror.host()
             )));
@@ -411,14 +407,14 @@ async fn redirect_staged_locks(
     let written = match written {
         Ok(written) => written,
         Err(e) => {
-            feedback.warning(every_file_from_pypi(format!(
+            feedback.warning(&every_file_from_pypi(&format!(
                 "the uv.lock files could not be written ({e})"
             )));
             return RewrittenLocks::none();
         }
     };
     for warning in written.warnings {
-        feedback.warning(warning);
+        feedback.warning(&warning);
     }
     for (outcome, redirected_files) in outcomes.iter_mut().zip(written.redirected_files) {
         outcome.redirected_files = redirected_files;
@@ -462,7 +458,7 @@ fn write_redirected_locks(
             }
             Err(e) => {
                 written.redirected_files.push(0);
-                written.warnings.push(its_files_from_pypi(format!(
+                written.warnings.push(its_files_from_pypi(&format!(
                     "cannot write {} ({e})",
                     staged.shown_as
                 )));
@@ -562,8 +558,8 @@ mod tests {
     fn every_line_of_the_step_starts_with_the_prefix() {
         let mut captured = CapturedFeedback::new();
 
-        captured.feedback().line("a line".to_string());
-        captured.feedback().warning("a warning".to_string());
+        captured.feedback().line("a line");
+        captured.feedback().warning("a warning");
 
         assert_eq!(
             captured.drain(),

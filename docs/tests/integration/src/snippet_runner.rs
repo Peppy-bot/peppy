@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
 struct NodeSetup {
     /// Root of the emulated daemon's directory tree, exported to every peppy
@@ -99,9 +99,9 @@ fn setup_env(peppy: &Path, node_dir: &Path) -> NodeSetup {
 /// one snippet through several deployments. The lock is per directory, so
 /// unrelated snippets still run in parallel.
 fn snippet_dir_lock(node_dir: &Path) -> &'static Mutex<()> {
-    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, &'static Mutex<()>>>> = OnceLock::new();
-    let locks = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut locks = locks.lock().unwrap_or_else(PoisonError::into_inner);
+    static LOCKS: LazyLock<Mutex<HashMap<PathBuf, &'static Mutex<()>>>> =
+        LazyLock::new(Mutex::default);
+    let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
     locks
         .entry(node_dir.to_path_buf())
         .or_insert_with(|| Box::leak(Box::new(Mutex::new(()))))

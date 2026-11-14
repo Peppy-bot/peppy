@@ -9,6 +9,7 @@ use daemon_config::launcher::{
     PeppyLauncherParser, PreparedLauncher, RunningStack, ScopeCheck, Starter, VariableChange,
     VariableNeed, check_daemon_scopes,
 };
+use std::assert_matches;
 use std::path::Path;
 
 mod common;
@@ -481,8 +482,9 @@ fn a_variable_in_env_vars_and_the_list_is_refused_at_the_launch() {
         ),
     );
     let refusal = prepared.launch(&[], &[]).expect_err("two values");
-    assert!(
-        matches!(&refusal, CompositionError::VariablesGivenTwoValues(_)),
+    assert_matches!(
+        &refusal,
+        CompositionError::VariablesGivenTwoValues(_),
         "{refusal:?}"
     );
     assert_eq!(
@@ -546,8 +548,9 @@ fn a_variable_given_two_values_is_refused_at_a_join_and_in_a_flat_file() {
             },
         )
         .expect_err("two values");
-    assert!(
-        matches!(refusal, CompositionError::VariablesGivenTwoValues(_)),
+    assert_matches!(
+        refusal,
+        CompositionError::VariablesGivenTwoValues(_),
         "{refusal}"
     );
 

@@ -54,8 +54,11 @@ use ureq::Error as HttpError;
 
 use super::{FeedbackLine, interface_step_sink};
 
-#[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
-pub async fn listen_for_node_add(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a listener takes the identity of the daemon and the handles that the listeners share"
+)]
+pub(crate) async fn listen_for_node_add(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
@@ -114,7 +117,7 @@ impl GoalHandler for NodeAddGoalHandler {
             self.gate.clone(),
             &self.slice_ownership,
         )
-        .await
+        .await;
     }
 }
 
@@ -133,7 +136,7 @@ impl CleanupDir {
 impl Drop for CleanupDir {
     fn drop(&mut self) {
         if let Some(dir) = self.0.take() {
-            std::fs::remove_dir_all(dir).ok();
+            let _ = std::fs::remove_dir_all(dir);
         }
     }
 }
@@ -169,15 +172,15 @@ fn shallow_validate_config(
     repo_ref: Option<&str>,
 ) -> std::result::Result<NodeConfig, ShallowCheckError> {
     let bare_dir = tempfile::tempdir().map_err(|e| {
-        ShallowCheckError::ShallowFetchFailed(format!("Failed to create temp dir: {}", e))
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to create temp dir: {e}"))
     })?;
 
     let bare_repo = git2::Repository::init_bare(bare_dir.path()).map_err(|e| {
-        ShallowCheckError::ShallowFetchFailed(format!("Failed to init bare repo: {}", e))
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to init bare repo: {e}"))
     })?;
 
     let mut remote = bare_repo.remote_anonymous(repo_url).map_err(|e| {
-        ShallowCheckError::ShallowFetchFailed(format!("Failed to create remote: {}", e))
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to create remote: {e}"))
     })?;
 
     // Build refspecs to try, in order of preference.
@@ -209,8 +212,7 @@ fn shallow_validate_config(
                 // Recreate the remote for a clean retry.
                 remote = bare_repo.remote_anonymous(repo_url).map_err(|e2| {
                     ShallowCheckError::ShallowFetchFailed(format!(
-                        "Failed to recreate remote: {}",
-                        e2
+                        "Failed to recreate remote: {e2}"
                     ))
                 })?;
             }
@@ -225,14 +227,14 @@ fn shallow_validate_config(
 
     // Resolve FETCH_HEAD to a commit.
     let fetch_head = bare_repo.find_reference("FETCH_HEAD").map_err(|e| {
-        ShallowCheckError::ShallowFetchFailed(format!("Failed to find FETCH_HEAD: {}", e))
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to find FETCH_HEAD: {e}"))
     })?;
     let commit = fetch_head.peel_to_commit().map_err(|e| {
-        ShallowCheckError::ShallowFetchFailed(format!("Failed to peel to commit: {}", e))
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to peel to commit: {e}"))
     })?;
     let tree = commit
         .tree()
-        .map_err(|e| ShallowCheckError::ShallowFetchFailed(format!("Failed to get tree: {}", e)))?;
+        .map_err(|e| ShallowCheckError::ShallowFetchFailed(format!("Failed to get tree: {e}")))?;
 
     // Navigate the tree to find the config blob.
     let config_tree_path = node_config_path(repo_relative_path);
@@ -246,7 +248,7 @@ fn shallow_validate_config(
     })?;
 
     let blob = bare_repo.find_blob(entry.id()).map_err(|e| {
-        ShallowCheckError::ShallowFetchFailed(format!("Failed to read config blob: {}", e))
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to read config blob: {e}"))
     })?;
 
     let content = std::str::from_utf8(blob.content()).map_err(|_| {
@@ -316,7 +318,7 @@ async fn shallow_probe_config(
         shallow_validate_config(&probe_url, &probe_path, probe_ref.as_deref())
     })
     .await
-    .map_err(|e| format!("Failed to join shallow probe task: {}", e))?;
+    .map_err(|e| format!("Failed to join shallow probe task: {e}"))?;
 
     // The shallow probe is only a preflight hint: if it rejects the config,
     // fail fast; otherwise proceed to the full clone and reparse the config
@@ -327,8 +329,7 @@ async fn shallow_probe_config(
         Err(ShallowCheckError::InvalidConfig(msg)) => Err(msg),
         Err(ShallowCheckError::ShallowFetchFailed(reason)) => {
             announcer.line(format!(
-                "Shallow probe unavailable ({}), proceeding with full clone",
-                reason
+                "Shallow probe unavailable ({reason}), proceeding with full clone"
             ));
             Ok(())
         }
@@ -344,7 +345,7 @@ async fn clone_repo_to_temp(
     announcer: &Announcer,
 ) -> std::result::Result<PathBuf, String> {
     let checkout_dir = tempfile::tempdir()
-        .map_err(|e| format!("Failed to create temporary directory: {}", e))?
+        .map_err(|e| format!("Failed to create temporary directory: {e}"))?
         .keep();
 
     let clone_checkout_dir = checkout_dir.clone();
@@ -363,9 +364,9 @@ async fn clone_repo_to_temp(
         .map(|_| ())
     })
     .await
-    .map_err(|e| format!("Failed to join git clone task: {}", e))?
+    .map_err(|e| format!("Failed to join git clone task: {e}"))?
     {
-        std::fs::remove_dir_all(&checkout_dir).ok();
+        let _ = std::fs::remove_dir_all(&checkout_dir);
         return Err(err);
     }
 
@@ -408,7 +409,7 @@ fn parse_config_from_checkout(
     let node_config = match parse_node_config_file(&config_path) {
         Ok(cfg) => cfg,
         Err(msg) => {
-            std::fs::remove_dir_all(&checkout_dir).ok();
+            let _ = std::fs::remove_dir_all(&checkout_dir);
             return Err(msg);
         }
     };
@@ -440,8 +441,7 @@ fn bundle_file_name(url: &url::Url) -> String {
     url.path_segments()
         .and_then(|mut segments| segments.next_back())
         .filter(|segment| !segment.is_empty())
-        .map(sanitize_http_filename)
-        .unwrap_or_else(|| "bundle.tar.zst".to_string())
+        .map_or_else(|| "bundle.tar.zst".to_string(), sanitize_http_filename)
 }
 
 /// Total attempts (initial try plus retries) for a bundle download that
@@ -565,8 +565,7 @@ fn download_http_bundle_once(
             // A connection dropped mid-transfer is as transient as one that
             // never opened; the retry restarts from File::create's truncate.
             DownloadAttemptError::Transient(format!(
-                "Failed to read response body from {}: {}",
-                shown_url, e
+                "Failed to read response body from {shown_url}: {e}"
             ))
         })?;
         if read == 0 {
@@ -601,7 +600,7 @@ fn download_http_bundle_once(
     if let Some((hasher, expected)) = hasher.zip(expected_bytes) {
         let computed = hasher.finalize();
         if computed.as_slice() != expected.as_slice() {
-            std::fs::remove_file(destination).ok();
+            let _ = std::fs::remove_file(destination);
             return Err(DownloadAttemptError::Fatal(format!(
                 "SHA256 checksum mismatch for {}: expected {}, computed {}",
                 shown_url,
@@ -623,7 +622,7 @@ fn download_progress_line(downloaded: u64, total: Option<u64>) -> String {
     };
     let percent = match total {
         0 => 0,
-        _ => (downloaded as f64 / total as f64 * 100.0) as u64,
+        _ => downloaded.saturating_mul(100) / total,
     };
     format!(
         "Downloading: {} / {} ({}%)",
@@ -656,7 +655,8 @@ fn decode_sha256_hex(input: &str) -> std::result::Result<Vec<u8>, String> {
 /// The value of one hexadecimal digit of either case, or `None` for any
 /// other byte.
 fn hex_digit_value(digit: u8) -> Option<u8> {
-    (digit as char).to_digit(16).map(|value| value as u8)
+    let value = (digit as char).to_digit(16)?;
+    u8::try_from(value).ok()
 }
 
 fn extract_http_bundle(
@@ -676,29 +676,33 @@ async fn resolve_http_source_with_feedback(
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let url = url.clone();
     tokio::task::spawn_blocking(move || {
-        resolve_http_source_blocking(url, &peppy_dirs, expected_sha256, Some(&announcer))
+        resolve_http_source_blocking(
+            &url,
+            &peppy_dirs,
+            expected_sha256.as_deref(),
+            Some(&announcer),
+        )
     })
     .await
-    .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
+    .map_err(|e| format!("Failed to join HTTP download task: {e}"))?
 }
 
 fn resolve_http_source_download_and_extract(
-    url: url::Url,
+    url: &url::Url,
     peppy_dirs: &PeppyDirs,
-    expected_sha256: Option<String>,
+    expected_sha256: Option<&str>,
     announcer: Option<&Announcer>,
 ) -> std::result::Result<ExtractedHttpSource, String> {
     match url.scheme() {
         "http" | "https" => {}
         other => {
             return Err(format!(
-                "HTTP source URL must use http or https (got scheme '{}')",
-                other
+                "HTTP source URL must use http or https (got scheme '{other}')"
             ));
         }
     }
 
-    if !is_supported_http_archive(&url) {
+    if !is_supported_http_archive(url) {
         return Err(
             "Only tar.zst (.tar.zstd/.tar.zst/.tzst) archives are supported for HTTP sources"
                 .to_string(),
@@ -707,24 +711,24 @@ fn resolve_http_source_download_and_extract(
 
     let http_base_dir = peppy_dirs.http_downloads_dir();
     std::fs::create_dir_all(&http_base_dir)
-        .map_err(|e| format!("Failed to create HTTP download directory: {}", e))?;
+        .map_err(|e| format!("Failed to create HTTP download directory: {e}"))?;
 
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
     let operation_dir =
         http_base_dir.join(format!("node_add_{timestamp}_{}", generate_random_id()));
     std::fs::create_dir_all(&operation_dir)
-        .map_err(|e| format!("Failed to create HTTP staging directory: {}", e))?;
+        .map_err(|e| format!("Failed to create HTTP staging directory: {e}"))?;
 
     let mut operation_cleanup = CleanupDir::new(Some(operation_dir.clone()));
 
-    let bundle_path = operation_dir.join(bundle_file_name(&url));
+    let bundle_path = operation_dir.join(bundle_file_name(url));
     let extract_dir = operation_dir.join("extracted");
     std::fs::create_dir_all(&extract_dir)
-        .map_err(|e| format!("Failed to create bundle extract directory: {}", e))?;
+        .map_err(|e| format!("Failed to create bundle extract directory: {e}"))?;
 
-    download_http_bundle(&url, &bundle_path, expected_sha256.as_deref(), announcer)?;
-    extract_http_bundle(&bundle_path, &extract_dir, &url)?;
-    std::fs::remove_file(&bundle_path).ok();
+    download_http_bundle(url, &bundle_path, expected_sha256, announcer)?;
+    extract_http_bundle(&bundle_path, &extract_dir, url)?;
+    let _ = std::fs::remove_file(&bundle_path);
 
     let node_root_dir = locate_node_root_dir(&extract_dir)?;
 
@@ -737,9 +741,9 @@ fn resolve_http_source_download_and_extract(
 }
 
 fn resolve_http_source_blocking(
-    url: url::Url,
+    url: &url::Url,
     peppy_dirs: &PeppyDirs,
-    expected_sha256: Option<String>,
+    expected_sha256: Option<&str>,
     announcer: Option<&Announcer>,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let extracted =
@@ -795,7 +799,7 @@ fn node_named_by(source: &NodeSource) -> Option<(String, String)> {
             };
             Some((
                 config.manifest.name.as_str().to_owned(),
-                config.manifest.tag.to_string(),
+                config.manifest.tag.clone(),
             ))
         }
         NodeSource::Git { .. } | NodeSource::Http { .. } => None,
@@ -914,7 +918,12 @@ pub(crate) async fn dispatch_node_add(
             crate::services::mcp::built_in::run_built_in_add(goal, action_context, announcer).await
         }
         NodeSource::Pinned { .. } | NodeSource::ResolveRef { .. } => {
-            super::add_batch::run_pinned_add(goal, action_context, announcer).await
+            Box::pin(super::add_batch::run_pinned_add(
+                goal,
+                action_context,
+                announcer,
+            ))
+            .await
         }
         NodeSource::Fs(_) | NodeSource::Git { .. } | NodeSource::Http { .. } => {
             run_node_add(goal, action_context, announcer).await
@@ -978,7 +987,7 @@ pub(crate) async fn run_node_add(
             let sync_manifest = node_config.manifest.clone();
             let sync_interfaces = node_config.interfaces.clone();
             let sync_git_hash = goal.git_hash.clone();
-            let sync_node_stack = action_context.node_stack.clone();
+            let sync_node_stack = Arc::clone(&action_context.node_stack);
             let sync_peppy_dirs = action_context.peppy_dirs.clone();
             let sync_announcer = announcer.clone();
 
@@ -1006,7 +1015,7 @@ pub(crate) async fn run_node_add(
                         &announcer,
                         Failure::new(
                             PeppyFailureKind::AttemptFailed,
-                            format!("Auto-sync failed: {}", e),
+                            format!("Auto-sync failed: {e}"),
                         ),
                     ));
                 }
@@ -1015,7 +1024,7 @@ pub(crate) async fn run_node_add(
                         &announcer,
                         Failure::new(
                             PeppyFailureKind::AttemptFailed,
-                            format!("Auto-sync task failed: {}", e),
+                            format!("Auto-sync task failed: {e}"),
                         ),
                     ));
                 }
@@ -1253,7 +1262,7 @@ async fn handle_goal_request(
         let work = async {
             tokio::select! {
                 biased;
-                _ = cancel_token_clone.cancelled() => {
+                () = cancel_token_clone.cancelled() => {
                     let reason = cancel_reason(&goal_ctx, &reset_token)
                         .unwrap_or_else(|| "superseded by a forced node add".to_owned());
                     log_for_cancel.error(&format!("node add {reason}"));
@@ -1266,7 +1275,7 @@ async fn handle_goal_request(
                 ) => Ok(result),
             }
         };
-        let ending = match under_goal_cancel(&goal_ctx, &cancel_token_clone, work).await {
+        let ending = match Box::pin(under_goal_cancel(&goal_ctx, &cancel_token_clone, work)).await {
             Ok(result) => {
                 // Drain the feedback consumer before ending so the
                 // end-of-stream sentinel never races ahead of the last
@@ -1435,7 +1444,7 @@ async fn process_node_add_inner(
             .map_err(|e| {
                 AddStepFailure::new(
                     PeppyFailureKind::PreconditionFailed,
-                    format!("Codegen fingerprint verification failed: {}", e),
+                    format!("Codegen fingerprint verification failed: {e}"),
                 )
             })?;
     }
@@ -1446,7 +1455,7 @@ async fn process_node_add_inner(
     // the node is published, the stack entity; the last owner removes it.
     let (working_dir, excluded_dirs) =
         copy_node_to_temp_dir(&source_path, &ctx.action.peppy_dirs.tmp_dir())
-            .map_err(|e| format!("Failed to copy node folder: {}", e))?;
+            .map_err(|e| format!("Failed to copy node folder: {e}"))?;
     let staging = Arc::new(WorkingDirGuard::new(working_dir));
 
     if !excluded_dirs.is_empty() {
@@ -1475,7 +1484,7 @@ async fn process_node_add_inner(
         DepClosure::Direct,
     )
     .await
-    .map_err(|reason| format!("Failed to add node config: {}", reason))?;
+    .map_err(|reason| format!("Failed to add node config: {reason}"))?;
     for entry in &repo_provenance {
         ctx.announcer.line(format!(
             "Resolved dependency `{}:{}` from the repository cache ({})",
@@ -1496,7 +1505,7 @@ async fn process_node_add_inner(
     if let Some(err) = dep_errors.into_iter().next() {
         return Err(AddStepFailure::new(
             PeppyFailureKind::PreconditionFailed,
-            format!("Failed to add node config: {}", err),
+            format!("Failed to add node config: {err}"),
         ));
     }
 
@@ -1543,7 +1552,7 @@ async fn process_node_add_inner(
             None,
             generator::NodeTree::Staged,
         )
-        .map_err(|e| format!("Failed to generate peppygen library: {}", e))
+        .map_err(|e| format!("Failed to generate peppygen library: {e}"))
     })
     .await?;
 
@@ -1590,8 +1599,7 @@ async fn process_node_add_inner(
         .find(&node_name, &node_tag)
         .ok_or_else(|| {
             format!(
-                "internal error: just-pushed entity {}:{} disappeared from the stack",
-                node_name, node_tag
+                "internal error: just-pushed entity {node_name}:{node_tag} disappeared from the stack"
             )
         })?;
 
@@ -1630,7 +1638,7 @@ fn check_dependencies_present(
         None => Ok(()),
         Some(err) => Err(AddStepFailure::new(
             PeppyFailureKind::PreconditionFailed,
-            format!("Failed to add node config: {}", err),
+            format!("Failed to add node config: {err}"),
         )),
     }
 }
@@ -1720,7 +1728,7 @@ mod tests {
         }
         let mut zst_data = Vec::new();
         let mut encoder = zstd::Encoder::new(&mut zst_data, 0).unwrap();
-        std::io::Write::write_all(&mut encoder, &tar_data).unwrap();
+        Write::write_all(&mut encoder, &tar_data).unwrap();
         encoder.finish().unwrap();
         zst_data
     }
@@ -1750,8 +1758,7 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             err.contains("checksum mismatch"),
-            "error should mention checksum mismatch, got: {}",
-            err
+            "error should mention checksum mismatch, got: {err}"
         );
         assert!(
             !dest.exists(),
@@ -1774,7 +1781,7 @@ mod tests {
         let dest = tmp.path().join("bundle.tar.zst");
 
         let result = download_http_bundle(&url, &dest, Some(&correct_hash), None);
-        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
         assert!(
             dest.exists(),
             "bundle file should exist after successful download"
@@ -1795,7 +1802,7 @@ mod tests {
         let dest = tmp.path().join("bundle.tar.zst");
 
         let result = download_http_bundle(&url, &dest, None, None);
-        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
         assert!(dest.exists(), "bundle file should exist");
     }
 

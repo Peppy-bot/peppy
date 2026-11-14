@@ -95,7 +95,7 @@ fn mutual_service_through_contracts_is_rejected_for_strict_and_permissive_adds()
             PathBuf::from("/tmp"),
         ) {
             Err(NodeStackError::ServiceActionContractCycle { kind, .. }) => {
-                assert_eq!(kind, "service", "{add}")
+                assert_eq!(kind, "service", "{add}");
             }
             other => panic!("expected ServiceActionContractCycle ({add}), got {other:?}"),
         }

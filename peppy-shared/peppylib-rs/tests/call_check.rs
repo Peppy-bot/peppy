@@ -193,8 +193,9 @@ async fn a_call_to_a_node_carries_no_signature() {
     let session = mock_session().await;
     let check = Arc::new(KeyCheck::default());
     let node_target = SenderTarget::node("arm", "v1").unwrap();
-    let observer = MessengerHandle::from_shared(Arc::clone(&session))
-        .checking_calls_with(Arc::clone(&check) as Arc<dyn CallCheck>);
+    let observer =
+        MessengerHandle::from_shared(Arc::clone(&session))
+            .checking_calls_with(Arc::<KeyCheck>::clone(&check));
     let mut endpoint = ServiceMessenger::listen(
         &observer,
         "cn-desk",
@@ -204,11 +205,7 @@ async fn a_call_to_a_node_carries_no_signature() {
     )
     .await
     .unwrap();
-    tokio::spawn(async move {
-        endpoint
-            .handle_requests(|_| async { Ok(Payload::new()) })
-            .await
-    });
+    tokio::spawn(async move { endpoint.handle_requests(async |_| Ok(Payload::new())).await });
 
     let client = signing(MessengerHandle::from_shared(session), ClientKey::generate());
     let _refused = ServiceMessenger::poll(

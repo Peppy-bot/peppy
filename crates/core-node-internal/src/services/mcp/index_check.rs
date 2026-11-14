@@ -7,7 +7,7 @@ use crate::services::repo::index::{
     IndexError, read_repository_index, resolve_declared_item, walk_directory,
 };
 use daemon_config::consts::PeppyDirs;
-use daemon_config::daemon_interface::served_interfaces;
+use daemon_config::daemon_interface::{DaemonInterface, served_interfaces};
 use daemon_config::mcp_deployment::PinnedContract;
 use daemon_config::mcp_exposure::{McpExposure, PeppyMcpExposureParser, PinnedContractRef};
 use daemon_config::repository::{ManifestFingerprint, RepoItemKind};
@@ -212,7 +212,7 @@ fn exposure_problems(exposure: &McpExposure, contracts: &mut Contracts<'_>) -> V
         .collect();
     let interfaces: Vec<_> = interfaces
         .into_iter()
-        .map(|interface| interface.resolved())
+        .map(DaemonInterface::resolved)
         .collect();
     if let Err(error) = build_exposure_bundle(exposure, &contracts, &interfaces) {
         problems.extend(error.violations);

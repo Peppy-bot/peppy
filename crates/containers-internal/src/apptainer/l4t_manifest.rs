@@ -278,6 +278,7 @@ pub(crate) fn sync_nvliblist(manifest_dir: &Path, nvliblist: &Path) -> Result<Nv
 mod tests {
     use super::*;
     use crate::apptainer::scratch_dir;
+    use std::assert_matches;
     use std::os::unix::fs::MetadataExt;
     use tempfile::TempDir;
 
@@ -299,7 +300,7 @@ libEGL_nvidia.so
     }
 
     fn names(list: &[&str]) -> Vec<String> {
-        list.iter().map(|name| name.to_string()).collect()
+        list.iter().map(ToString::to_string).collect()
     }
 
     // -- parsing --------------------------------------------------------------
@@ -654,8 +655,9 @@ sym,/usr/lib/aarch64-linux-gnu/libnvcucompat.so
         host.write_manifest("drivers.csv", "lib, /usr/lib/libnvos.so\nmount, /x\n");
 
         let error = host.sync().unwrap_err();
-        assert!(
-            matches!(&error, Error::L4tManifestInvalid { line: 2, .. }),
+        assert_matches!(
+            &error,
+            Error::L4tManifestInvalid { line: 2, .. },
             "{error:?}"
         );
         assert_eq!(host.list(), STOCK_LIST);

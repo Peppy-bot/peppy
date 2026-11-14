@@ -6,7 +6,7 @@
 //!
 //! The daemon must run: the peer takes the name of its core node, and the
 //! daemon is what joins the router. `peppy platform login` enrolls through the
-//! same [`enroll_machine`].
+//! same `enroll_machine`.
 
 use std::sync::Arc;
 
@@ -29,6 +29,7 @@ use auth::enrollment::{self, Enrollment, EnrollmentBundle, IssuedMaterial};
 use auth::selection::project_label;
 use auth::{AuthError, Problem, ProblemKind, storage};
 
+#[derive(Debug)]
 pub struct EnrollCommand {
     pub api_url: Option<String>,
     pub workspace: Option<String>,
@@ -162,7 +163,7 @@ pub(crate) fn enroll_machine(
         println!("{}", external_router_note(&session.dirs));
         return Ok(());
     }
-    poke_federation_and_report(&session.dirs, FederationPokeAction::Enroll)
+    poke_federation_and_report(&session.dirs, &FederationPokeAction::Enroll)
 }
 
 /// Puts a refused enrollment into words the person can act on. The refusals

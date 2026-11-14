@@ -2,7 +2,11 @@
 name = "peppy"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 autotests = false
+
+[lints]
+workspace = true
 
 [dependencies]
 auth = { workspace = true }

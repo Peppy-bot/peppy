@@ -28,6 +28,8 @@ use peppy::commands::stack::{
 use peppy::context::AppContext;
 use peppy::error::CallEnd;
 use peppy::test_support::ServeCommandEmulation;
+use std::assert_matches;
+use std::fmt::Write as _;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::runtime::CopyName;
@@ -62,7 +64,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Bound for waits that are already response-driven (launch readiness is
 /// blocking; everything after polls real endpoints).
-const WAIT: Duration = Duration::from_secs(120);
+const WAIT: Duration = Duration::from_mins(2);
 
 const STATUS_URI: &str = "peppy://resource/front_camera.status";
 const FRAME_URI: &str = "peppy://resource/front_camera.latest_frame";
@@ -279,7 +281,7 @@ fn main() -> Result<()> {
             let publisher = video_stream::declare_publisher(&runner)
                 .await
                 .expect("declare video_stream publisher");
-            let frame: Vec<u8> = (0..8u32 * 8 * 3).map(|i| (i % 251) as u8).collect();
+            let frame: Vec<u8> = Vec::from_fn(8 * 8 * 3, |i| (i % 251) as u8);
             loop {
                 let payload = video_stream::build_message(frame.clone(), "rgb8".to_owned(), 8, 8)
                     .expect("build video_stream message");
@@ -329,7 +331,7 @@ fn main() -> Result<()> {
                         "the shutter is closed",
                     ));
                 }
-                let frame: Vec<u8> = (0..8u32 * 8 * 3).map(|i| (i % 251) as u8).collect();
+                let frame: Vec<u8> = Vec::from_fn(8 * 8 * 3, |i| (i % 251) as u8);
                 Ok(snapshot::Response::new(frame, "rgb8".to_owned(), 8, 8))
             })
             .await
@@ -429,9 +431,7 @@ fn recording_sha() -> String {
 /// policies the endpoint behaviours exercise. `tag` and `title` vary so two
 /// tags of one exposure can be served side by side and told apart.
 fn camera_endpoint_exposure(tag: &str, title: &str, sha256: Option<&str>) -> String {
-    let pin = sha256
-        .map(|sha| format!(", sha256: \"{sha}\""))
-        .unwrap_or_default();
+    let pin = sha256.map_or_default(|sha| format!(", sha256: \"{sha}\""));
     format!(
         r#"{{
         peppy_schema: "mcp_exposure/v1",
@@ -802,7 +802,7 @@ fn stage_provider(
     let origin = ContractOrigin {
         link_id: link_id.to_string(),
         contract_name: contract.manifest.name.to_string(),
-        contract_tag: contract.manifest.tag.to_string(),
+        contract_tag: contract.manifest.tag.clone(),
         failure_kinds: contract.failure_kinds.clone(),
     };
     let mut generator = generator::RustGenerator::default();
@@ -1136,7 +1136,7 @@ impl Stack {
 
     /// The names of the copies the daemon's own stack list reports.
     async fn daemon_copies(&self) -> Vec<String> {
-        let report = peppy::commands::stack::list_nodes_json_collecting(&self.ctx)
+        let report = list_nodes_json_collecting(&self.ctx)
             .await
             .expect("stack list answers");
         let listed: Value = serde_json::from_str(&report.output).expect("the list is JSON");
@@ -1169,11 +1169,12 @@ impl Stack {
         let mut logs = String::new();
         if let Ok(entries) = fs::read_dir(&dir) {
             for entry in entries.flatten() {
-                logs.push_str(&format!(
-                    "--- {} ---\n{}\n",
+                let _ = writeln!(
+                    logs,
+                    "--- {} ---\n{}",
                     entry.path().display(),
                     fs::read_to_string(entry.path()).unwrap_or_default()
-                ));
+                );
             }
         }
         logs
@@ -1415,7 +1416,7 @@ async fn start_confirmed_record_clip(
     assert_eq!(created.task.status, TaskStatus::Working);
     assert_eq!(
         created.task.ttl_ms,
-        Some(600000 + 1000),
+        Some(600_000 + 1000),
         "the advertised TTL is the whole-goal deadline plus the runtime's grace"
     );
     let task_id = created.task.task_id;
@@ -1435,7 +1436,7 @@ async fn start_confirmed_record_clip(
 }
 
 /// The document of a read: its first content, as JSON.
-fn text_snapshot(read: rmcp::model::ReadResourceResult) -> Value {
+fn text_snapshot(read: &rmcp::model::ReadResourceResult) -> Value {
     let rmcp::model::ResourceContents::TextResourceContents { text, .. } =
         read.contents.first().expect("one content item")
     else {
@@ -1712,7 +1713,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         .expect("status snapshot serves");
     assert_eq!(read.cache_scope, Some(CacheScope::Private));
     assert_eq!(
-        text_snapshot(read),
+        text_snapshot(&read),
         json!({ "battery": 87, "note": "operational", "recording": true })
     );
     let read = client
@@ -1738,7 +1739,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
     assert_eq!(mime_type.as_deref(), Some("image/jpeg"));
     assert_is_jpeg(blob);
     assert_eq!(
-        text_snapshot(read),
+        text_snapshot(&read),
         json!({ "encoding": "mjpeg", "width": 8, "height": 8 }),
         "the document leaves out the frame, which the blob carries"
     );
@@ -1997,7 +1998,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
     // the record is that cancel; the provider serves one goal at a time, so
     // the next clip runs once it ended.
     let parked =
-        open_record_clip_until_progress(port, "/camera_and_recording/v1/mcp", 100000).await;
+        open_record_clip_until_progress(port, "/camera_and_recording/v1/mcp", 100_000).await;
     drop(parked);
     let ended = ended_call(
         &both_client,
@@ -2085,7 +2086,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
     assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
     other.cancel().await.expect("client disconnects");
 
-    let task_id = start_confirmed_record_clip(&tasks, 100000, "cancellation").await;
+    let task_id = start_confirmed_record_clip(&tasks, 100_000, "cancellation").await;
     poll_task_until(&tasks, WAIT, &task_id, "feedback-driven progress", |task| {
         task.task
             .status_message
@@ -2103,7 +2104,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
     .await;
     assert_record_clip_ended_cancelled(&cancelled);
 
-    let task_id = start_confirmed_record_clip(&tasks, 100000, "reconnection").await;
+    let task_id = start_confirmed_record_clip(&tasks, 100_000, "reconnection").await;
     poll_task_until(&tasks, WAIT, &task_id, "feedback-driven progress", |task| {
         task.task.status_message.is_some()
     })
@@ -2157,7 +2158,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
     // down: the endpoints close, the task with them, and a relaunch
     // restores the endpoints.
     let parking = connect_with_tasks(&v1).await;
-    let parked = start_confirmed_record_clip(&parking, 100000, "parked before reset").await;
+    let parked = start_confirmed_record_clip(&parking, 100_000, "parked before reset").await;
     poll_task_until(&parking, WAIT, &parked, "progress", |task| {
         task.task.status_message.is_some()
     })
@@ -2805,11 +2806,9 @@ async fn await_resource_list_changed(subscription: &mut Subscription) {
         .unwrap_or_else(|_| panic!("no resources/list_changed within {WAIT:?}"))
         .expect("the subscription stream is healthy")
         .expect("the stream did not end");
-    assert!(
-        matches!(
-            notification,
-            ServerNotification::ResourceListChangedNotification(_)
-        ),
+    assert_matches!(
+        notification,
+        ServerNotification::ResourceListChangedNotification(_),
         "expected resources/list_changed, got {notification:?}"
     );
 }
@@ -2972,7 +2971,7 @@ async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
         .await
         .expect("bravo's status serves once its camera publishes");
     assert_eq!(
-        text_snapshot(read),
+        text_snapshot(&read),
         json!({ "battery": 87, "note": "operational", "recording": true })
     );
 
@@ -3436,8 +3435,8 @@ async fn progress_of(
     .map(|received| received.expect("the client outlives the wait").clone());
     match waited {
         Ok(received) => call_progress(&received).expect("the progress is complete"),
-        Err(_) => panic!(
-            "the progress of the call that says {first:?} arrives; received: {:?}",
+        Err(elapsed) => panic!(
+            "the progress of the call that says {first:?} arrives ({elapsed}); received: {:?}",
             progress
                 .borrow()
                 .iter()
@@ -3596,10 +3595,7 @@ async fn a_client_adds_robots_with_features_on_the_machines_it_names() {
         .await
         .expect("the presence arrives")
         .expect("the watch is open");
-    assert!(
-        matches!(event, peppylib::LivelinessEvent::Alive(_)),
-        "{event:?}"
-    );
+    assert_matches!(event, peppylib::LivelinessEvent::Alive(_), "{event:?}");
     let mut machines = vec![this.clone(), "cn-gpu-box".to_owned()];
     machines.sort();
     assert_eq!(
@@ -3804,13 +3800,15 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
         2,
         "the stack log and the node's run log: {message}"
     );
-    let run_log_name = std::path::Path::new(logs[1])
+    let run_log_name = Path::new(logs[1])
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
     assert!(
         run_log_name.starts_with("delta_recorder_")
-            && run_log_name.ends_with(".log")
+            && Path::new(run_log_name)
+                .extension()
+                .is_some_and(|extension| extension == "log")
             && fs::read_to_string(logs[1])
                 .unwrap_or_default()
                 .contains("the recorder finds no camera"),
@@ -4067,8 +4065,10 @@ impl JoinableStack {
         let path = printed
             .lines()
             .find_map(|line| line.split_once("goal accepted, log file: "))
-            .map(|(_, path)| path.trim().to_owned())
-            .unwrap_or_else(|| panic!("the command prints its log file:\n{printed}"));
+            .map_or_else(
+                || panic!("the command prints its log file:\n{printed}"),
+                |(_, path)| path.trim().to_owned(),
+            );
         fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"))
     }
 

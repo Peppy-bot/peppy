@@ -10,13 +10,13 @@ use quote::quote;
 use std::collections::HashMap;
 
 #[derive(Default)]
-pub struct GenerationContext {
+pub(crate) struct GenerationContext {
     structs: Vec<StructDefinition>,
     private_items: Vec<TokenStream>,
 }
 
 impl GenerationContext {
-    pub fn add_struct(&mut self, ident: Ident, fields: Vec<(Ident, TokenStream)>) {
+    pub(crate) fn add_struct(&mut self, ident: Ident, fields: Vec<(Ident, TokenStream)>) {
         if let Some(existing) = self.structs.iter_mut().find(|def| def.ident == ident) {
             *existing = StructDefinition { ident, fields };
         } else {
@@ -26,7 +26,11 @@ impl GenerationContext {
 
     /// Registers a struct like [`Self::add_struct`], plus a `new`
     /// constructor that takes every field in order.
-    pub fn add_struct_with_constructor(&mut self, ident: Ident, fields: Vec<(Ident, TokenStream)>) {
+    pub(crate) fn add_struct_with_constructor(
+        &mut self,
+        ident: Ident,
+        fields: Vec<(Ident, TokenStream)>,
+    ) {
         let ctor_params: Vec<TokenStream> = fields
             .iter()
             .map(|(field_ident, ty)| quote!(#field_ident: #ty))
@@ -45,13 +49,13 @@ impl GenerationContext {
         self.add_struct(ident, fields);
     }
 
-    pub fn add_private_struct(&mut self, tokens: TokenStream) {
+    pub(crate) fn add_private_struct(&mut self, tokens: TokenStream) {
         self.private_items.push(tokens);
     }
 
     /// Registers a struct with standard metadata fields: `instance_id`, `core_node`,
     /// and an optional `data` field of the given type.
-    pub fn add_metadata_struct(&mut self, struct_ident: Ident, data_ident: Option<&Ident>) {
+    pub(crate) fn add_metadata_struct(&mut self, struct_ident: Ident, data_ident: Option<&Ident>) {
         let mut fields = vec![
             (Ident::new("instance_id", Span::call_site()), quote!(String)),
             (Ident::new("core_node", Span::call_site()), quote!(String)),
@@ -62,7 +66,7 @@ impl GenerationContext {
         self.add_struct(struct_ident, fields);
     }
 
-    pub fn into_tokens(self) -> Vec<TokenStream> {
+    pub(crate) fn into_tokens(self) -> Vec<TokenStream> {
         let mut items: Vec<TokenStream> = Vec::new();
         items.extend(self.structs.into_iter().map(StructDefinition::into_tokens));
         items.extend(self.private_items);
@@ -72,7 +76,7 @@ impl GenerationContext {
 
 /// The fields of a struct that holds one field per function param, in the
 /// order of the params.
-pub fn build_fields_from_params(params: &[FunctionParam]) -> Vec<(Ident, TokenStream)> {
+pub(super) fn build_fields_from_params(params: &[FunctionParam]) -> Vec<(Ident, TokenStream)> {
     params
         .iter()
         .map(|param| (param.ident.clone(), param.ty.clone()))
@@ -105,7 +109,7 @@ impl StructDefinition {
 
 /// [`map_declared_message_format`] for a format that may be absent: an
 /// absent format has no schema artifacts.
-pub fn map_message_format(
+pub(super) fn map_message_format(
     schema_name: &str,
     format: Option<&MessageFormat>,
 ) -> Result<Option<CapnpSchemaArtifacts>> {
@@ -117,7 +121,7 @@ pub fn map_message_format(
 
 /// Validates a declared message format for Rust generation and maps it to
 /// its Cap'n Proto schema artifacts.
-pub fn map_declared_message_format(
+pub(super) fn map_declared_message_format(
     schema_name: &str,
     format: &MessageFormat,
 ) -> Result<CapnpSchemaArtifacts> {
@@ -163,12 +167,12 @@ fn validate_nested_field_name_collisions_for_rust(schema: &SchemaType, path: &st
     }
 }
 
-pub struct SchemaFieldLookup<'a> {
+pub(super) struct SchemaFieldLookup<'a> {
     entries: HashMap<String, (&'a String, &'a SchemaType)>,
 }
 
 impl<'a> SchemaFieldLookup<'a> {
-    pub fn new(format: &'a MessageFormat) -> Result<Self> {
+    pub(super) fn new(format: &'a MessageFormat) -> Result<Self> {
         let mut entries = HashMap::with_capacity(format.0.len() * 2);
         for (name, schema) in &format.0 {
             let capnp_key = sanitize_capnp_field_name(name);
@@ -180,7 +184,7 @@ impl<'a> SchemaFieldLookup<'a> {
         Ok(Self { entries })
     }
 
-    pub fn get(&self, key: &str) -> Result<(&'a String, &'a SchemaType)> {
+    pub(super) fn get(&self, key: &str) -> Result<(&'a String, &'a SchemaType)> {
         self.entries
             .get(key)
             .copied()
@@ -218,7 +222,7 @@ fn insert_lookup_entry<'a>(
 /// Registers the `response_ident` struct of a response format, with a `new`
 /// constructor that takes every field. Its nested structs take the
 /// response struct's own name as their prefix.
-pub fn add_response_struct(
+pub(super) fn add_response_struct(
     context: &mut GenerationContext,
     artifacts: &CapnpSchemaArtifacts,
     response_ident: &Ident,
@@ -242,7 +246,7 @@ pub fn add_response_struct(
 /// The function parameters of a message format, one per field, with the
 /// structs nested in it registered in `context` under `struct_prefix`. An
 /// absent format has no parameters.
-pub fn collect_function_params(
+pub(super) fn collect_function_params(
     format_artifacts: Option<&CapnpSchemaArtifacts>,
     struct_prefix: &str,
     context: &mut GenerationContext,
@@ -344,9 +348,8 @@ mod tests {
     ) {
         let format: MessageFormat = serde_json5::from_str(format).unwrap();
 
-        let err = match map_message_format("test", Some(&format)) {
-            Ok(_) => panic!("expected FieldNameNormalizationCollision"),
-            Err(err) => err,
+        let Err(err) = map_message_format("test", Some(&format)) else {
+            panic!("expected FieldNameNormalizationCollision")
         };
         match err {
             Error::FieldNameNormalizationCollision {

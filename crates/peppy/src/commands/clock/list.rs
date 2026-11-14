@@ -80,9 +80,9 @@ async fn gather(ctx: &Arc<AppContext>) -> Result<Gathered> {
         CoreNodePresenceMessenger::LIST_TIMEOUT,
     )
     .await?;
-    let targets: Vec<String> = live.into_iter().map(|claim| claim.core_node).collect();
+    let targets = live.into_iter().map(|claim| claim.core_node);
 
-    let answers = join_all(targets.into_iter().map(|core_node| {
+    let answers = join_all(targets.map(|core_node| {
         let messenger = conn.messenger;
         let caller = &conn.core_node_name;
         async move {
@@ -472,7 +472,7 @@ mod tests {
             vec![hosted(robot.clone(), "sim_1")],
             vec![
                 reader("cn-a", "arm_1", robot.clone()),
-                reader("cn-b", "arm_2", robot.clone()),
+                reader("cn-b", "arm_2", robot),
                 reader("cn-b", "other_1", domain("robot", "cn-b", 7)),
             ],
             Vec::new(),

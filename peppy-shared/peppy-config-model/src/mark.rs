@@ -200,8 +200,8 @@ mod tests {
         ] {
             assert!(MarkName::parse(name).is_err(), "{name}");
         }
-        assert!(MarkName::parse(&"a".repeat(65)).is_err());
-        assert!(MarkName::parse(&"a".repeat(64)).is_ok());
+        MarkName::parse(&"a".repeat(65)).unwrap_err();
+        MarkName::parse(&"a".repeat(64)).unwrap();
     }
 
     #[test]
@@ -223,7 +223,7 @@ mod tests {
                 .to_string()
                 .contains("`item_id` is in the list twice")
         );
-        assert!(parse(r#"["Item"]"#).is_err());
+        parse(r#"["Item"]"#).unwrap_err();
     }
 
     #[test]
@@ -237,7 +237,7 @@ mod tests {
             parse("[]").unwrap_err().to_string(),
             InvalidEnumValues::Empty.to_string()
         );
-        assert!(parse(r#"["a", ""]"#).is_err());
+        parse(r#"["a", ""]"#).unwrap_err();
         assert!(
             parse(r#"["a", "a"]"#)
                 .unwrap_err()

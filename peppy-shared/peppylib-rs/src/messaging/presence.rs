@@ -8,6 +8,7 @@ use crate::error::Result;
 
 /// Stateless facade for advertising, watching, and enumerating live core
 /// nodes in the current messenger session's namespace.
+#[derive(Debug)]
 pub struct CoreNodePresenceMessenger;
 
 impl CoreNodePresenceMessenger {

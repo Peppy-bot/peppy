@@ -5,6 +5,7 @@
 //! Each [`LocalRegistry`] has its own storage directory and loopback port,
 //! and stops when it is dropped.
 
+use std::fmt::Write as _;
 use std::io::BufRead as _;
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
@@ -41,6 +42,7 @@ pub enum RegistryAuth {
 }
 
 /// A running registry. Dropping it stops the process.
+#[derive(Debug)]
 pub struct LocalRegistry {
     child: Child,
     address: SocketAddr,
@@ -89,10 +91,11 @@ impl LocalRegistry {
                 format!("{TEST_USERNAME}:{TEST_PASSWORD_BCRYPT}\n"),
             )
             .map_err(|e| format!("htpasswd: {e}"))?;
-            config.push_str(&format!(
-                "auth:\n  htpasswd:\n    realm: peppy-test\n    path: {}\n",
+            let _ = writeln!(
+                config,
+                "auth:\n  htpasswd:\n    realm: peppy-test\n    path: {}",
                 htpasswd.display()
-            ));
+            );
         }
         let config_path = dir.path().join("config.yml");
         std::fs::write(&config_path, config).map_err(|e| format!("config: {e}"))?;
@@ -150,7 +153,7 @@ impl LocalRegistry {
 
     /// The directory the registry stores its blobs and manifests in, with
     /// the layout of the filesystem driver of distribution.
-    pub fn storage_dir(&self) -> std::path::PathBuf {
+    pub fn storage_dir(&self) -> PathBuf {
         self.dir.path().join("storage")
     }
 

@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 ///
 /// Exposes `config::node::QoSProfile` to Python.
 #[pyclass(name = "QoSProfile", eq, eq_int, from_py_object)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PyQoSProfile {
     SensorData,
     Standard,
@@ -20,10 +20,10 @@ pub enum PyQoSProfile {
 impl From<PyQoSProfile> for QoSProfile {
     fn from(py_qos: PyQoSProfile) -> Self {
         match py_qos {
-            PyQoSProfile::SensorData => QoSProfile::SensorData,
-            PyQoSProfile::Standard => QoSProfile::Standard,
-            PyQoSProfile::Reliable => QoSProfile::Reliable,
-            PyQoSProfile::Critical => QoSProfile::Critical,
+            PyQoSProfile::SensorData => Self::SensorData,
+            PyQoSProfile::Standard => Self::Standard,
+            PyQoSProfile::Reliable => Self::Reliable,
+            PyQoSProfile::Critical => Self::Critical,
         }
     }
 }
@@ -33,7 +33,7 @@ impl From<PyQoSProfile> for QoSProfile {
 /// Exposes `config::node::TopicRetention` to Python:
 /// `TopicRetention.live_only()` or `TopicRetention.latest(depth)`.
 #[pyclass(name = "TopicRetention", eq, frozen, from_py_object)]
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PyTopicRetention(TopicRetention);
 
 #[pymethods]

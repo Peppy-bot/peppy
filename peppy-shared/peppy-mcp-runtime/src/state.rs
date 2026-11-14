@@ -60,6 +60,7 @@ pub(crate) struct SnapshotView {
     pub(crate) remaining_fresh_ms: u64,
 }
 
+#[derive(Debug)]
 pub(crate) struct ResourceState {
     pub(crate) entry: ResourceEntry,
     /// Minimum nanoseconds between admitted messages, from `update.max_hz`.
@@ -98,6 +99,11 @@ impl Drop for WaitingReader<'_> {
 
 impl ResourceState {
     pub(crate) fn new(entry: ResourceEntry) -> Self {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the interval of a positive rate is a positive count of nanoseconds, and the cast saturates"
+        )]
         let min_interval_nanos =
             (1_000_000_000f64 / entry.policies.update.max_hz.get()).round() as u64;
         Self {
@@ -152,7 +158,7 @@ impl ResourceState {
         // message admitted for this reader cannot be stored before the
         // reader listens for it.
         let arrived = self.arrived.notified();
-        tokio::pin!(arrived);
+        let mut arrived = std::pin::pin!(arrived);
         arrived.as_mut().enable();
         let reader = WaitingReader::register(&self.waiting);
         let _ = tokio::time::timeout(max_wait, arrived).await;
@@ -247,7 +253,7 @@ enum Admission {
 
 /// The feed a topic pump pushes decoded messages through. Handed out by
 /// [`ExposureServer::ingest`](crate::ExposureServer::ingest).
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ResourceIngest {
     pub(crate) state: Arc<ResourceState>,
     pub(crate) events: broadcast::Sender<CatalogEvent>,
@@ -275,6 +281,10 @@ impl ResourceIngest {
     /// snapshot, wakes the readers that wait for it and, for a message the
     /// interval admitted, notifies subscribed clients. On refusal the
     /// previous snapshot stays current and ages toward staleness.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "a publish spends the admit token of its message"
+    )]
     pub fn publish(&self, token: AdmitToken, value: Value) -> Result<(), PublishError> {
         let content = apply_content_policies(self.state.entry.policies.content(), value)?;
         self.state.store(Snapshot {
@@ -301,7 +311,8 @@ mod tests {
     use super::*;
     use crate::clock::test_support::{MS, manual_clock};
     use serde_json::json;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::assert_matches;
+    use std::sync::atomic::AtomicU64;
 
     /// A read spawned to wait for the next message, registered as waiting
     /// before this returns.
@@ -368,11 +379,9 @@ mod tests {
     #[test]
     fn reads_report_unavailable_then_fresh_then_stale() {
         let (ingest, nanos) = ingest_with_clock();
-        assert!(
-            matches!(
-                ingest.state.snapshot_for_read(0),
-                Err(ReadRefusal::Unavailable)
-            ),
+        assert_matches!(
+            ingest.state.snapshot_for_read(0),
+            Err(ReadRefusal::Unavailable),
             "nothing published yet"
         );
 
@@ -436,7 +445,7 @@ mod tests {
         let error = ingest
             .publish(token, json!({ "status": "y".repeat(64) }))
             .expect_err("oversize snapshot is rejected");
-        assert!(matches!(error, PublishError::Oversize { .. }));
+        assert_matches!(error, PublishError::Oversize { .. });
 
         let view = ingest
             .state
@@ -594,20 +603,20 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_resource_without_a_snapshot_or_with_a_stale_one_is_refused_without_waiting() {
         let (ingest, nanos) = ingest_with_clock();
-        assert!(matches!(
+        assert_matches!(
             ingest.state.next_snapshot(&ingest.clock).await,
             Err(ReadRefusal::Unavailable)
-        ));
+        );
         assert_eq!(ingest.state.waiting.load(Ordering::SeqCst), 0);
         let token = ingest.admit().expect("gate open");
         ingest
             .publish(token, json!({ "battery": 1 }))
             .expect("publishes");
         nanos.store(3_000 * MS, Ordering::SeqCst);
-        assert!(matches!(
+        assert_matches!(
             ingest.state.next_snapshot(&ingest.clock).await,
             Err(ReadRefusal::Stale { .. })
-        ));
+        );
     }
 
     #[test]

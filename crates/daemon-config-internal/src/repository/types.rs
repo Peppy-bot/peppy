@@ -422,7 +422,7 @@ where
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: de::Deserializer<'de>,
+        D: Deserializer<'de>,
     {
         deserializer.deserialize_map(UniqueMapVisitor(PhantomData))
     }
@@ -440,7 +440,7 @@ mod tests {
     impl<'de> Deserialize<'de> for CountingMap {
         fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
         where
-            D: de::Deserializer<'de>,
+            D: Deserializer<'de>,
         {
             struct CountingVisitor;
 
@@ -603,12 +603,12 @@ mod tests {
 
     #[test]
     fn refuses_an_identity_the_caches_could_never_key_on() {
-        assert!(ItemName::parse("foo/bar").is_err());
-        assert!(ItemName::parse("").is_err());
-        assert!(ItemTag::parse("").is_err());
-        assert!(ItemTag::parse("1v").is_err());
-        assert!(ItemTag::parse("v0.1.0").is_err());
-        assert!(ItemName::parse("uvc_camera").is_ok());
-        assert!(ItemTag::parse("v1").is_ok());
+        ItemName::parse("foo/bar").unwrap_err();
+        ItemName::parse("").unwrap_err();
+        ItemTag::parse("").unwrap_err();
+        ItemTag::parse("1v").unwrap_err();
+        ItemTag::parse("v0.1.0").unwrap_err();
+        ItemName::parse("uvc_camera").unwrap();
+        ItemTag::parse("v1").unwrap();
     }
 }

@@ -1,4 +1,4 @@
-//! Encoding types for the NodeRun action (streaming version with feedback).
+//! Encoding types for the `NodeRun` action (streaming version with feedback).
 
 use std::collections::{BTreeMap, HashSet};
 use std::num::NonZeroU32;
@@ -24,7 +24,7 @@ use crate::graph::InstanceEndpoint;
 /// [`NodeRunGoal::covered_pairs`]: the peer instance and, optionally, the
 /// pinned complementary slot on it. `Display` renders the CLI/launcher
 /// target grammar (`<peer_instance>` or `<peer_instance>/<peer_link_id>`);
-/// instance ids and link_ids are `/`-free names, so the rendering is
+/// instance ids and `link_ids` are `/`-free names, so the rendering is
 /// unambiguous.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairTarget {
@@ -92,6 +92,7 @@ impl PairTarget {
     ///
     /// Only a planner holding both manifests may call this: it is the
     /// receiving daemon's sole evidence about a slot it cannot read.
+    #[must_use]
     pub fn with_remote_peer(mut self, remote_peer: RemotePeerPairing) -> Self {
         self.remote_peer = Some(remote_peer);
         self
@@ -221,7 +222,7 @@ impl ObservationTargets {
     /// planner bug rather than a user error) is asserted once, here.
     pub fn slots_from_plan(
         members: BTreeMap<String, Vec<ObservationTarget>>,
-    ) -> BTreeMap<String, ObservationTargets> {
+    ) -> BTreeMap<String, Self> {
         members
             .into_iter()
             .map(|(link_id, targets)| {
@@ -265,7 +266,7 @@ impl<'a> IntoIterator for &'a ObservationTargets {
     }
 }
 
-/// Goal message for the NodeRun action.
+/// Goal message for the `NodeRun` action.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeRunGoal {
     /// What to start, NOT how it is wired into the mesh. See
@@ -290,7 +291,7 @@ pub struct NodeRunGoal {
     pub env_vars: Vec<(String, String)>,
     pub timeout_secs: u64,
     /// Pairing requests from `--link <link_id>@<peer_instance>[/<peer_link_id>]`
-    /// or a launch plan, keyed by the starting node's own slot link_id and
+    /// or a launch plan, keyed by the starting node's own slot `link_id` and
     /// holding every pair that slot takes, in the order the plan lists them:
     /// one for a scalar slot, one per peer for a multi slot.
     /// Commands to the daemon, not resolved config: the daemon validates and
@@ -298,7 +299,7 @@ pub struct NodeRunGoal {
     /// instance commits to Running.
     pub requested_pairs: BTreeMap<String, Vec<PairTarget>>,
     /// Pairing slots deliberately left unpaired, keyed by this instance's
-    /// slot link_id; each value is the reason the deployment wrote down
+    /// slot `link_id`; each value is the reason the deployment wrote down
     /// (`--vacant-link <link_id>=<why>`, or the launcher's
     /// `links: { <link_id>: { vacant: "<why>" } }`) and is never empty.
     /// Together with `requested_pairs` and `covered_pairs` these must cover
@@ -307,14 +308,14 @@ pub struct NodeRunGoal {
     pub vacant_pairs: BTreeMap<String, String>,
     /// Pairing slots of this instance that a LATER-starting instance of the
     /// same `stack launch` will claim through its own `requested_pairs`
-    /// entry, keyed by this instance's slot link_id; each value names that
+    /// entry, keyed by this instance's slot `link_id`; each value names that
     /// future peer. A launch-mechanism marker, not user intent: the slot
     /// boots unpaired and needs no action, unlike a `vacant_pairs` entry
     /// which records a deliberate opt-out. Never set by the CLI.
     pub covered_pairs: BTreeMap<String, Vec<PairTarget>>,
     /// Observer requests from `--link <observer_link>@<source>[/<source_link>]`
     /// or a launch plan, keyed by the starting node's own observer-slot
-    /// link_id and holding that slot's whole ordered member set. Commands to
+    /// `link_id` and holding that slot's whole ordered member set. Commands to
     /// the daemon, not resolved config: the daemon registers each with its
     /// observation coordinator BEFORE the instance commits to Running, so
     /// every member's pin is delivered the moment both are up and re-delivered
@@ -360,16 +361,19 @@ impl NodeRunGoal {
 
     /// Pins the manifest the planner validated against. Set by a coordinator
     /// dispatching to a peer; left unset on the in-process launch path.
+    #[must_use]
     pub fn with_manifest_sha256(mut self, manifest_sha256: impl Into<String>) -> Self {
         self.manifest_sha256 = Some(manifest_sha256.into());
         self
     }
 
+    #[must_use]
     pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
         self.env_vars = env_vars;
         self
     }
 
+    #[must_use]
     pub fn with_requested_pairs(
         mut self,
         requested_pairs: BTreeMap<String, Vec<PairTarget>>,
@@ -378,16 +382,19 @@ impl NodeRunGoal {
         self
     }
 
+    #[must_use]
     pub fn with_vacant_pairs(mut self, vacant_pairs: BTreeMap<String, String>) -> Self {
         self.vacant_pairs = vacant_pairs;
         self
     }
 
+    #[must_use]
     pub fn with_covered_pairs(mut self, covered_pairs: BTreeMap<String, Vec<PairTarget>>) -> Self {
         self.covered_pairs = covered_pairs;
         self
     }
 
+    #[must_use]
     pub fn with_planned_observations(
         mut self,
         planned_observations: BTreeMap<String, ObservationTargets>,
@@ -398,6 +405,7 @@ impl NodeRunGoal {
 
     /// Marks this goal as one step of a federated launch's dispatch, so the
     /// receiving daemon accepts it while reserved for that launch.
+    #[must_use]
     pub fn with_launch_id(mut self, launch_id: impl Into<String>) -> Self {
         self.launch_id = Some(launch_id.into());
         self
@@ -405,11 +413,13 @@ impl NodeRunGoal {
 
     /// Names the daemons whose observers tap this instance, so the daemon that
     /// spawns it can report its lifecycle to them.
+    #[must_use]
     pub fn with_lifecycle_watchers(mut self, lifecycle_watchers: Vec<String>) -> Self {
         self.lifecycle_watchers = lifecycle_watchers;
         self
     }
 
+    #[must_use]
     pub fn with_restart(mut self, restart: RestartRequest) -> Self {
         self.restart = restart;
         self
@@ -420,6 +430,7 @@ impl NodeRunGoal {
     /// holds now (its bindings, the observer sets and the watchers its last
     /// exit took, as joins and removals edited them) and no pairs to plan,
     /// which the respawn requests from the pairs its slot held.
+    #[must_use]
     pub fn for_respawn(
         &self,
         slot_bindings: config::runtime::SlotBindings,
@@ -453,7 +464,7 @@ impl NodeRunGoal {
             .map_err(|e| crate::Error::Encoding(format!("NodeRunGoal.instance_plan: {e}")))?;
         let mut builder = Builder::new_default();
         {
-            let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder>();
+            let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder<'_>>();
             goal.set_instance_plan_json5(&instance_plan_json5);
             goal.set_manifest_sha256(self.manifest_sha256.as_deref().unwrap_or(""));
             goal.set_launch_id(self.launch_id.as_deref().unwrap_or(""));
@@ -505,7 +516,7 @@ impl NodeRunGoal {
             fill_observation_requests(
                 goal.reborrow().init_planned_observations(observation_count),
                 &self.planned_observations,
-            );
+            )?;
             write_restart_request(goal.reborrow().init_restart(), self.restart);
         }
         encode_message(&builder)
@@ -513,7 +524,7 @@ impl NodeRunGoal {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let goal = reader.get_root::<node_capnp::node_run_goal::Reader>()?;
+        let goal = reader.get_root::<node_capnp::node_run_goal::Reader<'_>>()?;
 
         let env_vars = super::read_env_vars(goal.get_env_vars()?)?;
 
@@ -638,8 +649,8 @@ fn fill_pair_requests(
     let flattened = pairs
         .iter()
         .flat_map(|(link_id, targets)| targets.iter().map(move |target| (link_id, target)));
-    for (idx, (link_id, target)) in flattened.enumerate() {
-        let mut pair = list.reborrow().get(idx as u32);
+    for (idx, (link_id, target)) in (0_u32..).zip(flattened) {
+        let mut pair = list.reborrow().get(idx);
         pair.set_link_id(link_id);
         pair.set_peer_link_id(target.peer_link_id.as_deref().unwrap_or(""));
         if let Some(remote) = &target.remote_peer {
@@ -660,13 +671,7 @@ fn write_remote_peer(
     builder.set_pairing_tag(&remote.pairing_tag);
     builder.set_peer_role(&remote.peer_role);
     builder.set_peer_cardinality(remote.peer_cardinality.as_str());
-    builder.set_peer_copy(
-        remote
-            .peer_copy
-            .as_ref()
-            .map(|copy| copy.as_str())
-            .unwrap_or(""),
-    );
+    builder.set_peer_copy(remote.peer_copy.as_ref().map_or("", |copy| copy.as_str()));
 }
 
 /// Inverse of [`fill_pair_requests`]: an empty `peerLinkId` decodes to
@@ -731,8 +736,8 @@ fn fill_vacant_pairs(
     mut list: capnp::struct_list::Builder<'_, node_capnp::vacant_pair::Owned>,
     vacant: &BTreeMap<String, String>,
 ) {
-    for (idx, (link_id, reason)) in vacant.iter().enumerate() {
-        let mut pair = list.reborrow().get(idx as u32);
+    for (idx, (link_id, reason)) in (0_u32..).zip(vacant.iter()) {
+        let mut pair = list.reborrow().get(idx);
         pair.set_link_id(link_id);
         pair.set_reason(reason);
     }
@@ -799,15 +804,17 @@ fn read_instance_address(
 fn fill_observation_requests(
     mut list: capnp::struct_list::Builder<'_, node_capnp::observation_request::Owned>,
     observations: &BTreeMap<String, ObservationTargets>,
-) {
-    for (idx, (observer_link_id, targets)) in observations.iter().enumerate() {
-        let mut observation = list.reborrow().get(idx as u32);
+) -> Result<()> {
+    for (idx, (observer_link_id, targets)) in (0_u32..).zip(observations.iter()) {
+        let mut observation = list.reborrow().get(idx);
         observation.set_observer_link_id(observer_link_id);
-        let mut members = observation.init_targets(targets.len() as u32);
-        for (member_idx, target) in targets.iter().enumerate() {
-            write_observation_member(members.reborrow().get(member_idx as u32), target);
+        let target_count = capnp_list_len(targets.len(), "ObservationRequest.targets")?;
+        let mut members = observation.init_targets(target_count);
+        for (member_idx, target) in (0_u32..).zip(targets.iter()) {
+            write_observation_member(members.reborrow().get(member_idx), target);
         }
     }
+    Ok(())
 }
 
 /// Writes one observed pairing into an initialized `ObservationMember`
@@ -915,7 +922,8 @@ impl NodeRunGoalResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_run_goal_response::Builder>();
+            let mut response =
+                builder.init_root::<node_capnp::node_run_goal_response::Builder<'_>>();
             response.set_log_path(self.log_path.to_string_lossy().as_ref());
         }
         encode_message(&builder)
@@ -923,15 +931,15 @@ impl NodeRunGoalResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_run_goal_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::node_run_goal_response::Reader<'_>>()?;
         Ok(Self {
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
         })
     }
 }
 
-/// Feedback message for the NodeRun action.
-/// Represents a single line of output from the run_cmd process.
+/// Feedback message for the `NodeRun` action.
+/// Represents a single line of output from the `run_cmd` process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRunFeedback {
     pub stream: FeedbackStream,
@@ -974,7 +982,7 @@ impl NodeRunFeedback {
     pub fn encode(&self) -> Result<NonEmptyPayload> {
         let mut builder = Builder::new_default();
         {
-            let mut feedback = builder.init_root::<node_capnp::node_run_feedback::Builder>();
+            let mut feedback = builder.init_root::<node_capnp::node_run_feedback::Builder<'_>>();
             feedback.set_stream(self.stream.to_capnp());
             feedback.set_line(&self.line);
         }
@@ -983,7 +991,7 @@ impl NodeRunFeedback {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let feedback = reader.get_root::<node_capnp::node_run_feedback::Reader>()?;
+        let feedback = reader.get_root::<node_capnp::node_run_feedback::Reader<'_>>()?;
         Ok(Self {
             stream: FeedbackStream::from_capnp(feedback.get_stream()?),
             line: feedback.get_line()?.to_str()?.to_owned(),
@@ -1013,6 +1021,7 @@ impl NodeRunResult {
     }
 
     /// The endpoints the started instance serves.
+    #[must_use]
     pub fn with_endpoints(mut self, endpoints: Vec<InstanceEndpoint>) -> Self {
         self.endpoints = endpoints;
         self
@@ -1021,7 +1030,7 @@ impl NodeRunResult {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut result = builder.init_root::<node_capnp::node_run_result::Builder>();
+            let mut result = builder.init_root::<node_capnp::node_run_result::Builder<'_>>();
             result.set_pid(self.pid.unwrap_or(0));
             let endpoint_count = capnp_list_len(self.endpoints.len(), "NodeRunResult.endpoints")?;
             write_node_endpoints(result.init_endpoints(endpoint_count), &self.endpoints)?;
@@ -1031,7 +1040,7 @@ impl NodeRunResult {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let result = reader.get_root::<node_capnp::node_run_result::Reader>()?;
+        let result = reader.get_root::<node_capnp::node_run_result::Reader<'_>>()?;
         let pid = Some(result.get_pid()).filter(|pid| *pid != 0);
         Ok(Self {
             pid,
@@ -1041,19 +1050,19 @@ impl NodeRunResult {
 }
 
 impl crate::encoding::Wire for NodeRunGoal {
-    type Root = crate::node_capnp::node_run_goal::Owned;
+    type Root = node_capnp::node_run_goal::Owned;
 }
 
 impl crate::encoding::Wire for NodeRunGoalResponse {
-    type Root = crate::node_capnp::node_run_goal_response::Owned;
+    type Root = node_capnp::node_run_goal_response::Owned;
 }
 
 impl crate::encoding::Wire for NodeRunFeedback {
-    type Root = crate::node_capnp::node_run_feedback::Owned;
+    type Root = node_capnp::node_run_feedback::Owned;
 }
 
 impl crate::encoding::Wire for NodeRunResult {
-    type Root = crate::node_capnp::node_run_result::Owned;
+    type Root = node_capnp::node_run_result::Owned;
 }
 
 #[cfg(test)]
@@ -1104,9 +1113,10 @@ mod tests {
                 clock: sim_clock(),
                 slot_bindings: BTreeMap::from([(
                     "camera".to_owned(),
-                    config::runtime::BoundProducers::try_from(vec![
-                        config::runtime::ProducerRef::new("cn-robot-7", "wrist_cam_inst"),
-                    ])
+                    config::runtime::BoundProducers::try_from(vec![ProducerRef::new(
+                        "cn-robot-7",
+                        "wrist_cam_inst",
+                    )])
                     .expect("one producer is a valid set"),
                 )]),
                 daemon_scopes: BTreeMap::from([(
@@ -1147,9 +1157,10 @@ mod tests {
             NodeInstancePlan {
                 slot_bindings: BTreeMap::from([(
                     "scene".to_owned(),
-                    config::runtime::BoundProducers::try_from(vec![
-                        config::runtime::ProducerRef::new("cn-robot-7", "wrist_cam_inst"),
-                    ])
+                    config::runtime::BoundProducers::try_from(vec![ProducerRef::new(
+                        "cn-robot-7",
+                        "wrist_cam_inst",
+                    )])
                     .expect("one producer is a valid set"),
                 )]),
                 ..plan("planner_inst")
@@ -1279,7 +1290,7 @@ mod tests {
         .expect("distinct members");
         let goal = NodeRunGoal::new(plan("commander_1"), "commander", "v1", 0)
             .with_planned_observations(
-                [("observed_joints".to_owned(), targets.clone())]
+                [("observed_joints".to_owned(), targets)]
                     .into_iter()
                     .collect(),
             );
@@ -1331,7 +1342,7 @@ mod tests {
     }
 
     /// A multi slot's pairs travel as one `PairRequest` per pair, all sharing
-    /// that slot's link_id, and decode back into the slot's list in wire
+    /// that slot's `link_id`, and decode back into the slot's list in wire
     /// order. This is what lets one instance hold several pairs on one slot.
     #[test]
     fn node_run_goal_roundtrip_carries_every_pair_of_a_multi_slot() {
@@ -1392,12 +1403,12 @@ mod tests {
         message
             .set_root(
                 reader
-                    .get_root::<node_capnp::node_run_goal::Reader>()
+                    .get_root::<node_capnp::node_run_goal::Reader<'_>>()
                     .expect("root"),
             )
             .expect("copy the goal");
         let goal = message
-            .get_root::<node_capnp::node_run_goal::Builder>()
+            .get_root::<node_capnp::node_run_goal::Builder<'_>>()
             .expect("root");
         let pair = goal.get_requested_pairs().expect("requested pairs").get(0);
         edit(pair.get_remote_peer().expect("remote peer"));
@@ -1457,7 +1468,7 @@ mod tests {
             config::node::Cardinality::ZeroOrMore
         );
         assert_eq!(
-            remote.peer_copy.as_ref().map(|copy| copy.as_str()),
+            remote.peer_copy.as_ref().map(config::runtime::Name::as_str),
             Some("atlas")
         );
     }
@@ -1519,11 +1530,11 @@ mod tests {
     fn node_run_goal_decode_rejects_a_goal_carrying_no_instance_plan() {
         let mut builder = Builder::new_default();
         {
-            let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder>();
+            let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder<'_>>();
             goal.set_node_name("node");
             goal.set_tag("tag");
         }
-        let encoded = crate::encoding::encode_message(&builder).expect("encode");
+        let encoded = encode_message(&builder).expect("encode");
         let error = NodeRunGoal::decode(&encoded).expect_err("a goal with no plan must fail");
         assert!(
             error.to_string().contains("instance_plan is empty"),
@@ -1544,7 +1555,7 @@ mod tests {
     ) -> Payload {
         let mut builder = Builder::new_default();
         {
-            let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder>();
+            let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder<'_>>();
             goal.set_instance_plan_json5(
                 serde_json5::to_string(&plan("inst_1")).expect("serialize plan"),
             );
@@ -1552,7 +1563,7 @@ mod tests {
             goal.set_tag("tag");
             fill(goal.init_planned_observations(request_count));
         }
-        crate::encoding::encode_message(&builder).expect("encode")
+        encode_message(&builder).expect("encode")
     }
 
     /// An empty member list is never written (a slot that observes nothing is
@@ -1581,8 +1592,8 @@ mod tests {
     fn node_run_goal_decode_rejects_two_requests_for_one_slot() {
         let encoded = goal_with_raw_observations(
             |mut list| {
-                for (idx, instance) in ["follower_1", "follower_2"].into_iter().enumerate() {
-                    let mut request = list.reborrow().get(idx as u32);
+                for (idx, instance) in (0_u32..).zip(["follower_1", "follower_2"]) {
+                    let mut request = list.reborrow().get(idx);
                     request.set_observer_link_id("observed_joints");
                     let mut member = request.init_targets(1).get(0);
                     member.set_source_link_id("joint");
@@ -1718,7 +1729,7 @@ mod tests {
 
     #[test]
     fn node_run_goal_decode_rejects_malformed_bytes() {
-        assert!(NodeRunGoal::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeRunGoal::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     /// Each level's request survives the wire with its cap; a goal that
@@ -1834,7 +1845,7 @@ mod tests {
         for (policy, origin, max_restarts, refusal) in cases {
             let mut builder = Builder::new_default();
             {
-                let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder>();
+                let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder<'_>>();
                 goal.set_instance_plan_json5(
                     serde_json5::to_string(&plan("inst_1")).expect("a plan serializes"),
                 );
@@ -1865,7 +1876,7 @@ mod tests {
 
     #[test]
     fn node_run_goal_response_decode_rejects_malformed_bytes() {
-        assert!(NodeRunGoalResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeRunGoalResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     // --- NodeRunFeedback ---
@@ -1900,7 +1911,7 @@ mod tests {
 
     #[test]
     fn node_run_feedback_decode_rejects_malformed_bytes() {
-        assert!(NodeRunFeedback::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeRunFeedback::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     // --- NodeRunResult ---
@@ -1916,7 +1927,7 @@ mod tests {
 
     #[test]
     fn node_run_result_decode_rejects_malformed_bytes() {
-        assert!(NodeRunResult::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeRunResult::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     /// The endpoints a started instance serves ride the result, with their

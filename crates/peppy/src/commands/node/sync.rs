@@ -13,7 +13,7 @@ use crate::error::Result;
 use peppylib::core_node::transport::poll;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn sync_node(
+pub(super) fn sync_node(
     ctx: &Arc<AppContext>,
     path: Option<PathBuf>,
     include_repositories: bool,
@@ -68,7 +68,7 @@ async fn sync_resolved_node(
         REQUEST_TIMEOUT,
     )
     .await
-    .map_err(|e| crate::commands::request_error("Failed to sync the node", e))?;
+    .map_err(|e| crate::commands::request_error("Failed to sync the node", &e))?;
 
     info!("Synced node interfaces at {}", node_root_dir.display());
 

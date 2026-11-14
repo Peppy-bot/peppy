@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{Mutex, OnceCell};
 
+#[derive(Debug)]
 pub struct AppContext {
     pub root_dir: PathBuf,
     daemon_state_path: Option<PathBuf>,
@@ -48,6 +49,7 @@ impl AppContext {
     /// In-process test emulations root their daemon at a per-test temp dir;
     /// this points the context at that daemon's state file without mutating
     /// the process-wide environment, which is not safe from parallel tests.
+    #[must_use]
     pub fn with_daemon_state_file(mut self, daemon_state_path: impl AsRef<Path>) -> Self {
         self.daemon_state_path = Some(daemon_state_path.as_ref().to_path_buf());
         self
@@ -58,6 +60,7 @@ impl AppContext {
     /// default (the local daemon). Only the *target* of each request changes;
     /// the CLI still connects to the local daemon's router, whose federation
     /// carries the traffic to the remote core node.
+    #[must_use]
     pub fn with_core_node_override(mut self, core_node: Option<CoreNodeName>) -> Self {
         self.core_node_override = core_node;
         self
@@ -76,8 +79,7 @@ impl AppContext {
         }
         .map_err(|e| {
             Error::ExecutionFailed(format!(
-                "Failed to read daemon state. Is the peppy daemon running? Error: {}",
-                e
+                "Failed to read daemon state. Is the peppy daemon running? Error: {e}"
             ))
         })?;
         Ok(state)
@@ -87,7 +89,7 @@ impl AppContext {
         Ok(self.read_daemon_state()?.core_node_name)
     }
 
-    /// Creates an AppContext over a session that the caller gives in place
+    /// Creates an `AppContext` over a session that the caller gives in place
     /// of a connection to the router. This is useful for testing with a
     /// shared mock messenger. The context signs over it as over its own
     /// session.
@@ -107,7 +109,7 @@ impl AppContext {
     ) -> crate::error::Result<&MessengerHandle> {
         let messenger = self
             .messenger_handle
-            .get_or_try_init(|| async {
+            .get_or_try_init(async || {
                 let signer = ClientCredential::read(&daemon_state.command_line_key)
                     .map_err(|error| {
                         Error::ExecutionFailed(format!(

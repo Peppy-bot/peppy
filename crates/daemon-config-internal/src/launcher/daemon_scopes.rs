@@ -43,7 +43,7 @@ pub struct DeploymentTargets {
 impl DeploymentTargets {
     /// The targets of a node whose manifest is `manifest`: each slot of its
     /// `depends_on`, and each daemon target, a `depends_on.daemon` entry,
-    /// named by its link_id. Every daemon target must name an interface this
+    /// named by its `link_id`. Every daemon target must name an interface this
     /// peppy serves at the tag it names; every one that does not is reported
     /// at once.
     pub fn of_node(manifest: &Manifest) -> Result<Self, Vec<String>> {

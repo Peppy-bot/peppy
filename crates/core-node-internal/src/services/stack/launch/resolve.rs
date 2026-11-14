@@ -46,7 +46,7 @@ pub(in crate::services::stack) struct LaunchPlacements {
 pub(in crate::services::stack) async fn parse_launcher_config(
     ctx: &StackChangeContext,
     goal: &LaunchGoal,
-) -> std::result::Result<ParsedLaunch, String> {
+) -> Result<ParsedLaunch, String> {
     publish_stdout(
         ctx,
         "Parsing launcher configuration",
@@ -66,7 +66,7 @@ pub(in crate::services::stack) async fn parse_launcher_config(
 async fn read_launcher_config(
     ctx: &StackChangeContext,
     goal: &LaunchGoal,
-) -> std::result::Result<ParsedLaunch, String> {
+) -> Result<ParsedLaunch, String> {
     let launch_file = resolve_launcher_origin(ctx, &goal.launcher_origin).await?;
 
     if !launch_file.exists() {
@@ -133,7 +133,7 @@ pub(in crate::services::stack) fn resolve_placements(
     composed: &daemon_config::launcher::ComposedLaunch,
     goal: &LaunchGoal,
     coordinator: &str,
-) -> std::result::Result<LaunchPlacements, String> {
+) -> Result<LaunchPlacements, String> {
     // The daemon's own name, re-parsed rather than assumed: this is the only
     // way to obtain a `CoreNodeName`, and every name in a `Placements` is one.
     let coordinator = CoreNodeName::new(coordinator)
@@ -210,7 +210,7 @@ fn wire_core_node_links<'a>(
     declared: &BTreeSet<&'a str>,
     copies: &BTreeMap<CopyName, CoreNodeName>,
     coordinator: &CoreNodeName,
-) -> std::result::Result<BTreeMap<&'a str, CoreNodeName>, String> {
+) -> Result<BTreeMap<&'a str, CoreNodeName>, String> {
     let places = match placement {
         // `--local` collapses the whole topology onto this machine, whatever it
         // turns out to be. A launcher that declares nothing is already entirely
@@ -260,7 +260,7 @@ fn wire_core_node_links<'a>(
     }
     let undeclared: Vec<&str> = places
         .keys()
-        .map(|link| link.as_str())
+        .map(config::runtime::Name::as_str)
         .filter(|link| !declared.contains(link))
         .collect();
     if !undeclared.is_empty() {
@@ -292,7 +292,7 @@ fn wire_core_node_links<'a>(
 async fn resolve_launcher_origin(
     ctx: &StackChangeContext,
     origin: &LauncherOrigin,
-) -> std::result::Result<PathBuf, String> {
+) -> Result<PathBuf, String> {
     match origin {
         LauncherOrigin::Fs(path) => Ok(path.clone()),
         LauncherOrigin::Repository { name } => {
@@ -340,7 +340,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
     ctx: &StackChangeContext,
     deployments: Vec<Deployment>,
     placements: &Placements,
-) -> std::result::Result<Vec<PlannedDeployment>, String> {
+) -> Result<Vec<PlannedDeployment>, String> {
     publish_stdout(
         ctx,
         format!("Resolving {} deployment(s)", deployments.len()),
@@ -423,7 +423,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
 /// published as the change's error.
 pub(in crate::services::stack) async fn load_node_index(
     ctx: &StackChangeContext,
-) -> std::result::Result<Arc<Vec<repo_cache::NodeCacheEntry>>, String> {
+) -> Result<Arc<Vec<repo_cache::NodeCacheEntry>>, String> {
     match repo_cache::load_node_cache(&ctx.peppy_dirs) {
         Ok(entries) => Ok(Arc::new(entries)),
         Err(e) => {
@@ -450,7 +450,7 @@ pub(in crate::services::stack) async fn resolve_planned(
     deployment: Deployment,
     placements: &Placements,
     node_entries: &Arc<Vec<repo_cache::NodeCacheEntry>>,
-) -> std::result::Result<PlannedDeployment, String> {
+) -> Result<PlannedDeployment, String> {
     let (feedback_tx, forwarder) = spawn_feedback_forwarder(
         &ctx.feedback_publisher,
         LaunchFeedbackStep::LauncherStep,
@@ -523,7 +523,7 @@ fn has_remote_instances(deployment: &Deployment, placements: &Placements) -> boo
 fn refuse_unportable_pins<'a>(
     label: &str,
     pins: impl Iterator<Item = &'a PinnedItem>,
-) -> std::result::Result<(), String> {
+) -> Result<(), String> {
     for pin in pins {
         if let Some(reason) = pins::portable_pin_refusal(pin) {
             return Err(format!("deployment {label}: {reason}"));
@@ -538,7 +538,7 @@ async fn resolve_one(
     placements: &Placements,
     node_entries: &Arc<Vec<repo_cache::NodeCacheEntry>>,
     feedback_tx: &tokio::sync::mpsc::UnboundedSender<FeedbackLine>,
-) -> std::result::Result<ResolvedDeployment, String> {
+) -> Result<ResolvedDeployment, String> {
     let label = deployment.source.label();
     let remote = has_remote_instances(deployment, placements);
     let feedback: crate::services::node::cache::MaterializeFeedback =
@@ -559,7 +559,7 @@ async fn resolve_one(
             let references = exposures.clone();
             let resolved = tokio::task::spawn_blocking(move || {
                 crate::services::mcp::resolve_exposure_deployment(&dirs, &references, &|line| {
-                    feedback(line)
+                    feedback(line);
                 })
             })
             .await
@@ -632,7 +632,7 @@ pub(in crate::services::stack) async fn mint_doc_pins(
     ctx: &StackChangeContext,
     planned: &mut [PlannedDeployment],
     placements: &Placements,
-) -> std::result::Result<(), String> {
+) -> Result<(), String> {
     let minted = mint_doc_pins_of(ctx, planned).await?;
     let mut problems: Vec<String> = Vec::new();
     for (item, minted) in planned.iter_mut().zip(minted) {
@@ -667,7 +667,7 @@ pub(in crate::services::stack) async fn mint_doc_pins(
 pub(in crate::services::stack) async fn mint_doc_pins_of(
     ctx: &StackChangeContext,
     planned: &[PlannedDeployment],
-) -> std::result::Result<Vec<std::result::Result<Vec<PinnedItem>, String>>, String> {
+) -> Result<Vec<Result<Vec<PinnedItem>, String>>, String> {
     // Every deployment mints against ONE load of the contract and pairing
     // caches, on one blocking thread: both are read and parsed per load, and
     // a launch with N deployments otherwise paid N of each, sequentially, on
@@ -700,7 +700,7 @@ pub(in crate::services::stack) async fn mint_doc_pins_of(
 mod tests {
     use super::*;
     use crate::services::stack::fixtures::{launch_of_robots, placements_with, test_root_pin};
-    use daemon_config::launcher::{DeploymentInstance, DeploymentSource};
+    use daemon_config::launcher::DeploymentInstance;
     use daemon_config::repository::EntryOrigin;
 
     fn source(json5: &str) -> DeploymentSource {
@@ -752,7 +752,7 @@ mod tests {
         assert!(error.contains("git repository"), "got: {error}");
 
         let git_pin = test_root_pin("planner");
-        assert!(refuse_unportable_pins("planner:v1", std::iter::once(&git_pin)).is_ok());
+        refuse_unportable_pins("planner:v1", std::iter::once(&git_pin)).unwrap();
     }
 
     // --- Placement: binding a launcher's declared links to real machines ---

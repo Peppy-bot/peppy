@@ -23,10 +23,6 @@ use crate::generator::golden_support::{
     assert_matches_golden, full_action_messages, parse, peer, push_artifact_section,
     register_bodyless_dependency, register_own_emitted_topics, register_own_services_and_actions,
 };
-use config::node::{
-    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    TopicRetention,
-};
 use tempfile::TempDir;
 
 const GOLDEN: GoldenDocument = GoldenDocument {
@@ -125,8 +121,8 @@ fn render_everything(node_dir: &Path) -> Vec<InterfaceArtifact> {
     }
 
     let registry = std::mem::take(&mut generator.testgen);
-    super::super::mock::render(&mut generator, &registry).unwrap();
-    super::super::fixtures::render(&mut generator, &registry, node_dir).unwrap();
+    mock::render(&mut generator, &registry).unwrap();
+    fixtures::render(&mut generator, &registry, node_dir).unwrap();
     generator.into_artifacts()
 }
 
@@ -144,8 +140,8 @@ fn render_bodyless_surface(node_dir: &Path) -> Vec<InterfaceArtifact> {
     register_bodyless_dependency(&mut generator);
 
     let registry = std::mem::take(&mut generator.testgen);
-    super::super::mock::render(&mut generator, &registry).unwrap();
-    super::super::fixtures::render(&mut generator, &registry, node_dir).unwrap();
+    mock::render(&mut generator, &registry).unwrap();
+    fixtures::render(&mut generator, &registry, node_dir).unwrap();
     generator.into_artifacts()
 }
 
@@ -157,7 +153,7 @@ fn render_bare_harness(node_dir: &Path) -> Vec<InterfaceArtifact> {
     generator.set_node_identity("bare_node", "v1");
     generator.set_parameters(parse(PARAMETERS_WITH_A_MISSING_DEFAULT));
     let registry = std::mem::take(&mut generator.testgen);
-    super::super::fixtures::render(&mut generator, &registry, node_dir).unwrap();
+    fixtures::render(&mut generator, &registry, node_dir).unwrap();
     generator.into_artifacts()
 }
 
@@ -167,9 +163,9 @@ fn render_bare_harness(node_dir: &Path) -> Vec<InterfaceArtifact> {
 fn render_staged_harness(node_dir: &Path) -> Vec<InterfaceArtifact> {
     let mut generator = PythonGenerator::new();
     generator.set_node_identity("staged_node", "v1");
-    generator.set_node_tree(crate::generator::common::NodeTree::Staged);
+    generator.set_node_tree(NodeTree::Staged);
     let registry = std::mem::take(&mut generator.testgen);
-    super::super::fixtures::render(&mut generator, &registry, node_dir).unwrap();
+    fixtures::render(&mut generator, &registry, node_dir).unwrap();
     generator.into_artifacts()
 }
 
@@ -184,9 +180,9 @@ fn render_all_scenarios(node_dir: &Path) -> Vec<InterfaceArtifact> {
 
 /// The rendered surface as one reviewable document, with the sync-time node
 /// directory (a per-run temp path) normalized away.
-fn rendered_document(node_dir: &Path, artifacts: Vec<InterfaceArtifact>) -> String {
+fn rendered_document(node_dir: &Path, artifacts: &[InterfaceArtifact]) -> String {
     let mut document = String::new();
-    for artifact in &artifacts {
+    for artifact in artifacts {
         push_artifact_section(&mut document, artifact);
     }
     let canonical = std::fs::canonicalize(node_dir)
@@ -199,7 +195,7 @@ fn rendered_document(node_dir: &Path, artifacts: Vec<InterfaceArtifact>) -> Stri
 #[test]
 fn python_renderers_emit_the_golden_document() {
     let node_dir = TempDir::new().unwrap();
-    let rendered = rendered_document(node_dir.path(), render_all_scenarios(node_dir.path()));
+    let rendered = rendered_document(node_dir.path(), &render_all_scenarios(node_dir.path()));
     assert_matches_golden(&GOLDEN, &rendered);
 }
 

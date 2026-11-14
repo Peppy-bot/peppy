@@ -3,8 +3,8 @@
 //! registry live with the daemon.
 
 use super::*;
-use crate::CredentialStore;
 use httpmock::prelude::*;
+use std::assert_matches;
 use std::ffi::OsString;
 
 const REPOSITORY_PATH: &str = "acme/nodes";
@@ -55,10 +55,11 @@ impl Registry {
         )
         .expect("client")
     }
+}
 
-    fn path(&self, rest: &str) -> String {
-        format!("/v2/{REPOSITORY_PATH}/{rest}")
-    }
+/// The path of `rest` under the repository of the tests.
+fn repository_path(rest: &str) -> String {
+    format!("/v2/{REPOSITORY_PATH}/{rest}")
 }
 
 /// `Basic` of `peppy:s3cret`.
@@ -67,12 +68,12 @@ const BASIC_PEPPY: &str = "Basic cGVwcHk6czNjcmV0";
 #[tokio::test]
 async fn tag_list_follows_every_page() {
     let registry = Registry::start().await;
-    let second = format!("{}?n=1000&last=b", registry.path("tags/list"));
+    let second = format!("{}?n=1000&last=b", repository_path("tags/list"));
     registry
         .server
         .mock_async(|when, then| {
             when.method(GET)
-                .path(registry.path("tags/list"))
+                .path(repository_path("tags/list"))
                 .query_param("n", "1000")
                 .is_true(|request| !request.uri().to_string().contains("last="));
             then.status(200)
@@ -84,7 +85,7 @@ async fn tag_list_follows_every_page() {
         .server
         .mock_async(|when, then| {
             when.method(GET)
-                .path(registry.path("tags/list"))
+                .path(repository_path("tags/list"))
                 .query_param("last", "b");
             then.status(200)
                 .json_body(serde_json::json!({"name": REPOSITORY_PATH, "tags": ["c"]}));
@@ -106,7 +107,7 @@ async fn a_repository_the_registry_does_not_know_has_no_tags() {
     registry
         .server
         .mock_async(|when, then| {
-            when.method(GET).path(registry.path("tags/list"));
+            when.method(GET).path(repository_path("tags/list"));
             then.status(404).json_body(serde_json::json!({
                 "errors": [{"code": "NAME_UNKNOWN", "message": "repository name not known"}]
             }));
@@ -135,7 +136,7 @@ async fn a_bearer_challenge_is_answered_with_a_token_got_with_the_credential() {
         .server
         .mock_async(|when, then| {
             when.method(GET)
-                .path(registry.path("tags/list"))
+                .path(repository_path("tags/list"))
                 .header_missing("authorization");
             then.status(401)
                 .header("WWW-Authenticate", challenge.clone());
@@ -157,7 +158,7 @@ async fn a_bearer_challenge_is_answered_with_a_token_got_with_the_credential() {
         .server
         .mock_async(|when, then| {
             when.method(GET)
-                .path(registry.path("tags/list"))
+                .path(repository_path("tags/list"))
                 .header("authorization", "Bearer tok-123");
             then.status(200)
                 .json_body(serde_json::json!({"tags": ["x"]}));
@@ -182,7 +183,7 @@ async fn a_basic_challenge_is_answered_with_the_credential() {
         .server
         .mock_async(|when, then| {
             when.method(GET)
-                .path(registry.path("tags/list"))
+                .path(repository_path("tags/list"))
                 .header_missing("authorization");
             then.status(401)
                 .header("WWW-Authenticate", r#"Basic realm="Registry Realm""#);
@@ -192,7 +193,7 @@ async fn a_basic_challenge_is_answered_with_the_credential() {
         .server
         .mock_async(|when, then| {
             when.method(GET)
-                .path(registry.path("tags/list"))
+                .path(repository_path("tags/list"))
                 .header("authorization", BASIC_PEPPY);
             then.status(200).json_body(serde_json::json!({"tags": []}));
         })
@@ -213,7 +214,7 @@ async fn a_registry_that_asks_for_a_credential_the_auth_file_lacks_says_so() {
     registry
         .server
         .mock_async(|when, then| {
-            when.method(GET).path(registry.path("tags/list"));
+            when.method(GET).path(repository_path("tags/list"));
             then.status(401)
                 .header("WWW-Authenticate", r#"Basic realm="Registry Realm""#);
         })
@@ -225,8 +226,7 @@ async fn a_registry_that_asks_for_a_credential_the_auth_file_lacks_says_so() {
         .await
         .expect_err("no credential");
 
-    assert!(
-        matches!(&error, RegistryError::NoCredential { registry: r } if *r == registry.registry()),
+    assert_matches!(&error, RegistryError::NoCredential { registry: r } if *r == registry.registry(),
         "{error}"
     );
     assert!(error.to_string().contains("docker login"), "{error}");
@@ -239,7 +239,7 @@ async fn a_refused_credential_is_an_error_with_the_answer_of_the_registry() {
     registry
         .server
         .mock_async(|when, then| {
-            when.method(GET).path(registry.path("tags/list"));
+            when.method(GET).path(repository_path("tags/list"));
             then.status(401)
                 .header("WWW-Authenticate", r#"Basic realm="Registry Realm""#)
                 .json_body(serde_json::json!({
@@ -254,10 +254,7 @@ async fn a_refused_credential_is_an_error_with_the_answer_of_the_registry() {
         .await
         .expect_err("refused");
 
-    assert!(
-        matches!(error, RegistryError::Unauthorized { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::Unauthorized { .. }, "{error}");
     assert!(
         error
             .to_string()
@@ -270,12 +267,12 @@ async fn a_refused_credential_is_an_error_with_the_answer_of_the_registry() {
 async fn a_manifest_is_read_with_its_digest_and_a_missing_one_is_none() {
     let registry = Registry::start().await;
     let body = br#"{"schemaVersion":2}"#;
-    let digest = crate::digest::of_bytes(body);
+    let digest = digest::of_bytes(body);
     registry
         .server
         .mock_async(|when, then| {
             when.method(GET)
-                .path(registry.path("manifests/waldo.v1.v0.36.0.linux-amd64"))
+                .path(repository_path("manifests/waldo.v1.v0.36.0.linux-amd64"))
                 .header("accept", IMAGE_MANIFEST_MEDIA_TYPE);
             then.status(200).body(body);
         })
@@ -284,7 +281,7 @@ async fn a_manifest_is_read_with_its_digest_and_a_missing_one_is_none() {
         .server
         .mock_async(|when, then| {
             when.method(GET)
-                .path(registry.path(&format!("manifests/{digest}")));
+                .path(repository_path(&format!("manifests/{digest}")));
             then.status(200).body(b"tampered");
         })
         .await;
@@ -302,23 +299,20 @@ async fn a_manifest_is_read_with_its_digest_and_a_missing_one_is_none() {
         .manifest(digest.as_str())
         .await
         .expect_err("a manifest asked by digest must have it");
-    assert!(
-        matches!(error, RegistryError::DigestMismatch { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::DigestMismatch { .. }, "{error}");
 }
 
 #[tokio::test]
 async fn a_downloaded_blob_lands_only_when_its_digest_and_size_match() {
     let registry = Registry::start().await;
     let content = vec![7u8; 10_000];
-    let digest = crate::digest::of_bytes(&content);
-    let tampered = crate::digest::of_bytes(b"other");
+    let digest = digest::of_bytes(&content);
+    let tampered = digest::of_bytes(b"other");
     registry
         .server
         .mock_async(|when, then| {
             when.method(GET)
-                .path(registry.path(&format!("blobs/{digest}")));
+                .path(repository_path(&format!("blobs/{digest}")));
             then.status(200).body(&content);
         })
         .await;
@@ -326,7 +320,7 @@ async fn a_downloaded_blob_lands_only_when_its_digest_and_size_match() {
         .server
         .mock_async(|when, then| {
             when.method(GET)
-                .path(registry.path(&format!("blobs/{tampered}")));
+                .path(repository_path(&format!("blobs/{tampered}")));
             then.status(200).body(&content);
         })
         .await;
@@ -337,7 +331,7 @@ async fn a_downloaded_blob_lands_only_when_its_digest_and_size_match() {
     let mut seen = Vec::new();
     client
         .download_blob(&digest, content.len() as u64, &good, &mut |bytes| {
-            seen.push(bytes)
+            seen.push(bytes);
         })
         .await
         .expect("download");
@@ -349,20 +343,14 @@ async fn a_downloaded_blob_lands_only_when_its_digest_and_size_match() {
         .download_blob(&tampered, content.len() as u64, &bad, &mut |_| {})
         .await
         .expect_err("digest mismatch");
-    assert!(
-        matches!(error, RegistryError::DigestMismatch { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::DigestMismatch { .. }, "{error}");
 
     let short = dir.path().join("short.sif");
     let error = client
         .download_blob(&digest, content.len() as u64 - 1, &short, &mut |_| {})
         .await
         .expect_err("more bytes than the descriptor states");
-    assert!(
-        matches!(error, RegistryError::SizeMismatch { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::SizeMismatch { .. }, "{error}");
 
     // Nothing but the good blob is left: no partial file, no bad blob.
     let names: Vec<String> = std::fs::read_dir(dir.path())
@@ -381,12 +369,12 @@ async fn a_downloaded_blob_lands_only_when_its_digest_and_size_match() {
 #[tokio::test]
 async fn a_missing_blob_is_not_found() {
     let registry = Registry::start().await;
-    let digest = crate::digest::of_bytes(b"absent");
+    let digest = digest::of_bytes(b"absent");
     registry
         .server
         .mock_async(|when, then| {
             when.method(GET)
-                .path(registry.path(&format!("blobs/{digest}")));
+                .path(repository_path(&format!("blobs/{digest}")));
             then.status(404);
         })
         .await;
@@ -398,14 +386,14 @@ async fn a_missing_blob_is_not_found() {
         .await
         .expect_err("absent");
 
-    assert!(matches!(error, RegistryError::NotFound { .. }), "{error}");
+    assert_matches!(error, RegistryError::NotFound { .. }, "{error}");
 }
 
 #[tokio::test]
 async fn a_file_is_pushed_in_chunks_with_their_ranges_then_closed_with_its_digest() {
     let registry = Registry::start().await;
     let content: Vec<u8> = (0..25u8).collect();
-    let digest = crate::digest::of_bytes(&content);
+    let digest = digest::of_bytes(&content);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("node.sif");
     std::fs::write(&path, &content).expect("write");
@@ -413,16 +401,16 @@ async fn a_file_is_pushed_in_chunks_with_their_ranges_then_closed_with_its_diges
         .server
         .mock_async(|when, then| {
             when.method(httpmock::Method::HEAD)
-                .path(registry.path(&format!("blobs/{digest}")));
+                .path(repository_path(&format!("blobs/{digest}")));
             then.status(404);
         })
         .await;
     registry
         .server
         .mock_async(|when, then| {
-            when.method(POST).path(registry.path("blobs/uploads/"));
+            when.method(POST).path(repository_path("blobs/uploads/"));
             then.status(202)
-                .header("Location", registry.path("blobs/uploads/u1?_state=0"));
+                .header("Location", repository_path("blobs/uploads/u1?_state=0"));
         })
         .await;
     let mut chunks = Vec::new();
@@ -433,7 +421,7 @@ async fn a_file_is_pushed_in_chunks_with_their_ranges_then_closed_with_its_diges
                 .server
                 .mock_async(|when, then| {
                     when.method(PATCH)
-                        .path(registry.path("blobs/uploads/u1"))
+                        .path(repository_path("blobs/uploads/u1"))
                         .query_param("_state", index.to_string())
                         .header("content-range", format!("{start}-{end}"))
                         .is_true(move |request| request.body_ref() == expected.as_slice());
@@ -442,7 +430,7 @@ async fn a_file_is_pushed_in_chunks_with_their_ranges_then_closed_with_its_diges
                         // An absolute location is followed as well.
                         format!(
                             "{}?_state={}",
-                            registry.server.url(registry.path("blobs/uploads/u1")),
+                            registry.server.url(repository_path("blobs/uploads/u1")),
                             index + 1
                         ),
                     );
@@ -454,7 +442,7 @@ async fn a_file_is_pushed_in_chunks_with_their_ranges_then_closed_with_its_diges
         .server
         .mock_async(|when, then| {
             when.method(PUT)
-                .path(registry.path("blobs/uploads/u1"))
+                .path(repository_path("blobs/uploads/u1"))
                 .query_param("_state", "3")
                 .query_param("digest", digest.as_str());
             then.status(201);
@@ -465,7 +453,7 @@ async fn a_file_is_pushed_in_chunks_with_their_ranges_then_closed_with_its_diges
 
     let pushed = client
         .push_blob_file(&path, &digest, content.len() as u64, &mut |sent| {
-            progress.push(sent)
+            progress.push(sent);
         })
         .await
         .expect("push");
@@ -483,8 +471,8 @@ async fn a_file_is_pushed_in_chunks_with_their_ranges_then_closed_with_its_diges
 #[tokio::test]
 async fn the_progress_of_a_push_moves_by_the_parts_of_a_chunk() {
     let registry = Registry::start().await;
-    let content: Vec<u8> = (0..2 * UPLOAD_PART_BYTES + 100).map(|i| i as u8).collect();
-    let digest = crate::digest::of_bytes(&content);
+    let content: Vec<u8> = Vec::from_fn(2 * UPLOAD_PART_BYTES + 100, |i| i.to_le_bytes()[0]);
+    let digest = digest::of_bytes(&content);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("node.sif");
     std::fs::write(&path, &content).expect("write");
@@ -492,16 +480,16 @@ async fn the_progress_of_a_push_moves_by_the_parts_of_a_chunk() {
         .server
         .mock_async(|when, then| {
             when.method(httpmock::Method::HEAD)
-                .path(registry.path(&format!("blobs/{digest}")));
+                .path(repository_path(&format!("blobs/{digest}")));
             then.status(404);
         })
         .await;
     registry
         .server
         .mock_async(|when, then| {
-            when.method(POST).path(registry.path("blobs/uploads/"));
+            when.method(POST).path(repository_path("blobs/uploads/"));
             then.status(202)
-                .header("Location", registry.path("blobs/uploads/u1"));
+                .header("Location", repository_path("blobs/uploads/u1"));
         })
         .await;
     let expected = content.clone();
@@ -509,17 +497,17 @@ async fn the_progress_of_a_push_moves_by_the_parts_of_a_chunk() {
         .server
         .mock_async(|when, then| {
             when.method(PATCH)
-                .path(registry.path("blobs/uploads/u1"))
+                .path(repository_path("blobs/uploads/u1"))
                 .header("content-length", content.len().to_string())
                 .is_true(move |request| request.body_ref() == expected.as_slice());
             then.status(202)
-                .header("Location", registry.path("blobs/uploads/u2"));
+                .header("Location", repository_path("blobs/uploads/u2"));
         })
         .await;
     registry
         .server
         .mock_async(|when, then| {
-            when.method(PUT).path(registry.path("blobs/uploads/u2"));
+            when.method(PUT).path(repository_path("blobs/uploads/u2"));
             then.status(201);
         })
         .await;
@@ -528,7 +516,7 @@ async fn the_progress_of_a_push_moves_by_the_parts_of_a_chunk() {
     registry
         .client(Access::Push)
         .push_blob_file(&path, &digest, content.len() as u64, &mut |sent| {
-            progress.push(sent)
+            progress.push(sent);
         })
         .await
         .expect("push");
@@ -541,19 +529,19 @@ async fn the_progress_of_a_push_moves_by_the_parts_of_a_chunk() {
 #[tokio::test]
 async fn a_blob_the_registry_has_is_not_pushed_again() {
     let registry = Registry::start().await;
-    let digest = crate::digest::of_bytes(b"present");
+    let digest = digest::of_bytes(b"present");
     registry
         .server
         .mock_async(|when, then| {
             when.method(httpmock::Method::HEAD)
-                .path(registry.path(&format!("blobs/{digest}")));
+                .path(repository_path(&format!("blobs/{digest}")));
             then.status(200);
         })
         .await;
     let upload = registry
         .server
         .mock_async(|when, then| {
-            when.method(POST).path(registry.path("blobs/uploads/"));
+            when.method(POST).path(repository_path("blobs/uploads/"));
             then.status(202);
         })
         .await;
@@ -577,16 +565,16 @@ async fn the_push_check_opens_an_upload_and_cancels_it() {
     registry
         .server
         .mock_async(|when, then| {
-            when.method(POST).path(registry.path("blobs/uploads/"));
+            when.method(POST).path(repository_path("blobs/uploads/"));
             then.status(202)
-                .header("Location", registry.path("blobs/uploads/check"));
+                .header("Location", repository_path("blobs/uploads/check"));
         })
         .await;
     let cancel = registry
         .server
         .mock_async(|when, then| {
             when.method(DELETE)
-                .path(registry.path("blobs/uploads/check"));
+                .path(repository_path("blobs/uploads/check"));
             then.status(204);
         })
         .await;
@@ -606,7 +594,7 @@ async fn a_registry_that_refuses_the_push_check_answers_with_its_reason() {
     registry
         .server
         .mock_async(|when, then| {
-            when.method(POST).path(registry.path("blobs/uploads/"));
+            when.method(POST).path(repository_path("blobs/uploads/"));
             then.status(403).json_body(serde_json::json!({
                 "errors": [{"code": "DENIED", "message": "requested access to the resource is denied"}]
             }));
@@ -632,7 +620,7 @@ async fn a_manifest_is_put_under_its_tag_with_the_image_manifest_media_type() {
         .server
         .mock_async(|when, then| {
             when.method(PUT)
-                .path(registry.path("manifests/waldo.v1.v0.36.0.linux-amd64"))
+                .path(repository_path("manifests/waldo.v1.v0.36.0.linux-amd64"))
                 .header("content-type", IMAGE_MANIFEST_MEDIA_TYPE)
                 .body(String::from_utf8(body.clone()).expect("utf-8"));
             then.status(201);
@@ -645,7 +633,7 @@ async fn a_manifest_is_put_under_its_tag_with_the_image_manifest_media_type() {
         .await
         .expect("put");
 
-    assert_eq!(digest, crate::digest::of_bytes(&body));
+    assert_eq!(digest, digest::of_bytes(&body));
     put.assert_calls_async(1).await;
 }
 
@@ -668,10 +656,7 @@ async fn an_unreachable_registry_names_itself_and_the_cause() {
 
     let error = client.list_tags().await.expect_err("unreachable");
 
-    assert!(
-        matches!(error, RegistryError::Unreachable { .. }),
-        "{error}"
-    );
+    assert_matches!(error, RegistryError::Unreachable { .. }, "{error}");
     assert!(
         error.to_string().contains(&format!("127.0.0.1:{port}")),
         "{error}"
@@ -705,7 +690,7 @@ async fn the_platforms_of_an_index_leave_out_attestations() {
         .server
         .mock_async(|when, then| {
             when.method(GET)
-                .path(registry.path("manifests/latest"))
+                .path(repository_path("manifests/latest"))
                 .is_true(|request| {
                     request
                         .headers()
@@ -743,11 +728,12 @@ async fn the_platforms_of_an_index_leave_out_attestations() {
 async fn the_platform_of_a_single_manifest_is_the_one_of_its_config() {
     let registry = Registry::start().await;
     let config = br#"{"os": "linux", "architecture": "amd64"}"#;
-    let config_digest = crate::digest::of_bytes(config);
+    let config_digest = digest::of_bytes(config);
     registry
         .server
         .mock_async(|when, then| {
-            when.method(GET).path(registry.path("manifests/amd64-only"));
+            when.method(GET)
+                .path(repository_path("manifests/amd64-only"));
             then.status(200).json_body(serde_json::json!({
                 "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
                 "config": {"digest": config_digest.to_string(), "size": config.len()},
@@ -759,7 +745,7 @@ async fn the_platform_of_a_single_manifest_is_the_one_of_its_config() {
         .server
         .mock_async(|when, then| {
             when.method(GET)
-                .path(registry.path(&format!("blobs/{config_digest}")));
+                .path(repository_path(&format!("blobs/{config_digest}")));
             then.status(200).body(config);
         })
         .await;

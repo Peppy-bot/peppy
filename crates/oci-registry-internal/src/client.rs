@@ -9,6 +9,7 @@ use core_node_api::encoding::{OciDigest, OciRepository};
 use futures_util::StreamExt as _;
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use reqwest::{Method, StatusCode};
+use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -73,6 +74,22 @@ pub struct RegistryClient {
     tags_page_size: u32,
 }
 
+/// Shows which repository the client speaks to and how. The `Authorization`
+/// header is a secret, so it is not shown.
+impl fmt::Debug for RegistryClient {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RegistryClient")
+            .field("repository", &self.repository)
+            .field("base", &self.base)
+            .field("access", &self.access)
+            .field("credentials", &self.credentials)
+            .field("upload_chunk_bytes", &self.upload_chunk_bytes)
+            .field("tags_page_size", &self.tags_page_size)
+            .finish_non_exhaustive()
+    }
+}
+
 /// An answer that the request expects, or the error of any other.
 type Answer = reqwest::Response;
 
@@ -117,12 +134,14 @@ impl RegistryClient {
     }
 
     /// The same client with uploads in chunks of `bytes`.
+    #[must_use]
     pub fn with_upload_chunk_bytes(mut self, bytes: u64) -> Self {
         self.upload_chunk_bytes = bytes.max(1);
         self
     }
 
     /// The same client with pages of `size` tags in the tag list.
+    #[must_use]
     pub fn with_tags_page_size(mut self, size: u32) -> Self {
         self.tags_page_size = size.max(1);
         self
@@ -303,7 +322,7 @@ impl RegistryClient {
         let what = format!("the blob {digest} of {}", self.repository);
         let mut hasher = Hasher::default();
         let mut received = 0u64;
-        while let Some(part) = answer.chunk().await.map_err(|e| self.unreachable(e))? {
+        while let Some(part) = answer.chunk().await.map_err(|e| self.unreachable(&e))? {
             received += part.len() as u64;
             if received > size {
                 return Err(RegistryError::SizeMismatch {
@@ -394,7 +413,8 @@ impl RegistryClient {
         let mut sent = 0u64;
         while sent < size {
             let length = self.upload_chunk_bytes.min(size - sent);
-            let mut chunk = vec![0u8; length as usize];
+            let mut chunk =
+                vec![0u8; usize::try_from(length).expect("an upload chunk fits in memory")];
             file.read_exact(&mut chunk)
                 .await
                 .map_err(|e| RegistryError::io(path, e))?;
@@ -410,7 +430,7 @@ impl RegistryClient {
             // A body in parts has no length of its own: the header keeps the
             // chunk out of a chunked transfer encoding.
             headers.insert(header::CONTENT_LENGTH, header_value(&length.to_string()));
-            let request = format!("PATCH blobs/uploads ({} bytes at {sent})", length);
+            let request = format!("PATCH blobs/uploads ({length} bytes at {sent})");
             let (taken_tx, mut taken_rx) = tokio::sync::mpsc::unbounded_channel();
             let answer = report_taken_while(
                 self.send_body(
@@ -578,7 +598,7 @@ impl RegistryClient {
         let known = self.authorization.lock().await.clone();
         let answer = attempt(known.clone())
             .await
-            .map_err(|e| self.unreachable(e))?;
+            .map_err(|e| self.unreachable(&e))?;
         if answer.status() != StatusCode::UNAUTHORIZED {
             return Ok(answer);
         }
@@ -599,7 +619,7 @@ impl RegistryClient {
         *self.authorization.lock().await = Some(authorization.clone());
         let answer = attempt(Some(authorization))
             .await
-            .map_err(|e| self.unreachable(e))?;
+            .map_err(|e| self.unreachable(&e))?;
         if answer.status() != StatusCode::UNAUTHORIZED {
             return Ok(answer);
         }
@@ -672,7 +692,7 @@ impl RegistryClient {
                 builder.send().await
             }
         }
-        .map_err(|e| self.unreachable(e))?;
+        .map_err(|e| self.unreachable(&e))?;
         if token_answer.status() == StatusCode::UNAUTHORIZED
             || token_answer.status() == StatusCode::FORBIDDEN
         {
@@ -726,10 +746,10 @@ impl RegistryClient {
         }
     }
 
-    fn unreachable(&self, error: reqwest::Error) -> RegistryError {
+    fn unreachable(&self, error: &reqwest::Error) -> RegistryError {
         RegistryError::Unreachable {
             registry: self.repository.registry().to_owned(),
-            cause: error_with_causes(&error),
+            cause: error_with_causes(error),
         }
     }
 }
@@ -764,7 +784,7 @@ impl RequestBody {
                     count += part.len() as u64;
                     // The receiver is gone once the request ended.
                     let _ = taken.send(count);
-                    Ok::<_, std::convert::Infallible>(part)
+                    Ok::<_, !>(part)
                 }))
             }
         }
@@ -774,11 +794,11 @@ impl RequestBody {
 /// Awaits `request`, and gives `on_taken` each count of `taken` while the
 /// request runs, then the counts left once it ended.
 async fn report_taken_while<T>(
-    request: impl std::future::Future<Output = T>,
+    request: impl Future<Output = T>,
     taken: &mut tokio::sync::mpsc::UnboundedReceiver<u64>,
     mut on_taken: impl FnMut(u64),
 ) -> T {
-    tokio::pin!(request);
+    let mut request = std::pin::pin!(request);
     let outcome = loop {
         tokio::select! {
             outcome = &mut request => break outcome,
@@ -839,7 +859,7 @@ async fn read_limited(
     client: &RegistryClient,
 ) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    while let Some(part) = answer.chunk().await.map_err(|e| client.unreachable(e))? {
+    while let Some(part) = answer.chunk().await.map_err(|e| client.unreachable(&e))? {
         if bytes.len() as u64 + part.len() as u64 > limit {
             return Err(client.protocol(request, format!("more than {limit} bytes")));
         }

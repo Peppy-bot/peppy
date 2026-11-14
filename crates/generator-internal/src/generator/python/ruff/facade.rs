@@ -8,7 +8,7 @@ use std::time::Duration;
 /// and extracted to a temp file at runtime, making the result fully portable across
 /// machines.
 #[derive(Debug)]
-pub struct RuffFacade {
+pub(crate) struct RuffFacade {
     ruff_path: PathBuf,
 }
 
@@ -21,13 +21,13 @@ const COMMON_ARGS: [&str; 2] = ["--quiet", "--no-cache"];
 
 impl RuffFacade {
     /// Creates a new `RuffFacade`, extracting the embedded ruff binary if needed.
-    pub fn new() -> std::io::Result<Self> {
+    pub(crate) fn new() -> std::io::Result<Self> {
         let ruff_path = Self::resolve_ruff_binary()?;
         Ok(Self { ruff_path })
     }
 
     /// Formats Python files at the given path using `ruff format`.
-    pub fn format(&self, path: &Path) -> std::io::Result<()> {
+    pub(crate) fn format(&self, path: &Path) -> std::io::Result<()> {
         let output = self.run(&["format"], path)?;
 
         if !output.status.success() {
@@ -41,7 +41,7 @@ impl RuffFacade {
     }
 
     /// Lints and auto-fixes Python files at the given path using `ruff check --fix`.
-    pub fn check_and_fix(&self, path: &Path) -> std::io::Result<()> {
+    pub(crate) fn check_and_fix(&self, path: &Path) -> std::io::Result<()> {
         let output = self.run(&["check", "--fix"], path)?;
 
         if !output.status.success() {
@@ -66,7 +66,7 @@ impl RuffFacade {
     /// extract it on a cold cache, one can `execve` the file while another extractor
     /// still holds it open for writing, and the kernel returns `ETXTBSY` ("Text file
     /// busy"). That handle closes within milliseconds, so a bounded backoff-retry
-    /// clears it deterministically. The `OnceLock` in `bundled_ruff_binary` only
+    /// clears it deterministically. The `LazyLock` in `bundled_ruff_binary` only
     /// dedups extraction *within* a process; it cannot serialize separate processes,
     /// which is why the guard for that race lives here at the exec.
     fn run(&self, args: &[&str], path: &Path) -> std::io::Result<std::process::Output> {
@@ -85,7 +85,7 @@ impl RuffFacade {
                 Ok(output) => return Ok(output),
                 Err(e) if is_transient_exec_error(&e) && attempt < MAX_RETRIES => {
                     attempt += 1;
-                    let backoff = Duration::from_millis((10 * attempt as u64).min(100));
+                    let backoff = Duration::from_millis((10 * u64::from(attempt)).min(100));
                     std::thread::sleep(backoff);
                 }
                 Err(e) => return Err(e),
@@ -107,7 +107,7 @@ impl RuffFacade {
     }
 
     fn bundled_ruff_binary() -> std::io::Result<PathBuf> {
-        use std::sync::OnceLock;
+        use std::sync::LazyLock;
 
         // Extract the embedded binary to disk exactly once per process. Multiple
         // test threads share a PID, so without this guard they'd race on the shared
@@ -115,12 +115,10 @@ impl RuffFacade {
         // processes (e.g. parallel `cargo test` binaries) still extract the same
         // machine-global path concurrently, so the exec is retried on the resulting
         // transient ENOENT / ETXTBSY in `RuffFacade::run`.
-        static EXTRACTED: OnceLock<std::result::Result<PathBuf, String>> = OnceLock::new();
+        static EXTRACTED: LazyLock<Result<PathBuf, String>> =
+            LazyLock::new(|| RuffFacade::extract_bundled_ruff_binary().map_err(|e| e.to_string()));
 
-        let result = EXTRACTED
-            .get_or_init(|| Self::extract_bundled_ruff_binary().map_err(|e| e.to_string()));
-
-        match result {
+        match &*EXTRACTED {
             Ok(path) => Ok(path.clone()),
             Err(msg) => Err(std::io::Error::other(msg.clone())),
         }

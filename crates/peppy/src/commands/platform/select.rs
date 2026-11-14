@@ -9,7 +9,7 @@
 //! and there is nobody to ask, the command stops and lists the choices, so a
 //! script never lands on a guessed project.
 //!
-//! A command on an existing router (`peers`, `router`) resolves a [`Target`]:
+//! A command on an existing router (`peers`, `router`) resolves a `Target`:
 //! the flags, else the selected project, else the project this machine is
 //! enrolled in, else nothing. One project has one router, so the project names
 //! it.
@@ -32,6 +32,7 @@ pub(crate) struct ProjectInWorkspace {
 
 /// Whether a pick may ask the person when more than one candidate is left,
 /// and how.
+#[derive(Debug)]
 pub enum Ask {
     /// Do not ask: stop with the list of the choices.
     Never,
@@ -50,11 +51,10 @@ impl Ask {
     }
 
     /// The answer to `menu`, or `None` when there is nobody to ask.
-    fn answer(&mut self, menu: &Menu) -> Result<Option<MenuAnswer>> {
+    fn answer(&mut self, menu: &Menu<'_>) -> Result<Option<MenuAnswer>> {
         match self {
-            Self::Never => Ok(None),
             Self::Terminal if can_show_menu() => menu.show().map(Some),
-            Self::Terminal => Ok(None),
+            Self::Never | Self::Terminal => Ok(None),
             Self::Scripted(positions) => match positions.pop_front() {
                 None => Ok(Some(MenuAnswer::Cancelled)),
                 Some(position) if position < menu.options.len() => {
@@ -90,6 +90,7 @@ impl<T> Picked<T> {
 }
 
 /// What a pick knows besides its candidates.
+#[derive(Clone, Copy)]
 pub(crate) struct Question<'a> {
     /// The title of the menu: what the person selects, as a noun.
     pub title: &'a str,
@@ -122,7 +123,7 @@ struct Candidates<T> {
 /// Picks one workspace of the account.
 pub(crate) fn pick_workspace(
     api: &mut PlatformApi,
-    question: Question,
+    question: Question<'_>,
     ask: &mut Ask,
 ) -> Result<Picked<Workspace>> {
     let candidates = Candidates {
@@ -141,7 +142,7 @@ pub(crate) fn pick_workspace(
 pub(crate) fn pick_project(
     api: &mut PlatformApi,
     workspace: &Workspace,
-    question: Question,
+    question: Question<'_>,
     ask: &mut Ask,
 ) -> Result<Picked<Project>> {
     let candidates = Candidates {
@@ -206,9 +207,8 @@ pub(crate) fn selected_project_in<'a>(
     selection: Option<&'a PlatformSelection>,
     workspace: &Workspace,
 ) -> Option<&'a Named> {
-    selection
-        .filter(|selection| selection.workspace.id == workspace.id)
-        .and_then(|selection| selection.project.as_ref())
+    let selection = selection.filter(|selection| selection.workspace.id == workspace.id)?;
+    selection.project.as_ref()
 }
 
 /// What named the project of a [`Target`].
@@ -372,7 +372,7 @@ fn project_listing(api: &mut PlatformApi) -> Result<String> {
 }
 
 /// Picks one candidate, in the order of the module docs.
-fn pick<T>(candidates: Candidates<T>, question: Question, ask: &mut Ask) -> Result<Picked<T>> {
+fn pick<T>(candidates: Candidates<T>, question: Question<'_>, ask: &mut Ask) -> Result<Picked<T>> {
     let Candidates {
         what,
         items,
@@ -541,7 +541,7 @@ mod tests {
         );
         let workspace_only = PlatformSelection {
             project: None,
-            ..selection.clone()
+            ..selection
         };
         assert_eq!(
             decide_target(None, None, Some(&workspace_only), Some(&document)),

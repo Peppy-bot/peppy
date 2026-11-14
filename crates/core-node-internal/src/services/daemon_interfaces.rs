@@ -43,7 +43,6 @@ use peppylib::types::Payload;
 use peppylib::{CoreNodePresenceMessenger, ServiceMessenger};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -228,7 +227,7 @@ async fn serve_service(
             let ctx = ctx.clone();
             let member = member.clone();
             let handled = endpoint
-                .spawn_next_request_handler(move |request| async move {
+                .spawn_next_request_handler(async move |request| {
                     answer_service(&ctx, interface, &member, &request).await
                 })
                 .await?;
@@ -292,7 +291,7 @@ async fn serve_action(
                 }
                 match interface {
                     DaemonInterface::RobotLeases => {
-                        robot_leases::run_goal(&ctx, &member, pending).await
+                        robot_leases::run_goal(&ctx, &member, pending).await;
                     }
                     DaemonInterface::RobotMembership => {
                         robot_membership::run_goal(&ctx, &member, pending).await;

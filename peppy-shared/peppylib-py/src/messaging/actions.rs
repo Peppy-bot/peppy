@@ -25,8 +25,9 @@ use super::{
 // ---------------------------------------------------------------------------
 
 /// Python wrapper for a per-goal feedback publisher used by action servers.
-/// Vended by [`PyActionFeedbackPublisherFactory::declare`] once a goal is
+/// Vended by `PyActionFeedbackPublisherFactory::declare` once a goal is
 /// accepted.
+#[derive(Debug)]
 #[pyclass(name = "ActionFeedbackPublisher")]
 pub struct PyActionFeedbackPublisher {
     inner: ActionFeedbackPublisher,
@@ -72,8 +73,9 @@ impl PyActionFeedbackPublisher {
 
 /// Python wrapper for the per-action feedback publisher factory. Returned as
 /// a field of [`PyActionCreation`]; the codegen calls
-/// [`Self::declare`] from inside `handle_goal_next_request` once a goal is
+/// `Self::declare` from inside `handle_goal_next_request` once a goal is
 /// accepted, scoping the feedback topic to that single goal cycle.
+#[derive(Debug)]
 #[pyclass(name = "ActionFeedbackPublisherFactory")]
 pub struct PyActionFeedbackPublisherFactory {
     inner: ActionFeedbackPublisherFactory,
@@ -83,7 +85,7 @@ pub struct PyActionFeedbackPublisherFactory {
 impl PyActionFeedbackPublisherFactory {
     /// Standard server-side entry point used by the Python codegen. Unwraps
     /// the wire envelope, declares a per-goal publisher scoped to the
-    /// link_id the consumer targeted, and returns
+    /// `link_id` the consumer targeted, and returns
     /// `(publisher, goal_id, user_payload)`.
     fn declare_from_wire<'py>(
         &self,
@@ -117,6 +119,7 @@ impl PyActionFeedbackPublisherFactory {
 /// decoded Rust-side, so Python reads the typed `status`, the raw result
 /// `body`, the failure of a failed goal and the reason of a cancelled one
 /// directly (no re-parsing of the framing).
+#[derive(Debug)]
 #[pyclass(name = "ActionResultReply")]
 pub struct PyActionResultReply {
     status: u8,
@@ -199,6 +202,7 @@ impl PyActionResultReply {
 /// Python wrapper for the typed cancel reply returned by
 /// `ActionMessenger.cancel_goal`. The framework cancel-ack is decoded Rust-side
 /// (mirroring `request_result`), so Python reads the typed `state` tag directly.
+#[derive(Debug)]
 #[pyclass(name = "ActionCancelReply")]
 pub struct PyActionCancelReply {
     state: u8,
@@ -235,6 +239,7 @@ impl PyActionCancelReply {
 /// A clone of the underlying [`ActionWireSender`] is cached at construction so
 /// that `cancel_goal` and `request_result` can proceed without locking the
 /// mutex, which is only needed by `on_next_feedback` (mutates the subscription).
+#[derive(Debug)]
 #[pyclass(name = "ActionGoalHandle")]
 pub struct PyActionGoalHandle {
     pub(crate) inner: Arc<Mutex<ActionGoalHandle>>,
@@ -320,6 +325,7 @@ impl PyActionGoalHandle {
 // ---------------------------------------------------------------------------
 
 /// Python wrapper for the server-side action components returned by `expose`.
+#[derive(Debug)]
 #[pyclass(name = "ActionCreation")]
 pub struct PyActionCreation {
     goal_service: Arc<Mutex<ServiceEndpoint>>,
@@ -367,7 +373,8 @@ impl PyActionCreation {
 // ActionMessenger
 // ---------------------------------------------------------------------------
 
-/// Python wrapper for ActionMessenger (goal / feedback / result / cancel pattern).
+/// Python wrapper for `ActionMessenger` (goal / feedback / result / cancel pattern).
+#[derive(Debug)]
 #[pyclass(name = "ActionMessenger")]
 pub struct PyActionMessenger;
 
@@ -429,7 +436,10 @@ impl PyActionMessenger {
     /// raises `peppylib.FeedbackOverflowError`; a caller that never reads
     /// the feedback keeps its goal.
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, target=None, user_payload=vec![], feedback_bound=None, goal_timeout_secs=2.0))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the parameters of the Python method"
+    )]
     fn send_goal<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -596,6 +606,7 @@ impl PyActionMessenger {
 // the generated Python, and it crosses this boundary as plain `bytes`.
 
 /// Python wrapper for [`peppylib::messaging::ConcurrentAction`].
+#[derive(Debug)]
 #[pyclass(name = "ConcurrentAction")]
 pub struct PyConcurrentAction {
     inner: Arc<Mutex<ConcurrentAction>>,
@@ -635,7 +646,7 @@ impl PyConcurrentAction {
             )
             .await
             .map_err(to_py_err)?;
-            Ok(PyConcurrentAction {
+            Ok(Self {
                 sender_grace: action.sender_grace(),
                 inner: Arc::new(Mutex::new(action)),
             })
@@ -678,6 +689,7 @@ impl PyConcurrentAction {
 /// Python wrapper for [`peppylib::messaging::PendingGoal`]. `accept`/`refuse`
 /// consume the underlying goal, so it is held behind an `Option` and taken on
 /// first use.
+#[derive(Debug)]
 #[pyclass(name = "PendingGoal")]
 pub struct PyPendingGoal {
     inner: Arc<Mutex<Option<PendingGoal>>>,
@@ -738,10 +750,10 @@ impl PyPendingGoal {
     fn refuse<'py>(
         &self,
         py: Python<'py>,
-        kind: String,
+        kind: &str,
         message: String,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let failure = failure_from_py(&kind, message)?;
+        let failure = failure_from_py(kind, message)?;
         let inner = Arc::clone(&self.inner);
         future_into_py_unit(py, async move {
             let pending =
@@ -761,6 +773,7 @@ impl PyPendingGoal {
 /// `weakref` so `peppylib.testing`'s mock action server can track live goal
 /// contexts without keeping them alive: a strong registry would defer the
 /// abandon-on-drop transition a test triggers by releasing its goal handle.
+#[derive(Debug)]
 #[pyclass(name = "GoalContext", weakref)]
 pub struct PyGoalContext {
     inner: Arc<GoalContext>,
@@ -851,10 +864,10 @@ impl PyGoalContext {
     fn fail<'py>(
         &self,
         py: Python<'py>,
-        kind: String,
+        kind: &str,
         message: String,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let failure = failure_from_py(&kind, message)?;
+        let failure = failure_from_py(kind, message)?;
         let inner = Arc::clone(&self.inner);
         future_into_py_unit(py, async move {
             inner.fail(failure).await.map_err(to_py_err)?;
