@@ -533,10 +533,10 @@ def install_apparmor_profile(home: Path) -> Path:
     """The file of the AppArmor profile that the install in *home* wrote.
 
     `peppy container setup` writes one profile for each install, and the
-    profile names the `apptainer` program of that install.
+    profile names the `apptainer` program of that install, in quotes.
     """
     result = login_shell(
-        f"grep -l -F '{home}/bin/apptainer/bin/apptainer ' "
+        f"grep -l -F '\"{home}/bin/apptainer/bin/apptainer\"' "
         "/etc/apparmor.d/peppy-apptainer-*"
     )
     files = result.stdout.split()
