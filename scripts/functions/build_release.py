@@ -121,7 +121,7 @@ def _build_all_targets(
                 if limactl is None:
                     limactl = find_limactl(repo_root)
                     ensure_lima_vm(limactl)
-                    ensure_rust_in_vm(limactl)
+                    ensure_rust_in_vm(limactl, repo_root)
                 artifact = build_and_package(tag, triple, repo_root, limactl=limactl)
             else:
                 artifact = build_and_package(tag, triple, repo_root)

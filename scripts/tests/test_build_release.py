@@ -361,7 +361,7 @@ def test_build_all_targets_on_macos_builds_three(
     )
 
     mock_ensure_vm.assert_called_once()
-    mock_ensure_rust.assert_called_once()
+    mock_ensure_rust.assert_called_once_with(limactl, tmp_path)
     # The Lima VM must be stopped once the build completes so it frees host RAM.
     mock_stop.assert_called_once_with(limactl)
 
