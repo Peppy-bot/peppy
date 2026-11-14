@@ -1,0 +1,10 @@
+# the pinned tools that the build gets
+.pixi/
+node_modules/
+# the Chrome, the voice model, the voice of each sentence and the footage
+.cache/
+# what the build writes: the compiled compositions, the voice, the captions
+# and the video
+build/
+__pycache__/
+.pytest_cache/

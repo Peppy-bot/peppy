@@ -1,0 +1,237 @@
+{# Segment 2. A robot is many small programs, and each one is a node. The
+   nodes exchange data in three ways, and a node has one type of interface
+   for each way. #}
+{% from "_parts.html.j2" import backdrop, header, act_intro, problem_scene, rail, term_card, node, wire %}
+{% set id = segment.id %}
+{# The three interfaces: one row for each one, in the zone of the diagram.
+   `top` is the top of the nodes of the row. `wires` gives each wire of the
+   row with its height from the middle of the nodes: the first wire goes to
+   the right, and the second one comes back to the left. #}
+{% set node_width = 300 %}
+{% set node_height = 96 %}
+{% set zone_width = 1120 %}
+{% set rows = [
+  {"kind": "topic", "top": 96, "from": "camera", "to": "brain", "wires": [["stream", 0]]},
+  {"kind": "service", "top": 360, "from": "brain", "to": "arm", "wires": [["request", -18], ["reply", 18]]},
+  {"kind": "action", "top": 624, "from": "brain", "to": "arm", "wires": [["goal", -18], ["feedback", 18]]},
+] %}
+{% set node_icons = {"camera": "camera", "brain": "brain", "arm": "arm"} %}
+{# The camera has the place of the first node of the topic row. A transform
+   makes it large in the middle of the zone at the start. #}
+{% set camera_large = {"x": (zone_width - node_width) // 2, "y": 330 - rows[0].top - node_height // 2, "scale": 1.9} %}
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    .{{ id }}-languages {
+      left: 0;
+      top: 470px;
+      width: {{ zone_width }}px;
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+    }
+    .{{ id }}-language {
+      padding: 6px 26px;
+      border: 2px solid var(--line-strong);
+      border-radius: 14px;
+      background: var(--panel);
+      font-family: var(--mono);
+      font-size: 36px;
+      font-weight: 500;
+      line-height: 52px;
+    }
+    .{{ id }}-node {
+      width: {{ node_width }}px;
+    }
+    {# The lane between the two nodes of a row: the name of the interface
+       above the wires, and the need that it answers below them. #}
+    .{{ id }}-lane {
+      left: {{ node_width }}px;
+      width: {{ zone_width - 2 * node_width }}px;
+      display: flex;
+      justify-content: center;
+    }
+    .{{ id }}-role {
+      width: {{ node_width }}px;
+      text-align: center;
+    }
+    .{{ id }}-task {
+      position: absolute;
+      left: 26px;
+      right: 26px;
+      bottom: 12px;
+      height: 8px;
+      border-radius: 4px;
+      background: var(--line);
+      overflow: hidden;
+    }
+    .{{ id }}-task-done {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: var(--data);
+      transform-origin: left center;
+    }
+  </style>
+  <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
+    <div id="{{ id }}-stage" class="stage">
+      {{ backdrop(id) }}
+      {{ header(segment, act) }}
+      <div id="{{ id }}-content">
+      {{ act_intro(id, act) }}
+      {{ problem_scene(id, segment, screen.problem) }}
+
+      <div id="{{ id }}-concept" class="scene">
+        <div class="zone">
+          {# The languages of a node, below the large camera. #}
+          <div id="{{ id }}-languages" class="placed {{ id }}-languages">
+            {% for language in screen.languages %}
+            <span id="{{ id }}-language-{{ loop.index }}" class="{{ id }}-language">{{ language }}</span>
+            {% endfor %}
+          </div>
+          {% for row in rows %}
+          {% set kind = row.kind %}
+          {% set interface = screen.interfaces[kind] %}
+          <div id="{{ id }}-row-{{ kind }}">
+            {{ node(id + "-" + kind + "-from", screen.nodes[row.from], node_icons[row.from], "placed " + id + "-node", "left: 0; top: " ~ row.top ~ "px") }}
+            {# The arm of the action row shows how much of its task is done. #}
+            {% call node(id + "-" + kind + "-to", screen.nodes[row.to], node_icons[row.to], "placed " + id + "-node", "left: " ~ (zone_width - node_width) ~ "px; top: " ~ row.top ~ "px") %}
+            {% if kind == "action" %}<span id="{{ id }}-task" class="{{ id }}-task"><span id="{{ id }}-task-done" class="{{ id }}-task-done" data-layout="free"></span></span>{% endif %}
+            {% endcall %}
+            <div class="placed {{ id }}-lane" style="top: {{ row.top - 36 }}px"><span id="{{ id }}-{{ kind }}-name" class="pill">{{ interface.name }}</span></div>
+            <div class="placed {{ id }}-lane" style="top: {{ row.top + node_height + 12 }}px"><span id="{{ id }}-{{ kind }}-need" class="label is-data">{{ interface.need }}</span></div>
+            <div id="{{ id }}-{{ kind }}-from-role" class="label placed {{ id }}-role" style="left: 0; top: {{ row.top + node_height + 12 }}px">{{ interface["from"] }}</div>
+            <div id="{{ id }}-{{ kind }}-to-role" class="label placed {{ id }}-role" style="left: {{ zone_width - node_width }}px; top: {{ row.top + node_height + 12 }}px">{{ interface["to"] }}</div>
+          </div>
+          {% endfor %}
+        </div>
+        <svg class="wires" viewBox="0 0 1920 1080">
+          {% for row in rows %}
+          <g id="{{ id }}-wires-{{ row.kind }}">
+            {% for name, shift in row.wires %}
+            {{ wire(id + "-" + row.kind + "-" + name) }}
+            {% endfor %}
+          </g>
+          {% endfor %}
+        </svg>
+        {% for name in ["topic-dot-0", "topic-dot-1", "topic-dot-2", "service-request-dot", "service-reply-dot", "action-goal-dot", "action-feedback-dot"] %}
+        <div id="{{ id }}-{{ name }}" class="dot" data-layout="free"></div>
+        {% endfor %}
+        <div id="{{ id }}-action-stop-dot" class="dot is-stop" data-layout="free"></div>
+        {{ rail(id, screen, [
+          ["node", screen.cards.node.term, term_card(id + "-card-node", screen.cards.node)],
+          ["topic", screen.cards.topic.term, term_card(id + "-card-topic", screen.cards.topic)],
+          ["service", screen.cards.service.term, term_card(id + "-card-service", screen.cards.service)],
+          ["action", screen.cards.action.term, term_card(id + "-card-action", screen.cards.action)],
+        ]) }}
+      </div>
+
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const ID = "#{{ id }}";
+      const at = {{ at | tojson }};
+      const DURATION = {{ duration }};
+      const tl = gsap.timeline({ paused: true });
+      const ROWS = {{ rows | tojson }};
+      const KINDS = ROWS.map((row) => row.kind);
+      const part = (kind, name) => ID + "-" + kind + "-" + name;
+
+      // Each wire of a row goes between its two nodes: the first one to the
+      // right, and the second one back to the left.
+      ROWS.forEach(function ({ kind, wires }) {
+        wires.forEach(function ([name, shift], index) {
+          const ends = [[part(kind, "from"), "right", shift], [part(kind, "to"), "left", shift]];
+          Motion.connect(part(kind, name), ...(index === 0 ? ends : ends.reverse()), { gap: 6 });
+        });
+      });
+
+      Motion.chapter(tl, ID, {
+        duration: DURATION,
+        map: [0.2, at.problem.start - 0.3],
+        problem: [at.problem.start - 0.2, at.is_a_node.start - 0.2],
+        terms: [
+          ["node", at.is_a_node.start + 0.4, at.must_exchange.end],
+          ["topic", at.topic.start, at.service_why.start + 0.2],
+          ["service", at.service.start, at.action_why.start + 0.2],
+          ["action", at.action.start, at.benefit.start - 0.1],
+        ],
+        benefit: at.benefit.start,
+      });
+
+      // One node: the camera. It has one function, in one of two languages.
+      const large = {{ camera_large | tojson }};
+      const camera = part("topic", "from");
+      tl.fromTo(camera, { opacity: 0, ...large, scale: large.scale * 0.86 }, { opacity: 1, ...large, duration: 0.5, ease: "power3.out" }, at.is_a_node.start);
+      [0.5, 0.72].forEach((share, index) => Motion.show(tl, ID + "-language-" + (index + 1), Motion.within(at.one_function, share)));
+
+      // The nodes exchange data in three ways. The camera goes to its place
+      // in the first row, and the names of the three interfaces come in.
+      Motion.hide(tl, ID + "-languages", at.must_exchange.start + 0.7);
+      tl.to(camera, { x: 0, y: 0, scale: 1, duration: 0.8, ease: "power2.inOut" }, at.must_exchange.start + 0.35);
+      KINDS.forEach((kind, index) => Motion.show(tl, part(kind, "name"), Motion.within(at.must_exchange, 0.5) + index * 0.35, Motion.grows));
+
+      // A topic: the camera gives pictures all the time, as a stream of
+      // messages from the publisher to the subscriber.
+      Motion.pulse(tl, camera, at.topic_why.start + 0.1);
+      Motion.show(tl, part("topic", "need"), at.topic_why.start + 0.3);
+      Motion.show(tl, part("topic", "to"), at.topic_why.start + 0.5);
+      Motion.drawArrow(tl, part("topic", "stream"), at.topic_why.start + 0.8, 0.6);
+      const streamStart = at.topic_why.start + 1.5;
+      const streamSeconds = (at.topic.end + 0.3 - streamStart) / (9 + 2 / 3);
+      [0, 1, 2].forEach(function (index) {
+        Motion.follow(tl, part("topic", "dot-" + index), part("topic", "stream"), streamStart + (index * streamSeconds) / 3, streamSeconds, 9);
+      });
+      Motion.pulse(tl, part("topic", "name"), at.topic.start + 0.2);
+      Motion.show(tl, part("topic", "from-role"), Motion.within(at.topic, 0.42));
+      Motion.show(tl, part("topic", "to-role"), Motion.within(at.topic, 0.62));
+
+      // A service and an action come in the same way: the row before goes to
+      // the background, then the two nodes and the first wire come in.
+      [["service", "topic", "request"], ["action", "service", "goal"]].forEach(function ([kind, before, there]) {
+        const start = at[kind + "_why"].start;
+        Motion.fade(tl, [ID + "-row-" + before, ID + "-wires-" + before], 0.4, start - 0.1);
+        Motion.show(tl, part(kind, "from"), start + 0.2);
+        Motion.show(tl, part(kind, "to"), start + 0.5);
+        Motion.show(tl, part(kind, "need"), Motion.within(at[kind + "_why"], 0.5));
+        Motion.drawArrow(tl, part(kind, there), at[kind].start - 0.4, 0.5);
+        Motion.pulse(tl, part(kind, "name"), at[kind].start + 0.2);
+      });
+
+      // A service: one request, and one reply.
+      const asks = Motion.within(at.service, 0.52);
+      const replies = Motion.within(at.service, 0.76);
+      Motion.show(tl, part("service", "from-role"), asks);
+      Motion.follow(tl, part("service", "request-dot"), part("service", "request"), asks, 0.7, 1);
+      Motion.drawArrow(tl, part("service", "reply"), replies - 0.3, 0.4);
+      Motion.show(tl, part("service", "to-role"), replies);
+      Motion.follow(tl, part("service", "reply-dot"), part("service", "reply"), replies + 0.1, 0.7, 1);
+
+      // An action: a long task that gives feedback, and that stops before
+      // its end when a stop message comes.
+      const taskStart = Motion.within(at.action, 0.3);
+      const feedbackStart = Motion.within(at.action, 0.45);
+      const stopTime = Motion.within(at.action, 0.8);
+      Motion.show(tl, part("action", "from-role"), taskStart - 0.6);
+      Motion.follow(tl, part("action", "goal-dot"), part("action", "goal"), taskStart - 0.7, 0.7, 1);
+      Motion.show(tl, ID + "-task", taskStart - 0.2, Motion.appears);
+      tl.fromTo(ID + "-task-done", { scaleX: 0 }, { scaleX: 0.72, duration: stopTime + 0.7 - taskStart, ease: "none" }, taskStart);
+      Motion.drawArrow(tl, part("action", "feedback"), feedbackStart - 0.3, 0.4);
+      Motion.show(tl, part("action", "to-role"), feedbackStart);
+      Motion.follow(tl, part("action", "feedback-dot"), part("action", "feedback"), feedbackStart + 0.2, 0.6, 3);
+      Motion.follow(tl, part("action", "stop-dot"), part("action", "goal"), stopTime, 0.7, 1);
+      Motion.paint(tl, ID + "-task-done", { backgroundColor: Motion.colour("ink-dim") }, stopTime + 0.7);
+      Motion.pulse(tl, part("action", "to"), stopTime + 0.7);
+
+      // Each node says what it gives and what it needs: the three rows show.
+      Motion.fade(tl, ["topic", "service"].flatMap((kind) => [ID + "-row-" + kind, ID + "-wires-" + kind]), 1, at.benefit.start - 0.2);
+
+      window.__timelines["{{ id }}"] = tl;
+    })();
+  </script>
+</template>

@@ -1,0 +1,69 @@
+<!doctype html>
+{# The root composition: it mounts the splash screen and the composition of
+   each segment at its time, and plays the voice and the music. #}
+{# The place of one composition in the video. #}
+{% macro mount(id, start, duration) %}
+<div
+  id="{{ id }}"
+  data-composition-id="{{ id }}"
+  data-composition-src="compositions/{{ id }}.html"
+  data-start="{{ start }}"
+  data-duration="{{ duration }}"
+  data-track-index="1"
+  data-track-kind="graphics"
+  data-width="1920"
+  data-height="1080"
+></div>
+{% endmacro %}
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="lib/gsap.min.js"></script>
+    <script src="lib/motion.js"></script>
+    <script src="lib/robot_view.js"></script>
+    <link rel="stylesheet" href="styles/video.css" />
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="{{ duration }}"
+      data-fps="{{ frames_per_second }}"
+      data-width="1920"
+      data-height="1080"
+    >
+      {% if splash_duration %}
+      {{ mount(splash_id, 0, splash_duration) }}
+      {% endif %}
+      {% for slot in segments %}
+      {{ mount(slot.id, slot.start, slot.duration) }}
+      {% endfor %}
+      {# The voice of Kokoro is at -19 LUFS. The volume 1.3 brings it to
+         -17 LUFS, with its peaks below -1.5 dBFS. #}
+      <audio
+        id="voice"
+        src="{{ voice_track }}"
+        data-start="0"
+        data-duration="{{ duration }}"
+        data-track-index="2"
+        data-volume="1.3"
+      ></audio>
+      {# The music file is at -18 LUFS. Its level at each time of the video
+         is in `data-automation`. #}
+      <audio
+        id="music"
+        src="{{ music_track }}"
+        data-start="0"
+        data-duration="{{ duration }}"
+        data-track-index="3"
+        data-volume="1"
+        data-automation="{{ music_automation }}"
+      ></audio>
+    </div>
+    <script>
+      window.__timelines["main"] = gsap.timeline({ paused: true });
+    </script>
+  </body>
+</html>

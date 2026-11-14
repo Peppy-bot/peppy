@@ -1,0 +1,1343 @@
+# The transcript of the concepts video.
+#
+# This file is the only source of the voice, of the captions and of each text
+# that the video shows. A text between two backticks is a technical name: a
+# command, a flag, a file name or a name of an API.
+#
+# Each segment names the sections of `docs/src/content/docs` that it rests on,
+# with the SHA-256 of the text of each section. When `pixi run docs-check`
+# says that a section changed, read the segment against the section, correct
+# the segment if necessary, then run `pixi run record-sections`.
+
+[voice]
+id = "af_heart"
+speed = 0.9
+language = "en-us"
+# The silence, in seconds, before the first sentence of a segment, between two
+# sentences, and after the last sentence of a segment.
+lead_in_seconds = 0.8
+sentence_gap_seconds = 0.6
+tail_seconds = 1.0
+
+# How the voice says a written word that it reads wrongly.
+[pronunciation]
+"peppy.json5" = "peppy dot jason five"
+"ROS 2" = "ross two"
+"uv" = "you vee"
+"VLA" = "V L A"
+
+# The words of the frames of the cards, of the scenes and of the map.
+[labels]
+term = "Term"
+equivalent = "In general software"
+comparison = "Compared with ROS 2"
+ros2 = "ROS 2"
+peppy = "Peppy"
+act = "Part"
+problem = "The problem"
+benefit = "What you get"
+in_ros2 = "In ROS 2"
+
+# The splash screen, which shows before the first segment, with the music and
+# with no voice.
+[splash]
+seconds = 4.0
+
+[splash.screen]
+name = "Peppy"
+title = "The concepts"
+
+# The acts of the video. An act is a group of segments that answer one
+# question, and the screen shows it as a part of the video. A segment names
+# its act. The first and the last segment are in no act.
+[[act]]
+id = "one_node"
+title = "One node"
+question = "How do you write one program of the robot?"
+
+[[act]]
+id = "stack"
+title = "The stack"
+question = "How do the programs run together?"
+
+[[act]]
+id = "real_world"
+title = "The real world"
+question = "How does the stack go to a real robot?"
+
+# ---------------------------------------------------------------------------
+
+[[segment]]
+id = "opening"
+chapter = "Why a robot needs a framework"
+
+[[segment.source]]
+page = "guides/first_node.mdx"
+section = "Creating your first node"
+sha256 = "b756cf9e5949afa5e7e4612f81b6e3e08ff02dc567f3c4d91d3a9d125d5c6235"
+
+[[segment.source]]
+page = "reference/concepts.mdx"
+section = "The Core Node"
+sha256 = "88b810728e8d5015d0235356da7004f26b8bb586a67f900f902666d404d9abf9"
+
+[[segment.source]]
+page = "quickstart.mdx"
+section = "Step 1: Install peppy"
+sha256 = "bba39145104374e929384d0c3bba1e5644a1992f2d66d12c755965e28043d861"
+
+[[segment.voice]]
+id = "announce"
+text = "This video explains the concepts of Peppy, a framework for robot software, in three parts."
+
+[[segment.voice]]
+id = "reason"
+text = "With these concepts, you can read a Peppy project and write your own nodes."
+
+[[segment.voice]]
+id = "first_why"
+text = "First: why does a robot need a framework?"
+
+[[segment.voice]]
+id = "not_one_program"
+text = "A robot is not one program."
+
+[[segment.voice]]
+id = "many_programs"
+text = "It is many programs that run at the same time."
+
+[[segment.voice]]
+id = "drivers"
+text = "A driver reads each camera, and a driver moves each motor."
+
+[[segment.voice]]
+id = "brain"
+text = "A brain decides the next motion."
+
+[[segment.voice]]
+id = "needs"
+text = "These programs must find each other, exchange data, start in the correct order, and stay in operation."
+
+[[segment.voice]]
+id = "framework"
+text = "A robotics framework does this work."
+
+[[segment.voice]]
+id = "peppy"
+text = "Peppy is a robotics framework that puts ease of use and explicit configuration first."
+pause_after_seconds = 1.2
+
+[[segment.voice]]
+id = "agenda"
+text = "Now, the three parts of the video."
+
+[[segment.voice]]
+id = "act_one_node"
+text = "First, one node: how you write one program of the robot."
+
+[[segment.voice]]
+id = "act_stack"
+text = "Then, the stack: how the programs run together."
+
+[[segment.voice]]
+id = "act_real_world"
+text = "Last, the real world: a simulation, a real robot, several machines, and an LLM."
+
+[[segment.voice]]
+id = "method"
+text = "For each concept, the video shows a problem first, then how Peppy solves it."
+
+[[segment.voice]]
+id = "no_knowledge"
+text = "You need no knowledge of robotics to follow."
+
+[segment.screen]
+framework = "robotics framework"
+peppy = "Peppy"
+priorities = ["ease of use", "explicit configuration"]
+needs = ["find each other", "exchange data", "start in order", "stay in operation"]
+announce = "The concepts of Peppy, a framework for robot software"
+agenda = "The concepts of Peppy, in three parts"
+reason = "With these concepts, you can read a Peppy project and write your own nodes."
+method_title = "For each concept"
+method = ["a problem", "how Peppy solves it", "what you get"]
+
+[segment.screen.parts]
+camera = "camera"
+motor = "motor"
+
+[segment.screen.programs]
+camera_driver = "camera driver"
+motor_driver = "motor driver"
+brain = "brain"
+
+[segment.screen.cards.robot_brain]
+term = "Robot brain"
+definition = "The program that decides the next motion of the robot from the data of its sensors."
+
+# ---------------------------------------------------------------------------
+
+[[segment]]
+id = "node"
+act = "one_node"
+chapter = "A node and its interfaces"
+
+[[segment.source]]
+page = "reference/concepts.mdx"
+section = "Node"
+sha256 = "df47061215b90d376b00ed88c7ce237abae9b0995795b77413268d7afdd43fc9"
+
+[[segment.source]]
+page = "reference/concepts.mdx"
+section = "Execution"
+sha256 = "0c4128d265dc2e347fa000c416117e8bd232331a0f33425e20c97404c93a9df9"
+
+[[segment.source]]
+page = "reference/concepts.mdx"
+section = "Interfaces"
+sha256 = "ebc9026501d87010c99b732aef5cfa906138d2b1d1b21cb968509ad401333b06"
+
+[[segment.voice]]
+id = "act"
+text = "Part one: one node."
+pause_after_seconds = 2.0
+
+[[segment.voice]]
+id = "problem"
+text = "One large program for a full robot is hard to write, to test, and to change."
+
+[[segment.voice]]
+id = "is_a_node"
+text = "In Peppy, a robot is many small programs, and each one is a node."
+
+[[segment.voice]]
+id = "one_function"
+text = "A node has one function, and you write it in Rust or in Python."
+
+[[segment.voice]]
+id = "must_exchange"
+text = "But the nodes must exchange data, in three different ways."
+
+[[segment.voice]]
+id = "topic_why"
+text = "A camera gives pictures all the time."
+
+[[segment.voice]]
+id = "topic"
+text = "For this, a topic is a stream of messages: one node publishes them, and each node that subscribes receives them."
+
+[[segment.voice]]
+id = "service_why"
+text = "Sometimes, a node has one question for another node."
+
+[[segment.voice]]
+id = "service"
+text = "For this, a service answers a request: one node asks, and the other node replies."
+
+[[segment.voice]]
+id = "action_why"
+text = "And some tasks are long, such as a motion of the arm."
+
+[[segment.voice]]
+id = "action"
+text = "For this, an action runs a long task: it gives feedback during the task, and the task can stop before its end."
+
+[[segment.voice]]
+id = "benefit"
+text = "Thus each node says exactly what it gives and what it needs."
+pause_after_seconds = 2.0
+
+[segment.screen]
+problem = "One large program for a full robot is hard to write, to test, and to change."
+benefit = "Small programs with clear interfaces: you change one node at a time."
+languages = ["Rust", "Python"]
+
+[segment.screen.nodes]
+camera = "camera"
+brain = "brain"
+arm = "arm"
+
+[segment.screen.interfaces.topic]
+name = "topic"
+need = "data that does not stop"
+from = "publishes"
+to = "subscribes"
+
+[segment.screen.interfaces.service]
+name = "service"
+need = "one question, one answer"
+from = "asks"
+to = "replies"
+
+[segment.screen.interfaces.action]
+name = "action"
+need = "a long task"
+from = "starts the task"
+to = "gives feedback"
+
+[segment.screen.cards.node]
+term = "Node"
+definition = "One program with one function, in Rust or Python."
+equivalent = "A small service of a backend."
+
+[segment.screen.cards.topic]
+term = "Topic"
+definition = "A stream of messages from one publisher to its subscribers."
+equivalent = "A publish and subscribe channel."
+
+[segment.screen.cards.service]
+term = "Service"
+definition = "One request and its answer."
+equivalent = "A remote procedure call."
+
+[segment.screen.cards.action]
+term = "Action"
+definition = "A long task with feedback and cancellation."
+equivalent = "A background job with progress."
+
+# ---------------------------------------------------------------------------
+
+[[segment]]
+id = "file"
+act = "one_node"
+chapter = "One file declares a node"
+
+[[segment.source]]
+page = "reference/concepts.mdx"
+section = "Node"
+sha256 = "df47061215b90d376b00ed88c7ce237abae9b0995795b77413268d7afdd43fc9"
+
+[[segment.source]]
+page = "reference/concepts.mdx"
+section = "Execution"
+sha256 = "0c4128d265dc2e347fa000c416117e8bd232331a0f33425e20c97404c93a9df9"
+
+[[segment.source]]
+page = "reference/concepts.mdx"
+section = "Interfaces"
+sha256 = "ebc9026501d87010c99b732aef5cfa906138d2b1d1b21cb968509ad401333b06"
+
+[[segment.source]]
+page = "guides/first_node.mdx"
+section = "Exploring the `peppy.json5` file"
+sha256 = "81e0852e4a545dd872207ee95e114c3f0af3e95c025a0df2fd47cc8ae6189610"
+
+[[segment.source]]
+page = "guides/first_node.mdx"
+section = "Writing your first node"
+sha256 = "b6ef75b8712c7bec2a9b77a8d02bc811b2c7affe4809dc29f81da8f4742ed78e"
+
+[[segment.source]]
+page = "reference/coming_from_ros2.mdx"
+section = "A new message between two nodes"
+sha256 = "94a87b1985639336ebc5472d4c400afce19d7e51ee37ebd8cf3fbfa23f5cd1ea"
+
+[[segment.voice]]
+id = "problem"
+text = "A node has a name, interfaces, parameters, and commands."
+
+[[segment.voice]]
+id = "problem_cost"
+text = "If you write them in many places, the places can disagree."
+
+[[segment.voice]]
+id = "one_file"
+text = "In Peppy, one file declares the node: `peppy.json5`."
+
+[[segment.voice]]
+id = "file_parts"
+text = "The file gives its name, its interfaces, its parameters, and the commands that build it and run it."
+
+[[segment.voice]]
+id = "sync"
+text = "The command `peppy node sync` reads the file and generates typed code for each interface."
+
+[[segment.voice]]
+id = "agree"
+text = "Thus your code and the file always agree."
+pause_after_seconds = 1.5
+
+[[segment.voice]]
+id = "new_message"
+text = "And a new message is one entry in the file and one more sync."
+pause_after_seconds = 4.5
+
+[segment.screen]
+problem = "When the description of a node is in many places, the places can disagree."
+benefit = "One source of truth: your code and the file always agree."
+file_name = "`peppy.json5`"
+sync_command = "`peppy node sync`"
+generated = "typed code"
+languages = ["Rust", "Python"]
+
+[segment.screen.file]
+language = "json5"
+example_names = ["width", "frame", "device"]
+code = '''
+{
+  manifest: { name: "camera", tag: "v1" },
+  interfaces: {
+    topics: {
+      emits: [
+        {
+          name: "video_stream",
+          message_format: { width: "u32", frame: "bytes" },
+        },
+      ],
+    },
+  },
+  execution: {
+    language: "python",
+    parameters: { device: "string" },
+    build_cmd: ["uv", "sync"],
+    run_cmd: ["uv", "run", "camera"],
+  },
+}
+'''
+
+[segment.screen.file_parts]
+identity = "name"
+interfaces = "interfaces"
+parameters = "parameters"
+commands = "build and run commands"
+
+[segment.screen.cards.node_file]
+term = "`peppy.json5`"
+definition = "The one file that declares a node. The typed code of the node comes from it."
+equivalent = "An API schema that generates typed code."
+
+[segment.screen.comparisons.new_message]
+title = "A new message between two nodes"
+about_ros2 = "ROS 2 is an open-source set of tools and libraries for robot applications."
+ros2 = [
+  "Write a `.msg` file in an interface package, which can only be an `ament_cmake` package.",
+  "Add `rosidl_generate_interfaces` to its `CMakeLists.txt`.",
+  "Add three lines to its `package.xml`.",
+  "`colcon build`",
+  "`source install/setup.bash`",
+]
+peppy = [
+  "Add the topic to `peppy.json5`.",
+  "`peppy node sync`",
+]
+note = "These are the steps of the node that emits the message. In ROS 2 and in Peppy, each node that uses the message then declares it."
+
+# ---------------------------------------------------------------------------
+
+[[segment]]
+id = "run_and_test"
+act = "one_node"
+chapter = "Run and test one node"
+
+[[segment.source]]
+page = "guides/first_node.mdx"
+section = "Project structure"
+sha256 = "2d145a055a49f16141bc28f8cf2fbb1a94da7d59c30267b44d6bdb125479826f"
+
+[[segment.source]]
+page = "guides/standalone_node.mdx"
+section = "Standalone nodes"
+sha256 = "7b473d99c8147bd6ede951f78b921a48ccfb73666d83b30092b4812b79e202bf"
+
+[[segment.source]]
+page = "guides/standalone_node.mdx"
+section = "Debugging a node"
+sha256 = "3062b97f349fc47a2879366050edb77b65196b370a2ea22cc82ef8524780a2e5"
+
+[[segment.source]]
+page = "advanced_guides/testing.mdx"
+section = "Testing"
+sha256 = "e534bba3583a331126ca33cbd9ccd9dcb460e34eab8df3fee149006829ea77f0"
+
+[[segment.source]]
+page = "advanced_guides/testing.mdx"
+section = "A first test"
+sha256 = "65f6dca895ebb5017e7cedbee7da336ecc21a6e140a7e254d0fade78744da7bf"
+
+[[segment.source]]
+page = "advanced_guides/testing.mdx"
+section = "Emitted topics"
+sha256 = "eeedf0d04312ec1c443e8fbdf8ed032c590f7f68bfb58649e9591e348c8b08b7"
+
+[[segment.source]]
+page = "reference/coming_from_ros2.mdx"
+section = "Build tools"
+sha256 = "6691d7f8fb3049d6a4f89062bd91f6c175bffd8143da5ab1b70f4b6b20dab23f"
+
+[[segment.source]]
+page = "reference/coming_from_ros2.mdx"
+section = "Running and testing one node alone"
+sha256 = "834cbc9603b61c2abdb46276d64ee2e389953c7895058f1d7bc72d3a6d58c00c"
+
+[[segment.source]]
+page = "reference/coming_from_ros2.mdx"
+section = "The tools that build, run and test one node in Python"
+sha256 = "2dcdc027b7d3c961801554107ff293e025b00c5f9f67bce100ec2f9d733a992b"
+
+[[segment.voice]]
+id = "problem"
+text = "To work on one node, you do not want to start the full robot each time."
+
+[[segment.voice]]
+id = "regular_project"
+text = "In Peppy, a node is a regular project of its language: a `cargo` project in Rust, or a `uv` project in Python."
+
+[[segment.voice]]
+id = "your_tools"
+text = "You build, run, and test it with the tools that you know."
+
+[[segment.voice]]
+id = "ros2_tools"
+text = "ROS 2, another robotics framework, has a build system of its own, and you build each package with `colcon`."
+pause_after_seconds = 2.0
+
+[[segment.voice]]
+id = "standalone"
+text = "In standalone mode, you start one node in your IDE with a debugger, and it communicates with the nodes of the stack."
+
+[[segment.voice]]
+id = "mocks"
+text = "You can also test a node with mocks of all the nodes that it depends on: `peppy node sync` generates them."
+
+[[segment.voice]]
+id = "one_test"
+text = "In a test, a mock gives your node the messages of the node that it replaces."
+
+[[segment.voice]]
+id = "not_available"
+text = "This also lets you test a function that needs a node that is not available: a physical camera, or a motor controller."
+
+[[segment.voice]]
+id = "important"
+text = "This is one of the most important features of Peppy."
+
+[[segment.voice]]
+id = "who"
+text = "A person writes tests easily, and an LLM that writes code can check its assumptions."
+pause_after_seconds = 1.5
+
+[segment.screen]
+problem = "To work on one node, you do not want to start the full robot each time."
+benefit = "You test one node with no other node and no hardware."
+ros2 = "You write each mock."
+other_tools = "Other tools also work: `pip`, `poetry`, `pixi`."
+
+[segment.screen.comparisons.tools]
+title = "Build, run and test one node in Python"
+rows = ["Project", "Build", "Run", "Test"]
+ros2_summary = "A build system of its own, `ament`, and its build tool, `colcon`"
+ros2 = [
+  "A `package.xml`, a `setup.py`, a `setup.cfg` and a `resource` marker file",
+  "`colcon build`",
+  "`source install/local_setup.bash`, then `ros2 run <package> <node>`",
+  "`colcon test`",
+]
+peppy_summary = "The usual tools of Python"
+peppy = [
+  "A `uv` project with a `peppy.json5`",
+  "`uv sync --no-editable`",
+  "`uv run <node>`",
+  "`uv run --group dev pytest`",
+]
+note = "The same node in Rust: `cargo build --release`, `cargo run` and `cargo test`."
+
+[segment.screen.standalone]
+stack = "node stack"
+nodes = ["camera", "arm"]
+node = "your node"
+
+[segment.screen.standalone.code]
+language = "python"
+code = '''
+with open("params.json") as f:
+    params = json.load(f)
+
+standalone_config = StandaloneConfig().with_parameters(params)
+NodeBuilder().standalone(standalone_config).run(setup)
+'''
+
+# The test of one node: a mock is in the place of each node that it depends
+# on, and of the hardware of that node.
+[segment.screen.test]
+mock = "mock"
+node = "your node"
+not_available = "not available"
+
+[segment.screen.test.camera]
+node = "camera"
+hardware = "physical camera"
+
+[segment.screen.test.arm]
+node = "arm"
+hardware = "motor controller"
+
+[segment.screen.test.code]
+language = "python"
+example_names = ["test_node_reads_a_frame", "camera", "video_stream", "width", "frame", "outcome"]
+code = '''
+async def test_node_reads_a_frame():
+    async with harness.start(setup) as h:
+        await h.mocks.deps.camera.video_stream.publish(
+            video_stream.Message(width=640, frame=b"\x01\x02")
+        )
+        status = await h.emitted.status.next()
+        assert status.outcome == "done"
+'''
+
+[segment.screen.cards.standalone]
+term = "Standalone mode"
+definition = "A node is a regular Python program: run it, and debug it in your IDE."
+
+[segment.screen.cards.mock]
+term = "Generated mock"
+definition = "A generated replacement for a node that your node depends on. A test uses it in the place of the real node."
+equivalent = "A test double."
+
+# Why the tests of one node are important.
+[segment.screen.emphasis]
+title = "One of the most important features of Peppy"
+person = "A person writes tests easily."
+llm = "An LLM that writes code can check its assumptions."
+
+# ---------------------------------------------------------------------------
+
+[[segment]]
+id = "stack"
+act = "stack"
+chapter = "The node stack"
+
+[[segment.source]]
+page = "reference/concepts.mdx"
+section = "Node Instance"
+sha256 = "a5c13d5e8e42c20324b02a5365c1ff4dd72a36ca3d3c1f8d7e160b9ff72007c6"
+
+[[segment.source]]
+page = "reference/concepts.mdx"
+section = "Node Stack"
+sha256 = "8023d90259b867515af7c7b692afc077877dd07f7e6ae792a748083bf5d9bb6a"
+
+[[segment.source]]
+page = "reference/concepts.mdx"
+section = "How dependencies work"
+sha256 = "e39c80c971444d25143f20ecf34091b0d0e29693c1894d5ba4e98dd1557af8be"
+
+[[segment.source]]
+page = "reference/concepts.mdx"
+section = "Stack inspection"
+sha256 = "8dab06a035c4bb0785075892cdee75f7249966931da0473c2ea022d8e6c97609"
+
+[[segment.source]]
+page = "reference/concepts.mdx"
+section = "The Core Node"
+sha256 = "88b810728e8d5015d0235356da7004f26b8bb586a67f900f902666d404d9abf9"
+
+[[segment.source]]
+page = "reference/concepts.mdx"
+section = "Framework"
+sha256 = "eaef06c8ad4715f252d44f4d70eea1b0910166f7857cd3b84d92ed3bb2dbf5bc"
+
+[[segment.source]]
+page = "reference/coming_from_ros2.mdx"
+section = "The graph"
+sha256 = "e32b2f3b908d3eaf87d00e3ab2364056e5000ae5697d856fb6aa5b7390f642ec"
+
+[[segment.source]]
+page = "reference/coming_from_ros2.mdx"
+section = "Interfaces and errors before the start"
+sha256 = "5e9ea01e50594fa6fa4d45f60acf8626bffe0f346cf32987c5911dbc8fa67f6e"
+
+[[segment.voice]]
+id = "act"
+text = "Part two: the stack."
+pause_after_seconds = 2.0
+
+[[segment.voice]]
+id = "problem"
+text = "A robot has many nodes: something must start them in the correct order, and keep them in operation."
+
+[[segment.voice]]
+id = "daemon"
+text = "In Peppy, this is the daemon: a program that runs on each machine."
+
+[[segment.voice]]
+id = "daemon_work"
+text = "The daemon builds each node, starts its instances, and monitors their health."
+
+[[segment.voice]]
+id = "instance"
+text = "An instance is one node in operation, and one node can have many."
+
+[[segment.voice]]
+id = "restart"
+text = "If an instance fails, the daemon starts it again."
+pause_after_seconds = 1.0
+
+[[segment.voice]]
+id = "one_graph"
+text = "The daemon keeps all the nodes and their dependencies in one graph: the node stack."
+
+[[segment.voice]]
+id = "no_cycle"
+text = "The graph has no cycle, so each node starts after the nodes that it depends on."
+
+[[segment.voice]]
+id = "check"
+text = "When you add a node, the stack makes sure that each dependency exposes the interfaces that the node uses."
+
+[[segment.voice]]
+id = "early"
+text = "Thus a wrong connection shows when you add the node, and not during operation."
+
+[[segment.voice]]
+id = "list"
+text = "And one command, `peppy stack list`, shows the full graph, to a developer or to a program."
+pause_after_seconds = 2.0
+
+[segment.screen]
+problem = "Many nodes must start in the correct order, and stay in operation."
+benefit = "The stack starts in order, and a wrong connection shows before the start."
+ros2 = "The nodes connect when they run. A wrong topic name shows at run time."
+daemon = "daemon"
+stack = "node stack"
+checked = "interfaces checked"
+list_command = "`peppy stack list`"
+instances = ["left camera", "right camera"]
+
+[segment.screen.nodes]
+camera = "camera"
+arm = "arm"
+brain = "brain"
+
+[segment.screen.states]
+failed = "failed"
+running = "running"
+
+[segment.screen.cards.daemon]
+term = "Daemon"
+definition = "The program of Peppy that builds, starts and monitors the instances of one machine."
+equivalent = "A process supervisor."
+
+[segment.screen.cards.instance]
+term = "Instance"
+definition = "One deployment of a node, with its parameters."
+equivalent = "One process of a service."
+
+[segment.screen.cards.no_cycle]
+term = "Graph with no cycle"
+definition = "Parts with arrows between them, where no path comes back to its start. Thus an order always exists."
+equivalent = "The dependency graph of a build."
+
+# ---------------------------------------------------------------------------
+
+[[segment]]
+id = "contracts"
+act = "stack"
+chapter = "Contracts"
+
+[[segment.source]]
+page = "advanced_guides/contract_implementation.mdx"
+section = "Contract implementation"
+sha256 = "2e61701a2aa0b580df802b8c2d12a1cab247849fb5a362ce67cf169610dd6f37"
+
+[[segment.source]]
+page = "reference/concepts.mdx"
+section = "Interfaces"
+sha256 = "ebc9026501d87010c99b732aef5cfa906138d2b1d1b21cb968509ad401333b06"
+
+[[segment.source]]
+page = "reference/coming_from_ros2.mdx"
+section = "Contracts"
+sha256 = "42b71d58831cd89aff0b3836abc979f0e34ae6b5cd92382d5682b89049b22012"
+
+[[segment.voice]]
+id = "problem"
+text = "The models of robot brains change quickly."
+
+[[segment.voice]]
+id = "problem_cost"
+text = "If the other nodes depend on one specific brain, each new brain changes these nodes."
+
+[[segment.voice]]
+id = "contract"
+text = "For this, a contract is a document that declares one job as topics, services, and actions."
+
+[[segment.voice]]
+id = "brains_job"
+text = "For example, the job of a robot brain: it takes the pictures of the cameras, and it gives motions."
+
+[[segment.voice]]
+id = "implements"
+text = "A node that does the job declares that it implements the contract."
+
+[[segment.voice]]
+id = "depends"
+text = "A node that needs the job depends on the contract, and not on a specific node."
+
+[[segment.voice]]
+id = "binds"
+text = "At launch time, the launcher connects it to a node that implements the contract."
+
+[[segment.voice]]
+id = "same_contract"
+text = "A VLA, a WAM, and a brain that uses a VLM are different types of brain, and all can implement the same contract."
+pause_after_seconds = 2.5
+
+[[segment.voice]]
+id = "replace"
+text = "Thus you replace one brain with another, and the other nodes do not change."
+pause_after_seconds = 2.4
+
+[segment.screen]
+problem = "Robot brains change quickly. A new brain must not change the other nodes."
+benefit = "You replace one brain with another, and the other nodes do not change."
+ros2 = "Two nodes agree on a topic name in their code, and on a message type."
+contract = "contract"
+implements = "implements"
+depends_on = "depends on"
+consumer = "arm"
+input = "pictures"
+output = "motions"
+brain_types = "Types of robot brain"
+
+[segment.screen.cards.contract]
+term = "Contract"
+definition = "A document that declares topics, services and actions outside of a node."
+equivalent = "An interface that several classes implement."
+
+[segment.screen.cards.vla]
+term = "VLA"
+definition = "Vision-language-action model: pictures and words in, motions out."
+
+[segment.screen.cards.wam]
+term = "WAM"
+definition = "World action model: it predicts the scene and the motions."
+
+[segment.screen.cards.vlm]
+term = "VLM"
+definition = "Vision-language model: pictures and words in, words out, for a plan."
+
+# ---------------------------------------------------------------------------
+
+[[segment]]
+id = "launchers"
+act = "stack"
+chapter = "Launchers"
+
+[[segment.source]]
+page = "guides/launch_files.mdx"
+section = "Launch files"
+sha256 = "c7608ba24f8e2602afa8fe3e1317659022dec9b99bb90e93a32329a692b880bc"
+
+[[segment.source]]
+page = "guides/launch_files.mdx"
+section = "Running the example"
+sha256 = "baa26f5d8c718d0d1d366c29e343482d47c6bf5556df536c2ff8553d56b8a92f"
+
+[[segment.source]]
+page = "guides/launch_files.mdx"
+section = "Launching from a repository"
+sha256 = "84c4016c28f5f2c1e1b7794ca2983054c50a9a2c835303bf53d7620143a2db73"
+
+[[segment.source]]
+page = "quickstart.mdx"
+section = "Quickstart"
+sha256 = "45b644d132519cc5dbc68b9eef006b3fb155d9fd80758d9714751e06b9ae1b94"
+
+[[segment.source]]
+page = "quickstart.mdx"
+section = "Step 2: Launch the simulated robot"
+sha256 = "8df1056c30abe4248e727c5828dae796255ba7887a5f2162484ea8272f5d574a"
+
+[[segment.source]]
+page = "guides/installation.mdx"
+section = "Installation"
+sha256 = "f97fdb1d9e34932d5695b123d1f79118e6798fe69fc18746b627934e7b330cbf"
+
+[[segment.source]]
+page = "advanced_guides/repositories.mdx"
+section = "Repositories"
+sha256 = "1ff84a48d5eeccf0bf4f94c99c0b4fbbce514b997d64ffff3dd1f42740110974"
+
+[[segment.source]]
+page = "advanced_guides/repositories.mdx"
+section = "Add a repository"
+sha256 = "abe1ef65f5673a2459b92d3a556d646f68812408b785d84a435b043b8b88bbdc"
+
+[[segment.source]]
+page = "advanced_guides/repositories.mdx"
+section = "Refresh the index"
+sha256 = "712fd870c676a8c02aa9cbcc5ceadf549cdc8d0c5466f9c8dfae3b77fb347bf0"
+
+[[segment.source]]
+page = "reference/coming_from_ros2.mdx"
+section = "The first run of a robot stack that another team made"
+sha256 = "506377fadadebb4d05dff24c0dbd7bf8db9df8490002044e6ae087af1449ff6a"
+
+[[segment.voice]]
+id = "problem"
+text = "A full stack has many nodes, with their instances, their parameters, and their links."
+
+[[segment.voice]]
+id = "problem_cost"
+text = "To add them by hand at each start is slow, and it gives errors."
+
+[[segment.voice]]
+id = "launcher"
+text = "A launcher is one file that describes the full stack."
+
+[[segment.voice]]
+id = "one_command"
+text = "One command starts it: Peppy adds, builds, and starts each node in the order of the dependencies."
+
+[[segment.voice]]
+id = "by_name"
+text = "Peppy finds nodes, launchers, and contracts by name in repositories."
+
+[[segment.voice]]
+id = "nothing_to_clone"
+text = "Thus you have no repository to clone and no workspace to build."
+pause_after_seconds = 2.8
+
+[[segment.voice]]
+id = "two_steps"
+text = "The first run of a robot stack is two steps: install Peppy, then launch."
+
+[[segment.voice]]
+id = "seven_steps"
+text = "In ROS 2, the same first run is seven steps with four tools."
+pause_after_seconds = 3.0
+
+[[segment.voice]]
+id = "one_tool"
+text = "In Peppy, one command line does all of this."
+pause_after_seconds = 2.0
+
+[segment.screen]
+problem = "A full stack has many nodes. To add them by hand at each start is slow, and it gives errors."
+benefit = "One file describes the full stack, and one command starts it."
+file = "launcher"
+stack_parts = ["nodes", "instances", "parameters", "links"]
+launch_command = "`peppy stack launch <launcher>`"
+stack_nodes = ["camera", "arm", "brain"]
+found_by_name = ["nodes", "launchers", "contracts"]
+repositories = "repositories"
+not_needed = ["no repository to clone", "no workspace to build", "no environment file to source"]
+
+[segment.screen.cards.launcher]
+term = "Launcher"
+definition = "One file that describes a full stack: the nodes, their instances, their parameters and their links."
+equivalent = "The one file that starts all the services of a web application."
+
+[segment.screen.cards.repository]
+term = "Repository"
+definition = "The place where Peppy finds nodes, launchers and contracts by name."
+equivalent = "A package registry."
+
+[segment.screen.comparisons.first_run]
+title = "The first run of a robot stack that another team made"
+ros2_summary = "7 steps with 4 tools: `git`, `rosdep`, `colcon`, `ros2`"
+ros2 = [
+  "Install ROS 2.",
+  "`source /opt/ros/<distro>/setup.bash`",
+  "`mkdir -p ~/ros2_ws/src`, then `git clone <repository>` in it",
+  "`rosdep install -i --from-path src --rosdistro <distro> -y`",
+  "`colcon build`",
+  "`source install/local_setup.bash`, in a new terminal",
+  "`ros2 launch <package> <launch file>`",
+]
+peppy_summary = "2 steps with 1 tool: `peppy`"
+peppy = [
+  "`curl -fsSL https://peppy.bot/install.sh | sh`",
+  "`peppy stack launch <launcher>`",
+]
+note = "A launcher of another repository adds `peppy repo add <repository>` and `peppy repo refresh` before the launch. A node builds with the tool that its build command names, such as `uv` or `cargo`."
+
+# ---------------------------------------------------------------------------
+
+[[segment]]
+id = "simulation"
+act = "real_world"
+chapter = "From simulation to the real robot"
+
+[[segment.source]]
+page = "guides/launch_files.mdx"
+section = "Swapping parts at launch time"
+sha256 = "ca289d30a3310fd70b0c3774c622074d79f8f155b12164731828f5934b4a7bd2"
+
+[[segment.source]]
+page = "quickstart.mdx"
+section = "Step 2: Launch the simulated robot"
+sha256 = "8df1056c30abe4248e727c5828dae796255ba7887a5f2162484ea8272f5d574a"
+
+[[segment.voice]]
+id = "act"
+text = "Part three: the real world."
+pause_after_seconds = 2.0
+
+[[segment.voice]]
+id = "problem"
+text = "You do not always have a robot, and an error on a real robot can cause damage."
+
+[[segment.voice]]
+id = "wish"
+text = "Thus you want to run the same stack in a simulation first."
+
+[[segment.voice]]
+id = "axes"
+text = "For this, a launcher declares the parts that can change as component axes."
+
+[[segment.voice]]
+id = "options"
+text = "Each axis has options that fill the same place in the stack."
+
+[[segment.voice]]
+id = "examples"
+text = "For example: a simulation or the real robot, one brain or another, a recorder or none."
+
+[[segment.voice]]
+id = "select"
+text = "One word in the launch command selects an option, and the launcher file stays the same."
+
+[[segment.voice]]
+id = "no_robot"
+text = "Thus you can start with no robot, in a simulation."
+pause_after_seconds = 1.5
+
+[[segment.voice]]
+id = "later"
+text = "Later, the same launcher runs the real robot."
+pause_after_seconds = 3.0
+
+[segment.screen]
+problem = "You do not always have a robot, and an error on a real robot can cause damage."
+benefit = "The same launcher runs a simulation first, then the real robot."
+command = "`peppy stack launch <launcher> --with <option>`"
+same_file = "The launcher file stays the same."
+launcher = "launcher"
+simulation = "Simulation"
+real_robot = "Real robot"
+
+[segment.screen.axes.world]
+name = "robot"
+options = ["simulation", "real robot"]
+
+[segment.screen.axes.brain]
+name = "brain"
+options = ["brain A", "brain B"]
+
+[segment.screen.axes.recorder]
+name = "recorder"
+options = ["recorder", "none"]
+
+[segment.screen.cards.component_axis]
+term = "Component axis"
+definition = "A place in a stack that one of several options fills."
+equivalent = "An interface with several implementations, which you select at the start."
+
+[segment.screen.cards.simulation]
+term = "Simulation"
+definition = "A program that calculates the physics of a robot and of its world, so the stack runs with no hardware."
+
+# ---------------------------------------------------------------------------
+
+[[segment]]
+id = "machines"
+act = "real_world"
+chapter = "One stack on several machines"
+
+[[segment.source]]
+page = "guides/launch_files.mdx"
+section = "Running one launcher across several machines"
+sha256 = "f5ef5645534bc180e4ef1eed44aabd48b9c8c14c373059c1e249503cfd057a48"
+
+[[segment.source]]
+page = "advanced_guides/federation.mdx"
+section = "The problem it solves"
+sha256 = "47fe73549ba9752f403a048e73faa02205ac0b41bba488794f30b5c11d097ef6"
+
+[[segment.source]]
+page = "advanced_guides/federation.mdx"
+section = "Prerequisites"
+sha256 = "1aa8918dd4a3d0a6e94b48d44ee8be874e46fe90e0284fb2e0e0bd0df61a194e"
+
+[[segment.source]]
+page = "advanced_guides/federation.mdx"
+section = "Core node links"
+sha256 = "e76af031659d9d9ff84ef69d0d4a6eda5dddb9f37668e87418958aa5b4631bfd"
+
+[[segment.source]]
+page = "advanced_guides/federation.mdx"
+section = "Developing without a second machine"
+sha256 = "f0f046b12cc126b63b485b063469ca61b07c4d015c479a98b15a0c94cc6df953"
+
+[[segment.source]]
+page = "advanced_guides/federation.mdx"
+section = "Ordering, degradation, and failure"
+sha256 = "5174a82d2bbff1b05ca34dffc8a6a1dc941489c8e60f267aa126dd8d5b80c36a"
+
+[[segment.source]]
+page = "advanced_guides/platform.mdx"
+section = "Platform"
+sha256 = "0a19a175c2c2b068c752422361b8cc3f3c2b448eb40686fe9063eb56a5d0b310"
+
+[[segment.source]]
+page = "advanced_guides/platform.mdx"
+section = "Running one stack across your project's machines"
+sha256 = "c533ea585556b3d7f1f484af28c83feb56a0b7f07349a0cf87ffd1eb72121f51"
+
+[[segment.source]]
+page = "reference/concepts.mdx"
+section = "The Core Node"
+sha256 = "88b810728e8d5015d0235356da7004f26b8bb586a67f900f902666d404d9abf9"
+
+[[segment.source]]
+page = "reference/coming_from_ros2.mdx"
+section = "Several machines"
+sha256 = "b35bf8b51abb0ef84e84631383429f0a8882743b104f528b94c109d9edaef541"
+
+[[segment.voice]]
+id = "problem"
+text = "A large robot brain needs a GPU machine, and a robot cannot carry one."
+
+[[segment.voice]]
+id = "problem_fast"
+text = "But a small, fast brain must stay on the board of the robot."
+
+[[segment.voice]]
+id = "wish"
+text = "Thus one stack must run on several machines."
+
+[[segment.voice]]
+id = "core_node"
+text = "In Peppy, each machine that runs the daemon is a core node, with a name of its own."
+
+[[segment.voice]]
+id = "links"
+text = "A launcher names no machine: it declares core node links, and each instance names the link that it runs on."
+
+[[segment.voice]]
+id = "sign_in"
+text = "On each machine, you install Peppy and sign in one time."
+
+[[segment.voice]]
+id = "enroll"
+text = "This enrolls the machine in your project, and the machines of a project can reach each other."
+
+[[segment.voice]]
+id = "place"
+text = "Then, in the launch command, you give each link the name of a core node."
+
+[[segment.voice]]
+id = "brains"
+text = "The large brain then runs in the cloud, and the small brain runs on the robot: system 2 and system 1, in one stack."
+
+[[segment.voice]]
+id = "across"
+text = "The links between nodes work across machines."
+
+[[segment.voice]]
+id = "local"
+text = "And one flag runs the same launcher on one workstation."
+pause_after_seconds = 3.2
+
+[segment.screen]
+problem = "A large robot brain needs a GPU machine, and a robot cannot carry one."
+benefit = "One launch command starts one stack on all its machines."
+ros2 = "The ROS 2 documentation describes no command that starts one launch file on several machines."
+login_command = "`peppy platform login`"
+project = "your project, on the Peppy platform"
+local_command = "`peppy stack launch --local <launcher>`"
+launcher = "launcher"
+workstation = "workstation"
+systems = "The two parts of a brain"
+
+# The launch command that gives each link the name of a core node. The
+# composition puts one `--place` for each machine between its two ends: the
+# link of the machine, `@`, then the name of its core node.
+[segment.screen.place_command]
+start = "`peppy stack launch`"
+flag = "`--place`"
+end = "`<launcher>`"
+
+[segment.screen.robot]
+machine = "board of the robot"
+name = "robot-1"
+link = "onboard"
+brain = "small brain"
+system = "system 1"
+
+[segment.screen.cloud]
+machine = "GPU machine in the cloud"
+name = "gpu-1"
+link = "cloud"
+brain = "large brain"
+system = "system 2"
+
+[segment.screen.cards.core_node]
+term = "Core node"
+definition = "One machine that runs Peppy. Its daemon is the root of the node stack of the machine."
+equivalent = "One host of a cluster."
+
+[segment.screen.cards.core_node_link]
+term = "Core node link"
+definition = "A placeholder for a core node in a launcher."
+equivalent = "A variable for the host of a deployment."
+
+[segment.screen.cards.system_2]
+term = "System 2"
+definition = "The slow part of a robot brain: it reasons and plans, approximately one time each second."
+
+[segment.screen.cards.system_1]
+term = "System 1"
+definition = "The fast part of a robot brain: it reacts and controls the motion, many times each second."
+
+# ---------------------------------------------------------------------------
+
+[[segment]]
+id = "mcp"
+act = "real_world"
+chapter = "Access for an LLM"
+
+[[segment.source]]
+page = "advanced_guides/mcp.mdx"
+section = "MCP exposure"
+sha256 = "bde1ed90a43c016a4f54ff4ea6127e650407f03601d1fbe9cfb01e65677ac79c"
+
+[[segment.source]]
+page = "advanced_guides/mcp.mdx"
+section = "What an exposure publishes"
+sha256 = "4d5844aa87a407d5ad805a7ff30eb34e38f3ddb15f01b2e92a2b9ee884505622"
+
+[[segment.source]]
+page = "reference/coming_from_ros2.mdx"
+section = "MCP"
+sha256 = "01e4d4d135e6a39fc24c9dc5ff0e0bd81fe9fa79ccc916b89430003ab8e4da21"
+
+[[segment.voice]]
+id = "problem"
+text = "An LLM application can read the data of a robot and call its functions."
+
+[[segment.voice]]
+id = "problem_risk"
+text = "But an LLM makes errors, so it must not reach the critical functions."
+
+[[segment.voice]]
+id = "built_in"
+text = "For this, Peppy has an MCP server built in."
+
+[[segment.voice]]
+id = "exposure"
+text = "An exposure is a document that lists what an MCP client can reach."
+
+[[segment.voice]]
+id = "publishes"
+text = "It publishes the topics that you select as resources, and the services and the actions as tools."
+
+[[segment.voice]]
+id = "schemas"
+text = "Peppy derives each schema from the contracts, so you write none."
+
+[[segment.voice]]
+id = "only_named"
+text = "An MCP client reaches only what the exposure names."
+
+[[segment.voice]]
+id = "open_some"
+text = "Thus you open the functions that are not critical to an LLM, and the other functions stay closed."
+pause_after_seconds = 2.0
+
+[segment.screen]
+problem = "An LLM can operate a robot. But it makes errors, so it must not reach the critical functions."
+benefit = "An LLM reaches only the functions that you open."
+ros2 = "The ROS 2 documentation describes no MCP server. Separate projects give one."
+client = "LLM application"
+server = "MCP server of Peppy"
+exposure = "exposure"
+contract = "contract"
+closed = "not in the exposure: not reachable"
+
+[segment.screen.published.topic]
+from = "topic"
+as = "resource"
+
+[segment.screen.published.service]
+from = "service"
+as = "tool"
+
+[segment.screen.published.action]
+from = "action"
+as = "tool"
+task = "can run as a task"
+
+[segment.screen.cards.mcp]
+term = "MCP"
+definition = "Model Context Protocol: a standard protocol that gives an LLM application data to read and tools to call."
+equivalent = "An API for LLM applications."
+
+[segment.screen.cards.exposure]
+term = "Exposure"
+definition = "A document that lists the topics, the services and the actions that an MCP client can reach."
+equivalent = "An allowlist."
+
+# ---------------------------------------------------------------------------
+
+[[segment]]
+id = "summary"
+chapter = "Summary and next step"
+
+[[segment.source]]
+page = "quickstart.mdx"
+section = "Quickstart"
+sha256 = "45b644d132519cc5dbc68b9eef006b3fb155d9fd80758d9714751e06b9ae1b94"
+
+[[segment.source]]
+page = "guides/installation.mdx"
+section = "Installation"
+sha256 = "f97fdb1d9e34932d5695b123d1f79118e6798fe69fc18746b627934e7b330cbf"
+
+[[segment.voice]]
+id = "concepts"
+text = "These are the concepts of Peppy."
+
+[[segment.voice]]
+id = "act_one_node"
+text = "One node: one file declares it, Peppy generates its typed code, and you test it with mocks."
+
+[[segment.voice]]
+id = "act_stack"
+text = "The stack: one graph holds all the nodes, contracts let you replace a part, and one launcher starts all of it."
+
+[[segment.voice]]
+id = "act_real_world"
+text = "The real world: the same launcher goes from a simulation to the real robot, on one machine or on several."
+
+[[segment.voice]]
+id = "llm"
+text = "And an LLM reaches only what you open."
+
+[[segment.voice]]
+id = "simple"
+text = "One command installs Peppy, and one command starts a full stack."
+
+[[segment.voice]]
+id = "next"
+text = "To continue, do the quickstart below this video: it needs no robot."
+pause_after_seconds = 3.0
+
+[segment.screen]
+title = "The concepts of Peppy"
+simple = "One command installs Peppy, and one command starts a full stack."
+install_command = "`curl -fsSL https://peppy.bot/install.sh | sh`"
+next_step = "Next: the quickstart below this video. It needs no robot."
+
+# What the viewer gets from each segment of an act, by the id of the segment.
+[segment.screen.benefits]
+node = "Small, clear programs"
+file = "One file, typed code"
+run_and_test = "Tests with mocks"
+stack = "Errors before the start"
+contracts = "One brain replaces another"
+launchers = "One launch command"
+simulation = "Simulation, then the robot"
+machines = "Several machines"
+mcp = "Safe access for an LLM"

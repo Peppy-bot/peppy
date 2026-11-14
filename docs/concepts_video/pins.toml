@@ -1,0 +1,24 @@
+# The tools of the result that pixi.toml and package.json do not pin.
+
+# The headless shell of Chrome that HyperFrames gets and renders with.
+[chrome]
+version = "152.0.7977.30"
+
+# Kokoro-82M, the model of the voice. The `tts` command of HyperFrames reads
+# these two files from its cache, at these paths.
+[[voice_model_file]]
+cache_path = "tts/models/kokoro-v1.0.onnx"
+url = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+sha256 = "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5"
+
+[[voice_model_file]]
+cache_path = "tts/voices/voices-v1.0.bin"
+url = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+sha256 = "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"
+
+# The 3D model of the robot that the compositions show: the turntable model
+# of the OpenArm v2 of the Waldo catalogue. Its key in the asset store holds
+# its SHA-256.
+[robot_model]
+url = "https://waldo-assets.peppy.bot/turntable_models/openarm_v2/665a1f162b01d4f30cb78461d7ccf238804a7643811e66c12161627b9ce6e051.glb"
+sha256 = "665a1f162b01d4f30cb78461d7ccf238804a7643811e66c12161627b9ce6e051"

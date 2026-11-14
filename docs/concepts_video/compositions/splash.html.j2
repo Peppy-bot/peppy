@@ -1,0 +1,131 @@
+{# The splash screen: the logo and the name of Peppy, then the title of the
+   video. Wires come from the sides of the frame to the name, as the programs
+   of a robot connect through Peppy. The parts come in on the first bell
+   notes of the music. #}
+{# Each wire, from a side of the frame to the name. #}
+{% set wires = [
+  "M 0 210 C 230 210, 190 450, 400 450",
+  "M 0 690 C 230 690, 190 450, 400 450",
+  "M 1920 210 C 1690 210, 1730 450, 1520 450",
+  "M 1920 690 C 1690 690, 1730 450, 1520 450",
+] %}
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    .{{ id }}-glow {
+      position: absolute;
+      left: 210px;
+      top: 60px;
+      width: 1500px;
+      height: 780px;
+      background: radial-gradient(closest-side, rgba(200, 245, 66, 0.14), rgba(200, 245, 66, 0));
+    }
+    .{{ id }}-lockup {
+      position: absolute;
+      left: 0;
+      top: 330px;
+      width: 1920px;
+      height: 240px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 56px;
+    }
+    .{{ id }}-logo {
+      flex: none;
+      width: 240px;
+      height: 240px;
+      padding: 14px;
+      border-radius: 56px;
+      background: var(--logo-ground);
+    }
+    .{{ id }}-logo img {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    .{{ id }}-name {
+      font-size: 240px;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: -0.02em;
+      color: var(--peppy);
+    }
+    .{{ id }}-rule {
+      position: absolute;
+      left: 720px;
+      top: 652px;
+      width: 480px;
+      height: 3px;
+      border-radius: 2px;
+      background: var(--line-strong);
+    }
+    .{{ id }}-title {
+      position: absolute;
+      left: 0;
+      top: 688px;
+      width: 1920px;
+      text-align: center;
+      font-size: 72px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      color: var(--ink);
+    }
+  </style>
+  <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
+    <div class="stage">
+      <div id="{{ id }}-content">
+        <div id="{{ id }}-glow" class="{{ id }}-glow"></div>
+
+        <svg class="wires" viewBox="0 0 1920 1080">
+          {% for path in wires %}
+          <path id="{{ id }}-wire-{{ loop.index }}" class="wire is-quiet" pathLength="1" d="{{ path }}" />
+          {% endfor %}
+        </svg>
+        {% for path in wires %}
+        <div id="{{ id }}-dot-{{ loop.index }}" class="dot" data-layout="free"></div>
+        {% endfor %}
+
+        <div class="{{ id }}-lockup">
+          <div id="{{ id }}-logo" class="{{ id }}-logo"><img src="assets/pictures/peppy-logo.webp" alt="" /></div>
+          <div id="{{ id }}-name" class="{{ id }}-name">{{ screen.name }}</div>
+        </div>
+        <div id="{{ id }}-rule" class="{{ id }}-rule"></div>
+        <div id="{{ id }}-title" class="{{ id }}-title">{{ screen.title }}</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const ID = "#{{ id }}";
+      const DURATION = {{ duration }};
+      // The time of each bell note of the start of the music.
+      const bells = {{ bells | tojson }};
+      const WIRES = {{ wires | length }};
+      const tl = gsap.timeline({ paused: true });
+
+      Motion.endSegment(tl, ID + "-content", DURATION);
+
+      // The logo, the name and the title: one part on each bell note.
+      tl.fromTo(ID + "-glow", { opacity: 0, scale: 0.7 }, { opacity: 1, scale: 1, duration: 1.8, ease: "power2.out" }, 0);
+      Motion.show(tl, ID + "-logo", bells[0], Motion.grows);
+      Motion.show(tl, ID + "-name", bells[1], Motion.fromSide);
+      tl.fromTo(ID + "-rule", { opacity: 0, scaleX: 0 }, { opacity: 1, scaleX: 1, duration: 0.6, ease: "power3.out" }, bells[2]);
+      Motion.show(tl, ID + "-title", bells[2] + 0.1);
+
+      // The wires come to the name, then one message moves on each wire.
+      const MESSAGE_SECONDS = 0.9;
+      for (let wire = 1; wire <= WIRES; wire += 1) {
+        const delay = (wire - 1) * 0.12;
+        Motion.draw(tl, ID + "-wire-" + wire, bells[0] + delay, 1.2);
+        Motion.follow(tl, ID + "-dot-" + wire, ID + "-wire-" + wire, bells[3] + delay, MESSAGE_SECONDS, 1);
+      }
+      Motion.pulse(tl, ID + "-logo", bells[3] + MESSAGE_SECONDS + (WIRES - 1) * 0.12);
+
+      window.__timelines["{{ id }}"] = tl;
+    })();
+  </script>
+</template>

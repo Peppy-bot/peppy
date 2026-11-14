@@ -1,0 +1,127 @@
+{# Segment 11. The map of the video again, with what the viewer gets from
+   each chapter, then the next step: the quickstart below the video. #}
+{% from "_parts.html.j2" import backdrop, header, act_map, command, icon %}
+{% set id = segment.id %}
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    .{{ id }}-title {
+      left: var(--frame-side);
+      top: 176px;
+      font-size: 56px;
+    }
+    {# The card of an act is in the background until the voice names the act. #}
+    .{{ id }}-acts .map-act {
+      border-color: var(--line);
+    }
+    .{{ id }}-acts .map-chapter-number {
+      background: rgba(200, 245, 66, 0.16);
+      color: var(--peppy);
+    }
+    {# Below the map: how simple the start is, then the next step. #}
+    .{{ id }}-start {
+      left: var(--frame-side);
+      top: 688px;
+      width: var(--full-width);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 40px;
+    }
+    .{{ id }}-simple {
+      padding-left: 30px;
+      border-left: 8px solid var(--peppy);
+      font-size: 38px;
+      font-weight: 500;
+      line-height: 50px;
+    }
+    .{{ id }}-start .command {
+      flex: none;
+    }
+    .{{ id }}-next {
+      left: var(--frame-side);
+      top: 876px;
+      width: var(--full-width);
+      height: 104px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      border-radius: 22px;
+      background: var(--peppy);
+      box-shadow: 0 0 60px rgba(200, 245, 66, 0.22);
+      font-size: 44px;
+      font-weight: 700;
+      color: var(--peppy-ink);
+    }
+    .{{ id }}-next .icon {
+      width: 52px;
+      height: 52px;
+      stroke-width: 2.6;
+    }
+  </style>
+  <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
+    <div id="{{ id }}-stage" class="stage">
+      {{ backdrop(id) }}
+      {{ header(segment, act) }}
+      <div id="{{ id }}-content">
+      <div id="{{ id }}-recap" class="scene {{ id }}-acts">
+        <div id="{{ id }}-title" class="headline placed {{ id }}-title">{{ screen.title }}</div>
+        {{ act_map(id, 270, lines=screen.benefits) }}
+      </div>
+      <div class="placed {{ id }}-start">
+        <div id="{{ id }}-simple" class="{{ id }}-simple">{{ screen.simple }}</div>
+        {{ command(id + "-install", screen.install_command) }}
+      </div>
+      <div id="{{ id }}-next" class="placed {{ id }}-next"><span id="{{ id }}-next-arrow">{{ icon("down") }}</span><span>{{ screen.next_step }}</span></div>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const ID = "#{{ id }}";
+      const at = {{ at | tojson }};
+      const DURATION = {{ duration }};
+      const tl = gsap.timeline({ paused: true });
+      const ACTS = {{ acts | map(attribute="id") | list | tojson }};
+      const act = (actId) => ID + "-map-act-" + actId;
+
+      tl.fromTo(ID + "-glow", { x: -50, y: -30 }, { x: 70, y: 40, duration: DURATION, ease: "sine.inOut" }, 0);
+      Motion.endSegment(tl, ID + "-content", DURATION);
+
+      // These are the concepts of Peppy: the three acts of the video, in the
+      // middle of the frame until the next step comes in below them.
+      const RECAP_SHIFT = 190;
+      gsap.set(ID + "-recap", { y: RECAP_SHIFT });
+      tl.to(ID + "-recap", { y: 0, duration: 0.7, ease: "power2.inOut" }, at.simple.start - 0.5);
+      Motion.show(tl, ID + "-title", 0.2, Motion.fromSide);
+      Motion.show(tl, ID + "-map .map-act", 0.4, { stagger: 0.15 });
+
+      // Each act, with what the viewer gets from each of its chapters.
+      ACTS.forEach(function (actId) {
+        const sentence = at["act_" + actId];
+        Motion.paint(tl, act(actId), { borderColor: Motion.colour("peppy") }, sentence.start);
+        Motion.pulse(tl, act(actId) + " .map-act-title", sentence.start + 0.1);
+        Motion.show(tl, act(actId) + " .map-chapter", Motion.within(sentence, 0.22), {
+          from: { opacity: 0, x: -20, y: 0 },
+          stagger: Motion.lasts(sentence) * 0.26,
+        });
+      });
+      // And an LLM reaches only what you open: the last chapter.
+      Motion.pulse(tl, ID + "-map-chapter-{{ acts[-1].chapters[-1].segment_id }}", at.llm.start + 0.3);
+
+      // One command installs Peppy, and one command starts a full stack.
+      Motion.show(tl, ID + "-simple", at.simple.start, Motion.fromSide);
+      Motion.show(tl, ID + "-install", Motion.within(at.simple, 0.2), Motion.fromRight);
+
+      // The next step: the quickstart below the video.
+      Motion.show(tl, ID + "-next", at.next.start, { from: { opacity: 0, scale: 0.94, y: 0 } });
+      tl.fromTo(ID + "-next-arrow", { y: 0 }, { y: 10, duration: 0.45, ease: "sine.inOut", yoyo: true, repeat: 9, immediateRender: false }, at.next.start + 0.6);
+
+      window.__timelines["{{ id }}"] = tl;
+    })();
+  </script>
+</template>

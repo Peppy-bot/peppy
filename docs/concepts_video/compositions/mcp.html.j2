@@ -1,0 +1,255 @@
+{# Segment 10. Peppy has an MCP server built in. An exposure lists what an
+   MCP client can reach, so an LLM reaches only the functions that the
+   developer opens. #}
+{% from "_parts.html.j2" import backdrop, header, problem_scene, rail, term_card, icon, mark, wire %}
+{% set id = segment.id %}
+{% set kinds = ["topic", "service", "action"] %}
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    .{{ id }}-layout {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    {# The LLM application, which is the MCP client. #}
+    .{{ id }}-client {
+      flex-direction: column;
+      gap: 10px;
+      width: 250px;
+      height: 170px;
+      min-width: 0;
+      padding: 0 16px;
+      border-color: var(--data);
+      font-family: var(--sans);
+      font-size: 32px;
+      line-height: 40px;
+      text-align: center;
+      white-space: normal;
+    }
+    .{{ id }}-client .icon {
+      width: 46px;
+      height: 46px;
+      color: var(--data);
+      fill: currentColor;
+    }
+    {# The MCP server of Peppy, with the exposure in it. #}
+    .{{ id }}-server {
+      display: flex;
+      flex-direction: column;
+      gap: 26px;
+      width: 760px;
+      padding: 52px 30px 30px;
+      border-style: solid;
+      border-color: var(--peppy);
+    }
+    .{{ id }}-server .frame-name {
+      border-color: var(--peppy);
+      color: var(--peppy);
+    }
+    .{{ id }}-exposure {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      font-family: var(--sans);
+    }
+    .{{ id }}-exposure .code-title {
+      margin-bottom: 0;
+    }
+    {# One line of the exposure: an interface, and what the server publishes
+       it as. #}
+    .{{ id }}-row {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      height: 80px;
+      padding: 0 22px;
+      border: 2px solid var(--line-strong);
+      border-radius: 14px;
+      background: var(--panel);
+      font-size: 32px;
+      font-weight: 500;
+    }
+    .{{ id }}-row .pill {
+      background: transparent;
+    }
+    .{{ id }}-as {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }
+    .{{ id }}-as .icon {
+      width: 34px;
+      height: 34px;
+      color: var(--ink-dim);
+      transform: rotate(-90deg);
+    }
+    .{{ id }}-task {
+      padding: 0 14px;
+      border-radius: 10px;
+      background: rgba(95, 212, 240, 0.16);
+      font-size: 28px;
+      line-height: 44px;
+      color: var(--data);
+      white-space: nowrap;
+    }
+    {# The contract that gives each line its schema: its name at the top
+       right of the exposure, and a bar at the side of the lines. #}
+    .{{ id }}-contract {
+      position: absolute;
+      right: 26px;
+      top: 18px;
+    }
+    .{{ id }}-schemas {
+      position: absolute;
+      right: 44px;
+      width: 6px;
+      border-radius: 3px;
+      background: var(--contract);
+      transform-origin: center top;
+    }
+    {# A function that the exposure does not name. #}
+    .{{ id }}-closed {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      height: 80px;
+      padding: 0 22px;
+      border: 2px dashed var(--fault);
+      border-radius: 14px;
+      background: rgba(255, 107, 129, 0.07);
+      font-size: 30px;
+      font-weight: 500;
+      color: var(--fault);
+    }
+    .{{ id }}-closed .icon {
+      width: 38px;
+      height: 38px;
+    }
+  </style>
+  <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
+    <div id="{{ id }}-stage" class="stage">
+      {{ backdrop(id) }}
+      {{ header(segment, act) }}
+      <div id="{{ id }}-content">
+      {{ problem_scene(id, segment, screen.problem) }}
+
+      <div id="{{ id }}-concept" class="scene">
+        <div class="zone {{ id }}-layout">
+          <div id="{{ id }}-client" class="node {{ id }}-client">{{ icon("spark") }}<span>{{ screen.client }}</span></div>
+          <div id="{{ id }}-server" class="frame {{ id }}-server">
+            <span class="frame-name" data-layout="over">{{ screen.server }}</span>
+            <div id="{{ id }}-exposure" class="code-window {{ id }}-exposure">
+              <div class="code-title">{{ screen.exposure }}</div>
+              {% for kind in kinds %}
+              {% set published = screen.published[kind] %}
+              <div id="{{ id }}-row-{{ kind }}" class="{{ id }}-row">
+                <span class="pill">{{ published["from"] }}</span>
+                <span id="{{ id }}-as-{{ kind }}" class="{{ id }}-as">{{ icon("down") }}<span>{{ published["as"] }}</span></span>
+                {% if "task" in published %}<span id="{{ id }}-task" class="{{ id }}-task">{{ published.task }}</span>{% endif %}
+              </div>
+              {% endfor %}
+              <span id="{{ id }}-contract" class="pill is-contract {{ id }}-contract">{{ screen.contract }}</span>
+              <span id="{{ id }}-schemas" class="{{ id }}-schemas" data-layout="over"></span>
+            </div>
+            <div id="{{ id }}-closed" class="{{ id }}-closed">{{ icon("lock") }}<span>{{ screen.closed }}</span></div>
+          </div>
+        </div>
+        <svg class="wires" viewBox="0 0 1920 1080">
+          {{ wire(id + "-trunk") }}
+          {% for kind in kinds %}
+          {{ wire(id + "-reach-" + kind) }}
+          {% endfor %}
+          <path id="{{ id }}-refused" class="wire is-fault" pathLength="1" />
+        </svg>
+        {% for kind in kinds %}
+        <div id="{{ id }}-call-{{ kind }}" class="dot" data-layout="free"></div>
+        {% endfor %}
+        {{ mark(id + "-barrier", "fault", "position: absolute") }}
+        {{ rail(id, screen, [
+          ["mcp", screen.cards.mcp.term, term_card(id + "-card-mcp", screen.cards.mcp)],
+          ["exposure", screen.cards.exposure.term, term_card(id + "-card-exposure", screen.cards.exposure)],
+        ]) }}
+      </div>
+
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const ID = "#{{ id }}";
+      const at = {{ at | tojson }};
+      const DURATION = {{ duration }};
+      const tl = gsap.timeline({ paused: true });
+      const KINDS = {{ kinds | tojson }};
+      const row = (kind) => ID + "-row-" + kind;
+
+      // The wires from the LLM application: one to the server, then one to
+      // each line of the exposure. The last one stops at the side of the
+      // server, before the function that the exposure does not name.
+      const server = Motion.boxOf(ID + "-server");
+      Motion.connect(ID + "-trunk", [ID + "-client", "right"], [ID + "-server", "left", Motion.boxOf(ID + "-client").y - server.y], { gap: 6 });
+      KINDS.forEach((kind, index) => Motion.connect(ID + "-reach-" + kind, [ID + "-client", "right", (index - 1) * 26], [row(kind), "left"], { gap: 6, curve: true }));
+      const closed = Motion.boxOf(ID + "-closed");
+      const barrier = { x: server.left - 34, y: closed.y };
+      Motion.connect(ID + "-refused", [ID + "-client", "bottom"], [barrier, "left"], { gap: 6, endGap: 0 });
+      gsap.set(ID + "-barrier", { left: barrier.x - 6, top: barrier.y - 22 });
+      // The bar of the contract is at the side of the lines of the exposure.
+      const exposure = Motion.boxOf(ID + "-exposure");
+      const firstRow = Motion.boxOf(row(KINDS[0]));
+      const lastRow = Motion.boxOf(row(KINDS[KINDS.length - 1]));
+      // The border of the exposure is 2 px wide, and the bar is in the box inside it.
+      gsap.set(ID + "-schemas", { top: firstRow.top - exposure.top - 2 + 10, height: lastRow.bottom - firstRow.top - 20 });
+
+      Motion.chapter(tl, ID, {
+        duration: DURATION,
+        problem: [0.3, at.built_in.start - 0.2],
+        terms: [
+          ["mcp", at.built_in.start + 0.2, at.exposure.end + 0.3],
+          ["exposure", at.exposure.end + 0.5, at.only_named.start + 0.5],
+        ],
+        benefit: at.open_some.start,
+        ros2: at.open_some.start + 1.5,
+      });
+
+      // Peppy has an MCP server built in.
+      Motion.show(tl, ID + "-client", at.built_in.start);
+      Motion.show(tl, ID + "-server", Motion.within(at.built_in, 0.35));
+      Motion.drawArrow(tl, ID + "-trunk", Motion.within(at.built_in, 0.6), 0.5);
+
+      // An exposure lists what an MCP client can reach.
+      Motion.show(tl, ID + "-exposure", at.exposure.start + 0.1);
+      KINDS.forEach((kind, index) => Motion.show(tl, row(kind), Motion.within(at.exposure, 0.45) + index * 0.3, Motion.fromSide));
+
+      // It publishes the topics as resources, and the services and the
+      // actions as tools.
+      [0.42, 0.72, 0.84].forEach((share, index) => Motion.show(tl, ID + "-as-" + KINDS[index], Motion.within(at.publishes, share), Motion.fromSide));
+      Motion.show(tl, ID + "-task", at.publishes.end + 0.1, Motion.grows);
+
+      // Peppy derives each schema from the contracts.
+      Motion.show(tl, ID + "-contract", at.schemas.start + 0.3, Motion.grows);
+      tl.fromTo(ID + "-schemas", { opacity: 0, scaleY: 0 }, { opacity: 1, scaleY: 1, duration: 0.6, ease: "power2.out" }, Motion.within(at.schemas, 0.35));
+
+      // An MCP client reaches only what the exposure names.
+      Motion.hide(tl, [ID + "-trunk", ID + "-trunk-head"], at.only_named.start + 0.3);
+      KINDS.forEach(function (kind, index) {
+        const time = at.only_named.start + 0.2 + index * 0.25;
+        Motion.drawArrow(tl, ID + "-reach-" + kind, time, 0.6);
+        Motion.follow(tl, ID + "-call-" + kind, ID + "-reach-" + kind, time + 0.8, 0.7, 2);
+        Motion.pulse(tl, row(kind), time + 1.5);
+      });
+
+      // The other functions stay closed.
+      const closedTime = Motion.within(at.open_some, 0.55);
+      Motion.show(tl, ID + "-closed", closedTime - 0.4);
+      Motion.draw(tl, ID + "-refused", closedTime, 0.6);
+      Motion.show(tl, ID + "-barrier", closedTime + 0.5, Motion.grows);
+
+      window.__timelines["{{ id }}"] = tl;
+    })();
+  </script>
+</template>

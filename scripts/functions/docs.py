@@ -110,9 +110,9 @@ _DIFF_HEADER = re.compile(r'^diff --git "?a/.*? "?b/(.*?)"?$', re.MULTILINE)
 # The docs never use an em-dash (U+2014), and Claude writes one by habit. Every
 # text of Claude's that reaches a docs pull request is held to its absence: the
 # gap descriptions (quoted in the pull request body) through the check schema,
-# and the updater's edits by `_reword_added_em_dashes`.
+# and the updater's edits by `reword_added_em_dashes`.
 EM_DASH = "\u2014"
-_NO_EM_DASH_PATTERN = f"^[^{EM_DASH}]*$"
+NO_EM_DASH_PATTERN = f"^[^{EM_DASH}]*$"
 
 
 class Severity(StrEnum):
@@ -149,7 +149,7 @@ _CHECK_SCHEMA: dict = {
                 "type": "object",
                 "properties": {
                     "file": {"type": "string"},
-                    "change": {"type": "string", "pattern": _NO_EM_DASH_PATTERN},
+                    "change": {"type": "string", "pattern": NO_EM_DASH_PATTERN},
                     "severity": {"enum": list(Severity)},
                 },
                 "required": ["file", "change", "severity"],
@@ -664,7 +664,7 @@ def _parse_update_response(payload: dict) -> UpdateResult:
     return UpdateResult(results=tuple(results), summary=summary)
 
 
-def _em_dash_lines(repo_root: Path) -> tuple[EmDashLine, ...]:
+def em_dash_lines(repo_root: Path) -> tuple[EmDashLine, ...]:
     """Every line under ``docs/`` holding an em-dash, committed or not.
 
     Untracked files count (the updater may write a new page); ignored and
@@ -720,7 +720,7 @@ def _added_em_dash_lines(
     """
     existing = Counter((line.file, line.text) for line in before)
     added: list[EmDashLine] = []
-    for line in _em_dash_lines(repo_root):
+    for line in em_dash_lines(repo_root):
         key = (line.file, line.text)
         if existing[key]:
             existing[key] -= 1
@@ -733,7 +733,7 @@ def _render_em_dash_lines(lines: tuple[EmDashLine, ...]) -> str:
     return "\n".join(f"- `{line.file}` line {line.line}: {line.text}" for line in lines)
 
 
-def _reword_added_em_dashes(before: tuple[EmDashLine, ...], repo_root: Path) -> None:
+def reword_added_em_dashes(before: tuple[EmDashLine, ...], repo_root: Path) -> None:
     """Remove the em-dashes an edit added under ``docs/``, or stop.
 
     The update prompt already forbids them; this is what guarantees none
@@ -935,7 +935,7 @@ def update_docs(
     if not changes:
         raise ReleaseError("update_docs called with no changes to implement")
     repo_root = get_repo_root()
-    em_dashes_before = _em_dash_lines(repo_root)
+    em_dashes_before = em_dash_lines(repo_root)
     diff, _ = get_code_diff(base, head, repo_root)
     parts = split_diff(diff, _MAX_DIFF_CHARS)
     strays = [c for c in changes if not 1 <= c.diff_part <= len(parts)]
@@ -972,7 +972,7 @@ def update_docs(
         result = _parse_update_response(payload)
         results.extend(result.results)
         summaries.append(result.summary)
-    _reword_added_em_dashes(em_dashes_before, repo_root)
+    reword_added_em_dashes(em_dashes_before, repo_root)
     return UpdateResult(results=tuple(results), summary="\n".join(summaries))
 
 

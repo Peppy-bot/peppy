@@ -1,0 +1,181 @@
+{# Segment 6. A contract declares one job outside of a node. A node that
+   needs the job depends on the contract, and each node that does the job
+   implements it, so one brain replaces another. #}
+{% from "_parts.html.j2" import backdrop, header, problem_scene, rail, term_card, terms_card, node, icon, mark, wire %}
+{% set id = segment.id %}
+{# The diagram, in the zone: the brains that do the job at the top, the
+   contract in the middle, and the node that needs the job at the bottom. #}
+{% set zone_width = 1120 %}
+{% set node_width = 260 %}
+{% set brain_pitch = 350 %}
+{% set brains_top = 50 %}
+{% set contract = {"left": 110, "top": 330, "width": 900, "height": 170} %}
+{% set consumer_top = 684 %}
+{% set brains = [("vla", screen.cards.vla), ("wam", screen.cards.wam), ("vlm", screen.cards.vlm)] %}
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    .{{ id }}-contract {
+      left: {{ contract.left }}px;
+      top: {{ contract.top }}px;
+      width: {{ contract.width }}px;
+      height: {{ contract.height }}px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 36px;
+      border: 3px solid var(--contract);
+      border-radius: 22px;
+      background: linear-gradient(180deg, rgba(180, 140, 255, 0.16) 0%, rgba(180, 140, 255, 0.06) 100%);
+      box-shadow: var(--panel-shadow);
+    }
+    .{{ id }}-contract-name {
+      margin-right: 20px;
+      font-family: var(--mono);
+      font-size: 44px;
+      font-weight: 700;
+      line-height: 56px;
+      color: var(--contract);
+    }
+    .{{ id }}-flow {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      height: 76px;
+      padding: 0 26px;
+      border: 2px solid var(--line-strong);
+      border-radius: 14px;
+      background: var(--ground);
+      font-size: 36px;
+      font-weight: 500;
+    }
+    .{{ id }}-flow .icon {
+      width: 38px;
+      height: 38px;
+      color: var(--data);
+    }
+    .{{ id }}-node {
+      width: {{ node_width }}px;
+    }
+  </style>
+  <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
+    <div id="{{ id }}-stage" class="stage">
+      {{ backdrop(id) }}
+      {{ header(segment, act) }}
+      <div id="{{ id }}-content">
+      {{ problem_scene(id, segment, screen.problem) }}
+
+      <div id="{{ id }}-concept" class="scene">
+        <div class="zone">
+          {{ node(id + "-consumer", screen.consumer, "arm", "placed " + id + "-node", "left: " ~ ((zone_width - node_width) // 2) ~ "px; top: " ~ consumer_top ~ "px") }}
+          <div id="{{ id }}-contract" class="placed {{ id }}-contract">
+            <div class="{{ id }}-contract-name">{{ screen.contract }}</div>
+            <div id="{{ id }}-input" class="{{ id }}-flow">{{ icon("camera") }}<span>{{ screen.input }}</span></div>
+            <div id="{{ id }}-output" class="{{ id }}-flow">{{ icon("arm") }}<span>{{ screen.output }}</span></div>
+          </div>
+          {% for key, card in brains %}
+          {{ node(id + "-brain-" + key, card.term, "brain", "placed " + id + "-node", "left: " ~ ((zone_width - node_width) // 2 + (loop.index0 - 1) * brain_pitch) ~ "px; top: " ~ brains_top ~ "px") }}
+          {% endfor %}
+        </div>
+        <svg class="wires" viewBox="0 0 1920 1080">
+          {{ wire(id + "-depends", "is-contract") }}
+          {% for key, card in brains %}
+          {{ wire(id + "-fits-" + key, "is-contract") }}
+          {% endfor %}
+        </svg>
+        {# The name of each link, on its wire. #}
+        <span id="{{ id }}-implements" class="label is-tag placed" data-layout="over">{{ screen.implements }}</span>
+        <span id="{{ id }}-depends-on" class="label is-tag placed" data-layout="over">{{ screen.depends_on }}</span>
+        {{ mark(id + "-same", "ok", "position: absolute") }}
+        {{ rail(id, screen, [
+          ["contract", screen.cards.contract.term, term_card(id + "-card-contract", screen.cards.contract)],
+          ["types", screen.brain_types, terms_card(id + "-card-types", screen.brain_types, [screen.cards.vla, screen.cards.wam, screen.cards.vlm])],
+        ]) }}
+      </div>
+
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const ID = "#{{ id }}";
+      const at = {{ at | tojson }};
+      const DURATION = {{ duration }};
+      const tl = gsap.timeline({ paused: true });
+      const BRAINS = {{ brains | map(attribute=0) | list | tojson }};
+      const [PEPPY, CONTRACT] = ["peppy", "contract"].map(Motion.colour);
+      const brain = (key) => ID + "-brain-" + key;
+      const fits = (key) => ID + "-fits-" + key;
+
+      // The wires: each brain implements the contract, and the node that
+      // needs the job depends on it. Each wire is a straight line.
+      const contract = Motion.boxOf(ID + "-contract");
+      Motion.connect(ID + "-depends", [ID + "-consumer", "top"], [ID + "-contract", "bottom"], { gap: 6 });
+      BRAINS.forEach((key) => Motion.connect(fits(key), [brain(key), "bottom"], [ID + "-contract", "top", Motion.boxOf(brain(key)).x - contract.x], { gap: 6 }));
+      // The name of a link is on the middle of its wire.
+      [["implements", fits(BRAINS[0])], ["depends-on", ID + "-depends"]].forEach(function ([name, wire]) {
+        const point = Motion.pointOn(wire, 0.42);
+        gsap.set(ID + "-" + name, { left: point.x, top: point.y, xPercent: -50, yPercent: -50 });
+      });
+      // The mark that says that the node at the bottom is the same.
+      const consumer = Motion.boxOf(ID + "-consumer");
+      gsap.set(ID + "-same", { left: consumer.right - 22, top: consumer.top - 22 });
+      // Give the link of a brain to the contract a colour.
+      const bind = function (key, value, time) {
+        tl.to(fits(key), { stroke: value, duration: 0.3 }, time);
+        tl.to(fits(key) + "-head", { fill: value, duration: 0.3 }, time);
+      };
+
+      Motion.chapter(tl, ID, {
+        duration: DURATION,
+        problem: [0.3, at.contract.start - 0.2],
+        terms: [
+          ["contract", at.contract.start + 0.4, at.same_contract.start - 0.1],
+          ["types", at.same_contract.start + 0.2, at.replace.start - 0.1],
+        ],
+        benefit: at.replace.start,
+        ros2: at.replace.start + 0.8,
+      });
+
+      // A contract declares one job: it takes the pictures, and gives motions.
+      Motion.show(tl, ID + "-contract", at.contract.start + 0.1, Motion.grows);
+      Motion.show(tl, ID + "-input", Motion.within(at.brains_job, 0.5), Motion.fromSide);
+      Motion.show(tl, ID + "-output", Motion.within(at.brains_job, 0.82), Motion.fromSide);
+
+      // A node that does the job implements the contract, and a node that
+      // needs the job depends on the contract.
+      Motion.show(tl, brain("vla"), at.implements.start + 0.2);
+      Motion.drawArrow(tl, fits("vla"), Motion.within(at.implements, 0.5), 0.5);
+      Motion.show(tl, ID + "-implements", Motion.within(at.implements, 0.6), Motion.grows);
+      Motion.show(tl, ID + "-consumer", at.depends.start + 0.2);
+      Motion.drawArrow(tl, ID + "-depends", Motion.within(at.depends, 0.42), 0.5);
+      Motion.show(tl, ID + "-depends-on", Motion.within(at.depends, 0.5), Motion.grows);
+
+      // At launch time, the launcher connects the two nodes.
+      const bound = Motion.within(at.binds, 0.45);
+      bind("vla", PEPPY, bound);
+      Motion.pulse(tl, ID + "-consumer", bound);
+      Motion.pulse(tl, brain("vla"), bound + 0.2);
+
+      // The other types of brain implement the same contract.
+      [["wam", 0.12], ["vlm", 0.3]].forEach(function ([key, share]) {
+        Motion.show(tl, brain(key), Motion.within(at.same_contract, share));
+        Motion.drawArrow(tl, fits(key), Motion.within(at.same_contract, 0.72), 0.5);
+      });
+
+      // One brain replaces another, and the node at the bottom does not change.
+      [["vla", "wam", 0.2], ["wam", "vlm", 0.55]].forEach(function ([before, after, share]) {
+        const time = Motion.within(at.replace, share);
+        bind(before, CONTRACT, time);
+        bind(after, PEPPY, time);
+        Motion.pulse(tl, brain(after), time);
+      });
+      Motion.show(tl, ID + "-same", Motion.within(at.replace, 0.75), Motion.grows);
+
+      window.__timelines["{{ id }}"] = tl;
+    })();
+  </script>
+</template>

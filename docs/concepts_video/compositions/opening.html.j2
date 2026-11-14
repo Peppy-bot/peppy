@@ -1,0 +1,396 @@
+{# Segment 1. First what the video explains, and why the viewer needs it.
+   Then why a robot needs a framework: a robot is many programs, and a
+   robotics framework connects them, starts them and monitors them. Peppy is
+   such a framework. Last the map of the video: its three acts with their
+   chapters, and the order of each chapter. #}
+{% from "_parts.html.j2" import backdrop, header, act_map, term_card, icon, wire %}
+{% set id = segment.id %}
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    {# The first scene: what the video explains, in three parts, and why. #}
+    .{{ id }}-announce {
+      align-items: flex-start;
+      gap: 56px;
+      padding-bottom: 40px;
+    }
+    .{{ id }}-subject {
+      max-width: 1500px;
+      font-size: 92px;
+      line-height: 1.08;
+      letter-spacing: -0.02em;
+    }
+    .{{ id }}-parts {
+      display: flex;
+      gap: 28px;
+    }
+    .{{ id }}-part {
+      padding: 18px 34px 22px;
+      border: 2px solid var(--line-strong);
+      border-radius: 20px;
+      background: var(--panel-fill);
+      box-shadow: var(--panel-shadow);
+    }
+    .{{ id }}-part-title {
+      font-size: 48px;
+      font-weight: 700;
+      line-height: 58px;
+    }
+    {# The second scene: the robot, its programs, then what they need. #}
+    .{{ id }}-row {
+      display: flex;
+      align-items: center;
+      gap: 56px;
+    }
+    .{{ id }}-robot {
+      flex: none;
+      width: 560px;
+      height: 830px;
+    }
+    .{{ id }}-programs {
+      flex: none;
+      display: flex;
+      flex-direction: column;
+      gap: 96px;
+      padding: 52px 44px 48px;
+      border-color: transparent;
+      background: transparent;
+    }
+    .{{ id }}-programs .node {
+      width: 420px;
+    }
+    .{{ id }}-side {
+      position: relative;
+      flex: 1;
+      align-self: stretch;
+    }
+    .{{ id }}-needs {
+      left: 0;
+      top: 150px;
+      display: flex;
+      flex-direction: column;
+      gap: 34px;
+    }
+    .{{ id }}-need {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-size: 40px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .{{ id }}-need::before {
+      content: "";
+      width: 16px;
+      height: 16px;
+      border-radius: 5px;
+      background: var(--data);
+    }
+    .{{ id }}-peppy {
+      left: 0;
+      top: 128px;
+    }
+    .{{ id }}-lockup {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+    }
+    .{{ id }}-logo {
+      width: 136px;
+      height: 136px;
+      padding: 8px;
+      border-radius: 32px;
+      background: var(--logo-ground);
+    }
+    .{{ id }}-logo img {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    .{{ id }}-name {
+      font-size: 116px;
+      line-height: 1;
+      color: var(--peppy);
+    }
+    .{{ id }}-priorities {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 20px;
+      margin-top: 44px;
+    }
+    .{{ id }}-priority {
+      padding: 8px 26px;
+      border: 2px solid var(--peppy);
+      border-radius: 14px;
+      font-size: 40px;
+      font-weight: 500;
+      line-height: 52px;
+      color: var(--peppy);
+      white-space: nowrap;
+    }
+    .{{ id }}-card {
+      left: 0;
+      right: 0;
+      bottom: 0;
+    }
+    .{{ id }}-leader {
+      fill: none;
+      stroke: var(--ink-dim);
+      stroke-width: 2;
+    }
+    {# The third scene: the map of the video, and why the viewer needs it. #}
+    .{{ id }}-agenda {
+      left: var(--frame-side);
+      top: 176px;
+      font-size: 56px;
+    }
+    .{{ id }}-why {
+      left: var(--frame-side);
+      top: 852px;
+      width: var(--full-width);
+      height: 174px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 60px;
+      align-items: center;
+    }
+    .{{ id }}-reason {
+      padding-left: 30px;
+      border-left: 8px solid var(--peppy);
+      font-size: 36px;
+      font-weight: 500;
+      line-height: 48px;
+    }
+    .{{ id }}-method-title {
+      margin-bottom: 14px;
+      font-family: var(--mono);
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-dim);
+    }
+    .{{ id }}-method {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .{{ id }}-step {
+      padding: 6px 22px;
+      border: 2px solid var(--line-strong);
+      border-radius: 14px;
+      background: var(--panel);
+      font-size: 30px;
+      font-weight: 500;
+      line-height: 44px;
+      white-space: nowrap;
+    }
+    .{{ id }}-step.is-problem {
+      border-color: var(--fault);
+    }
+    .{{ id }}-step.is-benefit {
+      border-color: var(--peppy);
+    }
+    .{{ id }}-then {
+      width: 34px;
+      height: 34px;
+      color: var(--ink-dim);
+      transform: rotate(-90deg);
+    }
+  </style>
+  <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
+    <div id="{{ id }}-stage" class="stage">
+      {{ backdrop(id) }}
+      {{ header(segment, act) }}
+      <div id="{{ id }}-content">
+
+      {# What the video explains, and why. #}
+      <div id="{{ id }}-announce-scene" class="scene">
+        <div class="zone is-full is-centered {{ id }}-announce">
+          <div id="{{ id }}-subject" class="headline {{ id }}-subject">{{ screen.announce }}</div>
+          <div class="{{ id }}-parts">
+            {% for act in acts %}
+            <div class="{{ id }}-part">
+              <div class="map-act-kicker">{{ labels.act }} {{ act.number }}</div>
+              <div class="{{ id }}-part-title">{{ act.title }}</div>
+            </div>
+            {% endfor %}
+          </div>
+          <div id="{{ id }}-announce-reason" class="{{ id }}-reason">{{ screen.reason }}</div>
+        </div>
+      </div>
+
+      {# The robot and its programs. #}
+      <div id="{{ id }}-robot-scene" class="scene">
+        <div class="zone is-full {{ id }}-row">
+          <canvas id="{{ id }}-robot" class="robot-canvas {{ id }}-robot"></canvas>
+          <div id="{{ id }}-programs" class="frame {{ id }}-programs">
+            <span id="{{ id }}-framework" class="frame-name" data-layout="over">{{ screen.framework }}</span>
+            {% for key, icon_name in [("camera_driver", "camera"), ("brain", "brain"), ("motor_driver", "motor")] %}
+            <div id="{{ id }}-node-{{ key }}" class="node">
+              {{ icon(icon_name) }}<span>{{ screen.programs[key] }}</span>
+              <span class="status {{ id }}-status" data-layout="over"></span>
+            </div>
+            {% endfor %}
+          </div>
+          <div class="{{ id }}-side">
+            <div class="placed {{ id }}-needs">
+              {% for need in screen.needs %}
+              <div id="{{ id }}-need-{{ loop.index }}" class="{{ id }}-need">{{ need }}</div>
+              {% endfor %}
+            </div>
+            <div id="{{ id }}-peppy" class="placed {{ id }}-peppy">
+              <div class="{{ id }}-lockup">
+                <div class="{{ id }}-logo"><img src="assets/pictures/peppy-logo.webp" alt="" /></div>
+                <div class="headline {{ id }}-name">{{ screen.peppy }}</div>
+              </div>
+              <div class="{{ id }}-priorities">
+                {% for priority in screen.priorities %}
+                <div id="{{ id }}-priority-{{ loop.index }}" class="{{ id }}-priority">{{ priority }}</div>
+                {% endfor %}
+              </div>
+            </div>
+            <div class="placed {{ id }}-card">{{ term_card(id + "-card-brain", screen.cards.robot_brain) }}</div>
+          </div>
+        </div>
+        <svg class="wires" viewBox="0 0 1920 1080">
+          <path id="{{ id }}-leader-camera" class="{{ id }}-leader" pathLength="1" />
+          <path id="{{ id }}-leader-motor" class="{{ id }}-leader" pathLength="1" />
+          {{ wire(id + "-wire-camera") }}
+          {{ wire(id + "-wire-to-brain") }}
+          {{ wire(id + "-wire-from-brain") }}
+          {{ wire(id + "-wire-motor") }}
+        </svg>
+        <div id="{{ id }}-label-camera" class="label is-tag placed" data-layout="over">{{ screen.parts.camera }}</div>
+        <div id="{{ id }}-label-motor" class="label is-tag placed" data-layout="over">{{ screen.parts.motor }}</div>
+        <div id="{{ id }}-dot-to-brain" class="dot" data-layout="free"></div>
+        <div id="{{ id }}-dot-from-brain" class="dot" data-layout="free"></div>
+      </div>
+
+      {# The map of the video. #}
+      <div id="{{ id }}-map-scene" class="scene">
+        <div id="{{ id }}-agenda" class="headline placed {{ id }}-agenda">{{ screen.agenda }}</div>
+        {{ act_map(id, 280) }}
+        <div class="placed {{ id }}-why">
+          <div id="{{ id }}-reason" class="{{ id }}-reason">{{ screen.reason }}</div>
+          <div id="{{ id }}-method">
+            <div class="{{ id }}-method-title">{{ screen.method_title }}</div>
+            <div class="{{ id }}-method">
+              {% for step in screen.method %}
+              {% if not loop.first %}<span class="{{ id }}-then {{ id }}-method-part">{{ icon("down") }}</span>{% endif %}
+              <span class="{{ id }}-step {{ id }}-method-part{{ ' is-problem' if loop.first else (' is-benefit' if loop.last else '') }}">{{ step }}</span>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const ID = "#{{ id }}";
+      const at = {{ at | tojson }};
+      const DURATION = {{ duration }};
+      const tl = gsap.timeline({ paused: true });
+      const node = (key) => ID + "-node-" + key;
+
+      tl.fromTo(ID + "-glow", { x: -50, y: -30 }, { x: 70, y: 40, duration: DURATION, ease: "sine.inOut" }, 0);
+      // The content comes in after the splash screen.
+      Motion.show(tl, ID + "-content", 0, Motion.appears);
+      Motion.endSegment(tl, ID + "-content", DURATION);
+
+      // What the video explains, in three parts, and why the viewer needs it.
+      Motion.show(tl, ID + "-subject", 0.3, Motion.fromSide);
+      Motion.show(tl, "." + "{{ id }}-part", Motion.within(at.announce, 0.72), { stagger: 0.25 });
+      Motion.show(tl, ID + "-announce-reason", at.reason.start, Motion.fromSide);
+      // First: why does a robot need a framework? The robot comes in.
+      const robotTime = at.first_why.start + 0.2;
+      Motion.hide(tl, ID + "-announce-scene", robotTime);
+      Motion.show(tl, ID + "-robot-scene", robotTime, Motion.appears);
+
+      // The wires between the programs.
+      Motion.connect(ID + "-wire-to-brain", [node("camera_driver"), "bottom"], [node("brain"), "top"], { gap: 6 });
+      Motion.connect(ID + "-wire-from-brain", [node("brain"), "bottom"], [node("motor_driver"), "top"], { gap: 6 });
+
+      // The robot turns to the viewer, then labels point to its parts.
+      const robot = RobotView.mount({
+        canvas: document.querySelector(ID + "-robot"),
+        segmentStart: {{ start }},
+        segmentDuration: DURATION,
+        turns: [[robotTime, -55], [at.many_programs.start, 0]],
+      });
+      robot.ready.then(function (view) {
+        const camera = view.pointOnPage("camera", 0);
+        const motor = view.pointOnPage("left_wrist", 0);
+        const place = (selector, x, y) => gsap.set(selector, { left: x, top: y });
+        const path = (selector, d) => document.querySelector(selector).setAttribute("d", d);
+        place(ID + "-label-camera", camera.x + 64, camera.y - 112);
+        path(ID + "-leader-camera", `M ${camera.x + 84} ${camera.y - 62} L ${camera.x + 12} ${camera.y - 10}`);
+        place(ID + "-label-motor", motor.x - 70, motor.y - 204);
+        path(ID + "-leader-motor", `M ${motor.x - 12} ${motor.y - 154} L ${motor.x - 4} ${motor.y - 30}`);
+        Motion.connect(ID + "-wire-camera", [{ x: camera.x + 16, y: camera.y }, "right"], [node("camera_driver"), "left"], { curve: true });
+        Motion.connect(ID + "-wire-motor", [node("motor_driver"), "left"], [{ x: motor.x + 30, y: motor.y + 8 }, "right"], { gap: 6, endGap: 0, curve: true });
+      });
+      [
+        ["camera", at.many_programs.start + 0.3],
+        ["motor", at.many_programs.start + 1.1],
+      ].forEach(function ([part, time]) {
+        Motion.draw(tl, ID + "-leader-" + part, time, 0.4);
+        Motion.show(tl, ID + "-label-" + part, time + 0.1);
+      });
+
+      // Each part has a program.
+      Motion.drawArrow(tl, ID + "-wire-camera", at.drivers.start + 0.2, 0.8);
+      Motion.show(tl, node("camera_driver"), at.drivers.start + 0.7);
+      const motorTime = Motion.within(at.drivers, 0.55);
+      Motion.show(tl, node("motor_driver"), motorTime);
+      Motion.drawArrow(tl, ID + "-wire-motor", motorTime + 0.3, 0.8);
+
+      // The brain is between the two drivers.
+      Motion.show(tl, node("brain"), at.brain.start + 0.2);
+      Motion.drawArrow(tl, ID + "-wire-to-brain", at.brain.start + 0.6, 0.4);
+      Motion.drawArrow(tl, ID + "-wire-from-brain", at.brain.start + 1.0, 0.4);
+      Motion.showBetween(tl, ID + "-card-brain", at.brain.start + 0.4, at.framework.end + 0.2, Motion.fromRight);
+
+      // What the programs need, one need for each part of the sentence.
+      const needTimes = [0.14, 0.36, 0.55, 0.8].map((share) => Motion.within(at.needs, share));
+      needTimes.forEach((time, index) => Motion.show(tl, ID + "-need-" + (index + 1), time, Motion.fromSide));
+      Motion.follow(tl, ID + "-dot-to-brain", ID + "-wire-to-brain", needTimes[1], 0.6, 4);
+      Motion.follow(tl, ID + "-dot-from-brain", ID + "-wire-from-brain", needTimes[1] + 0.3, 0.6, 4);
+      ["camera_driver", "brain", "motor_driver"].forEach((key, index) => Motion.pulse(tl, node(key), needTimes[2] + index * 0.3));
+      Motion.show(tl, "." + "{{ id }}-status", needTimes[3], { from: { opacity: 0, scale: 0.2 }, stagger: 0.15 });
+
+      // A robotics framework does this work, and Peppy is one.
+      Motion.paint(tl, ID + "-programs", { borderColor: Motion.colour("line-strong"), backgroundColor: "rgba(14, 22, 38, 0.55)" }, at.framework.start + 0.2);
+      Motion.show(tl, ID + "-framework", at.framework.start + 0.3);
+      Motion.hide(tl, "." + "{{ id }}-need", at.peppy.start);
+      Motion.show(tl, ID + "-peppy", at.peppy.start + 0.1);
+      Motion.paint(tl, ID + "-programs", { borderColor: Motion.colour("peppy") }, at.peppy.start + 0.1);
+      [0.5, 0.72].forEach((share, index) => Motion.show(tl, ID + "-priority-" + (index + 1), Motion.within(at.peppy, share), Motion.fromSide));
+
+      // The map of the video: its three acts, one with each sentence.
+      const mapTime = at.agenda.start - 0.3;
+      Motion.hide(tl, ID + "-robot-scene", mapTime);
+      Motion.show(tl, ID + "-map-scene", mapTime, Motion.appears);
+      Motion.show(tl, ID + "-agenda", mapTime + 0.1, Motion.fromSide);
+      {{ acts | map(attribute="id") | list | tojson }}.forEach(function (actId) {
+        const time = at["act_" + actId].start;
+        Motion.show(tl, ID + "-map-act-" + actId, time);
+        Motion.show(tl, ID + "-map-act-" + actId + " .map-chapter", time + 0.5, { from: { opacity: 0, x: -20, y: 0 }, stagger: 0.25 });
+      });
+
+      // Why the viewer needs these concepts, again, and how the video shows each one.
+      Motion.show(tl, ID + "-reason", Motion.within(at.act_real_world, 0.7), Motion.fromSide);
+      Motion.show(tl, ID + "-method", at.method.start, Motion.appears);
+      Motion.show(tl, "." + "{{ id }}-method-part", at.method.start + 0.3, { from: { opacity: 0, scale: 0.8, y: 0 }, stagger: Motion.lasts(at.method) / 7 });
+
+      window.__timelines["{{ id }}"] = tl;
+    })();
+  </script>
+</template>

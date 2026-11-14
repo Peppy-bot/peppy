@@ -1,0 +1,251 @@
+{# Segment 7. A launcher is one file that describes a full stack, and one
+   command starts it. Peppy finds the nodes by name in repositories, so the
+   first run of a stack is two steps. #}
+{% from "_parts.html.j2" import backdrop, header, problem_scene, rail, term_card, steps_comparison, node, command, icon, wire %}
+{% set id = segment.id %}
+{# The diagram, in the zone: the launcher file and the stack that it starts
+   at the top, the launch command below the file, and the repositories at
+   the bottom. Each number is a left side, a top or a size in the zone. #}
+{% set file = {"width": 400, "height": 390} %}
+{% set stack = {"left": 560, "width": 560, "height": 390} %}
+{% set stack_node_width = 230 %}
+{# The space between a node of the stack and the side of its frame. #}
+{% set stack_inset = 30 %}
+{% set command_top = 454 %}
+{% set store_top = 612 %}
+{% set part_icons = ["box", "copies", "sliders", "link"] %}
+{% set node_icons = ["camera", "arm", "brain"] %}
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    {# The launcher file: one line for each part of a stack. #}
+    .{{ id }}-file {
+      left: 0;
+      top: 0;
+      width: {{ file.width }}px;
+      height: {{ file.height }}px;
+      padding: 22px 30px;
+      font-family: var(--sans);
+    }
+    {# The four lines fill the window below its title. #}
+    .{{ id }}-part {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      height: 72px;
+      font-family: var(--mono);
+      font-size: 34px;
+      font-weight: 500;
+    }
+    .{{ id }}-part .icon {
+      width: 40px;
+      height: 40px;
+      color: var(--data);
+    }
+    .{{ id }}-command {
+      left: 0;
+      top: {{ command_top }}px;
+    }
+    {# The stack that the launch starts. #}
+    .{{ id }}-stack {
+      left: {{ stack.left }}px;
+      top: 0;
+      width: {{ stack.width }}px;
+      height: {{ stack.height }}px;
+    }
+    .{{ id }}-stack .node {
+      width: {{ stack_node_width }}px;
+      min-width: 0;
+    }
+    {# The repositories, and what they hold. #}
+    .{{ id }}-store {
+      left: 0;
+      top: {{ store_top }}px;
+      width: {{ file.width }}px;
+      padding: 20px 30px 26px;
+      border: 2px solid var(--data);
+      border-radius: 18px;
+      background: var(--panel-fill);
+      box-shadow: var(--panel-shadow);
+    }
+    .{{ id }}-store-name {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 16px;
+      font-size: 34px;
+      font-weight: 500;
+      line-height: 44px;
+    }
+    .{{ id }}-store-name .icon {
+      width: 40px;
+      height: 40px;
+      color: var(--data);
+    }
+    .{{ id }}-found {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .{{ id }}-found .pill {
+      font-size: 28px;
+      padding: 0 16px;
+    }
+    {# What a developer does not need. #}
+    .{{ id }}-not-needed {
+      left: {{ stack.left }}px;
+      top: {{ store_top }}px;
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+    }
+    .{{ id }}-free {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      font-size: 34px;
+      font-weight: 500;
+      line-height: 44px;
+      white-space: nowrap;
+    }
+    .{{ id }}-free .icon {
+      width: 44px;
+      height: 44px;
+      padding: 8px;
+      border-radius: 50%;
+      background: var(--ok);
+      color: var(--ground);
+      stroke-width: 3.2;
+    }
+  </style>
+  <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
+    <div id="{{ id }}-stage" class="stage">
+      {{ backdrop(id) }}
+      {{ header(segment, act) }}
+      <div id="{{ id }}-content">
+      {{ problem_scene(id, segment, screen.problem) }}
+
+      <div id="{{ id }}-concept" class="scene">
+        <div class="zone">
+          <div id="{{ id }}-file" class="code-window placed {{ id }}-file">
+            <div class="code-title">{{ screen.file }}</div>
+            {% for part in screen.stack_parts %}
+            <div id="{{ id }}-part-{{ loop.index }}" class="{{ id }}-part">{{ icon(part_icons[loop.index0]) }}<span>{{ part }}</span></div>
+            {% endfor %}
+          </div>
+          {{ command(id + "-command", screen.launch_command, "placed " + id + "-command") }}
+          <div id="{{ id }}-stack" class="frame placed {{ id }}-stack">
+            {% for name in screen.stack_nodes %}
+            {# The frame has a border of 3 px on each side. #}
+            {% set inner_width = stack.width - 6 %}
+            {% set left = [stack_inset, inner_width - stack_inset - stack_node_width, (inner_width - stack_node_width) // 2][loop.index0] %}
+            {# The last node is as far from the bottom of the frame as the first ones from its top. #}
+            {% set top = stack.height - 6 - 44 - 96 if loop.last else 44 %}
+            {% call node(id + "-node-" ~ loop.index, name, node_icons[loop.index0], "placed", "left: " ~ left ~ "px; top: " ~ top ~ "px") %}
+            <span id="{{ id }}-status-{{ loop.index }}" class="status" data-layout="over"></span>
+            {% endcall %}
+            {% endfor %}
+          </div>
+          <div id="{{ id }}-store" class="placed {{ id }}-store">
+            <div class="{{ id }}-store-name">{{ icon("store") }}<span>{{ screen.repositories }}</span></div>
+            <div class="{{ id }}-found">
+              {% for kind in screen.found_by_name %}
+              <span id="{{ id }}-found-{{ loop.index }}" class="pill">{{ kind }}</span>
+              {% endfor %}
+            </div>
+          </div>
+          <div class="placed {{ id }}-not-needed">
+            {% for item in screen.not_needed %}
+            <div id="{{ id }}-free-{{ loop.index }}" class="{{ id }}-free">{{ icon("check") }}<span>{{ item }}</span></div>
+            {% endfor %}
+          </div>
+        </div>
+        <svg class="wires" viewBox="0 0 1920 1080">
+          {{ wire(id + "-reads", "is-quiet") }}
+          {{ wire(id + "-starts", "is-peppy") }}
+          {{ wire(id + "-finds") }}
+          {{ wire(id + "-needs-1", "is-dim") }}
+          {{ wire(id + "-needs-2", "is-dim") }}
+        </svg>
+        {{ rail(id, screen, [
+          ["launcher", screen.cards.launcher.term, term_card(id + "-card-launcher", screen.cards.launcher)],
+          ["repository", screen.cards.repository.term, term_card(id + "-card-repository", screen.cards.repository)],
+        ]) }}
+      </div>
+
+      {{ steps_comparison(id + "-steps", screen.comparisons.first_run, columns="0.86fr 1fr") }}
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const ID = "#{{ id }}";
+      const at = {{ at | tojson }};
+      const DURATION = {{ duration }};
+      const tl = gsap.timeline({ paused: true });
+      const grows = { from: { opacity: 0, scale: 0.2, y: 0 } };
+
+      // The wires. The command is below the file and above the repositories,
+      // so its two wires are straight lines at the middle of the file.
+      const file = Motion.boxOf(ID + "-file");
+      const fromFile = file.x - Motion.boxOf(ID + "-command").x;
+      Motion.connect(ID + "-reads", [ID + "-file", "bottom"], [ID + "-command", "top", fromFile], { gap: 6 });
+      Motion.connect(ID + "-finds", [ID + "-store", "top"], [ID + "-command", "bottom", fromFile], { gap: 6 });
+      Motion.connect(ID + "-starts", [ID + "-command", "right"], [ID + "-stack", "bottom"], { gap: 6 });
+      // The last node depends on the two first ones.
+      Motion.connect(ID + "-needs-1", [ID + "-node-3", "left"], [ID + "-node-1", "bottom", -30]);
+      Motion.connect(ID + "-needs-2", [ID + "-node-3", "right"], [ID + "-node-2", "bottom", 30]);
+
+      const stepsTime = at.two_steps.start - 0.3;
+      Motion.chapter(tl, ID, {
+        duration: DURATION,
+        problem: [0.3, at.launcher.start - 0.2],
+        terms: [
+          ["launcher", at.launcher.start + 0.4, at.by_name.start + 0.1],
+          ["repository", at.by_name.start + 0.3, at.nothing_to_clone.start + 0.3],
+        ],
+        benefit: at.nothing_to_clone.start + 0.3,
+      });
+
+      // A launcher is one file that describes the full stack.
+      Motion.show(tl, ID + "-file", at.launcher.start + 0.1);
+      Motion.show(tl, "." + "{{ id }}-part", Motion.within(at.launcher, 0.4), { from: { opacity: 0, x: -20, y: 0 }, stagger: 0.25 });
+
+      // One command starts it: each node comes in the order of the dependencies.
+      Motion.show(tl, ID + "-command", at.one_command.start + 0.1);
+      Motion.drawArrow(tl, ID + "-reads", at.one_command.start + 0.5, 0.4);
+      Motion.show(tl, ID + "-stack", Motion.within(at.one_command, 0.2), Motion.appears);
+      Motion.drawArrow(tl, ID + "-starts", Motion.within(at.one_command, 0.25), 0.6);
+      [0.45, 0.6, 0.8].forEach(function (share, index) {
+        const time = Motion.within(at.one_command, share);
+        Motion.show(tl, ID + "-node-" + (index + 1), time);
+        Motion.show(tl, ID + "-status-" + (index + 1), time + 0.5, grows);
+      });
+      [1, 2].forEach((number) => Motion.drawArrow(tl, ID + "-needs-" + number, Motion.within(at.one_command, 0.8) + number * 0.2, 0.5));
+
+      // Peppy finds nodes, launchers and contracts by name in repositories.
+      Motion.show(tl, ID + "-store", at.by_name.start + 0.1);
+      Motion.show(tl, ID + "-store .pill", Motion.within(at.by_name, 0.25), { from: { opacity: 0, scale: 0.6, y: 0 }, stagger: 0.45 });
+      Motion.drawArrow(tl, ID + "-finds", Motion.within(at.by_name, 0.7), 0.5);
+
+      // Thus a developer has no repository to clone and no workspace to build:
+      // one line comes in with each of the two, and a third line after them.
+      // The three lines stay during the silence after the sentence.
+      [0.2, 0.58, 1.03].forEach((share, index) => Motion.show(tl, ID + "-free-" + (index + 1), Motion.within(at.nothing_to_clone, share), Motion.fromSide));
+
+      // The first run of a stack: the two steps of Peppy come in with the
+      // voice, then the seven steps of ROS 2.
+      Motion.swap(tl, ID + "-concept", ID + "-steps", stepsTime);
+      [0.55, 0.85].forEach((share, index) => Motion.show(tl, ID + "-steps-peppy-" + (index + 1), Motion.within(at.two_steps, share), Motion.fromSide));
+      {{ range(1, screen.comparisons.first_run.ros2 | length + 1) | list | tojson }}.forEach(function (step) {
+        Motion.show(tl, ID + "-steps-ros2-" + step, at.seven_steps.start + step * 0.4, Motion.fromSide);
+      });
+      Motion.glow(tl, ID + "-steps .steps-side.is-peppy", at.one_tool.start + 0.4);
+
+      window.__timelines["{{ id }}"] = tl;
+    })();
+  </script>
+</template>

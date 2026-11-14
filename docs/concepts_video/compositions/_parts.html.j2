@@ -1,0 +1,257 @@
+{# The parts that the compositions share. Each part takes its texts from the
+   transcript, and the words of its frame from `labels`. #}
+
+{# The shapes of the line icons, by name, in a square of 24 units. #}
+{% set icon_shapes = {
+  "camera": '<path d="M3.5 8.5 h3.2 l1.6 -2.5 h7.4 l1.6 2.5 h3.2 v10 h-17 z" /><circle cx="12" cy="13.2" r="3.4" />',
+  "brain": '<circle cx="6" cy="12" r="2.6" /><circle cx="17.5" cy="6" r="2.6" /><circle cx="17.5" cy="18" r="2.6" /><path d="M8.3 10.8 l6.9 -3.6 M8.3 13.2 l6.9 3.6 M17.5 8.6 v6.8" />',
+  "arm": '<path d="M4 20.5 h9 M8.5 20.5 v-5" /><circle cx="8.5" cy="13.5" r="2" /><path d="M10 12.2 l5 -4.2" /><circle cx="16.4" cy="6.8" r="2" /><path d="M18.4 6.8 h1.8 M20.2 4.6 v4.4" />',
+  "motor": '<circle cx="12" cy="12" r="5.2" /><circle cx="12" cy="12" r="1.6" /><path d="M12 2.8 v2.6 M12 18.6 v2.6 M2.8 12 h2.6 M18.6 12 h2.6 M5.5 5.5 l1.9 1.9 M16.6 16.6 l1.9 1.9 M5.5 18.5 l1.9 -1.9 M16.6 7.4 l1.9 -1.9" />',
+  "daemon": '<path d="M3 12 h4 l2.5 -6 l4 12 l2.5 -6 h5" />',
+  "file": '<path d="M6 3.5 h8 l4 4 v13 h-12 z M14 3.5 v4 h4" /><path d="M9 12.5 h6 M9 16 h6" />',
+  "cloud": '<path d="M7 18 h10 a4 4 0 0 0 0.6 -7.95 a5.6 5.6 0 0 0 -10.9 -1.1 a4.6 4.6 0 0 0 0.3 9.05 z" />',
+  "chip": '<rect x="6" y="6" width="12" height="12" rx="2" /><rect x="9.5" y="9.5" width="5" height="5" rx="1" /><path d="M9 6 v-2.5 M12 6 v-2.5 M15 6 v-2.5 M9 20.5 v-2.5 M12 20.5 v-2.5 M15 20.5 v-2.5 M6 9 h-2.5 M6 12 h-2.5 M6 15 h-2.5 M20.5 9 h-2.5 M20.5 12 h-2.5 M20.5 15 h-2.5" />',
+  "lock": '<path d="M8 11 v-3 a4 4 0 0 1 8 0 v3" /><rect x="5.5" y="11" width="13" height="9.5" rx="2" />',
+  "spark": '<path d="M12 2.5 c1 5.5 4 8.5 9.5 9.5 c-5.5 1 -8.5 4 -9.5 9.5 c-1 -5.5 -4 -8.5 -9.5 -9.5 c5.5 -1 8.5 -4 9.5 -9.5 z" />',
+  "check": '<path d="M5 12.5 l4.5 4.5 l9.5 -10" />',
+  "person": '<circle cx="12" cy="8" r="3.8" /><path d="M4.5 20.5 c0 -4.6 3.3 -7.2 7.5 -7.2 s7.5 2.6 7.5 7.2" />',
+  "laptop": '<rect x="5" y="5" width="14" height="10" rx="1.5" /><path d="M2.5 18.5 h19" />',
+  "down": '<path d="M12 4 v15 M5.5 12.5 l6.5 6.5 l6.5 -6.5" />',
+  "box": '<rect x="4" y="7" width="16" height="10" rx="2.5" />',
+  "copies": '<rect x="3" y="5" width="13" height="9" rx="2" /><rect x="8" y="10" width="13" height="9" rx="2" />',
+  "sliders": '<path d="M4 8 h16 M4 16 h16" /><circle cx="14.5" cy="8" r="2.4" /><circle cx="9" cy="16" r="2.4" />',
+  "link": '<circle cx="6" cy="12" r="2.6" /><circle cx="18" cy="12" r="2.6" /><path d="M8.6 12 h6.8" />',
+  "store": '<ellipse cx="12" cy="6" rx="7.5" ry="2.8" /><path d="M4.5 6 v12 c0 1.5 3.4 2.8 7.5 2.8 s7.5 -1.3 7.5 -2.8 v-12" /><path d="M4.5 12 c0 1.5 3.4 2.8 7.5 2.8 s7.5 -1.3 7.5 -2.8" />',
+} %}
+
+{# A line icon, by its name. #}
+{% macro icon(name) %}
+<svg class="icon" viewBox="0 0 24 24">{{ icon_shapes[name] | safe }}</svg>
+{%- endmacro %}
+
+{# The lights behind the content of a stage. #}
+{% macro backdrop(id) %}
+<div id="{{ id }}-glow" class="stage-glow" data-layout="free"></div>
+<div class="stage-shade" data-layout="free"></div>
+{% endmacro %}
+
+{# The header of a segment: its number and its chapter title at the top
+   left and, for a segment of an act, the act and the place of the segment
+   in it at the top right. #}
+{% macro header(segment, act) %}
+<div class="chapter">
+  <span class="chapter-number">{{ "%02d" | format(segment.number) }}</span>
+  <span>{{ segment.chapter }}</span>
+</div>
+{% if act %}
+<div class="act-progress">
+  <span><span class="act-progress-number">{{ labels.act }} {{ act.number }}</span> · {{ act.title }}</span>
+  <span class="pips">
+    {% for chapter in act.chapters %}
+    <span class="pip{{ ' is-current' if chapter.segment_id == segment.id else (' is-done' if chapter.number < segment.number else '') }}"></span>
+    {% endfor %}
+  </span>
+</div>
+{% endif %}
+{% endmacro %}
+
+{# The map of the video: one card for each act, with its question and its
+   chapters. `current` is the act that starts, in a chapter that opens an
+   act. `lines` gives, by the id of a segment, the text of the line of its
+   chapter: without it, the line shows the title of the chapter, and with it
+   the card shows no question. The card of an act has the id
+   `<id>-map-act-<act id>`, and the line of a chapter the id
+   `<id>-map-chapter-<segment id>`. #}
+{% macro act_map(id, top, current=none, lines=none) %}
+<div id="{{ id }}-map" class="map{{ ' has-current' if current else '' }}" style="top: {{ top }}px">
+  {% for act in acts %}
+  <div id="{{ id }}-map-act-{{ act.id }}" class="map-act{{ ' is-current' if current and act.id == current.id else '' }}">
+    <div class="map-act-kicker">{{ labels.act }} {{ act.number }}</div>
+    <div class="map-act-title">{{ act.title }}</div>
+    {% if not lines %}
+    <div class="map-act-question">{{ act.question }}</div>
+    {% endif %}
+    <ol class="map-chapters">
+      {% for chapter in act.chapters %}
+      <li id="{{ id }}-map-chapter-{{ chapter.segment_id }}" class="map-chapter">
+        <span class="map-chapter-number">{{ "%02d" | format(chapter.number) }}</span>
+        <span>{{ lines[chapter.segment_id] if lines else chapter.title }}</span>
+      </li>
+      {% endfor %}
+    </ol>
+  </div>
+  {% endfor %}
+</div>
+{% endmacro %}
+
+{# The scene that opens an act: the number and the title of the act in large
+   text, above the map of the video with the card of the act in the colour
+   of Peppy. #}
+{% macro act_intro(id, act) %}
+<div id="{{ id }}-act" class="scene">
+  <div class="act-heading">
+    <div class="act-heading-kicker">{{ labels.act }} {{ act.number }}</div>
+    <div class="act-heading-title">{{ act.title }}</div>
+  </div>
+  {{ act_map(id, 420, act) }}
+</div>
+{% endmacro %}
+
+{# The problem scene of a chapter: the problem that the chapter solves, in
+   large text. #}
+{% macro problem_scene(id, segment, text) %}
+<div id="{{ id }}-problem" class="problem">
+  <div class="problem-number" data-layout="free">{{ "%02d" | format(segment.number) }}</div>
+  <div class="scene-label is-problem">{{ labels.problem }}</div>
+  <div class="problem-headline">{{ text | rich }}</div>
+</div>
+{% endmacro %}
+
+{# The rail of a chapter: its problem, one chip for each of its terms, then
+   the slot of the cards. `terms` holds `[key, name, card]` for each term:
+   the chip `<id>-chip-<key>` shows `name`, and `card` is the card of the
+   term, which has the id `<id>-card-<key>`. The slot also holds what the
+   viewer gets (`<id>-benefit`) and, in a chapter that has one, the note
+   about ROS 2 (`<id>-ros2`). #}
+{% macro rail(id, screen, terms) %}
+<div id="{{ id }}-rail" class="rail">
+  <div id="{{ id }}-rail-problem" class="rail-block rail-problem">
+    <div class="scene-label is-problem">{{ labels.problem }}</div>
+    <div class="rail-text">{{ screen.problem | rich }}</div>
+  </div>
+  {% if terms %}
+  <div class="rail-chips">
+    {% for key, name, card in terms %}
+    <span id="{{ id }}-chip-{{ key }}" class="rail-chip">{{ name | rich }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <div class="rail-slot">
+    {% for key, name, card in terms %}
+    {{ card }}
+    {% endfor %}
+    <div>
+      <div id="{{ id }}-benefit" class="rail-block rail-benefit">
+        <div class="scene-label is-benefit">{{ labels.benefit }}</div>
+        <div class="rail-text">{{ screen.benefit | rich }}</div>
+      </div>
+      {% if "ros2" in screen %}
+      <div id="{{ id }}-ros2" class="rail-block rail-ros2">
+        <div class="scene-label is-ros2">{{ labels.in_ros2 }}</div>
+        <div class="rail-text">{{ screen.ros2 | rich }}</div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+{# A term card: a term, its definition in plain words, and its equivalent in
+   general software when it has one. #}
+{% macro term_card(id, card) %}
+<div id="{{ id }}" class="term-card">
+  <div class="card-kind">{{ labels.term }}</div>
+  <div class="card-term">{{ card.term | rich }}</div>
+  <div class="card-definition">{{ card.definition | rich }}</div>
+  {% if "equivalent" in card %}
+  <div class="card-equivalent">
+    <span class="card-equivalent-label">{{ labels.equivalent }}</span>
+    {{ card.equivalent | rich }}
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{# A term card for several terms that belong together: a title, then one row
+   for each term with its definition. A wide card has each term above its
+   definition. #}
+{% macro terms_card(id, title, cards, wide=false) %}
+<div id="{{ id }}" class="term-card">
+  <div class="card-kind">{{ title }}</div>
+  {% for card in cards %}
+  <div class="card-row{{ ' is-wide' if wide else '' }}">
+    <span class="card-row-term">{{ card.term | rich }}</span>
+    <span>{{ card.definition | rich }}</span>
+  </div>
+  {% endfor %}
+</div>
+{% endmacro %}
+
+{# A node: a box with its name, and an icon when `icon_name` gives one. A
+   call block gives more parts of the box. #}
+{% macro node(id, name, icon_name=none, kind="", style="") %}
+<div id="{{ id }}" class="node{{ ' ' + kind if kind else '' }}"{% if style %} style="{{ style }}"{% endif %}>
+  {% if icon_name %}{{ icon(icon_name) }}{% endif %}
+  <span>{{ name }}</span>
+  {% if caller is defined %}{{ caller() }}{% endif %}
+</div>
+{%- endmacro %}
+
+{# One side of a comparison of steps. Each step has the id `<id>-<side>-<n>`. #}
+{% macro steps_side(id, side, name, comparison) %}
+<div class="steps-side is-{{ side }}">
+  <span class="steps-side-name is-{{ side }}">{{ name }}</span>
+  {% if side + "_summary" in comparison %}
+  <div class="steps-summary">{{ comparison[side + "_summary"] | rich }}</div>
+  {% endif %}
+  <ol class="steps-list">
+    {% for step in comparison[side] %}
+    <li class="step" id="{{ id }}-{{ side }}-{{ loop.index }}"><span>{{ step | rich }}</span></li>
+    {% endfor %}
+  </ol>
+</div>
+{% endmacro %}
+
+{# A comparison of steps: ROS 2 on the left and Peppy on the right, in the
+   middle of the frame. A large comparison has larger text, for few steps.
+   `columns` gives the widths of the two sides, when they are not the usual
+   ones. #}
+{% macro steps_comparison(id, comparison, large=false, columns=none) %}
+<div id="{{ id }}" class="steps-scene">
+<div class="steps{{ ' is-large' if large else '' }}">
+  <div class="card-kind">{{ labels.comparison }}</div>
+  <div class="steps-title">{{ comparison.title | rich }}</div>
+  {% if "about_ros2" in comparison %}
+  <div class="steps-about">{{ comparison.about_ros2 | rich }}</div>
+  {% endif %}
+  <div class="steps-columns"{% if columns %} style="grid-template-columns: {{ columns }}"{% endif %}>
+    {{ steps_side(id, "ros2", labels.ros2, comparison) }}
+    {{ steps_side(id, "peppy", labels.peppy, comparison) }}
+  </div>
+  {% if "note" in comparison %}
+  <div class="steps-note">{{ comparison.note | rich }}</div>
+  {% endif %}
+</div>
+</div>
+{% endmacro %}
+
+{# Code on the screen. Each line has the id `<id>-l<n>`, from 1. A call
+   block gives more parts of the window. #}
+{% macro code_window(id, block, title=none) %}
+<div id="{{ id }}" class="code-window">
+  {% if title %}
+  <div class="code-title">{{ title | rich }}</div>
+  {% endif %}
+  {% for line in block.lines %}
+  <div class="code-line" id="{{ id }}-l{{ loop.index }}">{{ line | code(block.language) }}</div>
+  {% endfor %}
+  {% if caller is defined %}{{ caller() }}{% endif %}
+</div>
+{% endmacro %}
+
+{# A command in its general form, after the prompt of a terminal. #}
+{% macro command(id, text, kind="") %}
+<div id="{{ id }}" class="command{{ ' ' + kind if kind else '' }}"><span class="command-prompt">$</span>{{ text | rich }}</div>
+{%- endmacro %}
+
+{# A round mark: a check (`ok`) or a cross (`fault`). It is over the part
+   that it marks. #}
+{% macro mark(id, kind, style="") %}
+<div id="{{ id }}" class="mark is-{{ kind }}" data-layout="over"{% if style %} style="{{ style }}"{% endif %}><svg viewBox="0 0 44 44" width="44" height="44"><path d="{{ "M 12 23 L 19 30 L 32 15" if kind == "ok" else "M 14 14 L 30 30 M 30 14 L 14 30" }}" /></svg></div>
+{%- endmacro %}
+
+{# A wire with its head: the path `<id>` and the polygon `<id>-head`.
+   `Motion.connect` gives them their shape. #}
+{% macro wire(id, kind="") %}
+<path id="{{ id }}" class="wire{{ ' ' + kind if kind else '' }}" pathLength="1" /><polygon id="{{ id }}-head" class="wire-head{{ ' ' + kind if kind else '' }}" />
+{%- endmacro %}
