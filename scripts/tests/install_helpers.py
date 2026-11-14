@@ -224,6 +224,13 @@ def run_as_root(script: str, *, timeout: int = 600) -> None:
 # second, so both belong to the baseline rather than to any test. A user
 # manager that started before dbus-user-session was installed does not serve
 # the bus, hence the restart.
+#
+# The runner image may also leave apparmor.service stopped, as the stock
+# images of RunsOn do. A user's Ubuntu machine starts it at boot, and it
+# loads the AppArmor profiles of the packages, `unprivileged_userns` among
+# them. Ubuntu 24.04 lets a program that has no profile of its own make a
+# user namespace through that profile only, and apptainer makes one before
+# each container build.
 _LOGIN_BASELINE_SCRIPT = f"""
 set -eu
 if ! command -v sshd >/dev/null 2>&1; then
@@ -231,6 +238,7 @@ if ! command -v sshd >/dev/null 2>&1; then
     {APT_GET} install -y -qq openssh-server
 fi
 systemctl start ssh
+systemctl start apparmor
 if ! dpkg -s dbus-user-session >/dev/null 2>&1; then
     {APT_GET} update -qq
     {APT_GET} install -y -qq dbus-user-session
