@@ -5,8 +5,9 @@ name: Parallel release
 # Actions tab. Each archive builds natively on a runner of its own platform,
 # all three at once, so no runner has to start a VM:
 #
-#   prepare ──> provision (x3) ──> build (x3) ─┬─> install-test (x3) ──────┬─> publish ──> live-check
-#                                              └─> hub-set ──> hub-launch ─┘
+#   prepare ──> provision (x3) ──> build (x3) ─┬─> install-test-macos ─────────────┬─> publish ──> live-check
+#                                              └─> hub-set ─┬─> install-test (x2) ─┤
+#                                                           └─> hub-launch ────────┘
 #
 # The provision jobs build what every archive embeds but only one platform
 # builds natively: the peppylib bindings (macOS) and apptainer (one Linux
@@ -24,8 +25,9 @@ name: Parallel release
 # breaking change, else v0.<MINOR>.<PATCH+1> (see
 # scripts/functions/release_version.py). The prepare job names the version in
 # its job summary, and its `tag` output gives it to the later jobs that do not
-# read the release plan. The install-test jobs install each archive before
-# publish makes it the one users download.
+# read the release plan. The install-test jobs install each archive on a
+# fresh machine of its platform and do the steps of the quickstart on that
+# install, before publish makes the archive the one users download.
 #
 # The release also publishes the hub content its peppy reads. hub-set records
 # the commit of each hub the release tests (the hubs of
@@ -64,8 +66,9 @@ name: Parallel release
 # tag on each platform, then run the second command: it moves `latest`, the
 # tag the definition files of the hubs name.
 #
-# The Linux stages run on RunsOn runners: the x86_64 ones in the shape of the
-# cargo suites of tests.yml with the peppy-ubuntu24 image, the aarch64 ones on
+# The Linux stages run on RunsOn runners. All but the install-test legs boot a
+# peppy CI image: the x86_64 ones in the shape of the cargo suites of
+# tests.yml with the peppy-ubuntu24 image, the aarch64 ones on
 # `release-arm64` with its arm64 build, peppy-ubuntu24-aarch64 (see
 # .github/runs-on.yml). The 2 vCPU jobs, prepare, hub-set, hub-launch, publish
 # and live-check, run on demand, never spot. They cost little, and three of
@@ -81,9 +84,11 @@ name: Parallel release
 # reads the release plan and the artifacts the earlier attempts uploaded. Both
 # stages turn fail-fast off, so an interrupted leg fails alone and the next
 # attempt runs that leg again, not its siblings.
-# RunsOn has no macOS, so the macOS stages run on a Blacksmith macOS runner.
-# The install tests run on GitHub-hosted runners (see the install-test
-# action).
+# The two install-test legs boot a stock image of RunsOn, under the same spot
+# rule (see install-tests.yml): a leg changes its own instance alone, so a
+# leg that AWS interrupts can run again.
+# RunsOn has no macOS, so the macOS stages and install-test-macos run on
+# Blacksmith macOS runners.
 on:
   workflow_dispatch:
     inputs:
@@ -323,31 +328,53 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Installs each archive with the install.sh of the release commit on a fresh
-  # GitHub-hosted runner of its platform, and runs the install.sh tests
-  # against it. The aarch64 leg also installs its archive on Raspberry Pi
-  # boards, in containers of Raspberry Pi OS, Ubuntu and Debian (see
+  # Installs each Linux archive with the install.sh of the release commit on a
+  # fresh machine of its platform, and runs the install.sh tests against it
+  # (see install-tests.yml). The quickstart test does the steps of the
+  # quickstart on that machine: a full install, the background service that
+  # the install registers, `peppy info`, then `peppy stack launch
+  # openarm_simulation --with mujoco` on that service. A peppy of this
+  # release reads each default hub at the tag `peppy-release/<tag>`, which
+  # publish creates. So for that test the install reads each default hub at
+  # its commit of the hub set, the commit that publish tags. The machine
+  # holds no key for private-nodes-hub, as the machine of a user. The legs
+  # run at the same time as hub-launch, which launches every launcher
+  # combination on the CI image, with a daemon of its own.
+  #
+  # The aarch64 leg also installs its archive on Raspberry Pi boards, in
+  # containers of Raspberry Pi OS, Ubuntu and Debian (see
   # scripts/tests/test_install_raspberry_pi.py). peppy.bot/install.sh
   # serves the install.sh of `main` and
   # peppy.bot/latest the archives of the latest release, and publish moves
   # both to this release at once, so this is the install users get from the
   # moment publish finishes. The tests change the machine they run on, which
-  # is why they run on runners discarded after the job (see the action).
+  # is why they run on machines discarded after the job (see the action).
   install-test:
-    needs: build
+    needs: [build, hub-set]
     strategy:
       # Each platform reports on its own, so one failing install does not
-      # hide whether the others work.
+      # hide whether the other works.
       fail-fast: false
       matrix:
-        include:
-          - target: aarch64-apple-darwin
-            runner: macos-15
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-24.04
-    runs-on: ${{ matrix.runner }}
+        target:
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-gnu
+    uses: ./.github/workflows/install-tests.yml
+    with:
+      target: ${{ matrix.target }}
+      archive: archive-${{ matrix.target }}
+      hub-set: hub-set
+
+  # Installs the macOS archive with the install.sh of the release commit on a
+  # fresh macOS machine, and runs the install.sh tests against it: the
+  # quickstart test checks the background service that the install registers
+  # and `peppy info` there. It launches nothing: on macOS, peppy runs each
+  # node in a Linux virtual machine, and a macOS runner is itself a virtual
+  # machine, which cannot start one. The job runs on the smallest Blacksmith
+  # macOS runner (6 vCPU, 24 GB): it builds nothing.
+  install-test-macos:
+    needs: build
+    runs-on: blacksmith-6vcpu-macos-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7.0.1
@@ -357,7 +384,7 @@ jobs:
 
       - uses: $/.github/actions/install-test
         with:
-          archive: archive-${{ matrix.target }}
+          archive: archive-aarch64-apple-darwin
 
   # Records the hub set of the release: the commit of every hub the release
   # tests, each hub at its tag `peppy-release/<tag>` where an earlier run of
@@ -431,9 +458,9 @@ jobs:
   # Runs launchers-hub's tests on the hub set and on the x86_64 archive of this
   # release run: the run the dispatch starts checks out the launchers-hub
   # commit of the set, pins every other hub at its commit of the set, and plans
-  # and launches every launcher combination. It runs at the same time as
-  # install-test. The release token dispatches the run and can do nothing else:
-  # it is scoped to launchers-hub and to actions. The run takes up to about 75
+  # and launches every launcher combination. It runs at the same time as the
+  # install-test jobs. The release token dispatches the run and can do nothing
+  # else: it is scoped to launchers-hub and to actions. The run takes up to about 75
   # minutes, longer than the hour that token lasts, so the stage reads it with
   # the job's own token, which reads the public launchers-hub for as long as
   # the job runs. The timeout covers a full run with room to spare; the stage
@@ -512,7 +539,7 @@ jobs:
   # publish that failed before the release went live is cut again from a new
   # run.
   publish:
-    needs: [prepare, build, install-test, hub-set, hub-launch]
+    needs: [prepare, build, install-test, install-test-macos, hub-set, hub-launch]
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
     environment: release
     timeout-minutes: 20

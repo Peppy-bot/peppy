@@ -27,16 +27,16 @@ env:
 # slowest suite rather than the sum of them. Every suite is gated on its inputs
 # by the changes job and waits for that job alone, never for another suite.
 #
-# Every job but the two install-script jobs runs on a RunsOn runner: an EC2
-# instance of its own, booted from the peppy-ubuntu24 image for the job and
-# discarded after it, sized by the job's runs-on label. Every one of these
-# jobs but install-archive-aarch64 asks for the AMD families c8a, c7a, m8a and
-# m7a. On these, one vCPU is a full core and not a hyperthread, so a compile
-# gets twice the cores of an Intel instance of the same size for about the
-# same spot price. Four families in each zone give enough spot pools that a
-# spot instance is found at once. install-archive-aarch64 builds on Graviton,
-# from peppy-ubuntu24-aarch64, the arm64 build of the image. The gates take 2
-# vCPU. The
+# Every job runs on a RunsOn runner: an EC2 instance of its own, booted for
+# the job and discarded after it, sized by the job's runs-on label. Every job
+# but the two install-script jobs boots the peppy-ubuntu24 image. Every one of
+# these jobs but install-archive-aarch64 asks for the AMD families c8a, c7a,
+# m8a and m7a. On these, one vCPU is a full core and not a hyperthread, so a
+# compile gets twice the cores of an Intel instance of the same size for about
+# the same spot price. Four families in each zone give enough spot pools that
+# a spot instance is found at once. install-archive-aarch64 builds on
+# Graviton, from peppy-ubuntu24-aarch64, the arm64 build of the image. The
+# gates take 2 vCPU. The
 # cargo suites take 16 vCPU with 32 or 64 GB (the heaviest suite peaks near
 # 11 GB) and a root disk of about twice what the suite writes under
 # RUNNER_TEMP: 100 GB for the multi-daemon suite, whose Docker and apptainer
@@ -71,11 +71,11 @@ env:
 # because RunsOn runs an interrupted job again only after attempt 1 or 2 (see
 # .github/runs-on.yml).
 #
-# The exceptions are install-script and install-script-aarch64, which run
-# install.sh on GitHub-hosted runners. install.sh changes the machine it runs
-# on (apt packages, systemd linger, an AppArmor profile, a user service), and
-# the tests must start from the stock Ubuntu image a user starts from, which
-# the CI image, provisioned for builds, is not.
+# install-script and install-script-aarch64 run install.sh, and boot a stock
+# image of RunsOn (see install-tests.yml). install.sh changes the machine it
+# runs on (apt packages, systemd linger, an AppArmor profile, a user service),
+# and the tests must start from the stock Ubuntu image a user starts from,
+# which the CI image, provisioned for builds, is not.
 jobs:
   # What the change set requires each gated job to run: a boolean for the jobs
   # that are all or nothing, and a package selection for the job that splits
@@ -448,8 +448,9 @@ jobs:
           HEAD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: ./scripts/build_release.sh --local --tag "dev-${HEAD_COMMIT:0:12}"
 
-      # The installing job runs on ubuntu-24.04, so this runner must build the
-      # x86_64 archive; a runner of another architecture fails here, by name.
+      # The installing job runs on an x86_64 instance, so this runner must
+      # build the x86_64 archive; a runner of another architecture fails here,
+      # by name.
       # A build of a push to dev is kept 90 days: under the dev builds
       # policy, every hub pull request without a peppy branch of its name
       # takes the dev build of the head of dev, and dev can go more than 14
@@ -462,26 +463,20 @@ jobs:
           retention-days: ${{ github.ref == 'refs/heads/dev' && 90 || 14 }}
 
   # Installs that archive with this change's install.sh on a fresh Ubuntu
-  # x86_64 runner, and runs the container path of install.sh in Docker (see
-  # the install-test action). The release workflow runs the same tests on
-  # every platform before it publishes; this job and install-script-aarch64
-  # are the early warning for the two Linux platforms.
+  # x86_64 machine, launches the quickstart on that install, and runs the
+  # container path of install.sh in Docker (see install-tests.yml and the
+  # install-test action). The release workflow runs the same tests on every
+  # platform before it publishes; this job and install-script-aarch64 are the
+  # early warning for the two Linux platforms.
   install-script:
     needs: [changes, install-archive]
     if: needs.changes.outputs.install_script == 'true'
-    runs-on: ubuntu-24.04
     permissions:
       contents: read
-    timeout-minutes: 45
-
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: $/.github/actions/install-test
-        with:
-          archive: peppy-dev-x86_64-unknown-linux-gnu
+    uses: ./.github/workflows/install-tests.yml
+    with:
+      target: x86_64-unknown-linux-gnu
+      archive: peppy-dev-x86_64-unknown-linux-gnu
 
   # Builds the release archive of this change for aarch64 Linux, natively on
   # Graviton, as install-archive builds the x86_64 one. No hub reads it, so
@@ -513,7 +508,7 @@ jobs:
           HEAD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: ./scripts/build_release.sh --local --tag "dev-${HEAD_COMMIT:0:12}"
 
-      # The installing job runs on ubuntu-24.04-arm, so this runner must
+      # The installing job runs on an aarch64 instance, so this runner must
       # build the aarch64 archive; a runner of another architecture fails
       # here, by name. Only the job after this one reads it.
       - uses: actions/upload-artifact@v7.0.2
@@ -524,25 +519,18 @@ jobs:
           retention-days: 1
 
   # Installs that archive with this change's install.sh on a fresh Ubuntu
-  # aarch64 runner, as install-script does on x86_64, and installs it on
+  # aarch64 machine, as install-script does on x86_64, and installs it on
   # Raspberry Pi boards, whose tests need an arm64 host (see the install-test
   # action).
   install-script-aarch64:
     needs: [changes, install-archive-aarch64]
     if: needs.changes.outputs.install_script == 'true'
-    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
-    timeout-minutes: 45
-
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: $/.github/actions/install-test
-        with:
-          archive: peppy-dev-aarch64-unknown-linux-gnu
+    uses: ./.github/workflows/install-tests.yml
+    with:
+      target: aarch64-unknown-linux-gnu
+      archive: peppy-dev-aarch64-unknown-linux-gnu
 
   # The sealed peppy-shared tree: the cargo packages of its workspace together
   # with the peppylib Python bindings built from them. It runs the units the

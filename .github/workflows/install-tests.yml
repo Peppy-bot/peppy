@@ -1,0 +1,75 @@
+name: Install tests
+
+# One Linux leg of the install tests: the release archive of one platform,
+# installed with install.sh on a machine that a user starts from, and the
+# install.sh tests against it, the quickstart test among them (see the
+# install-test action). Two workflows call it, and take the two Linux legs
+# from this one definition, the runner of each platform, its size and its
+# steps:
+#
+# - tests.yml, for a pull request that changes scripts/install.sh, with the
+#   peppy dev build of the change. That build has no release version, so the
+#   launch of the quickstart test reads the `main` of each hub.
+# - parallel-release.yml, before it publishes, with the archive of the
+#   release and its hub set: the launch reads each default hub at the commit
+#   that publish then tags.
+#
+# The leg runs on a RunsOn instance of its own, discarded after the job. The
+# instance boots a stock image of RunsOn, ubuntu24-full-x64 on x86_64 and
+# ubuntu24-full-arm64 on aarch64. Each is compatible with the GitHub runner
+# image of Ubuntu 24.04. A peppy CI image is provisioned for builds and
+# carries what install.sh is there to install, so the install-test action
+# refuses it. Each label names a runner of .github/runs-on.yml, because RunsOn
+# sets the EC2 tags of an instance from a runner definition only, and replaces
+# the image and the size of that runner.
+#
+# The quickstart test launches the quickstart on a machine with no cache, so
+# each node of the launch builds from nothing. Thus each instance has the size
+# of the launch job of launchers-hub: 8 full cores and 16 GB or more. On
+# x86_64 these are the instance types of that job. On aarch64 these are the
+# 2xlarge of the Graviton families of release-arm64, where one vCPU is a full
+# core. The 150 GB root disk holds the stock image, the node images that the
+# launch builds and the Docker images of the container tests.
+#
+# Each instance is a spot instance in attempts 1 and 2 of the run, and an
+# on-demand instance from attempt 3 (see .github/runs-on.yml).
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: The platform of the leg, x86_64-unknown-linux-gnu or aarch64-unknown-linux-gnu
+        type: string
+        required: true
+      archive:
+        description: The artifact of the run that holds the release archive of that platform
+        type: string
+        required: true
+      hub-set:
+        description: >-
+          The artifact of the run that holds the hub set of a release. With
+          it, the install of the quickstart test reads each default hub at
+          its commit of the set. Without it, that install reads its default
+          hubs as it finds them.
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  install-test:
+    runs-on: runs-on=${{ github.run_id }}/${{ inputs.target == 'x86_64-unknown-linux-gnu' && 'runner=peppy-ci-ubuntu-24.04-x86_64/image=ubuntu24-full-x64/cpu=8+16/ram=16+64/family=*7a.2xlarge+*6i.4xlarge+*7i.4xlarge+*8i.4xlarge' || 'runner=release-arm64/image=ubuntu24-full-arm64/cpu=8/ram=16+32' }}/volume=150gb:gp3:500mbs:6000iops${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # stock RunsOn image
+    # The limit ends a leg whose launch hangs. The tests without the launch
+    # take about 5 minutes.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: $/.github/actions/install-test
+        with:
+          archive: ${{ inputs.archive }}
+          hub-set: ${{ inputs.hub-set }}
