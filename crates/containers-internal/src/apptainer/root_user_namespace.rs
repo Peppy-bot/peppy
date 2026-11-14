@@ -5,17 +5,21 @@
 //! - For a user that is not root, it runs the container in a user namespace
 //!   and mounts the image with the bundled `squashfuse_ll`, which reads every
 //!   compression.
-//! - For root with the capability `CAP_SYS_ADMIN`, it uses no user namespace
-//!   and the kernel mounts the image. No setting of `apptainer.conf` changes
-//!   this for root: the flag `--userns` is the one switch.
+//! - For the real root (user 0 of the initial user namespace) with the
+//!   capability `CAP_SYS_ADMIN`, it uses no user namespace and the kernel
+//!   mounts the image. No setting of `apptainer.conf` changes this for root:
+//!   the flag `--userns` is the one switch.
+//!
+//! Root of a user namespace, as in a rootless container, is not the real
+//! root: apptainer mounts its images with `squashfuse_ll` too.
 //!
 //! peppy packs each image with zstd, and some kernels are built without zstd
 //! for squashfs (`# CONFIG_SQUASHFS_ZSTD is not set`): the WSL2 kernel of
 //! Microsoft and the kernel of the NVIDIA Jetson are two. On such a kernel a
-//! container of a root daemon stops with "kernel reported a bad superblock
-//! for squashfs image partition".
+//! container of a daemon that is the real root stops with "kernel reported a
+//! bad superblock for squashfs image partition".
 //!
-//! So a root daemon on such a kernel passes `--userns` to each `run` and each
+//! So such a daemon on such a kernel passes `--userns` to each `run` and each
 //! `exec` ([`UserNamespace::Forced`]), and apptainer mounts the image with
 //! `squashfuse_ll` as it does for every other user. On every other host peppy
 //! passes no flag ([`UserNamespace::ApptainerDefault`]), so a root daemon on
@@ -62,6 +66,14 @@ const KERNEL_OPTION_PREFIX: &str = "CONFIG_";
 /// driver. The option is a boolean, so no other value turns it on.
 const ZSTD_SQUASHFS_ENABLED: &str = "CONFIG_SQUASHFS_ZSTD=y";
 
+/// How the user namespace of this process maps its users: one line of the
+/// first user in the namespace, the first user outside it, and the count.
+const UID_MAP_FILE: &str = "/proc/self/uid_map";
+
+/// The fields of the one line of [`UID_MAP_FILE`] in the initial user
+/// namespace: every user maps to itself.
+const INITIAL_USER_NAMESPACE_MAP: [&str; 3] = ["0", "0", "4294967295"];
+
 /// The user and the group of root.
 const ROOT_ID: u32 = 0;
 
@@ -72,8 +84,8 @@ pub(crate) enum UserNamespace {
     /// peppy passes no flag: apptainer uses a user namespace for a user that
     /// is not root, and none for root.
     ApptainerDefault,
-    /// peppy passes [`USER_NAMESPACE_FLAG`]: the daemon is root and its kernel
-    /// cannot mount the zstd squashfs of an image.
+    /// peppy passes [`USER_NAMESPACE_FLAG`]: the daemon is the real root and
+    /// its kernel cannot mount the zstd squashfs of an image.
     Forced,
 }
 
@@ -87,7 +99,7 @@ impl UserNamespace {
     /// directory on the way to it cannot be read.
     pub(crate) fn for_this_daemon(apptainer_dir: &Path) -> Result<Self> {
         let user_namespace = Self::for_daemon(
-            rustix::process::geteuid().is_root(),
+            daemon_is_real_root(),
             &KernelConfigFiles::of_this_host(),
             apptainer_dir,
             DirectoryAccess::of,
@@ -102,12 +114,12 @@ impl UserNamespace {
     /// arguments describe. `access_of` reads the owner, the group and the
     /// permission bits of a directory.
     fn for_daemon(
-        daemon_is_root: bool,
+        daemon_is_real_root: bool,
         kernel_config_files: &KernelConfigFiles,
         apptainer_dir: &Path,
         access_of: impl Fn(&Path) -> io::Result<DirectoryAccess>,
     ) -> Result<Self> {
-        if !daemon_is_root {
+        if !daemon_is_real_root {
             return Ok(Self::ApptainerDefault);
         }
         // Without a configuration to read, the kernel is taken to mount zstd
@@ -121,6 +133,21 @@ impl UserNamespace {
         ensure_root_reaches_from_user_namespace(apptainer_dir, access_of)?;
         Ok(Self::Forced)
     }
+}
+
+/// Whether this process is the real root: user 0 of the initial user
+/// namespace. A process whose user namespace cannot be read is taken not to
+/// be, so that peppy passes no flag for it.
+fn daemon_is_real_root() -> bool {
+    rustix::process::geteuid().is_root()
+        && fs::read_to_string(UID_MAP_FILE)
+            .is_ok_and(|uid_map| is_initial_user_namespace_map(&uid_map))
+}
+
+/// Whether `uid_map`, the text of a [`UID_MAP_FILE`], is the map of the
+/// initial user namespace.
+fn is_initial_user_namespace_map(uid_map: &str) -> bool {
+    uid_map.split_whitespace().eq(INITIAL_USER_NAMESPACE_MAP)
 }
 
 /// Tells the operator, once for the process, why the containers of this root
@@ -394,14 +421,38 @@ CONFIG_SQUASHFS_XZ=y
     /// [`UserNamespace::for_daemon`] for an installation in a scratch
     /// directory that every user can enter.
     fn user_namespace_for(
-        daemon_is_root: bool,
+        daemon_is_real_root: bool,
         proc_text: Option<&str>,
         boot_text: Option<&str>,
     ) -> UserNamespace {
         let scratch = scratch_dir();
         let files = kernel_config_files(scratch.path(), proc_text, boot_text);
-        UserNamespace::for_daemon(daemon_is_root, &files, scratch.path(), |_| Ok(OPEN_DIR))
-            .expect("root reaches a directory that every user can enter")
+        UserNamespace::for_daemon(daemon_is_real_root, &files, scratch.path(), |_| {
+            Ok(OPEN_DIR)
+        })
+        .expect("root reaches a directory that every user can enter")
+    }
+
+    #[test]
+    fn the_map_of_every_user_to_itself_is_the_initial_user_namespace() {
+        assert!(is_initial_user_namespace_map(
+            "         0          0 4294967295\n"
+        ));
+    }
+
+    #[test]
+    fn the_map_of_a_container_is_not_the_initial_user_namespace() {
+        let root_of_apptainer = "         0          0          1\n";
+        let root_of_a_rootless_container = "         0       1000          1\n";
+        let rootless_container_with_subordinate_users =
+            "         0       1000          1\n         1     100000      65536\n";
+
+        assert!(!is_initial_user_namespace_map(root_of_apptainer));
+        assert!(!is_initial_user_namespace_map(root_of_a_rootless_container));
+        assert!(!is_initial_user_namespace_map(
+            rootless_container_with_subordinate_users
+        ));
+        assert!(!is_initial_user_namespace_map(""));
     }
 
     #[test]
@@ -495,7 +546,7 @@ CONFIG_SQUASHFS_XZ=y
     }
 
     #[test]
-    fn a_root_daemon_on_a_kernel_without_zstd_squashfs_forces_the_user_namespace() {
+    fn the_real_root_on_a_kernel_without_zstd_squashfs_forces_the_user_namespace() {
         let from_proc = user_namespace_for(true, Some(CONFIG_WITHOUT_ZSTD), None);
         let from_boot = user_namespace_for(true, None, Some(CONFIG_WITHOUT_ZSTD));
 
@@ -504,28 +555,28 @@ CONFIG_SQUASHFS_XZ=y
     }
 
     #[test]
-    fn a_root_daemon_on_a_kernel_with_zstd_squashfs_keeps_the_default_of_apptainer() {
+    fn the_real_root_on_a_kernel_with_zstd_squashfs_keeps_the_default_of_apptainer() {
         let user_namespace = user_namespace_for(true, Some(CONFIG_WITH_ZSTD), None);
 
         assert_eq!(user_namespace, UserNamespace::ApptainerDefault);
     }
 
     #[test]
-    fn a_root_daemon_with_no_kernel_configuration_keeps_the_default_of_apptainer() {
+    fn the_real_root_with_no_kernel_configuration_keeps_the_default_of_apptainer() {
         let user_namespace = user_namespace_for(true, None, None);
 
         assert_eq!(user_namespace, UserNamespace::ApptainerDefault);
     }
 
     #[test]
-    fn a_daemon_that_is_not_root_keeps_the_default_of_apptainer() {
+    fn a_daemon_that_is_not_the_real_root_keeps_the_default_of_apptainer() {
         let user_namespace = user_namespace_for(false, Some(CONFIG_WITHOUT_ZSTD), None);
 
         assert_eq!(user_namespace, UserNamespace::ApptainerDefault);
     }
 
     #[test]
-    fn a_daemon_that_is_not_root_reads_no_directory() {
+    fn a_daemon_that_is_not_the_real_root_reads_no_directory() {
         let scratch = scratch_dir();
         let files = kernel_config_files(scratch.path(), Some(CONFIG_WITHOUT_ZSTD), None);
 
