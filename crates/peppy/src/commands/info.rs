@@ -16,8 +16,12 @@ fn print_container_setup_status() {
             let status = containers::check_setup_status(&dir);
             if status.is_ok() {
                 println!("Container setup: OK");
-            } else {
+            } else if status.fix_script.is_some() {
                 println!("Container setup: INCOMPLETE (run `peppy container setup`)");
+            } else {
+                // The one failure that the setup has no fix for: the status
+                // command shows what the kernel answered.
+                println!("Container setup: INCOMPLETE (see `peppy container status`)");
             }
         }
         Err(e) => {

@@ -4,11 +4,13 @@ use super::activity::{
 };
 #[cfg(target_os = "linux")]
 use super::facade::{
-    ApparmorProfileRef, apparmor_profile_ref, check_setup_status, setup_fix_script,
-    shell_escape_single_quoted,
+    ApparmorProfileRef, SetupStatus, apparmor_profile_ref, check_setup_status, require_fixes_made,
+    setup_fix_script, shell_escape_single_quoted,
 };
 use super::facade::{Apptainer, Backend, GuestSignal, is_uri, prepare_scratch_dir};
 use super::registry_auth::{RegistryAuth, RegistryAuthSource};
+#[cfg(target_os = "linux")]
+use super::unprivileged_user_namespace::UnprivilegedUserNamespace;
 use crate::error::Error;
 use std::assert_matches;
 use std::fs;
@@ -1222,12 +1224,13 @@ fn check_setup_status_reports_real_installation() {
 
     let status = check_setup_status(&apptainer_dir);
 
-    // On systems with newuidmap and without AppArmor restrictions,
-    // everything should pass.
-    if status.newuidmap_ok && !status.apparmor_restricted {
+    // On systems with newuidmap, without AppArmor restrictions and with a
+    // kernel that gives a user namespace, everything should pass.
+    if status.newuidmap_ok && !status.apparmor_restricted && status.user_namespace.is_usable() {
         assert!(
             status.is_ok(),
-            "is_ok should be true when newuidmap is available and no AppArmor restrictions"
+            "is_ok should be true when newuidmap is available, AppArmor does not restrict \
+             and the kernel gives a user namespace"
         );
         assert!(
             status.fix_script.is_none(),
@@ -1261,7 +1264,7 @@ fn check_setup_status_no_apparmor_restriction() {
         status.apparmor_loaded,
         "apparmor_loaded should be true when not restricted"
     );
-    if status.newuidmap_ok {
+    if status.newuidmap_ok && status.user_namespace.is_usable() {
         assert!(status.is_ok());
         assert!(status.fix_script.is_none());
     }
@@ -1297,12 +1300,44 @@ fn check_setup_status_requires_apparmor_profile_loaded() {
         );
     }
 
-    // If both are true (and newuidmap is present), the full check passes.
-    if status.apparmor_ok && status.apparmor_loaded && status.newuidmap_ok {
+    // If both are true (and newuidmap is present, and the kernel gives a
+    // user namespace), the full check passes.
+    if status.apparmor_ok
+        && status.apparmor_loaded
+        && status.newuidmap_ok
+        && status.user_namespace.is_usable()
+    {
         assert!(
             status.is_ok(),
             "is_ok() should be true when all checks pass"
         );
+    }
+}
+
+/// A user namespace that the kernel refuses fails the status, with or
+/// without a fix, and the fix script has a step only for the refusal that
+/// the profile `unprivileged_userns` repairs.
+#[cfg(target_os = "linux")]
+#[test]
+fn check_setup_status_fails_on_a_refused_user_namespace() {
+    let status = check_setup_status(&ready_apptainer_dir());
+
+    match &status.user_namespace {
+        UnprivilegedUserNamespace::NotRequired | UnprivilegedUserNamespace::Granted => {
+            eprintln!("SKIPPING: the kernel of this host gives a user namespace");
+        }
+        UnprivilegedUserNamespace::RefusedWithoutProfile { .. } => {
+            assert!(!status.is_ok());
+            let script = status.fix_script.as_ref().expect("fix_script should exist");
+            assert!(
+                script.contains("apparmor_parser -r /etc/apparmor.d/unprivileged_userns"),
+                "fix script should load the profile, got: {script}"
+            );
+        }
+        UnprivilegedUserNamespace::Refused { .. } => {
+            assert!(!status.is_ok());
+            assert!(status.user_namespace.refusal_without_repair().is_some());
+        }
     }
 }
 
@@ -1397,10 +1432,12 @@ fn shell_escape_single_quoted_survives_embedded_quotes() {
     assert_eq!(shell_escape_single_quoted("/plain/path"), "/plain/path");
 }
 
-/// The fix script holds one step per failing check, in a fixed order, and is
-/// absent when every check passes. A profile that is missing or stale is
-/// written and loaded in one step, so a profile that only needs loading gets
-/// the load alone.
+/// The fix script holds one step per failing check that has a fix, in a
+/// fixed order, and is absent when no check has one. A profile that is
+/// missing or stale is written and loaded in one step, so a profile that only
+/// needs loading gets the load alone. A refused user namespace gets the load
+/// of `unprivileged_userns` when that profile is the repair, and no step when
+/// it is not.
 #[cfg(target_os = "linux")]
 #[test]
 fn setup_fix_script_holds_a_step_for_each_failing_check() {
@@ -1414,12 +1451,16 @@ fn setup_fix_script_holds_a_step_for_each_failing_check() {
          && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
     const LOAD_PROFILE: &str =
         "sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
+    const LOAD_USER_NAMESPACE_PROFILE: &str =
+        "sudo apparmor_parser -r /etc/apparmor.d/unprivileged_userns";
     let profile = ApparmorProfileRef {
         starter_path: "/opt/a/libexec/apptainer/bin/starter".to_string(),
         name: "peppy-apptainer-0000000000000000".to_string(),
         file: PathBuf::from("/etc/apparmor.d/peppy-apptainer-0000000000000000"),
     };
-    let uidmap_then = |step: &str| format!("{INSTALL_UIDMAP} \\\n  && {step}");
+    let then = |first: &str, second: &str| format!("{first} \\\n  && {second}");
+    let uidmap_then = |step: &str| then(INSTALL_UIDMAP, step);
+    let refusal = || "unshare: unshare failed: Permission denied".to_string();
 
     // (newuidmap_ok, apparmor_ok, apparmor_loaded, script)
     let cases = [
@@ -1433,12 +1474,116 @@ fn setup_fix_script_holds_a_step_for_each_failing_check() {
         (false, true, false, Some(uidmap_then(LOAD_PROFILE))),
     ];
     for (newuidmap_ok, apparmor_ok, apparmor_loaded, script) in cases {
-        assert_eq!(
-            setup_fix_script(newuidmap_ok, apparmor_ok, apparmor_loaded, &profile),
-            script,
+        let context = format!(
             "newuidmap_ok={newuidmap_ok} apparmor_ok={apparmor_ok} \
              apparmor_loaded={apparmor_loaded}"
         );
+        let script_for = |user_namespace: &UnprivilegedUserNamespace| {
+            setup_fix_script(
+                newuidmap_ok,
+                apparmor_ok,
+                apparmor_loaded,
+                user_namespace,
+                &profile,
+            )
+        };
+
+        // A user namespace that needs no repair, or has none, adds no step.
+        for user_namespace in [
+            UnprivilegedUserNamespace::Granted,
+            UnprivilegedUserNamespace::NotRequired,
+            UnprivilegedUserNamespace::Refused { answer: refusal() },
+        ] {
+            assert_eq!(
+                script_for(&user_namespace),
+                script,
+                "{context} {user_namespace:?}"
+            );
+        }
+
+        // The load of `unprivileged_userns` is the last step.
+        let with_profile_load = script.as_deref().map_or_else(
+            || LOAD_USER_NAMESPACE_PROFILE.to_string(),
+            |steps| then(steps, LOAD_USER_NAMESPACE_PROFILE),
+        );
+        assert_eq!(
+            script_for(&UnprivilegedUserNamespace::RefusedWithoutProfile { answer: refusal() }),
+            Some(with_profile_load),
+            "{context} with a refusal that the profile repairs"
+        );
+    }
+}
+
+/// A status whose every check passes but the user namespace, which is
+/// `user_namespace`, with the fix script that goes with it.
+#[cfg(target_os = "linux")]
+fn setup_status_with(
+    user_namespace: UnprivilegedUserNamespace,
+    fix_script: Option<&str>,
+) -> SetupStatus {
+    SetupStatus {
+        newuidmap_ok: true,
+        apparmor_restricted: true,
+        apparmor_ok: true,
+        apparmor_loaded: true,
+        apparmor_manageable: true,
+        user_namespace,
+        fix_script: fix_script.map(str::to_owned),
+    }
+}
+
+/// A status that has a fix to make stops the construction of the facade, and
+/// so the daemon, with an error that gives the script.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_status_with_a_fix_to_make_is_an_error_that_gives_the_script() {
+    const LOAD: &str = "sudo apparmor_parser -r /etc/apparmor.d/unprivileged_userns";
+    let status = setup_status_with(
+        UnprivilegedUserNamespace::RefusedWithoutProfile {
+            answer: "unshare: unshare failed: Permission denied".to_string(),
+        },
+        Some(LOAD),
+    );
+    assert!(!status.is_ok());
+
+    let error = require_fixes_made(status).unwrap_err();
+
+    assert_matches!(
+        &error,
+        Error::ConfigurationError(message)
+            if message.contains(&format!("  {LOAD}\n"))
+                && message.contains("peppy container setup")
+    );
+}
+
+/// A user namespace that the kernel refuses for a cause with no fix fails
+/// the status and does not stop the daemon: the nodes that are not
+/// containers run on such a machine.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_refusal_with_no_fix_does_not_stop_the_daemon() {
+    let status = setup_status_with(
+        UnprivilegedUserNamespace::Refused {
+            answer: "unshare: unshare failed: Operation not permitted".to_string(),
+        },
+        None,
+    );
+    assert!(!status.is_ok());
+
+    require_fixes_made(status).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_status_that_passes_has_no_fix_to_make() {
+    for user_namespace in [
+        UnprivilegedUserNamespace::Granted,
+        UnprivilegedUserNamespace::NotRequired,
+    ] {
+        let status = setup_status_with(user_namespace, None);
+        assert!(status.is_ok());
+
+        require_fixes_made(status).unwrap();
     }
 }
 

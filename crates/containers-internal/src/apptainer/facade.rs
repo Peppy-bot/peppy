@@ -2,6 +2,8 @@ use super::super::error::{Error, Result};
 use super::l4t_manifest::{self, L4T_MANIFEST_DIR, NVLIBLIST_PATH, NvliblistSync};
 use super::lima;
 use super::registry_auth::{APPTAINER_AUTH_FILE_ENV, RegistryAuth};
+#[cfg(target_os = "linux")]
+use super::unprivileged_user_namespace::{DEFAULT_PROFILE_FILE, UnprivilegedUserNamespace};
 use core_node_api::encoding::ArtifactPlatform;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -226,7 +228,9 @@ fn is_apparmor_manageable() -> bool {
 /// unprivileged user namespaces via fakeroot. This requires `newuidmap`
 /// (from the `uidmap` package). On systems where AppArmor restricts
 /// unprivileged user namespaces (e.g. Ubuntu 24.04+), an AppArmor profile
-/// must be installed to allow the `starter` binary to create them.
+/// must be installed to allow the `starter` binary to create them. Before a
+/// build, the `apptainer` program also asks the kernel for a user namespace
+/// of its own, which that profile does not cover.
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 #[expect(
@@ -249,8 +253,12 @@ pub struct SetupStatus {
     /// `false` when the AppArmor security filesystem is not mounted
     /// (e.g. inside Docker/Podman/BuildKit containers).
     pub apparmor_manageable: bool,
-    /// A shell script that fixes all failing checks, or `None` when everything
-    /// passes.
+    /// What the kernel answers to the request of a user namespace that the
+    /// `apptainer` program makes before a build.
+    pub user_namespace: UnprivilegedUserNamespace,
+    /// A shell script that fixes every failing check that has a fix, or
+    /// `None` when no check has one to make. The one failure without a fix is
+    /// [`UnprivilegedUserNamespace::Refused`].
     pub fix_script: Option<String>,
 }
 
@@ -258,7 +266,10 @@ pub struct SetupStatus {
 impl SetupStatus {
     /// Returns `true` when all prerequisites are met.
     pub fn is_ok(&self) -> bool {
-        self.newuidmap_ok && self.apparmor_ok && self.apparmor_loaded
+        self.newuidmap_ok
+            && self.apparmor_ok
+            && self.apparmor_loaded
+            && self.user_namespace.is_usable()
     }
 }
 
@@ -350,10 +361,17 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
 
     let profile = apparmor_profile_ref(apptainer_dir);
     let apparmor_ok = !apparmor_restricted || profile_references_starter(&profile);
-    let apparmor_loaded = !apparmor_restricted || is_profile_loaded(&profile);
+    let apparmor_loaded = !apparmor_restricted || is_apparmor_profile_loaded(&profile.name);
+    let user_namespace = UnprivilegedUserNamespace::for_this_user(apparmor_restricted);
     // Both AppArmor checks pass on a system that does not restrict user
     // namespaces, so the fix script needs no restriction flag of its own.
-    let fix_script = setup_fix_script(newuidmap_ok, apparmor_ok, apparmor_loaded, &profile);
+    let fix_script = setup_fix_script(
+        newuidmap_ok,
+        apparmor_ok,
+        apparmor_loaded,
+        &user_namespace,
+        &profile,
+    );
 
     SetupStatus {
         newuidmap_ok,
@@ -361,6 +379,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
         apparmor_ok,
         apparmor_loaded,
         apparmor_manageable,
+        user_namespace,
         fix_script,
     }
 }
@@ -375,12 +394,12 @@ fn profile_references_starter(profile: &ApparmorProfileRef) -> bool {
         .is_ok_and(|content| content.contains(&profile.starter_path))
 }
 
-/// Whether the kernel has `profile` loaded. Reads the policy directory
-/// listing, which is world-readable, because
+/// Whether the kernel has the AppArmor profile `name` loaded. Reads the
+/// policy directory listing, which is world-readable, because
 /// `/sys/kernel/security/apparmor/profiles` requires `CAP_MAC_ADMIN`.
 #[cfg(target_os = "linux")]
-fn is_profile_loaded(profile: &ApparmorProfileRef) -> bool {
-    let kernel_entry_prefix = format!("{}.", profile.name);
+pub(crate) fn is_apparmor_profile_loaded(name: &str) -> bool {
+    let kernel_entry_prefix = format!("{name}.");
     std::fs::read_dir("/sys/kernel/security/apparmor/policy/profiles").is_ok_and(|entries| {
         entries.flatten().any(|e| {
             e.file_name()
@@ -391,14 +410,17 @@ fn is_profile_loaded(profile: &ApparmorProfileRef) -> bool {
 }
 
 /// The shell script that fixes the failing checks, one step per failure
-/// joined with `&&`, or `None` when every check passes. A profile that is
-/// missing or stale is written and loaded in one step, so the load alone is
-/// for a profile that is in place but not loaded.
+/// joined with `&&`, or `None` when no check has a fix to make. A profile
+/// that is missing or stale is written and loaded in one step, so the load
+/// alone is for a profile that is in place but not loaded. A user namespace
+/// that the kernel refuses for want of the profile `unprivileged_userns` gets
+/// the load of that profile; a refusal with another cause has no step.
 #[cfg(target_os = "linux")]
 pub(crate) fn setup_fix_script(
     newuidmap_ok: bool,
     apparmor_ok: bool,
     apparmor_loaded: bool,
+    user_namespace: &UnprivilegedUserNamespace,
     profile: &ApparmorProfileRef,
 ) -> Option<String> {
     let mut steps: Vec<String> = Vec::new();
@@ -427,6 +449,10 @@ pub(crate) fn setup_fix_script(
         ));
     }
 
+    if user_namespace.needs_profile() {
+        steps.push(format!("sudo apparmor_parser -r {DEFAULT_PROFILE_FILE}"));
+    }
+
     if steps.is_empty() {
         return None;
     }
@@ -434,17 +460,26 @@ pub(crate) fn setup_fix_script(
 }
 
 /// Check that Apptainer's user namespace prerequisites are met.
-/// Returns an error with a copy-pasteable fix script when any check fails.
 #[cfg(target_os = "linux")]
 fn check_userns_prerequisites(apptainer_dir: &Path) -> Result<()> {
-    let status = check_setup_status(apptainer_dir);
-    if status.is_ok() {
-        return Ok(());
-    }
+    require_fixes_made(check_setup_status(apptainer_dir))
+}
 
-    let script = status
-        .fix_script
-        .unwrap_or_else(|| "peppy container setup".to_string());
+/// Returns an error with a copy-pasteable fix script when a check of
+/// `status` that has a fix fails.
+///
+/// A user namespace that the kernel refuses for a cause with no fix is a
+/// warning and not an error: the nodes that are not containers run on such a
+/// machine, and an error here stops the daemon.
+#[cfg(target_os = "linux")]
+pub(crate) fn require_fixes_made(status: SetupStatus) -> Result<()> {
+    let Some(script) = status.fix_script else {
+        if let Some(refusal) = status.user_namespace.refusal_without_repair() {
+            tracing::warn!("{refusal}");
+        }
+        return Ok(());
+    };
+
     let indented: String = script.lines().fold(String::new(), |mut buf, line| {
         buf.push_str("  ");
         buf.push_str(line);

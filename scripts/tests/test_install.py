@@ -21,6 +21,7 @@ from .install_helpers import (
     IS_LINUX,
     SERVICE_RUNNING_MARK,
     SERVICE_STATUS_COMMAND,
+    apparmor_restricts_user_namespaces,
     assert_installed,
     daemon_logs,
     diagnostic,
@@ -33,6 +34,7 @@ from .install_helpers import (
     remove_peppy,
     set_fuse2fs_installed,
     set_linger,
+    set_user_namespace_profile_loaded,
     show_step,
 )
 
@@ -155,6 +157,73 @@ def test_standard_install_container_setup() -> None:
     assert status.returncode == 0, (
         f"every Apptainer prerequisite should pass after the install{diagnostic(status)}"
     )
+
+
+# The line of `peppy container status` for the user namespace that apptainer
+# asks the kernel for before each container build.
+USER_NAMESPACE_GRANTED = "User namespace         : OK"
+USER_NAMESPACE_REFUSED = "User namespace         : FAILED"
+# The fix that `peppy container setup` announces for a refused user namespace.
+USER_NAMESPACE_FIX = "Load AppArmor profile `unprivileged_userns` into the kernel"
+
+needs_restricted_user_namespaces = pytest.mark.skipif(
+    not apparmor_restricts_user_namespaces(),
+    reason="AppArmor does not restrict user namespaces on this machine",
+)
+
+
+@linux_only
+@needs_restricted_user_namespaces
+def test_install_loads_the_user_namespace_profile() -> None:
+    """On a machine whose kernel lacks `unprivileged_userns`, install.sh loads it.
+
+    This is a machine whose apparmor.service is stopped: the kernel refuses a
+    user namespace to apptainer, so no container builds until the profile is
+    loaded.
+    """
+    set_user_namespace_profile_loaded(False)
+    home = peppy_home("usernsinstall")
+
+    result = login_shell(install_cmd(home), timeout=600)
+
+    assert_installed(result)
+    assert USER_NAMESPACE_FIX in result.stdout, (
+        f"install.sh should announce the load of the profile{diagnostic(result)}"
+    )
+    status = login_shell(f"PEPPY_HOME={home} {home}/bin/peppy container status")
+    assert status.returncode == 0 and USER_NAMESPACE_GRANTED in status.stdout, (
+        f"the kernel should give a user namespace after the install{diagnostic(status)}"
+    )
+
+
+@linux_only
+@needs_restricted_user_namespaces
+def test_container_setup_repairs_a_refused_user_namespace() -> None:
+    """`peppy container status` fails on a refused user namespace, and the setup repairs it."""
+    home = peppy_home("usernssetup")
+    container = f"PEPPY_HOME={home} {home}/bin/peppy container"
+    assert_installed(login_shell(install_cmd(home), timeout=600))
+    set_user_namespace_profile_loaded(False)
+
+    try:
+        refused = login_shell(f"{container} status")
+        assert refused.returncode == 1 and USER_NAMESPACE_REFUSED in refused.stdout, (
+            f"the status should fail on the refused user namespace{diagnostic(refused)}"
+        )
+
+        setup = login_shell(f"{container} setup")
+        assert setup.returncode == 0 and USER_NAMESPACE_FIX in setup.stdout, (
+            f"the setup should load the profile{diagnostic(setup)}"
+        )
+
+        granted = login_shell(f"{container} status")
+        assert granted.returncode == 0 and USER_NAMESPACE_GRANTED in granted.stdout, (
+            f"the status should pass after the setup{diagnostic(granted)}"
+        )
+    finally:
+        # A setup that did not load the profile fails this test alone: the
+        # tests after it start from a kernel that has the profile.
+        set_user_namespace_profile_loaded(True)
 
 
 @linux_only

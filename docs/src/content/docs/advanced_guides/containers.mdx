@@ -30,6 +30,7 @@ This configures the following (prompting for `sudo` when needed):
 
 1. **uidmap package**: installs `newuidmap` (required for fakeroot mode).
 2. **AppArmor profile** (on systems that restrict unprivileged user namespaces via AppArmor): installs a profile that allows Apptainer to create user namespaces and loads it into the kernel. When the profile already exists but is not loaded, it is reloaded without being rewritten.
+3. **User namespace**: before each container build, Apptainer asks the kernel for a user namespace, and the setup makes the same request with `unshare --user /bin/true`. On a system that restricts user namespaces via AppArmor, the kernel gives this namespace through the profile `unprivileged_userns` of the `apparmor` package, which `apparmor.service` loads at boot. When the kernel refuses the namespace because that profile is not loaded (the service is stopped or disabled), the setup loads it from `/etc/apparmor.d/unprivileged_userns`. The profile stays loaded until the next boot. The setup makes no request for root, which builds with no user namespace.
 
 To check the current state without making any changes:
 
@@ -38,6 +39,8 @@ peppy container status
 ```
 
 This prints a pass/fail summary of each prerequisite and exits with code `0` (all pass) or `1` (something needs fixing).
+
+When the kernel refuses the user namespace for another cause (a sysctl that turns user namespaces off, the seccomp profile of a Docker container), the setup has no fix. `peppy container status` then shows the message of `unshare` and exits with `1`, and `peppy container setup` stops with the same message. The daemon starts on such a machine and writes a warning: the nodes that are not containers run, and each container build fails.
 
 :::note
 On macOS, no setup is needed; containers run inside a Lima VM which handles permissions transparently.

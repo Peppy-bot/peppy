@@ -11,7 +11,7 @@ mod mount_source;
 pub use apptainer::{Apptainer, ApptainerCommand, emulation_problem};
 pub use apptainer::{BuildActivity, BuildActivityProbe, RegistryAuthFile};
 #[cfg(target_os = "linux")]
-pub use apptainer::{SetupStatus, check_setup_status};
+pub use apptainer::{SetupStatus, UnprivilegedUserNamespace, check_setup_status};
 pub use error::{Error, Result};
 pub use mount_source::{
     auto_created_warning, data_root_mount_rejection, ensure_bind_source, expand_home_in_mount_spec,
