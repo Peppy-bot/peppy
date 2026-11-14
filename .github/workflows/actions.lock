@@ -6,6 +6,9 @@ workflows:
     '.github/workflows/claude.yml':
         - 'actions/checkout@v7.0.1'
         - 'anthropics/claude-code-action@v1.0.243'
+    '.github/workflows/install-tests.yml':
+        - 'actions/checkout@v7.0.1'
+        - 'actions/download-artifact@v8.0.2'
     '.github/workflows/latency.yml':
         - 'actions/checkout@v7.0.1'
     '.github/workflows/main-merge-source.yml': []
@@ -23,7 +26,6 @@ workflows:
     '.github/workflows/pr-title.yml': []
     '.github/workflows/tests.yml':
         - 'actions/checkout@v7.0.1'
-        - 'actions/download-artifact@v8.0.2'
         - 'actions/upload-artifact@v7.0.2'
         - 'runs-on/action@v2.7.0'
 dependencies:
