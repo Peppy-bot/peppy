@@ -106,6 +106,7 @@ fn native_facade_with_registry_auth(registry_auth: RegistryAuth) -> Apptainer {
             registry_auth,
             l4t_manifest_dir: native_fixture_scratch().join("no-such-l4t-manifest-dir"),
             user_namespace: UserNamespace::ApptainerDefault,
+            absent_bind_paths: Vec::new(),
         },
         extra_mounts: Vec::new(),
     }
@@ -119,6 +120,19 @@ fn native_facade_forcing_user_namespace() -> Apptainer {
         unreachable!("native_facade builds the native backend");
     };
     *user_namespace = UserNamespace::Forced;
+    facade
+}
+
+/// `facade` on a host that has no `/etc/localtime`, the source of a
+/// `bind path` entry of `apptainer.conf`.
+fn on_a_host_without_localtime(mut facade: Apptainer) -> Apptainer {
+    let Backend::Native {
+        absent_bind_paths, ..
+    } = &mut facade.backend
+    else {
+        unreachable!("the fixture is for the native backend");
+    };
+    *absent_bind_paths = vec!["/etc/localtime".to_string()];
     facade
 }
 
@@ -326,6 +340,70 @@ fn a_run_and_an_exec_with_the_default_of_apptainer_pass_no_userns() {
 
     assert_eq!(run_args, ["run", "/images/node.sif"]);
     assert_eq!(exec_args, ["exec", "/images/node.sif", "echo", "hello"]);
+}
+
+#[test]
+fn a_run_and_an_exec_skip_the_bind_path_that_the_host_does_not_have() {
+    let facade = on_a_host_without_localtime(native_facade());
+
+    let run_args = facade
+        .run("/images/node.sif")
+        .build_args()
+        .expect("build_args should succeed");
+    let exec_args = facade
+        .exec("/images/node.sif", &["echo", "hello"])
+        .build_args()
+        .expect("build_args should succeed");
+
+    assert_eq!(
+        run_args,
+        ["run", "--no-mount", "/etc/localtime", "/images/node.sif"]
+    );
+    assert_eq!(
+        exec_args,
+        [
+            "exec",
+            "--no-mount",
+            "/etc/localtime",
+            "/images/node.sif",
+            "echo",
+            "hello"
+        ]
+    );
+}
+
+#[test]
+fn a_run_that_forces_the_user_namespace_also_skips_the_absent_bind_path() {
+    let facade = on_a_host_without_localtime(native_facade_forcing_user_namespace());
+
+    let cmd = facade.run("/images/node.sif");
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    assert_eq!(
+        args,
+        [
+            "run",
+            "--userns",
+            "--no-mount",
+            "/etc/localtime",
+            "/images/node.sif"
+        ]
+    );
+}
+
+/// A build binds none of the `bind path` entries, so it skips none.
+#[test]
+fn a_build_skips_no_bind_path() {
+    let facade = on_a_host_without_localtime(native_facade());
+
+    let (output, def) = build_paths_under_home();
+    let cmd = facade.build(&output, &def);
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    assert!(
+        !args.iter().any(|arg| arg == "--no-mount"),
+        "a build should skip no bind path, got: {args:?}"
+    );
 }
 
 /// The user of the Lima guest is not root, so apptainer uses a user namespace

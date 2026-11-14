@@ -1,4 +1,5 @@
 use super::super::error::{Error, Result};
+use super::absent_bind_paths::{self, NO_MOUNT_FLAG};
 use super::l4t_manifest::{self, L4T_MANIFEST_DIR, NVLIBLIST_PATH, NvliblistSync};
 use super::lima;
 use super::registry_auth::{APPTAINER_AUTH_FILE_ENV, RegistryAuth};
@@ -151,6 +152,12 @@ pub(crate) enum Backend {
         /// backend has no counterpart: the user of its guest is not root, so
         /// apptainer uses a user namespace there on its own.
         user_namespace: UserNamespace,
+        /// The destinations of the `bind path` entries of `apptainer.conf`
+        /// that a `run` or an `exec` skips, because this host does not have
+        /// their source; see [`absent_bind_paths`]. The Lima backend has no
+        /// counterpart: the sources are in its guest, an Ubuntu system that
+        /// has them.
+        absent_bind_paths: Vec<String>,
     },
     /// macOS, and a build for another architecture: route commands through
     /// a Lima VM.
@@ -572,6 +579,7 @@ impl Apptainer {
                 registry_auth: RegistryAuth::from_env()?,
                 l4t_manifest_dir: PathBuf::from(L4T_MANIFEST_DIR),
                 user_namespace: UserNamespace::for_this_daemon(&apptainer_dir)?,
+                absent_bind_paths: absent_bind_paths::of_installation(&apptainer_dir),
             }
         };
 
@@ -847,13 +855,30 @@ impl Apptainer {
     // Command builders
     // -----------------------------------------------------------------------
 
-    /// Whether a `run` or an `exec` of this facade asks apptainer for a user
-    /// namespace.
-    fn user_namespace(&self) -> UserNamespace {
-        match &self.backend {
-            Backend::Native { user_namespace, .. } => *user_namespace,
-            Backend::Lima { .. } => UserNamespace::ApptainerDefault,
-        }
+    /// The flags that this host needs on each command that runs an image:
+    /// the user namespace of a root daemon whose kernel cannot mount the
+    /// image, then one `--no-mount` for each `bind path` entry whose source
+    /// the host does not have. The Lima backend needs none.
+    fn flags_to_run_an_image(&self) -> Vec<String> {
+        let Backend::Native {
+            user_namespace,
+            absent_bind_paths,
+            ..
+        } = &self.backend
+        else {
+            return Vec::new();
+        };
+        let user_namespace_flag = match user_namespace {
+            UserNamespace::Forced => Some(USER_NAMESPACE_FLAG.to_string()),
+            UserNamespace::ApptainerDefault => None,
+        };
+        let no_mount_flags = absent_bind_paths
+            .iter()
+            .flat_map(|destination| [NO_MOUNT_FLAG.to_string(), destination.clone()]);
+        user_namespace_flag
+            .into_iter()
+            .chain(no_mount_flags)
+            .collect()
     }
 
     /// Start building an `apptainer run` command.
@@ -1654,10 +1679,11 @@ impl CommandKind {
         }
     }
 
-    /// Whether apptainer mounts the squashfs of an image to run this command:
-    /// a run and an exec start a container from one, and a build unpacks its
-    /// base image instead.
-    fn mounts_an_image(&self) -> bool {
+    /// Whether the command runs an image: a run and an exec do. Apptainer
+    /// then mounts the squashfs of the image and binds the `bind path`
+    /// entries of its configuration. A build unpacks its base image and binds
+    /// none of the entries.
+    fn runs_an_image(&self) -> bool {
         match self {
             Self::Run { .. } | Self::Exec { .. } => true,
             Self::Build { .. } => false,
@@ -1982,9 +2008,9 @@ impl<'a> ApptainerCommand<'a> {
     // -----------------------------------------------------------------------
 
     /// Assemble the full argument vector:
-    /// `[subcommand, user namespace flag, ...flags, ...binds, ...positional]`.
-    /// The user namespace flag is there only for a command that mounts an
-    /// image, on a facade that forces the namespace.
+    /// `[subcommand, ...host flags, ...flags, ...binds, ...positional]`.
+    /// The host flags are those of [`Apptainer::flags_to_run_an_image`], for
+    /// a command that runs an image.
     ///
     /// Path translation for bind mounts and positional args happens here.
     pub(crate) fn build_args(&self) -> Result<Vec<String>> {
@@ -2000,10 +2026,9 @@ impl<'a> ApptainerCommand<'a> {
             .to_string(),
         );
 
-        // 2. The user namespace of a root daemon whose kernel cannot mount
-        //    the image
-        if self.kind.mounts_an_image() && self.facade.user_namespace() == UserNamespace::Forced {
-            args.push(USER_NAMESPACE_FLAG.to_string());
+        // 2. What this host needs to run an image
+        if self.kind.runs_an_image() {
+            args.extend(self.facade.flags_to_run_an_image());
         }
 
         // 3. Accumulated flags (no translation needed)

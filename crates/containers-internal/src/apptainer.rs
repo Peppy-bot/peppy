@@ -1,3 +1,4 @@
+pub(crate) mod absent_bind_paths;
 pub(crate) mod activity;
 pub(crate) mod atomic_file;
 pub(crate) mod facade;
