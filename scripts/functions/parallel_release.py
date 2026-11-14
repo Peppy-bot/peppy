@@ -4,9 +4,13 @@
 separate runners, so each archive builds natively on a runner of its own
 platform, all three at once, and no stage starts a VM:
 
-- `prepare` (any host): the branch and docs checks, the drafted release notes,
-  and the version they give the release (see release_version.py), whose tag
-  must be new, written to a release plan that every later stage reads.
+- `prepare` (Linux x86_64): the branch check, the docs gate (the docs against
+  the code, and the concepts video against the docs; see
+  release_docs_gate.py), the drafted release notes, and the version they give
+  the release (see release_version.py), whose tag must be new, written to a
+  release plan that every later stage reads. The check of the concepts video
+  runs in the pixi workspace of the video, which has that one platform; with
+  `--skip-video-check` the stage runs on any host.
 - `bindings` (macOS ARM64): the peppylib native bindings for every platform.
 - `apptainer` (Linux): apptainer for the host's architecture.
 - `build` (one per target): one release archive, built from the plan's commit.
@@ -373,6 +377,7 @@ def run_prepare(
     release_commit: str,
     open_minor_docs_pr: bool,
     skip_docs_check: bool,
+    skip_video_check: bool,
     plan_path: Path,
 ) -> None:
     """Check the release can start from *release_commit*, draft it, and write
@@ -403,13 +408,21 @@ def run_prepare(
             "(--skip-docs-check). This release may document behaviour that no "
             "longer matches the code.[/yellow]"
         )
-    else:
+    if skip_video_check:
+        console.print(
+            "[yellow]WARNING: skipping the check of the concepts video "
+            "(--skip-video-check). This release may show a video that states "
+            "what the docs no longer state.[/yellow]"
+        )
+    if not (skip_docs_check and skip_video_check):
         verify_docs_gate(
             client,
             slug,
             release_commit,
             repo_root,
             open_minor_docs_pr=open_minor_docs_pr,
+            skip_docs_check=skip_docs_check,
+            skip_video_check=skip_video_check,
         )
 
     draft = _draft_release(previous, release_commit, repo_root)
@@ -1211,6 +1224,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     prepare.add_argument(
+        "--skip-video-check",
+        action="store_true",
+        help=(
+            "Skip the check of the concepts video against the docs; a release "
+            "shipped this way can show a video that states what the docs no "
+            "longer state."
+        ),
+    )
+    prepare.add_argument(
         "--plan", required=True, type=Path, help="Where to write the release plan."
     )
 
@@ -1310,6 +1332,7 @@ def _run_stage(args: argparse.Namespace) -> None:
                 release_commit=args.release_commit,
                 open_minor_docs_pr=args.minor_docs_pr,
                 skip_docs_check=args.skip_docs_check,
+                skip_video_check=args.skip_video_check,
                 plan_path=args.plan,
             )
         case "bindings":

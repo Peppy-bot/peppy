@@ -46,7 +46,7 @@ outputs:
   concepts_video:
     description: >-
       Whether the inputs of the concepts video checks changed: the video
-      project, or the docs content that its transcript rests on.
+      project.
     value: ${{ steps.detect.outputs.concepts_video }}
   install_script:
     description: >-

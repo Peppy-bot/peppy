@@ -1,10 +1,14 @@
-"""The transcript test: the files of the video project against the docs and against each other."""
+"""The project test: the files of the video project against each other.
+
+The check of the transcript against the docs is not here: it is the command
+`pixi run docs-check`, which the release runs.
+"""
 
 from pathlib import Path
 
 import pytest
 
-from tools import checks, compiler, paths
+from tools import checks, compiler, paths, upload
 from tools.footage import read_footage_list
 from tools.pins import read_pins, voice_tools_identity
 from tools.project import recorded_timeline
@@ -20,14 +24,6 @@ def transcript() -> Transcript:
     return read_transcript(paths.TRANSCRIPT)
 
 
-def test_each_named_section_exists_and_has_the_text_of_its_hash(transcript: Transcript) -> None:
-    assert checks.source_problems(transcript, paths.DOCS_ROOT) == []
-
-
-def test_each_technical_name_of_a_segment_is_in_the_sections_that_the_segment_names(transcript: Transcript) -> None:
-    assert checks.technical_name_problems(transcript, paths.DOCS_ROOT) == []
-
-
 def test_no_sentence_of_the_voice_is_longer_than_the_limit_of_asd_ste100(transcript: Transcript) -> None:
     assert checks.sentence_length_problems(transcript) == []
 
@@ -36,6 +32,12 @@ def test_the_record_of_the_voice_durations_agrees_with_the_transcript(transcript
     recorded = read_voice_durations(paths.VOICE_DURATIONS)
 
     assert out_of_date_problems(transcript, recorded, voice_tools_identity(read_pins(paths.PINS))) == []
+
+
+def test_the_video_on_youtube_is_the_video_of_the_transcript() -> None:
+    recorded = upload.read_upload(paths.UPLOAD)
+
+    assert upload.out_of_date_problems(recorded, upload.content_sha256(paths.TRANSCRIPT)) == []
 
 
 def test_the_video_is_not_longer_than_its_limit(transcript: Transcript) -> None:

@@ -36,9 +36,15 @@ PYTHONPATH = "$PIXI_PROJECT_ROOT"
 # The two commands of the project.
 build = "python -m tools.build"
 add-footage = "python -m tools.add_footage"
-# What CI runs: the transcript test and the lint of the compositions.
+# What CI runs: the tests of the project and the lint of the compositions.
 test = "pytest tests -v"
 lint = "python -m tools.lint"
+# The check of the transcript against the docs, which the release runs.
+docs-check = "python -m tools.docs_check"
+# Writes in the transcript the hash of the present text of each section.
+record-sections = "python -m tools.record_sections"
+# Writes the record of an upload to YouTube.
+record-upload = "python -m tools.record_upload"
 # Pictures of one segment at given times, to look at a composition.
 snapshot = "python -m tools.snapshot"
 # The check of the place of each part of the compositions, in the pinned Chrome.

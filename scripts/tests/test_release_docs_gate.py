@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -10,17 +11,36 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from functions.cli import ReleaseError
-from functions.docs import CheckResult, RequiredChange, UpdateOutcome, UpdateResult
+from functions.concepts_video import (
+    ChangedSection,
+    MissingName,
+    SegmentFindings,
+    SegmentOutcome,
+    SegmentStatus,
+    VideoCheck,
+    VideoUpdate,
+)
+from functions.docs import (
+    EM_DASH,
+    CheckResult,
+    RequiredChange,
+    UpdateOutcome,
+    UpdateResult,
+)
 from functions.github import RepoSlug
 from functions.release_docs_gate import (
+    DocsPull,
     JudgedCommit,
+    _comment_on_docs_pr,
     _docs_check_base,
+    _docs_sync_pr_body,
     _find_open_docs_pr,
     _judged_commit_of,
     _last_judged_commit,
     _last_shipped_commit,
     _open_docs_pr,
     _push_docs_branch,
+    _render_steps_comment,
     verify_docs_gate,
 )
 
@@ -306,12 +326,12 @@ def test_last_judged_commit_is_none_without_a_merged_docs_pull_request(
 
 
 @patch("functions.release_docs_gate._last_judged_commit", return_value=None)
-@patch("functions.release_docs_gate._last_shipped_commit", return_value="origin/main")
 def test_docs_check_base_is_the_last_shipped_commit_when_nothing_was_judged_since(
-    mock_shipped: MagicMock, mock_judged: MagicMock
+    mock_judged: MagicMock,
 ) -> None:
     assert (
-        _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+        _docs_check_base(MagicMock(), RepoSlug("o", "r"), "origin/main", DEV_COMMIT)
+        == "origin/main"
     )
 
     assert mock_judged.call_args.args[2:] == ("origin/main", DEV_COMMIT)
@@ -321,16 +341,15 @@ def test_docs_check_base_is_the_last_shipped_commit_when_nothing_was_judged_sinc
     "functions.release_docs_gate._last_judged_commit",
     return_value=JudgedCommit(commit=JUDGED_COMMIT, pr_url=JUDGED_PR_URL),
 )
-@patch("functions.release_docs_gate._last_shipped_commit", return_value="origin/main")
 def test_docs_check_base_is_the_commit_a_merged_docs_pull_request_settled(
-    mock_shipped: MagicMock,
     mock_judged: MagicMock,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
     # The rerun after the merge: the code up to the judged commit is settled,
     # so the check starts there instead of drawing new gaps from the same code.
     assert (
-        _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == JUDGED_COMMIT
+        _docs_check_base(MagicMock(), RepoSlug("o", "r"), "origin/main", DEV_COMMIT)
+        == JUDGED_COMMIT
     )
 
     err = unwrapped(capfd.readouterr().err)
@@ -340,6 +359,16 @@ def test_docs_check_base_is_the_commit_a_merged_docs_pull_request_settled(
 
 # --- the gate ---
 
+REPO_ROOT = Path("/repo")
+SLUG = RepoSlug(owner="test-owner", repo="test-repo")
+DOCS_PAGE = "docs/src/content/docs/x.mdx"
+TRANSCRIPT = "docs/concepts_video/transcript.toml"
+PULL = DocsPull(number=7, url="https://github.com/test-owner/test-repo/pull/7")
+SYNC_BRANCH = f"auto/docs-update-{DEV_COMMIT[:12]}"
+# Where the stand-in for the worktree of the last shipped commit is.
+LAST_RELEASE_TREE = Path("/last-release")
+CONTENT_SHA256 = "c" * 64
+
 _BLOCKING_CHANGE = RequiredChange(
     file="docs/x.mdx", change="document --verbose", severity="blocking"
 )
@@ -347,21 +376,76 @@ _MINOR_CHANGE = RequiredChange(
     file="docs/y.mdx", change="reword the intro", severity="minor"
 )
 
+# A segment of the video whose docs section changed since the last release.
+_CHANGED_SECTION = SegmentFindings(
+    segment_id="launchers",
+    changed_sections=(
+        ChangedSection(page="quickstart.mdx", section="Quickstart", diff="-old\n+new"),
+    ),
+    missing_sections=(),
+    missing_names=(),
+)
+# A segment of the video that shows a name its docs sections no longer hold.
+_MISSING_NAME = SegmentFindings(
+    segment_id="stack",
+    changed_sections=(),
+    missing_sections=(),
+    missing_names=(MissingName(where="sentence `launch`", name="--with"),),
+)
+
+
+def _video_check(
+    *segments: SegmentFindings, upload_is_current: bool = True
+) -> VideoCheck:
+    return VideoCheck(
+        segments=segments,
+        content_sha256=CONTENT_SHA256,
+        upload_is_current=upload_is_current,
+    )
+
+
+def _video_update(
+    *outcomes: tuple[SegmentFindings, str, str], for_the_reviewer: str = ""
+) -> VideoUpdate:
+    """An update report: one (segment, status, reason) per reported segment."""
+    return VideoUpdate(
+        outcomes=tuple(
+            SegmentOutcome(
+                segment_id=segment.segment_id,
+                status=SegmentStatus(status),
+                reason=reason,
+            )
+            for segment, status, reason in outcomes
+        ),
+        for_the_reviewer=for_the_reviewer,
+    )
+
 
 def _docs_gate(
     *,
     open_minor_docs_pr: bool = False,
-    repo_root: Path = Path("/repo"),
-    base: str = "origin/main",
+    skip_docs_check: bool = False,
+    skip_video_check: bool = False,
+    shipped: str = "origin/main",
+    base: str | None = None,
 ) -> None:
-    """Run the gate with placeholder GitHub handles, diffing from *base*."""
-    with patch("functions.release_docs_gate._docs_check_base", return_value=base):
+    """Run the gate with placeholder GitHub handles: the last shipped commit
+    is *shipped*, and the docs check diffs from *base* (*shipped* when None)."""
+    with (
+        patch("functions.release_docs_gate._last_shipped_commit", return_value=shipped),
+        patch(
+            "functions.release_docs_gate._docs_check_base",
+            return_value=shipped if base is None else base,
+        ),
+    ):
         verify_docs_gate(
             MagicMock(),
-            RepoSlug(owner="test-owner", repo="test-repo"),
+            SLUG,
             DEV_COMMIT,
-            repo_root,
+            REPO_ROOT,
             open_minor_docs_pr=open_minor_docs_pr,
+            skip_docs_check=skip_docs_check,
+            skip_video_check=skip_video_check,
         )
 
 
@@ -374,27 +458,66 @@ def _update_result(
     )
 
 
+class FakeTree:
+    """The files of the checkout that hold uncommitted changes."""
+
+    def __init__(self) -> None:
+        self.changed: set[Path] = set()
+
+    def edit(self, path: str) -> None:
+        self.changed.add(REPO_ROOT / path)
+
+    def has_changes(self, paths: Sequence[Path]) -> bool:
+        return any(
+            changed == path or path in changed.parents
+            for changed in self.changed
+            for path in paths
+        )
+
+
+def _editing(tree: FakeTree, path: str, result: object) -> Callable[..., object]:
+    """A stand-in for a Claude update that edits *path* and reports *result*."""
+
+    def run(*args: object, **kwargs: object) -> object:
+        tree.edit(path)
+        return result
+
+    return run
+
+
 @dataclass(frozen=True)
 class GateCollaborators:
     """The stand-ins of what the gate calls, for a test to set or check."""
 
-    has_changes: MagicMock
+    tree: FakeTree
     check: MagicMock
     update: MagicMock
     find_pr: MagicMock
     push_branch: MagicMock
     open_pr: MagicMock
+    comment: MagicMock
+    worktree: MagicMock
+    check_video: MagicMock
+    update_video: MagicMock
+    record_sections: MagicMock
 
 
 @pytest.fixture
 def gate() -> Iterator[GateCollaborators]:
-    """Stand in for every collaborator of the gate: a clean docs tree, a check
-    that finds no gap and no open docs pull request, unless a test sets
-    otherwise."""
+    """Stand in for every collaborator of the gate: a clean docs tree, a docs
+    check that finds no gap, a concepts video that agrees with the docs and no
+    open docs pull request, unless a test sets otherwise."""
+    tree = FakeTree()
+
+    @contextmanager
+    def last_release_tree(commit: str) -> Iterator[Path]:
+        yield LAST_RELEASE_TREE
+
     with (
         patch(
-            "functions.release_docs_gate.has_changes_in_paths", return_value=False
-        ) as has_changes,
+            "functions.release_docs_gate.has_changes_in_paths",
+            side_effect=tree.has_changes,
+        ),
         patch(
             "functions.release_docs_gate.check_docs",
             return_value=CheckResult(changes=()),
@@ -404,22 +527,39 @@ def gate() -> Iterator[GateCollaborators]:
             "functions.release_docs_gate._find_open_docs_pr", return_value=None
         ) as find_pr,
         patch("functions.release_docs_gate._push_docs_branch") as push_branch,
-        patch("functions.release_docs_gate._open_docs_pr") as open_pr,
+        patch(
+            "functions.release_docs_gate._open_docs_pr", return_value=PULL
+        ) as open_pr,
+        patch("functions.release_docs_gate._comment_on_docs_pr") as comment,
+        patch(
+            "functions.release_docs_gate.detached_worktree",
+            side_effect=last_release_tree,
+        ) as worktree,
+        patch(
+            "functions.release_docs_gate.check_video", return_value=_video_check()
+        ) as check_video,
+        patch("functions.release_docs_gate.update_video") as update_video,
+        patch("functions.release_docs_gate.record_sections") as record_sections,
     ):
         yield GateCollaborators(
-            has_changes=has_changes,
+            tree=tree,
             check=check,
             update=update,
             find_pr=find_pr,
             push_branch=push_branch,
             open_pr=open_pr,
+            comment=comment,
+            worktree=worktree,
+            check_video=check_video,
+            update_video=update_video,
+            record_sections=record_sections,
         )
 
 
 def test_docs_gate_passes_and_diffs_from_the_last_shipped_commit(
     gate: GateCollaborators,
 ) -> None:
-    _docs_gate(base="v0.29.0")
+    _docs_gate(shipped="v0.29.0")
 
     # The base names the last shipped commit; the head is the dev commit
     # being released.
@@ -450,12 +590,14 @@ def test_docs_gate_opens_the_optional_polish_pr_and_continues(
     gate.check.return_value = CheckResult(changes=(_MINOR_CHANGE,))
     # The pull request opens on the side; the gate still returns normally so
     # the release goes on.
-    gate.update.return_value = _update_result("implemented", _MINOR_CHANGE)
-    # Clean at the gate's dirty check, dirty after the polish update.
-    gate.has_changes.side_effect = [False, True]
-    gate.open_pr.return_value = "https://github.com/test-owner/test-repo/pull/8"
+    gate.update.side_effect = _editing(
+        gate.tree, DOCS_PAGE, _update_result("implemented", _MINOR_CHANGE)
+    )
+    gate.open_pr.return_value = DocsPull(
+        number=8, url="https://github.com/test-owner/test-repo/pull/8"
+    )
 
-    _docs_gate(open_minor_docs_pr=True, base="v0.29.0")
+    _docs_gate(open_minor_docs_pr=True, shipped="v0.29.0")
 
     gate.update.assert_called_once_with("v0.29.0", DEV_COMMIT, (_MINOR_CHANGE,))
     branch = f"auto/docs-polish-{DEV_COMMIT[:12]}"
@@ -509,7 +651,7 @@ def test_docs_gate_reports_the_polish_pr_already_open(
 def test_docs_gate_rejects_a_dirty_docs_tree_before_asking_claude(
     gate: GateCollaborators,
 ) -> None:
-    gate.has_changes.return_value = True
+    gate.tree.edit(DOCS_PAGE)
 
     # Those edits would be swept into the sync commit, so refuse up front rather
     # than after a multi-minute check.
@@ -517,21 +659,22 @@ def test_docs_gate_rejects_a_dirty_docs_tree_before_asking_claude(
         _docs_gate()
 
     gate.check.assert_not_called()
+    gate.check_video.assert_not_called()
 
 
 def test_docs_gate_opens_a_pr_and_stops_the_release(
     gate: GateCollaborators, capfd: pytest.CaptureFixture[str]
 ) -> None:
     gate.check.return_value = CheckResult(changes=(_BLOCKING_CHANGE,))
-    gate.update.return_value = _update_result(
-        "implemented", _BLOCKING_CHANGE, "edited 2 files"
+    # Claude rewrote the docs.
+    gate.update.side_effect = _editing(
+        gate.tree,
+        DOCS_PAGE,
+        _update_result("implemented", _BLOCKING_CHANGE, "edited 2 files"),
     )
-    # Clean before the update, dirty after it: claude rewrote the docs.
-    gate.has_changes.side_effect = [False, True]
-    gate.open_pr.return_value = "https://github.com/test-owner/test-repo/pull/7"
 
     with pytest.raises(SystemExit) as excinfo:
-        _docs_gate(base="v0.29.0")
+        _docs_gate(shipped="v0.29.0")
 
     assert excinfo.value.code == 1
     # The check and the update diff from the same base, the last shipped commit.
@@ -539,11 +682,14 @@ def test_docs_gate_opens_a_pr_and_stops_the_release(
     gate.update.assert_called_once_with("v0.29.0", DEV_COMMIT, (_BLOCKING_CHANGE,))
     # The branch is named after the release commit, so a retry on that commit
     # finds the pull request instead of producing a second one.
-    branch = f"auto/docs-update-{DEV_COMMIT[:12]}"
     gate.push_branch.assert_called_once_with(
-        branch, Path("/repo/docs"), "docs: sync with the code being released"
+        SYNC_BRANCH, Path("/repo/docs"), "docs: sync with the code being released"
     )
-    assert gate.open_pr.call_args.args[2] == branch
+    assert gate.open_pr.call_args.args[2] == SYNC_BRANCH
+    # The video agrees with the edited docs, so the pull request holds the
+    # docs alone: no hash is recorded and nobody is asked for a render.
+    gate.record_sections.assert_not_called()
+    gate.comment.assert_not_called()
     # The log points at the pull request that has to merge first, and at the
     # new run that follows it.
     err = unwrapped(capfd.readouterr().err)
@@ -559,9 +705,9 @@ def test_docs_gate_feeds_only_blocking_changes_to_the_update_and_pr(
     # request, and the minor one is only printed. The optional polish pull
     # request belongs to minor-only verdicts, so it is not opened even when
     # asked for.
-    gate.update.return_value = _update_result("implemented", _BLOCKING_CHANGE)
-    gate.has_changes.side_effect = [False, True]
-    gate.open_pr.return_value = "https://github.com/test-owner/test-repo/pull/7"
+    gate.update.side_effect = _editing(
+        gate.tree, DOCS_PAGE, _update_result("implemented", _BLOCKING_CHANGE)
+    )
 
     with pytest.raises(SystemExit):
         _docs_gate(open_minor_docs_pr=True)
@@ -570,9 +716,7 @@ def test_docs_gate_feeds_only_blocking_changes_to_the_update_and_pr(
     body = gate.open_pr.call_args.args[4]
     assert "docs/x.mdx" in body
     assert "reword the intro" not in body
-    assert [c.args[2] for c in gate.find_pr.call_args_list] == [
-        f"auto/docs-update-{DEV_COMMIT[:12]}"
-    ]
+    assert [c.args[2] for c in gate.find_pr.call_args_list] == [SYNC_BRANCH]
     assert "reword the intro" in capfd.readouterr().err
 
 
@@ -590,8 +734,9 @@ def test_docs_gate_stops_on_the_pr_an_earlier_attempt_opened(
 
     assert excinfo.value.code == 1
     gate.find_pr.assert_called_once()
-    assert gate.find_pr.call_args.args[2] == f"auto/docs-update-{DEV_COMMIT[:12]}"
+    assert gate.find_pr.call_args.args[2] == SYNC_BRANCH
     gate.update.assert_not_called()
+    gate.check_video.assert_not_called()
     gate.push_branch.assert_not_called()
     assert "pull/7" in capfd.readouterr().err
 
@@ -611,6 +756,8 @@ def test_docs_gate_continues_when_the_updater_finds_gaps_already_covered(
 
     gate.push_branch.assert_not_called()
     gate.open_pr.assert_not_called()
+    # The video is still read against the docs the release ships.
+    gate.check_video.assert_called_once()
     assert "already documented" in unwrapped(capfd.readouterr().err)
 
 
@@ -627,6 +774,350 @@ def test_docs_gate_raises_when_the_update_claims_edits_but_changed_nothing(
         _docs_gate()
 
     gate.push_branch.assert_not_called()
+
+
+# --- the concepts video in the gate ---
+
+
+def test_docs_gate_reads_the_video_against_the_docs_of_the_last_shipped_commit(
+    gate: GateCollaborators, capfd: pytest.CaptureFixture[str]
+) -> None:
+    # The docs check starts from the commit a merged pull request settled, but
+    # the video is read against what the last release shipped: its transcript
+    # records the sections a pull request settled.
+    _docs_gate(shipped="v0.29.0", base=JUDGED_COMMIT)
+
+    gate.worktree.assert_called_once_with("v0.29.0")
+    gate.check_video.assert_called_once_with(
+        REPO_ROOT, LAST_RELEASE_TREE / "docs/src/content/docs"
+    )
+    # A video that agrees costs no Claude run and leaves no trace.
+    gate.update_video.assert_not_called()
+    gate.record_sections.assert_not_called()
+    gate.open_pr.assert_not_called()
+    assert "The concepts video agrees with the docs" in capfd.readouterr().err
+
+
+def test_docs_gate_leaves_the_video_alone_when_asked(gate: GateCollaborators) -> None:
+    _docs_gate(skip_video_check=True)
+
+    gate.check.assert_called_once()
+    gate.worktree.assert_not_called()
+    gate.check_video.assert_not_called()
+
+
+def test_docs_gate_opens_a_pr_for_a_video_the_docs_no_longer_agree_with(
+    gate: GateCollaborators, capfd: pytest.CaptureFixture[str]
+) -> None:
+    # A docs section the video rests on changed, and Claude corrected a
+    # sentence of the transcript: the video on YouTube no longer shows it.
+    gate.check_video.side_effect = [
+        _video_check(_CHANGED_SECTION),
+        _video_check(upload_is_current=False),
+    ]
+    gate.update_video.side_effect = _editing(
+        gate.tree,
+        TRANSCRIPT,
+        _video_update((_CHANGED_SECTION, "changed", "The flag has a new name.")),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        _docs_gate()
+
+    assert excinfo.value.code == 1
+    gate.update_video.assert_called_once_with(REPO_ROOT, (_CHANGED_SECTION,))
+    # The transcript records the sections that were read, then is checked as
+    # the pull request holds it, with no baseline.
+    gate.record_sections.assert_called_once_with(REPO_ROOT)
+    assert gate.check_video.call_args_list[1].args == (REPO_ROOT, None)
+    gate.push_branch.assert_called_once_with(
+        SYNC_BRANCH,
+        Path("/repo/docs"),
+        "docs: sync the concepts video with the docs being released",
+    )
+    title, body = gate.open_pr.call_args.args[3:5]
+    assert title == (
+        f"docs: sync the concepts video with the docs being released "
+        f"({DEV_COMMIT[:12]})"
+    )
+    assert "Automated update of the concepts video" in body
+    assert "- Segment `launchers` (changed): The flag has a new name." in body
+    assert "Gaps the check reported" not in body
+    assert "The video on YouTube is not the video of this transcript" in body
+    # The reviewer gets the steps to render, upload and give the link.
+    pull, comment = gate.comment.call_args.args[2:4]
+    assert pull == PULL
+    assert "pixi run build" in comment
+    assert CONTENT_SHA256 in comment
+    assert "pull/7" in capfd.readouterr().err
+
+
+def test_docs_gate_puts_the_docs_and_the_video_in_one_pull_request(
+    gate: GateCollaborators,
+) -> None:
+    gate.check.return_value = CheckResult(changes=(_BLOCKING_CHANGE,))
+    gate.update.side_effect = _editing(
+        gate.tree, DOCS_PAGE, _update_result("implemented", _BLOCKING_CHANGE)
+    )
+    # The edits that closed the docs gap changed a section the video rests on.
+    gate.check_video.side_effect = [
+        _video_check(_CHANGED_SECTION),
+        _video_check(upload_is_current=False),
+    ]
+    gate.update_video.side_effect = _editing(
+        gate.tree,
+        TRANSCRIPT,
+        _video_update((_CHANGED_SECTION, "changed", "The flag has a new name.")),
+    )
+
+    with pytest.raises(SystemExit):
+        _docs_gate()
+
+    # One branch, one commit of `docs/`, one pull request, under the subject
+    # of the docs sync.
+    gate.push_branch.assert_called_once_with(
+        SYNC_BRANCH, Path("/repo/docs"), "docs: sync with the code being released"
+    )
+    gate.open_pr.assert_called_once()
+    body = gate.open_pr.call_args.args[4]
+    assert "- `docs/x.mdx`: document --verbose" in body
+    assert "- Segment `launchers` (changed): The flag has a new name." in body
+    gate.comment.assert_called_once()
+
+
+def test_docs_gate_records_the_sections_of_a_video_that_the_docs_edits_left_correct(
+    gate: GateCollaborators,
+) -> None:
+    gate.check.return_value = CheckResult(changes=(_BLOCKING_CHANGE,))
+    gate.update.side_effect = _editing(
+        gate.tree, DOCS_PAGE, _update_result("implemented", _BLOCKING_CHANGE)
+    )
+    gate.check_video.side_effect = [_video_check(_CHANGED_SECTION), _video_check()]
+    gate.update_video.return_value = _video_update(
+        (_CHANGED_SECTION, "still_correct", "The video does not show this flag.")
+    )
+
+    with pytest.raises(SystemExit):
+        _docs_gate()
+
+    # The pull request of the docs records the sections the video was read
+    # against, so the rerun after its merge does not read them again. The
+    # video itself did not change, so nobody is asked for a render.
+    gate.record_sections.assert_called_once_with(REPO_ROOT)
+    body = gate.open_pr.call_args.args[4]
+    assert (
+        "- Segment `launchers` (still correct): The video does not show this flag."
+        in body
+    )
+    assert "The video on YouTube" not in body
+    gate.comment.assert_not_called()
+
+
+def test_docs_gate_continues_when_the_changed_sections_leave_the_video_correct(
+    gate: GateCollaborators, capfd: pytest.CaptureFixture[str]
+) -> None:
+    gate.check_video.return_value = _video_check(_CHANGED_SECTION)
+    gate.update_video.return_value = _video_update(
+        (_CHANGED_SECTION, "still_correct", "The video does not show this flag.")
+    )
+
+    # A section that changed and left the video correct stops nothing, and no
+    # pull request is opened only to record that it was read: the next
+    # release reads the video against what this one ships.
+    _docs_gate()
+
+    gate.record_sections.assert_not_called()
+    gate.push_branch.assert_not_called()
+    gate.open_pr.assert_not_called()
+    err = unwrapped(capfd.readouterr().err)
+    assert "launchers (still correct): The video does not show this flag." in err
+    assert "leave the concepts video correct" in err
+    assert "up to date" in err
+
+
+def test_docs_gate_stops_when_the_video_names_what_the_docs_do_not_hold(
+    gate: GateCollaborators,
+) -> None:
+    gate.check_video.return_value = _video_check(_MISSING_NAME)
+    gate.update_video.return_value = _video_update(
+        (_MISSING_NAME, "still_correct", "The flag is in another section.")
+    )
+
+    # A name the docs no longer hold cannot be left as it is: with no edit to
+    # put in a pull request, the release stops and says what to do by hand.
+    with pytest.raises(ReleaseError) as excinfo:
+        _docs_gate()
+
+    message = str(excinfo.value)
+    assert (
+        "Segment `stack`, sentence `launch`: no section that the segment names "
+        "holds `--with`." in message
+    )
+    assert "--skip-video-check" in message
+    gate.open_pr.assert_not_called()
+
+
+def test_docs_gate_lists_what_the_video_update_left_for_the_reviewer(
+    gate: GateCollaborators,
+) -> None:
+    gate.check_video.side_effect = [
+        _video_check(_CHANGED_SECTION, _MISSING_NAME),
+        _video_check(_MISSING_NAME, upload_is_current=False),
+    ]
+    gate.update_video.side_effect = _editing(
+        gate.tree,
+        TRANSCRIPT,
+        _video_update(
+            (_CHANGED_SECTION, "changed", "The flag has a new name."),
+            (_MISSING_NAME, "still_correct", "The composition shows the flag."),
+            for_the_reviewer="The composition of `stack` shows `--with`.",
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        _docs_gate()
+
+    body = gate.open_pr.call_args.args[4]
+    left = body[body.index("Left for the reviewer:") :]
+    assert (
+        "- Segment `stack`, sentence `launch`: no section that the segment "
+        "names holds `--with`." in left
+    )
+    assert "- The composition of `stack` shows `--with`." in left
+
+
+def test_docs_gate_raises_when_the_video_update_claims_an_edit_but_made_none(
+    gate: GateCollaborators,
+) -> None:
+    gate.check_video.return_value = _video_check(_CHANGED_SECTION)
+    # A "changed" claim with an untouched transcript is a malfunctioning
+    # update: letting it pass would ship a video its own judge calls stale.
+    gate.update_video.return_value = _video_update(
+        (_CHANGED_SECTION, "changed", "The flag has a new name.")
+    )
+
+    with pytest.raises(ReleaseError, match="transcript.toml' did not change"):
+        _docs_gate()
+
+    gate.open_pr.assert_not_called()
+
+
+def test_docs_gate_stops_on_the_open_pr_before_reading_the_video_again(
+    gate: GateCollaborators, capfd: pytest.CaptureFixture[str]
+) -> None:
+    gate.check_video.return_value = _video_check(_CHANGED_SECTION)
+    gate.find_pr.return_value = "https://github.com/test-owner/test-repo/pull/7"
+
+    with pytest.raises(SystemExit) as excinfo:
+        _docs_gate()
+
+    assert excinfo.value.code == 1
+    assert gate.find_pr.call_args.args[2] == SYNC_BRANCH
+    gate.update_video.assert_not_called()
+    assert "pull/7" in capfd.readouterr().err
+
+
+def test_docs_gate_without_the_docs_check_names_its_branch_after_the_video(
+    gate: GateCollaborators,
+) -> None:
+    gate.check_video.side_effect = [
+        _video_check(_CHANGED_SECTION),
+        _video_check(upload_is_current=False),
+    ]
+    gate.update_video.side_effect = _editing(
+        gate.tree,
+        TRANSCRIPT,
+        _video_update((_CHANGED_SECTION, "changed", "The flag has a new name.")),
+    )
+
+    with pytest.raises(SystemExit):
+        _docs_gate(skip_docs_check=True)
+
+    # A merged `auto/docs-update-` pull request vouches that the docs check
+    # judged the code up to its commit. This run did not check the docs, so
+    # its branch must not carry that prefix.
+    gate.check.assert_not_called()
+    branch = f"auto/video-update-{DEV_COMMIT[:12]}"
+    assert gate.find_pr.call_args.args[2] == branch
+    assert gate.push_branch.call_args.args[0] == branch
+    assert gate.open_pr.call_args.args[2] == branch
+
+
+def test_docs_gate_without_the_docs_check_passes_on_a_video_that_agrees(
+    gate: GateCollaborators, capfd: pytest.CaptureFixture[str]
+) -> None:
+    _docs_gate(skip_docs_check=True)
+
+    gate.check.assert_not_called()
+    gate.check_video.assert_called_once()
+    # Nothing vouches for the docs, so the log does not call them up to date.
+    assert "up to date" not in capfd.readouterr().err
+
+
+# --- the pull request of the gate ---
+
+
+def test_docs_sync_pr_body_of_docs_gaps_alone_names_the_gaps() -> None:
+    body = _docs_sync_pr_body(DEV_COMMIT, (_BLOCKING_CHANGE,))
+
+    assert body.splitlines() == [
+        "Automated docs update produced by the release script "
+        "(`scripts/functions/docs.py`), which found `docs/` lagging the code at "
+        "the commit the release was being cut from.",
+        "",
+        f"Release commit: {DEV_COMMIT}",
+        "",
+        "Gaps the check reported:",
+        "",
+        "- `docs/x.mdx`: document --verbose",
+        "",
+        "Merge this into `dev`, then re-run the release.",
+    ]
+
+
+def test_render_steps_comment_gives_the_build_the_upload_and_the_text_box() -> None:
+    comment = _render_steps_comment(SLUG, SYNC_BRANCH, CONTENT_SHA256)
+
+    # The branch to build, the commands, and the two ways to give the link.
+    assert f"git switch {SYNC_BRANCH}" in comment
+    assert "cd docs/concepts_video" in comment
+    for command in (
+        "pixi run build",
+        "pixi run test",
+        "pixi run layout",
+        "pixi run motion",
+        "pixi run record-upload <link>",
+    ):
+        assert command in comment
+    # The text box: GitHub's editor of the record, on the branch of the pull
+    # request, with the hash the record has to hold.
+    assert (
+        f"https://github.com/test-owner/test-repo/edit/{SYNC_BRANCH}/"
+        "docs/concepts_video/upload.json" in comment
+    )
+    assert CONTENT_SHA256 in comment
+    assert (
+        f"https://github.com/test-owner/test-repo/blob/{SYNC_BRANCH}/"
+        "docs/concepts_video/README.md" in comment
+    )
+    # A comment of the release never holds an em-dash.
+    assert EM_DASH not in comment
+
+
+@patch("functions.release_docs_gate.github_api")
+def test_comment_on_docs_pr_posts_to_the_issue_of_the_pull_request(
+    mock_api: MagicMock,
+) -> None:
+    client = MagicMock()
+
+    _comment_on_docs_pr(client, SLUG, PULL, "the steps")
+
+    mock_api.assert_called_once_with(
+        client,
+        "POST",
+        "https://api.github.com/repos/test-owner/test-repo/issues/7/comments",
+        json_data={"body": "the steps"},
+    )
 
 
 # --- the docs pull requests ---
@@ -691,10 +1182,11 @@ def test_push_docs_branch_explains_a_rejected_push_and_returns_to_dev(
 def test_open_docs_pr_creates_a_pr_against_dev(mock_api: MagicMock) -> None:
     slug = RepoSlug(owner="test-owner", repo="test-repo")
     mock_api.return_value = {
-        "html_url": "https://github.com/test-owner/test-repo/pull/9"
+        "number": 9,
+        "html_url": "https://github.com/test-owner/test-repo/pull/9",
     }
 
-    url = _open_docs_pr(
+    pull = _open_docs_pr(
         MagicMock(),
         slug,
         "auto/docs-update-abc",
@@ -702,13 +1194,34 @@ def test_open_docs_pr_creates_a_pr_against_dev(mock_api: MagicMock) -> None:
         f"body mentioning docs/x.mdx at {DEV_COMMIT}",
     )
 
-    assert url == "https://github.com/test-owner/test-repo/pull/9"
+    assert pull == DocsPull(
+        number=9, url="https://github.com/test-owner/test-repo/pull/9"
+    )
     payload = mock_api.call_args.kwargs["json_data"]
     assert payload["head"] == "auto/docs-update-abc"
     assert payload["base"] == "dev"
     assert payload["title"] == "docs: sync with the code being released (abc)"
     assert "docs/x.mdx" in payload["body"]
     assert DEV_COMMIT in payload["body"]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        # No number: the comment for the reviewer could not name the pull request.
+        {"html_url": "https://github.com/test-owner/test-repo/pull/9"},
+        {"number": 9},
+        [],
+    ],
+)
+@patch("functions.release_docs_gate.github_api")
+def test_open_docs_pr_refuses_a_response_that_names_no_pull_request(
+    mock_api: MagicMock, response: object
+) -> None:
+    mock_api.return_value = response
+
+    with pytest.raises(ReleaseError, match="unexpected GitHub API response"):
+        _open_docs_pr(MagicMock(), SLUG, "auto/docs-update-abc", "title", "body")
 
 
 @patch("functions.release_docs_gate.github_api")

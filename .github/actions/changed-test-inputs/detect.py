@@ -77,15 +77,21 @@ LINT_INPUTS = [
 #
 # The release scripts split across two of them because their two halves cost
 # orders of magnitude apart. The mocked half runs the whole tree in about a
-# second, so it is gated on the whole tree, and on the resolve.py of the
-# hub-ci-peppy action, which the release scripts load for their model of the
-# hubs (scripts/functions/hub_ci.py). The install half installs a
+# second, so it is gated on the whole tree, and on the two files outside it
+# that the release scripts read: the resolve.py of the hub-ci-peppy action,
+# which they load for their model of the hubs (scripts/functions/hub_ci.py),
+# and the pixi manifest of the concepts video, whose tasks the docs gate runs
+# (scripts/functions/concepts_video.py). The install half installs a
 # release archive on a fresh runner, so it is gated on the files that decide
 # what gets installed and how: a change to the release-notes drafter or the
 # docs gate cannot alter what install.sh does to a machine.
 TREE_SUITES = {
     # pixi run test-fast
-    "scripts": ["scripts/**", ".github/actions/hub-ci-peppy/resolve.py"],
+    "scripts": [
+        "scripts/**",
+        ".github/actions/hub-ci-peppy/resolve.py",
+        "docs/concepts_video/pixi.toml",
+    ],
     # The install-script jobs, the install-archive-aarch64 job, and the
     # install-archive job on a push to main. install.sh is what the runner
     # runs; build_release.sh and build/build_release/cli produce the archive
@@ -117,12 +123,12 @@ TREE_SUITES = {
         ".github/actions/sticky-disk-report/**",
         ".github/actions/install-test/**",
     ],
-    # pixi run test and pixi run lint in docs/concepts_video. The transcript
-    # test holds the transcript of the video to the sections of the docs
-    # pages that it names, and a section shows the snippet files of its page,
-    # so the suite runs on a change of the video project and on a change of
-    # the docs content.
-    "concepts_video": ["docs/concepts_video/**", "docs/src/content/docs/**"],
+    # pixi run test and pixi run lint in docs/concepts_video. Both read the
+    # files of the video project alone. The check of its transcript against
+    # the docs content is not in this suite: the docs gate of a release runs
+    # it (scripts/functions/release_docs_gate.py), so a change of the docs
+    # content starts nothing here.
+    "concepts_video": ["docs/concepts_video/**"],
 }
 
 # The sealed tree, and the one member of it whose suite is not a cargo test:

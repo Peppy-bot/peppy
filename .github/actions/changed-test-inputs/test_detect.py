@@ -200,6 +200,14 @@ class Detection(unittest.TestCase):
             {"scripts": "true"},
         )
 
+    def test_the_tasks_of_the_concepts_video_run_the_mocked_release_scripts(self):
+        # The docs gate of a release runs tasks of the video project by name,
+        # and a test of the release scripts holds those names to its manifest.
+        self.assertEqual(
+            selected(select("docs/concepts_video/pixi.toml")),
+            {"scripts": "true", "concepts_video": "true"},
+        )
+
     def test_the_workspace_manifests_run_the_suites_of_crates_alone(self):
         for path in ("Cargo.toml", "Cargo.lock", ".cargo/config.toml"):
             with self.subTest(path=path):
@@ -292,21 +300,24 @@ class Detection(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(select(path)["scripts"], "true")
 
-    def test_the_concepts_video_checks_run_for_the_video_project_and_the_docs_content(self):
-        # The transcript test holds the transcript of the video to the docs
-        # pages that it names, and to the snippet files that these pages show.
+    def test_the_concepts_video_checks_run_for_the_video_project(self):
         for path in (
             "docs/concepts_video/transcript.toml",
+            "docs/concepts_video/upload.json",
             "docs/concepts_video/compositions/opening.html.j2",
             "docs/concepts_video/pixi.lock",
-            "docs/src/content/docs/reference/concepts.mdx",
-            "docs/src/content/docs/guides/snippets/python/standalone/params.json",
         ):
             with self.subTest(path=path):
                 self.assertEqual(select(path)["concepts_video"], "true")
 
-    def test_the_concepts_video_checks_do_not_run_for_the_rest_of_the_docs_site(self):
+    def test_the_concepts_video_checks_do_not_run_for_the_docs_site(self):
+        # The docs gate of a release holds the transcript of the video to the
+        # docs content, so a change of a docs page starts no check of the
+        # video.
         for path in (
+            "docs/src/content/docs/reference/concepts.mdx",
+            "docs/src/content/docs/quickstart.mdx",
+            "docs/src/content/docs/guides/snippets/python/standalone/params.json",
             "docs/astro.config.mjs",
             "docs/src/components/YouTubeEmbed.astro",
             "docs/src/content/releases/v0.36.4.html",

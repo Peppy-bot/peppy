@@ -208,6 +208,7 @@ def test_prepare_takes_every_answer_up_front() -> None:
     assert args.release_commit == RELEASE_COMMIT
     assert args.minor_docs_pr is False
     assert args.skip_docs_check is False
+    assert args.skip_video_check is False
 
 
 @pytest.mark.parametrize(
@@ -312,12 +313,14 @@ def _prepare(
     *,
     open_minor_docs_pr: bool = False,
     skip_docs_check: bool = False,
+    skip_video_check: bool = False,
 ) -> Path:
     plan_path = tmp_path / "out" / "release-plan.json"
     run_prepare(
         release_commit=RELEASE_COMMIT,
         open_minor_docs_pr=open_minor_docs_pr,
         skip_docs_check=skip_docs_check,
+        skip_video_check=skip_video_check,
         plan_path=plan_path,
     )
     return plan_path
@@ -391,6 +394,8 @@ def test_prepare_writes_the_plan_without_asking_anything(
         RELEASE_COMMIT,
         tmp_path,
         open_minor_docs_pr=True,
+        skip_docs_check=False,
+        skip_video_check=False,
     )
     # The notes cover the changes since the last published release, whose tag
     # is fetched first: it can be newer than the checkout.
@@ -474,12 +479,43 @@ def test_prepare_stops_when_dev_is_not_at_the_commit_the_run_builds(
     assert not (tmp_path / "out" / "release-plan.json").exists()
 
 
-def test_prepare_skips_the_docs_gate_when_asked(
-    tmp_path: Path, prepare_mocks: PrepareMocks
+@pytest.mark.parametrize(
+    ("skip_docs_check", "skip_video_check", "warnings"),
+    [
+        (True, False, ["--skip-docs-check"]),
+        (False, True, ["--skip-video-check"]),
+    ],
+)
+def test_prepare_leaves_one_check_of_the_docs_gate_out_when_asked(
+    tmp_path: Path,
+    prepare_mocks: PrepareMocks,
+    capfd: pytest.CaptureFixture[str],
+    skip_docs_check: bool,
+    skip_video_check: bool,
+    warnings: list[str],
 ) -> None:
-    plan_path = _prepare(tmp_path, skip_docs_check=True)
+    plan_path = _prepare(
+        tmp_path, skip_docs_check=skip_docs_check, skip_video_check=skip_video_check
+    )
+
+    # The gate still runs for the check that was not skipped.
+    gate_options = prepare_mocks.docs_gate.call_args.kwargs
+    assert gate_options["skip_docs_check"] is skip_docs_check
+    assert gate_options["skip_video_check"] is skip_video_check
+    err = capfd.readouterr().err
+    assert all(warning in err for warning in warnings)
+    assert plan_path.exists()
+
+
+def test_prepare_skips_the_docs_gate_when_both_of_its_checks_are_skipped(
+    tmp_path: Path, prepare_mocks: PrepareMocks, capfd: pytest.CaptureFixture[str]
+) -> None:
+    plan_path = _prepare(tmp_path, skip_docs_check=True, skip_video_check=True)
 
     prepare_mocks.docs_gate.assert_not_called()
+    err = capfd.readouterr().err
+    assert "--skip-docs-check" in err
+    assert "--skip-video-check" in err
     assert plan_path.exists()
 
 

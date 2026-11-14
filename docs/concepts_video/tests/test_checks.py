@@ -37,6 +37,13 @@ def source_of(docs_root: Path) -> dict:
     return {"page": "guides/page.mdx", "section": "A section", "sha256": sha256}
 
 
+def docs_root_copy(docs_root: Path, destination: Path) -> Path:
+    """A copy of the docs pages, as the baseline of a check."""
+    (destination / "guides").mkdir(parents=True)
+    (destination / "guides" / "page.mdx").write_text((docs_root / "guides" / "page.mdx").read_text(encoding="utf-8"), encoding="utf-8")
+    return destination
+
+
 @pytest.mark.parametrize(
     ("span", "fragments"),
     [
@@ -96,7 +103,7 @@ def test_a_shell_block_gives_the_fragments_of_each_command() -> None:
     assert checks.fragments_of_code_block(block) == ["peppy repo add", "peppy repo refresh"]
 
 
-def test_a_transcript_that_agrees_with_its_sections_has_no_problem(docs_root: Path) -> None:
+def test_a_transcript_that_agrees_with_its_sections_has_no_finding(docs_root: Path) -> None:
     transcript = transcript_of(
         [
             segment_table(
@@ -107,11 +114,10 @@ def test_a_transcript_that_agrees_with_its_sections_has_no_problem(docs_root: Pa
         ]
     )
 
-    assert checks.source_problems(transcript, docs_root) == []
-    assert checks.technical_name_problems(transcript, docs_root) == []
+    assert checks.docs_findings(transcript, docs_root) == []
 
 
-def test_a_technical_name_that_the_sections_do_not_hold_is_a_problem(docs_root: Path) -> None:
+def test_a_technical_name_that_the_sections_do_not_hold_is_a_finding(docs_root: Path) -> None:
     transcript = transcript_of(
         [
             segment_table(
@@ -122,7 +128,17 @@ def test_a_technical_name_that_the_sections_do_not_hold_is_a_problem(docs_root: 
         ]
     )
 
-    assert checks.technical_name_problems(transcript, docs_root) == [
+    (found,) = checks.docs_findings(transcript, docs_root)
+
+    assert found.segment_id == "opening"
+    assert found.changed_sections == ()
+    assert found.missing_names == (
+        checks.MissingName(where="sentence `launch`", name="peppy stack start"),
+        checks.MissingName(where="sentence `launch`", name="--fast"),
+        checks.MissingName(where="screen.code", name="NodeBuilder"),
+        checks.MissingName(where="screen.code", name="spin"),
+    )
+    assert checks.problems_of([found]) == [
         "Segment `opening`, sentence `launch`: no section that the segment names holds `peppy stack start`.",
         "Segment `opening`, sentence `launch`: no section that the segment names holds `--fast`.",
         "Segment `opening`, screen.code: no section that the segment names holds `NodeBuilder`.",
@@ -130,19 +146,66 @@ def test_a_technical_name_that_the_sections_do_not_hold_is_a_problem(docs_root: 
     ]
 
 
-def test_a_section_whose_text_changed_is_a_problem_that_gives_the_new_hash(docs_root: Path) -> None:
+def test_a_section_whose_text_is_not_the_recorded_text_is_a_changed_section(docs_root: Path) -> None:
     transcript = transcript_of([segment_table(source=[{**source_of(docs_root), "sha256": "1" * 64}])])
 
-    (problem,) = checks.source_problems(transcript, docs_root)
+    (found,) = checks.docs_findings(transcript, docs_root)
 
-    assert "the text of the section `A section` of guides/page.mdx changed" in problem
-    assert source_of(docs_root)["sha256"] in problem
+    assert found.changed_sections == (checks.ChangedSection(page="guides/page.mdx", section="A section", diff=None),)
+    assert checks.problems_of([found]) == [
+        "Segment `opening`: the text of the section `A section` of guides/page.mdx changed. "
+        "Read the segment against the section, correct the transcript if necessary, "
+        "then run `pixi run record-sections`."
+    ]
 
 
-def test_a_source_that_names_no_section_is_a_problem(docs_root: Path) -> None:
+def test_a_section_that_has_the_text_of_the_baseline_is_not_a_changed_section(docs_root: Path, tmp_path: Path) -> None:
+    baseline_root = docs_root_copy(docs_root, tmp_path / "baseline")
+    transcript = transcript_of([segment_table(source=[{**source_of(docs_root), "sha256": "1" * 64}])])
+
+    assert checks.docs_findings(transcript, docs_root, baseline_root) == []
+
+
+def test_a_section_that_changed_since_the_baseline_gives_the_lines_that_changed(docs_root: Path, tmp_path: Path) -> None:
+    baseline_root = docs_root_copy(docs_root, tmp_path / "baseline")
+    recorded = source_of(docs_root)
+    page = docs_root / "guides" / "page.mdx"
+    page.write_text(page.read_text(encoding="utf-8").replace("with `build_cmd` and `run_cmd`", "with `run_cmd`"), encoding="utf-8")
+
+    (found,) = checks.docs_findings(transcript_of([segment_table(source=[recorded])]), docs_root, baseline_root)
+
+    (changed,) = found.changed_sections
+    assert "-The node file is `peppy.json5`, with `build_cmd` and `run_cmd`." in changed.diff
+    assert "+The node file is `peppy.json5`, with `run_cmd`." in changed.diff
+
+
+def test_a_section_that_the_transcript_records_is_not_a_changed_section_with_another_baseline(
+    docs_root: Path, tmp_path: Path
+) -> None:
+    baseline_root = docs_root_copy(docs_root, tmp_path / "baseline")
+    page = docs_root / "guides" / "page.mdx"
+    page.write_text(page.read_text(encoding="utf-8").replace("with `build_cmd` and `run_cmd`", "with `run_cmd`"), encoding="utf-8")
+
+    assert checks.docs_findings(transcript_of([segment_table(source=[source_of(docs_root)])]), docs_root, baseline_root) == []
+
+
+def test_a_section_that_the_baseline_does_not_have_is_a_changed_section_with_no_diff(docs_root: Path, tmp_path: Path) -> None:
+    baseline_root = tmp_path / "baseline"
+    baseline_root.mkdir()
+    transcript = transcript_of([segment_table(source=[{**source_of(docs_root), "sha256": "1" * 64}])])
+
+    (found,) = checks.docs_findings(transcript, docs_root, baseline_root)
+
+    assert found.changed_sections == (checks.ChangedSection(page="guides/page.mdx", section="A section", diff=None),)
+
+
+def test_a_source_that_names_no_section_is_a_finding(docs_root: Path) -> None:
     source = {"page": "guides/page.mdx", "section": "No such section", "sha256": "1" * 64}
 
-    assert checks.source_problems(transcript_of([segment_table(source=[source])]), docs_root) == [
+    (found,) = checks.docs_findings(transcript_of([segment_table(source=[source])]), docs_root)
+
+    assert found.missing_sections == ("guides/page.mdx: no section has the heading `No such section`",)
+    assert checks.problems_of([found]) == [
         "Segment `opening`: guides/page.mdx: no section has the heading `No such section`."
     ]
 

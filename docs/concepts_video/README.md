@@ -2,7 +2,7 @@
 
 This directory is the project of the video that explains the concepts of Peppy. The quickstart page of the docs shows the video. [HyperFrames](https://github.com/heygen-com/hyperframes) renders it: each composition is an HTML page with CSS and an animation timeline, and a headless Chrome renders it frame by frame to an MP4 file.
 
-The directory is a project of its own. The build of the docs site does not read it.
+The directory is a project of its own. The build of the docs site reads one file of it: `upload.json`, which names the video that the quickstart page shows.
 
 ## Build the video
 
@@ -29,7 +29,13 @@ It writes these files into `build/`:
 
 Two builds of the same commit on the same machine give the same MP4 file, byte for byte. The build renders with the software renderer of Chrome and with a fixed count of render workers, so the graphics card and the count of processors of a machine do not change the settings of the render.
 
-YouTube gives each upload a new link. After an upload, put the id of the new link in the `YouTubeEmbed` of `docs/src/content/docs/quickstart.mdx`. The player is in the first section of that page, which two segments of the transcript rest on, so `pixi run test` then gives the new hash of this section: set it in `transcript.toml`.
+YouTube gives each upload a new link. After an upload, record it:
+
+```sh
+pixi run record-upload <link>
+```
+
+The command writes `upload.json`: the id of the video, which the quickstart page reads, and the hash of the content of the transcript. The content of the transcript is the transcript without the sources of its segments: what the video says and what it shows. `pixi run test` fails when `upload.json` does not hold the hash of the content of the transcript. Thus a change of what the video says or shows needs a new build and a new upload.
 
 `pixi run build <part id>` builds the video of one part only, into `build/<part id>.mp4`. A part is one segment, or `splash`: the splash screen with the first segment after it. The video of a segment has no splash screen.
 
@@ -43,21 +49,22 @@ To look at a change sooner, `pixi run build --preview` renders a preview: a file
 |---|---|
 | `transcript.toml` | The transcript: the only source of the voice, of the captions and of each text that the video shows |
 | `voice_durations.json` | The duration of the voice of each sentence. The build writes it |
+| `upload.json` | The video on YouTube, and the hash of the content of the transcript that it shows. `pixi run record-upload` writes it |
 | `compositions/` | The composition of each segment, the composition of the splash screen (`splash.html.j2`) and the root composition, as Jinja templates, with the animation functions (`motion.js`) and the 3D view of the robot (`robot_view.js`) |
 | `styles/` | The look that all the compositions share |
 | `assets/` | The fonts and the pictures |
 | `footage.json` | The list of the footage: the name, the SHA-256 and the key of each file |
 | `pins.toml`, `pixi.toml`, `pixi.lock`, `package.json`, `package-lock.json` | The version of each tool and file that the build gets |
 | `tools/` | The commands |
-| `tests/` | The tests of the commands, and the transcript test |
+| `tests/` | The tests of the commands, and the project test |
 
-## The transcript and its test
+## The transcript
 
 `transcript.toml` has one `[[segment]]` for each segment of the video. A segment holds:
 
 - `chapter`: the title of its chapter.
 - `act`: the id of its act, for a segment that is in an act.
-- `[[segment.source]]`: each section of `docs/src/content/docs` that the segment rests on, with the SHA-256 of the text of the section. A section is the text below one heading, up to the next heading of any level, with the text of the snippet files that it shows. The title of a page names the text before its first heading.
+- `[[segment.source]]`: each section of `docs/src/content/docs` that the segment rests on, with the SHA-256 of the text of the section when the segment was read against it. A section is the text below one heading, up to the next heading of any level, with the text of the snippet files that it shows. The title of a page names the text before its first heading.
 - `[[segment.voice]]`: the sentences of the voice, in order. Each one has an `id`, which its composition uses to time its animation.
 - `[segment.screen]`: each text that its composition shows.
 
@@ -67,21 +74,43 @@ A text between two backticks is a technical name: a command, a flag, a file name
 
 `[splash]` is the splash screen, which shows before the first segment with the music and with no voice. `seconds` is its duration, and `[splash.screen]` holds each text that its composition shows. The splash screen names no section of the docs, so its texts hold no technical name. A transcript with no `[splash]` gives a video with no splash screen.
 
-`pixi run test` runs the transcript test (`tests/test_project.py`). It fails in these cases:
+## The project test
 
-- A named section does not exist.
-- The text of a named section does not agree with its hash.
-- A technical name of a segment is not in the sections that the segment names. For a command, each flag and each run of the other words must be in a section. For a code block, each name must be in a section, but for the words of the language and the names that the block gives in `example_names`.
+`pixi run test` runs the tests of the commands and the project test (`tests/test_project.py`), which holds the files of the project to each other. The project test fails in these cases:
+
 - A sentence of the voice has more than 25 words, which is the limit that ASD-STE100 gives for a descriptive sentence.
 - `voice_durations.json` does not agree with the sentences of the transcript.
+- `upload.json` does not hold the hash of the content of the transcript.
 - A composition shows a text that is not in the transcript, does not show a text of its segment or of the splash screen, or names a footage file that is not in `footage.json`.
 - The video is longer than 10 minutes and 5 seconds.
 
-The test compares text, counts and hashes only. It calls no model.
-
-When a section of the docs changes, the test gives the new hash of the section. Read the segment against the section, correct the transcript if necessary, then set the hash. A person also checks each change of the transcript against the other rules of ASD-STE100.
+The test compares text, counts and hashes only. It calls no model, and it does not read the docs pages.
 
 When a sentence of the voice changes, run `pixi run build`: it makes the new voice and writes `voice_durations.json`. Commit this file with the transcript.
+
+## The check against the docs
+
+```sh
+pixi run docs-check
+```
+
+The command names each segment that does not agree with the sections of the docs that it names:
+
+- A source names a section that does not exist.
+- The text of a section is not the text that the transcript records.
+- A technical name of the segment is not in the sections that the segment names. For a command, each flag and each run of the other words must be in a section. For a code block, each name must be in a section, but for the words of the language and the names that the block gives in `example_names`.
+
+The check compares text and hashes only. It calls no model.
+
+When the text of a section changed, read the segment against the section and correct the transcript if necessary. Then run `pixi run record-sections`: the command writes in `transcript.toml` the hash of the present text of each section. A person also checks each change of the transcript against the other rules of ASD-STE100.
+
+The check is not a part of `pixi run test`, and a change of a docs page starts no check of the video. The prepare stage of a release runs the check, on the docs that the release ships (`scripts/functions/release_docs_gate.py`):
+
+1. The release gives the check the docs pages of the last release (`--baseline`). A section that has the text of the last release is not a changed section, because the last release read the segment against this text.
+2. For each segment that the check names, Claude reads the segment against its sections. It corrects the transcript where the segment states what the docs no longer state.
+3. When the sections that changed leave the video correct, the release continues and changes no file.
+4. When the transcript changed, or when the release changed the docs, the release stops and opens one pull request with the changes of the docs and of the video. In this pull request, the transcript records the present text of each section.
+5. When the pull request changes what the video says or shows, a comment on the pull request gives the reviewer the steps: build the video, upload it, and record the upload. The job `concepts-video` fails on the pull request until `upload.json` holds the new upload.
 
 ## The compositions
 
@@ -223,4 +252,6 @@ A new build gives the same video until a person changes a version. To change one
 
 ## The checks of CI
 
-CI does not build the video. The job `concepts-video` of the workflow `Tests` runs `pixi run test` and `pixi run lint`, with no voice model, no Chrome and no footage. The tests calculate some music, which needs no file and no model. The layout check and the motion check need Chrome and the voice, so a person runs them.
+CI does not build the video. When a file of this directory changes, the job `concepts-video` of the workflow `Tests` runs `pixi run test` and `pixi run lint`, with no voice model, no Chrome and no footage. The tests calculate some music, which needs no file and no model. The layout check and the motion check need Chrome and the voice, so a person runs them.
+
+The prepare stage of the workflow `Parallel release` runs the check against the docs.

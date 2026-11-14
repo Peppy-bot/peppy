@@ -5,9 +5,9 @@
 # command, a flag, a file name or a name of an API.
 #
 # Each segment names the sections of `docs/src/content/docs` that it rests on,
-# with the SHA-256 of the text of each section. When a test says that a
-# section changed, read the segment against the section, correct the segment if
-# necessary, then set the hash that the test gives.
+# with the SHA-256 of the text of each section. When `pixi run docs-check`
+# says that a section changed, read the segment against the section, correct
+# the segment if necessary, then run `pixi run record-sections`.
 
 [voice]
 id = "af_heart"
@@ -841,7 +841,7 @@ sha256 = "84c4016c28f5f2c1e1b7794ca2983054c50a9a2c835303bf53d7620143a2db73"
 [[segment.source]]
 page = "quickstart.mdx"
 section = "Quickstart"
-sha256 = "3eb9a7bf8547aa8556637de528916fe4ad7fdcabffaaf226b730e1fb36f0aaa0"
+sha256 = "45b644d132519cc5dbc68b9eef006b3fb155d9fd80758d9714751e06b9ae1b94"
 
 [[segment.source]]
 page = "quickstart.mdx"
@@ -1288,7 +1288,7 @@ chapter = "Summary and next step"
 [[segment.source]]
 page = "quickstart.mdx"
 section = "Quickstart"
-sha256 = "3eb9a7bf8547aa8556637de528916fe4ad7fdcabffaaf226b730e1fb36f0aaa0"
+sha256 = "45b644d132519cc5dbc68b9eef006b3fb155d9fd80758d9714751e06b9ae1b94"
 
 [[segment.source]]
 page = "guides/installation.mdx"

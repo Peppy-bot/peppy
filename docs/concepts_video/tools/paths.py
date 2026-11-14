@@ -9,6 +9,7 @@ DOCS_ROOT = PROJECT_ROOT.parent / "src" / "content" / "docs"
 
 TRANSCRIPT = PROJECT_ROOT / "transcript.toml"
 VOICE_DURATIONS = PROJECT_ROOT / "voice_durations.json"
+UPLOAD = PROJECT_ROOT / "upload.json"
 FOOTAGE_LIST = PROJECT_ROOT / "footage.json"
 PINS = PROJECT_ROOT / "pins.toml"
 COMPOSITIONS = PROJECT_ROOT / "compositions"

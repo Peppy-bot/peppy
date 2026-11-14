@@ -6,7 +6,7 @@ description: >-
 
 inputs:
   claude:
-    description: Install the Claude CLI, which runs the docs check and drafts the release notes
+    description: Install the Claude CLI, which runs the docs check, reads the concepts video against the docs and drafts the release notes
     default: "false"
   git-author:
     description: Make the user who started the run the author of the commits the stage makes

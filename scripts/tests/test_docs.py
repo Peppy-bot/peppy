@@ -32,7 +32,7 @@ from functions.docs import (
     RequiredChange,
     UpdateOutcome,
     UpdateResult,
-    _em_dash_lines,
+    em_dash_lines,
     _is_code_path,
     _parse_check_response,
     _parse_confirm_response,
@@ -1369,7 +1369,7 @@ def test_em_dash_lines_cover_tracked_and_untracked_docs_only(
     (repo / "docs" / "image.bin").write_bytes(b"\x00binary " + EM_DASH.encode() + b"\n")
     (repo / "README.md").write_text(f"outside {EM_DASH} docs\n")
 
-    assert set(_em_dash_lines(repo)) == {
+    assert set(em_dash_lines(repo)) == {
         EmDashLine(file="docs/new.mdx", line=2, text=f"new {EM_DASH} line"),
         EmDashLine(file=_PAGE, line=3, text=f"An old line {EM_DASH} kept as is."),
     }
@@ -1384,7 +1384,7 @@ def test_em_dash_lines_keep_a_line_that_holds_a_unicode_line_break(
     repo = _docs_repo(tmp_path)
     (repo / _PAGE).write_text(f"# Page\n\nA {EM_DASH} b{separator}c\n")
 
-    assert _em_dash_lines(repo) == (
+    assert em_dash_lines(repo) == (
         EmDashLine(file=_PAGE, line=3, text=f"A {EM_DASH} b{separator}c"),
     )
 
@@ -1392,7 +1392,7 @@ def test_em_dash_lines_keep_a_line_that_holds_a_unicode_line_break(
 def test_em_dash_lines_is_empty_without_a_match(tmp_path: Path) -> None:
     repo = _docs_repo(tmp_path)
     (repo / _PAGE).write_text("# Page\n")
-    assert _em_dash_lines(repo) == ()
+    assert em_dash_lines(repo) == ()
 
 
 def test_update_docs_without_an_added_em_dash_asks_claude_once(

@@ -12,7 +12,11 @@ name: Parallel release
 # builds natively: the peppylib bindings (macOS) and apptainer (one Linux
 # runner per architecture). They start only once prepare passes, so a release
 # that stops there (a docs pull request to merge first, a tag already taken,
-# `dev` moved on) never pays for their runners. The form collects every answer
+# `dev` moved on) never pays for their runners. The docs pull request closes
+# the gaps between the docs and the code, and corrects the concepts video
+# (docs/concepts_video) where the docs no longer agree with it; when the video
+# has to be rendered again, a comment on it gives the reviewer the steps (see
+# scripts/functions/release_docs_gate.py). The form collects every answer
 # the release would otherwise ask for, and the release notes Claude drafts are
 # published as they are, since nobody is there to review them; the prepare job
 # prints them. The notes also give the release its version, which follows the
@@ -91,7 +95,7 @@ on:
         type: boolean
         default: false
       extra_args:
-        description: Extra arguments for the prepare stage (example --skip-docs-check)
+        description: Extra arguments for the prepare stage (examples --skip-docs-check, --skip-video-check)
         required: false
         type: string
         default: ""
@@ -117,7 +121,7 @@ concurrency:
 # repositories and the permissions its writes need:
 #
 # - prepare: this repository, contents and pull requests, for the docs pull
-#   requests.
+#   requests and the comment that asks for a render of the concepts video.
 # - hub-launch: launchers-hub, actions, for the dispatch of its tests alone.
 # - publish: this repository and every hub of the hub set, contents and
 #   workflows, for the release, the pushes to `dev` and `main`, and the hub
@@ -141,10 +145,11 @@ defaults:
 
 jobs:
   # Checks that `dev` can be released at the commit this run builds, runs the
-  # docs gate and drafts the notes and the version they give the release, all
+  # docs gate (the docs against the code, then the concepts video against the
+  # docs) and drafts the notes and the version they give the release, all
   # recorded in the release plan. Its release token pushes the branches of the
-  # docs pull requests and opens them, so it writes contents and pull
-  # requests; the checkout keeps it for those pushes.
+  # docs pull requests, opens them and comments on them, so it writes contents
+  # and pull requests; the checkout keeps it for those pushes.
   prepare:
     runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
     environment: release
@@ -171,7 +176,8 @@ jobs:
           permission-pull-requests: write
 
       # Full history brings the tags the notes are drafted from and the
-      # `main` the docs check diffs against.
+      # `main` the docs check diffs against and the concepts video is read
+      # against.
       - uses: actions/checkout@v7.0.1
         with:
           ref: dev

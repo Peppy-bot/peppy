@@ -372,10 +372,12 @@ jobs:
         run: ./scripts/run_tests.sh -m 'not install'
 
   # The concepts video of the docs (docs/concepts_video). CI does not build
-  # the video. This job runs the transcript test, which holds the transcript
-  # of the video to the sections of the docs pages that it names, and the lint
-  # of HyperFrames on the compiled compositions. Both need the pinned tools of
-  # the project only: no voice model, no Chrome and no footage.
+  # the video. This job runs the tests of the video project, which hold its
+  # files to each other and the record of its upload to its transcript, and
+  # the lint of HyperFrames on the compiled compositions. Both need the pinned
+  # tools of the project only: no voice model, no Chrome and no footage. The
+  # check of the transcript against the docs is not here: the docs gate of a
+  # release runs it (see parallel-release.yml).
   concepts-video:
     needs: changes
     if: needs.changes.outputs.concepts_video == 'true'
@@ -399,7 +401,7 @@ jobs:
           pixi install --locked
           pixi run npm ci
 
-      - name: Run the transcript test
+      - name: Run the tests of the video project
         run: pixi run test
 
       - name: Lint the compositions
