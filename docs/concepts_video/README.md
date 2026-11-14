@@ -29,7 +29,7 @@ It writes these files into `build/`:
 
 Two builds of the same commit on the same machine give the same MP4 file, byte for byte. The build renders with the software renderer of Chrome and with a fixed count of render workers, so the graphics card and the count of processors of a machine do not change the settings of the render.
 
-YouTube gives each upload a new link. After an upload, put the id of the new link in the `YouTubeEmbed` of `docs/src/content/docs/quickstart.mdx`.
+YouTube gives each upload a new link. After an upload, put the id of the new link in the `YouTubeEmbed` of `docs/src/content/docs/quickstart.mdx`. The player is in the first section of that page, which two segments of the transcript rest on, so `pixi run test` then gives the new hash of this section: set it in `transcript.toml`.
 
 `pixi run build <part id>` builds the video of one part only, into `build/<part id>.mp4`. A part is one segment, or `splash`: the splash screen with the first segment after it. The video of a segment has no splash screen.
 
