@@ -921,12 +921,13 @@ fn declared_item_kind(schema: PeppySchema) -> Option<RepoItemKind> {
         PeppySchema::McpExposureV1 => Some(RepoItemKind::McpExposure),
         // The repository's own index declares no item. It is the output of
         // the walk, not an input to it.
-        PeppySchema::RepositoryV1 | PeppySchema::LauncherFragmentV1 => None,
+        //
         // A fragment file declares no item either: it is a piece of the
         // launcher whose option references it. The walk recognizes the tag
         // so a fragment is never mistaken for an unrecognized schema; the
         // composition checks in `check_repository_index` read and validate
         // the fragments each launcher references.
+        PeppySchema::RepositoryV1 | PeppySchema::LauncherFragmentV1 => None,
     }
 }
 
