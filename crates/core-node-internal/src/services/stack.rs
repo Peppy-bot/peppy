@@ -39,7 +39,7 @@ const STACK_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// What a stack change reports when it refuses, fails or stops at a
 /// cancel: the cause, the failure kind and the operator's whole account of
 /// it.
-type ChangeResult<T> = std::result::Result<T, WorkStop>;
+type ChangeResult<T> = Result<T, WorkStop>;
 
 /// What a stack change ended with: its result or its failure, and the log
 /// file of each node phase it ran, which its goal reports whichever way it

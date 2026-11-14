@@ -261,7 +261,7 @@ impl ContractKinds {
                 }
             }
             if !given.is_empty() {
-                listed.insert((section, member), in_declared_order(&declared, given));
+                listed.insert((section, member), in_declared_order(&declared, &given));
             }
         }
         if let Some((unlisted, _)) = declared.iter().find(|(name, _)| {
@@ -288,8 +288,7 @@ impl ContractKinds {
         self.members
             .get(&(section, name.to_owned()))
             .cloned()
-            .map(MemberFailureKinds::of_member)
-            .unwrap_or_default()
+            .map_or_default(MemberFailureKinds::of_member)
     }
 
     /// The names of the kinds of the contract that the member `name` of
@@ -297,15 +296,14 @@ impl ContractKinds {
     pub fn listed(&self, section: MemberSection, name: &str) -> Vec<FailureKindName> {
         self.members
             .get(&(section, name.to_owned()))
-            .map(|kinds| kinds.iter().map(|(kind, _)| kind.clone()).collect())
-            .unwrap_or_default()
+            .map_or_default(|kinds| kinds.iter().map(|(kind, _)| kind.clone()).collect())
     }
 }
 
 /// `given`, a subset of `declared`, in the order of `declared`.
 fn in_declared_order(
     declared: &ContractFailureKinds,
-    given: IndexMap<FailureKindName, String>,
+    given: &IndexMap<FailureKindName, String>,
 ) -> ContractFailureKinds {
     ContractFailureKinds(
         declared
@@ -393,8 +391,8 @@ mod tests {
 
     #[test]
     fn a_name_holds_at_most_64_bytes() {
-        assert!(FailureKindName::parse(&"k".repeat(64)).is_ok());
-        assert!(FailureKindName::parse(&"k".repeat(65)).is_err());
+        FailureKindName::parse(&"k".repeat(64)).unwrap();
+        FailureKindName::parse(&"k".repeat(65)).unwrap_err();
     }
 
     #[test]

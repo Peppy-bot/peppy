@@ -19,7 +19,6 @@ use peppylib::messaging::{
 use peppylib::runtime::BoundSetSubscription;
 use peppylib::{Message, MessengerHandle, Payload, PeppyError};
 use serde_json::{Map, Value};
-use std::future::Future;
 use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
@@ -165,12 +164,14 @@ pub fn contract_topic_codec(
 /// A subscription to a topic member, decoding messages on request: across
 /// every producer bound to a slot of the consumer's node, or from one
 /// producer that a client with no node names itself.
+#[derive(Debug)]
 pub struct TopicConsumer {
     codec: MessageCodec,
     source: TopicSource,
 }
 
 /// Where the messages of a [`TopicConsumer`] come from.
+#[derive(Debug)]
 enum TopicSource {
     /// The producers a launcher binds to a slot of the consumer's node.
     BoundSet(BoundSetSubscription),
@@ -467,7 +468,10 @@ impl ActionClient {
     /// caller that reads the feedback and falls behind by more loses the
     /// stream: the handle cancels the goal, and the next read reports the
     /// loss. A caller that never reads the feedback keeps its goal.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub async fn fire_goal(
         &self,
         messenger: &MessengerHandle,
@@ -505,6 +509,7 @@ impl ActionClient {
 }
 
 /// A goal in flight.
+#[derive(Debug)]
 pub struct GoalHandle {
     inner: ActionGoalHandle,
     member: String,
@@ -514,7 +519,7 @@ pub struct GoalHandle {
 }
 
 /// How a goal ended, as reported by the producer's result service.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoalOutcome {
     /// The goal ran to completion, a success; the value is the decoded
     /// result body, an empty object for an action without a result format.

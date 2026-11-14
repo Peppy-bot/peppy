@@ -18,6 +18,7 @@ use crate::error::Result;
 use auth::revoke::{self, TokenKind};
 use auth::{discovery, http::HttpClient, profile, storage};
 
+#[derive(Debug)]
 pub struct LogoutCommand {
     pub api_url: Option<String>,
     /// Test seam: override the peppy data dirs (the credentials file and

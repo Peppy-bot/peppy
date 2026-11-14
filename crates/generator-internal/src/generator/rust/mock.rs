@@ -100,6 +100,7 @@ fn claim_member_name(
 /// The schema-side inputs every generated codec shares: the schema key it
 /// registers on, the struct prefix its capnp artifacts carry, the message
 /// format it walks, and the label its errors carry.
+#[derive(Clone, Copy)]
 pub(super) struct CodecSpec<'a> {
     pub schema_key: &'a str,
     pub struct_prefix: &'a str,
@@ -390,7 +391,7 @@ fn render_dep_link(
 
         #( #modules )*
     };
-    Ok(render_tokens(tokens))
+    Ok(render_tokens(&tokens))
 }
 
 fn render_dep_topic(
@@ -1138,7 +1139,7 @@ fn render_pairing_link(
 
         #( #modules )*
     };
-    Ok(render_tokens(tokens))
+    Ok(render_tokens(&tokens))
 }
 
 fn render_pair_publisher(
@@ -1449,7 +1450,7 @@ fn render_observed_link(
 
         #( #modules )*
     };
-    Ok(render_tokens(tokens))
+    Ok(render_tokens(&tokens))
 }
 
 fn render_observed_publisher(

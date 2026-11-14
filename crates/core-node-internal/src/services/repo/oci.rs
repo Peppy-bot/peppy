@@ -32,7 +32,7 @@ const PARALLEL_MANIFEST_READS: usize = 8;
 const NODE_MANIFEST_FILE: &str = "peppy.json5";
 
 /// What one read of a repository yields, or why it failed.
-type ReadResult = std::result::Result<Vec<PublishedItem>, (RepoReadFailure, String)>;
+type ReadResult = Result<Vec<PublishedItem>, (RepoReadFailure, String)>;
 
 /// Reads an `oci` repository for this daemon: its version and its
 /// platform. A node the repository holds no artifact of for this platform
@@ -366,8 +366,8 @@ async fn published_node(
                 .to_owned(),
         ));
     }
-    let name = ItemName::parse(&node.node_name).map_err(|e| refuse(e.to_string()))?;
-    let tag = ItemTag::parse(&node.node_tag).map_err(|e| refuse(e.to_string()))?;
+    let name = ItemName::parse(&node.node_name).map_err(&refuse)?;
+    let tag = ItemTag::parse(&node.node_tag).map_err(refuse)?;
     Ok(PublishedItem {
         name,
         tag: Some(tag),

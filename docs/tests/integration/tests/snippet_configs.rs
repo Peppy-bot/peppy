@@ -45,7 +45,7 @@ fn find_peppy_documents(root: &Path) -> Vec<PathBuf> {
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| ext == "json5")
         })
-        .map(|e| e.into_path())
+        .map(walkdir::DirEntry::into_path)
         .collect()
 }
 
@@ -158,7 +158,7 @@ fn docs_robot_membership_scope_parses() {
     /// A feature of a scoped option: its name, the axis it fills and the
     /// option of that axis that it holds.
     type Feature<'a> = (&'a str, &'a str, &'a str);
-    let features: Vec<(&str, Vec<Feature>)> = scope
+    let features: Vec<(&str, Vec<Feature<'_>>)> = scope
         .options()
         .iter()
         .map(|entry| {

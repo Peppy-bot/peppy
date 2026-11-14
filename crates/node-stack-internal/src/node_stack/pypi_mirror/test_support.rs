@@ -4,6 +4,7 @@ use daemon_config::peppy_config::PackagesBaseUrl;
 use httpmock::MockServer;
 
 use super::lock::PYPI_PACKAGES_BASE;
+use std::fmt::Write as _;
 
 /// The text of a lock with one registry package that pins one wheel on PyPI
 /// per `(path, size)`, in that order. A `None` size leaves `size` out.
@@ -13,12 +14,11 @@ pub(super) fn lock_with_wheels(wheels: &[(&str, Option<u64>)]) -> String {
          source = { registry = \"https://pypi.org/simple\" }\nwheels = [\n",
     );
     for (path, size) in wheels {
-        let size = size
-            .map(|size| format!(", size = {size}"))
-            .unwrap_or_default();
-        lock.push_str(&format!(
-            "    {{ url = \"{PYPI_PACKAGES_BASE}{path}\", hash = \"sha256:00\"{size} }},\n"
-        ));
+        let size = size.map_or_default(|size| format!(", size = {size}"));
+        let _ = writeln!(
+            lock,
+            "    {{ url = \"{PYPI_PACKAGES_BASE}{path}\", hash = \"sha256:00\"{size} }},"
+        );
     }
     lock.push_str("]\n");
     lock

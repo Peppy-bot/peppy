@@ -257,26 +257,18 @@ fn main() -> Result<()> {
         exposer_stderr,
     } = run_single_exposer_service_flow(topology, service, consumer_main, exposer_main).await;
     let expected_consumer_log = format!(
-        "enable_camera result: service_id={} enabled=true error=handled",
-        SOLE_EXPOSER_INSTANCE_ID
+        "enable_camera result: service_id={SOLE_EXPOSER_INSTANCE_ID} enabled=true error=handled"
     );
     assert!(
         consumer_stdout.contains(&expected_consumer_log),
-        "consumer did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
-        expected_consumer_log,
-        consumer_stdout,
-        consumer_stderr
+        "consumer did not receive expected service response (expected log: {expected_consumer_log}).\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
-    let expected_request_log = format!(
-        "received enable_camera request from {}: enable = true",
-        SOLE_CONSUMER_INSTANCE_ID
-    );
+    let expected_request_log =
+        format!("received enable_camera request from {SOLE_CONSUMER_INSTANCE_ID}: enable = true");
     assert!(
         exposer_stdout.contains(&expected_request_log),
-        "exposer did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
-        exposer_stdout,
-        exposer_stderr
+        "exposer did not process the enable_camera request.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
     );
 }
 
@@ -334,27 +326,18 @@ fn main() -> Result<()> {
         exposer_stdout,
         exposer_stderr,
     } = run_single_exposer_service_flow(topology, service, consumer_main, exposer_main).await;
-    let expected_consumer_log = format!(
-        "get_system_status result: service_id={} healthy=true",
-        SOLE_EXPOSER_INSTANCE_ID
-    );
+    let expected_consumer_log =
+        format!("get_system_status result: service_id={SOLE_EXPOSER_INSTANCE_ID} healthy=true");
     assert!(
         consumer_stdout.contains(&expected_consumer_log),
-        "consumer did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
-        expected_consumer_log,
-        consumer_stdout,
-        consumer_stderr
+        "consumer did not receive expected service response (expected log: {expected_consumer_log}).\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
-    let expected_request_log = format!(
-        "received get_system_status request from {}",
-        SOLE_CONSUMER_INSTANCE_ID
-    );
+    let expected_request_log =
+        format!("received get_system_status request from {SOLE_CONSUMER_INSTANCE_ID}");
     assert!(
         exposer_stdout.contains(&expected_request_log),
-        "exposer did not process the get_system_status request.\nstdout:\n{}\nstderr:\n{}",
-        exposer_stdout,
-        exposer_stderr
+        "exposer did not process the get_system_status request.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
     );
 }
 
@@ -560,10 +543,10 @@ fn main() -> Result<()> {
     let (consumer_stdout, consumer_stderr) =
         assert_exited_successfully("consumer cargo run", &consumer_output);
 
-    let exposer1_stdout = String::from_utf8_lossy(&exposer_output1.stdout).into_owned();
-    let exposer1_stderr = String::from_utf8_lossy(&exposer_output1.stderr).into_owned();
-    let exposer2_stdout = String::from_utf8_lossy(&exposer_output2.stdout).into_owned();
-    let exposer2_stderr = String::from_utf8_lossy(&exposer_output2.stderr).into_owned();
+    let exposer1_stdout = String::from_utf8_lossy_owned(exposer_output1.stdout);
+    let exposer1_stderr = String::from_utf8_lossy_owned(exposer_output1.stderr);
+    let exposer2_stdout = String::from_utf8_lossy_owned(exposer_output2.stdout);
+    let exposer2_stderr = String::from_utf8_lossy_owned(exposer_output2.stderr);
 
     // The consumer's slot is bound to exposer1, so exposer1 must serve
     // the request and exposer2 must NEVER run its handler; that's the
@@ -571,31 +554,23 @@ fn main() -> Result<()> {
     // race, no wildcard fallback). Identify the responder by the response
     // marker the consumer printed (exposer1 emits `error=handled`,
     // exposer2 emits `error=handled_by_exposer2`).
-    let expected_request_log = format!(
-        "received enable_camera request for {}: true",
-        CONSUMER_INSTANCE_ID
-    );
+    let expected_request_log =
+        format!("received enable_camera request for {CONSUMER_INSTANCE_ID}: true");
     let consumer_saw_exposer2 = consumer_stdout.contains("error=handled_by_exposer2");
     let consumer_saw_exposer1 = consumer_stdout
         .lines()
         .any(|line| line.trim_end() == "enable_camera result: enabled=true error=handled");
     assert!(
         consumer_saw_exposer1 && !consumer_saw_exposer2,
-        "consumer must have received its response from the bound exposer1 only.\nstdout:\n{}\nstderr:\n{}",
-        consumer_stdout,
-        consumer_stderr
+        "consumer must have received its response from the bound exposer1 only.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 
     assert!(
         exposer1_stdout.contains(&expected_request_log),
-        "exposer1 is the bound producer but did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
-        exposer1_stdout,
-        exposer1_stderr
+        "exposer1 is the bound producer but did not process the enable_camera request.\nstdout:\n{exposer1_stdout}\nstderr:\n{exposer1_stderr}"
     );
     assert!(
         !exposer2_stdout.contains(&expected_request_log),
-        "exposer2 must NOT process the enable_camera request: the slot is bound to the other exposer and there is no wildcard fallback.\nstdout:\n{}\nstderr:\n{}",
-        exposer2_stdout,
-        exposer2_stderr
+        "exposer2 must NOT process the enable_camera request: the slot is bound to the other exposer and there is no wildcard fallback.\nstdout:\n{exposer2_stdout}\nstderr:\n{exposer2_stderr}"
     );
 }

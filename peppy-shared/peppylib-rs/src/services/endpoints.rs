@@ -40,14 +40,14 @@ pub async fn listen_for_node_endpoints(
         endpoint
             .handle_requests(move |context| {
                 let response = response.clone();
-                async move { handle_endpoints_request(context, response) }
+                async move { handle_endpoints_request(&context, response) }
             })
             .await
     });
     Ok(handle)
 }
 
-fn handle_endpoints_request(context: ServiceRequestContext, response: Payload) -> ServiceAnswer {
+fn handle_endpoints_request(context: &ServiceRequestContext, response: Payload) -> ServiceAnswer {
     let sender_instance_id = context.message().instance_id().to_string();
     // The request carries nothing; decoding it still catches wire-schema skew
     // instead of answering a request that was never one.

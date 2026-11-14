@@ -24,7 +24,7 @@ fn reset_timeout(started: &StartedCoreNode) -> Duration {
 
 /// The instance id of the stack's root, which is the core node itself. A
 /// reset keeps it.
-fn root_instance_id(node_stack: &node_stack::NodeStack) -> String {
+fn root_instance_id(node_stack: &NodeStack) -> String {
     node_stack
         .root()
         .read()
@@ -368,8 +368,7 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
             .lines()
             .any(|line| line.contains(TARGET_INSTANCE_ID) && line.contains("failed")),
         "a reset teardown must never be recorded as a crash, got:
-{}",
-        log_content
+{log_content}"
     );
 }
 
@@ -407,7 +406,7 @@ fn setup_budget_test_node() {
     .expect("the test node's manifest parses");
     peppylib::runtime::NodeBuilder::<serde_json::Value>::new()
         .with_manifest(manifest)
-        .run(move |_parameters, node_runner| async move {
+        .run(async move |_parameters, node_runner| {
             node_runner.on_shutdown(async move {
                 std::fs::write(&marker, SHUTDOWN_HOOK_MARK).expect("write the marker");
             });
@@ -432,13 +431,12 @@ fn test_node_run_cmd() -> Vec<String> {
 
 /// The pid of the one instance of `name:tag`, once the daemon spawned it.
 fn starting_pid(node_stack: &NodeStack, name: &str, tag: &str) -> Option<u32> {
-    node_stack.find(name, tag).and_then(|handle| {
-        handle
-            .read()
-            .instances()
-            .first()
-            .and_then(|inst| inst.pid())
-    })
+    let handle = node_stack.find(name, tag)?;
+    handle
+        .read()
+        .instances()
+        .first()
+        .and_then(node_stack::TrackedNodeInstance::pid)
 }
 
 /// A stack reset that cancels a start after the instance answered ready

@@ -18,7 +18,7 @@ use crate::{MessengerHandle, PeppyResult};
 use config::node::Cardinality;
 
 /// Shared map of one watch channel per declared producer set slot, keyed by
-/// the node's own consumer-slot link_id.
+/// the node's own consumer-slot `link_id`.
 pub(crate) type BindingSlotChannels = SlotChannels<BoundSetState>;
 
 impl SlotUpdate for BindingUpdateRequest {
@@ -28,7 +28,7 @@ impl SlotUpdate for BindingUpdateRequest {
     const SLOT_NOUN: &'static str = "`one_or_more` or `zero_or_more` producer slot";
 
     fn decode_request(payload: &[u8]) -> PeppyResult<Self> {
-        BindingUpdateRequest::decode(payload)
+        Self::decode(payload)
     }
 
     fn link_id(&self) -> &str {

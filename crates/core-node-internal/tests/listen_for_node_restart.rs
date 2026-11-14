@@ -45,6 +45,7 @@ use peppylib::PeppyError;
 use peppylib::core_node::transport::{poll, poll_node_stop};
 use peppylib::messaging::{Failure, MessengerHandle, ServiceAnswer};
 use peppylib::services::shutdown::listen_for_shutdown;
+use std::assert_matches;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -78,6 +79,10 @@ const KILL_AFTER_SECS: u64 = 100;
 const KILL_AFTER: Duration = Duration::from_secs(KILL_AFTER_SECS);
 /// The probes after the last answered one at which a silent instance is
 /// killed.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the count of seconds is a small constant, and `try_from` is not const"
+)]
 const PROBES_TO_THE_KILL: usize = KILL_AFTER_SECS as usize;
 /// The default cooperative-shutdown grace, which the daemons of these tests
 /// run under unless a test chooses the shortest one.
@@ -145,7 +150,7 @@ fn answer_with(verdict: &Verdict) -> ServiceAnswer {
 /// The failure of the error reply that `error` carries. Panics on an error
 /// without a reply: the `request` did not complete.
 #[track_caller]
-fn error_reply(error: PeppyError, request: &str) -> Failure {
+fn error_reply(error: &PeppyError, request: &str) -> Failure {
     error
         .failure()
         .cloned()
@@ -591,7 +596,7 @@ async fn remove(
         core_node::node_remove_bound(started.node_stack.shutdown_grace()) + REQUEST_MARGIN,
     )
     .await
-    .map_err(|error| error_reply(error, "node_remove"))
+    .map_err(|error| error_reply(&error, "node_remove"))
 }
 
 /// [`remove`] of `node`, which must succeed.
@@ -632,7 +637,7 @@ async fn stop(started: &StartedCoreNode, instance_id: &str) -> Result<NodeStopRe
         core_node::node_stop_bound(started.node_stack.shutdown_grace()) + REQUEST_MARGIN,
     )
     .await
-    .map_err(|error| error_reply(error, "node_stop"))
+    .map_err(|error| error_reply(&error, "node_stop"))
 }
 
 /// [`stop`] of `instance_id`, which must succeed.
@@ -792,7 +797,12 @@ async fn a_crash_under_on_failure_respawns_under_the_same_id() {
         .iter()
         .map(|needle| lines.iter().position(|line| line.contains(needle)).unwrap())
         .collect();
-    assert!(positions.windows(2).all(|w| w[0] < w[1]), "{lines:?}");
+    assert!(
+        positions
+            .array_windows()
+            .all(|[previous, next]| previous < next),
+        "{lines:?}"
+    );
 
     let (first_log, second_log) = (previous_run_log(&started, ID), run_log(&started, ID));
     let opening = format!(
@@ -1049,10 +1059,9 @@ async fn a_respawn_that_dies_during_startup_schedules_the_next_attempt() {
         "each stack log line is one event, the failure's first line alone:\n{log}"
     );
     let instance = serialized(&started, ID);
-    assert!(
-        matches!(&instance.restart_status.last_exit, Some(ExitCause::Message(text))
+    assert_matches!(&instance.restart_status.last_exit, Some(ExitCause::Message(text))
             if text.starts_with("node process exited during startup (exit code 3)")
-                && !text.contains('\n')),
+                && !text.contains('\n'),
         "a start failure's first line is the last exit: {:?}",
         instance.restart_status.last_exit
     );
@@ -1193,9 +1202,8 @@ async fn a_respawn_whose_spawn_fails_schedules_the_next_attempt() {
     );
     signal_process(pid, "-9");
     wait_for_line(&started, "restarting in 0 s (attempt 2)").await;
-    assert!(
-        matches!(&serialized(&started, ID).restart_status.last_exit, Some(ExitCause::Message(text))
-            if text.contains("failed to spawn")),
+    assert_matches!(&serialized(&started, ID).restart_status.last_exit, Some(ExitCause::Message(text))
+            if text.contains("failed to spawn"),
         "{:?}",
         serialized(&started, ID).restart_status.last_exit
     );
@@ -1206,12 +1214,12 @@ async fn a_respawn_whose_spawn_fails_schedules_the_next_attempt() {
 }
 
 /// The `sleep` binary of this machine.
-fn which_sleep() -> std::path::PathBuf {
+fn which_sleep() -> PathBuf {
     let output = std::process::Command::new("sh")
         .args(["-c", "command -v sleep"])
         .output()
         .expect("sh runs");
-    std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+    PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
 }
 
 /// A reset during a respawn's start cancels it at once, well before the
@@ -1289,7 +1297,7 @@ async fn a_run_past_the_reset_window_starts_the_backoff_over() {
     let pid = run(&started, NODE, ID, capped(2)).await;
     // A run shorter than the window backs off further: attempt 2 after a
     // second run one second short of it.
-    let just_short = RESET_WINDOW - Duration::from_secs(1);
+    let just_short = RESET_WINDOW.checked_sub(Duration::from_secs(1)).unwrap();
     time(&started).advance(just_short);
     signal_process(pid, "-9");
     wait_for_restarts(&started, ID, 1).await;
@@ -1757,7 +1765,7 @@ async fn a_stop_that_claims_a_restarts_start_before_its_fork_forks_nothing() {
 /// The FIFO at a path a start may be blocked opening, which a test that ends
 /// before it writes the FIFO opens for writing on drop, from a thread of its
 /// own: the start then reads an end of file, and the runtime can shut down.
-struct UnblockFifoOnDrop(Option<std::path::PathBuf>);
+struct UnblockFifoOnDrop(Option<PathBuf>);
 
 impl Drop for UnblockFifoOnDrop {
     fn drop(&mut self) {
@@ -2181,7 +2189,7 @@ async fn refusing_shutdown(started: &StartedCoreNode, name: &str, instance_id: &
         name,
         instance_id,
         peppylib::messaging::SHUTDOWN_SERVICE,
-        |_context| async move {
+        async |_context| {
             Err(Failure::new(
                 PeppyFailureKind::Rejected,
                 "this instance refuses to shut down",
@@ -2548,7 +2556,13 @@ async fn a_health_kill_during_a_stop_is_skipped() {
         // The answered request leaves the node running, so the stop waits
         // out the rest of its force-kill deadline.
         shutdowns.release.notify_one();
-        advance_to_deadline(&started, deadline_of(LONG_GRACE_SECS) - KILL_AFTER).await;
+        advance_to_deadline(
+            &started,
+            deadline_of(LONG_GRACE_SECS)
+                .checked_sub(KILL_AFTER)
+                .unwrap(),
+        )
+        .await;
     };
     tokio::join!(stop_ok(&started, ID), silent_while_claimed);
     assert_eq!(state_of(&started, ID), None);
@@ -2609,7 +2623,12 @@ async fn a_kill_after_a_long_answered_run_starts_the_backoff_over() {
     for restarts in 1..=2 {
         // The run counts to its last answer, which comes a whole reset
         // window after the start.
-        ticks(&started, RESET_WINDOW.as_secs() as usize, 1).await;
+        ticks(
+            &started,
+            usize::try_from(RESET_WINDOW.as_secs()).unwrap(),
+            1,
+        )
+        .await;
         drop(health);
         ticks(&started, PROBES_TO_THE_KILL - 1, 1).await;
         time(&started).advance(PROBE_INTERVAL);
@@ -2698,7 +2717,7 @@ async fn a_hung_instance_that_ignores_sigterm_is_killed_at_the_deadline() {
     let deadline = deadline_of(SHORT_GRACE_SECS);
     wait_for_pending(&started, deadline).await;
     let time = time(&started);
-    time.advance(deadline - Duration::from_secs(1));
+    time.advance(deadline.checked_sub(Duration::from_secs(1)).unwrap());
     assert_eq!(
         serialized_pid(&started, ID),
         pid,
@@ -3000,7 +3019,7 @@ async fn participant<R: core_node_api::ServiceRequest>(
         request_budget(),
     )
     .await
-    .map_err(|error| error_reply(error, R::ID.name()))
+    .map_err(|error| error_reply(&error, R::ID.name()))
 }
 
 /// Asks this daemon to reserve itself for [`LAUNCH`], as its coordinator
@@ -3203,7 +3222,7 @@ async fn a_removal_kills_what_does_not_exit_and_names_it() {
     let deadline = deadline_of(SHORT_GRACE_SECS);
     let kill_at_the_deadline = async {
         wait_for_pending(&started, deadline).await;
-        time(&started).advance(deadline - Duration::from_secs(1));
+        time(&started).advance(deadline.checked_sub(Duration::from_secs(1)).unwrap());
         for pid in [answering, unreachable] {
             assert!(
                 common::is_process_running(pid),
@@ -3265,14 +3284,19 @@ async fn a_removal_waits_for_the_process_another_stop_ends() {
 async fn a_second_into_the_deadline<T>(
     started: &StartedCoreNode,
     grace_secs: u64,
-    second: impl std::future::Future<Output = T>,
+    second: impl Future<Output = T>,
 ) -> T {
     let deadline = deadline_of(grace_secs);
     let second_of_it = Duration::from_secs(1);
     wait_for_pending(started, deadline).await;
     time(started).advance(second_of_it);
     let (output, ()) = tokio::join!(second, async {
-        advance_to_deadline_from(started, deadline, deadline - second_of_it).await;
+        advance_to_deadline_from(
+            started,
+            deadline,
+            deadline.checked_sub(second_of_it).unwrap(),
+        )
+        .await;
     });
     output
 }
@@ -3937,24 +3961,24 @@ enum JointLinkSide {
 impl JointLinkSide {
     fn role(self) -> &'static str {
         match self {
-            JointLinkSide::Leader => "leader",
-            JointLinkSide::Follower => "follower",
+            Self::Leader => "leader",
+            Self::Follower => "follower",
         }
     }
 
     /// The slot the side's node pairs on.
     fn link_id(self) -> &'static str {
         match self {
-            JointLinkSide::Leader => LEADER_SLOT,
-            JointLinkSide::Follower => FOLLOWER_SLOT,
+            Self::Leader => LEADER_SLOT,
+            Self::Follower => FOLLOWER_SLOT,
         }
     }
 
     /// The topics the side emits and consumes.
     fn topics(self) -> (&'static str, &'static str) {
         match self {
-            JointLinkSide::Leader => ("joint_setpoints", "joint_states"),
-            JointLinkSide::Follower => ("joint_states", "joint_setpoints"),
+            Self::Leader => ("joint_setpoints", "joint_states"),
+            Self::Follower => ("joint_states", "joint_setpoints"),
         }
     }
 }
@@ -3969,7 +3993,7 @@ async fn add_joint_link_node(
     cardinality: Cardinality,
     run_cmd: &str,
 ) -> TempDir {
-    let pairing = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let pairing = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/launch_assets/waldo_codegen/pairings/joint_link.json5");
     let body = std::fs::read_to_string(&pairing).expect("read the joint_link pairing fixture");
     common::TestPackagesCache::new()
@@ -4200,7 +4224,7 @@ fn pair_commit_of(
         peer: ProducerRef::new(WATCHER, leader),
         peer_link_id: LEADER_SLOT.to_owned(),
         peer_role: "leader".to_owned(),
-        peer_cardinality: config::node::Cardinality::ZeroOrMore,
+        peer_cardinality: Cardinality::ZeroOrMore,
         peer_copy: None,
         held,
     }
@@ -4244,7 +4268,7 @@ async fn ask_pair(
         request_budget(),
     )
     .await
-    .map_err(|error| error_reply(error, "pair_commit"))
+    .map_err(|error| error_reply(&error, "pair_commit"))
 }
 
 /// The pair commits [`WATCHER`]'s daemon was asked for, by whether each
@@ -4325,9 +4349,7 @@ async fn peer_daemon(
 
 /// The pairs the slot of `instance_id` holds for its restarts.
 fn held_pairs(started: &StartedCoreNode, instance_id: &str) -> Vec<node_stack::PlannedPair> {
-    slot_of(started, instance_id)
-        .map(|slot| slot.supervision().held_pairs.clone())
-        .unwrap_or_default()
+    slot_of(started, instance_id).map_or_default(|slot| slot.supervision().held_pairs.clone())
 }
 
 /// Waits until the exit of a paired instance has dissolved its pairs, after
@@ -5138,7 +5160,7 @@ async fn peer_daemon_asking_back(
                         request_budget(),
                     )
                     .await
-                    .map_err(|error| error_reply(error, "pair_commit"));
+                    .map_err(|error| error_reply(&error, "pair_commit"));
                     *recorder.lock().unwrap() = Some(verdict);
                 }
                 answer_with(&Ok(FederationAck))

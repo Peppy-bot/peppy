@@ -7,20 +7,20 @@ use config::node::{ConsumedAction, ConsumedService, DaemonTargetDependency};
 use daemon_config::daemon_interface::DaemonInterface;
 use generator::{ConsumedActionMessage, DependencyContext, DeploymentInterface};
 
-/// The link_id of the daemon target, and the name of its slot in the
+/// The `link_id` of the daemon target, and the name of its slot in the
 /// generated modules.
-pub const LINK_ID: &str = "fleet";
+pub(crate) const LINK_ID: &str = "fleet";
 
 /// The services of `robot_leases:v1` that the lease holder calls.
-pub const SERVICES: [&str; 2] = ["list", "take"];
+pub(crate) const SERVICES: [&str; 2] = ["list", "take"];
 
 /// The action of `robot_leases:v1` that the lease holder runs.
-pub const ACTION: &str = "lease";
+pub(crate) const ACTION: &str = "lease";
 
 /// The manifest of a lease holder named `name`, whose `execution` block is
 /// `execution`: its daemon target `fleet` of `robot_leases:v1` and the
 /// members it consumes through it.
-pub fn lease_holder_manifest(name: &str, execution: &str) -> String {
+pub(crate) fn lease_holder_manifest(name: &str, execution: &str) -> String {
     format!(
         r#"{{
   peppy_schema: "node/v1",
@@ -46,7 +46,7 @@ pub fn lease_holder_manifest(name: &str, execution: &str) -> String {
 /// document of `robot_leases:v1`: each addresses the daemon as the provider
 /// of the contract `robot_leases:v1` through the `one` slot of the daemon
 /// target.
-pub fn lease_holder_interfaces() -> Vec<DeploymentInterface> {
+pub(crate) fn lease_holder_interfaces() -> Vec<DeploymentInterface> {
     let interface = DaemonInterface::RobotLeases;
     let document = interface.document();
     let dependency = DependencyContext::contract(

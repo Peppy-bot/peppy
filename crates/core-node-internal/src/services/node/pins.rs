@@ -61,7 +61,7 @@ pub(crate) struct PinnedClosure {
 impl PinnedClosure {
     /// The dependency-node pins, i.e. everything except the root, for
     /// `NodeAddGoal.pins_json5` and `DeploymentPins.closure`.
-    pub fn dep_pins(&self) -> Vec<PinnedItem> {
+    pub(crate) fn dep_pins(&self) -> Vec<PinnedItem> {
         self.nodes
             .iter()
             .filter(|node| !node.is_root)
@@ -70,7 +70,7 @@ impl PinnedClosure {
     }
 
     /// Every manifest in the closure, root first, for doc-pin minting.
-    pub fn manifests(&self) -> Vec<Manifest> {
+    pub(crate) fn manifests(&self) -> Vec<Manifest> {
         self.nodes
             .iter()
             .map(|node| node.config.manifest.clone())
@@ -91,12 +91,11 @@ pub(crate) async fn materialize_pinned_node(
     entries: &Arc<Vec<NodeCacheEntry>>,
     pin: &PinnedItem,
     on_feedback: node_cache::MaterializeFeedback,
-) -> std::result::Result<(PathBuf, NodeConfig), String> {
+) -> Result<(PathBuf, NodeConfig), String> {
     let label = pin.label();
     let may_block = pin.origin.resolution_may_block()
         || repo_cache::lookup_by_content(entries, pin)
-            .map(|entry| entry.origin.resolution_may_block())
-            .unwrap_or(true);
+            .is_none_or(|entry| entry.origin.resolution_may_block());
 
     let (manifest_path, bytes) = if may_block {
         let dirs = peppy_dirs.clone();
@@ -141,11 +140,7 @@ pub(crate) async fn materialize_pinned_node(
     Ok((root_dir, config))
 }
 
-type MaterializeOutput = (
-    PinnedItem,
-    bool,
-    std::result::Result<(PathBuf, NodeConfig), String>,
-);
+type MaterializeOutput = (PinnedItem, bool, Result<(PathBuf, NodeConfig), String>);
 
 /// One bounded materialization, ready to push onto a `FuturesUnordered`.
 ///
@@ -181,7 +176,7 @@ pub(crate) async fn materialize_pin_set(
     root: PinnedItem,
     dep_pins: Vec<PinnedItem>,
     on_feedback: node_cache::MaterializeFeedback,
-) -> std::result::Result<Vec<MaterializedPin>, String> {
+) -> Result<Vec<MaterializedPin>, String> {
     let semaphore = Arc::new(Semaphore::new(MATERIALIZE_CONCURRENCY));
     let mut in_flight: FuturesUnordered<BoxFuture<'_, MaterializeOutput>> = FuturesUnordered::new();
 
@@ -229,7 +224,7 @@ pub(crate) async fn resolve_pinned_closure(
     root_name: &str,
     root_tag: &str,
     on_feedback: node_cache::MaterializeFeedback,
-) -> std::result::Result<PinnedClosure, peppylib::messaging::Failure> {
+) -> Result<PinnedClosure, peppylib::messaging::Failure> {
     use config::failure_kind::PeppyFailureKind;
     let mut nodes: Vec<MaterializedPin> = Vec::new();
     let mut seen: HashSet<(String, String)> = HashSet::new();
@@ -305,7 +300,7 @@ pub(crate) async fn resolve_pinned_closure(
         missing.sort();
         let list = missing
             .iter()
-            .map(|(n, t)| format!("{}:{}", n, t))
+            .map(|(n, t)| format!("{n}:{t}"))
             .collect::<Vec<_>>()
             .join(", ");
         problems.push(format!(
@@ -353,12 +348,12 @@ impl ManifestDocuments {
     ///
     /// Blocking: a pin whose local copy is gone or drifted is fetched from
     /// its origin. Use [`Self::read_async`] inside Tokio.
-    pub fn read(
+    pub(crate) fn read(
         peppy_dirs: &PeppyDirs,
         pins: &[PinnedItem],
         manifest: &Manifest,
         on_feedback: &dyn Fn(Report<'_>),
-    ) -> std::result::Result<Self, String> {
+    ) -> Result<Self, String> {
         let mut selected: Vec<(DocumentKind, &PinnedItem)> = Vec::new();
         for reference in manifest.document_references() {
             let pin = find_pinned(pins, |pin| pin, reference)?;
@@ -384,18 +379,18 @@ impl ManifestDocuments {
                     repo_cache::materialize_pinned_document(peppy_dirs, &pairings, pin, on_feedback)
                 }
             })
-            .collect::<std::result::Result<_, _>>()?;
+            .collect::<Result<_, _>>()?;
         Ok(Self { documents })
     }
 
     /// [`Self::read`] on a blocking thread, with the feedback sink every
     /// async caller already holds.
-    pub async fn read_async(
+    pub(crate) async fn read_async(
         peppy_dirs: &PeppyDirs,
         pins: Vec<PinnedItem>,
         manifest: Manifest,
         on_feedback: node_cache::MaterializeFeedback,
-    ) -> std::result::Result<Self, String> {
+    ) -> Result<Self, String> {
         let dirs = peppy_dirs.clone();
         tokio::task::spawn_blocking(move || {
             Self::read(&dirs, &pins, &manifest, &|report| on_feedback(report))
@@ -405,18 +400,18 @@ impl ManifestDocuments {
     }
 
     /// The document of one reference of the manifest, parsed by `parse`.
-    pub fn parse<T>(
+    pub(crate) fn parse<T>(
         &self,
         reference: DocumentReference<'_>,
-        parse: impl FnOnce(&str) -> std::result::Result<T, String>,
-    ) -> std::result::Result<T, String> {
+        parse: impl FnOnce(&str) -> Result<T, String>,
+    ) -> Result<T, String> {
         let document = find_pinned(&self.documents, |document| &document.pin, reference)?;
         parse(&document.content)
             .map_err(|e| format!("failed to parse pinned {}: {e}", document.pin.label()))
     }
 
     /// The documents, each once, in manifest order.
-    pub fn into_documents(self) -> Vec<PinnedDocument> {
+    pub(crate) fn into_documents(self) -> Vec<PinnedDocument> {
         self.documents
     }
 }
@@ -427,7 +422,7 @@ fn find_pinned<'a, T>(
     items: &'a [T],
     pin_of: impl Fn(&T) -> &PinnedItem,
     reference: DocumentReference<'_>,
-) -> std::result::Result<&'a T, String> {
+) -> Result<&'a T, String> {
     let DocumentReference {
         kind,
         name,
@@ -480,7 +475,7 @@ struct DocPinMinter {
 fn load_doc_cache_if_needed<E: RepoCacheEntry>(
     peppy_dirs: &PeppyDirs,
     needed: bool,
-) -> std::result::Result<Vec<E>, String> {
+) -> Result<Vec<E>, String> {
     if !needed {
         return Ok(Vec::new());
     }
@@ -496,11 +491,11 @@ impl DocPinMinter {
         contracts: &[ContractCacheEntry],
         pairings: &[PairingCacheEntry],
         on_feedback: &dyn Fn(Report<'_>),
-    ) -> std::result::Result<(), String> {
+    ) -> Result<(), String> {
         for reference in manifest.document_references() {
             match reference.kind {
                 DocumentKind::Contract => {
-                    self.mint(peppy_dirs, contracts, reference, on_feedback)?
+                    self.mint(peppy_dirs, contracts, reference, on_feedback)?;
                 }
                 DocumentKind::Pairing => self.mint(peppy_dirs, pairings, reference, on_feedback)?,
             }
@@ -514,7 +509,7 @@ impl DocPinMinter {
         entries: &[E],
         reference: DocumentReference<'_>,
         on_feedback: &dyn Fn(Report<'_>),
-    ) -> std::result::Result<(), String> {
+    ) -> Result<(), String> {
         let DocumentReference {
             kind,
             name,
@@ -575,7 +570,7 @@ pub(crate) fn doc_pins_for_manifest_sets(
     peppy_dirs: &PeppyDirs,
     sets: &[Vec<Manifest>],
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<Vec<std::result::Result<Vec<PinnedItem>, String>>, String> {
+) -> Result<Vec<Result<Vec<PinnedItem>, String>>, String> {
     let named = |kind: DocumentKind| {
         sets.iter().flatten().any(|manifest| {
             manifest
@@ -610,7 +605,7 @@ pub(crate) async fn doc_pins_for_manifest_sets_async(
     peppy_dirs: &PeppyDirs,
     sets: Vec<Vec<Manifest>>,
     on_feedback: node_cache::MaterializeFeedback,
-) -> std::result::Result<Vec<std::result::Result<Vec<PinnedItem>, String>>, String> {
+) -> Result<Vec<Result<Vec<PinnedItem>, String>>, String> {
     let dirs = peppy_dirs.clone();
     tokio::task::spawn_blocking(move || {
         doc_pins_for_manifest_sets(&dirs, &sets, &|report| on_feedback(report))
@@ -621,7 +616,7 @@ pub(crate) async fn doc_pins_for_manifest_sets_async(
 
 /// Decodes the JSON5 pins of a goal, refusing the batch on the first pin
 /// that does not validate.
-pub(crate) fn decode_pins(pins_json5: &[String]) -> std::result::Result<Vec<PinnedItem>, String> {
+pub(crate) fn decode_pins(pins_json5: &[String]) -> Result<Vec<PinnedItem>, String> {
     pins_json5
         .iter()
         .enumerate()
@@ -633,7 +628,7 @@ pub(crate) fn decode_pins(pins_json5: &[String]) -> std::result::Result<Vec<Pinn
 }
 
 /// Serializes pins for the wire. The inverse of [`decode_pins`].
-pub(crate) fn encode_pins(pins: &[PinnedItem]) -> std::result::Result<Vec<String>, String> {
+pub(crate) fn encode_pins(pins: &[PinnedItem]) -> Result<Vec<String>, String> {
     pins.iter()
         .map(|pin| {
             serde_json5::to_string(pin)

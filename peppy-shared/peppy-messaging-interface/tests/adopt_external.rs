@@ -65,8 +65,7 @@ fn external_endpoint_rejects_listen_wildcards_and_non_tcp_transports() {
     for endpoint in ["tcp/0.0.0.0:7448", "tcp/[::]:7448"] {
         let error =
             ZenohAdapter::with_external_router(endpoint, false, SubscriberBufferSizes::default())
-                .err()
-                .expect("a listen wildcard is not a dial endpoint");
+                .expect_err("a listen wildcard is not a dial endpoint");
         assert!(
             error.to_string().contains("listen wildcard"),
             "unexpected error for {endpoint}: {error}"
@@ -78,8 +77,7 @@ fn external_endpoint_rejects_listen_wildcards_and_non_tcp_transports() {
         false,
         SubscriberBufferSizes::default(),
     )
-    .err()
-    .expect("external adoption currently requires TCP");
+    .expect_err("external adoption currently requires TCP");
     assert!(
         error.to_string().contains("must use `tcp/`"),
         "unexpected error: {error}"
@@ -148,11 +146,9 @@ async fn fails_loud_when_the_configured_external_router_is_not_running() {
 
         match TcpListener::bind(("127.0.0.1", port)) {
             Ok(listener) => break (port, adapter, start_result, listener),
+            // Another process took the port: the next attempt samples one.
             Err(err)
-                if err.kind() == std::io::ErrorKind::AddrInUse && attempt < MAX_PORT_ATTEMPTS =>
-            {
-                continue;
-            }
+                if err.kind() == std::io::ErrorKind::AddrInUse && attempt < MAX_PORT_ATTEMPTS => {}
             Err(err) => {
                 panic!("could not reclaim sampled port {port} after {attempt} attempts: {err}")
             }

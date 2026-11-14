@@ -3,6 +3,7 @@
 //! spot-checks.
 
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use super::*;
 
@@ -171,7 +172,11 @@ fn schema_sources_cover_the_schemas_dir() {
                 .into_string()
                 .expect("UTF-8 name")
         })
-        .filter(|n| n.ends_with(".capnp"))
+        .filter(|n| {
+            Path::new(n)
+                .extension()
+                .is_some_and(|extension| extension == "capnp")
+        })
         .collect();
 
     let keys: BTreeSet<String> = SCHEMA_SOURCES.iter().map(|(k, _)| k.to_string()).collect();

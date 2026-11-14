@@ -8,8 +8,7 @@ use super::*;
 use crate::generator::testgen::{
     DepLinkSpec, DepTopicSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
 };
-use config::node::{Cardinality, MessageFormat, NativeEmittedTopic, TopicRetention};
-use std::path::Path;
+use std::assert_matches;
 use tempfile::TempDir;
 
 fn registry_with_pairing(cardinality: Cardinality) -> TestGenRegistry {
@@ -38,7 +37,7 @@ fn rendered_harness_in(
     registry: &TestGenRegistry,
     node_dir: &Path,
 ) -> String {
-    super::super::fixtures::render(&mut generator, registry, node_dir).unwrap();
+    fixtures::render(&mut generator, registry, node_dir).unwrap();
     generator
         .into_artifacts()
         .into_iter()
@@ -184,7 +183,7 @@ fn registry_with_camera_topics(names: &[&str]) -> TestGenRegistry {
 #[test]
 fn a_member_named_after_one_of_the_mock_s_own_bindings_takes_its_link_qualified_name() {
     let mut generator = PythonGenerator::new();
-    super::super::mock::render(&mut generator, &registry_with_camera_topics(&["session"]))
+    mock::render(&mut generator, &registry_with_camera_topics(&["session"]))
         .expect("a member named after the mock's own `session` renders");
     let camera = generator
         .into_artifacts()
@@ -208,19 +207,17 @@ fn a_member_named_after_one_of_the_mock_s_own_bindings_takes_its_link_qualified_
 #[test]
 fn a_link_qualified_name_still_collides_with_a_member_that_carries_it() {
     let mut generator = PythonGenerator::new();
-    let error = super::super::mock::render(
+    let error = mock::render(
         &mut generator,
         &registry_with_camera_topics(&["session", "camera_session"]),
     )
     .expect_err("two members on one attribute must not render");
-    assert!(
-        matches!(
+    assert_matches!(
             &error,
             crate::error::Error::ModuleNameCollision { sanitized, first, second, .. }
                 if sanitized == "camera_session"
                     && first == "camera/session"
-                    && second == "camera/camera_session"
-        ),
+                    && second == "camera/camera_session",
         "expected `session` and `camera_session` to collide on `camera_session`, got: {error}"
     );
 }
@@ -239,7 +236,7 @@ fn a_retaining_topic_reaches_its_mock_publisher_and_its_fixture_subscription() {
     };
 
     let mut generator = PythonGenerator::new();
-    super::super::mock::render(&mut generator, &registry).unwrap();
+    mock::render(&mut generator, &registry).unwrap();
     assert!(
         declares_in(
             generator.into_artifacts(),
@@ -250,7 +247,7 @@ fn a_retaining_topic_reaches_its_mock_publisher_and_its_fixture_subscription() {
 
     let mut generator = PythonGenerator::new();
     let node_dir = TempDir::new().unwrap();
-    super::super::fixtures::render(&mut generator, &registry, node_dir.path()).unwrap();
+    fixtures::render(&mut generator, &registry, node_dir.path()).unwrap();
     assert!(
         declares_in(
             generator.into_artifacts(),
@@ -276,7 +273,7 @@ fn an_emitted_topic_named_after_a_rust_keyword_shares_its_production_schema() {
 
     let registry = std::mem::take(&mut generator.testgen);
     let node_dir = TempDir::new().unwrap();
-    let rendered = super::super::fixtures::render(&mut generator, &registry, node_dir.path());
+    let rendered = fixtures::render(&mut generator, &registry, node_dir.path());
 
     assert!(
         rendered.is_ok(),
@@ -288,7 +285,7 @@ fn an_emitted_topic_named_after_a_rust_keyword_shares_its_production_schema() {
 /// The baked node directory is the one arbitrary user string in the harness.
 /// A path holding a combining character (an NFD name, common on macOS) must
 /// still be a valid Python string literal: Rust's `{:?}` writes it as
-/// `\u{301}`, an escape Python rejects with a SyntaxError.
+/// `\u{301}`, an escape Python rejects with a `SyntaxError`.
 #[test]
 fn a_node_directory_with_a_combining_character_bakes_as_a_python_literal() {
     let mut registry = TestGenRegistry::default();

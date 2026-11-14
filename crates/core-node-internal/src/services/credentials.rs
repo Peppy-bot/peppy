@@ -29,6 +29,7 @@ use pmi::{
     unix_millis,
 };
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -60,6 +61,19 @@ pub(crate) struct DaemonKeys {
     instances: Mutex<HashMap<PathBuf, ClientPublicKey>>,
     /// The serial of the next key file of an instance.
     next_key_serial: AtomicU64,
+}
+
+/// Shows which daemon the keys belong to. The keys and the credentials are
+/// secrets, so they are not shown.
+impl fmt::Debug for DaemonKeys {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DaemonKeys")
+            .field("namespace", &self.namespace)
+            .field("core_node", &self.core_node)
+            .field("boot_instance_id", &self.boot_instance_id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The key file of an instance that the daemon wrote for one start of it.
@@ -309,7 +323,7 @@ impl CallCheck for DaemonCallCheck {
         let now = (self.clock)();
         let now_ms = unix_millis(now);
         let skew_ms = now_ms.abs_diff(proof.timestamp_ms());
-        let window_ms = TIMESTAMP_WINDOW.as_millis() as u64;
+        let window_ms = config::duration::saturating_millis(TIMESTAMP_WINDOW);
         if skew_ms > window_ms {
             return Err(refused(format!(
                 "the timestamp of the call of {sender} is {} s away from the clock of this \
@@ -359,8 +373,8 @@ impl<'a> Sender<'a> {
     }
 }
 
-impl std::fmt::Display for Sender<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Sender<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "`{}` of `{}`", self.instance_id, self.core_node)
     }
 }

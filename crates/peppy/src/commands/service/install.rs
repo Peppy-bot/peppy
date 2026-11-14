@@ -19,7 +19,8 @@ fn service_label(kind: ServiceManagerKind) -> &'static str {
     }
 }
 
-pub struct InstallCommand {}
+#[derive(Debug)]
+pub struct InstallCommand;
 
 impl Command for InstallCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
@@ -27,7 +28,8 @@ impl Command for InstallCommand {
     }
 }
 
-pub struct StopCommand {}
+#[derive(Debug)]
+pub struct StopCommand;
 
 impl Command for StopCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
@@ -35,7 +37,8 @@ impl Command for StopCommand {
     }
 }
 
-pub struct UninstallCommand {}
+#[derive(Debug)]
+pub struct UninstallCommand;
 
 impl Command for UninstallCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
@@ -70,8 +73,7 @@ pub fn install_peppy_daemon(service_dir_override: Option<PathBuf>) -> Result<Pat
     let program_path = std::env::current_exe()?;
     let working_dir = program_path
         .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("/"));
+        .map_or_else(|| PathBuf::from("/"), Path::to_path_buf);
     let ctx = make_install_context(
         label.clone(),
         program_path,
@@ -289,7 +291,10 @@ fn is_root() -> bool {
 // (see the SAFETY notes on each call). The rest of the crate is
 // `#![deny(unsafe_code)]`.
 #[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "`env::set_var` is unsafe, and the function runs before a second thread exists"
+)]
 fn ensure_systemd_user_env() -> Result<()> {
     use std::env;
 
@@ -415,10 +420,10 @@ fn render_launchd_plist(ctx: &ServiceInstallCtx) -> String {
     // Wrap in a login shell to source the user's profile and get full environment
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
     let inner_cmd = command_parts(ctx).join(" ");
-    lines.push(format!("      <string>{}</string>", shell));
+    lines.push(format!("      <string>{shell}</string>"));
     lines.push("      <string>-l</string>".to_string());
     lines.push("      <string>-c</string>".to_string());
-    lines.push(format!("      <string>{}</string>", inner_cmd));
+    lines.push(format!("      <string>{inner_cmd}</string>"));
 
     lines.push("    </array>".to_string());
 
@@ -460,7 +465,7 @@ fn build_exec_command(ctx: &ServiceInstallCtx) -> String {
     // Wrap in a login shell to source the user's profile and get full environment
     // (PATH, custom env vars, etc.) even when started by systemd
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    format!("{} -l -c '{}'", shell, inner_cmd)
+    format!("{shell} -l -c '{inner_cmd}'")
 }
 
 fn command_parts(ctx: &ServiceInstallCtx) -> Vec<String> {

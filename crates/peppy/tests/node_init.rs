@@ -98,9 +98,8 @@ fn node_cargo_init_command_success() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains(&format!("Successfully created node '{}'", node_name)),
-        "logs should contain success message. Logs:\n{}",
-        logs
+        logs.contains(&format!("Successfully created node '{node_name}'")),
+        "logs should contain success message. Logs:\n{logs}"
     );
 }
 
@@ -297,8 +296,7 @@ fn node_uv_init_command_success() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains(&format!("Successfully created node '{}'", node_name)),
-        "logs should contain success message. Logs:\n{}",
-        logs
+        logs.contains(&format!("Successfully created node '{node_name}'")),
+        "logs should contain success message. Logs:\n{logs}"
     );
 }

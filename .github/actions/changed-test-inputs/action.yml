@@ -34,6 +34,12 @@ outputs:
   cross_check:
     description: Whether the inputs of the cross-compilation check changed.
     value: ${{ steps.detect.outputs.cross_check }}
+  lint:
+    description: >-
+      Whether the inputs of the lint of the two workspaces changed: a crate of
+      the `peppy` workspace or of the `peppy-shared` workspace, what either
+      resolves itself from, or its clippy configuration.
+    value: ${{ steps.detect.outputs.lint }}
   scripts:
     description: Whether the mocked release scripts suite's inputs changed.
     value: ${{ steps.detect.outputs.scripts }}

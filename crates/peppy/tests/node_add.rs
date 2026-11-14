@@ -59,9 +59,8 @@ fn node_add_command_succeeds() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains(&format!("Added node {}:", node_name)),
-        "logs should contain success message for adding node. Logs:\n{}",
-        logs
+        logs.contains(&format!("Added node {node_name}:")),
+        "logs should contain success message for adding node. Logs:\n{logs}"
     );
 
     // A first-time `node add` runs a `NodeInfoRequest` preflight to look for
@@ -70,8 +69,7 @@ fn node_add_command_succeeds() {
     // service-handler error log.
     assert!(
         !logs.contains("service handler returned error"),
-        "first-time node add should not emit a service-handler error log. Logs:\n{}",
-        logs
+        "first-time node add should not emit a service-handler error log. Logs:\n{logs}"
     );
 
     let messenger_handle = node_ctx
@@ -164,14 +162,12 @@ fn node_add_command_with_run_arg_succeeds() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains(&format!("Added node {}:", node_name)),
-        "logs should contain success message for adding node. Logs:\n{}",
-        logs
+        logs.contains(&format!("Added node {node_name}:")),
+        "logs should contain success message for adding node. Logs:\n{logs}"
     );
     assert!(
         logs.contains("Started node instance"),
-        "logs should contain success message for starting node instance. Logs:\n{}",
-        logs
+        "logs should contain success message for starting node instance. Logs:\n{logs}"
     );
 
     let messenger_handle = node_ctx
@@ -238,8 +234,7 @@ fn node_add_after_failed_sync_succeeds() {
     assert!(
         error_message.contains("(precondition_failed)")
             && error_message.contains("git hash mismatch"),
-        "error should be a precondition_failed git hash mismatch, got: {}",
-        error_message
+        "error should be a precondition_failed git hash mismatch, got: {error_message}"
     );
 
     // 4. Run `node sync` on that node to update the `.peppy/git.hash` of the node
@@ -262,9 +257,8 @@ fn node_add_after_failed_sync_succeeds() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains(&format!("Added node {}:", node_name)),
-        "logs should contain success message for adding node. Logs:\n{}",
-        logs
+        logs.contains(&format!("Added node {node_name}:")),
+        "logs should contain success message for adding node. Logs:\n{logs}"
     );
 
     let messenger_handle = node_ctx
@@ -385,7 +379,11 @@ fn node_add_same_node_shutdown_existing_instances() {
     let node_before = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the node after first add. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            graph
+                .nodes
+                .iter()
+                .map(core_node_api::SerializedNode::label)
+                .collect::<Vec<_>>()
         )
     });
     assert_eq!(
@@ -429,7 +427,11 @@ fn node_add_same_node_shutdown_existing_instances() {
     let node_after = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the node after re-add. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            graph
+                .nodes
+                .iter()
+                .map(core_node_api::SerializedNode::label)
+                .collect::<Vec<_>>()
         )
     });
     assert_eq!(
@@ -440,9 +442,8 @@ fn node_add_same_node_shutdown_existing_instances() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains(&format!("Added node {}:", node_name)),
-        "logs should contain success message for adding node. Logs:\n{}",
-        logs
+        logs.contains(&format!("Added node {node_name}:")),
+        "logs should contain success message for adding node. Logs:\n{logs}"
     );
 }
 #[test]
@@ -542,7 +543,11 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     let node_before = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the node after first add. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            graph
+                .nodes
+                .iter()
+                .map(core_node_api::SerializedNode::label)
+                .collect::<Vec<_>>()
         )
     });
     assert_eq!(
@@ -565,7 +570,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
                 flags: true,
             },
             force: false,
-            confirm_reader: Some(Box::new(std::io::Cursor::new(b"n\n" as &[u8]))),
+            confirm_reader: Some(Box::new(std::io::Cursor::new(b"n\n".as_slice()))),
             sync: false,
             chain_build: true,
         },
@@ -638,7 +643,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
                 flags: true,
             },
             force: false,
-            confirm_reader: Some(Box::new(std::io::Cursor::new(b"n\n" as &[u8]))),
+            confirm_reader: Some(Box::new(std::io::Cursor::new(b"n\n".as_slice()))),
             sync: false,
             chain_build: true,
         },
@@ -651,7 +656,11 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     let node_after = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the node after git re-add. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            graph
+                .nodes
+                .iter()
+                .map(core_node_api::SerializedNode::label)
+                .collect::<Vec<_>>()
         )
     });
     assert_eq!(
@@ -734,15 +743,13 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
     //    current peppy.json5 (i.e. --sync really ran a sync)
     let logs = log_capture.logs();
     assert!(
-        logs.contains(&format!("Added node {}:", node_name)),
-        "logs should contain success message. Logs:\n{}",
-        logs
+        logs.contains(&format!("Added node {node_name}:")),
+        "logs should contain success message. Logs:\n{logs}"
     );
     // The sync log line should also appear, proving --sync fired
     assert!(
         logs.contains("Synced node interfaces at"),
-        "logs should show sync ran. Logs:\n{}",
-        logs
+        "logs should show sync ran. Logs:\n{logs}"
     );
 
     let fingerprint_path = node_path
@@ -808,8 +815,7 @@ fn node_add_with_sync_flag_rejects_remote_source() {
     .to_string();
     assert!(
         err.contains("--sync is only valid for local node sources"),
-        "error should mention local-source restriction, got: {}",
-        err
+        "error should mention local-source restriction, got: {err}"
     );
 }
 
@@ -965,7 +971,7 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
 }
 
 /// Positive control: `peppy node add -r --link KEY@VALUE` (where KEY is a
-/// declared link_id and VALUE is the producer's instance_id) is the
+/// declared `link_id` and VALUE is the producer's `instance_id`) is the
 /// supported path. The same producer/consumer scaffolding as the
 /// rejection test above, but with the binding supplied; the consumer
 /// must launch cleanly.
@@ -1426,7 +1432,6 @@ fn node_add_build_force_supersedes_inflight_build() {
     // `peppy node build` uses.
     let first_build = {
         let messenger = serve.command_line_handle();
-        let core_node_name = core_node_name.clone();
         let node_name = node_name.to_string();
         rt.spawn(async move {
             peppy::commands::node::build_node_async(
@@ -1449,10 +1454,7 @@ fn node_add_build_force_supersedes_inflight_build() {
     // goal and spawned build_cmd, so polling for it is race-free.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
-        if std::fs::read_to_string(&pid_file)
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false)
-        {
+        if std::fs::read_to_string(&pid_file).is_ok_and(|s| !s.trim().is_empty()) {
             break;
         }
         assert!(
@@ -1594,12 +1596,20 @@ fn node_add_resolves_absent_optional_dependency_through_the_repo_cache() {
     assert!(
         graph.find_node(consumer_name, "v1").is_some(),
         "the consumer should be in the stack. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
     assert!(
         graph.find_node(recorder_name, "v1").is_none(),
         "a local add carries no closure, so the cache-resolved dependency stays out of the stack. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 }
 

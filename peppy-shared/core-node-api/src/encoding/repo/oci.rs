@@ -524,6 +524,7 @@ impl<'de> serde::Deserialize<'de> for OciDigest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn version(text: &str) -> ArtifactVersion {
         ArtifactVersion::parse(text).expect("valid version")
@@ -600,10 +601,10 @@ mod tests {
             );
         }
         let url = "oci://ghcr.io/acme//nodes";
-        assert!(matches!(
+        assert_matches!(
             OciRepository::parse(url),
             Err(OciRepositoryError::InvalidPathComponent { .. })
-        ));
+        );
     }
 
     #[test]
@@ -656,7 +657,7 @@ mod tests {
     #[test]
     fn a_repository_name_above_the_registry_limit_is_refused() {
         let path = "a".repeat(MAX_REPOSITORY_NAME_LENGTH - "ghcr.io/".len());
-        assert!(OciRepository::parse(&format!("oci://ghcr.io/{path}")).is_ok());
+        OciRepository::parse(&format!("oci://ghcr.io/{path}")).unwrap();
         let url = format!("oci://ghcr.io/{path}a");
         assert_eq!(
             OciRepository::parse(&url),
@@ -674,7 +675,7 @@ mod tests {
         assert_eq!(json, "\"oci://ghcr.io/acme/nodes\"");
         let back: OciRepository = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, repository);
-        assert!(serde_json::from_str::<OciRepository>("\"https://ghcr.io/x\"").is_err());
+        serde_json::from_str::<OciRepository>("\"https://ghcr.io/x\"").unwrap_err();
     }
 
     // -----------------------------------------------------------------------
@@ -823,8 +824,8 @@ mod tests {
 
     #[test]
     fn versions_hold_only_tag_characters() {
-        assert!(ArtifactVersion::parse("v0.36.0").is_ok());
-        assert!(ArtifactVersion::parse("dev-5b706c5a0f1e").is_ok());
+        ArtifactVersion::parse("v0.36.0").unwrap();
+        ArtifactVersion::parse("dev-5b706c5a0f1e").unwrap();
         assert_eq!(ArtifactVersion::parse(""), Err(ArtifactVersionError::Empty));
         for raw in ["v1+build", "v1/2", "v 1"] {
             assert_eq!(
@@ -852,7 +853,7 @@ mod tests {
             digest
         );
         for raw in [
-            "".to_owned(),
+            String::new(),
             "a".repeat(64),
             format!("sha512:{}", "a".repeat(64)),
             format!("sha256:{}", "a".repeat(63)),

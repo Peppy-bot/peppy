@@ -301,6 +301,7 @@ impl IssuedMaterial {
 
 /// Everything `enroll` writes: the private key this machine made, and what the
 /// platform issued for it.
+#[derive(Debug)]
 pub struct EnrollmentBundle {
     pub peer_key_pem: SecretString,
     pub issued: IssuedMaterial,
@@ -603,13 +604,14 @@ mod tests {
         let cases: [(&str, Change); 4] = [
             ("peer id", |answer| answer.peer.id = "peer-2".into()),
             ("zenoh id", |answer| {
-                answer.zenoh_id = RouterId::parse("7f3a9c1e").unwrap()
+                answer.zenoh_id = RouterId::parse("7f3a9c1e").unwrap();
             }),
             ("namespace", |answer| {
-                answer.namespace = Namespace::parse("11111111-e29b-41d4-a716-446655440000").unwrap()
+                answer.namespace =
+                    Namespace::parse("11111111-e29b-41d4-a716-446655440000").unwrap();
             }),
             ("router address", |answer| {
-                answer.address = RouterEndpoint::parse("rtr-other.example", 7447).unwrap()
+                answer.address = RouterEndpoint::parse("rtr-other.example", 7447).unwrap();
             }),
         ];
         for (member, change) in cases {
@@ -897,8 +899,8 @@ mod tests {
 
     #[test]
     fn router_endpoints_are_validated_on_read() {
-        assert!(RouterEndpoint::parse("", 7447).is_err());
-        assert!(serde_json::from_str::<RouterEndpoint>(r#"{"host":"","port":1}"#).is_err());
+        RouterEndpoint::parse("", 7447).unwrap_err();
+        serde_json::from_str::<RouterEndpoint>(r#"{"host":"","port":1}"#).unwrap_err();
         let endpoint: RouterEndpoint =
             serde_json::from_str(r#"{"host":"rtr.example","port":7447}"#).unwrap();
         assert_eq!(endpoint.locator(), "tls/rtr.example:7447");

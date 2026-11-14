@@ -87,8 +87,7 @@ async fn listen_for_node_stop_success() {
     // Verify the process is running before we try to stop it
     assert!(
         is_process_running(pid),
-        "process {} should be running before stop",
-        pid
+        "process {pid} should be running before stop"
     );
 
     // Simulate the target node exposing the shutdown service.
@@ -153,8 +152,7 @@ async fn listen_for_node_stop_success() {
     // Verify the process has been killed
     assert!(
         !is_process_running(pid),
-        "process {} should no longer be running after successful stop",
-        pid
+        "process {pid} should no longer be running after successful stop"
     );
 
     assert!(
@@ -627,7 +625,7 @@ async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
         .expect("local node_stop listener should start");
         AbortOnDrop(peppylib::runtime::spawn(async move {
             endpoint
-                .handle_requests(|_context| async move {
+                .handle_requests(async |_context| {
                     Ok(NodeStopResponse::graceful()
                         .encode()
                         .expect("a node_stop response encodes"))
@@ -792,7 +790,6 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
             .lines()
             .any(|line| line.contains(TARGET_INSTANCE_ID) && line.contains("failed")),
         "an explicit stop must never be recorded as a crash, got:
-{}",
-        log_content
+{log_content}"
     );
 }

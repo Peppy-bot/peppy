@@ -23,6 +23,7 @@ from functions.lima import (
     SO_BUILD_STATE_MARKER,
     cargo_build_in_lima,
     ensure_lima_vm,
+    ensure_rust_in_vm,
     find_limactl,
     require_prebuilt_peppylib_so,
     stop_lima_vm,
@@ -242,6 +243,145 @@ def test_ensure_lima_vm_create_failure_raises(tmp_path: Path) -> None:
         ]
         with pytest.raises(ReleaseError, match="failed to create Lima VM"):
             ensure_lima_vm(limactl)
+
+
+def _checkout_that_needs_rust(tmp_path: Path, rust_version: str) -> Path:
+    """A checkout under *tmp_path* whose workspace declares *rust_version*."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "Cargo.toml").write_text(
+        f'[workspace.package]\nrust-version = "{rust_version}"\n'
+    )
+    return repo_root
+
+
+def _rustc_version_output(release: str) -> MagicMock:
+    """What the VM answers to `rustc --version` when its Rust is *release*."""
+    return MagicMock(returncode=0, stdout=f"rustc {release} (0123456789 2026-01-01)\n")
+
+
+def _ensure_rust_in_vm(
+    tmp_path: Path,
+    *,
+    needed: str,
+    answers: list[MagicMock],
+    shell_returncode: int = 0,
+) -> tuple[MagicMock, MagicMock]:
+    """Run ensure_rust_in_vm for a checkout that needs the Rust *needed*.
+
+    *answers* are what the VM answers, in order, to the commands whose output
+    the setup reads: first whether it has Rust, then each `rustc --version`.
+    The scripts that the setup runs exit with *shell_returncode*. Returns the
+    stub of the commands and the stub of the scripts.
+    """
+    with (
+        patch("functions.lima._ensure_pinned_go_in_vm"),
+        patch("functions.lima._run_limactl") as mock_run,
+        patch("functions.lima._lima_shell") as mock_shell,
+    ):
+        mock_run.side_effect = answers
+        mock_shell.return_value = MagicMock(returncode=shell_returncode)
+        ensure_rust_in_vm(
+            tmp_path / "limactl", _checkout_that_needs_rust(tmp_path, needed)
+        )
+    return mock_run, mock_shell
+
+
+def test_ensure_rust_in_vm_keeps_a_rust_that_the_workspace_accepts(
+    tmp_path: Path,
+) -> None:
+    mock_run, mock_shell = _ensure_rust_in_vm(
+        tmp_path,
+        needed="1.100",
+        answers=[MagicMock(returncode=0), _rustc_version_output("1.100.0")],
+    )
+
+    mock_shell.assert_not_called()
+    version_script = mock_run.call_args_list[1][0][1][-1]
+    assert f"export RUSTUP_HOME={GUEST_RUSTUP_HOME}" in version_script
+    assert f"{GUEST_CARGO_HOME}/bin/rustc --version" in version_script
+
+
+def test_ensure_rust_in_vm_keeps_a_rust_newer_than_the_workspace_needs(
+    tmp_path: Path,
+) -> None:
+    _, mock_shell = _ensure_rust_in_vm(
+        tmp_path,
+        needed="1.100",
+        answers=[MagicMock(returncode=0), _rustc_version_output("1.101.2")],
+    )
+
+    mock_shell.assert_not_called()
+
+
+def test_ensure_rust_in_vm_updates_a_rust_older_than_the_workspace_needs(
+    tmp_path: Path,
+) -> None:
+    _, mock_shell = _ensure_rust_in_vm(
+        tmp_path,
+        needed="1.100",
+        answers=[
+            MagicMock(returncode=0),
+            _rustc_version_output("1.99.1"),
+            _rustc_version_output("1.100.0"),
+        ],
+    )
+
+    mock_shell.assert_called_once()
+    update_script = mock_shell.call_args[0][1]
+    assert f"export RUSTUP_HOME={GUEST_RUSTUP_HOME}" in update_script
+    assert f"{GUEST_CARGO_HOME}/bin/rustup update stable" in update_script
+
+
+def test_ensure_rust_in_vm_raises_when_the_update_fails(tmp_path: Path) -> None:
+    with pytest.raises(ReleaseError, match="failed to update Rust in Lima VM"):
+        _ensure_rust_in_vm(
+            tmp_path,
+            needed="1.100",
+            answers=[MagicMock(returncode=0), _rustc_version_output("1.99.1")],
+            shell_returncode=1,
+        )
+
+
+def test_ensure_rust_in_vm_raises_when_the_updated_rust_is_still_too_old(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        ReleaseError, match=r"is 1\.99\.1 after its update.*needs 1\.100\.0"
+    ):
+        _ensure_rust_in_vm(
+            tmp_path,
+            needed="1.100",
+            answers=[
+                MagicMock(returncode=0),
+                _rustc_version_output("1.99.1"),
+                _rustc_version_output("1.99.1"),
+            ],
+        )
+
+
+def test_ensure_rust_in_vm_installs_rust_in_a_vm_without_it(tmp_path: Path) -> None:
+    _, mock_shell = _ensure_rust_in_vm(
+        tmp_path,
+        needed="1.100",
+        answers=[MagicMock(returncode=1), _rustc_version_output("1.100.0")],
+    )
+
+    mock_shell.assert_called_once()
+    install_script = mock_shell.call_args[0][1]
+    assert "https://sh.rustup.rs" in install_script
+    assert "rustup target add x86_64-unknown-linux-gnu" in install_script
+
+
+def test_ensure_rust_in_vm_raises_when_the_vm_names_no_rust_release(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ReleaseError, match="failed to read the Rust release"):
+        _ensure_rust_in_vm(
+            tmp_path,
+            needed="1.100",
+            answers=[MagicMock(returncode=0), MagicMock(returncode=127, stdout="")],
+        )
 
 
 def test_cargo_build_in_lima_constructs_correct_command(tmp_path: Path) -> None:

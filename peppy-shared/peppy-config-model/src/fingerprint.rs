@@ -138,7 +138,7 @@ pub fn create_wrong_codegen_fingerprint(peppy_config_path: &Path, output_path: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::assert_matches;
     use tempfile::TempDir;
 
     #[test]
@@ -219,7 +219,7 @@ mod tests {
 
         // `generate`, `read`, and `verify` all resolve the fingerprint relative
         // to the config's parent, so the same `output_path` feeds every side.
-        let rel_output = std::path::Path::new(crate::consts::PEPPYGEN_OUTPUT_PATH);
+        let rel_output = Path::new(crate::consts::PEPPYGEN_OUTPUT_PATH);
         generate_node_config_fingerprint(&config_path, rel_output)
             .expect("failed to generate fingerprint");
 
@@ -234,8 +234,9 @@ mod tests {
         fs::write(&config_path, "tampered contents").expect("failed to rewrite config");
         let err = verify_codegen_fingerprint(&config_path, rel_output)
             .expect_err("verify should fail after tampering");
-        assert!(
-            matches!(err, crate::error::Error::FingerprintMismatch { .. }),
+        assert_matches!(
+            err,
+            crate::error::Error::FingerprintMismatch { .. },
             "expected FingerprintMismatch, got {err:?}"
         );
     }
@@ -248,8 +249,8 @@ mod tests {
 
         // No fingerprint was ever generated, so the read must fail rather than
         // silently returning an empty/garbage digest.
-        let rel_output = std::path::Path::new(crate::consts::PEPPYGEN_OUTPUT_PATH);
-        assert!(read_codegen_fingerprint(&config_path, rel_output).is_err());
+        let rel_output = Path::new(crate::consts::PEPPYGEN_OUTPUT_PATH);
+        read_codegen_fingerprint(&config_path, rel_output).unwrap_err();
     }
 
     fn prepare_generated_crate(tmp: &TempDir) -> std::path::PathBuf {
@@ -280,7 +281,7 @@ mod tests {
         let upper = fingerprint.as_str().to_ascii_uppercase();
         let parsed = ManifestFingerprint::parse(&format!("  {upper} ")).expect("parses");
         assert_eq!(parsed, fingerprint, "parsing trims and lowercases");
-        assert!(parsed == fingerprint.as_str());
+        assert_eq!(parsed, fingerprint.as_str());
         assert_eq!(parsed.to_string(), fingerprint.as_str());
     }
 

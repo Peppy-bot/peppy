@@ -99,7 +99,7 @@ impl LogExport {
         };
         let discard_log = setup.discard_log;
         let worker = ExportWorker::new(setup.receiver, setup.transport, config, move |count| {
-            discard_log.record(count)
+            discard_log.record(count);
         });
         RunningLogExport {
             worker: Some(tokio::spawn(worker.run(shutdown.clone()))),
@@ -271,7 +271,7 @@ mod tests {
         receiver.answer_with(200);
         let mut delivered: Vec<ReceivedRecord> = Vec::new();
         while !delivered.iter().any(|record| record.body == discard_report) {
-            let request = tokio::time::timeout(Duration::from_secs(120), receiver.next_request())
+            let request = tokio::time::timeout(Duration::from_mins(2), receiver.next_request())
                 .await
                 .expect("the export resumes");
             if request.answered == 200 {

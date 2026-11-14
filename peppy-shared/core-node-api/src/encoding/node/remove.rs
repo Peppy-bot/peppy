@@ -27,11 +27,13 @@ impl NodeRemoveRequest {
         }
     }
 
+    #[must_use]
     pub fn with_stop_instances(mut self, stop_instances: bool) -> Self {
         self.stop_instances = stop_instances;
         self
     }
 
+    #[must_use]
     pub fn with_launch_id(mut self, launch_id: impl Into<String>) -> Self {
         self.launch_id = Some(launch_id.into());
         self
@@ -40,7 +42,7 @@ impl NodeRemoveRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<node_capnp::node_remove_request::Builder>();
+            let mut request = builder.init_root::<node_capnp::node_remove_request::Builder<'_>>();
             request.set_node_name(&self.node_name);
             request.set_stop_instances(self.stop_instances);
             request.set_tag(&self.tag);
@@ -53,7 +55,7 @@ impl NodeRemoveRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<node_capnp::node_remove_request::Reader>()?;
+        let request = reader.get_root::<node_capnp::node_remove_request::Reader<'_>>()?;
         Ok(Self {
             node_name: request.get_node_name()?.to_str()?.to_owned(),
             tag: request.get_tag()?.to_str()?.to_owned(),
@@ -81,7 +83,7 @@ impl NodeRemoveResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_remove_response::Builder>();
+            let mut response = builder.init_root::<node_capnp::node_remove_response::Builder<'_>>();
             let force_killed = response.reborrow().init_force_killed(capnp_list_len(
                 self.force_killed.len(),
                 "NodeRemoveResponse.force_killed",
@@ -93,7 +95,7 @@ impl NodeRemoveResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_remove_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::node_remove_response::Reader<'_>>()?;
         Ok(Self {
             force_killed: read_text_list(response.get_force_killed()?)?,
         })
@@ -101,11 +103,11 @@ impl NodeRemoveResponse {
 }
 
 impl crate::encoding::Wire for NodeRemoveRequest {
-    type Root = crate::node_capnp::node_remove_request::Owned;
+    type Root = node_capnp::node_remove_request::Owned;
 }
 
 impl crate::encoding::Wire for NodeRemoveResponse {
-    type Root = crate::node_capnp::node_remove_response::Owned;
+    type Root = node_capnp::node_remove_response::Owned;
 }
 
 #[cfg(test)]

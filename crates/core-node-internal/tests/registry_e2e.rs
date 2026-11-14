@@ -34,6 +34,7 @@ mod registry_e2e_tests {
     };
     use oci_registry::test_support::{LocalRegistry, RegistryAuth};
     use oci_registry::{Access, CredentialStore, RegistryClient};
+    use std::assert_matches;
     use std::fmt::Display;
     use std::ops::ControlFlow;
     use std::path::{Path, PathBuf};
@@ -42,7 +43,7 @@ mod registry_e2e_tests {
     const REPOSITORY_PATH: &str = "acme/peppy-nodes";
 
     /// How long a container build or a pull of a test may take.
-    const BUILD_TIMEOUT: Duration = Duration::from_secs(900);
+    const BUILD_TIMEOUT: Duration = Duration::from_mins(15);
 
     /// The version of the artifacts of this peppy.
     fn version() -> ArtifactVersion {
@@ -353,7 +354,7 @@ mod registry_e2e_tests {
         let registry = LocalRegistry::start(RegistryAuth::Anonymous);
         let publisher = start_core_node_publishing_to(
             repository(&registry),
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             setup_budget(60),
         )
         .await;
@@ -416,11 +417,9 @@ mod registry_e2e_tests {
             again.artifact_path, None,
             "a platform published already builds nothing"
         );
-        assert!(
-            matches!(
-                again.published[0].outcome,
-                PublishOutcome::AlreadyPublished { .. }
-            ),
+        assert_matches!(
+            again.published[0].outcome,
+            PublishOutcome::AlreadyPublished { .. },
             "{again:?}"
         );
 
@@ -438,7 +437,7 @@ mod registry_e2e_tests {
 
         let puller = start_core_node_publishing_to(
             repository(&registry),
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             setup_budget(60),
         )
         .await;
@@ -656,8 +655,7 @@ mod registry_e2e_tests {
         assert!(message.contains("tampered.v1."), "{message}");
         let stored = started.peppy_dirs.built_node_dir("tampered", "v1");
         let left: Vec<_> = std::fs::read_dir(&stored)
-            .map(|entries| entries.flatten().map(|entry| entry.file_name()).collect())
-            .unwrap_or_default();
+            .map_or_default(|entries| entries.flatten().map(|entry| entry.file_name()).collect());
         assert!(left.is_empty(), "nothing is stored: {left:?}");
     }
 
@@ -722,7 +720,7 @@ mod registry_e2e_tests {
         .await;
         let started = start_core_node_publishing_to(
             repository(&registry),
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             setup_budget(60),
         )
         .await;

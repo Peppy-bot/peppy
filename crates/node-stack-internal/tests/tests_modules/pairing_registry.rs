@@ -2,6 +2,7 @@
 //! exclusivity, clear, dissolve-on-death, reset, the serialized-graph
 //! overlay, and the DAG-invisibility of `depends_on.pairings`.
 
+use std::assert_matches;
 use std::path::PathBuf;
 
 use config::runtime::{Name, PairedPeer};
@@ -124,8 +125,9 @@ async fn pair_clear_repair_lifecycle() {
 
     // The pair held is refused a second time.
     let err = stack.pair_slots(&ctrl_slot, &arm_slot).unwrap_err();
-    assert!(
-        matches!(err, NodeStackError::PairAlreadyHeld { .. }),
+    assert_matches!(
+        err,
+        NodeStackError::PairAlreadyHeld { .. },
         "expected PairAlreadyHeld, got {err:?}"
     );
 
@@ -140,8 +142,7 @@ async fn pair_clear_repair_lifecycle() {
     .await;
     let other_ctrl_slot = SlotAddr::new(TEST_CORE_NODE, "ctrl_2", "arm");
     let err = stack.pair_slots(&other_ctrl_slot, &arm_slot).unwrap_err();
-    assert!(
-        matches!(err, NodeStackError::PairingSlotAlreadyPaired { ref peer, .. } if peer.contains("ctrl_1")),
+    assert_matches!(&err, NodeStackError::PairingSlotAlreadyPaired { peer, .. } if peer.contains("ctrl_1"),
         "expected PairingSlotAlreadyPaired naming ctrl_1, got {err:?}"
     );
 
@@ -169,8 +170,7 @@ async fn pair_slots_validation_matrix() {
             &SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller"),
         )
         .unwrap_err();
-    assert!(
-        matches!(err, NodeStackError::PairingInstanceNotInStack { ref instance_id } if instance_id == "ghost"),
+    assert_matches!(&err, NodeStackError::PairingInstanceNotInStack { instance_id } if instance_id == "ghost",
         "expected PairingInstanceNotInStack, got {err:?}"
     );
 
@@ -181,8 +181,7 @@ async fn pair_slots_validation_matrix() {
             &SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller"),
         )
         .unwrap_err();
-    assert!(
-        matches!(err, NodeStackError::PairingSlotNotFound { ref link_id, .. } if link_id == "ghost_slot"),
+    assert_matches!(&err, NodeStackError::PairingSlotNotFound { link_id, .. } if link_id == "ghost_slot",
         "expected PairingSlotNotFound, got {err:?}"
     );
 
@@ -201,8 +200,7 @@ async fn pair_slots_validation_matrix() {
             &SlotAddr::new(TEST_CORE_NODE, "ctrl_2", "arm"),
         )
         .unwrap_err();
-    assert!(
-        matches!(err, NodeStackError::PairingRolesNotComplementary { ref role, .. } if role == "controller"),
+    assert_matches!(&err, NodeStackError::PairingRolesNotComplementary { role, .. } if role == "controller",
         "expected PairingRolesNotComplementary, got {err:?}"
     );
 }
@@ -304,7 +302,7 @@ async fn reading_pairs_for_notification_does_not_prune_the_dissolution_away() {
     ));
 
     assert_eq!(
-        stack.with_pairs(|pairs| pairs.len()),
+        stack.with_pairs(<[node_stack::Pairing]>::len),
         1,
         "the notification path must still see the pair of an instance that is already gone"
     );

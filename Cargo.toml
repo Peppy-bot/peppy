@@ -20,10 +20,10 @@ default-members = ["crates/*"]
 version = "0.0.1"
 authors = ["Tuatini Godard <tuatini@peppy.bot>"]
 edition = "2024"
+# The oldest compiler that builds the workspace. The code uses the language
+# and the standard library of this release.
+rust-version = "1.100"
 
-# Optionally share common dependency versions across members (requires newer Cargo).
-# This helps keep versions in sync without repeating them in each member's Cargo.toml.
-# Uncomment and adapt as needed.
 [workspace.dependencies]
 parking_lot = "0.13"
 # The regex engine `repo search` compiles its query patterns with.
@@ -76,12 +76,107 @@ oci-registry = { path = "crates/oci-registry-internal" }
 peppylib-build-policy = { path = "crates/peppylib-build-policy" }
 stack-goal = { path = "crates/stack-goal-internal" }
 
-# Optionally define workspace-wide lints or profiles.
-# [workspace.lints.rust]
-# unused_extern_crates = "deny"
+# The Rust practices that the code keeps to. Every member inherits these tables.
+[workspace.lints.rust]
+# The idiom lints of the 2018 edition, which include
+# `elided_lifetimes_in_paths`: a type that borrows shows its lifetime.
+rust_2018_idioms = { level = "warn", priority = -1 }
+# A closure whose body is one async block is an async closure.
+closure_returning_async_block = "warn"
+# An `impl Trait` in return position captures every lifetime in scope.
+impl_trait_redundant_captures = "warn"
+# The prelude and a glob import bring a name in once, and a path names an item
+# by the shortest form that the imports of its scope allow.
+redundant_imports = "warn"
+unused_qualifications = "warn"
+# `pub` marks an item that the crate exports. An item that the crate keeps to
+# itself is `pub(crate)` or narrower.
+unreachable_pub = "warn"
+# A type that the crate exports implements `Debug`, so a log line and a failed
+# assertion can show it.
+missing_debug_implementations = "warn"
+# A cast is written only where it changes the type.
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+# A lifetime has a name only where two places must agree on it.
+redundant_lifetimes = "warn"
+single_use_lifetimes = "warn"
+unused_lifetimes = "warn"
+# An import list of one name has no braces, each rule of a macro has a use,
+# and a macro comes in through a `use`.
+macro_use_extern_crate = "warn"
+unused_import_braces = "warn"
+unused_macro_rules = "warn"
 
-# [workspace.profile.dev]
-# opt-level = 1
+[workspace.lints.clippy]
+# The pedantic group: conversions that cannot lose a value without a word,
+# patterns that name what they match, method references, borrowed parameters,
+# early returns. The lints of the group that are set to "allow" below are the
+# ones that the code does not keep to.
+pedantic = { level = "warn", priority = -1 }
+# `#[must_use]` is for a function whose ignored result is a defect, not for
+# each function that returns a value.
+must_use_candidate = "allow"
+# The docs say when a function fails in the words of its error type. They have
+# no `# Errors` and no `# Panics` heading.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# A count of lines, and two names that look alike, are not defects.
+similar_names = "allow"
+too_many_lines = "allow"
+# An item that one statement uses is declared next to that statement.
+items_after_statements = "allow"
+# `assert!(x.is_empty())` stays: the replacement compares with a typed empty
+# array.
+assert_is_empty = "allow"
+# An `async fn` of a trait implementation stays `async` when its body does not
+# wait: its signature is the one of the trait.
+unused_async_trait_impl = "allow"
+# A field takes the default of its type through `Default::default()`.
+default_trait_access = "allow"
+# Short strings are joined with `map` and `collect`.
+format_collect = "allow"
+
+# A lint is expected, with its reason, so an attribute that silences nothing
+# is reported. An inner `#![allow]` stays for code that a tool writes and for
+# the helpers that test binaries share.
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+# `Self` names the type of an impl block, and `Arc::clone(&x)` shows that a
+# clone copies a pointer. A value that has no later use moves.
+clone_on_ref_ptr = "warn"
+redundant_clone = "warn"
+use_self = "warn"
+# A cast names its target type, and a type that can be `Eq` derives it.
+as_underscore = "warn"
+derive_partial_eq_without_eq = "warn"
+# A pattern binds by reference through the match ergonomics, names the fields
+# it skips with `..`, and compares with `==` where it binds nothing.
+equatable_if_let = "warn"
+ref_patterns = "warn"
+unneeded_field_pattern = "warn"
+# An `Option` chain that ends a function returns early with `?`, and a
+# condition that picks `Some` or `None` is `bool::then`.
+if_then_some_else_none = "warn"
+return_and_then = "warn"
+# A test unwraps the result it expects, so a failure shows the other variant.
+# A discarded result is `let _ =`, and an index is `[i]`, not `get(i).unwrap()`.
+assertions_on_result_states = "warn"
+get_unwrap = "warn"
+unused_result_ok = "warn"
+# An empty struct or variant has no brackets, the module file of a directory
+# sits beside the directory, and an import list has no lone `self`.
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+mod_module_files = "warn"
+unnecessary_self_imports = "warn"
+# An unsafe block says why it is sound, and only an unsafe block says so.
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
+# Nothing that a debug session leaves behind.
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
 
 [profile.release]
 lto = "thin"

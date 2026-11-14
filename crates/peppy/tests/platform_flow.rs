@@ -329,6 +329,9 @@ fn write_state(dir: &tempfile::TempDir, state: &DaemonState) {
     DaemonState::write_to(&path, state).expect("write daemon state");
 }
 
+/// What a test writes under the data root before the command runs.
+type WriteState = fn(&tempfile::TempDir);
+
 /// Writes the state of a daemon that died under `dir`: a pid outside the
 /// valid range names no live process.
 fn write_dead_daemon_state(dir: &tempfile::TempDir) {
@@ -805,13 +808,14 @@ fn login_with_nobody_to_ask_keeps_the_session_and_names_enroll() {
 /// the device flow starts, so the person never approves a code for nothing.
 #[test]
 fn login_without_a_running_daemon_fails_before_the_device_flow() {
-    for (write_state, what) in [
+    let cases: [(Option<WriteState>, &str); 2] = [
         (None, "no state file"),
         (
-            Some(write_dead_daemon_state as fn(&tempfile::TempDir)),
+            Some(write_dead_daemon_state),
             "the state of a daemon that died",
         ),
-    ] {
+    ];
+    for (write_state, what) in cases {
         let server = MockServer::start();
         let device_authorization = mock_login_endpoints(&server, "unused-token");
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1698,13 +1702,14 @@ fn enroll_writes_the_bundle_and_waits_for_the_daemon_to_restart() {
 /// refreshed and nothing is minted.
 #[test]
 fn enroll_without_a_running_daemon_is_refused_before_any_platform_call() {
-    for (write_state, what) in [
+    let cases: [(Option<WriteState>, &str); 2] = [
         (None, "no state file"),
         (
-            Some(write_dead_daemon_state as fn(&tempfile::TempDir)),
+            Some(write_dead_daemon_state),
             "the state of a daemon that died",
         ),
-    ] {
+    ];
+    for (write_state, what) in cases {
         let server = MockServer::start();
         let any_api = server.mock(|when, then| {
             when.path_includes("/");

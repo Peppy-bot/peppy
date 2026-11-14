@@ -1,11 +1,9 @@
 use super::*;
 use crate::test_support::LogCapture;
-use daemon_config::consts::PeppyDirs;
 use peppylib::CoreNodePresenceMessenger;
-use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+use pmi::{MessengerAdapter, MessengerBackend, MockAdapter};
+use std::assert_matches;
 use std::num::NonZeroU32;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 async fn wait_for_log(capture: &LogCapture, needle: &str) {
     let observed = tokio::time::timeout(Duration::from_secs(2), async {
@@ -50,7 +48,7 @@ struct BootedCoreNode {
     core_node: Arc<CoreNode>,
     /// Second handle on the boot messenger, for presence queries.
     presence_handle: MessengerHandle,
-    boot_task: tokio::task::JoinHandle<crate::Result<()>>,
+    boot_task: JoinHandle<Result<()>>,
 }
 
 impl BootedCoreNode {
@@ -65,7 +63,7 @@ impl BootedCoreNode {
         )));
 
         let boot = Arc::clone(&core_node);
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (ready_tx, ready_rx) = oneshot::channel();
         let boot_task = tokio::spawn(async move { boot.start_with_ready(Some(ready_tx)).await });
         tokio::time::timeout(Duration::from_secs(5), ready_rx)
             .await
@@ -115,8 +113,8 @@ fn test_node_arguments() -> CoreNodeArguments {
         // there is no propagation lag for a settle window to cover; the
         // settling behavior has its own dedicated presence tests.
         name_claim_settle: Duration::ZERO,
-        time_source: crate::TimeSource::System,
-        reply_bounds: crate::ReplyBounds::DEFAULT,
+        time_source: TimeSource::System,
+        reply_bounds: ReplyBounds::DEFAULT,
     }
 }
 
@@ -136,7 +134,7 @@ fn test_core_node_config(
         peppy_dirs,
         peppy_config: daemon_config::peppy_config::PeppyConfig::default(),
         namespace: config::namespace::Namespace::local(),
-        shutdown_token: tokio_util::sync::CancellationToken::new(),
+        shutdown_token: CancellationToken::new(),
         log_exporter: log_export::LogExporter::disabled(),
         machine_certificate: None,
     }
@@ -255,7 +253,7 @@ fn derived_name_has_compact_two_word_shape() {
             .any(|segment| { segment.chars().all(|c| c.is_ascii_digit()) })
     );
 
-    assert!(Name::new(name.to_string()).is_ok());
+    Name::new(name.to_string()).unwrap();
 }
 
 /// A second `start_with_ready` on the same instance is rejected rather than
@@ -275,7 +273,7 @@ async fn start_with_ready_rejects_a_second_start() {
     // the session closes. The ready signal is a deterministic barrier: once it
     // fires, the `started` flag is set.
     let first = Arc::clone(&core_node);
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let (ready_tx, ready_rx) = oneshot::channel();
     let first_task = tokio::spawn(async move { first.start_with_ready(Some(ready_tx)).await });
     ready_rx
         .await
@@ -285,7 +283,7 @@ async fn start_with_ready_rejects_a_second_start() {
         .start_with_ready(None)
         .await
         .expect_err("a second start must be rejected");
-    assert!(matches!(err, crate::Error::AlreadyStarted));
+    assert_matches!(err, crate::Error::AlreadyStarted);
 
     first_task.abort();
 }
@@ -322,8 +320,7 @@ async fn start_refuses_to_boot_when_name_already_claimed() {
         .start_with_ready(None)
         .await
         .expect_err("boot must refuse while the name is claimed");
-    assert!(
-        matches!(err, crate::Error::CoreNodeNameTaken { ref name } if name == "collision_node"),
+    assert_matches!(&err, crate::Error::CoreNodeNameTaken { name } if name == "collision_node",
         "expected CoreNodeNameTaken for `collision_node`, got: {err}"
     );
     assert!(
@@ -371,8 +368,8 @@ async fn simultaneous_daemons_with_same_derived_name_allow_exactly_one_claim() {
     assert_eq!(second.node_name(), core_node_name);
 
     let barrier = Arc::new(tokio::sync::Barrier::new(3));
-    let (first_ready_tx, first_ready_rx) = tokio::sync::oneshot::channel();
-    let (second_ready_tx, second_ready_rx) = tokio::sync::oneshot::channel();
+    let (first_ready_tx, first_ready_rx) = oneshot::channel();
+    let (second_ready_tx, second_ready_rx) = oneshot::channel();
     let first_task = {
         let core_node = Arc::clone(&first);
         let barrier = Arc::clone(&barrier);
@@ -420,10 +417,9 @@ async fn simultaneous_daemons_with_same_derived_name_allow_exactly_one_claim() {
         .await
         .expect("losing startup task should not panic")
         .expect_err("losing startup must fail");
-    assert!(matches!(
-        loser_error,
-        crate::Error::CoreNodeNameTaken { ref name } if name == &core_node_name
-    ));
+    assert_matches!(
+        &loser_error,
+        crate::Error::CoreNodeNameTaken { name } if name == &core_node_name);
     winner_task.abort();
 }
 

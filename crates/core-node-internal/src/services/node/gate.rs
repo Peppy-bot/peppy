@@ -42,6 +42,14 @@
 //! only while that generation is still current. A superseded task's release is
 //! thus a safe no-op.
 
+#![cfg_attr(
+    not(any(test, feature = "test-support")),
+    expect(
+        unreachable_pub,
+        reason = "the `test-support` feature exports items of this module"
+    )
+)]
+
 use crate::services::action_loop::GoalEnding;
 use crate::services::response::failure;
 use config::runtime::Name;
@@ -309,11 +317,11 @@ pub enum StackBusy {
 impl std::fmt::Display for StackBusy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            StackBusy::Change => {
+            Self::Change => {
                 "a stack launch, build, join, removal or reset, or a coordinator's change to this \
                  daemon's slice, is in progress on this daemon; run this again once it ends"
             }
-            StackBusy::NodeGoals => {
+            Self::NodeGoals => {
                 "a node add, build, run, stop or removal, or a restart, is in progress on this \
                  daemon; run this again once it ends"
             }
@@ -332,7 +340,7 @@ impl StackBusy {
     /// naming each restart `admitted_restarts` holds the stack for and the
     /// stop that ends it.
     pub(crate) fn refusal(self, admitted_restarts: &[Name], core_node: &str) -> Failure {
-        let StackBusy::NodeGoals = self else {
+        let Self::NodeGoals = self else {
             return self.failure();
         };
         let text = admitted_restarts
@@ -387,6 +395,7 @@ pub struct StackState {
 /// it clears the copy change it reported, so `stack list` never reports the
 /// change of a hold that ended.
 #[must_use = "the stack is free again once the hold is dropped"]
+#[derive(Debug)]
 pub struct StackHold {
     copy_change: Arc<Mutex<Option<CopyChange>>>,
     _write: tokio::sync::OwnedRwLockWriteGuard<()>,
@@ -415,7 +424,7 @@ impl StackState {
     /// Takes the stack for one change, refusing while a change or a node
     /// goal holds it.
     pub fn try_begin_change(&self) -> Result<StackHold, StackBusy> {
-        let write = self.mutation.clone().try_write_owned().map_err(|_| {
+        let write = Arc::clone(&self.mutation).try_write_owned().map_err(|_| {
             // Node goals share the stack, so a read admitted now says they
             // hold it; another change holds it alone.
             if self.mutation.try_read().is_ok() {
@@ -441,21 +450,20 @@ impl StackState {
     pub(crate) fn try_admit_node_goal(
         &self,
     ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, StackBusy> {
-        self.mutation
-            .clone()
+        Arc::clone(&self.mutation)
             .try_read_owned()
             .map_err(|_| StackBusy::Change)
     }
 
     /// Admits one node goal once the change holding the stack ends.
     pub(crate) async fn admit_node_goal_waiting(&self) -> tokio::sync::OwnedRwLockReadGuard<()> {
-        self.mutation.clone().read_owned().await
+        Arc::clone(&self.mutation).read_owned().await
     }
 
     /// Cancels admitted work and drains its guards before the stack is cleared.
     pub(crate) async fn begin_reset(&self) -> tokio::sync::OwnedRwLockWriteGuard<()> {
         self.cancellation.lock().cancel();
-        let guard = self.mutation.clone().write_owned().await;
+        let guard = Arc::clone(&self.mutation).write_owned().await;
         *self.cancellation.lock() = CancellationToken::new();
         guard
     }
@@ -472,12 +480,12 @@ pub(crate) async fn finish_on_reset<F, T>(
     failure: impl FnOnce() -> T,
 ) -> T
 where
-    F: std::future::Future<Output = T>,
+    F: Future<Output = T>,
 {
-    tokio::pin!(work);
+    let mut work = std::pin::pin!(work);
     tokio::select! {
         biased;
-        _ = cancellation.cancelled() => {
+        () = cancellation.cancelled() => {
             let _ = tokio::time::timeout(budget, work.as_mut()).await;
             failure()
         }
@@ -638,7 +646,7 @@ mod tests {
                     let _ = released.await;
                 })
             };
-            let reset_state = state.clone();
+            let reset_state = Arc::clone(&state);
             let reset = tokio::spawn(async move { reset_state.begin_reset().await });
             cancellation.cancelled().await;
             assert!(!reset.is_finished(), "reset must drain the admitted worker");
@@ -681,7 +689,7 @@ mod tests {
         assert_eq!(state.try_admit_node_goal().err(), Some(StackBusy::Change));
         assert_eq!(state.try_begin_change().err(), Some(StackBusy::Change));
         drop(change);
-        assert!(state.try_begin_change().is_ok());
+        let _ = state.try_begin_change().unwrap();
     }
 
     /// The hold of a join or a removal reports its copy change until the
@@ -710,7 +718,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let work_cancel = cancellation.clone();
         let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let worker_cleaned = cleaned.clone();
+        let worker_cleaned = Arc::clone(&cleaned);
         let work = async move {
             work_cancel.cancelled().await;
             worker_cleaned.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -733,7 +741,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let work_cancel = cancellation.clone();
         let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let worker_cleaned = cleaned.clone();
+        let worker_cleaned = Arc::clone(&cleaned);
         let work = async move {
             work_cancel.cancelled().await;
             tokio::time::sleep(stop).await;

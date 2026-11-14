@@ -11,7 +11,7 @@ use quote::quote;
 /// Generates the statements that read one field into a local and returns
 /// them with the local's name. An optional field reads into an `Option`,
 /// guarded by the field's presence check when its wire type has one.
-pub fn generate_field_reader_statements(
+pub(super) fn generate_field_reader_statements(
     reader_expr: &TokenStream,
     field_name: &str,
     schema: &SchemaType,
@@ -64,7 +64,7 @@ pub fn generate_field_reader_statements(
 /// `fn name(payload: &[u8]) -> crate::Result<T> { ... }`.
 ///
 /// `context_expr` must evaluate to `String` at runtime (e.g. `format!(...)`).
-pub fn build_deserialize_fn(
+pub(super) fn build_deserialize_fn(
     fn_name: &Ident,
     reader_type: &TokenStream,
     context_expr: &TokenStream,
@@ -117,7 +117,7 @@ pub fn build_deserialize_fn(
 /// Returns `(field_statements, field_inits)` where:
 /// - `field_statements`: variable binding statements for each deserialized field
 /// - `field_inits`: struct field initializers (`field_name: value_ident`)
-pub fn deserialize_format_fields(
+pub(super) fn deserialize_format_fields(
     format: &MessageFormat,
     struct_prefix: &str,
     context_expr: &TokenStream,

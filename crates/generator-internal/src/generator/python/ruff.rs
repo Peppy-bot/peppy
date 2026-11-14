@@ -1,3 +1,3 @@
 mod facade;
 
-pub use facade::RuffFacade;
+pub(super) use facade::RuffFacade;

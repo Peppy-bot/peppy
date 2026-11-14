@@ -58,7 +58,7 @@ const FRONT_RESPONSE_FORMAT: &str = r#"{ ok: "bool" }"#;
 const REAR_REQUEST_FORMAT: &str = r#"{ enabled: "bool", intensity: "u32" }"#;
 const REAR_RESPONSE_FORMAT: &str = r#"{ status_code: "i32" }"#;
 
-const USER_MAIN: &str = r#"
+const USER_MAIN: &str = r"
 use peppygen::consumed_services::front_cam::enable as front_cam_enable;
 use peppygen::consumed_services::rear_cam::enable as rear_cam_enable;
 
@@ -69,7 +69,7 @@ fn _references_both_link_keyed_modules() {
 }
 
 fn main() {}
-"#;
+";
 
 #[test]
 fn rust_cross_producer_same_service_name_keeps_schemas_separate() {

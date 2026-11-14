@@ -47,7 +47,7 @@ use std::path::{Path, PathBuf};
 pub(crate) async fn prepare_container_mounts(
     mount_sources: &[String],
     mounts: LocalMounts,
-) -> std::result::Result<Vec<String>, String> {
+) -> Result<Vec<String>, String> {
     // Expanding here and at instance start through the one shared helper keeps
     // both sides byte-identical: `host_mounts_need_restart` at start compares
     // against what was registered now, and a `~` source registered in one form
@@ -55,7 +55,7 @@ pub(crate) async fn prepare_container_mounts(
     let mount_sources = mount_sources
         .iter()
         .map(|src| containers::expand_home_in_mount_spec(src))
-        .collect::<std::result::Result<Vec<String>, String>>()?;
+        .collect::<Result<Vec<String>, String>>()?;
 
     let mut auto_created = Vec::new();
     for src in &mount_sources {
@@ -136,9 +136,7 @@ fn absolute_mount_source(src: &str) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(path))
-            .unwrap_or_else(|_| path.to_path_buf())
+        std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
     }
 }
 
@@ -157,8 +155,8 @@ pub(crate) enum LocalMounts {
 impl LocalMounts {
     fn may_restart_vm(self) -> bool {
         match self {
-            LocalMounts::WholeStack => true,
-            LocalMounts::AddedToRunningStack => false,
+            Self::WholeStack => true,
+            Self::AddedToRunningStack => false,
         }
     }
 }
@@ -169,7 +167,7 @@ impl LocalMounts {
 pub(crate) fn refuse_data_root_sources(
     mount_sources: &[String],
     data_root: &Path,
-) -> std::result::Result<(), String> {
+) -> Result<(), String> {
     for src in mount_sources {
         let expanded = containers::expand_home_in_mount_spec(src)?;
         if let Some(rejection) = containers::data_root_mount_rejection(&expanded, data_root) {
@@ -187,7 +185,7 @@ pub(in crate::services::stack) async fn prepare_local_container_mounts(
     has_container_nodes: bool,
     mut mount_sources: Vec<String>,
     mounts: LocalMounts,
-) -> std::result::Result<(), String> {
+) -> Result<(), String> {
     refuse_data_root_sources(&mount_sources, ctx.peppy_dirs.root())?;
     // The peppy data root hosts the container build working dirs (`tmp/`),
     // built images (`built_nodes/`), and instance dirs. When it sits outside
@@ -258,7 +256,7 @@ pub(in crate::services::stack) fn hosts_container_nodes<'a>(
 pub(super) fn container_mount_sources_by_machine(
     planned: &[PlannedDeployment],
     placements: &Placements,
-) -> std::result::Result<HashMap<String, Vec<String>>, String> {
+) -> Result<HashMap<String, Vec<String>>, String> {
     let mut by_machine: HashMap<String, Vec<String>> = HashMap::new();
     let mut seen: HashSet<(String, String)> = HashSet::new();
 

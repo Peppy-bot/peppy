@@ -9,13 +9,13 @@
 //! `containers` crate reaches it via the re-exported `config::node::is_blocked_mount_source`.
 
 /// Top-level system directories that Lima 2.0+ rejects as guest mountPoints.
-pub const BLOCKED_MOUNT_PATHS: &[&str] = &[
+pub(super) const BLOCKED_MOUNT_PATHS: &[&str] = &[
     "/", "/bin", "/dev", "/etc", "/home", "/opt", "/sbin", "/tmp", "/usr", "/var",
 ];
 
 /// Format the blocked mount paths as a comma-separated display string, for use in
 /// user-facing validation errors.
-pub fn blocked_mount_paths_display() -> String {
+pub(super) fn blocked_mount_paths_display() -> String {
     BLOCKED_MOUNT_PATHS.join(", ")
 }
 

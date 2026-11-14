@@ -62,6 +62,7 @@ Run:
     [`cargo`](https://doc.rust-lang.org/cargo/) is the default Rust toolchain in Peppy, but you can use any build system you prefer.
     To do so, first initialize the node with `peppy node init --toolchain cargo`, then add `peppygen = { path = ".peppy/libs/peppygen" }` and `peppylib = { path = ".peppy/libs/peppylib" }` as dependencies in your build configuration,
     and update `build_cmd` and `run_cmd` in `peppy.json5` to match your build system's commands. Peppy is designed to work with whichever tools you prefer.
+    `peppylib` needs Rust 1.100 or later.
     :::
   </TabItem>
 </Tabs>

@@ -8,7 +8,8 @@ use encoding::{CapnpSchemaArtifacts, FunctionParam};
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
 
-pub struct ConsumedTopicSubscriptionSpec<'a> {
+#[derive(Clone, Copy)]
+pub(super) struct ConsumedTopicSubscriptionSpec<'a> {
     pub helper_fn_ident: &'a Ident,
     pub args_struct_ident: &'a Ident,
     pub params: &'a [FunctionParam],
@@ -22,8 +23,8 @@ pub struct ConsumedTopicSubscriptionSpec<'a> {
 }
 
 /// Specification for building an action-feedback emit-style method
-/// (publish_feedback).
-pub struct EmitMethodSpec<'a> {
+/// (`publish_feedback`).
+pub(super) struct EmitMethodSpec<'a> {
     pub method_name: &'a Ident,
     pub params: &'a [FunctionParam],
     pub encoding: &'a MessageEncodingSpec,
@@ -40,7 +41,7 @@ pub struct EmitMethodSpec<'a> {
 /// The encoding is not optional: an endpoint built through this path always
 /// declares a message format, which the config parser guarantees is present
 /// and non-empty.
-pub fn build_emit_method(spec: EmitMethodSpec<'_>) -> TokenStream {
+pub(super) fn build_emit_method(spec: EmitMethodSpec<'_>) -> TokenStream {
     let EmitMethodSpec {
         method_name,
         params,
@@ -91,7 +92,7 @@ pub fn build_emit_method(spec: EmitMethodSpec<'_>) -> TokenStream {
 /// publisher once and then calls `publisher.publish(build_message(...)?)`, so
 /// per-message serialization never re-takes the messenger lock. This is the
 /// only topic-publish path.
-pub fn build_topic_publisher(
+pub(super) fn build_topic_publisher(
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
     topic: &NativeEmittedTopic,
@@ -167,36 +168,33 @@ fn build_topic_build_message(
 
     let error_context = quote!(String::from(#label_literal));
 
-    match encoding {
-        Some(spec) => {
-            let serialize_block =
-                build_serialize_payload(&spec.builder_type, &[], &spec.assignments, &error_context);
+    if let Some(spec) = encoding {
+        let serialize_block =
+            build_serialize_payload(&spec.builder_type, &[], &spec.assignments, &error_context);
 
-            quote! {
-                #[allow(clippy::too_many_arguments)]
-                pub fn build_message(#(#method_param_tokens),*) -> crate::Result<peppylib::Payload> {
-                    let payload = #serialize_block;
-                    Ok(payload)
-                }
+        quote! {
+            #[allow(clippy::too_many_arguments)]
+            pub fn build_message(#(#method_param_tokens),*) -> crate::Result<peppylib::Payload> {
+                let payload = #serialize_block;
+                Ok(payload)
             }
         }
-        None => {
-            let ignore_params: Vec<TokenStream> = kept_params
-                .iter()
-                .map(|param| {
-                    let ident = &param.ident;
-                    quote!(let _ = #ident;)
-                })
-                .collect();
+    } else {
+        let ignore_params: Vec<TokenStream> = kept_params
+            .iter()
+            .map(|param| {
+                let ident = &param.ident;
+                quote!(let _ = #ident;)
+            })
+            .collect();
 
-            quote! {
-                #[allow(clippy::too_many_arguments)]
-                pub fn build_message(#(#method_param_tokens),*) -> crate::Result<peppylib::Payload> {
-                    #(#ignore_params)*
-                    Err(crate::Error::MessageFormatUnavailable {
-                        context: #error_context,
-                    })
-                }
+        quote! {
+            #[allow(clippy::too_many_arguments)]
+            pub fn build_message(#(#method_param_tokens),*) -> crate::Result<peppylib::Payload> {
+                #(#ignore_params)*
+                Err(crate::Error::MessageFormatUnavailable {
+                    context: #error_context,
+                })
             }
         }
     }
@@ -208,7 +206,7 @@ fn build_topic_build_message(
 /// `zero_or_one`) exposes `paired()`/`wait_paired()`; a multi slot exposes
 /// `peers()` answering every pair it holds as a `Vec<PeerMember>`, whose doc
 /// states the floor its cardinality declares.
-pub fn build_peer_module_header(
+pub(super) fn build_peer_module_header(
     topic_name: &str,
     peer: &crate::generator::types::PeerContext,
 ) -> TokenStream {
@@ -269,7 +267,7 @@ pub fn build_peer_module_header(
 /// `first()` needs no unwrap, and `zero_or_more` gets `sources()` answering a
 /// plain, possibly empty `Vec` in plan order. The empty branch exists only where
 /// the cardinality can produce one, so it is never dead code.
-pub fn build_observed_module_header(
+pub(super) fn build_observed_module_header(
     topic_name: &str,
     observer: &crate::generator::types::PeerContext,
     cardinality: Cardinality,
@@ -311,12 +309,9 @@ pub fn build_observed_module_header(
     };
 
     let sources_doc = super::doc_attrs(
-        &crate::generator::types::observed_sources_doc(
-            cardinality,
-            crate::generator::types::DocLanguage::Rust,
-        )
-        .lines()
-        .collect::<Vec<_>>(),
+        &crate::generator::types::observed_sources_doc(cardinality, DocLanguage::Rust)
+            .lines()
+            .collect::<Vec<_>>(),
     );
 
     quote! {
@@ -336,7 +331,7 @@ pub fn build_observed_module_header(
 /// instance's lifecycle (fully pinned to the source triple, held across the
 /// source's peer transitions, drop-before-redeclare on a source-generation
 /// change). There is no publisher: an observer only reads.
-pub fn build_observed_topic_subscription(
+pub(super) fn build_observed_topic_subscription(
     spec: PeerTopicSubscriptionSpec<'_>,
     cardinality: Cardinality,
 ) -> Result<TokenStream> {
@@ -349,7 +344,7 @@ pub fn build_observed_topic_subscription(
 /// paired peer; a multi slot's answers a `PeerPublisher`, which keeps one
 /// wire publisher per pair the slot holds and is driven with `publish_to`,
 /// naming one of the slot's peers.
-pub fn build_peer_topic_publisher(
+pub(super) fn build_peer_topic_publisher(
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
     qos_profile: &QoSProfile,
@@ -410,7 +405,8 @@ pub fn build_peer_topic_publisher(
 
 /// Inputs of a pairing-topic subscription module, shared by the peer and
 /// observer consume sides.
-pub struct PeerTopicSubscriptionSpec<'a> {
+#[derive(Clone, Copy)]
+pub(super) struct PeerTopicSubscriptionSpec<'a> {
     pub helper_fn_ident: &'a Ident,
     pub args_struct_ident: &'a Ident,
     pub params: &'a [FunctionParam],
@@ -424,7 +420,9 @@ pub struct PeerTopicSubscriptionSpec<'a> {
 /// `peppylib::runtime::subscribe_peer`, which follows the slot's live pin
 /// (silent while unpaired, triple wire pin while paired, drop-before-redeclare
 /// on re-pin). The binding-slot consumer filters are never involved.
-pub fn build_peer_topic_subscription(spec: PeerTopicSubscriptionSpec<'_>) -> Result<TokenStream> {
+pub(super) fn build_peer_topic_subscription(
+    spec: PeerTopicSubscriptionSpec<'_>,
+) -> Result<TokenStream> {
     build_pair_topic_subscription(spec, PairTopicSubscriptionKind::Peer)
 }
 
@@ -538,9 +536,9 @@ fn build_pair_topic_subscription(
         ),
     };
     let subscription_tokens = build_subscription_struct(
-        struct_doc,
-        inner_type,
-        next_doc,
+        &struct_doc,
+        &inner_type,
+        &next_doc,
         tag,
         helper_fn_ident,
         args_struct_ident,
@@ -578,9 +576,9 @@ fn build_pair_topic_subscription(
 /// text (passed as `quote!`d `///` blocks so the generated docs stay
 /// per-module).
 fn build_subscription_struct(
-    struct_doc: TokenStream,
-    inner_type: TokenStream,
-    next_doc: TokenStream,
+    struct_doc: &TokenStream,
+    inner_type: &TokenStream,
+    next_doc: &TokenStream,
     tag: SubscriptionTag,
     helper_fn_ident: &Ident,
     args_struct_ident: &Ident,
@@ -619,24 +617,23 @@ fn build_subscription_struct(
 /// Otherwise emit as `SenderTarget::node(node_name, node_tag)` using the
 /// runtime's own identity. Both forms are fallible because segment validation
 /// runs at construction.
-pub fn sender_target_expression(
+pub(super) fn sender_target_expression(
     origin: Option<&crate::generator::types::ContractOrigin>,
 ) -> TokenStream {
-    match origin {
-        Some(o) => {
-            let name = Literal::string(&o.contract_name);
-            let tag = Literal::string(&o.contract_tag);
-            quote!(peppylib::messaging::SenderTarget::contract(#name, #tag)?)
-        }
-        None => quote!(peppylib::messaging::SenderTarget::node(
+    if let Some(o) = origin {
+        let name = Literal::string(&o.contract_name);
+        let tag = Literal::string(&o.contract_tag);
+        quote!(peppylib::messaging::SenderTarget::contract(#name, #tag)?)
+    } else {
+        quote!(peppylib::messaging::SenderTarget::node(
             node_runner.processor().node_name(),
             node_runner.processor().node_tag(),
-        )?),
+        )?)
     }
 }
 
-pub fn build_consumed_topic_subscription(
-    spec: ConsumedTopicSubscriptionSpec,
+pub(super) fn build_consumed_topic_subscription(
+    spec: ConsumedTopicSubscriptionSpec<'_>,
 ) -> Result<TokenStream> {
     let ConsumedTopicSubscriptionSpec {
         helper_fn_ident,
@@ -670,7 +667,7 @@ pub fn build_consumed_topic_subscription(
     // follows a join or a removal.
     let follows_the_set = follows_the_set_attrs(dependency.cardinality);
     let subscription_tokens = build_subscription_struct(
-        quote! {
+        &quote! {
             /// A held subscription covering every producer bound to this slot: one
             /// producer-pinned wire subscription per member of the slot's bound
             /// set, merged client-side. Message order is preserved independently
@@ -679,8 +676,8 @@ pub fn build_consumed_topic_subscription(
             /// the yielded producer identity.
             #( #follows_the_set )*
         },
-        quote!(peppylib::runtime::BoundSetSubscription),
-        quote! {
+        &quote!(peppylib::runtime::BoundSetSubscription),
+        &quote! {
             /// Awaits the next message from any producer bound to this slot.
             ///
             /// Returns `Ok(Some((producer, message)))` for each message (the
@@ -757,7 +754,7 @@ pub fn build_consumed_topic_subscription(
 /// state the same guarantees, in Rust's API terms.
 ///
 /// [`DependencyContext::bound_producers_doc`]: crate::generator::types::DependencyContext::bound_producers_doc
-pub fn build_bound_producer_accessor_fn(
+pub(super) fn build_bound_producer_accessor_fn(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     let link_id_literal = Literal::string(&dependency.link_id);
@@ -854,20 +851,17 @@ fn build_bound_members_accessor_fn(
 /// `ActionMessenger::send_goal` call. When the dependency emits via
 /// a contract, the consumer matches on `Contract(name, tag)`; otherwise
 /// on `Node(node_name, node_tag)`.
-pub fn consumed_to_target_expression(
+pub(super) fn consumed_to_target_expression(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
-    match &dependency.origin {
-        Some(origin) => {
-            let name = Literal::string(&origin.contract_name);
-            let tag = Literal::string(&origin.contract_tag);
-            quote!(peppylib::messaging::SenderTarget::contract(#name, #tag)?)
-        }
-        None => {
-            let node_name = Literal::string(&dependency.producer_name);
-            let node_tag = Literal::string(&dependency.producer_tag);
-            quote!(peppylib::messaging::SenderTarget::node(#node_name, #node_tag)?)
-        }
+    if let Some(origin) = &dependency.origin {
+        let name = Literal::string(&origin.contract_name);
+        let tag = Literal::string(&origin.contract_tag);
+        quote!(peppylib::messaging::SenderTarget::contract(#name, #tag)?)
+    } else {
+        let node_name = Literal::string(&dependency.producer_name);
+        let node_tag = Literal::string(&dependency.producer_tag);
+        quote!(peppylib::messaging::SenderTarget::node(#node_name, #node_tag)?)
     }
 }
 
@@ -904,7 +898,7 @@ fn build_topic_deserialize_helper(
 
 /// The `peppylib::config::QoSProfile` value generated code states for a
 /// topic's QoS profile.
-pub fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
+pub(super) fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
     match profile {
         QoSProfile::Standard => quote!(peppylib::config::QoSProfile::Standard),
         QoSProfile::Reliable => quote!(peppylib::config::QoSProfile::Reliable),
@@ -921,7 +915,7 @@ fn retention_doc_lines(retention: TopicRetention) -> Vec<String> {
 
 /// The `TopicRetention` value generated code states for a topic. A retaining
 /// topic's depth is checked when the generated crate compiles.
-pub fn retention_tokens(retention: TopicRetention) -> TokenStream {
+pub(super) fn retention_tokens(retention: TopicRetention) -> TokenStream {
     let TopicRetention::Latest { depth } = retention else {
         return quote!(peppylib::config::TopicRetention::LiveOnly);
     };

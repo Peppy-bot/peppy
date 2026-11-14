@@ -42,7 +42,10 @@
 //! ports in `node_stack::container_build_cache`) and the map of uv cache gates
 //! in `node_stack::container_build_cache`, created on first use. Each is
 //! per-process by intent, not per-`NodeStack` state.
-#![allow(clippy::result_large_err)]
+#![expect(
+    clippy::result_large_err,
+    reason = "`NodeStackError` holds the context of a failure by value, and a failure is the rare path"
+)]
 #![forbid(unsafe_code)]
 
 pub mod action_log;

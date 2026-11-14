@@ -14,6 +14,10 @@ mod services;
 /// Python module implemented in Rust.
 /// The function name must match `lib.name` in Cargo.toml.
 #[pymodule]
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the name of the function is the name of the Python module"
+)]
 fn _peppylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "__version__",

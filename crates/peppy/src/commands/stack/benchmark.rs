@@ -45,11 +45,11 @@ use crate::terminal::ScrollingOutput;
 const BASELINE_SUBDIR: &str = "stack-benchmark";
 /// Idle watchdog: the daemon emits feedback per edge; a long gap means a hang.
 /// Generous because a single dead edge can take a few probe timeouts to skip.
-const CLI_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+const CLI_IDLE_TIMEOUT: Duration = Duration::from_mins(5);
 /// Absolute ceiling so the command can never wedge forever.
-const CLI_MAX_TIMEOUT: Duration = Duration::from_secs(3600);
+const CLI_MAX_TIMEOUT: Duration = Duration::from_hours(1);
 
-pub fn benchmark(
+pub(super) fn benchmark(
     ctx: &Arc<AppContext>,
     samples: u32,
     warmup: u32,
@@ -91,7 +91,7 @@ async fn benchmark_async(
         GOAL_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to send benchmark goal: {}", e)))?;
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send benchmark goal: {e}")))?;
 
     crate::commands::action_poll::accepted_goal(&action_handle, "Benchmark")?;
 
@@ -437,7 +437,10 @@ mod tests {
     use core_node_api::encoding::{ClockConfidence, InterfaceKind};
     use unicode_width::UnicodeWidthStr;
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a test helper takes each value that a test varies as one argument"
+    )]
     fn row(
         from: &str,
         to: &str,
@@ -715,7 +718,9 @@ mod tests {
                 .map(UnicodeWidthStr::width)
                 .collect();
             assert!(
-                widths.windows(2).all(|w| w[0] == w[1]),
+                widths
+                    .array_windows()
+                    .all(|[previous, next]| previous == next),
                 "box lines misaligned: {widths:?}"
             );
             let table_width = widths.first().copied().unwrap_or(0);

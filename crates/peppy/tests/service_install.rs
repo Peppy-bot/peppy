@@ -24,8 +24,7 @@ fn install_peppy_service() {
     let current_exe = std::env::current_exe().unwrap();
     let working_dir_hint = current_exe
         .parent()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "/".into());
+        .map_or_else(|| "/".into(), |p| p.display().to_string());
     assert!(
         contents.contains(&working_dir_hint),
         "service definition should mention working directory {working_dir_hint}"

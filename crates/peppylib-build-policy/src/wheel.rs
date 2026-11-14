@@ -6,6 +6,7 @@
 //! [`native_extension_of_wheel`] reads. Only a macOS build script calls it, and
 //! it lives here so that the Linux hosts of the CI compile and test it too.
 
+use std::borrow::Cow;
 use std::io::{Read, Seek};
 
 /// The file name of peppylib's native extension inside a wheel.
@@ -76,7 +77,7 @@ fn native_extension_entry_name<R: Read + Seek>(
     let extension_names: Vec<String> = entry_names
         .into_iter()
         .filter(|name| is_native_extension(name))
-        .map(|name| name.into_owned())
+        .map(Cow::into_owned)
         .collect();
     match extension_names.as_slice() {
         [] => Err(WheelError::NoNativeExtension),
@@ -95,6 +96,7 @@ fn is_native_extension(entry_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::io::{Cursor, Write};
     use zip::CompressionMethod;
     use zip::write::{SimpleFileOptions, ZipWriter};
@@ -148,10 +150,7 @@ mod tests {
 
         let error = native_extension_of_wheel(wheel).expect_err("no extension to read");
 
-        assert!(
-            matches!(error, WheelError::NoNativeExtension),
-            "got: {error:?}"
-        );
+        assert_matches!(error, WheelError::NoNativeExtension, "got: {error:?}");
     }
 
     #[test]
@@ -160,10 +159,7 @@ mod tests {
 
         let error = native_extension_of_wheel(wheel).expect_err("no extension to read");
 
-        assert!(
-            matches!(error, WheelError::NoNativeExtension),
-            "got: {error:?}"
-        );
+        assert_matches!(error, WheelError::NoNativeExtension, "got: {error:?}");
     }
 
     #[test]
@@ -190,6 +186,6 @@ mod tests {
 
         let error = native_extension_of_wheel(not_a_wheel).expect_err("not a wheel");
 
-        assert!(matches!(error, WheelError::Archive(_)), "got: {error:?}");
+        assert_matches!(error, WheelError::Archive(_), "got: {error:?}");
     }
 }

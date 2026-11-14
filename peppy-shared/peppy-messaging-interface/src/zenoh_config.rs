@@ -120,27 +120,24 @@ pub async fn probe_tls_reachable(
 
     // Build the trust anchors: either an explicit private CA, or the OS roots.
     let mut roots = RootCertStore::empty();
-    match &tls.root_ca_certificate {
-        Some(path) => {
-            for cert in read_pem_certificates(path, "root CA")? {
-                roots
-                    .add(cert)
-                    .map_err(|e| format!("add root CA `{}` failed: {e}", path.display()))?;
-            }
+    if let Some(path) = &tls.root_ca_certificate {
+        for cert in read_pem_certificates(path, "root CA")? {
+            roots
+                .add(cert)
+                .map_err(|e| format!("add root CA `{}` failed: {e}", path.display()))?;
         }
-        None => {
-            // rustls-native-certs 0.8 returns a `CertificateResult`; take all of
-            // its `.certs` (any per-cert load errors are non-fatal as long as at
-            // least one root ends up trusted).
-            let native = rustls_native_certs::load_native_certs();
-            for cert in native.certs {
-                let _ = roots.add(cert);
-            }
-            if roots.is_empty() {
-                return Err(
-                    "system trust store is empty (no native roots could be loaded)".to_string(),
-                );
-            }
+    } else {
+        // rustls-native-certs 0.8 returns a `CertificateResult`; take all of
+        // its `.certs` (any per-cert load errors are non-fatal as long as at
+        // least one root ends up trusted).
+        let native = rustls_native_certs::load_native_certs();
+        for cert in native.certs {
+            let _ = roots.add(cert);
+        }
+        if roots.is_empty() {
+            return Err(
+                "system trust store is empty (no native roots could be loaded)".to_string(),
+            );
         }
     }
 
@@ -201,7 +198,7 @@ fn read_pem_certificates(
     let bytes = std::fs::read(path)
         .map_err(|e| format!("read {label} `{}` failed: {e}", path.display()))?;
     let certs = rustls_pemfile::certs(&mut &bytes[..])
-        .collect::<std::result::Result<Vec<_>, _>>()
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("parse {label} `{}` failed: {e}", path.display()))?;
     if certs.is_empty() {
         return Err(format!(
@@ -305,9 +302,9 @@ impl SessionMode {
     /// an entry under another key is silently ignored.
     fn zenoh_name(self) -> &'static str {
         match self {
-            SessionMode::Peer => "peer",
-            SessionMode::Client => "client",
-            SessionMode::Router => "router",
+            Self::Peer => "peer",
+            Self::Client => "client",
+            Self::Router => "router",
         }
     }
 }
@@ -539,12 +536,12 @@ pub(crate) fn router_spec(
 /// [`crate::ZenohAdapter::with_router`]. With `protocol = Tls` and a server
 /// [`TlsConfig`] this emits the `transport.link.tls` listener block; a non-empty
 /// `connect_endpoints` emits a `connect` block so the router federates to those
-/// upstreams (see [`router_spec`]). Available under the base `zenoh` feature (no
+/// upstreams (see `router_spec`). Available under the base `zenoh` feature (no
 /// `router`/zenohd binary needed) because rendering a config is independent of
 /// spawning a process.
 ///
 /// `id` is the router's pinned transport identity and is required; see
-/// [`router_spec`] for why it is not an `Option`.
+/// `router_spec` for why it is not an `Option`.
 pub fn render_router_config(
     protocol: ZenohNetProtocol,
     host: &str,
@@ -788,7 +785,7 @@ mod tests {
 
     /// Regression guard: with `tls: None` the TLS feature is inert, and no
     /// `transport` block is emitted.
-    /// (We assert structurally rather than byte-for-byte because serde_json's
+    /// (We assert structurally rather than byte-for-byte because `serde_json`'s
     /// object key order depends on whether the `preserve_order` feature is
     /// unified in by some dependency, which would make an exact-string golden
     /// flaky across builds.)
@@ -1100,7 +1097,7 @@ mod tests {
             reconnect: false,
             gossip: true,
             tls: None,
-            namespace: Some(ns.clone()),
+            namespace: Some(ns),
             id: Some(test_router_id()),
         });
         assert!(

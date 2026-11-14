@@ -29,9 +29,8 @@ use crate::commands::SCROLLING_OUTPUT_LINES;
 use crate::error::{CallEnd, Error, INTERRUPTED_EXIT_CODE, Result};
 use crate::terminal::ScrollingOutput;
 
-use std::future::Future;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 /// How long the daemon has to answer a cancel request.
@@ -129,9 +128,7 @@ impl Drop for CtrlC {
 /// The follow slot. A panic while it is held leaves nothing half written,
 /// so a poisoned lock is read as it is.
 fn follow_slot() -> std::sync::MutexGuard<'static, Option<mpsc::UnboundedSender<()>>> {
-    FOLLOW
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    FOLLOW.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Starts the thread that reads each SIGINT of the process and hands it on
@@ -199,8 +196,7 @@ impl FollowedGoal<'_> {
     /// " Log file: {path}", or nothing for a goal with no log file.
     fn log_tail(&self) -> String {
         self.log_path
-            .map(|path| format!(" Log file: {}", path.display()))
-            .unwrap_or_default()
+            .map_or_default(|path| format!(" Log file: {}", path.display()))
     }
 
     /// The line a command writes when a Ctrl-C sends the daemon a cancel.
@@ -312,7 +308,7 @@ where
     Res: ActionResultLike,
 {
     let goal_response = Resp::decode_payload(accepted_goal(action_handle, doing)?.as_ref())
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {e}")))?;
 
     info!("Log file: {}", goal_response.log_path().display());
 
@@ -351,7 +347,7 @@ pub(crate) const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 
 /// How far ahead a deadline lies when its budget is too large for the clock to
 /// hold.
-const UNREACHABLE_DEADLINE_DISTANCE: Duration = Duration::from_secs(86_400 * 365 * 30);
+const UNREACHABLE_DEADLINE_DISTANCE: Duration = Duration::from_hours(262_800);
 
 /// The instant `budget` after `start`. A budget the clock cannot represent (a
 /// `--max-timeout` near `u64::MAX` seconds) gives an instant no command
@@ -390,7 +386,10 @@ pub(crate) fn deadline_after(
 ///   [`cancel_unless_stopped`]), with [`Error::Interrupted`].
 ///
 /// The scrolling output is cleared before returning.
-#[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input, and a struct of them only moves the list"
+)]
 pub(crate) async fn poll_action_to_completion<R>(
     messenger: &MessengerHandle,
     action_handle: &mut ActionGoalHandle,
@@ -734,7 +733,7 @@ fn check_max_timeout(
     Ok(())
 }
 
-/// " Use {flag} <seconds> to increase.", for a command whose budgets have
+/// " Use {flag} `<seconds>` to increase.", for a command whose budgets have
 /// flags.
 fn raise_hint(timeouts: &TimeoutConfig, flag: &str) -> String {
     if timeouts.flags {
@@ -762,7 +761,7 @@ mod tests {
 
         assert!(
             deadline_after(start, Duration::from_secs(u64::MAX))
-                > start + Duration::from_secs(86_400 * 365)
+                > start + Duration::from_hours(8760)
         );
         assert_eq!(
             deadline_after(start, Duration::from_secs(5)),
@@ -775,16 +774,14 @@ mod tests {
         let base = tokio::time::Instant::now();
         let deadline = base + Duration::from_secs(100);
         let now = base + Duration::from_secs(1);
-        assert!(
-            check_timeouts(
-                now,
-                base,
-                Duration::from_secs(5),
-                deadline,
-                &timeouts(5, 100)
-            )
-            .is_ok()
-        );
+        check_timeouts(
+            now,
+            base,
+            Duration::from_secs(5),
+            deadline,
+            &timeouts(5, 100),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -792,16 +789,14 @@ mod tests {
         let base = tokio::time::Instant::now();
         let deadline = base + Duration::from_secs(100);
         let now = base + Duration::from_millis(4_999);
-        assert!(
-            check_timeouts(
-                now,
-                base,
-                Duration::from_secs(5),
-                deadline,
-                &timeouts(5, 100)
-            )
-            .is_ok()
-        );
+        check_timeouts(
+            now,
+            base,
+            Duration::from_secs(5),
+            deadline,
+            &timeouts(5, 100),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -959,7 +954,6 @@ mod ctrl_c {
     use peppylib::messaging::{
         CancelCause, ConcurrentAction, Failure, FeedbackBound, GoalContext, SenderTarget,
     };
-    use peppylib::types::Payload;
 
     const CORE_NODE: &str = "cn-ctrl-c";
     const LOG_PATH: &str = "/logs/add/source_20260101_000000_000.log";

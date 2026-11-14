@@ -30,7 +30,7 @@ pub(crate) async fn poll_bound_core_node<R: core_node_api::ServiceRequest>(
 /// Subscribes to a periodic core-node-published topic (e.g. `clock`,
 /// `daemon_heartbeat`) on `node_runner`'s bound core node, keyed the same way
 /// the daemon publishes it: the target's name segment says which daemon's
-/// stream this matches (a daemon's node name IS its core_node name), and the
+/// stream this matches (a daemon's node name IS its `core_node` name), and the
 /// reserved default `link_id` says it is that daemon's own publishes, while
 /// its per-boot `(core_node, instance_id)` pair stays wildcarded. A clock
 /// domain hosted on the same machine rides this same topic and target under

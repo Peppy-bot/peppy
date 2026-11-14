@@ -91,9 +91,9 @@ pub(crate) fn selection_json(selection: Option<&PlatformSelection>) -> serde_jso
 
 /// The selected workspace as JSON, `null` when there is none.
 pub(crate) fn workspace_json(selection: Option<&PlatformSelection>) -> serde_json::Value {
-    selection
-        .map(|selection| named_json(&selection.workspace))
-        .unwrap_or(serde_json::Value::Null)
+    selection.map_or(serde_json::Value::Null, |selection| {
+        named_json(&selection.workspace)
+    })
 }
 
 /// The selected project with its workspace as JSON, `null` when no project is

@@ -3,13 +3,13 @@
 //! (`collector/logs/v1/logs_service.proto` and the messages it imports).
 
 #[derive(prost::Message)]
-pub struct ExportLogsServiceRequest {
+pub(crate) struct ExportLogsServiceRequest {
     #[prost(message, repeated, tag = "1")]
     pub resource_logs: Vec<ResourceLogs>,
 }
 
 #[derive(prost::Message)]
-pub struct ResourceLogs {
+pub(crate) struct ResourceLogs {
     #[prost(message, optional, tag = "1")]
     pub resource: Option<Resource>,
     #[prost(message, repeated, tag = "2")]
@@ -17,13 +17,13 @@ pub struct ResourceLogs {
 }
 
 #[derive(prost::Message)]
-pub struct Resource {
+pub(crate) struct Resource {
     #[prost(message, repeated, tag = "1")]
     pub attributes: Vec<KeyValue>,
 }
 
 #[derive(prost::Message)]
-pub struct ScopeLogs {
+pub(crate) struct ScopeLogs {
     #[prost(message, optional, tag = "1")]
     pub scope: Option<InstrumentationScope>,
     #[prost(message, repeated, tag = "2")]
@@ -31,7 +31,7 @@ pub struct ScopeLogs {
 }
 
 #[derive(prost::Message)]
-pub struct InstrumentationScope {
+pub(crate) struct InstrumentationScope {
     #[prost(string, tag = "1")]
     pub name: String,
     #[prost(string, tag = "2")]
@@ -39,7 +39,7 @@ pub struct InstrumentationScope {
 }
 
 #[derive(prost::Message)]
-pub struct LogRecord {
+pub(crate) struct LogRecord {
     /// When the line was written, or 0 when only the time it was read is
     /// known.
     #[prost(fixed64, tag = "1")]
@@ -59,7 +59,7 @@ pub struct LogRecord {
 }
 
 #[derive(prost::Message)]
-pub struct KeyValue {
+pub(crate) struct KeyValue {
     #[prost(string, tag = "1")]
     pub key: String,
     #[prost(message, optional, tag = "2")]
@@ -67,14 +67,14 @@ pub struct KeyValue {
 }
 
 #[derive(prost::Message)]
-pub struct AnyValue {
+pub(crate) struct AnyValue {
     #[prost(oneof = "any_value::Value", tags = "1, 2")]
     pub value: Option<any_value::Value>,
 }
 
-pub mod any_value {
+pub(crate) mod any_value {
     #[derive(Clone, PartialEq, prost::Oneof)]
-    pub enum Value {
+    pub(crate) enum Value {
         #[prost(string, tag = "1")]
         StringValue(String),
         #[prost(bool, tag = "2")]
@@ -83,13 +83,13 @@ pub mod any_value {
 }
 
 #[derive(prost::Message)]
-pub struct ExportLogsServiceResponse {
+pub(crate) struct ExportLogsServiceResponse {
     #[prost(message, optional, tag = "1")]
     pub partial_success: Option<ExportLogsPartialSuccess>,
 }
 
 #[derive(prost::Message)]
-pub struct ExportLogsPartialSuccess {
+pub(crate) struct ExportLogsPartialSuccess {
     #[prost(int64, tag = "1")]
     pub rejected_log_records: i64,
     #[prost(string, tag = "2")]

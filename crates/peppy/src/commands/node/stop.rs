@@ -22,7 +22,7 @@ fn stop_request_timeout(shutdown_grace_secs: u64) -> Duration {
     )))
 }
 
-pub fn stop_node(ctx: &Arc<AppContext>, instance_id: String) -> Result<()> {
+pub(super) fn stop_node(ctx: &Arc<AppContext>, instance_id: String) -> Result<()> {
     crate::commands::block_on(stop_node_async(ctx, instance_id))
 }
 
@@ -58,7 +58,7 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
         request_timeout,
     )
     .await
-    .map_err(|e| crate::commands::request_error("Failed to stop the node instance", e))?;
+    .map_err(|e| crate::commands::request_error("Failed to stop the node instance", &e))?;
 
     if stop_response.force_killed {
         warn_force_killed(&instance_id);
@@ -96,7 +96,7 @@ mod tests {
                  worst-case stop {daemon_worst_case:?}",
             );
             assert_eq!(
-                cli - daemon_worst_case,
+                cli.checked_sub(daemon_worst_case).unwrap(),
                 DAEMON_MESSAGING_MARGIN,
                 "the headroom must be exactly the messaging margin",
             );

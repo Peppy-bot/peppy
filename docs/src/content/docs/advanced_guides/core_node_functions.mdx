@@ -74,7 +74,7 @@ The second argument is a timeout. Rust accepts anything that converts to `Option
     use peppylib::info;
 
     fn main() -> Result<()> {
-        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_args: Parameters, node_runner| {
             let response = info(&node_runner, Duration::from_secs(3)).await?;
             println!(
                 "{} on {}: {} nodes, up {}s",
@@ -154,7 +154,7 @@ The example below uses `stack.list` to count the running instances of each node 
     use peppylib::stack;
 
     fn main() -> Result<()> {
-        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_args: Parameters, node_runner| {
             let result = stack::list(&node_runner, Duration::from_secs(3)).await?;
 
             println!("served by {}", result.host_name);

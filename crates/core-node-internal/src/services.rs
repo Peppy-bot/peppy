@@ -34,6 +34,7 @@ pub use stack::{
 use crate::Result;
 use config::{
     DefaultValue, ParameterSpec,
+    duration::saturating_millis,
     node::{Execution, Manifest, NodeConfig, PeppygenLanguage, TypeToken},
     runtime::Name,
     schema::PeppySchema,
@@ -100,6 +101,7 @@ pub fn current_host_name() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+#[derive(Debug)]
 pub struct CoreNodeArguments {
     pub node_startup_timeout: Duration,
     /// The default setup budget: how long the daemon waits for the setup of an
@@ -135,18 +137,18 @@ impl CoreNodeArguments {
             "node_startup_timeout_ms".to_string(),
             ParameterSpec::Primitive {
                 kind: TypeToken::U64,
-                default: Some(DefaultValue::UInt(
-                    self.node_startup_timeout.as_millis() as u64
-                )),
+                default: Some(DefaultValue::UInt(saturating_millis(
+                    self.node_startup_timeout,
+                ))),
             },
         );
         params.insert(
             "default_setup_timeout_ms".to_string(),
             ParameterSpec::Primitive {
                 kind: TypeToken::U64,
-                default: Some(DefaultValue::UInt(
-                    self.default_setup_timeout.as_duration().as_millis() as u64,
-                )),
+                default: Some(DefaultValue::UInt(saturating_millis(
+                    self.default_setup_timeout.as_duration(),
+                ))),
             },
         );
         params
@@ -157,6 +159,7 @@ impl CoreNodeArguments {
 /// single named bundle rather than a long positional argument list (the
 /// `Arc<Mutex<Messenger>>`, `PeppyDirs`, and `PeppyConfig` are easy to transpose
 /// positionally).
+#[derive(Debug)]
 pub struct CoreNodeConfig {
     /// Shared messaging interface the core node binds its services on.
     pub messenger: Arc<Mutex<Messenger>>,
@@ -185,7 +188,7 @@ pub struct CoreNodeConfig {
     /// Where the daemon reads the addresses of its machine, which the
     /// endpoints of every instance it starts expand against: the system's
     /// interfaces in production, a fixed list under test.
-    pub host_addresses: node::endpoints::HostAddressSource,
+    pub host_addresses: HostAddressSource,
     /// Where the log files of the node stack send their lines.
     pub log_exporter: log_export::LogExporter,
     /// The certificate of this machine, which proves the calls of this
@@ -195,6 +198,7 @@ pub struct CoreNodeConfig {
     pub machine_certificate: Option<auth::machine_proof::MachineCertificate>,
 }
 
+#[derive(Debug)]
 pub struct CoreNode {
     node_stack: Arc<NodeStack>,
     node_config: NodeConfig,
@@ -219,7 +223,7 @@ pub struct CoreNode {
     namespace: config::namespace::Namespace,
     /// Where this daemon reads its machine's addresses, which every started
     /// instance's endpoints expand against.
-    host_addresses: node::endpoints::HostAddressSource,
+    host_addresses: HostAddressSource,
     /// Cancelled on shutdown to stop the clock + heartbeat publishers cleanly.
     /// Cloned into each publisher task in [`CoreNode::start_with_ready`].
     shutdown_token: CancellationToken,
@@ -247,7 +251,7 @@ pub struct CoreNode {
 /// Writes the key file of an instance that a test spawns itself, as the
 /// daemon writes one at each start of an instance.
 #[cfg(any(test, feature = "test-support"))]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct InstanceKeys(Arc<credentials::DaemonKeys>);
 
 #[cfg(any(test, feature = "test-support"))]
@@ -288,20 +292,18 @@ fn derive_core_node_name() -> Name {
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| {
-            hostname::get().ok().and_then(|h| {
-                let s = h.to_string_lossy().into_owned();
-                if s.is_empty() { None } else { Some(s) }
-            })
+            let h = hostname::get().ok()?;
+            let s = h.to_string_lossy().into_owned();
+            if s.is_empty() { None } else { Some(s) }
         });
 
-    match seed_source {
-        Some(src) => derive_name_from_host_id(&src),
-        None => {
-            tracing::warn!(
-                "machine UID and hostname unavailable; falling back to non-deterministic core node name"
-            );
-            format_core_node_name(&get_random(rng()))
-        }
+    if let Some(src) = seed_source {
+        derive_name_from_host_id(&src)
+    } else {
+        tracing::warn!(
+            "machine UID and hostname unavailable; falling back to non-deterministic core node name"
+        );
+        format_core_node_name(&get_random(rng()))
     }
 }
 
@@ -348,7 +350,7 @@ struct ListenerCtx<'a> {
     /// `clock` topic publisher.
     clock_source: Arc<dyn ClockSource>,
     /// In-memory key/value store shared by the five datastore endpoints
-    /// (store, store_exclusive, get, list, remove).
+    /// (store, `store_exclusive`, get, list, remove).
     datastore: Arc<datastore::Datastore>,
     /// The daemon's single pairing and observation authorities, shared by every
     /// establishment hook and lifecycle teardown path.
@@ -499,7 +501,7 @@ impl CoreNode {
     /// core node's own future is still pinned. See
     /// [`node::teardown_all_instances`].
     pub async fn teardown_node_stack(&self) {
-        node::teardown_all_instances(
+        teardown_all_instances(
             &self.messenger,
             self.node_name(),
             self.instance_id(),
@@ -1009,12 +1011,12 @@ impl CoreNode {
     /// - **Claims its core-node name** with a liveliness token and refuses to
     ///   boot if a foreign daemon already advertises that name.
     /// - **Deletes the instances directory** (`peppy_dirs.instances_dir()`) to
-    ///   clear stale state from a previous run; see [`clear_instances_dir`].
+    ///   clear stale state from a previous run; see `clear_instances_dir`.
     /// - **Writes/updates `repositories.json5`** via [`repo::ensure_default_repos`]
     ///   so newly-bundled default repos land in pre-existing user configs.
     /// - **Reads again the repositories on `@{peppy-release}` that were read
     ///   for another peppy version** (see
-    ///   [`repo::refresh_release_repositories_for_this_version`]), before any
+    ///   `repo::refresh_release_repositories_for_this_version`), before any
     ///   listener answers.
     pub async fn start_with_ready(&self, ready: Option<oneshot::Sender<()>>) -> Result<()> {
         // Boot exactly once per instance: a second `start` would re-run the
@@ -1106,13 +1108,11 @@ impl CoreNode {
                 Arc::clone(&self.slice_ownership),
             )),
         );
+        let liveness = Arc::clone(&self.node_stack);
         let ctx = ListenerCtx {
             core_node_name,
             clock_source,
-            datastore: Arc::new(datastore::Datastore::new(
-                Arc::clone(&self.node_stack) as _,
-                core_node_name,
-            )),
+            datastore: Arc::new(datastore::Datastore::new(liveness, core_node_name)),
             relationships,
             raw_calls: raw_calls::RawCallGate::new(),
         };

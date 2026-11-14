@@ -152,16 +152,20 @@ fn field_descriptions<'a>(
 
 /// A member kind in the cache: `topic`, `service` or `action`.
 mod interface_kind_name {
-    use super::*;
+    use super::{Deserialize, Deserializer, InterfaceKind, Serializer};
 
-    pub fn serialize<S: Serializer>(
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde calls a `serialize_with` function with a reference"
+    )]
+    pub(super) fn serialize<S: Serializer>(
         kind: &InterfaceKind,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         serializer.collect_str(kind)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<InterfaceKind, D::Error> {
         let name = String::deserialize(deserializer)?;
@@ -171,13 +175,20 @@ mod interface_kind_name {
 
 /// A message side in the cache, by its name ([`MessageSide::as_str`]).
 mod message_side_name {
-    use super::*;
+    use super::{Deserialize, Deserializer, MessageSide, Serializer};
 
-    pub fn serialize<S: Serializer>(side: &MessageSide, serializer: S) -> Result<S::Ok, S::Error> {
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde calls a `serialize_with` function with a reference"
+    )]
+    pub(super) fn serialize<S: Serializer>(
+        side: &MessageSide,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(side.as_str())
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<MessageSide, D::Error> {
         let name = String::deserialize(deserializer)?;

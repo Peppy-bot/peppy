@@ -1,6 +1,8 @@
 #![cfg(feature = "multi_daemon_e2e")]
 
+use std::assert_matches;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::net::Ipv4Addr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -33,7 +35,7 @@ use testcontainers::core::client::docker_client_instance;
 use testcontainers::runners::AsyncBuilder;
 use tokio::sync::OnceCell;
 
-const TIMEOUT: Duration = Duration::from_secs(60);
+const TIMEOUT: Duration = Duration::from_mins(1);
 /// How long a check that a restart asks for no pair waits once the restart
 /// is listed running. A restart asks for its held pairs after it tells its
 /// observers and watchers it runs; every daemon of the fixture answers both
@@ -96,7 +98,7 @@ async fn engine_client() -> Docker {
 
 /// How long the client testcontainers builds waits for an answer of the
 /// engine.
-const TESTCONTAINERS_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const TESTCONTAINERS_REQUEST_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// `client`, made to wait for every answer of its engine however late it
 /// comes.
@@ -160,8 +162,9 @@ async fn the_suite_waits_for_an_engine_answer_that_testcontainers_gives_up_on() 
     };
 
     let gave_up = connect(TESTCONTAINERS_REQUEST_TIMEOUT).ping().await;
-    assert!(
-        matches!(gave_up, Err(EngineError::RequestTimeoutError)),
+    assert_matches!(
+        gave_up,
+        Err(EngineError::RequestTimeoutError),
         "the testcontainers client must give up on the late answer, got {gave_up:?}"
     );
 
@@ -225,12 +228,12 @@ fn require_delivered(output: ExecOutput, operation: &str) -> String {
 }
 
 fn require_success(output: ExecOutput, operation: &str) -> String {
-    if !output.success() {
-        panic!(
-            "{operation} failed (exit code {}):\n{}",
-            output.exit_code, output.text
-        );
-    }
+    assert!(
+        output.success(),
+        "{operation} failed (exit code {}):\n{}",
+        output.exit_code,
+        output.text
+    );
     output.text
 }
 
@@ -252,6 +255,9 @@ struct MachineCertificates {
     written: Mutex<BTreeMap<String, auth::test_support::MachineFiles>>,
 }
 
+/// The machine certificates of the suite. A directory that cannot be made
+/// leaves the cell empty, so each test that needs the certificates tries
+/// again and reports the failure itself.
 fn machine_certificates() -> &'static MachineCertificates {
     static CERTIFICATES: std::sync::OnceLock<MachineCertificates> = std::sync::OnceLock::new();
     CERTIFICATES.get_or_init(|| {
@@ -425,7 +431,7 @@ fn e2e_dockerfile(ubuntu_release: &str) -> String {
 async fn e2e_image() -> String {
     static IMAGE: OnceCell<String> = OnceCell::const_new();
     IMAGE
-        .get_or_init(|| async {
+        .get_or_init(async || {
             if let Ok(image) = std::env::var(IMAGE_OVERRIDE_ENV)
                 && !image.trim().is_empty()
             {
@@ -4624,24 +4630,24 @@ enum Placement {
 }
 
 impl Placement {
-    fn daemon<'a>(&self, federation: &'a Federation) -> &'a Daemon {
+    fn daemon(self, federation: &Federation) -> &Daemon {
         match self {
-            Placement::Coordinator => &federation.robot,
-            Placement::Peer => &federation.cloud,
+            Self::Coordinator => &federation.robot,
+            Self::Peer => &federation.cloud,
         }
     }
 
-    fn core_node<'a>(&self, federation: &'a Federation) -> Option<&'a str> {
+    fn core_node(self, federation: &Federation) -> Option<&str> {
         match self {
-            Placement::Coordinator => None,
-            Placement::Peer => Some(&federation.cloud_core_node),
+            Self::Coordinator => None,
+            Self::Peer => Some(&federation.cloud_core_node),
         }
     }
 
-    fn gate(&self) -> &'static str {
+    fn gate(self) -> &'static str {
         match self {
-            Placement::Coordinator => COORDINATOR_GATE,
-            Placement::Peer => PEER_GATE,
+            Self::Coordinator => COORDINATOR_GATE,
+            Self::Peer => PEER_GATE,
         }
     }
 }
@@ -4661,7 +4667,7 @@ struct Station {
 
 impl Station {
     fn new(name: &'static str, placement: Placement) -> Self {
-        Station {
+        Self {
             name,
             generation: 1,
             placement,
@@ -4831,7 +4837,7 @@ fn foreign_markers(stations: &[Station], retired: &[String], copy: &str) -> Vec<
     let own_gate = stations
         .iter()
         .find(|station| station.name == copy)
-        .map(|station| station.gate());
+        .map(Station::gate);
     let mut markers: BTreeSet<String> = stations
         .iter()
         .filter(|station| station.name != copy)
@@ -4980,13 +4986,13 @@ async fn station_logs(federation: &Federation, stations: &[Station]) -> String {
         let daemon = station.daemon(federation);
         for instance in [station.commander(), station.arm()] {
             let log = daemon.node_log(&instance).await;
-            dump.push_str(&format!("--- {instance} ---\n{log}\n"));
+            let _ = writeln!(dump, "--- {instance} ---\n{log}");
         }
     }
     for placement in [Placement::Coordinator, Placement::Peer] {
         let gate = placement.gate();
         let log = placement.daemon(federation).node_log(gate).await;
-        dump.push_str(&format!("--- {gate} ---\n{log}\n"));
+        let _ = writeln!(dump, "--- {gate} ---\n{log}");
     }
     dump
 }
@@ -5162,15 +5168,12 @@ fn recorded_bindings(section: &serde_json::Value, instance_id: &str, link_id: &s
         .into_iter()
         .flatten()
         .map(|member| {
-            let copy = member["copy"]["name"]
-                .as_str()
-                .map(|name| {
-                    let in_copy = member["copy"]["instance_id"]
-                        .as_str()
-                        .expect("a member of a copy names the id inside it");
-                    format!(" [copy {name}/{in_copy}]")
-                })
-                .unwrap_or_default();
+            let copy = member["copy"]["name"].as_str().map_or_default(|name| {
+                let in_copy = member["copy"]["instance_id"]
+                    .as_str()
+                    .expect("a member of a copy names the id inside it");
+                format!(" [copy {name}/{in_copy}]")
+            });
             format!(
                 "{}@{}{copy}",
                 member["producer"]["instance_id"]
@@ -6177,7 +6180,7 @@ const HUB_START_GATE: &str = "/tmp/pairing_hub_start_gate";
 /// How long the hub can take to run again once its start gate opens: the
 /// backoff's attempts its gate failed leave a wait of up to its 60 s
 /// ceiling, then its start.
-const GATED_RESTART_WAIT: Duration = Duration::from_secs(120);
+const GATED_RESTART_WAIT: Duration = Duration::from_mins(2);
 
 /// Waits until the hub on the coordinator runs with `restarts` restarts, up
 /// to [`GATED_RESTART_WAIT`], which a restart whose start gate held its

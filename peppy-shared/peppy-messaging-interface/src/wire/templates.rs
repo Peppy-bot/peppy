@@ -3,13 +3,13 @@
 //! `platform-backend`'s AsyncAPI generator needs to render the zenoh
 //! key-expression grammar with *placeholder* identity slots (the AsyncAPI
 //! channel parameters `{coreNode}`, `{clientCoreNode}`, `{daemonInstance}`,
-//! `{clientInstance}`, `{linkId}`, `{goalId}`). Nothing in [`super::zenoh_format`]
+//! `{clientInstance}`, `{linkId}`, `{goalId}`). Nothing in `zenoh_format`
 //! is public, so these thin helpers expose the grammar without letting the
 //! generator hand-roll key expressions.
 //!
 //! The complex part of each shape (the service-root / action-root) is
-//! delegated to the shared [`super::zenoh_format::service_root`] /
-//! [`super::zenoh_format::action_root`] builders, so this module never
+//! delegated to the shared `zenoh_format::service_root` /
+//! `zenoh_format::action_root` builders, so this module never
 //! duplicates that grammar. The surrounding identity-slot arrangement is
 //! formatted here and pinned, byte-for-byte, against the corresponding
 //! `ZenohWireFormat` builder by the tests below.
@@ -22,7 +22,7 @@ use super::zenoh_format::{SINGLE_CHUNK_WILDCARD, action_root, service_root};
 use super::{SenderTarget, ServiceKind};
 
 /// Fully-addressed service channel key expression, mirroring
-/// [`super::zenoh_format::ZenohWireFormat::service_reply_keyexpr`]:
+/// `super::zenoh_format::ZenohWireFormat::service_reply_keyexpr`:
 /// `{to_core}/{from_core}/{to_instance}/{from_instance}/{service_root}`.
 ///
 /// * `to_core` / `to_instance`: the producer (daemon) identity the caller
@@ -32,9 +32,10 @@ use super::{SenderTarget, ServiceKind};
 ///   service this is `SenderTarget::node(core_node_name, "core")`).
 /// * `link_id`: the link-id slot literal.
 /// * `service_name`, `kind`: the service / action sub-service.
-// The arguments are the wire's positional identity slots; grouping them into a
-// struct would obscure that one-to-one mapping with the key expression.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments are the identity slots of the key expression, in its order"
+)]
 pub fn service_channel_address(
     to_core: &str,
     from_core: &str,
@@ -52,7 +53,7 @@ pub fn service_channel_address(
 }
 
 /// Topic publish channel key expression for a non-pairing `target`, mirroring
-/// [`super::zenoh_format::ZenohWireFormat::topic_publish`]:
+/// `super::zenoh_format::ZenohWireFormat::topic_publish`:
 /// `*/{as_core}/*/{as_instance}/topic/{discriminator}/{name}/{tag}/{link_id}/{topic_name}`.
 ///
 /// The two leading wildcards are the subscriber identity slots, which this
@@ -76,7 +77,7 @@ pub fn topic_channel_address(
 }
 
 /// Per-goal action feedback publish channel key expression, mirroring
-/// [`super::zenoh_format::ZenohWireFormat::action_feedback_publish`]:
+/// `super::zenoh_format::ZenohWireFormat::action_feedback_publish`:
 /// `*/{bound_core}/*/{as_instance}/{action_root}/feedback/{as_instance}/{goal_id}`.
 ///
 /// `bound_core` / `as_instance` are the producer's (daemon's) identity;
@@ -152,14 +153,8 @@ mod tests {
             "*/daemoncore/*/daemoninst/topic/node/daemoncore/core/_/clock",
         );
 
-        let sender = TopicWireSender::new(
-            "daemoncore",
-            "daemoninst",
-            target.clone(),
-            Some("_"),
-            "clock",
-        )
-        .unwrap();
+        let sender =
+            TopicWireSender::new("daemoncore", "daemoninst", target, Some("_"), "clock").unwrap();
         assert_eq!(rendered, ZenohWireFormat::topic_publish(&sender));
     }
 
@@ -182,8 +177,7 @@ mod tests {
         );
 
         let receiver =
-            ActionWireReceiver::new("daemoncore", "daemoninst", target.clone(), "stack_launch")
-                .unwrap();
+            ActionWireReceiver::new("daemoncore", "daemoninst", target, "stack_launch").unwrap();
         assert_eq!(
             rendered,
             ZenohWireFormat::action_feedback_publish(&receiver, "_", "goal-123"),

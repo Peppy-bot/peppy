@@ -5,7 +5,7 @@
 //! this validator steps over them.
 //!
 //! A pair is one peer to one peer between two complementary slots (slot =
-//! instance × link_id): same pairing `(name, tag)`, opposite roles. A slot
+//! instance × `link_id`): same pairing `(name, tag)`, opposite roles. A slot
 //! holds as many pairs as its `cardinality` admits: a `one` or `zero_or_one`
 //! slot one, a `one_or_more` or `zero_or_more` slot any number, each pair
 //! held once. Declaring a pair on ONE side covers both endpoints' slots;
@@ -29,6 +29,7 @@ use super::types::{
 /// Minimal view of one node's planned (or already-running) instances needed
 /// for pairing validation. Mirrors `BindingValidationItem` for the pairing
 /// mechanism.
+#[derive(Debug)]
 pub struct PairingValidationItem<'a> {
     pub node_name: &'a str,
     pub node_tag: &'a str,
@@ -396,78 +397,74 @@ fn resolve_pair_declaration(
         !d.cardinality.is_scalar() || peers_of(&slot, claims, already_paired).next().is_none()
     };
 
-    let resolved_peer_link = match requested_peer_link {
+    let resolved_peer_link = if let Some(peer_link) = requested_peer_link {
         // Explicit disambiguation: the named slot must exist and be
         // complementary; claimed-ness is reported precisely below.
-        Some(peer_link) => {
-            let Some(dep) = complementary.iter().find(|d| d.link_id == peer_link) else {
-                return Err(not_complementary());
-            };
-            dep.link_id.clone()
-        }
+        let Some(dep) = complementary.iter().find(|d| d.link_id == peer_link) else {
+            return Err(not_complementary());
+        };
+        dep.link_id.clone()
+    } else {
         // No explicit slot: exactly one OPEN complementary slot must remain
         // (in-plan claim tracking).
-        None => {
-            let available: Vec<&&PairingParticipantDependency> =
-                complementary.iter().filter(|d| open(d)).collect();
-            match available.as_slice() {
-                [] => {
-                    // Distinguish "the target has no such slot at all" from
-                    // "its complementary slot(s) are taken". A slot taken by
-                    // another declaration in THIS plan is a disagreement
-                    // between declarations (PairingConflict); one taken in
-                    // the running stack is plain exclusivity.
-                    let taken_in_plan = complementary.iter().find_map(|d| {
-                        let slot = (target_instance.to_string(), d.link_id.clone());
-                        claims
-                            .get(&slot)
-                            .and_then(|peers| peers.first())
-                            .map(|peer| (d.link_id.clone(), peer.clone()))
-                    });
-                    if let Some((taken_link, (peer_inst, peer_link))) = taken_in_plan {
-                        return Err(ParsingError::PairingConflict(Box::new(PairingConflict {
-                            instance_a: target_instance.to_string(),
-                            link_a: taken_link,
-                            // Same `<instance>/<link_id>` notation as the raw
-                            // declaration in `target_b`, so one message never
-                            // mixes peer-reference styles.
-                            target_a: format!("{peer_inst}/{peer_link}"),
-                            instance_b: owner_id.to_string(),
-                            link_b: key.to_string(),
-                            target_b: target.to_string(),
-                        })));
-                    }
-                    let taken_running = complementary.iter().find_map(|d| {
-                        let slot = (target_instance.to_string(), d.link_id.clone());
-                        already_paired
-                            .get(&slot)
-                            .and_then(|peers| peers.first())
-                            .map(|(inst, link)| (d.link_id.clone(), peer_label(inst, link)))
-                    });
-                    if let Some((taken_link, existing_peer)) = taken_running {
-                        return Err(slot_taken(
-                            target_instance.to_string(),
-                            taken_link,
-                            existing_peer,
-                        ));
-                    }
-                    return Err(not_complementary());
+        let available: Vec<&&PairingParticipantDependency> =
+            complementary.iter().filter(|d| open(d)).collect();
+        match available.as_slice() {
+            [] => {
+                // Distinguish "the target has no such slot at all" from
+                // "its complementary slot(s) are taken". A slot taken by
+                // another declaration in THIS plan is a disagreement
+                // between declarations (PairingConflict); one taken in
+                // the running stack is plain exclusivity.
+                let taken_in_plan = complementary.iter().find_map(|d| {
+                    let slot = (target_instance.to_string(), d.link_id.clone());
+                    claims
+                        .get(&slot)
+                        .and_then(|peers| peers.first())
+                        .map(|peer| (d.link_id.clone(), peer.clone()))
+                });
+                if let Some((taken_link, (peer_inst, peer_link))) = taken_in_plan {
+                    return Err(ParsingError::PairingConflict(Box::new(PairingConflict {
+                        instance_a: target_instance.to_string(),
+                        link_a: taken_link,
+                        // Same `<instance>/<link_id>` notation as the raw
+                        // declaration in `target_b`, so one message never
+                        // mixes peer-reference styles.
+                        target_a: format!("{peer_inst}/{peer_link}"),
+                        instance_b: owner_id.to_string(),
+                        link_b: key.to_string(),
+                        target_b: target.to_string(),
+                    })));
                 }
-                [single] => single.link_id.clone(),
-                multiple => {
-                    let candidates: Vec<&str> =
-                        multiple.iter().map(|d| d.link_id.as_str()).collect();
-                    return Err(ParsingError::PairingTargetAmbiguous(Box::new(
-                        PairingTargetAmbiguous {
-                            owner_instance_id: owner_id.to_string(),
-                            key: key.to_string(),
-                            target_instance_id: target_instance.to_string(),
-                            pairing_name: own_dep.name.as_str().to_string(),
-                            pairing_tag: own_dep.tag.clone(),
-                            candidate_link_ids: candidates.join(", "),
-                        },
-                    )));
+                let taken_running = complementary.iter().find_map(|d| {
+                    let slot = (target_instance.to_string(), d.link_id.clone());
+                    already_paired
+                        .get(&slot)
+                        .and_then(|peers| peers.first())
+                        .map(|(inst, link)| (d.link_id.clone(), peer_label(inst, link)))
+                });
+                if let Some((taken_link, existing_peer)) = taken_running {
+                    return Err(slot_taken(
+                        target_instance.to_string(),
+                        taken_link,
+                        existing_peer,
+                    ));
                 }
+                return Err(not_complementary());
+            }
+            [single] => single.link_id.clone(),
+            multiple => {
+                let candidates: Vec<&str> = multiple.iter().map(|d| d.link_id.as_str()).collect();
+                return Err(ParsingError::PairingTargetAmbiguous(Box::new(
+                    PairingTargetAmbiguous {
+                        owner_instance_id: owner_id.to_string(),
+                        key: key.to_string(),
+                        target_instance_id: target_instance.to_string(),
+                        pairing_name: own_dep.name.as_str().to_string(),
+                        pairing_tag: own_dep.tag.clone(),
+                        candidate_link_ids: candidates.join(", "),
+                    },
+                )));
             }
         }
     };

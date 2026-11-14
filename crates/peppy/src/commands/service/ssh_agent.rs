@@ -29,7 +29,10 @@ const SSH_AUTH_SOCK: &str = "SSH_AUTH_SOCK";
 // it runs during synchronous, single-threaded CLI startup, before the daemon
 // runtime or any other thread exists (see the SAFETY note on the call). The
 // rest of the crate is `#![deny(unsafe_code)]`.
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "`env::set_var` is unsafe, and the function runs before a second thread exists"
+)]
 pub(super) fn bind_ssh_agent_from_config() {
     let selected = match resolve_host_config(&SshTarget::without_host_specific_configuration()) {
         Ok(Some(config)) => config.identity_agent,

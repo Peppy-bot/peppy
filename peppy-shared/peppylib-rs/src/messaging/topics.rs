@@ -15,6 +15,7 @@ use std::sync::Arc;
 /// `(core_node, instance_id)` pair in the keyexpr, and infra subscriptions
 /// deliberately wildcard it. So every message the wire delivers surfaces to
 /// user code; there is no in-process producer filtering.
+#[derive(Debug)]
 pub struct Subscription {
     inner: pmi::Subscription,
 }
@@ -39,12 +40,13 @@ impl Subscription {
     }
 
     /// The underlying wire receiver, which a pinned slot's reader polls beside
-    /// its other members' (see [`crate::runtime::slot_stream`]).
+    /// its other members' (see `crate::runtime::slot_stream`).
     pub(crate) fn wire_receiver(&self) -> &flume::Receiver<pmi::TopicMessage> {
         &self.inner.rx
     }
 }
 
+#[derive(Debug)]
 pub struct TopicMessenger;
 
 impl TopicMessenger {
@@ -55,7 +57,7 @@ impl TopicMessenger {
     /// [`Self::subscribe_target_scoped`].
     /// `from_producer` is one producer: its full `(core_node, instance_id)`
     /// pair is pinned on the wire, so only that producer's publishes ever
-    /// reach this subscription. There is no separate core_node parameter:
+    /// reach this subscription. There is no separate `core_node` parameter:
     /// producer identity always travels as the whole pair. Generated
     /// consumed topics never splice this: they go through
     /// [`crate::runtime::subscribe_bound_set`], which follows the slot's
@@ -69,7 +71,10 @@ impl TopicMessenger {
     /// yet: [`TopicBuffer::Backpressure`] for a reader that consumes the
     /// stream, such as a node, and [`TopicBuffer::KeepLatest`] for a reader
     /// that can leave messages unread, such as a test that observes a node.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub async fn subscribe(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -101,7 +106,7 @@ impl TopicMessenger {
     /// pair stays wildcarded on the wire. Used for streams whose producer
     /// identity is unknowable or deliberately open: a node following its
     /// daemon's `clock` / `daemon_heartbeat` (a daemon's node name IS its
-    /// core_node name, so the target pins which daemon matches), the
+    /// `core_node` name, so the target pins which daemon matches), the
     /// daemon's own name-collision watch (the point is to hear foreign
     /// publishers), an external simulator's clock, and the benchmark
     /// prober. Deliberately separate from [`Self::subscribe`]: consumer
@@ -138,7 +143,10 @@ impl TopicMessenger {
     /// domain's own `link_id`. Naming the segment is what keeps the two streams
     /// apart for a subscriber that cannot know the daemon's per-boot
     /// `instance_id`. `buffer` is as in [`Self::subscribe`].
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub(crate) async fn subscribe_target_scoped_with_link_id(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -165,8 +173,8 @@ impl TopicMessenger {
     }
 
     /// Subscribe to one topic of a pairing, pinned to a producer's full wire
-    /// triple: `(core_node, instance_id)` plus the producer-side link_id segment
-    /// of its publishes. Unlike [`Self::subscribe`], the link_id slot is a
+    /// triple: `(core_node, instance_id)` plus the producer-side `link_id` segment
+    /// of its publishes. Unlike [`Self::subscribe`], the `link_id` slot is a
     /// literal, never a wildcard. Pairing traffic rides the `pairing` wire
     /// discriminator, which no interface subscription can match.
     ///
@@ -179,7 +187,10 @@ impl TopicMessenger {
     /// for either caller. Applications never construct raw key expressions;
     /// every pinned subscription comes through this seam. `buffer` is as in
     /// [`Self::subscribe`].
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub(crate) async fn subscribe_peer_pinned(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -226,12 +237,15 @@ impl TopicMessenger {
 
     /// Subscribe to one topic of a pairing as an observer of every pair that
     /// one producer slot holds: pinned to the producer's
-    /// `(core_node, instance_id)` and the link_id of its slot, whichever peer
+    /// `(core_node, instance_id)` and the `link_id` of its slot, whichever peer
     /// each message goes to. For a client that names the producer itself,
     /// such as `peppy node echo`, with no observer slot of its own. A slot
     /// that holds no pair publishes nothing, so the subscription receives
     /// nothing until it does. `buffer` is as in [`Self::subscribe`].
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub async fn subscribe_observing(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -275,7 +289,10 @@ impl TopicMessenger {
     /// pairing-shaped target and names the recipient it stands for, and from
     /// [`Self::subscribe_target_scoped`], which leaves the publisher's identity
     /// and `link_id` wildcarded. `buffer` is as in [`Self::subscribe`].
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub(crate) async fn subscribe_publisher_pinned(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -304,7 +321,10 @@ impl TopicMessenger {
 
     /// Whether a subscriber matching a pairing emission from this node's
     /// slot `link_id` to `peer` is visible, within `timeout`.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub async fn wait_for_pairing_subscriber(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -331,7 +351,10 @@ impl TopicMessenger {
     /// Declares the publisher for pairing emissions from this node's slot
     /// `link_id` to `peer`: one wire publisher per pair, which is what a
     /// [`crate::runtime::PeerPublisher`] keeps per peer of its slot.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub async fn declare_pairing_publisher(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -388,7 +411,7 @@ impl TopicMessenger {
     /// [`Self::wait_for_subscriber`] for a publisher bound under a concrete
     /// producer-side `link_id` (a pairing slot publisher, or any
     /// `--link-id`-scoped publisher): the match is checked against the same
-    /// keyexpr the publisher will emit on, link_id segment included.
+    /// keyexpr the publisher will emit on, `link_id` segment included.
     pub async fn wait_for_subscriber_with_link_id(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -410,7 +433,7 @@ impl TopicMessenger {
             .await
     }
 
-    /// Declares a topic publisher bound under a single producer-side link_id,
+    /// Declares a topic publisher bound under a single producer-side `link_id`,
     /// bypassing the central `Messenger` mutex on every subsequent publish.
     /// `link_id` `None` falls back to the reserved default `_` segment.
     ///
@@ -422,7 +445,10 @@ impl TopicMessenger {
     /// [`TopicRetention::Latest`] the node's session keeps the topic's newest
     /// messages until the node stops, for subscribers that join later, and
     /// every declaration of the topic states the same retention and QoS.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub async fn declare_publisher(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -484,12 +510,12 @@ fn pairing_sender(
 /// ([`crate::runtime::declare_sole_peer_publisher`]) addresses each publish
 /// to the one peer that holds the pair when it runs, and sends nothing while
 /// the slot is unpaired.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TopicPublisher {
     route: PublisherRoute,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 enum PublisherRoute {
     /// One wire publisher, whose key is fixed when it is declared.
     Fixed(Arc<MessengerPublisher>),

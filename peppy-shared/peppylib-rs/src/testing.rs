@@ -73,7 +73,7 @@ const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(200);
 ///
 /// The one scoped unsafe opt-out of this module (see lib.rs): the
 /// get/setrlimit FFI has no safe equivalent.
-#[allow(unsafe_code)]
+#[expect(unsafe_code, reason = "the get/setrlimit FFI has no safe equivalent")]
 pub fn ensure_test_fd_limit() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
@@ -87,7 +87,7 @@ pub fn ensure_test_fd_limit() {
                 rlim_cur: 0,
                 rlim_max: 0,
             };
-            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+            if libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) != 0 {
                 return;
             }
             let target = DESIRED_SOFT.min(limit.rlim_max);
@@ -95,7 +95,7 @@ pub fn ensure_test_fd_limit() {
                 return;
             }
             limit.rlim_cur = target;
-            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &limit);
+            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit);
         }
     });
 }
@@ -122,7 +122,7 @@ pub fn unique_test_instance_id() -> String {
     format!(
         "test-{}-{}",
         std::process::id(),
-        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        COUNTER.fetch_add(1, Ordering::Relaxed),
     )
 }
 
@@ -134,6 +134,7 @@ pub fn unique_test_instance_id() -> String {
 /// a time. That guard is not reentrant: a test that needs two routers at once
 /// must use [`start_unserialized`](Self::start_unserialized) for the second
 /// (or both) and accept the discovery-contention flake risk.
+#[derive(Debug)]
 pub struct EphemeralRouter {
     instance: ZenohdInstance,
     _serial: Option<tokio::sync::MutexGuard<'static, ()>>,
@@ -219,12 +220,13 @@ pub async fn connect_messenger(host: &str, port: u16) -> Result<MessengerHandle>
 /// mode a freshly-connected publisher learns about existing subscribers
 /// asynchronously, so an unguarded first publish can be dropped before routing
 /// propagates; the wait is keyed by this publisher's exact wire identity
-/// (link_id segment included), so it matches precisely the subscription the
+/// (`link_id` segment included), so it matches precisely the subscription the
 /// consumer under test opened. Subsequent publishes skip the wait.
 ///
 /// No subscriber within [`READINESS_TIMEOUT`] is an error, not a silent drop:
 /// it means the node under test never subscribed where the test publishes,
 /// which is a wiring bug the test must surface.
+#[derive(Debug)]
 pub struct TestTopicPublisher {
     publisher: TopicPublisher,
     messenger: MessengerHandle,
@@ -242,7 +244,10 @@ pub struct TestTopicPublisher {
 impl TestTopicPublisher {
     /// Declares the underlying publisher now (so the identity is visible to
     /// the mesh immediately) without waiting for any subscriber yet.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the mock"
+    )]
     pub async fn declare(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -281,7 +286,10 @@ impl TestTopicPublisher {
     /// Declares a pairing publisher from the mock's slot `link_id` to `peer`
     /// (the node under test, on its slot), for a mock playing the other end
     /// of a pair.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the mock"
+    )]
     pub async fn declare_to_peer(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -319,6 +327,7 @@ impl TestTopicPublisher {
 
     /// Override how long the first publish may wait for a subscriber before
     /// failing (default [`READINESS_TIMEOUT`]).
+    #[must_use]
     pub fn with_readiness_timeout(mut self, timeout: Duration) -> Self {
         self.readiness_timeout = timeout;
         self
@@ -425,7 +434,10 @@ async fn wait_for_matching_subscriber(
 /// The subscription keeps the newest messages ([`TopicBuffer::KeepLatest`]):
 /// a test can leave it unread, and its unread messages never hold up the
 /// other messages to the mock's session.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments are the segments of the wire address and the options of the mock"
+)]
 pub async fn subscribe_peer_pinned(
     messenger: &MessengerHandle,
     as_core_node: &str,
@@ -510,7 +522,10 @@ pub async fn wait_action_reachable(
 
 /// The shared probe loop behind the two `wait_*_reachable` helpers: poll the
 /// matching `is_reachable` probe until it answers or `timeout` expires.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments are the segments of the wire address and the options of the mock"
+)]
 async fn wait_reachable(
     kind: ServiceReadinessKind,
     messenger: &MessengerHandle,
@@ -562,11 +577,11 @@ async fn wait_reachable(
 
 /// One service request captured by a [`MockServiceCore`], kept for later
 /// assertions regardless of whether the response was scripted or manual.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct CapturedServiceRequest {
     /// Caller identity and request payload.
     pub message: Message,
-    /// Producer-side link_id that received the request.
+    /// Producer-side `link_id` that received the request.
     pub link_id: String,
 }
 
@@ -576,6 +591,7 @@ pub struct CapturedServiceRequest {
 /// [`next_request`](Self::next_request) otherwise. Requests that neither path
 /// consumed are reported loudly at drop, so a node call the test never
 /// noticed cannot pass silently.
+#[derive(Debug)]
 pub struct MockServiceCore {
     service_name: String,
     requests: flume::Receiver<(ServiceRequestContext, ServiceResponder)>,
@@ -742,6 +758,7 @@ impl Drop for MockServiceCore {
 /// [`Error::ActionFeedbackProducerGone`]. The caller must also drop the mock's
 /// session for the loss to be complete; the generated veneer owns that
 /// ordering.
+#[derive(Debug)]
 pub struct MockActionServerCore {
     action_name: String,
     engine: ConcurrentAction,
@@ -781,6 +798,7 @@ impl MockActionServerCore {
     /// [`ConcurrentAction::with_result_retention_grace`] does. A zero grace
     /// makes every later result request of a settled goal read
     /// [`GoalOutcome::Expired`](crate::messaging::GoalOutcome::Expired).
+    #[must_use]
     pub fn with_result_retention_grace(mut self, grace: Duration) -> Self {
         self.engine = self.engine.with_result_retention_grace(grace);
         self
@@ -821,6 +839,7 @@ impl MockActionServerCore {
 
 /// A goal received by a [`MockActionServerCore`], awaiting the test's
 /// admission decision.
+#[derive(Debug)]
 pub struct MockPendingGoal {
     pending: PendingGoal,
     live: Arc<StdMutex<Vec<Weak<GoalContext>>>>,
@@ -897,6 +916,7 @@ impl ClockSource for SkewedWallSource {
     }
 }
 
+#[derive(Debug)]
 enum MockClockDriver {
     /// Publishes wall ticks on the core node's own `clock` key, as a daemon
     /// does.
@@ -924,6 +944,7 @@ enum MockClockDriver {
 /// The `clock` service answers from OS wall time in every mode, skewable via
 /// [`set_offset_ns`](Self::set_offset_ns), because that is what a daemon
 /// serves whatever its instances read.
+#[derive(Debug)]
 pub struct MockClock {
     core_node: String,
     instance_id: String,
@@ -1154,10 +1175,11 @@ impl Drop for MockClock {
 /// subscriptions before the node exists, but in gossip mode the node's fresh
 /// session still has to *discover* them; without this barrier the node's very
 /// first publish can be dropped (subscribe-first alone is not sufficient).
+#[derive(Debug)]
 pub struct PublisherReadiness {
     /// The identity the node publishes under for this topic.
     pub target: SenderTarget,
-    /// The node's own producer-side link_id for slot-scoped publishers
+    /// The node's own producer-side `link_id` for slot-scoped publishers
     /// (pairing slots); `None` for plain emitted topics.
     pub link_id: Option<String>,
     /// The mock peer a pairing publisher addresses; `None` for plain emitted
@@ -1180,6 +1202,7 @@ pub enum ServiceReadinessKind {
 /// queryable that was declared long before the node's session existed. The
 /// harness therefore waits (on the node's own session) until each mock's
 /// queryable answers reachability probes, before `setup` runs.
+#[derive(Debug)]
 pub struct ServiceReadiness {
     /// The identity the mock serves under (the dependency's node/contract
     /// target).
@@ -1204,6 +1227,7 @@ pub struct ServiceReadiness {
 /// release the node session as the harness drops. Dropping without calling
 /// `shutdown` still cancels and aborts, but skips the hook run: prefer the
 /// explicit call.
+#[derive(Debug)]
 pub struct HarnessCore {
     node_runner: Arc<NodeRunner>,
     cancellation_token: CancellationToken,
@@ -1229,7 +1253,7 @@ impl HarnessCore {
     where
         Params: serde::de::DeserializeOwned + schemars::JsonSchema,
         F: FnOnce(Params, Arc<NodeRunner>) -> Fut,
-        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
     {
         let cancellation_token = CancellationToken::new();
         let mut context = NodeBuilder::<Params>::new()

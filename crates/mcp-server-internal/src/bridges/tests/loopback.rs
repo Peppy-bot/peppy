@@ -204,16 +204,16 @@ impl Endpoint {
     fn call_tool(
         &self,
         tool: &str,
-        arguments: Value,
+        arguments: &Value,
         progress_token: Option<&str>,
-    ) -> impl Future<Output = reqwest::Response> + Send + 'static {
+    ) -> impl Future<Output = reqwest::Response> + Send + 'static + use<> {
         self.loopback.call_tool(tool, arguments, progress_token)
     }
 
     /// Moves the gripper with a progress token. Returns once the response
     /// headers arrive.
     fn move_gripper(&self, width: f64) -> impl Future<Output = reqwest::Response> + Send + 'static {
-        self.call_tool(TOOL, json!({ "width": width }), Some(PROGRESS_TOKEN))
+        self.call_tool(TOOL, &json!({ "width": width }), Some(PROGRESS_TOKEN))
     }
 
     /// The result of a call that carries no progress token, whose response
@@ -310,7 +310,7 @@ async fn a_progress_bound_call_opens_with_the_first_feedback_of_its_held_goal() 
     assert_progress(&events.next_message().await, r#"{"percent":10}"#);
 
     context
-        .complete(encoded(&result_codec(), json!({ "width": 0.04 })))
+        .complete(encoded(&result_codec(), &json!({ "width": 0.04 })))
         .await
         .expect("the provider completes the goal");
     let answer = events.next_message().await;
@@ -390,7 +390,7 @@ async fn a_refused_and_a_failed_goal_reach_the_client_and_the_record_with_their_
     let (mesh, mut provider) = mesh(true).await;
     let endpoint = Endpoint::serve(&mesh).await;
 
-    let refused = move_gripper_ending(&endpoint, &mut provider, |pending| async {
+    let refused = move_gripper_ending(&endpoint, &mut provider, async |pending| {
         pending
             .refuse(unreachable_width())
             .await
@@ -408,7 +408,7 @@ async fn a_refused_and_a_failed_goal_reach_the_client_and_the_record_with_their_
     );
     ending.assert_recorded(&endpoint.ended_entry(TOOL).await);
 
-    let failed = move_gripper_ending(&endpoint, &mut provider, |pending| async {
+    let failed = move_gripper_ending(&endpoint, &mut provider, async |pending| {
         let context = pending
             .accept(Payload::new())
             .await

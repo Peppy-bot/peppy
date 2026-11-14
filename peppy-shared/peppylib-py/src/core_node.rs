@@ -15,7 +15,7 @@ use crate::runtime::PyNodeRunner;
 
 /// Python wrapper for `core_node_api::encoding::ContainerInfo`.
 #[pyclass(name = "ContainerInfo", from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyContainerInfo {
     inner: ContainerInfo,
 }
@@ -48,7 +48,7 @@ impl PyContainerInfo {
 /// Exposes the same fields as the Rust type plus `encode()` so tests can
 /// fabricate capnp wire bytes for stub listeners.
 #[pyclass(name = "InfoResponse", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyInfoResponse {
     inner: InfoResponse,
 }
@@ -62,7 +62,10 @@ impl From<InfoResponse> for PyInfoResponse {
 #[pymethods]
 impl PyInfoResponse {
     #[new]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor takes one argument for each field"
+    )]
     fn new(
         uptime_secs: u64,
         core_node_name: String,
@@ -139,7 +142,7 @@ impl PyInfoResponse {
 /// Python wrapper for `core_node_api::encoding::StackListResponse`, used by
 /// test stubs to produce capnp wire bytes for the `STACK_LIST` service.
 #[pyclass(name = "StackListResponse", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyStackListResponse {
     inner: StackListResponse,
 }
@@ -151,7 +154,10 @@ impl PyStackListResponse {
     /// stack, if any.
     #[new]
     #[pyo3(signature = (graph_json, core_node, instance_id, host_name, copies, launch_copies, shutdown_grace_secs, copy_change=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor takes one argument for each field"
+    )]
     fn new(
         graph_json: String,
         core_node: String,
@@ -221,6 +227,7 @@ impl PyStackListResponse {
 /// `SerializedNodeGraph` types all derive `Serialize`/`Deserialize`, so a
 /// dict/list representation faithfully mirrors the Rust shape without hand-
 /// wrapping six more classes.
+#[derive(Debug)]
 #[pyclass(name = "StackList")]
 pub struct PyStackList {
     inner: peppylib::stack::StackList,
@@ -309,7 +316,7 @@ fn info<'py>(
     node_runner: &PyNodeRunner,
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = std::sync::Arc::clone(&node_runner.inner);
     let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let response = peppylib::info(&runner, timeout).await.map_err(to_py_err)?;
@@ -327,7 +334,7 @@ fn stack_list<'py>(
     node_runner: &PyNodeRunner,
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = std::sync::Arc::clone(&node_runner.inner);
     let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let result = peppylib::stack::list(&runner, timeout)

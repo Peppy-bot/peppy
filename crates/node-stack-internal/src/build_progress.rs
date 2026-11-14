@@ -221,7 +221,7 @@ impl ProgressTracker {
         let bytes_written = activity.bytes_on_disk.saturating_sub(self.bytes_on_disk);
         self.bytes_on_disk = activity.bytes_on_disk;
         self.cpu_reported = self.cpu_reported.min(activity.cpu_time);
-        let cpu_accrued = activity.cpu_time - self.cpu_reported;
+        let cpu_accrued = activity.cpu_time.checked_sub(self.cpu_reported).unwrap();
         let cpu_burned = (cpu_accrued >= CPU_ACTIVITY_THRESHOLD).then_some(cpu_accrued);
         if cpu_burned.is_some() {
             self.cpu_reported = activity.cpu_time;
@@ -283,6 +283,7 @@ fn format_duration(time: Duration) -> String {
 mod tests {
     use super::*;
     use crate::build_io::FeedbackStream;
+    use std::assert_matches;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     const MB: u64 = 1024 * 1024;
@@ -448,10 +449,10 @@ mod tests {
         last_output.record("");
         last_output.record(" \t ");
         assert_eq!(
-            last_output.quiet_output(printed_at + Duration::from_secs(60)),
+            last_output.quiet_output(printed_at + Duration::from_mins(1)),
             Some(QuietOutput {
                 text: "INFO:    Creating SIF file...".to_string(),
-                quiet_for: Duration::from_secs(60),
+                quiet_for: Duration::from_mins(1),
             })
         );
     }
@@ -531,7 +532,7 @@ mod tests {
             .await
             .expect("a growth tick must emit within an interval")
             .expect("channel open");
-        assert!(matches!(line.stream, FeedbackStream::Stdout));
+        assert_matches!(line.stream, FeedbackStream::Stdout);
         assert!(
             line.line.contains("(+300.0 MB)"),
             "the line must report the growth delta, got: {}",

@@ -20,14 +20,14 @@ use std::collections::{HashMap, HashSet};
 /// `node sync`, and the launch-time auto-sync so the "what feeds peppygen"
 /// sequence lives in one place. Error strings name the failing step; callers
 /// only add their transport wrapper.
-pub fn collect_all_deployment_interfaces(
+pub(crate) fn collect_all_deployment_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
     resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
     peppy_dirs: &PeppyDirs,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<Vec<DeploymentInterface>, String> {
+) -> Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = collect_consumed_interfaces(
         manifest,
         interfaces_cfg,
@@ -54,7 +54,7 @@ pub fn collect_all_deployment_interfaces(
     Ok(interfaces)
 }
 
-/// The pairing slot link_ids of a manifest, participants and observers alike.
+/// The pairing slot `link_ids` of a manifest, participants and observers alike.
 /// Entries naming one are resolved by `collect_pairing_interfaces` against the
 /// pairing document and generated under `paired_topics/<link_id>/<topic>`, so
 /// both the consumed collector and the implements resolver must step over
@@ -64,7 +64,7 @@ fn pairing_slot_link_ids(manifest: &config::node::Manifest) -> HashSet<&str> {
     manifest
         .depends_on
         .iter()
-        .flat_map(|d| d.pairing_link_ids())
+        .flat_map(config::node::DependsOn::pairing_link_ids)
         .collect()
 }
 
@@ -103,7 +103,7 @@ fn collect_consumed_interfaces(
     peppy_dirs: &PeppyDirs,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<Vec<DeploymentInterface>, String> {
+) -> Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = Vec::new();
     let mut deps = ResolvedDependencies {
         lookup: build_dependency_lookup(manifest),
@@ -113,7 +113,7 @@ fn collect_consumed_interfaces(
 
     // Pre-resolve each unique dependency into its offerings table / contract
     // document, so the per-entry lookups below are pure map reads.
-    for (link_id, entry) in deps.lookup.iter() {
+    for (link_id, entry) in &deps.lookup {
         match entry.kind {
             DependencyKind::Node => {
                 let node_key = (entry.name.clone(), entry.tag.clone());
@@ -159,7 +159,7 @@ fn collect_consumed_interfaces(
                 continue;
             }
             let Some((offered, dependency)) = deps.resolve_consumed_offering(
-                config::node::InterfaceKind::Topic.consumed_section(),
+                InterfaceKind::Topic.consumed_section(),
                 &consumed_topic.link_id,
                 consumed_topic.name.trim(),
                 |offerings, name| offerings.topics.get(name).cloned(),
@@ -197,7 +197,7 @@ fn collect_consumed_interfaces(
         for consumed_service in consumed_services {
             let Some(((request_format, response_format), dependency)) = deps
                 .resolve_consumed_offering(
-                    config::node::InterfaceKind::Service.consumed_section(),
+                    InterfaceKind::Service.consumed_section(),
                     &consumed_service.link_id,
                     consumed_service.name.trim(),
                     |offerings, name| offerings.services.get(name).cloned(),
@@ -236,7 +236,7 @@ fn collect_consumed_interfaces(
     {
         for consumed_action in consumed_actions {
             let Some((action_message, dependency)) = deps.resolve_consumed_offering(
-                config::node::InterfaceKind::Action.consumed_section(),
+                InterfaceKind::Action.consumed_section(),
                 &consumed_action.link_id,
                 consumed_action.name.trim(),
                 |offerings, name| offerings.actions.get(name).cloned(),
@@ -274,14 +274,14 @@ impl ResolvedDependencies {
     /// document (contract-addressed).
     ///
     /// `Ok(None)` means the entry is not this collector's to report: an
-    /// undeclared link_id, an unresolved node dependency, and a name the
+    /// undeclared `link_id`, an unresolved node dependency, and a name the
     /// producer does not natively offer are all reported by
     /// `validate_dependency_specs` upstream, which sees node dependencies and
     /// would otherwise report each twice.
     ///
     /// A name absent from a *contract* document has no upstream reporter at
     /// all: `validate_dependency_specs` stops at the declaration check for
-    /// `depends_on.contracts` link_ids, and no layer below this one can open a
+    /// `depends_on.contracts` `link_ids`, and no layer below this one can open a
     /// contract document. So it errors here, or nowhere. The same goes for a
     /// `refine` block the member does not admit, which `extract_from_contract`
     /// reports as its `Err`.
@@ -295,7 +295,7 @@ impl ResolvedDependencies {
             &peppy_codec::contract::PeppyContract,
             &str,
         ) -> Option<Result<T, Vec<RefinementProblem>>>,
-    ) -> std::result::Result<Option<(T, generator::DependencyContext)>, String> {
+    ) -> Result<Option<(T, generator::DependencyContext)>, String> {
         let Some(entry) = self.lookup.get(link_id) else {
             return Ok(None);
         };
@@ -410,7 +410,7 @@ mod action_message_tests {
 fn daemon_interface_doc(
     link_id: &str,
     entry: &DependencyLookupEntry,
-) -> std::result::Result<peppy_codec::contract::PeppyContract, String> {
+) -> Result<peppy_codec::contract::PeppyContract, String> {
     let target = config::node::DaemonTargetDependency {
         name: config::runtime::Name::new(&entry.name).map_err(|e| e.to_string())?,
         tag: entry.tag.clone(),
@@ -435,7 +435,7 @@ pub(crate) fn resolve_contract_doc(
     sha256_pin: Option<&str>,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<peppy_codec::contract::PeppyContract, String> {
+) -> Result<peppy_codec::contract::PeppyContract, String> {
     let parse = |content: &str| {
         peppy_codec::contract::PeppyContractParser::from_content(content).map_err(|e| e.to_string())
     };
@@ -536,7 +536,7 @@ fn resolve_implements(
     peppy_dirs: &PeppyDirs,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<Vec<DeploymentInterface>, ImplementsError> {
+) -> Result<Vec<DeploymentInterface>, ImplementsError> {
     if manifest.implements.is_empty() {
         return Ok(Vec::new());
     }
@@ -727,7 +727,7 @@ fn member_kind(doc: &peppy_codec::contract::PeppyContract, name: &str) -> Option
 ///
 /// Use this for callers that resolve against the stack alone, such as
 /// `auto_sync_if_missing`.
-pub fn stack_resolver(
+pub(crate) fn stack_resolver(
     node_stack: &NodeStack,
 ) -> impl Fn(&str, &str) -> Option<config::node::NodeConfig> + '_ {
     move |name, tag| {
@@ -743,7 +743,7 @@ pub fn stack_resolver(
 /// `node sync` and `node add`.
 pub(crate) fn stack_then_repo_resolver<'a>(
     node_stack: &'a NodeStack,
-    repo_resolved: &'a std::collections::HashMap<(String, String), config::node::NodeConfig>,
+    repo_resolved: &'a HashMap<(String, String), config::node::NodeConfig>,
 ) -> impl Fn(&str, &str) -> Option<config::node::NodeConfig> + 'a {
     let stack = stack_resolver(node_stack);
     move |name, tag| {
@@ -768,6 +768,7 @@ mod implements_tests {
     use config::failure_kind::MemberSection;
     use config::node::{Interfaces, Manifest};
     use generator::InterfaceVariant;
+    use std::assert_matches;
     use std::fs;
     use tempfile::TempDir;
 
@@ -789,7 +790,7 @@ mod implements_tests {
                 .expect("test name is valid"),
             tag: daemon_config::repository::ItemTag::parse(tag).expect("test tag is valid"),
             sha256: daemon_config::repository::ManifestFingerprint::of_bytes(body.as_bytes()),
-            origin: repo_cache::EntryOrigin::Fs { path: path.clone() },
+            origin: repo_cache::EntryOrigin::Fs { path },
             repo_id: 0,
             descriptions: crate::services::repo::cache::test_support::descriptions("test contract"),
         }
@@ -867,7 +868,7 @@ mod implements_tests {
         );
     }
 
-    /// Happy path: a full-coverage manifest yields one DeploymentInterface
+    /// Happy path: a full-coverage manifest yields one `DeploymentInterface`
     /// per contract-backed entry, each carrying the member's shape from the
     /// contract document and a `ContractOrigin` pointing back at the source
     /// contract.
@@ -1217,11 +1218,9 @@ mod implements_tests {
                     let goal = action.goal_service.as_ref().unwrap();
                     let request = goal.request_message_format.as_ref();
                     assert_eq!(array_length(request, "joint_positions"), Some(7));
-                    assert!(
-                        matches!(
-                            request.unwrap().0["arm_id"],
-                            config::node::SchemaType::Type(config::node::TypeToken::U8)
-                        ),
+                    assert_matches!(
+                        request.unwrap().0["arm_id"],
+                        config::node::SchemaType::Type(config::node::TypeToken::U8),
                         "unpinned fields stay as the contract declares them"
                     );
                     let response = action
@@ -1561,7 +1560,7 @@ mod implements_tests {
     /// a contract dependency must route each entry to exactly one collector.
     ///
     /// This is the regression this whole design is most exposed to. Admitting
-    /// pairing link_ids into the consumed collector would either drop them
+    /// pairing `link_ids` into the consumed collector would either drop them
     /// (the consumed dependency lookup knows only node and contract kinds) or
     /// land them in the flat `consumed_topics` namespace, splitting a slot's
     /// two directions across unrelated module trees.
@@ -1590,9 +1589,7 @@ mod implements_tests {
             sha256: daemon_config::repository::ManifestFingerprint::of_bytes(
                 ARM_LINK_BODY.as_bytes(),
             ),
-            origin: repo_cache::EntryOrigin::Fs {
-                path: pairing_path.clone(),
-            },
+            origin: repo_cache::EntryOrigin::Fs { path: pairing_path },
             repo_id: 0,
             descriptions: crate::services::repo::cache::test_support::descriptions("test pairing"),
         };
@@ -1636,16 +1633,16 @@ mod implements_tests {
         for interface in &out {
             match interface.interface() {
                 InterfaceVariant::EmittedTopic { topic, .. } => {
-                    emitted_topics.push(topic.name.as_str())
+                    emitted_topics.push(topic.name.as_str());
                 }
                 InterfaceVariant::PeerEmittedTopic { topic, .. } => {
-                    peer_emitted.push(topic.name.as_str())
+                    peer_emitted.push(topic.name.as_str());
                 }
                 InterfaceVariant::PeerConsumedTopic { topic, .. } => {
-                    peer_consumed.push(topic.name.as_str())
+                    peer_consumed.push(topic.name.as_str());
                 }
                 InterfaceVariant::ConsumedTopic { topic, .. } => {
-                    consumed_topics.push(topic.name.as_str())
+                    consumed_topics.push(topic.name.as_str());
                 }
                 other => panic!("unexpected variant {other:?}"),
             }
@@ -1667,7 +1664,7 @@ mod implements_tests {
 
     /// A consumed entry naming no member of its contract is refused, not
     /// dropped, so a typo cannot produce a missing module and a successful
-    /// sync. Nothing upstream sees contract link_ids, so this is the only
+    /// sync. Nothing upstream sees contract `link_ids`, so this is the only
     /// place it can be reported.
     #[test]
     fn consumed_entry_absent_from_contract_is_rejected() {
@@ -2043,7 +2040,7 @@ mod implements_tests {
 
     /// A consumed action naming no member of its contract is rejected with
     /// the same error shape as topics and services; nothing upstream sees
-    /// contract link_ids, so this is the only place it can be reported.
+    /// contract `link_ids`, so this is the only place it can be reported.
     #[test]
     fn consumed_action_absent_from_contract_is_rejected() {
         let tmp = TempDir::new().unwrap();

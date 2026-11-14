@@ -25,11 +25,11 @@ pub(crate) struct ResolvedMcpDeployment {
 }
 
 impl ResolvedMcpDeployment {
-    pub fn exposure_pins(&self) -> Vec<PinnedItem> {
+    pub(crate) fn exposure_pins(&self) -> Vec<PinnedItem> {
         self.spec.exposures.iter().map(|d| d.pin.clone()).collect()
     }
 
-    pub fn contract_pins(&self) -> Vec<PinnedItem> {
+    pub(crate) fn contract_pins(&self) -> Vec<PinnedItem> {
         self.spec.contracts.iter().map(|d| d.pin.clone()).collect()
     }
 

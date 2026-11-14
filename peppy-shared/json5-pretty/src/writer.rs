@@ -81,7 +81,7 @@ fn write_key(out: &mut String, key: &str) {
 
 /// `s` as a quoted string. The line and paragraph separators (U+2028 and
 /// U+2029) are escaped as well: JSON5 parsers that follow ECMAScript 5,
-/// serde_json5 among them, refuse them raw inside a string.
+/// `serde_json5` among them, refuse them raw inside a string.
 fn write_string(out: &mut String, s: &str) {
     out.push('"');
     for c in s.chars() {
@@ -170,7 +170,7 @@ mod tests {
     }
 
     /// A string with a line or a paragraph separator is written escaped,
-    /// and serde_json5 reads it back as it was.
+    /// and `serde_json5` reads it back as it was.
     #[test]
     fn escapes_the_line_and_paragraph_separators() {
         let v = json!({ "description": "One\u{2028}line, one\u{2029}paragraph." });

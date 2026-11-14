@@ -16,7 +16,9 @@ pub fn workspace_root() -> PathBuf {
 }
 
 /// Compiles the peppy binary in release mode and returns the path to the executable.
-/// The compilation only happens once per test run.
+/// The compilation only happens once per test run. A build that fails leaves
+/// the cell empty, so each test that needs the binary runs the build and
+/// reports its failure itself.
 pub fn peppy_binary() -> &'static PathBuf {
     static BINARY_PATH: OnceLock<PathBuf> = OnceLock::new();
 

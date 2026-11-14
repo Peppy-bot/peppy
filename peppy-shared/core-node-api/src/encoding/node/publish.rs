@@ -42,8 +42,8 @@ impl NodePublishRequest {
             "NodePublishRequest.extra_platforms",
         )?;
         let mut platforms = request.reborrow().init_extra_platforms(count);
-        for (index, platform) in self.extra_platforms.iter().enumerate() {
-            platforms.set(index as u32, platform.as_str());
+        for (index, platform) in (0_u32..).zip(self.extra_platforms.iter()) {
+            platforms.set(index, platform.as_str());
         }
         request.set_report_refusals(self.refusals == PublishRefusals::Report);
         Ok(())
@@ -285,7 +285,7 @@ impl NodePublishLine {
         match &self.outcome {
             NodePublishLineOutcome::ProcessNode => outcome.set_process_node(()),
             NodePublishLineOutcome::OciOrigin(repository) => {
-                outcome.set_oci_origin(repository.to_string())
+                outcome.set_oci_origin(repository.to_string());
             }
             NodePublishLineOutcome::Platform(PlatformPublish {
                 platform,

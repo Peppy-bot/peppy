@@ -35,6 +35,7 @@ pub(crate) fn acquire_daemon_singleton_lock(peppy_dirs: &PeppyDirs) -> Result<Fi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn a_second_acquisition_reports_already_running_until_the_first_drops() {
@@ -43,7 +44,7 @@ mod tests {
 
         let first = acquire_daemon_singleton_lock(&peppy_dirs).unwrap();
         let second = acquire_daemon_singleton_lock(&peppy_dirs);
-        assert!(matches!(second, Err(Error::AlreadyRunning)));
+        assert_matches!(second, Err(Error::AlreadyRunning));
 
         drop(first);
         acquire_daemon_singleton_lock(&peppy_dirs).unwrap();

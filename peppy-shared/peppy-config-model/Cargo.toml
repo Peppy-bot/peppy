@@ -3,6 +3,10 @@ name = "peppy-config-model"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -15,8 +19,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_json5 = "0.2"
 serde_path_to_error = "0.1"
-tracing = "0.1"
-walkdir = "2.5"
 # Used only by the `Capnp` error variant in `error.rs`; the Cap'n Proto
 # schema of a message format is rendered by the `peppy-codec` crate.
 capnp = "0.27"
@@ -36,6 +38,8 @@ tempfile = { version = "3.8", optional = true }
 tempfile = "3.8"
 # The tests of `atomic_write` run in every test build of the crate.
 peppy-config-model = { path = ".", features = ["atomic_write"] }
+# Finds the example configurations that the tests parse.
+walkdir = "2.5"
 
 [features]
 default = []

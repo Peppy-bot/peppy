@@ -31,7 +31,7 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>, strict: bool) -> Result<()> {
         GOAL_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to send repo refresh goal: {}", e)))?;
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send repo refresh goal: {e}")))?;
 
     crate::commands::action_poll::accepted_goal(&action_handle, "Repository refresh")?;
 
@@ -106,7 +106,7 @@ fn format_refresh_line(feedback: &RepoRefreshFeedback) -> String {
         RepoRefreshFeedback::Excluded {
             source_type,
             identity,
-        } => format!("Excluded {} ({})", identity, source_type),
+        } => format!("Excluded {identity} ({source_type})"),
         RepoRefreshFeedback::Discovered {
             kind,
             item_name,

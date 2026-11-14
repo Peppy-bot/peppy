@@ -2,6 +2,7 @@
 //! `NodeEntity`.
 
 use parking_lot::RwLock;
+use std::assert_matches;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -95,7 +96,7 @@ async fn ready_with_running_instance_round_trip() {
             assert!(instances[0].pid().is_some());
             assert_eq!(instances[0].state(), InstanceState::Running);
         }
-        other => panic!("expected Ready, got {:?}", other),
+        other => panic!("expected Ready, got {other:?}"),
     }
 }
 
@@ -129,7 +130,7 @@ async fn stop_instance_removes_last_instance_keeps_ready() {
                 "instances list should be empty after removing the only instance"
             );
         }
-        other => panic!("expected Ready, got {:?}", other),
+        other => panic!("expected Ready, got {other:?}"),
     }
     assert!(guard.artifact_path().is_some());
     assert!(guard.instances().is_empty());
@@ -220,7 +221,7 @@ async fn stop_instance_keeps_other_instances_when_one_removed() {
             assert_eq!(instances.len(), 1);
             assert_eq!(instances[0].instance_id(), &id_b);
         }
-        other => panic!("expected Ready with one instance, got {:?}", other),
+        other => panic!("expected Ready with one instance, got {other:?}"),
     }
 }
 
@@ -303,7 +304,7 @@ async fn push_config_resets_existing_entity_to_added() {
         NodeStage::Added { config_path: cp } => {
             assert_eq!(cp, &config_path_v2);
         }
-        other => panic!("expected Added after re-push, got {:?}", other),
+        other => panic!("expected Added after re-push, got {other:?}"),
     }
     assert!(guard.artifact_path().is_none());
     assert!(guard.instances().is_empty());
@@ -337,7 +338,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
     .expect("valid producer_b config");
 
     let consumer_pointing_at = |producer_name: &str| -> config::node::NodeConfig {
-        let link_id = format!("p_{}", producer_name);
+        let link_id = format!("p_{producer_name}");
         serde_json5::from_str(
             &r#"{
                 peppy_schema: "node/v1",
@@ -441,10 +442,7 @@ async fn push_config_rejects_replacement_with_live_instances() {
             assert_eq!(node_name, "sensor");
             assert_eq!(node_tag, "v1");
         }
-        other => panic!(
-            "expected CannotOverwriteNodeWithLiveInstances, got {:?}",
-            other
-        ),
+        other => panic!("expected CannotOverwriteNodeWithLiveInstances, got {other:?}"),
     }
 }
 
@@ -452,11 +450,7 @@ async fn push_config_rejects_replacement_with_live_instances() {
 async fn concurrent_builds_are_rejected_immediately() {
     // Process node (no container): `NodeEntity::build` runs the pure-Rust
     // archive path, no apptainer required.
-    let stack = NodeStack::new(
-        crate::helpers::config_common::core_node_config(),
-        None,
-        PathBuf::from("/tmp"),
-    );
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
 
     // Isolated peppy_dirs root for this test.
@@ -547,10 +541,7 @@ async fn concurrent_builds_are_rejected_immediately() {
             assert_eq!(from, "Building");
             assert_eq!(to, "Ready");
         }
-        other => panic!(
-            "a concurrent build should be rejected from Building, got {:?}",
-            other
-        ),
+        other => panic!("a concurrent build should be rejected from Building, got {other:?}"),
     }
 
     // Unblock the winner and let it finish.
@@ -562,10 +553,10 @@ async fn concurrent_builds_are_rejected_immediately() {
     );
 
     // Entity ended up in Ready, with the archive present exactly once.
-    assert!(matches!(handle.read().stage(), NodeStage::Ready { .. }));
+    assert_matches!(handle.read().stage(), NodeStage::Ready { .. });
     let archive = winner_result.expect("checked above");
     assert_keyed_artifact_path(&archive, &peppy_dirs);
-    assert!(archive.is_file(), "expected archive at {:?}", archive);
+    assert!(archive.is_file(), "expected archive at {archive:?}");
 }
 
 // ===========================================================================
@@ -606,16 +597,15 @@ fn sensor_config_in_language(language: &str, build_cmd_shell: &str) -> config::n
             }},
             execution: {{
                 language: "{language}",
-                build_cmd: ["sh", "-c", {snippet}],
+                build_cmd: ["sh", "-c", {escaped_snippet}],
                 run_cmd: ["sensor"]
             }}
-        }}"#,
-        snippet = escaped_snippet
+        }}"#
     );
     serde_json5::from_str::<config::node::NodeConfig>(&json).expect("valid sensor+build_cmd config")
 }
 
-/// Helper that constructs the BuildContext fields shared across tests.
+/// Helper that constructs the `BuildContext` fields shared across tests.
 struct BuildHarness {
     working_dir: tempfile::TempDir,
     /// Owns the directory that `peppy_dirs` points into, so the directory
@@ -680,9 +670,7 @@ fn counting_build_cmd(counter: &std::path::Path) -> String {
 }
 
 fn build_count(counter: &std::path::Path) -> usize {
-    std::fs::read_to_string(counter)
-        .map(|contents| contents.lines().count())
-        .unwrap_or(0)
+    std::fs::read_to_string(counter).map_or(0, |contents| contents.lines().count())
 }
 
 /// Pushes a fresh `sensor:v1` entity with `build_cmd_shell` into a new stack
@@ -710,9 +698,11 @@ async fn build_sensor_from(
         .expect("build should succeed")
 }
 
-/// [`build_sensor_from`] for a build that may fail. `NodeStackError` is the
-/// error of `NodeEntity::build`, which the library allows to be large.
-#[allow(clippy::result_large_err)]
+/// [`build_sensor_from`] for a build that may fail.
+#[expect(
+    clippy::result_large_err,
+    reason = "`NodeStackError` is the error of `NodeEntity::build`, which the library keeps large"
+)]
 async fn try_build_sensor_from(
     h: &BuildHarness,
     config: config::node::NodeConfig,
@@ -752,7 +742,7 @@ fn archived_text(archive: &std::path::Path, path: &str) -> Option<String> {
     for entry in tar.entries().expect("tar entries") {
         let mut entry = entry.expect("tar entry");
         let entry_path = entry.path().expect("entry path").into_owned();
-        if entry_path.strip_prefix(".").unwrap_or(&entry_path) == std::path::Path::new(path) {
+        if entry_path.trim_prefix(".") == std::path::Path::new(path) {
             let mut text = String::new();
             entry.read_to_string(&mut text).expect("read archived file");
             return Some(text);
@@ -818,14 +808,14 @@ async fn build_runs_build_cmd_for_process_node() {
 
     // The entity is Ready.
     let guard = handle.read();
-    assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
+    assert_matches!(guard.stage(), NodeStage::Ready { .. });
     assert_eq!(guard.artifact_path(), Some(archive.as_path()));
     drop(guard);
 
     // The archive sits at its keyed slot and contains the marker file
     // produced by build_cmd.
     assert_keyed_artifact_path(&archive, &h.peppy_dirs);
-    assert!(archive.is_file(), "expected archive at {:?}", archive);
+    assert!(archive.is_file(), "expected archive at {archive:?}");
 
     assert!(
         archived_text(&archive, "marker.txt").is_some(),
@@ -882,7 +872,7 @@ async fn a_changed_tree_rebuilds_and_prunes_the_previous_artifact() {
     assert_eq!(build_count(&counter), 2);
     assert_eq!(
         h.sensor_artifacts(),
-        vec![second.clone()],
+        vec![second],
         "storage keeps one artifact per node identity"
     );
 }
@@ -957,8 +947,9 @@ async fn a_missing_working_dir_fails_the_build_at_fingerprinting() {
         ),
         other => panic!("expected BuildFailed, got {other:?}"),
     }
-    assert!(
-        matches!(handle.read().stage(), NodeStage::Building { .. }),
+    assert_matches!(
+        handle.read().stage(),
+        NodeStage::Building { .. },
         "the failure contract leaves the entity in Building"
     );
 }
@@ -1136,10 +1127,7 @@ async fn a_python_build_that_fails_puts_the_staged_lock_back() {
     .await
     .expect_err("build_cmd exits 1");
 
-    assert!(
-        matches!(error, NodeStackError::BuildFailed { .. }),
-        "{error:?}"
-    );
+    assert_matches!(error, NodeStackError::BuildFailed { .. }, "{error:?}");
     let mirror_url = format!("{}{WHEEL_ON_MIRROR}", mirror.base.as_str());
     assert!(
         std::fs::read_to_string(&seen_by_build)
@@ -1219,7 +1207,7 @@ async fn a_build_cancelled_during_the_mirror_check_never_starts_its_build() {
 
     match error {
         NodeStackError::BuildFailed { reason, .. } => {
-            assert_eq!(reason, "build cancelled")
+            assert_eq!(reason, "build cancelled");
         }
         other => panic!("expected BuildFailed, got {other:?}"),
     }
@@ -1290,7 +1278,7 @@ async fn a_rust_build_and_a_python_build_without_a_mirror_leave_the_lock_alone()
 // Start: prepare_and_spawn / commit_started / abort_started
 // ===========================================================================
 
-/// Returns a sensor config that uses a long-running shell loop as run_cmd.
+/// Returns a sensor config that uses a long-running shell loop as `run_cmd`.
 /// The loop traps SIGTERM so `child.kill()` cleanly terminates it.
 fn long_running_sensor_config() -> config::node::NodeConfig {
     serde_json5::from_str::<config::node::NodeConfig>(
@@ -1328,8 +1316,8 @@ async fn push_built_long_running_sensor(
 }
 
 /// Sets up a start-test harness: a `real_lifecycle::LifecycleHarness` plus a
-/// pre-baked instance id. The lifecycle harness provides peppy_dirs, log,
-/// feedback_tx + drain task, publish_enabled, and output_sinks().
+/// pre-baked instance id. The lifecycle harness provides `peppy_dirs`, log,
+/// `feedback_tx` + drain task, `publish_enabled`, and `output_sinks()`.
 fn start_harness(instance_id_str: &str) -> (Name, real_lifecycle::LifecycleHarness) {
     (
         Name::new(instance_id_str).expect("valid instance id"),
@@ -1360,12 +1348,12 @@ async fn prepare_and_spawn_rejects_when_not_built() {
             assert_eq!(from, "Added");
             assert_eq!(to, "spawn instance");
         }
-        other => panic!("expected InvalidStageTransition, got {:?}", other),
+        other => panic!("expected InvalidStageTransition, got {other:?}"),
     }
 
     // Entity remained in Added.
     let guard = handle.read();
-    assert!(matches!(guard.stage(), NodeStage::Added { .. }));
+    assert_matches!(guard.stage(), NodeStage::Added { .. });
 }
 
 #[tokio::test]
@@ -1382,8 +1370,9 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
     // Entity is in Ready with the new instance in Starting state.
     {
         let guard = handle.read();
-        assert!(
-            matches!(guard.stage(), NodeStage::Ready { .. }),
+        assert_matches!(
+            guard.stage(),
+            NodeStage::Ready { .. },
             "entity should remain in Ready during prepare_and_spawn, got {:?}",
             guard.stage()
         );
@@ -1435,7 +1424,7 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
                 assert_eq!(instances[0].pid(), Some(pid));
                 assert_eq!(instances[0].state(), InstanceState::Running);
             }
-            other => panic!("expected Ready, got {:?}", other),
+            other => panic!("expected Ready, got {other:?}"),
         }
     }
 
@@ -1656,15 +1645,15 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
     .await;
     assert!(
         msg.contains("synthetic failure"),
-        "abort message should include the original error, got: {}",
-        msg
+        "abort message should include the original error, got: {msg}"
     );
 
     // Entity is still in Ready, but the Starting instance was removed.
     {
         let guard = handle.read();
-        assert!(
-            matches!(guard.stage(), NodeStage::Ready { .. }),
+        assert_matches!(
+            guard.stage(),
+            NodeStage::Ready { .. },
             "entity should remain in Ready after abort, got {:?}",
             guard.stage()
         );
@@ -1682,12 +1671,10 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
         .arg("-0")
         .arg(pid.to_string())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| s.success());
     assert!(
         !still_alive,
-        "child PID {} should be dead after abort_started, but kill -0 reported alive",
-        pid
+        "child PID {pid} should be dead after abort_started, but kill -0 reported alive"
     );
 }
 
@@ -1756,8 +1743,9 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
     // and new Starting.
     {
         let guard = handle.read();
-        assert!(
-            matches!(guard.stage(), NodeStage::Ready { .. }),
+        assert_matches!(
+            guard.stage(),
+            NodeStage::Ready { .. },
             "expected Ready, got {:?}",
             guard.stage()
         );
@@ -1807,7 +1795,7 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
                     .unwrap();
                 assert_eq!(new_inst.pid(), Some(new_pid));
             }
-            other => panic!("expected Ready, got {:?}", other),
+            other => panic!("expected Ready, got {other:?}"),
         }
     }
 
@@ -1844,7 +1832,7 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
             assert_eq!(id, instance_id.as_str());
             assert_eq!(core_node, "cn-a", "the refusal names the start's daemon");
         }
-        other => panic!("expected DuplicateInstanceId, got {:?}", other),
+        other => panic!("expected DuplicateInstanceId, got {other:?}"),
     }
 
     // The entity remained in Ready with exactly the original instance;
@@ -1856,7 +1844,7 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
             assert_eq!(instances[0].instance_id(), &instance_id);
             assert_eq!(instances[0].state(), InstanceState::Running);
         }
-        other => panic!("expected Ready, got {:?}", other),
+        other => panic!("expected Ready, got {other:?}"),
     }
 }
 
@@ -2023,8 +2011,9 @@ async fn rollback_to_added_if_matches_rolls_building_back_and_reattaches_working
         ),
         "a different handle must not roll back"
     );
-    assert!(
-        matches!(handle.read().stage(), NodeStage::Building { .. }),
+    assert_matches!(
+        handle.read().stage(),
+        NodeStage::Building { .. },
         "the entity must still be Building after the mismatch cases"
     );
 
@@ -2044,7 +2033,7 @@ async fn rollback_to_added_if_matches_rolls_building_back_and_reattaches_working
         let guard = handle.read();
         match guard.stage() {
             NodeStage::Added { config_path } => assert_eq!(config_path, &original_config_path),
-            other => panic!("expected Added after rollback, got {:?}", other),
+            other => panic!("expected Added after rollback, got {other:?}"),
         }
         assert_eq!(
             guard.pending_working_dir().map(|g| g.path().to_path_buf()),

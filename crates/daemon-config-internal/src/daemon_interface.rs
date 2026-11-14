@@ -9,7 +9,7 @@
 //! launcher gives a target that names it, the narrowing of its published
 //! schema by a scope, and the checks a launch runs on a scope.
 
-pub mod robot_leases;
+pub(crate) mod robot_leases;
 mod robot_membership;
 
 use crate::internal::launcher::{Joinable, PreparedLauncher, UnitSelection, VacantReason};
@@ -245,7 +245,7 @@ pub fn served_interfaces(
     )
 }
 
-/// The daemon interface of each daemon target of a node, by its link_id, in
+/// The daemon interface of each daemon target of a node, by its `link_id`, in
 /// the order of `depends_on.daemon`, resolved through the registry, or one
 /// refusal per target that names an interface this peppy does not serve.
 pub fn served_targets(

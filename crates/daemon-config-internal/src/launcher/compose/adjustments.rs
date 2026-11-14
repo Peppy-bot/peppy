@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 /// One of the launcher's adjustments as it runs, with the origin the
 /// report names it by and, for an option's adjustment, the option it sits
 /// under: selecting that option is what brings the entry into a unit.
+#[derive(Debug)]
 pub(super) struct LauncherAdjustment<'a> {
     pub(super) adjustment: &'a Adjustment,
     pub(super) origin: String,
@@ -47,8 +48,7 @@ impl<'a> LauncherAdjustment<'a> {
                 .when
                 .as_ref()
                 .and_then(|when| when.get(axis))
-                .map(|options| options.iter().collect())
-                .unwrap_or_default(),
+                .map_or_default(|options| options.iter().collect()),
         }
     }
 
@@ -86,6 +86,7 @@ impl<'a> LauncherAdjustment<'a> {
 /// One launcher adjustment with what deciding its units needs: the ids that
 /// can run in the stack beside it, and the axes whose copies run it. The id
 /// sets within it are built once per option.
+#[derive(Debug)]
 pub(super) struct Routed<'a> {
     pub(super) entry: LauncherAdjustment<'a>,
     pub(super) stack_ids: HashSet<&'a str>,

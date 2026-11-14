@@ -1,5 +1,6 @@
 mod common;
 
+use std::assert_matches;
 use std::ops::ControlFlow;
 use std::time::Duration;
 
@@ -373,8 +374,9 @@ async fn a_cancelled_benchmark_ends_cancelled_and_the_next_one_runs() {
         deadline,
     )
     .await;
-    assert!(
-        matches!(drained, FeedbackDrainOutcome::Stopped),
+    assert_matches!(
+        drained,
+        FeedbackDrainOutcome::Stopped,
         "the benchmark reaches its first measurement"
     );
 

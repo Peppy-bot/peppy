@@ -4,7 +4,7 @@
 //!
 //! The CLI parses each type from its text with [`FromStr`]. The wire, the
 //! daemon and the MCP bridge carry the types, and a refusal prints them with
-//! [`Display`], whose text parses back to the same value. Each parser trims
+//! `Display`, whose text parses back to the same value. Each parser trims
 //! the whole value once, then splits it in one order: at `@` first (the
 //! machine), then at `.` (the copy of a launch word), then at `=` (the
 //! axis), then at `:` (the name of a copy reference). Axis, option, copy and
@@ -599,6 +599,7 @@ mod tests {
     use super::*;
     use crate::encoding::{decode_message, encode_message};
     use capnp::message::Builder;
+    use std::assert_matches;
 
     fn name(value: &str) -> Name {
         Name::new(value).unwrap()
@@ -734,14 +735,14 @@ mod tests {
             "brain=ai_brain_vla".parse::<AxisSelection>().unwrap(),
             with_copy
         );
-        assert!(matches!(
+        assert_matches!(
             "ai_brain_vla".parse::<AxisSelection>(),
             Err(WordError::MissingPart { .. })
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             "brain=ai_brain_vla@self".parse::<AxisSelection>(),
             Err(WordError::BadMachine { .. })
-        ));
+        );
         assert_eq!(
             serde_json::to_value(&with_copy).unwrap(),
             serde_json::json!({ "axis": "brain", "option": "ai_brain_vla" })
@@ -801,7 +802,7 @@ mod tests {
             assert_eq!(copy_round_trip(&copy), copy);
         }
         let mut message = Builder::new_default();
-        let mut wire = message.init_root::<launch_capnp::copy_reference::Builder>();
+        let mut wire = message.init_root::<launch_capnp::copy_reference::Builder<'_>>();
         wire.set_option("openarm_sim");
         wire.set_name("delta");
         let bytes = encode_message(&message).unwrap();
@@ -813,7 +814,7 @@ mod tests {
         );
 
         let mut message = Builder::new_default();
-        let mut wire = message.init_root::<launch_capnp::copy_reference::Builder>();
+        let mut wire = message.init_root::<launch_capnp::copy_reference::Builder<'_>>();
         wire.set_option("openarm_sim");
         wire.set_name("self");
         wire.init_core_node().set_coordinator(());
@@ -846,7 +847,7 @@ mod tests {
 
         let mut message = Builder::new_default();
         message
-            .init_root::<launch_capnp::launch_word::Builder>()
+            .init_root::<launch_capnp::launch_word::Builder<'_>>()
             .init_copy()
             .set_copy("xiaozhu");
         let bytes = encode_message(&message).unwrap();
@@ -858,7 +859,7 @@ mod tests {
         );
 
         let mut message = Builder::new_default();
-        message.init_root::<launch_capnp::selection_word::Builder>();
+        message.init_root::<launch_capnp::selection_word::Builder<'_>>();
         let bytes = encode_message(&message).unwrap();
         let decoded = decode_message(&bytes).unwrap();
         let refusal = read_selection_word(decoded.get_root().unwrap(), "word").unwrap_err();
@@ -868,7 +869,7 @@ mod tests {
         );
 
         let mut message = Builder::new_default();
-        let mut word = message.init_root::<launch_capnp::option_choice::Builder>();
+        let mut word = message.init_root::<launch_capnp::option_choice::Builder<'_>>();
         word.reborrow().init_axis().set_named("brain");
         word.set_option("bad/option");
         let bytes = encode_message(&message).unwrap();
@@ -891,7 +892,7 @@ mod tests {
             );
         }
         let mut message = Builder::new_default();
-        let mut wire = message.init_root::<node_capnp::axis_selection::Builder>();
+        let mut wire = message.init_root::<node_capnp::axis_selection::Builder<'_>>();
         wire.set_axis("brain");
         wire.set_option("ai_brain_vla");
         wire.init_core_node().set_named("self");

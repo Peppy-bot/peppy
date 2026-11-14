@@ -10,6 +10,7 @@ use daemon_config::launcher::{
     AppliedChange, CompositionError, JoinRequest, PeppyLauncherParser, PreparedLauncher,
     RunningStack,
 };
+use std::assert_matches;
 use std::num::NonZeroU32;
 use std::path::Path;
 use tempfile::tempdir;
@@ -441,9 +442,8 @@ fn copies_must_agree_on_restart() {
     )
     .launch(&[], &[])
     .expect_err("two policies on one instance disagree");
-    assert!(
-        matches!(&error, CompositionError::CopiesConflict { first, second, target, .. }
-            if first == "alpha" && second == "bravo" && target == "engine_inst.framework.restart"),
+    assert_matches!(&error, CompositionError::CopiesConflict { first, second, target, .. }
+            if first == "alpha" && second == "bravo" && target == "engine_inst.framework.restart",
         "{error}"
     );
 }
@@ -493,10 +493,9 @@ fn join_refuses_a_changed_restart() {
         )
     };
     let error = join("fragile", "alpha").expect_err("the join changes the engine's policy");
-    assert!(
-        matches!(&error, CompositionError::JoinChangesExisting { instance, changes, .. }
+    assert_matches!(&error, CompositionError::JoinChangesExisting { instance, changes, .. }
             if instance == "engine_inst"
-                && changes == r#"framework.restart: "on_failure" -> "never""#),
+                && changes == r#"framework.restart: "on_failure" -> "never""#,
         "{error}"
     );
     let joined = join("same", "bravo").expect("a join writing what runs is admitted");

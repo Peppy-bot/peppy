@@ -65,9 +65,10 @@ const CANCEL_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long one request for the end of a goal waits before the command
 /// asks again. The provider answers the request at the end of the goal, so
 /// the command follows a goal of any length.
-const RESULT_WAIT: Duration = Duration::from_secs(60);
+const RESULT_WAIT: Duration = Duration::from_mins(1);
 
 /// What `peppy node call` calls.
+#[derive(Debug)]
 pub struct CallParams {
     pub instance_id: String,
     pub member: String,
@@ -93,7 +94,7 @@ fn kinds_to_call(kind: Option<CallKind>) -> &'static [InterfaceKind] {
     }
 }
 
-pub fn call(ctx: &Arc<AppContext>, params: CallParams) -> Result<()> {
+pub(super) fn call(ctx: &Arc<AppContext>, params: CallParams) -> Result<()> {
     crate::commands::block_on(call_writing(ctx, params, &mut std::io::stdout()))
 }
 
@@ -152,7 +153,7 @@ enum CallClient {
 impl MemberCall {
     /// The call of `selected` with the message `arguments` give, its codecs
     /// laid out from the formats of the pinned manifest.
-    pub fn new(selected: &SelectedMember<'_>, arguments: &MessageArguments) -> Result<Self> {
+    pub(super) fn new(selected: &SelectedMember<'_>, arguments: &MessageArguments) -> Result<Self> {
         let name = selected.full_name.clone();
         let MemberAddress::Interface { target } = &selected.address else {
             return Err(topic_is_not_called(&name));
@@ -165,14 +166,14 @@ impl MemberCall {
                     &service.service,
                     service.failure_kinds.clone(),
                 )
-                .map_err(|error| selected.codec_error(error))?;
+                .map_err(|error| selected.codec_error(&error))?;
                 let request = service.service.request_message_format.as_ref();
                 (CallClient::Service(client), request)
             }
             Member::Action(action) => {
                 let client =
                     ActionClient::of_action(&label, &action.action, action.failure_kinds.clone())
-                        .map_err(|error| selected.codec_error(error))?;
+                        .map_err(|error| selected.codec_error(&error))?;
                 let goal = action
                     .action
                     .goal_service
@@ -201,7 +202,7 @@ impl MemberCall {
     /// Sends the call as `caller` and follows it to its end, writing its
     /// lines to `out`; `interrupts` gives the Ctrl-C presses. `rules` are the
     /// fleet rules that a call of a member that moves a robot keeps.
-    pub async fn run(
+    pub(super) async fn run(
         &self,
         messenger: &MessengerHandle,
         caller: &ConsumerIdentity,
@@ -359,7 +360,7 @@ impl MemberCall {
                 None => std::future::pending().await,
             }
         };
-        tokio::pin!(fleet_stop);
+        let mut fleet_stop = std::pin::pin!(fleet_stop);
         loop {
             let step = tokio::select! {
                 biased;
@@ -595,7 +596,7 @@ async fn next_step(
     }
     loop {
         match goal.result(messenger, RESULT_WAIT).await {
-            Err(ConsumerError::Messaging(PeppyError::ActionResultTimeout { .. })) => continue,
+            Err(ConsumerError::Messaging(PeppyError::ActionResultTimeout { .. })) => {}
             outcome => return Step::Ended(outcome),
         }
     }
@@ -939,7 +940,7 @@ mod tests {
                 context
                     .complete_cancelled(
                         "stopped at the halt",
-                        payload(RESULT, json!({"reached": false})),
+                        payload(RESULT, &json!({"reached": false})),
                     )
                     .await
                     .expect("the goal ends cancelled");
@@ -967,7 +968,7 @@ mod tests {
             assert_eq!(request, json!({"joints": [0.1, 0.2, 0.3]}));
             Ok(payload(
                 r#"{ reachable: "bool" }"#,
-                json!({"reachable": true}),
+                &json!({"reachable": true}),
             ))
         })
         .await;
@@ -1010,7 +1011,7 @@ mod tests {
                         .expect("the request decodes");
                     let answer = Ok(payload(
                         r#"{ current_value: "i32" }"#,
-                        json!({"current_value": request["value"]}),
+                        &json!({"current_value": request["value"]}),
                     ));
                     async move { answer }
                 })
@@ -1102,7 +1103,7 @@ mod tests {
             let context = accept_move_to(&mut engine).await;
             for progress in [0.5, 1.0] {
                 let feedback =
-                    NonEmptyPayload::try_new(payload(FEEDBACK, json!({"progress": progress})))
+                    NonEmptyPayload::try_new(payload(FEEDBACK, &json!({"progress": progress})))
                         .expect("a feedback message");
                 context
                     .publish_feedback(feedback)
@@ -1110,7 +1111,7 @@ mod tests {
                     .expect("the feedback goes out");
             }
             context
-                .complete(payload(RESULT, json!({"reached": true})))
+                .complete(payload(RESULT, &json!({"reached": true})))
                 .await
                 .expect("the goal completes");
         });
@@ -1237,7 +1238,7 @@ mod tests {
             context
                 .complete_cancelled(
                     CancelCause::Caller.reason(),
-                    payload(RESULT, json!({"reached": false})),
+                    payload(RESULT, &json!({"reached": false})),
                 )
                 .await
                 .expect("the goal ends cancelled");
@@ -1318,7 +1319,7 @@ mod tests {
         let (ended, ()) = tokio::join!(run(&call, &messenger, &mut no_press, &mut out), async {
             let context = accept_move_to(&mut engine).await;
             context
-                .complete(payload(RESULT, json!({"reached": true})))
+                .complete(payload(RESULT, &json!({"reached": true})))
                 .await
                 .expect("the goal completes");
         });

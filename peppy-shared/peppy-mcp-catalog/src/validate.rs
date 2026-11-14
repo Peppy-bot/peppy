@@ -36,7 +36,7 @@ use peppy_config_model::node::{
 use peppy_config_model::type_token_name;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::fmt;
+use std::fmt::{self, Write as _};
 
 /// The members a contract or a daemon interface declares, in the contract
 /// format, the failure kinds it declares and that each of them gives, and
@@ -94,7 +94,7 @@ impl fmt::Display for ExposureValidationError {
 impl std::error::Error for ExposureValidationError {}
 
 /// Where the member behind one catalog entry comes from.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemberSource {
     /// The contract slot behind the entry's target; its `link_id` is the
     /// entry's `target`.
@@ -108,7 +108,7 @@ pub enum MemberSource {
 /// source the entry's target draws from, the member it selects as that
 /// source declares it, the failure kinds the member can give, and the marks
 /// that its source gives it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundMember<M> {
     pub source: MemberSource,
     pub member: M,
@@ -1101,24 +1101,26 @@ fn missing_member_violation(
         kind.singular()
     );
     if declared.is_empty() {
-        message.push_str(&format!(" (it declares no {})", kind.section()));
+        let _ = write!(message, " (it declares no {})", kind.section());
     } else {
-        message.push_str(&format!(
+        let _ = write!(
+            message,
             " (declared {}: `{}`)",
             kind.section(),
             declared.join("`, `")
-        ));
+        );
     }
     for other in [MemberKind::Topic, MemberKind::Service, MemberKind::Action] {
         if other == kind {
             continue;
         }
         if member_names(members, other).contains(&member) {
-            message.push_str(&format!(
+            let _ = write!(
+                message,
                 "; a {} with that name exists, select it under `{}`",
                 other.singular(),
                 other.section()
-            ));
+            );
         }
     }
     message

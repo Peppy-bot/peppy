@@ -9,9 +9,9 @@ use tracing::{debug, error};
 /// Minimum interval between successive name-collision alarms. A reconnect can
 /// replay the same live token, so rate limiting keeps router flapping from
 /// flooding the daemon log.
-const NAME_COLLISION_ALARM_COOLDOWN: Duration = Duration::from_secs(60);
+const NAME_COLLISION_ALARM_COOLDOWN: Duration = Duration::from_mins(1);
 
-/// Settle window a *federated* daemon's [`claim_name`] holds its candidacy
+/// Settle window a *federated* daemon's `claim_name` holds its candidacy
 /// open before committing, re-querying throughout.
 ///
 /// A liveliness query is answered from the local router's token registry,
@@ -245,7 +245,7 @@ pub(crate) async fn watch_for_duplicate_name(
         loop {
             let event = tokio::select! {
                 biased;
-                _ = cancel.cancelled() => break,
+                () = cancel.cancelled() => break,
                 event = watch.rx.recv_async() => match event {
                     Ok(event) => event,
                     Err(_) => break,
@@ -293,6 +293,7 @@ mod tests {
         Messenger, MessengerAdapter, MessengerBackend, SubscriberBufferSizes, ZenohAdapter,
         ZenohNetProtocol,
     };
+    use std::assert_matches;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -378,7 +379,7 @@ mod tests {
                     &messenger,
                     "settle_node",
                     "joiner_instance",
-                    Duration::from_secs(60),
+                    Duration::from_mins(1),
                 )
                 .await
             }
@@ -399,8 +400,7 @@ mod tests {
             Err(err) => err,
             Ok(_token) => panic!("a committed token landing mid-settle must refuse the claim"),
         };
-        assert!(
-            matches!(err, crate::Error::CoreNodeNameTaken { ref name } if name == "settle_node"),
+        assert_matches!(&err, crate::Error::CoreNodeNameTaken { name } if name == "settle_node",
             "the refusal must be the boot refusal: {err}"
         );
     }

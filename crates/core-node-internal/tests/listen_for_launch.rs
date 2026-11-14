@@ -41,6 +41,7 @@ use crate::common::{
     write_executable_script,
 };
 
+#[derive(Clone, Copy)]
 struct NodeConfigOptions<'a> {
     build_cmd: &'a [&'a str],
     run_cmd: &'a [&'a str],
@@ -456,7 +457,7 @@ async fn send_accepted_stack_goal(
 async fn cancel_and_follow_to_end(
     started: &StartedCoreNode,
     mut handle: ActionGoalHandle,
-    after_cancel: impl std::future::Future<Output = ()>,
+    after_cancel: impl Future<Output = ()>,
 ) -> GoalEnd<LaunchResult> {
     peppylib::ActionMessenger::cancel_goal(&started.caller_handle, &handle, GOAL_TIMEOUT)
         .await
@@ -743,7 +744,7 @@ async fn listen_for_launch_configuration_succeed() {
             .node_logs
             .node_add_logs
             .iter()
-            .all(|e| !e.log_path.as_os_str().is_empty()),
+            .all(|e| !e.log_path.is_empty()),
         "all add log paths should be non-empty, got: {:?}",
         result
             .node_logs
@@ -790,7 +791,7 @@ async fn listen_for_launch_configuration_succeed() {
             .node_logs
             .node_build_logs
             .iter()
-            .all(|e| !e.log_path.as_os_str().is_empty()),
+            .all(|e| !e.log_path.is_empty()),
         "all build log paths should be non-empty, got: {:?}",
         result
             .node_logs
@@ -837,7 +838,7 @@ async fn listen_for_launch_configuration_succeed() {
             .node_logs
             .node_run_logs
             .iter()
-            .all(|e| !e.log_path.as_os_str().is_empty()),
+            .all(|e| !e.log_path.is_empty()),
         "all start log paths should be non-empty, got: {:?}",
         result
             .node_logs
@@ -1375,9 +1376,11 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     });
 
     let node_b_pid = poll_until(RESULT_TIMEOUT, "node_b should start a real process", || {
-        node_stack
-            .find("node_b", NODE_TAG)
-            .and_then(|h| h.read().instances().first().and_then(|i| i.pid()))
+        let h = node_stack.find("node_b", NODE_TAG)?;
+        h.read()
+            .instances()
+            .first()
+            .and_then(node_stack::TrackedNodeInstance::pid)
     })
     .await;
     assert!(
@@ -1483,9 +1486,11 @@ async fn a_cancelled_launch_clears_the_stack_and_ends_cancelled() {
         RESULT_TIMEOUT,
         "the start of waiting_inst records its process",
         || {
-            node_stack
-                .find("waiting_node", NODE_TAG)
-                .and_then(|h| h.read().instances().first().and_then(|i| i.pid()))
+            let h = node_stack.find("waiting_node", NODE_TAG)?;
+            h.read()
+                .instances()
+                .first()
+                .and_then(node_stack::TrackedNodeInstance::pid)
         },
     )
     .await;
@@ -1679,7 +1684,7 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     );
     assert_eq!(
         result.node_logs.node_add_logs[0].node_label,
-        format!("{}:{}", NODE_NAME, NODE_TAG)
+        format!("{NODE_NAME}:{NODE_TAG}")
     );
 
     // The node was successfully built before the start failed, so we expect one build log entry.
@@ -1694,7 +1699,7 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     );
     assert_eq!(
         result.node_logs.node_build_logs[0].node_label,
-        format!("{}:{}", NODE_NAME, NODE_TAG)
+        format!("{NODE_NAME}:{NODE_TAG}")
     );
 
     // The failed start should produce one start log entry marked as failed.
@@ -1710,7 +1715,7 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     assert_eq!(result.node_logs.node_run_logs[0].instance_id, INSTANCE_ID);
     assert_eq!(
         result.node_logs.node_run_logs[0].node_label,
-        format!("{}:{}", NODE_NAME, NODE_TAG)
+        format!("{NODE_NAME}:{NODE_TAG}")
     );
     assert!(
         !result.node_logs.node_run_logs[0]
@@ -1771,7 +1776,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
     );
 
     // Create a temp bin directory with a `printout` script that sleeps
-    let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
+    let bin_dir = tempdir().expect("failed to create temp bin dir");
     write_executable_script(
         bin_dir.path(),
         "printout",
@@ -2168,8 +2173,7 @@ async fn waldo_generation_launch() {
         "the failed node is cleared from the stack"
     );
     let staging_leftovers: Vec<PathBuf> = fs::read_dir(peppy_dirs.tmp_dir())
-        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
-        .unwrap_or_default();
+        .map_or_default(|entries| entries.flatten().map(|entry| entry.path()).collect());
     assert!(
         staging_leftovers.is_empty(),
         "a cleared node leaves no staging directory behind: {staging_leftovers:?}"
@@ -2237,7 +2241,7 @@ async fn launch_scripted_node_above(
         .filter(|record| matches!(record.origin, log_export::LineOrigin::Captured(_)))
         .map(|record| record.body.as_str())
         .collect();
-    common::poll_until(
+    poll_until(
         RESULT_TIMEOUT,
         "the launch log should hold the output it relays",
         || {
@@ -2357,7 +2361,7 @@ async fn a_launch_relays_run_output_to_its_file() {
 }
 
 /// The entries of the log at `path`.
-fn log_entries(path: &std::path::Path) -> Vec<String> {
+fn log_entries(path: &Path) -> Vec<String> {
     let content = fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("{} should be readable: {error}", path.display()));
     node_stack::action_log::test_support::log_entries(&content)
@@ -2382,7 +2386,7 @@ async fn each_log_of_a_launch_exports_its_own_entries_once() {
         "failed to start node scripted_node:v1 instance s1",
     );
 
-    let mut bodies_by_file: BTreeMap<&std::path::Path, Vec<&str>> = BTreeMap::new();
+    let mut bodies_by_file: BTreeMap<&Path, Vec<&str>> = BTreeMap::new();
     for record in &records {
         bodies_by_file
             .entry(record.identity.file_path.as_path())

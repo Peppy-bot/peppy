@@ -8,7 +8,7 @@
 //!   exists for a pinned consumer);
 //! - a followed pin → exactly one wire subscription, pinned to the producer's
 //!   `(core_node, instance_id)` and, for a pairing or observer slot, its
-//!   producer-side link_id;
+//!   producer-side `link_id`;
 //! - a pin changes (re-pair, or a source-incarnation change) → the old
 //!   subscription is dropped BEFORE the new one is declared (at most one wire
 //!   subscription per followed pin, ever), and a read-time stale filter drops
@@ -17,7 +17,7 @@
 //! Each slot kind differs only in what it follows. A pairing slot follows its
 //! one peer pin, so its set is empty while unpaired and holds one member once
 //! paired. An observer slot follows one pin per member of its set, keyed on
-//! `(source generation, source pin)` so a reused instance_id under an identical
+//! `(source generation, source pin)` so a reused `instance_id` under an identical
 //! wire triple is still told apart. A consumer slot follows one pin per bound
 //! producer. [`FollowedSlot`] captures what each kind follows and how it
 //! subscribes one pin.
@@ -40,7 +40,7 @@ use crate::messaging::{MessengerHandle, ProducerRef, Subscription};
 use crate::runtime::TaskHandle;
 use crate::types::Message;
 use config::node::QoSProfile;
-use std::future::Future;
+use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tokio::sync::{Notify, watch};
@@ -179,6 +179,17 @@ pub(crate) struct SlotStream<S: FollowedSlot> {
 /// every pinned subscription is keyed on.
 pub(crate) fn published_by_producer(producer: &ProducerRef, message: &Message) -> bool {
     message.core_node() == producer.core_node && message.instance_id() == producer.instance_id
+}
+
+impl<S: FollowedSlot> fmt::Debug for SlotStream<S> {
+    /// Shows the size of the followed set: a member holds a wire channel,
+    /// which has no text.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SlotStream")
+            .field("members", &self.members.len())
+            .field("replays_retained", &self.replays_retained)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<S: FollowedSlot> SlotStream<S> {
@@ -502,12 +513,11 @@ async fn converge_subscriptions<S: FollowedSlot>(
     let mut converged: Vec<Option<(Arc<S::Pin>, Subscription)>> = Vec::with_capacity(desired.len());
     let mut pending: Vec<(usize, S::Pin)> = Vec::new();
     for (position, pin) in desired.into_iter().enumerate() {
-        match current.iter().position(|(followed, _)| **followed == pin) {
-            Some(idx) => converged.push(Some(current.swap_remove(idx))),
-            None => {
-                converged.push(None);
-                pending.push((position, pin));
-            }
+        if let Some(idx) = current.iter().position(|(followed, _)| **followed == pin) {
+            converged.push(Some(current.swap_remove(idx)));
+        } else {
+            converged.push(None);
+            pending.push((position, pin));
         }
     }
 
@@ -556,9 +566,7 @@ async fn recv_first_ready<T>(
         return (0, members[0].1.recv_async().await);
     }
     let start = start % len;
-    let recvs: Vec<_> = (0..len)
-        .map(|offset| members[(start + offset) % len].1.recv_async())
-        .collect();
+    let recvs: Vec<_> = Vec::from_fn(len, |offset| members[(start + offset) % len].1.recv_async());
     let (received, position, _) = futures::future::select_all(recvs).await;
     ((start + position) % len, received)
 }
@@ -613,16 +621,13 @@ mod tests {
     /// before it is allowed to succeed.
     mod engine {
         use super::*;
-        use crate::messaging::{
-            MessengerHandle, ProducerRef, SenderTarget, TopicBuffer, TopicMessenger,
-        };
+        use crate::messaging::{SenderTarget, TopicBuffer, TopicMessenger};
         use crate::types::Payload;
-        use config::node::{QoSProfile, TopicRetention};
+        use config::node::TopicRetention;
         use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
         use std::collections::HashMap;
         use std::sync::Mutex as StdMutex;
-        use std::time::Duration;
-        use tokio::sync::{Mutex, watch};
+        use tokio::sync::Mutex;
 
         const CORE: &str = "test_core";
         const TOPIC: &str = "joint_states";
@@ -1037,7 +1042,7 @@ mod tests {
                     .await
                     .expect("the first pin declares");
             let attempts = || *declarations.attempts.lock().unwrap();
-            let settle = || async {
+            let settle = async || {
                 for _ in 0..16 {
                     tokio::task::yield_now().await;
                 }
@@ -1068,7 +1073,7 @@ mod tests {
 
             // The third retry landed: nothing is owed, so the clock can run
             // on without another attempt.
-            tokio::time::advance(Duration::from_secs(60)).await;
+            tokio::time::advance(Duration::from_mins(1)).await;
             settle().await;
             assert_eq!(attempts(), 5, "a declaration that lands ends the retries");
         }

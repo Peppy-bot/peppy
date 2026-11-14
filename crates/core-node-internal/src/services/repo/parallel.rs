@@ -123,7 +123,7 @@ mod tests {
         const COUNT: usize = 4;
         let finished = Mutex::new(Vec::new());
 
-        let results = map_in_parallel(chain(COUNT), threads(COUNT), &mut |_: ()| {}, |item, _| {
+        let results = map_in_parallel(chain(COUNT), threads(COUNT), &mut |(): ()| {}, |item, _| {
             if let Some(next_finished) = item.next_finished {
                 next_finished.recv().expect("the next item finishes");
             }
@@ -151,7 +151,7 @@ mod tests {
         let results = map_in_parallel(
             (0..3 * MAX_THREADS).collect(),
             threads(MAX_THREADS),
-            &mut |_: ()| {},
+            &mut |(): ()| {},
             |item, _| {
                 let now_running = running.fetch_add(1, Ordering::SeqCst) + 1;
                 most_running.fetch_max(now_running, Ordering::SeqCst);
@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn resumes_a_panic_of_the_work_on_the_calling_thread() {
         let panic = std::panic::catch_unwind(|| {
-            map_in_parallel(vec![1, 2, 3], threads(2), &mut |_: ()| {}, |item, _| {
+            map_in_parallel(vec![1, 2, 3], threads(2), &mut |(): ()| {}, |item, _| {
                 assert_ne!(item, 2, "item 2 cannot be read");
                 item
             })
@@ -219,7 +219,7 @@ mod tests {
         let results: Vec<()> = map_in_parallel(
             Vec::<()>::new(),
             threads(4),
-            &mut |_: ()| messages += 1,
+            &mut |(): ()| messages += 1,
             |item, _| item,
         );
 

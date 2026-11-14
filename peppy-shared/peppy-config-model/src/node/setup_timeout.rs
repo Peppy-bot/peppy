@@ -21,21 +21,22 @@ impl SetupTimeout {
     /// The largest setup budget, in seconds. It stays below the default run
     /// idle budget of a launch (600 s), so a silent setup gets the setup
     /// timeout and not the idle timeout.
-    pub const MAX_SECS: u64 = 540;
+    pub const MAX_SECS: u64 = Self::MAX.as_secs();
     /// The default setup budget: the budget of a node that declares none.
     pub const DEFAULT: Self = Self(15);
     /// The largest setup budget.
-    pub const MAX: Self = Self(Self::MAX_SECS as u16);
+    pub const MAX: Self = Self(540);
 
     /// The setup budget of `secs` seconds, refused outside
     /// [`Self::MIN_SECS`] to [`Self::MAX_SECS`].
     pub fn from_secs(secs: u64) -> Result<Self, SetupTimeoutOutOfRange> {
-        if !(Self::MIN_SECS..=Self::MAX_SECS).contains(&secs) {
-            return Err(SetupTimeoutOutOfRange {
+        let in_range = (Self::MIN_SECS..=Self::MAX_SECS).contains(&secs);
+        match u16::try_from(secs) {
+            Ok(secs) if in_range => Ok(Self(secs)),
+            _ => Err(SetupTimeoutOutOfRange {
                 written: secs.to_string(),
-            });
+            }),
         }
-        Ok(Self(secs as u16))
     }
 
     pub const fn as_secs(self) -> u64 {

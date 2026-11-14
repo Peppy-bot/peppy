@@ -3,12 +3,16 @@ name = "peppylib-build-policy"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # Build-time logic for peppylib's embedded native extensions (the rebuild
 # policy, and the reading of an extension out of its wheel), used only by
 # `generator`'s build script. It lives here in the `peppy` workspace (next to
 # its single consumer) rather than in the shared `build-helpers` crate, which
 # must not carry peppy-specific logic.
+[lints]
+workspace = true
+
 [dependencies]
 zip = { version = "9", default-features = false, features = ["deflate"] }
 

@@ -1,7 +1,6 @@
 use super::*;
 use config::node::NodeConfig;
-use std::fs;
-use tempfile::TempDir;
+use std::assert_matches;
 
 const NODE_EXAMPLE: &str = r#"
 {
@@ -332,12 +331,11 @@ fn reject_parameters_with_invalid_field_names() {
         Error::InvalidParameterFieldName { name, allowed } => {
             assert!(
                 name.chars().any(|c| !ALLOWED_CONFIG_CHARS.contains(c)),
-                "Expected field name with invalid characters, got: {}",
-                name
+                "Expected field name with invalid characters, got: {name}"
             );
             assert_eq!(allowed, ALLOWED_CONFIG_CHARS);
         }
-        _ => panic!("Expected InvalidParameterFieldName error, got: {:?}", err),
+        _ => panic!("Expected InvalidParameterFieldName error, got: {err:?}"),
     }
 }
 
@@ -374,8 +372,7 @@ fn reject_array_parameters_with_their_dotted_path() {
 
     for (schema, expected_path) in cases {
         let error = generate_parameters_struct(&schema).unwrap_err();
-        assert!(
-            matches!(&error, Error::UnsupportedArrayParameter { path } if path == expected_path),
+        assert_matches!(&error, Error::UnsupportedArrayParameter { path } if path == expected_path,
             "expected UnsupportedArrayParameter at `{expected_path}`, got: {error:?}"
         );
     }

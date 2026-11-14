@@ -70,7 +70,10 @@ fn instance_environment(
 }
 
 /// Starts instances in dependency order, awaiting Running before each next start.
-#[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input, and a struct of them only moves the list"
+)]
 pub(in crate::services::stack) async fn start_node_instances(
     ctx: &StackChangeContext,
     phase: &PhaseGoal,
@@ -139,7 +142,7 @@ pub(in crate::services::stack) async fn start_node_instances(
         .map(|(instance, hosts)| {
             (
                 instance.to_string(),
-                hosts.iter().map(|host| host.to_string()).collect(),
+                hosts.iter().map(ToString::to_string).collect(),
             )
         })
         .collect();
@@ -424,7 +427,6 @@ async fn start_locally(
 /// loudly instead of starting a node the plan was never checked against.
 /// Every remote instance carries it, straddling deployments included,
 /// because the coordinator resolved every deployment itself.
-#[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
 async fn start_remotely(
     ctx: &StackChangeContext,
     core_node: &str,
@@ -515,7 +517,7 @@ mod tests {
     }
 
     /// An instance on a peer starts from no forwarded environment, so the
-    /// env_vars its launcher file declares are the whole environment its run
+    /// `env_vars` its launcher file declares are the whole environment its run
     /// goal carries.
     #[test]
     fn a_peer_instance_carries_only_its_declared_env_vars() {

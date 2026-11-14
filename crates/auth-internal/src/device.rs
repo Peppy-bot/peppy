@@ -143,9 +143,7 @@ struct TokenErrorBody {
 /// [`classify`] acts on passes this filter unchanged, so polling behaviour is
 /// unaffected.
 pub(crate) fn safe_oauth_error_code(body: &str) -> String {
-    let code = serde_json::from_str::<TokenErrorBody>(body)
-        .map(|body| body.error)
-        .unwrap_or_default();
+    let code = serde_json::from_str::<TokenErrorBody>(body).map_or_default(|body| body.error);
     if !code.is_empty()
         && code.len() <= 64
         && code
@@ -179,6 +177,7 @@ impl TokenResponse {
 }
 
 /// How a non-success poll of the token endpoint should be handled.
+#[derive(Debug)]
 enum PollOutcome {
     KeepWaiting,
     SlowDown,
@@ -286,6 +285,7 @@ pub fn poll(
 mod tests {
     use httpmock::prelude::*;
     use serde_json::json;
+    use std::assert_matches;
 
     use super::*;
 
@@ -453,7 +453,7 @@ mod tests {
             &device_auth(1, 2),
         )
         .expect_err("an unapproved flow times out");
-        assert!(matches!(err, Error::Auth(_)));
+        assert_matches!(err, Error::Auth(_));
         assert!(err.to_string().contains("login timed out"));
         assert!(
             pending.calls() >= 2,
@@ -510,7 +510,7 @@ mod tests {
             &device_auth(1, 60),
         )
         .expect_err("expired_token is fatal");
-        assert!(matches!(err, Error::Auth(_)));
+        assert_matches!(err, Error::Auth(_));
         assert!(err.to_string().contains("login timed out"));
         assert_eq!(expired.calls(), 1, "fatal: no re-poll");
         assert!(
@@ -521,14 +521,11 @@ mod tests {
 
     #[test]
     fn classify_maps_oauth_codes() {
-        assert!(matches!(
-            classify("authorization_pending"),
-            PollOutcome::KeepWaiting
-        ));
-        assert!(matches!(classify("slow_down"), PollOutcome::SlowDown));
-        assert!(matches!(classify("access_denied"), PollOutcome::Fatal(_)));
-        assert!(matches!(classify("expired_token"), PollOutcome::Fatal(_)));
-        assert!(matches!(classify("anything_else"), PollOutcome::Fatal(_)));
+        assert_matches!(classify("authorization_pending"), PollOutcome::KeepWaiting);
+        assert_matches!(classify("slow_down"), PollOutcome::SlowDown);
+        assert_matches!(classify("access_denied"), PollOutcome::Fatal(_));
+        assert_matches!(classify("expired_token"), PollOutcome::Fatal(_));
+        assert_matches!(classify("anything_else"), PollOutcome::Fatal(_));
     }
 
     #[test]

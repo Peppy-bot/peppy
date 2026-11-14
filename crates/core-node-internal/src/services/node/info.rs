@@ -14,7 +14,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-pub async fn listen_for_node_info(
+pub(crate) async fn listen_for_node_info(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
@@ -67,6 +67,10 @@ async fn handle_node_info_request(
     })
 }
 
+#[expect(
+    clippy::unused_async,
+    reason = "the caller awaits the lookup under a time limit"
+)]
 async fn handle_node_info_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
@@ -115,11 +119,10 @@ async fn handle_node_info_request_inner(
             .manifest
             .depends_on
             .as_ref()
-            .map(|d| d.pairings.as_slice())
-            .unwrap_or(&[]);
+            .map_or_default(|d| d.pairings.as_slice());
         let mut instances: Vec<NodeInstanceInfo> = Vec::with_capacity(tracked.len());
         let mut run_log_paths: Vec<PathBuf> = Vec::with_capacity(tracked.len());
-        for instance in tracked.iter() {
+        for instance in tracked {
             let id = instance.instance_id().as_str();
             instances.push(NodeInstanceInfo {
                 instance_id: id.to_owned(),
@@ -163,6 +166,10 @@ async fn handle_node_info_request_inner(
     .map_err(encode_failure)
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` gives the error by value"
+)]
 fn encode_failure(error: core_node_api::Error) -> peppylib::messaging::Failure {
     failure(
         PeppyFailureKind::AttemptFailed,

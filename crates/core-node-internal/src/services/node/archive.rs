@@ -16,6 +16,10 @@ pub(crate) struct ResolvedLocalArchiveSource {
     pub(crate) temp_dir: tempfile::TempDir,
 }
 
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "the path is in lower case here"
+)]
 fn is_supported_archive_path(path: &str) -> bool {
     let path = path.to_ascii_lowercase();
     path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")
@@ -29,7 +33,7 @@ pub(crate) fn is_supported_http_archive(url: &url::Url) -> bool {
     is_supported_archive_path(url.path())
 }
 
-pub(crate) fn locate_node_root_dir(extracted_dir: &Path) -> std::result::Result<PathBuf, String> {
+pub(crate) fn locate_node_root_dir(extracted_dir: &Path) -> Result<PathBuf, String> {
     let direct = extracted_dir.join(NODE_CONFIG_FILE);
     if direct.is_file() {
         return Ok(extracted_dir.to_path_buf());
@@ -71,16 +75,15 @@ pub(crate) fn locate_node_root_dir(extracted_dir: &Path) -> std::result::Result<
     }
 
     Err(format!(
-        "Bundle does not contain {} at the root (or exactly one top-level folder)",
-        NODE_CONFIG_FILE
+        "Bundle does not contain {NODE_CONFIG_FILE} at the root (or exactly one top-level folder)"
     ))
 }
 
 pub(crate) fn resolve_local_archive_source(
     archive_path: &Path,
-) -> std::result::Result<ResolvedLocalArchiveSource, String> {
+) -> Result<ResolvedLocalArchiveSource, String> {
     let temp_dir =
-        tempfile::tempdir().map_err(|e| format!("Failed to create temporary directory: {}", e))?;
+        tempfile::tempdir().map_err(|e| format!("Failed to create temporary directory: {e}"))?;
 
     extract_tar_zst(archive_path, temp_dir.path())?;
     let source_path = locate_node_root_dir(temp_dir.path())?;

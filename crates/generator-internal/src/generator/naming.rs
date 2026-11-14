@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::error::{Error, Result};
 
-/// Converts a raw string to a sanitized snake_case identifier component.
+/// Converts a raw string to a sanitized `snake_case` identifier component.
 ///
 /// - Non-alphanumeric characters are replaced with underscores
 /// - Consecutive separators produce a single underscore
@@ -45,7 +45,7 @@ pub(crate) fn sanitize_contract_tag(raw: &str) -> String {
     raw.replace('-', "_")
 }
 
-/// Converts a CamelCase or mixed-case string to snake_case.
+/// Converts a CamelCase or mixed-case string to `snake_case`.
 pub(crate) fn normalize_snake_case(input: &str) -> String {
     let mut result = String::new();
     let mut chars = input.chars().peekable();
@@ -129,7 +129,7 @@ pub(crate) fn nested_type_name(struct_prefix: &str, field_name: &str) -> String 
     format!("{struct_prefix}{}", to_camel_case(field_name))
 }
 
-/// Converts a snake_case or raw string to CamelCase.
+/// Converts a `snake_case` or raw string to CamelCase.
 pub(crate) fn to_camel_case(raw: &str) -> String {
     let sanitized = sanitize_component(raw);
     let mut out = String::new();
@@ -200,7 +200,7 @@ pub(crate) struct ResolvedSchemaFileStem {
 
 /// Resolves a Cap'n Proto schema file stem from a raw schema key.
 ///
-/// Sanitizes the key to snake_case, falls back to `"message"` if empty,
+/// Sanitizes the key to `snake_case`, falls back to `"message"` if empty,
 /// and appends `"_message"` suffix when not already present.
 pub(crate) fn resolve_schema_file_stem(schema_key: &str) -> ResolvedSchemaFileStem {
     let base_name = sanitize_or(schema_key, "message");
@@ -281,7 +281,7 @@ pub(crate) fn claim_sanitized_name(
 /// Shared by the Rust and Python generators and by both mock generators, so
 /// the consumer of a slot and the mock of that same slot resolve one file,
 /// and a Rust node and a Python node consuming identical slots produce
-/// matching capnp file_stems.
+/// matching capnp `file_stems`.
 pub(crate) fn consumed_topic_schema_key(link_id: &str, topic_name: &str) -> String {
     let link = sanitize_or(link_id, "slot");
     let topic = sanitize_or(topic_name, "topic");
@@ -328,10 +328,10 @@ pub(crate) struct ConsumedActionSchemaKeys {
 
 /// Schema keys for every cap'n proto message a consumed action produces.
 /// Includes the producer node so cross-producer same-action-name doesn't
-/// collide on the deduplicated file_stem.
+/// collide on the deduplicated `file_stem`.
 ///
 /// Shared between the Rust and Python generators so the same input produces
-/// matching file_stems in both languages.
+/// matching `file_stems` in both languages.
 pub(crate) fn consumed_action_schema_keys(
     producer_name: &str,
     action_name: &str,
@@ -352,7 +352,7 @@ pub(crate) fn consumed_action_schema_keys(
 /// topics. Two slots of the same pairing each get their own schema entry so
 /// the nested `paired_topics.<link_id>.<topic>` namespace stays unambiguous;
 /// the duplicated few hundred bytes of schema are accepted.
-pub fn peer_schema_key(link_id: &str, topic_name: &str) -> String {
+pub(crate) fn peer_schema_key(link_id: &str, topic_name: &str) -> String {
     format!("peer_{link_id}_{topic_name}")
 }
 

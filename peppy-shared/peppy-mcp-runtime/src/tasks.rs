@@ -21,7 +21,6 @@ use crate::server::ToolCall;
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::task_manager::TaskContext;
 use serde_json::Value;
-use std::future::Future;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -154,6 +153,19 @@ pub(crate) enum ActionSurface {
 #[derive(Clone)]
 pub struct ActionContext {
     pub(crate) surface: ActionSurface,
+}
+
+impl std::fmt::Debug for ActionContext {
+    /// Shows the kind of the surface: the task context of rmcp has no text.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let surface = match &self.surface {
+            ActionSurface::Task(_) => "task",
+            ActionSurface::Call { .. } => "call",
+        };
+        f.debug_struct("ActionContext")
+            .field("surface", &surface)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ActionContext {

@@ -62,7 +62,7 @@ impl RelationshipCoordinators {
         // a macOS container outlasts the delivery's timeout; the set is then
         // recorded on its slot like any set of a restarting instance.
         let producers = join_all(producer_sets.into_iter().map(
-            |((instance_id, link_id), producers)| async move {
+            async |((instance_id, link_id), producers)| {
                 let Err(reason) = self
                     .binding
                     .replace_slot(&instance_id, &link_id, producers.clone())
@@ -78,7 +78,7 @@ impl RelationshipCoordinators {
                 (!recorded).then(|| format!("`{instance_id}.links.{link_id}`: {reason}"))
             },
         ));
-        let observers = join_all(observer_sets.iter().map(|(observer, slots)| async move {
+        let observers = join_all(observer_sets.iter().map(async |(observer, slots)| {
             let lines = self.observation.replace_slots(observer, slots).await;
             if lines.is_empty() {
                 return Vec::new();

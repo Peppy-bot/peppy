@@ -65,8 +65,8 @@ impl std::ops::Deref for Payload {
 
 // `assert_eq!(payload, &expected_payload)`: compares a `Payload` returned by
 // value against a borrowed `Payload` held by the test.
-impl PartialEq<&Payload> for Payload {
-    fn eq(&self, other: &&Payload) -> bool {
+impl PartialEq<&Self> for Payload {
+    fn eq(&self, other: &&Self) -> bool {
         self.0 == other.0
     }
 }
@@ -95,13 +95,13 @@ pub struct EmptyPayloadError;
 /// Lives next to [`Payload`] so that capnp `encode()` helpers can return a
 /// non-emptiness-typed payload directly without `peppylib` and
 /// `core-node-api` having to depend on each other.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct NonEmptyPayload(Payload);
 
 impl NonEmptyPayload {
     /// Construct a `NonEmptyPayload`, returning [`EmptyPayloadError`] if
     /// `payload` is empty.
-    pub fn try_new(payload: Payload) -> core::result::Result<Self, EmptyPayloadError> {
+    pub fn try_new(payload: Payload) -> Result<Self, EmptyPayloadError> {
         if payload.is_empty() {
             Err(EmptyPayloadError)
         } else {
@@ -118,7 +118,7 @@ impl NonEmptyPayload {
 impl TryFrom<Payload> for NonEmptyPayload {
     type Error = EmptyPayloadError;
 
-    fn try_from(payload: Payload) -> core::result::Result<Self, Self::Error> {
+    fn try_from(payload: Payload) -> Result<Self, Self::Error> {
         Self::try_new(payload)
     }
 }
@@ -152,9 +152,10 @@ mod tests {
         assert_eq!(from_vec.into_inner(), Bytes::from_static(&[1, 2, 3]));
     }
 
-    // The `&`s are the whole point here: this exercises the two by-reference
-    // `PartialEq` impls, so clippy's "drop the reference" suggestion is wrong.
-    #[allow(clippy::op_ref)]
+    #[expect(
+        clippy::op_ref,
+        reason = "the test compares through the two by-reference `PartialEq` impls"
+    )]
     #[test]
     fn partial_eq_by_reference_both_directions() {
         let owned = Payload::from(vec![9u8, 8, 7]);
@@ -173,7 +174,7 @@ mod tests {
             Err(err) => assert!(err.to_string().contains("empty"), "got: {err}"),
         }
         // The `TryFrom` impl mirrors `try_new`.
-        assert!(NonEmptyPayload::try_from(Payload::new()).is_err());
+        NonEmptyPayload::try_from(Payload::new()).unwrap_err();
     }
 
     #[test]

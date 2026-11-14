@@ -69,6 +69,7 @@ use tracing::info;
 const ADOPTION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Zenoh-specific QoS settings derived from a `PublisherQoS` level.
+#[derive(Debug)]
 struct ZenohQoS {
     priority: Priority,
     congestion_control: CongestionControl,
@@ -114,6 +115,7 @@ fn reserve_ephemeral_port() -> std::io::Result<(u16, TcpListener)> {
 /// Result of starting a zenohd router process.
 ///
 /// The router is automatically stopped when this instance is dropped.
+#[derive(Debug)]
 #[cfg(feature = "router")]
 pub struct ZenohdInstance {
     messenger: Option<Messenger>,
@@ -164,7 +166,8 @@ use zenoh_ext::{
 /// Resolved config for a node/daemon peer session, plus the inputs needed to
 /// rebuild it (the reconnecting session is re-derived on every
 /// [`start_session`](MessengerBackend::start_session)).
-pub struct ZenohClientConfig {
+#[derive(Debug)]
+pub(crate) struct ZenohClientConfig {
     zenoh_config: zenoh::config::Config,
     host: String,
     port: u16,
@@ -189,6 +192,7 @@ pub struct ZenohClientConfig {
     namespace: Option<Namespace>,
 }
 
+#[derive(Debug)]
 pub struct ZenohAdapter {
     #[cfg(feature = "router")]
     zenohd: Option<zenohd::ZenohdFacade>,
@@ -204,7 +208,7 @@ pub struct ZenohAdapter {
 }
 
 impl ZenohAdapter {
-    /// Creates a ZenohAdapter that owns and manages a zenohd router. `gossip`
+    /// Creates a `ZenohAdapter` that owns and manages a zenohd router. `gossip`
     /// selects the daemon session's own routing model (peer vs router-relay) and
     /// `buffer_sizes` its subscriber channel capacities. The adapter renders the
     /// router config, spawns zenohd, and reports an error if its port is busy.
@@ -221,7 +225,14 @@ impl ZenohAdapter {
     /// the router keeps one identity across its own restarts. It is taken by
     /// value, not as an `Option`: see [`RouterId`].
     #[cfg(feature = "router")]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is one setting of the session"
+    )]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the caller hands over the identity that it loaded for this router"
+    )]
     pub fn with_router(
         protocol: ZenohNetProtocol,
         host: &str,
@@ -253,7 +264,7 @@ impl ZenohAdapter {
         })
     }
 
-    /// Creates a ZenohAdapter that adopts an already-running, operator-managed
+    /// Creates a `ZenohAdapter` that adopts an already-running, operator-managed
     /// Zenoh router at `endpoint`.
     ///
     /// The endpoint is a dial locator in `tcp/<host>:<port>` form. Listen
@@ -283,7 +294,7 @@ impl ZenohAdapter {
         })
     }
 
-    /// Creates a ZenohAdapter that joins the mesh seeded by an existing zenohd
+    /// Creates a `ZenohAdapter` that joins the mesh seeded by an existing zenohd
     /// router, using the default discovery (gossip on, seed = `host:port`) and
     /// default subscriber buffers. The session runs in `peer` mode so data forms
     /// direct links instead of relaying through the router.
@@ -329,7 +340,6 @@ impl ZenohAdapter {
     /// list, gossip toggle, and subscriber buffer sizes. The node runtime passes
     /// its `DiscoveryConfig` here. An empty `seed_peers` falls back to the single
     /// `host:port` seed.
-    #[allow(clippy::too_many_arguments)]
     pub fn connect_to_with_discovery(
         protocol: ZenohNetProtocol,
         host: &str,
@@ -400,6 +410,7 @@ impl ZenohAdapter {
     /// until it lands. [`is_linked`](Self::is_linked) is the signal for that.
     /// `reconnecting_client_open_blocks_until_the_router_accepts` pins both
     /// halves of this behaviour.
+    #[must_use]
     pub fn with_session_reconnect(mut self) -> Self {
         self.reconnect_session = true;
         self
@@ -468,13 +479,12 @@ impl ZenohAdapter {
         let max_attempts = if port.is_some() { 1 } else { 32 };
 
         for attempt in 0..max_attempts {
-            let (port, reservation) = match port {
-                Some(p) => (p, None),
-                None => {
-                    let (p, listener) =
-                        reserve_ephemeral_port().map_err(|e| Error::BackendError(e.to_string()))?;
-                    (p, Some(listener))
-                }
+            let (port, reservation) = if let Some(p) = port {
+                (p, None)
+            } else {
+                let (p, listener) =
+                    reserve_ephemeral_port().map_err(|e| Error::BackendError(e.to_string()))?;
+                (p, Some(listener))
             };
 
             let adapter = Self::with_router(
@@ -527,9 +537,9 @@ impl ZenohAdapter {
                     });
                 }
                 Err(_) if attempt + 1 < max_attempts => {
-                    // Drop messenger to stop the router, then retry on a fresh port.
+                    // Drop messenger to stop the router; the next attempt
+                    // takes a fresh port.
                     drop(messenger);
-                    continue;
                 }
                 Err(e) => {
                     return Err(Error::BackendError(format!(
@@ -559,7 +569,7 @@ impl ZenohAdapter {
         )
     }
 
-    /// Builds a lock-free [`RouterHealthChecker`] bound to this adapter's router
+    /// Builds a lock-free [`zenohd::RouterHealthChecker`] bound to this adapter's router
     /// endpoint, for the router watchdog to probe liveness without holding the
     /// central messenger lock.
     #[cfg(feature = "router")]
@@ -595,12 +605,14 @@ impl ZenohAdapter {
             self.client_config.port,
             self.client_config.tls.clone(),
         );
-        zenohd::RouterLinksProbe::new(probe_config, zenohd.configured_connect_endpoints())
+        zenohd::RouterLinksProbe::new(probe_config, &zenohd.configured_connect_endpoints())
     }
 
     #[cfg(feature = "router")]
     pub fn router_is_adopted(&self) -> bool {
-        self.zenohd.as_ref().is_some_and(|z| z.is_adopted())
+        self.zenohd
+            .as_ref()
+            .is_some_and(zenohd::ZenohdFacade::is_adopted)
     }
 
     /// Whether the owned router runs under an operator-pinned `ZENOH_CONFIG`
@@ -610,13 +622,18 @@ impl ZenohAdapter {
     /// owns no router.
     #[cfg(feature = "router")]
     pub fn router_config_is_pinned(&self) -> bool {
-        self.zenohd.as_ref().is_some_and(|z| z.is_pinned())
+        self.zenohd
+            .as_ref()
+            .is_some_and(zenohd::ZenohdFacade::is_pinned)
     }
 
     /// Builds a peer-session config seeded by `host:port` (or `seed_peers` when
     /// non-empty). `buffer_sizes` are applied later at the flume/mpsc layer
     /// (subscribe / listen / call).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is one setting of the session"
+    )]
     fn create_client_config(
         protocol: ZenohNetProtocol,
         host: &str,
@@ -711,6 +728,7 @@ impl ZenohAdapter {
     /// There is intentionally no in-process namespace *swap* once a session is
     /// open: zenoh captures the namespace once at session build, so a change
     /// requires a fresh session (the daemon rebuilds its whole generation).
+    #[must_use]
     pub fn with_namespace(mut self, namespace: Option<Namespace>) -> Self {
         let protocol = self.client_config.protocol;
         let host = self.client_config.host.clone();
@@ -759,7 +777,7 @@ impl MessengerBackend for ZenohAdapter {
 
         let session = zenoh::open(config)
             .await
-            .map_err(|e| Error::BackendError(format!("Failed to create Zenoh session: {}", e)))?;
+            .map_err(|e| Error::BackendError(format!("Failed to create Zenoh session: {e}")))?;
 
         let mode = if self.client_config.gossip {
             "peer"
@@ -939,8 +957,7 @@ impl MessengerBackend for ZenohAdapter {
                 let zbytes = sample.payload().clone();
                 let attachment_bytes = sample
                     .attachment()
-                    .map(|z| z.to_bytes())
-                    .unwrap_or_default();
+                    .map_or_default(|z| z.to_bytes());
                 let reply_kind = match ServiceReplyAttachment::decode(attachment_bytes.as_ref()) {
                     Ok(a) => a.kind,
                     Err(err) => {
@@ -1049,12 +1066,13 @@ impl MessengerBackend for ZenohAdapter {
             ZenohWireFormat::core_node_presence_filter(PresenceScope::Session, core_node),
             |sample| {
                 let keyexpr = sample.key_expr().as_str();
-                match ZenohWireFormat::parse_core_node_presence(PresenceScope::Session, keyexpr) {
-                    Ok(presence) => Some(presence),
-                    Err(_) => {
-                        tracing::error!(%keyexpr, "failed to parse core-node presence keyexpr");
-                        None
-                    }
+                if let Ok(presence) =
+                    ZenohWireFormat::parse_core_node_presence(PresenceScope::Session, keyexpr)
+                {
+                    Some(presence)
+                } else {
+                    tracing::error!(%keyexpr, "failed to parse core-node presence keyexpr");
+                    None
                 }
             },
         )
@@ -1362,7 +1380,7 @@ impl ZenohAdapter {
         self.topic_subscriber_wait(sender)?.resolve(timeout).await
     }
 
-    /// [`subscriber_match_wait`](Self::subscriber_match_wait) for a topic,
+    /// `subscriber_match_wait` for a topic,
     /// building the publish key expression from `sender`.
     pub fn topic_subscriber_wait(&self, sender: &TopicWireSender) -> Result<SubscriberMatchWait> {
         self.subscriber_match_wait(ZenohWireFormat::topic_publish(sender))
@@ -1427,10 +1445,7 @@ impl ZenohAdapter {
                     ..
                 } = sample.into();
                 if drop_secondary {
-                    let raw = attachment
-                        .as_ref()
-                        .map(|z| z.to_bytes())
-                        .unwrap_or_default();
+                    let raw = attachment.as_ref().map_or_default(|z| z.to_bytes());
                     if !TopicAttachment::decode(raw.as_ref()).is_primary {
                         return;
                     }
@@ -1489,6 +1504,7 @@ fn live_route(session: &Arc<zenoh::Session>, topic: String, qos: PublisherQoS) -
 }
 
 /// The session's publisher for one retaining topic.
+#[derive(Debug)]
 struct RetainingPublisher {
     publisher: AdvancedPublisher<'static>,
     /// Held across each put: a message takes its timestamp, enters the cache
@@ -1533,15 +1549,15 @@ fn declare_retaining_publisher(
 }
 
 /// Per-query inbound handler. Parses the selector, verifies the caller's
-/// link_id slot resolves to the producer's default `_` segment via
-/// [`ParsedInboundQuery::claim`], builds an [`IncomingRequest`] with a
+/// `link_id` slot resolves to the producer's default `_` segment via
+/// `ParsedInboundQuery::claim`, builds an [`IncomingRequest`] with a
 /// [`ResponseToken::Zenoh`] (carrying the concrete reply keyexpr) and pushes
 /// it onto `tx`.
 ///
 /// The parser also re-validates concrete target core / instance slots against
 /// this receiver. That is defensive: Zenoh's matcher should already have
 /// filtered them out, but a stale peer-routing view must not let a pinned
-/// action goal run on a sibling instance. Queries whose link_id slot is neither
+/// action goal run on a sibling instance. Queries whose `link_id` slot is neither
 /// `*` nor `_` are dropped silently for the same reason.
 ///
 /// This runs inside zenoh's reception callback, so the function is sync:
@@ -1556,7 +1572,7 @@ fn process_inbound_query(
     tx: &flume::Sender<IncomingRequest>,
     rt: &tokio::runtime::Handle,
 ) {
-    let attachment_bytes = query.attachment().map(|z| z.to_bytes()).unwrap_or_default();
+    let attachment_bytes = query.attachment().map_or_default(|z| z.to_bytes());
     let parsed = match ZenohWireFormat::parse_inbound_query(
         recv,
         query.key_expr().as_str(),
@@ -1635,8 +1651,10 @@ fn process_inbound_query(
 /// Zenoh-side per-topic publisher returned by
 /// [`ZenohAdapter::declare_topic_publisher`]. Its `publish` takes no adapter
 /// lock.
+#[derive(Debug)]
 pub struct ZenohPublisher(PublishRoute);
 
+#[derive(Debug)]
 enum PublishRoute {
     /// A live-only topic: each publish is one `session.put()`, and no Zenoh
     /// publisher is declared.
@@ -1655,7 +1673,8 @@ enum PublishRoute {
 /// [`resolve`](Self::resolve) runs detached from the adapter and callers can
 /// release any shared adapter lock before waiting out the timeout, the same
 /// issue-then-resolve split as
-/// [`LivelinessProbe`](crate::types::LivelinessProbe).
+/// [`LivelinessProbe`].
+#[derive(Debug)]
 pub struct SubscriberMatchWait {
     session: Arc<zenoh::Session>,
     keyexpr: String,
@@ -1699,7 +1718,7 @@ impl SubscriberMatchWait {
             loop {
                 match listener.recv_async().await {
                     Ok(status) if status.matching() => return true,
-                    Ok(_) => continue,
+                    Ok(_) => {}
                     Err(_) => return false,
                 }
             }

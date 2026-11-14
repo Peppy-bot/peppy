@@ -70,8 +70,8 @@ impl DefinitionHeader {
             return None;
         }
         let from = self.from.as_deref()?;
-        let from = from.strip_prefix("oras://").unwrap_or(from);
-        let from = from.strip_prefix("docker://").unwrap_or(from);
+        let from = from.trim_prefix("oras://");
+        let from = from.trim_prefix("docker://");
         Some(ImageReference::parse(from))
     }
 }
@@ -311,8 +311,8 @@ mod tests {
             .expect("a registry image")
             .expect("valid");
         assert_eq!(oras.to_string(), "ghcr.io/acme/base:1");
-        assert!(ImageReference::parse("Upper/Case").is_err());
-        assert!(ImageReference::parse("ubuntu:").is_err());
-        assert!(ImageReference::parse("ubuntu@").is_err());
+        ImageReference::parse("Upper/Case").unwrap_err();
+        ImageReference::parse("ubuntu:").unwrap_err();
+        ImageReference::parse("ubuntu@").unwrap_err();
     }
 }

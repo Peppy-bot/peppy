@@ -9,10 +9,10 @@
 use super::{PeerInfo, ProducerRef};
 
 /// One observed source: the observed instance's full `(core_node,
-/// instance_id)` address plus the producer-side link_id of the pairing slot
+/// instance_id)` address plus the producer-side `link_id` of the pairing slot
 /// being observed, and, when the plan named one pair of that slot by its other
 /// end, that peer. The triple pins the source's publishes exactly (core,
-/// instance, producer-side link_id segment), the peer narrows them to the one
+/// instance, producer-side `link_id` segment), the peer narrows them to the one
 /// pair, and together they are both what an observer subscription is declared
 /// against and the member's full identity, so members sharing one instance,
 /// or one slot, stay distinct.
@@ -33,10 +33,10 @@ use super::{PeerInfo, ProducerRef};
 pub struct ObservedSource {
     /// The observed source instance's full wire address.
     pub producer: ProducerRef,
-    /// The producer-side link_id of the observed pairing slot.
+    /// The producer-side `link_id` of the observed pairing slot.
     pub source_link_id: String,
     /// The pair's other end, when the plan named the pair by it: the peer the
-    /// source publishes to and the link_id of the peer's slot. `None`
+    /// source publishes to and the `link_id` of the peer's slot. `None`
     /// observes every pair of the source's slot, each tagged with this same
     /// source.
     pub peer: Option<PeerInfo>,

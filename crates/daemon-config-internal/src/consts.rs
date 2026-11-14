@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// The peppy output directory relative to node_dir (contains generated libraries).
+/// The peppy output directory relative to `node_dir` (contains generated libraries).
 pub const PEPPY_OUTPUT_DIR: &str = ".peppy";
 pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppylib";
 /// The crate of the codec API in a Rust node that asks for it.
@@ -134,7 +134,7 @@ static APP_ENV: OnceLock<AppEnv> = OnceLock::new();
 /// should construct [`PeppyDirs::new`] directly rather than rely on this
 /// global; that keeps it independent of call ordering across threads.
 pub fn set_app_env(env: AppEnv) {
-    APP_ENV.set(env).ok();
+    let _ = APP_ENV.set(env);
 }
 
 /// Returns the process-wide application environment, defaulting to
@@ -358,7 +358,7 @@ impl PeppyDirs {
 
     /// Persistent Git checkouts shared across `node add` batches.
     /// Directories are keyed by `<slug>-<hash>` where the hash covers
-    /// repo_url + commit, so one directory holds exactly one tree.
+    /// `repo_url` + commit, so one directory holds exactly one tree.
     pub fn git_checkouts_dir(&self) -> PathBuf {
         self.cache_dir().join("git_checkouts")
     }
@@ -458,6 +458,7 @@ impl Default for PeppyDirs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn a_build_without_a_release_tag_has_no_artifact_version() {
@@ -479,10 +480,14 @@ mod tests {
             );
         }
         let error = artifact_version_of(Some("v1+build")).expect_err("a `+`");
-        assert!(matches!(error, NoArtifactVersion::Unusable(..)), "{error}");
+        assert_matches!(error, NoArtifactVersion::Unusable(..), "{error}");
         assert!(error.to_string().contains("v1+build"), "{error}");
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a test shorthand for a value that the code under test gives wrapped"
+    )]
     fn user_home() -> Option<PathBuf> {
         Some(PathBuf::from("/home/u"))
     }

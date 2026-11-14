@@ -17,7 +17,6 @@ use futures::future::{Either, Ready, ready};
 use peppylib::messaging::{
     CallerKind, Failure, ServiceAnswer, ServiceRequestContext, VerifiedCaller,
 };
-use std::future::Future;
 
 /// Refuses the raw calls of the daemon from the instances of the nodes.
 #[derive(Clone, Default)]
@@ -31,6 +30,10 @@ impl RawCallGate {
     /// The refusal of the raw call `call` from `caller`, the caller that the
     /// check of the session verified: when it is an instance, or when no
     /// check verified it.
+    #[expect(
+        clippy::unused_self,
+        reason = "the gate is a value that each listener holds, and it has no state"
+    )]
     pub(crate) fn refusal(&self, call: &str, caller: Option<&VerifiedCaller>) -> Option<Failure> {
         let caller = match verified(caller) {
             Ok(caller) => caller,

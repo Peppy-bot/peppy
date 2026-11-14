@@ -17,7 +17,6 @@ mod table;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -41,8 +40,8 @@ pub(crate) const CALLER_INSTANCE_ID: &str = core_node_api::names::COMMAND_LINE_I
 /// `doing` naming the request ("Failed to add repository"): the daemon's
 /// error reply with its failure kind, which is a refusal, or why the request
 /// did not reach the daemon, which is an error of the command.
-pub(crate) fn request_error(doing: &str, error: peppylib::PeppyError) -> Error {
-    let text = request_failure_text(doing, &error);
+pub(crate) fn request_error(doing: &str, error: &peppylib::PeppyError) -> Error {
+    let text = request_failure_text(doing, error);
     match error.failure() {
         Some(_) => Error::ended(CallEnd::Refused, text),
         None => Error::ExecutionFailed(text),
@@ -98,10 +97,10 @@ fn health_label(healthy: bool) -> &'static str {
 /// health via [`health_label`]. Shared by `stack list` and `node info` so the
 /// two never diverge.
 pub(crate) fn instance_health_label(state: InstanceState, healthy: bool) -> &'static str {
-    if !state.has_process() {
-        "-"
-    } else {
+    if state.has_process() {
         health_label(healthy)
+    } else {
+        "-"
     }
 }
 
@@ -358,12 +357,11 @@ pub(crate) fn block_on<F, T>(future: F) -> Result<T>
 where
     F: Future<Output = Result<T>>,
 {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
-        Err(_) => {
-            let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(future)
-        }
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(future))
+    } else {
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(future)
     }
 }
 
@@ -468,7 +466,7 @@ mod tests {
         InstanceEndpoint {
             label: label.to_string(),
             kind,
-            urls: urls.iter().map(|url| url.to_string()).collect(),
+            urls: urls.iter().map(ToString::to_string).collect(),
         }
     }
 
@@ -686,7 +684,7 @@ MCP endpoints:
     #[test]
     fn block_on_runs_a_future_without_an_ambient_runtime() {
         // The no-current-handle branch builds a fresh runtime.
-        let value = block_on(async { Ok::<_, crate::error::Error>(7) }).expect("future resolves");
+        let value = block_on(async { Ok::<_, Error>(7) }).expect("future resolves");
         assert_eq!(value, 7);
     }
 
@@ -703,9 +701,9 @@ MCP endpoints:
                 .start_session()
                 .await
                 .expect("mock session should start");
-            let handle = MessengerHandle::from_shared(std::sync::Arc::new(
-                tokio::sync::Mutex::new(instance.take_messenger()),
-            ));
+            let handle = MessengerHandle::from_shared(Arc::new(tokio::sync::Mutex::new(
+                instance.take_messenger(),
+            )));
             let conn = |target: &str| DaemonConnection {
                 messenger: &handle,
                 core_node_name: "local-daemon".to_string(),

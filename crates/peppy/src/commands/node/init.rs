@@ -15,6 +15,7 @@ use peppylib::core_node::transport::poll;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[derive(Debug)]
 pub struct NodeInitBuilder {
     ctx: Arc<AppContext>,
     to_dir: PathBuf,
@@ -44,11 +45,13 @@ impl NodeInitBuilder {
         }
     }
 
+    #[must_use]
     pub fn with_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.to_dir = dir.into();
         self
     }
 
+    #[must_use]
     pub fn with_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
         self.timeout = timeout.into();
         self
@@ -91,7 +94,7 @@ impl NodeInitBuilder {
             self.timeout,
         )
         .await
-        .map_err(|e| crate::commands::request_error("Failed to initialize the node", e))?;
+        .map_err(|e| crate::commands::request_error("Failed to initialize the node", &e))?;
 
         info!(
             "Successfully created node '{}' at {}/{}",

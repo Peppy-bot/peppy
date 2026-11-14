@@ -1,4 +1,4 @@
-//! Encoding types for the NodeBuild action (streaming version with feedback).
+//! Encoding types for the `NodeBuild` action (streaming version with feedback).
 
 use super::publish::{NodePublishRequest, PlatformPublish};
 use crate::encoding::{
@@ -21,30 +21,30 @@ pub enum FeedbackStream {
 impl FeedbackStream {
     pub fn as_str(&self) -> &'static str {
         match self {
-            FeedbackStream::Stdout => "stdout",
-            FeedbackStream::Stderr => "stderr",
-            FeedbackStream::Warning => "warning",
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+            Self::Warning => "warning",
         }
     }
 
     pub(crate) fn to_capnp(self) -> node_capnp::FeedbackStream {
         match self {
-            FeedbackStream::Stdout => node_capnp::FeedbackStream::Stdout,
-            FeedbackStream::Stderr => node_capnp::FeedbackStream::Stderr,
-            FeedbackStream::Warning => node_capnp::FeedbackStream::Warning,
+            Self::Stdout => node_capnp::FeedbackStream::Stdout,
+            Self::Stderr => node_capnp::FeedbackStream::Stderr,
+            Self::Warning => node_capnp::FeedbackStream::Warning,
         }
     }
 
     pub(crate) fn from_capnp(value: node_capnp::FeedbackStream) -> Self {
         match value {
-            node_capnp::FeedbackStream::Stdout => FeedbackStream::Stdout,
-            node_capnp::FeedbackStream::Stderr => FeedbackStream::Stderr,
-            node_capnp::FeedbackStream::Warning => FeedbackStream::Warning,
+            node_capnp::FeedbackStream::Stdout => Self::Stdout,
+            node_capnp::FeedbackStream::Stderr => Self::Stderr,
+            node_capnp::FeedbackStream::Warning => Self::Warning,
         }
     }
 }
 
-/// Goal message for the NodeBuild action.
+/// Goal message for the `NodeBuild` action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeBuildGoal {
     pub node_name: String,
@@ -81,22 +81,26 @@ impl NodeBuildGoal {
         }
     }
 
+    #[must_use]
     pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
         self.env_vars = env_vars;
         self
     }
 
+    #[must_use]
     pub fn with_force(mut self, force: bool) -> Self {
         self.force = force;
         self
     }
 
+    #[must_use]
     pub fn with_rebuild(mut self, rebuild: bool) -> Self {
         self.rebuild = rebuild;
         self
     }
 
     /// Asks for the publish of the node with its build.
+    #[must_use]
     pub fn with_publish(mut self, publish: NodePublishRequest) -> Self {
         self.publish = Some(publish);
         self
@@ -104,6 +108,7 @@ impl NodeBuildGoal {
 
     /// Marks this goal as one step of a federated launch's dispatch, so the
     /// receiving daemon accepts it while reserved for that launch.
+    #[must_use]
     pub fn with_launch_id(mut self, launch_id: impl Into<String>) -> Self {
         self.launch_id = Some(launch_id.into());
         self
@@ -112,7 +117,7 @@ impl NodeBuildGoal {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut goal = builder.init_root::<node_capnp::node_build_goal::Builder>();
+            let mut goal = builder.init_root::<node_capnp::node_build_goal::Builder<'_>>();
             goal.set_node_name(&self.node_name);
             goal.set_node_tag(&self.node_tag);
 
@@ -134,7 +139,7 @@ impl NodeBuildGoal {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let goal = reader.get_root::<node_capnp::node_build_goal::Reader>()?;
+        let goal = reader.get_root::<node_capnp::node_build_goal::Reader<'_>>()?;
 
         let env_vars = super::read_env_vars(goal.get_env_vars()?)?;
 
@@ -173,7 +178,8 @@ impl NodeBuildGoalResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_build_goal_response::Builder>();
+            let mut response =
+                builder.init_root::<node_capnp::node_build_goal_response::Builder<'_>>();
             response.set_log_path(self.log_path.to_string_lossy().as_ref());
         }
         encode_message(&builder)
@@ -181,14 +187,14 @@ impl NodeBuildGoalResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_build_goal_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::node_build_goal_response::Reader<'_>>()?;
         Ok(Self {
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
         })
     }
 }
 
-/// Feedback message for the NodeBuild action.
+/// Feedback message for the `NodeBuild` action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeBuildFeedback {
     pub stream: FeedbackStream,
@@ -230,7 +236,7 @@ impl NodeBuildFeedback {
     pub fn encode(&self) -> Result<NonEmptyPayload> {
         let mut builder = Builder::new_default();
         {
-            let mut feedback = builder.init_root::<node_capnp::node_build_feedback::Builder>();
+            let mut feedback = builder.init_root::<node_capnp::node_build_feedback::Builder<'_>>();
             feedback.set_stream(self.stream.to_capnp());
             feedback.set_line(&self.line);
         }
@@ -239,7 +245,7 @@ impl NodeBuildFeedback {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let feedback = reader.get_root::<node_capnp::node_build_feedback::Reader>()?;
+        let feedback = reader.get_root::<node_capnp::node_build_feedback::Reader<'_>>()?;
         Ok(Self {
             stream: FeedbackStream::from_capnp(feedback.get_stream()?),
             line: feedback.get_line()?.to_str()?.to_owned(),
@@ -278,6 +284,7 @@ impl NodeBuildResult {
         }
     }
 
+    #[must_use]
     pub fn with_published(mut self, published: Vec<PlatformPublish>) -> Self {
         self.published = published;
         self
@@ -286,14 +293,14 @@ impl NodeBuildResult {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut result = builder.init_root::<node_capnp::node_build_result::Builder>();
+            let mut result = builder.init_root::<node_capnp::node_build_result::Builder<'_>>();
             if let Some(path) = &self.artifact_path {
                 result.set_artifact_path(path.to_string_lossy().as_ref());
             }
             let count = capnp_list_len(self.published.len(), "NodeBuildResult.published")?;
             let mut published = result.reborrow().init_published(count);
-            for (index, platform) in self.published.iter().enumerate() {
-                platform.write(published.reborrow().get(index as u32));
+            for (index, platform) in (0_u32..).zip(self.published.iter()) {
+                platform.write(published.reborrow().get(index));
             }
         }
         encode_message(&builder)
@@ -301,7 +308,7 @@ impl NodeBuildResult {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let result = reader.get_root::<node_capnp::node_build_result::Reader>()?;
+        let result = reader.get_root::<node_capnp::node_build_result::Reader<'_>>()?;
         Ok(Self {
             artifact_path: optional_text(result.get_artifact_path()?.to_str()?).map(PathBuf::from),
             published: result
@@ -314,19 +321,19 @@ impl NodeBuildResult {
 }
 
 impl crate::encoding::Wire for NodeBuildGoal {
-    type Root = crate::node_capnp::node_build_goal::Owned;
+    type Root = node_capnp::node_build_goal::Owned;
 }
 
 impl crate::encoding::Wire for NodeBuildGoalResponse {
-    type Root = crate::node_capnp::node_build_goal_response::Owned;
+    type Root = node_capnp::node_build_goal_response::Owned;
 }
 
 impl crate::encoding::Wire for NodeBuildFeedback {
-    type Root = crate::node_capnp::node_build_feedback::Owned;
+    type Root = node_capnp::node_build_feedback::Owned;
 }
 
 impl crate::encoding::Wire for NodeBuildResult {
-    type Root = crate::node_capnp::node_build_result::Owned;
+    type Root = node_capnp::node_build_result::Owned;
 }
 
 #[cfg(test)]
@@ -513,7 +520,7 @@ mod tests {
 
     #[test]
     fn node_build_goal_decode_rejects_malformed_bytes() {
-        assert!(NodeBuildGoal::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeBuildGoal::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     // --- NodeBuildGoalResponse ---
@@ -529,7 +536,7 @@ mod tests {
 
     #[test]
     fn node_build_goal_response_decode_rejects_malformed_bytes() {
-        assert!(NodeBuildGoalResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeBuildGoalResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     // --- NodeBuildFeedback ---
@@ -564,7 +571,7 @@ mod tests {
 
     #[test]
     fn node_build_feedback_decode_rejects_malformed_bytes() {
-        assert!(NodeBuildFeedback::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeBuildFeedback::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 
     // --- NodeBuildResult ---
@@ -583,6 +590,6 @@ mod tests {
 
     #[test]
     fn node_build_result_decode_rejects_malformed_bytes() {
-        assert!(NodeBuildResult::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+        NodeBuildResult::decode(&[0xde, 0xad, 0xbe, 0xef]).unwrap_err();
     }
 }

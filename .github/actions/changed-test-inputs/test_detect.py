@@ -166,6 +166,7 @@ class Detection(unittest.TestCase):
                 self.assertEqual(selection["multi_daemon_e2e"], "true")
                 self.assertEqual(selection["docs_integration"], "true")
                 self.assertEqual(selection["cross_check"], "true")
+                self.assertEqual(selection["lint"], "true")
                 self.assertEqual(selection["scripts"], "false")
                 self.assertEqual(selection["install_script"], install_script)
 
@@ -204,8 +205,44 @@ class Detection(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(
                     selected(select(path)).keys(),
-                    {detect.WORKSPACE_SUITE, *detect.SUITES},
+                    {detect.WORKSPACE_SUITE, detect.LINT_SUITE, *detect.SUITES},
                 )
+
+    def test_the_lint_runs_for_every_crate_of_the_two_workspaces(self):
+        directories, _, _ = detect.crate_graph(
+            [
+                os.path.join(detect.ROOT, "Cargo.toml"),
+                os.path.join(detect.ROOT, detect.PEPPY_SHARED, "Cargo.toml"),
+            ]
+        )
+        crates = set(directories.values())
+        # A member that the workspace suite does not build, and a crate of
+        # the sealed tree.
+        self.assertIn("docs/tests/integration", crates)
+        self.assertIn(detect.PEPPY_SHARED + "/peppylib-py", crates)
+        for directory in sorted(crates):
+            with self.subTest(crate=directory):
+                self.assertEqual(select(directory + "/src/lib.rs")["lint"], "true")
+
+    def test_the_lint_runs_for_what_decides_the_lints(self):
+        for path in (
+            "clippy.toml",
+            detect.PEPPY_SHARED + "/clippy.toml",
+            detect.PEPPY_SHARED + "/Cargo.toml",
+            detect.PEPPY_SHARED + "/Cargo.lock",
+            ".github/actions/cargo-lint/action.yml",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(select(path)["lint"], "true")
+
+    def test_the_lint_stays_off_for_what_no_crate_compiles(self):
+        for path in (
+            "docs/src/content/docs/guides/quickstart.mdx",
+            "scripts/install.sh",
+            ".github/actions/hub-ci-peppy/resolve.py",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(select(path)["lint"], "false")
 
     def test_the_workspace_suite_runs_for_every_default_member(self):
         root_manifest = os.path.join(detect.ROOT, "Cargo.toml")

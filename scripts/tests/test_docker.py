@@ -6,7 +6,7 @@ import base64
 import json
 import os
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -39,14 +39,19 @@ from functions.docker import (
     move_latest_main,
     move_latest_to,
     probe_base_image,
+    probe_rust_release,
     read_apt_snapshot,
     validate_docker_environment,
 )
+from functions.rust_version import RustVersion, workspace_rust_version
 
 from .helpers import flag_value
 
 SNAPSHOT = AptSnapshot("20261110T073833Z")
 OTHER_SNAPSHOT = AptSnapshot("20261111T120000Z")
+# The Rust that a node needs in the tests, and the images that hold a Rust.
+RUST_VERSION = RustVersion(1, 100, 0)
+RUST_IMAGES = [image for image in BASE_IMAGES if image.holds_rust]
 
 # The directory the base images build from, the build context of each.
 BASE_IMAGES_DIR = Path(__file__).resolve().parent.parent / "base_images"
@@ -979,20 +984,42 @@ def _is_build(cmd: Sequence[str]) -> bool:
     return list(cmd[:3]) == ["docker", "buildx", "build"]
 
 
+def _is_rust_probe(cmd: Sequence[str]) -> bool:
+    return list(cmd[:2]) == ["docker", "run"] and list(cmd[-2:]) == [
+        "rustc",
+        "--version",
+    ]
+
+
 def _is_probe(cmd: Sequence[str]) -> bool:
-    return list(cmd[:2]) == ["docker", "run"]
+    """Whether *cmd* is a probe of the apt sources of an image."""
+    return list(cmd[:2]) == ["docker", "run"] and not _is_rust_probe(cmd)
+
+
+def _docker_with_rust(release: str) -> Callable[..., MagicMock]:
+    """A docker whose every command passes, and whose images hold the Rust
+    *release*."""
+
+    def run(cmd: Sequence[str], **_: object) -> MagicMock:
+        return MagicMock(
+            returncode=0, stdout=f"rustc {release} (0123456789 2026-01-01)\n"
+        )
+
+    return run
 
 
 def test_build_all_base_images_builds_every_image_on_one_snapshot_then_probes(
     tmp_path: Path,
 ) -> None:
-    with patch("functions.docker.subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0)
-        build_all_base_images(tmp_path, "v0.2.0", SNAPSHOT)
+    with patch(
+        "functions.docker.subprocess.run", side_effect=_docker_with_rust("1.100.0")
+    ) as mock_run:
+        build_all_base_images(tmp_path, "v0.2.0", SNAPSHOT, RUST_VERSION)
 
     commands = [run.args[0] for run in mock_run.call_args_list]
     builds = commands[: len(BASE_IMAGES)]
-    probes = commands[len(BASE_IMAGES) :]
+    rust_probes = commands[len(commands) - len(RUST_IMAGES) * len(DOCKER_PLATFORMS) :]
+    probes = commands[len(builds) : len(commands) - len(rust_probes)]
 
     assert all(_is_build(cmd) for cmd in builds)
     assert [flag_value(cmd, "-t") for cmd in builds] == [
@@ -1014,6 +1041,14 @@ def test_build_all_base_images_builds_every_image_on_one_snapshot_then_probes(
     ]
     assert {cmd[-1] for cmd in probes} == {SNAPSHOT.id}
 
+    # The Rust of each image that holds one is read on every platform, last.
+    assert all(_is_rust_probe(cmd) for cmd in rust_probes)
+    assert [(cmd[-3], flag_value(cmd, "--platform")) for cmd in rust_probes] == [
+        (f"{image.repo}:v0.2.0", platform)
+        for image in RUST_IMAGES
+        for platform in DOCKER_PLATFORMS
+    ]
+
     assert not any("latest" in arg for cmd in commands for arg in cmd)
 
 
@@ -1021,7 +1056,7 @@ def test_build_all_base_images_stops_on_first_failure(tmp_path: Path) -> None:
     with patch("functions.docker.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=1)
         with pytest.raises(ReleaseError, match="docker buildx build failed"):
-            build_all_base_images(tmp_path, "v0.3.0", SNAPSHOT)
+            build_all_base_images(tmp_path, "v0.3.0", SNAPSHOT, RUST_VERSION)
 
     assert mock_run.call_count == 1
 
@@ -1034,10 +1069,93 @@ def test_build_all_base_images_stops_on_a_failed_probe(tmp_path: Path) -> None:
         patch("functions.docker.subprocess.run", side_effect=run) as mock_run,
         pytest.raises(ReleaseError, match="does not install from the Ubuntu snapshot"),
     ):
-        build_all_base_images(tmp_path, "v0.3.0", SNAPSHOT)
+        build_all_base_images(tmp_path, "v0.3.0", SNAPSHOT, RUST_VERSION)
 
     # Every build, then the one probe that failed.
     assert mock_run.call_count == len(BASE_IMAGES) + 1
+
+
+def test_build_all_base_images_stops_on_a_rust_older_than_a_node_needs(
+    tmp_path: Path,
+) -> None:
+    with (
+        patch(
+            "functions.docker.subprocess.run", side_effect=_docker_with_rust("1.99.1")
+        ) as mock_run,
+        pytest.raises(ReleaseError, match=r"holds Rust 1\.99\.1"),
+    ):
+        build_all_base_images(tmp_path, "v0.3.0", SNAPSHOT, RUST_VERSION)
+
+    # Every build and every probe of the apt sources, then the one Rust probe
+    # that failed.
+    apt_probes = len(BASE_IMAGES) * len(DOCKER_PLATFORMS) * len(APT_PROBES)
+    assert mock_run.call_count == len(BASE_IMAGES) + apt_probes + 1
+
+
+# --- probe_rust_release ---
+
+
+def test_the_image_of_the_rust_nodes_holds_a_rust() -> None:
+    assert [image.repo for image in RUST_IMAGES] == ["peppybot/rust-cargo-base"]
+
+
+def test_probe_rust_release_reads_the_rustc_of_each_platform() -> None:
+    image = RUST_IMAGES[0]
+
+    with patch(
+        "functions.docker.subprocess.run", side_effect=_docker_with_rust("1.101.2")
+    ) as mock_run:
+        probe_rust_release(image, "v0.1.0", RUST_VERSION)
+
+    commands = [run.args[0] for run in mock_run.call_args_list]
+    assert [flag_value(cmd, "--platform") for cmd in commands] == DOCKER_PLATFORMS
+    for cmd in commands:
+        assert cmd[:3] == ["docker", "run", "--rm"]
+        # The image Docker Hub serves, not a copy this host holds.
+        assert flag_value(cmd, "--pull") == "always"
+        assert cmd[-3:] == [f"{image.repo}:v0.1.0", "rustc", "--version"]
+
+
+def test_probe_rust_release_accepts_the_rust_that_a_node_needs() -> None:
+    with patch(
+        "functions.docker.subprocess.run", side_effect=_docker_with_rust("1.100.0")
+    ):
+        probe_rust_release(RUST_IMAGES[0], "v0.1.0", RUST_VERSION)
+
+
+def test_probe_rust_release_reports_a_rust_older_than_a_node_needs() -> None:
+    image = RUST_IMAGES[0]
+
+    with (
+        patch(
+            "functions.docker.subprocess.run", side_effect=_docker_with_rust("1.99.1")
+        ) as mock_run,
+        pytest.raises(ReleaseError) as raised,
+    ):
+        probe_rust_release(image, "v0.1.0", RUST_VERSION)
+
+    assert str(raised.value) == (
+        f"{image.repo}:v0.1.0 on {DOCKER_PLATFORMS[0]} holds Rust 1.99.1: a Rust "
+        "node needs Rust 1.100.0, the rust-version of peppy-shared/Cargo.toml"
+    )
+    mock_run.assert_called_once()
+
+
+def test_probe_rust_release_reports_an_image_that_does_not_run_rustc() -> None:
+    image = RUST_IMAGES[0]
+
+    with patch("functions.docker.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=127, stderr="exec: rustc: not found\n"
+        )
+        with pytest.raises(ReleaseError) as raised:
+            probe_rust_release(image, "v0.1.0", RUST_VERSION)
+
+    assert str(raised.value) == (
+        f"{image.repo}:v0.1.0 on {DOCKER_PLATFORMS[0]} does not run rustc "
+        "(exit 127): exec: rustc: not found"
+    )
+    mock_run.assert_called_once()
 
 
 # --- read_apt_snapshot ---
@@ -1323,9 +1441,11 @@ def test_run_build_gives_one_snapshot_to_every_image_and_platform() -> None:
     with (
         patch("functions.docker.validate_docker_environment") as mock_validate,
         patch("functions.docker._utc_now", return_value=start) as mock_now,
-        patch("functions.docker.subprocess.run") as mock_run,
+        patch(
+            "functions.docker.subprocess.run",
+            side_effect=_docker_with_rust("1.100.0"),
+        ) as mock_run,
     ):
-        mock_run.return_value = MagicMock(returncode=0)
         _run_build("v1.0.0")
 
     mock_validate.assert_called_once_with()
@@ -1373,9 +1493,13 @@ def test_run_build_prompts_for_the_tag() -> None:
         _run_build(None)
 
     mock_build.assert_called_once()
-    _, tag, snapshot = mock_build.call_args[0]
+    _, tag, snapshot, rust_version = mock_build.call_args[0]
     assert tag == "v1.0.0"
     assert snapshot == AptSnapshot("20260101T230000Z")
+    # The Rust that the crates of this checkout need.
+    assert rust_version == workspace_rust_version(
+        Path(__file__).resolve().parents[2] / "peppy-shared" / "Cargo.toml"
+    )
 
 
 @pytest.mark.usefixtures("no_prompts")

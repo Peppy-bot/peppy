@@ -16,7 +16,7 @@ async fn spawn_stub_listener(server: MessengerHandle, response: InfoResponse) {
 
     tokio::spawn(async move {
         endpoint
-            .handle_next_request(|request| async move {
+            .handle_next_request(async |request| {
                 let payload = request.message().payload();
                 let _inbound = InfoRequest::decode(payload.as_ref()).expect("decode InfoRequest");
                 Ok(response.encode().expect("encode InfoResponse"))
@@ -53,7 +53,7 @@ async fn info_returns_typed_response_fields() {
         7447,
     );
 
-    let (_router, _temp_dir, node_runner) = setup_stub(response.clone()).await;
+    let (_router, _temp_dir, node_runner) = Box::pin(setup_stub(response.clone())).await;
 
     let result = info(&node_runner, Duration::from_secs(3))
         .await

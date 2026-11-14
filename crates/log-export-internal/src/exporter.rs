@@ -26,11 +26,12 @@ const RECORD_OVERHEAD_BYTES: usize = 128;
 
 /// Where a log writer sends the lines it writes. Cloning it is cheap. A
 /// disabled exporter does no work.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LogExporter {
     queue: Option<Arc<Queue>>,
 }
 
+#[derive(Debug)]
 struct Queue {
     sender: mpsc::UnboundedSender<QueuedRecord>,
     min_severity: Option<OtlpMinSeverity>,
@@ -40,6 +41,7 @@ struct Queue {
 }
 
 /// The receiving end of an exporter's queue.
+#[derive(Debug)]
 pub struct LogRecordReceiver {
     receiver: mpsc::UnboundedReceiver<QueuedRecord>,
     discarded: Arc<AtomicU64>,
@@ -47,6 +49,7 @@ pub struct LogRecordReceiver {
 
 /// A record in the queue. It holds its share of the queue's capacity until it
 /// is dropped.
+#[derive(Debug)]
 pub struct QueuedRecord {
     record: LogRecord,
     reservation: Reservation,
@@ -158,8 +161,10 @@ impl Queue {
         let cost = cost(&record);
         // A stack record takes its room of the reserve once the queue is full.
         let reserve = matches!(record.identity.kind, LogKind::Stack).then_some(&self.stack);
-        let reservation = Budget::reserve(&self.lines, cost)
-            .or_else(|| reserve.and_then(|reserve| Budget::reserve(reserve, cost)));
+        let reservation = Budget::reserve(&self.lines, cost).or_else(|| {
+            let reserve = reserve?;
+            Budget::reserve(reserve, cost)
+        });
         let Some(reservation) = reservation else {
             self.discarded.fetch_add(1, Ordering::Relaxed);
             return;
@@ -224,12 +229,14 @@ fn body_of(line: &str) -> (String, bool) {
 }
 
 /// A number of bytes that reservations share.
+#[derive(Debug)]
 struct Budget {
     capacity: usize,
     used: AtomicUsize,
 }
 
 /// A share of a [`Budget`], given back when dropped.
+#[derive(Debug)]
 pub(crate) struct Reservation {
     budget: Arc<Budget>,
     cost: usize,

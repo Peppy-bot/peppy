@@ -50,7 +50,7 @@ const RESERVED_COMPONENT_NAMES: [&str; 8] = [
 
 /// Argument overrides an option entry or one of its copies writes, keyed by
 /// the instance id written in the option's fragment and then by argument.
-pub type ArgumentOverrides = BTreeMap<String, BTreeMap<String, AnyType>>;
+pub(super) type ArgumentOverrides = BTreeMap<String, BTreeMap<String, AnyType>>;
 
 /// How many selections of an axis a document allows. `one` and
 /// `zero_or_one` are filled once, by a `deployments` entry or `--with`, and
@@ -68,6 +68,10 @@ pub enum ComponentCardinality {
 }
 
 impl ComponentCardinality {
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde calls a `skip_serializing_if` function with a reference"
+    )]
     pub fn is_one(&self) -> bool {
         *self == Self::One
     }
@@ -192,7 +196,7 @@ impl<'de> Deserialize<'de> for ComponentAxis {
 /// One option as its axis declares it: a path string names one
 /// `launcher_fragment/v1` file, and an object names files under `fragments`
 /// and carries a body of its own beside them, either or both. The files are
-/// resolved and read when the composition is loaded ([`super::compose`]),
+/// resolved and read when the composition is loaded (`super::compose`),
 /// never here; the body is part of the declaring document.
 ///
 /// In a launcher the object also carries `adjustments`: the launcher's
@@ -323,7 +327,7 @@ impl Fragment {
     /// beside its `fragments` and `adjustments`.
     /// `adjustments` is passed in, so an option writes the one list it
     /// carries and a fragment file writes its own.
-    fn serialize_entries<M: serde::ser::SerializeMap>(
+    fn serialize_entries<M: SerializeMap>(
         &self,
         map: &mut M,
         adjustments: &[Adjustment],
@@ -402,7 +406,7 @@ impl<'de> Deserialize<'de> for LauncherFragment {
 
         let raw = RawLauncherFragment::deserialize(deserializer)?;
         let adjustments = named_entries(raw.adjustments).map_err(de::Error::custom)?;
-        Ok(LauncherFragment {
+        Ok(Self {
             peppy_schema: raw.peppy_schema,
             body: Fragment::from_raw(
                 RawFragment {
@@ -664,7 +668,7 @@ impl<'de> Deserialize<'de> for DeploymentEntries {
         impl<'de> Visitor<'de> for EntriesVisitor {
             type Value = DeploymentEntries;
 
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.write_str(
                     "a list of deployments: `{ source: { name, tag }, instances: [...] }` for \
                      a node, `{ <component>: \"<option>\" }` for a component's option",
@@ -784,7 +788,7 @@ fn read_deployment_entry(
 
 /// Reads the optional `key` of one option entry, taking its value out of the
 /// entry instead of copying it. A refusal names the key and the entry.
-fn read_entry_key<T: serde::de::DeserializeOwned>(
+fn read_entry_key<T: de::DeserializeOwned>(
     entry: &mut serde_json::Map<String, serde_json::Value>,
     key: &str,
     origin: &str,
@@ -870,7 +874,10 @@ impl<'de> Deserialize<'de> for ConditionOptions {
             ));
         }
         names.sort();
-        if names.windows(2).any(|pair| pair[0] == pair[1]) {
+        if names
+            .array_windows()
+            .any(|[previous, next]| previous == next)
+        {
             return Err(de::Error::custom("a condition must name each option once"));
         }
         Ok(Self(names))
@@ -896,7 +903,7 @@ impl std::fmt::Display for ConditionOptions {
 }
 
 /// All named axes must match; each axis accepts one or several option names.
-pub type SelectionCondition = BTreeMap<String, ConditionOptions>;
+pub(super) type SelectionCondition = BTreeMap<String, ConditionOptions>;
 
 /// One rule about which selections a document refuses to be: `when` a
 /// guard holds, the selection must also satisfy at least one `requires`
@@ -1062,7 +1069,7 @@ impl WrittenAdjustment {
     /// list, each with the same changes; each one that the resolved
     /// selection does not define is skipped on its own.
     fn per_instance(self) -> Vec<Adjustment> {
-        let Adjustment {
+        let Self {
             target,
             when,
             set_arguments,
@@ -1149,7 +1156,7 @@ fn check_fragment_path<E: de::Error>(path: &str) -> Result<(), E> {
 
 /// Reads a written key as a value of its type, so `null` is refused as the
 /// type's deserializer refuses it; an absent key takes the field's default.
-pub(crate) fn written<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(
+pub(crate) fn written<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     deserializer: D,
 ) -> Result<Option<T>, D::Error> {
     T::deserialize(deserializer).map(Some)
@@ -1186,7 +1193,7 @@ impl<'de> Deserialize<'de> for OptionSpec {
         impl<'de> Visitor<'de> for OptionSpecVisitor {
             type Value = OptionSpec;
 
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.write_str(
                     "a fragment path string, or an object naming files under `fragments` \
                      beside a body of its own and, in a launcher, `adjustments`, e.g. \
@@ -1207,8 +1214,7 @@ impl<'de> Deserialize<'de> for OptionSpec {
             /// Files first, in order, then the inline body; an
             /// object with neither is an empty body.
             fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-                let raw =
-                    RawOption::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                let raw = RawOption::deserialize(de::value::MapAccessDeserializer::new(map))?;
                 let files = match raw.fragments {
                     Some(files) if files.is_empty() => {
                         return Err(de::Error::custom(
@@ -1259,6 +1265,7 @@ impl<'de> Deserialize<'de> for OptionSpec {
 /// Fragment files have no fixed name: any `.json5` file whose body declares
 /// the fragment schema is one. A fragment is inert on its own; it only ever
 /// contributes to the document whose option references it.
+#[derive(Debug)]
 pub struct LauncherFragmentParser;
 
 impl LauncherFragmentParser {
@@ -1888,8 +1895,8 @@ mod tests {
         let error = parse_option(r#"{ fragments: ["fragments/a.json5"], adjustments: null }"#)
             .expect_err("null names nothing");
         assert!(error.contains("expected a sequence"), "got: {error}");
-        let error = parse_option(r#"{ fragments: null, deployments: [] }"#)
-            .expect_err("null names no file");
+        let error =
+            parse_option(r"{ fragments: null, deployments: [] }").expect_err("null names no file");
         assert!(error.contains("expected a sequence"), "got: {error}");
     }
 
@@ -2026,7 +2033,7 @@ mod tests {
 
     #[test]
     fn an_empty_fragments_list_is_refused() {
-        let error = parse_option(r#"{ fragments: [] }"#).expect_err("no file named");
+        let error = parse_option(r"{ fragments: [] }").expect_err("no file named");
         assert!(error.contains("names no file"), "got: {error}");
     }
 
@@ -2049,7 +2056,7 @@ mod tests {
     fn an_option_round_trips_through_its_written_shape() {
         for written in [
             r#""fragments/a.json5""#,
-            r#"{ deployments: [] }"#,
+            r"{ deployments: [] }",
             r#"{ fragments: ["fragments/a.json5", "fragments/b.json5"] }"#,
             r#"{ fragments: ["fragments/a.json5"], core_nodes: ["edge"],
                 adjustments: [{ target: "x_inst", set_arguments: { fast: true } }] }"#,

@@ -122,9 +122,10 @@ struct EndpointMeta {
     /// Only a scalar slot is taken by one pair.
     cardinality: config::node::Cardinality,
     /// The copy the endpoint's instance belongs to.
-    copy: Option<config::runtime::Name>,
+    copy: Option<Name>,
 }
 
+#[derive(Debug)]
 struct NodeStackInner {
     graph: StableDiGraph<EntityHandle, ()>,
     key_to_index: HashMap<NodeKey, NodeIndex>,
@@ -417,7 +418,7 @@ impl NodeStackInner {
     /// Find the `(node_name, node_tag)` of any entity in the stack that
     /// already tracks an instance with `instance_id`, in any state:
     /// `Starting`, `Running`, etc. Used by the daemon's stack-wide
-    /// instance_id uniqueness guard at spawn time (the validator's
+    /// `instance_id` uniqueness guard at spawn time (the validator's
     /// `rule 7` is the primary check at plan time; this is the
     /// defensive backstop at the trust boundary).
     ///
@@ -453,7 +454,7 @@ impl NodeStackInner {
                 .instances()
                 .iter()
                 .any(|inst| is_running_instance(inst, instance_id))
-                .then(|| handle.clone())
+                .then(|| Arc::clone(handle))
         })
     }
 
@@ -478,7 +479,7 @@ impl NodeStackInner {
 
     /// The entity tracking an instance with `instance_id` in any state.
     fn find_entity_any_state(&self, instance_id: &str) -> Option<EntityHandle> {
-        self.tracked(instance_id, |tracked| tracked.handle.clone())
+        self.tracked(instance_id, |tracked| Arc::clone(tracked.handle))
     }
 
     /// The state of the instance with `instance_id`, in any state.
@@ -492,7 +493,7 @@ impl NodeStackInner {
         instance_id: &Name,
     ) -> Option<(TrackedNodeInstance, EntityHandle)> {
         self.tracked(instance_id.as_str(), |tracked| {
-            (tracked.instance.clone(), tracked.handle.clone())
+            (tracked.instance.clone(), Arc::clone(tracked.handle))
         })
     }
 
@@ -685,7 +686,7 @@ impl NodeStackInner {
         }
 
         let &index = self.key_to_index.get(key)?;
-        let current = self.graph.node_weight(index)?.clone();
+        let current = Arc::clone(self.graph.node_weight(index)?);
 
         if !Arc::ptr_eq(&current, expected_handle) {
             return None;
@@ -835,7 +836,7 @@ impl NodeStackInner {
     }
 
     /// The copy a local instance belongs to, as recorded when it started.
-    fn instance_copy(&self, instance_id: &str) -> Option<config::runtime::Name> {
+    fn instance_copy(&self, instance_id: &str) -> Option<Name> {
         self.tracked(instance_id, |tracked| tracked.instance.copy().cloned())
             .flatten()
     }
@@ -860,10 +861,10 @@ impl NodeStackInner {
             return Err(Error::PairingMismatch {
                 a: a.to_string(),
                 name_a: dep_a.name.clone(),
-                tag_a: dep_a.tag.clone(),
+                tag_a: dep_a.tag,
                 b: b.to_string(),
                 name_b: dep_b.name.clone(),
-                tag_b: dep_b.tag.clone(),
+                tag_b: dep_b.tag,
             });
         }
         if dep_a.role == dep_b.role {
@@ -872,7 +873,7 @@ impl NodeStackInner {
                 b: b.to_string(),
                 role: dep_a.role.clone(),
                 name: dep_a.name.clone(),
-                tag: dep_a.tag.clone(),
+                tag: dep_a.tag,
             });
         }
         if let (Some(sha_a), Some(sha_b)) = (&dep_a.sha256, &dep_b.sha256)
@@ -915,15 +916,15 @@ impl NodeStackInner {
         let pairing = Pairing {
             pairing_name: dep_a.name.clone(),
             pairing_tag: dep_a.tag.clone(),
-            a: pairing::PairEndpoint {
+            a: PairEndpoint {
                 slot: a.clone(),
                 role: dep_a.role.clone(),
-                copy: dep_a.copy.clone(),
+                copy: dep_a.copy,
             },
-            b: pairing::PairEndpoint {
+            b: PairEndpoint {
                 slot: b.clone(),
                 role: dep_b.role.clone(),
-                copy: dep_b.copy.clone(),
+                copy: dep_b.copy,
             },
         };
         self.pairing_registry.insert(pairing.clone());
@@ -1060,7 +1061,7 @@ impl NodeStackInner {
 // Public thread-safe wrapper
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct NodeStack {
     shared: Arc<RwLock<NodeStackInner>>,
     /// Most-recent add log path per node key. This is a daemon-only cache
@@ -1113,7 +1114,7 @@ pub struct PublishSettings {
 }
 
 impl NodeStack {
-    /// Creates a new NodeStack with the given root node configuration.
+    /// Creates a new `NodeStack` with the given root node configuration.
     /// The root node (core node) is the parent of all other nodes in the graph
     /// and cannot be removed from the stack.
     ///
@@ -1134,11 +1135,8 @@ impl NodeStack {
         let instance_id = instance_id.unwrap_or_else(|| {
             Name::new(get_random(rng())).expect("random name generation failed")
         });
-        let instance = TrackedNodeInstance::new(
-            instance_id,
-            InstanceState::Running,
-            std::collections::BTreeMap::new(),
-        );
+        let instance =
+            TrackedNodeInstance::new(instance_id, InstanceState::Running, BTreeMap::new());
         let root_entity = NodeEntity::root(root_config, root_path, instance);
         Self {
             shared: Arc::new(RwLock::new(NodeStackInner::new(root_entity))),
@@ -1157,6 +1155,7 @@ impl NodeStack {
     /// `peppy_config.lifecycle.shutdown_grace_secs`). Builder form so the daemon
     /// can configure it at construction without changing [`NodeStack::new`]'s
     /// signature for the many (mostly test) call sites that take the default.
+    #[must_use]
     pub fn with_shutdown_grace(mut self, grace: Duration) -> Self {
         self.shutdown_grace = grace;
         self
@@ -1171,6 +1170,7 @@ impl NodeStack {
     /// Sets the PyPI mirror of Python builds (from
     /// `peppy_config.pypi_mirror`). Builder form, like
     /// [`NodeStack::with_shutdown_grace`]; `None` is the default.
+    #[must_use]
     pub fn with_pypi_mirror(mut self, mirror: Option<PackagesBaseUrl>) -> Self {
         self.pypi_mirror = mirror;
         self
@@ -1185,6 +1185,7 @@ impl NodeStack {
     /// Sets where the publishes of this daemon push to (from
     /// `peppy_config.publish_repository`). Builder form, like
     /// [`NodeStack::with_shutdown_grace`]; no repository is the default.
+    #[must_use]
     pub fn with_publish_settings(mut self, settings: PublishSettings) -> Self {
         self.publish_settings = settings;
         self
@@ -1197,6 +1198,7 @@ impl NodeStack {
 
     /// Sets the exporter of the stack's log files. Builder form, like
     /// [`NodeStack::with_shutdown_grace`].
+    #[must_use]
     pub fn with_log_exporter(mut self, log_exporter: LogExporter) -> Self {
         self.log_exporter = log_exporter;
         self
@@ -1210,6 +1212,7 @@ impl NodeStack {
     /// Sets the time the supervision of the instances runs on. Builder form,
     /// like [`NodeStack::with_shutdown_grace`]; [`TimeSource::System`] is the
     /// default.
+    #[must_use]
     pub fn with_time_source(mut self, time: TimeSource) -> Self {
         self.time = time;
         self
@@ -1223,6 +1226,7 @@ impl NodeStack {
     /// Sets the bounds on the answers to the daemon's requests. Builder form,
     /// like [`NodeStack::with_shutdown_grace`]; [`ReplyBounds::DEFAULT`] is
     /// the default.
+    #[must_use]
     pub fn with_reply_bounds(mut self, reply_bounds: ReplyBounds) -> Self {
         self.reply_bounds = reply_bounds;
         self
@@ -1296,13 +1300,13 @@ impl NodeStack {
         guard.find(&NodeKey::new(name, tag))
     }
 
-    /// Finds a node instance by its instance_id across all entities in the stack.
+    /// Finds a node instance by its `instance_id` across all entities in the stack.
     pub fn find_by_instance_id(&self, instance_id: &Name) -> Option<TrackedNodeInstance> {
         let guard = self.shared.read();
         guard.find_by_instance_id(instance_id)
     }
 
-    /// Finds a node entity by an instance_id it contains.
+    /// Finds a node entity by an `instance_id` it contains.
     fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
         let guard = self.shared.read();
         guard.find_entity_by_instance_id(instance_id)
@@ -1349,7 +1353,7 @@ impl NodeStack {
     /// starts once the spawn has forked it: the key that the process signs
     /// its calls to the daemon with. `None` when no instance has the id,
     /// before the fork, and once its process is gone.
-    pub fn live_credential(&self, instance_id: &str) -> Option<std::path::PathBuf> {
+    pub fn live_credential(&self, instance_id: &str) -> Option<PathBuf> {
         self.shared
             .read()
             .tracked(instance_id, |tracked| {
@@ -1938,8 +1942,7 @@ impl NodeStack {
                         .manifest
                         .depends_on
                         .as_ref()
-                        .map(|d| d.pairings.clone())
-                        .unwrap_or_default(),
+                        .map_or_default(|d| d.pairings.clone()),
                 })
             })
             .collect()
@@ -2019,7 +2022,7 @@ pub struct PairingNodeSnapshot {
     pub node_name: String,
     pub node_tag: String,
     pub instance_ids: Vec<String>,
-    pub pairing_deps: Vec<config::node::PairingParticipantDependency>,
+    pub pairing_deps: Vec<PairingParticipantDependency>,
 }
 
 /// The serialized pairing-slot view of one instance: every declared
@@ -2032,10 +2035,10 @@ pub struct PairingNodeSnapshot {
 pub fn pairing_slot_view(
     core_node: &str,
     instance_id: &str,
-    deps: &[config::node::PairingParticipantDependency],
+    deps: &[PairingParticipantDependency],
     live_pairs: &[Pairing],
-) -> std::collections::BTreeMap<String, SerializedPairingSlot> {
-    let mut out = std::collections::BTreeMap::new();
+) -> BTreeMap<String, SerializedPairingSlot> {
+    let mut out = BTreeMap::new();
     for dep in deps {
         let slot = SlotAddr::new(core_node, instance_id, &dep.link_id);
         let peers = live_pairs
@@ -2093,7 +2096,7 @@ mod live_container_instances_tests {
         TrackedNodeInstance::new(
             Name::new(id).expect("valid instance id"),
             state,
-            std::collections::BTreeMap::new(),
+            BTreeMap::new(),
         )
     }
 
@@ -2214,7 +2217,7 @@ mod clock_tests {
         TrackedNodeInstance::new(
             Name::new(id).expect("valid instance id"),
             state,
-            std::collections::BTreeMap::new(),
+            BTreeMap::new(),
         )
         .with_clock(binding)
     }

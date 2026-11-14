@@ -6,7 +6,7 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(Clone, Copy)]
-pub enum LogStyle {
+pub(crate) enum LogStyle {
     Verbose,
     Compact,
 }
@@ -38,7 +38,7 @@ fn level_tag(level: Level) -> Option<(&'static str, &'static str)> {
 
 impl<S, N, E> FormatEvent<S, N> for LevelPrefixFormatter<E>
 where
-    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    S: Subscriber + for<'a> LookupSpan<'a>,
     N: for<'a> FormatFields<'a> + 'static,
     E: FormatEvent<S, N>,
 {
@@ -143,7 +143,7 @@ where
 
 /// Where the log lines of a command go.
 #[derive(Clone, Copy)]
-pub enum LogSink {
+pub(crate) enum LogSink {
     /// Standard output, beside the output of the command.
     Stdout,
     /// Standard error, for a command whose standard output carries data that
@@ -151,7 +151,7 @@ pub enum LogSink {
     Stderr,
 }
 
-pub fn init_tracing(style: LogStyle, sink: LogSink) {
+pub(crate) fn init_tracing(style: LogStyle, sink: LogSink) {
     let filter = env_filter(style);
     match sink {
         LogSink::Stdout => subscriber(style, filter, peppy::colors_enabled(), std::io::stdout),
@@ -277,17 +277,17 @@ mod tests {
     fn the_compact_style_tags_each_level_it_names() {
         let warned = |colorize| {
             written_by(LogStyle::Compact, "info", colorize, || {
-                tracing::warn!("Disk almost full")
+                tracing::warn!("Disk almost full");
             })
         };
         let failed = |colorize| {
             written_by(LogStyle::Compact, "info", colorize, || {
-                tracing::error!("Build failed")
+                tracing::error!("Build failed");
             })
         };
         let debugged = |colorize| {
             written_by(LogStyle::Compact, "debug", colorize, || {
-                tracing::debug!("Resolved 3 nodes")
+                tracing::debug!("Resolved 3 nodes");
             })
         };
         assert_eq!(warned(true), "\x1b[33m[WARNING]\x1b[0m Disk almost full\n");

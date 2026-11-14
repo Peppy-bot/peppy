@@ -18,7 +18,7 @@
 //! The `$description` of a field becomes the `description` of its schema:
 //! an annotation for the caller, which no value is checked against.
 //!
-//! Public property names keep the DSL's snake_case spelling, not the
+//! Public property names keep the DSL's `snake_case` spelling, not the
 //! lowerCamelCase spelling the wire encoding uses internally. Every emitted
 //! schema closes with `additionalProperties: false`.
 //!
@@ -178,12 +178,12 @@ fn primitive_json(token: &TypeToken) -> Value {
 /// here.
 pub(crate) fn integer_bounds(token: &TypeToken) -> Option<(i64, i64)> {
     match token {
-        TypeToken::U8 => Some((0, u8::MAX as i64)),
-        TypeToken::U16 => Some((0, u16::MAX as i64)),
-        TypeToken::U32 => Some((0, u32::MAX as i64)),
-        TypeToken::I8 => Some((i8::MIN as i64, i8::MAX as i64)),
-        TypeToken::I16 => Some((i16::MIN as i64, i16::MAX as i64)),
-        TypeToken::I32 => Some((i32::MIN as i64, i32::MAX as i64)),
+        TypeToken::U8 => Some((0, i64::from(u8::MAX))),
+        TypeToken::U16 => Some((0, i64::from(u16::MAX))),
+        TypeToken::U32 => Some((0, i64::from(u32::MAX))),
+        TypeToken::I8 => Some((i64::from(i8::MIN), i64::from(i8::MAX))),
+        TypeToken::I16 => Some((i64::from(i16::MIN), i64::from(i16::MAX))),
+        TypeToken::I32 => Some((i64::from(i32::MIN), i64::from(i32::MAX))),
         _ => None,
     }
 }
@@ -230,11 +230,12 @@ fn max_value_bytes(schema: &SchemaType) -> Option<u64> {
         SchemaType::Primitive(primitive) => max_primitive_bytes(&primitive.kind),
         SchemaType::Object(object) => max_fields_bytes(object.fields.iter()),
         SchemaType::Array(array) => {
-            let length = array.length? as u64;
+            let length = array.length?;
             if array.items.as_ref().as_type_token() == Some(&TypeToken::U8) {
                 // Quotes around the base64 text.
-                return Some(2 + base64_encoded_len(length as usize) as u64);
+                return Some(2 + base64_encoded_len(length) as u64);
             }
+            let length = length as u64;
             let item = max_value_bytes(array.items.as_ref())?;
             // Brackets, items, and the commas between them.
             Some(
@@ -247,6 +248,10 @@ fn max_value_bytes(schema: &SchemaType) -> Option<u64> {
 
 /// Worst-case serialized length of one primitive value, quotes included for
 /// string renderings.
+#[expect(
+    clippy::match_same_arms,
+    reason = "the table has one line for each type, and two lengths are equal by chance"
+)]
 fn max_primitive_bytes(token: &TypeToken) -> Option<u64> {
     match token {
         // "false"

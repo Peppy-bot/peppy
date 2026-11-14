@@ -4,6 +4,7 @@
 //! readiness, the harness barrier and teardown convergence) are proven HERE,
 //! once, before any codegen consumes them.
 
+use std::assert_matches;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,6 +51,10 @@ fn write_peppy_config(dir: &TempDir) -> PathBuf {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "the parameters of a node are a JSON object, which a struct with braces describes"
+)]
 struct EmptyParameters {}
 
 /// Scripted responses are served automatically in FIFO order; unscripted
@@ -446,7 +451,7 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
         standalone_config,
         &readiness,
         &service_readiness,
-        move |_params, node_runner| async move {
+        async move |_params, node_runner| {
             let processor = node_runner.processor();
             let publisher = TopicMessenger::declare_publisher(
                 node_runner.messenger(),
@@ -518,13 +523,13 @@ async fn harness_core_node_reads_the_setup_budget_of_its_manifest() {
             .with_instance_id("setup_budget_instance"),
         &[],
         &[],
-        |_params, _node_runner| async move { Ok(()) },
+        async |_params, _node_runner| Ok(()),
     )
     .await
     .expect("harness should start");
     assert_eq!(
         harness.node_runner().setup_timeout(),
-        Duration::from_secs(180)
+        Duration::from_mins(3)
     );
 
     harness.shutdown().await.expect("harness shutdown");
@@ -543,18 +548,15 @@ async fn harness_core_shutdown_propagates_setup_error() {
         .with_messaging(router.host(), router.port())
         .with_instance_id("failing_setup_instance");
 
-    let harness =
-        HarnessCore::start::<EmptyParameters, _, _>(
-            peppy_config_path,
-            standalone_config,
-            &[],
-            &[],
-            |_params, _node_runner| async move {
-                Err(PeppyError::Io(std::io::Error::other("setup boom")))
-            },
-        )
-        .await
-        .expect("harness start itself should succeed");
+    let harness = HarnessCore::start::<EmptyParameters, _, _>(
+        peppy_config_path,
+        standalone_config,
+        &[],
+        &[],
+        async |_params, _node_runner| Err(PeppyError::Io(std::io::Error::other("setup boom"))),
+    )
+    .await
+    .expect("harness start itself should succeed");
 
     let err = harness
         .shutdown()
@@ -612,7 +614,7 @@ async fn harness_core_shutdown_reports_a_setup_panic() {
 }
 
 /// The statically pinned peer subscription matches a pairing publisher
-/// exactly (producer identity, pairing target, producer-side link_id, and
+/// exactly (producer identity, pairing target, producer-side `link_id`, and
 /// the mock's own slot as the recipient), so a mock peer receives what the
 /// node emits to it on its pairing slot: the seam generated pairing mocks
 /// are built on.
@@ -905,8 +907,9 @@ async fn mock_clock_consumer_drives_the_nodes_own_clock() {
     let peppy_clock = peppylib::clock::for_node(&node_runner)
         .await
         .expect("build PeppyClock");
-    assert!(
-        matches!(peppy_clock.now_ns(), Err(PeppyError::ClockNotReady)),
+    assert_matches!(
+        peppy_clock.now_ns(),
+        Err(PeppyError::ClockNotReady),
         "a domain that has not ticked is not ready",
     );
 
@@ -989,7 +992,7 @@ async fn mock_clock_publisher_leaves_the_domain_to_the_node() {
 }
 
 /// The queue of a clock subscription on a standalone node's session. A clock
-/// subscription rides the sensor_data tier, and the session takes its sizes
+/// subscription rides the `sensor_data` tier, and the session takes its sizes
 /// from the discovery section of its runtime config, which a standalone node
 /// leaves at its defaults.
 fn node_clock_queue() -> u64 {

@@ -3,7 +3,7 @@ mod common;
 use common::{
     AbortOnDrop, GOAL_TIMEOUT, GoalEnd, NodeRunTestResponse, RESULT_TIMEOUT, TIMEOUTS, WAIT,
     acquire_container_test_guard, answer_health_probes, answer_readiness, answer_ready_probe,
-    assert_failure, create_test_node_with_name, fast_health_monitor, never,
+    assert_failure, create_test_node_with_name, fast_health_monitor, has_log_extension, never,
     path_env_with_dir_first, poll_until, send_node_add_then_build, send_node_run_and_wait,
     send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
     start_core_node_with_mock_messenger, start_core_node_with_real_messenger, wait_for_state,
@@ -45,7 +45,7 @@ fn assert_run_log_of(path: &std::path::Path, run_dir: &std::path::Path, instance
         .and_then(|name| name.to_str())
         .expect("a run log file name");
     assert!(
-        file_name.starts_with(&format!("{instance_id}_")) && file_name.ends_with(".log"),
+        file_name.starts_with(&format!("{instance_id}_")) && has_log_extension(file_name),
         "{file_name}"
     );
 }
@@ -313,8 +313,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
 
     assert!(
         markers_present(&feedback),
-        "feedback should include both the stdout and stderr markers, got: {:?}",
-        feedback
+        "feedback should include both the stdout and stderr markers, got: {feedback:?}"
     );
 }
 
@@ -386,24 +385,22 @@ async fn listen_for_node_run_writes_log_file() {
     );
 
     // Verify the log file exists and contains expected content
-    assert!(log_path.exists(), "log file should exist at {:?}", log_path);
+    assert!(log_path.exists(), "log file should exist at {log_path:?}");
 
     let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
 
     // Check that stdout marker is present with correct prefix
     assert!(
-        log_content.contains(&format!("[stdout] {}", STDOUT_MARKER)),
+        log_content.contains(&format!("[stdout] {STDOUT_MARKER}")),
         "log file should contain stdout marker with [stdout] prefix, got:
-{}",
-        log_content
+{log_content}"
     );
 
     // Check that stderr marker is present with correct prefix
     assert!(
-        log_content.contains(&format!("[stderr] {}", STDERR_MARKER)),
+        log_content.contains(&format!("[stderr] {STDERR_MARKER}")),
         "log file should contain stderr marker with [stderr] prefix, got:
-{}",
-        log_content
+{log_content}"
     );
 }
 
@@ -478,23 +475,19 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
     // Verify ALL missing parameters are listed (not just the first one)
     assert!(
         error_msg.contains("device.physical"),
-        "error message should list device.physical, got: {}",
-        error_msg
+        "error message should list device.physical, got: {error_msg}"
     );
     assert!(
         error_msg.contains("device.sim"),
-        "error message should list device.sim, got: {}",
-        error_msg
+        "error message should list device.sim, got: {error_msg}"
     );
     assert!(
         error_msg.contains("video.frame_rate"),
-        "error message should list video.frame_rate, got: {}",
-        error_msg
+        "error message should list video.frame_rate, got: {error_msg}"
     );
     assert!(
         error_msg.contains("video.encoding"),
-        "error message should list video.encoding, got: {}",
-        error_msg
+        "error message should list video.encoding, got: {error_msg}"
     );
 }
 
@@ -586,23 +579,19 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
     // Verify only the video parameters are listed as missing (device is complete)
     assert!(
         !error_msg.contains("device.physical"),
-        "device.physical was provided and should NOT be in error, got: {}",
-        error_msg
+        "device.physical was provided and should NOT be in error, got: {error_msg}"
     );
     assert!(
         !error_msg.contains("device.sim"),
-        "device.sim was provided and should NOT be in error, got: {}",
-        error_msg
+        "device.sim was provided and should NOT be in error, got: {error_msg}"
     );
     assert!(
         error_msg.contains("video.frame_rate"),
-        "error message should list video.frame_rate, got: {}",
-        error_msg
+        "error message should list video.frame_rate, got: {error_msg}"
     );
     assert!(
         error_msg.contains("video.encoding"),
-        "error message should list video.encoding, got: {}",
-        error_msg
+        "error message should list video.encoding, got: {error_msg}"
     );
 }
 
@@ -987,42 +976,37 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     );
 
     // Verify the log file exists and contains expected content
-    assert!(log_path.exists(), "log file should exist at {:?}", log_path);
+    assert!(log_path.exists(), "log file should exist at {log_path:?}");
 
     let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
     assert!(
         log_content.contains("Executing apptainer run"),
         "log file should contain the apptainer run command, got:
-{}",
-        log_content
+{log_content}"
     );
     assert!(
         log_content.contains("Received env var hello_from_peppy"),
         "log file should contain the env var output from the runscript, got:
-{}",
-        log_content
+{log_content}"
     );
 
     // Verify that mount_paths are logged as bind mounts
     assert!(
         log_content.contains("bind_mounts:"),
         "log file should contain bind_mounts info, got:
-{}",
-        log_content
+{log_content}"
     );
     assert!(
         log_content.contains(&mount_dir_str),
         "log file should contain the mount directory path, got:
-{}",
-        log_content
+{log_content}"
     );
 
     // Verify the mount path was accessible inside the container
     assert!(
         log_content.contains("Mount path verified: mount_content"),
         "log file should confirm mount path was accessible in container, got:
-{}",
-        log_content
+{log_content}"
     );
 }
 
@@ -1075,7 +1059,7 @@ async fn listen_for_node_run_with_container_creates_missing_mount_dir_and_warns(
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let apptainer_def = format!(
-        r#"
+        r"
 Bootstrap: docker
 From: {DEFAULT_ALPINE_BASE_IMAGE}
 
@@ -1085,7 +1069,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 
 %runscript
     exec sleep 300
-"#
+"
     );
     std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
         .expect("failed to write apptainer definition");
@@ -1134,15 +1118,12 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     assert!(
         log_content.contains("auto-created missing bind mount source:"),
         "feedback log should contain the auto-create warning, got:
-{}",
-        log_content
+{log_content}"
     );
     assert!(
         log_content.contains(&mount_dir_str),
-        "feedback log warning should reference the offending path {:?}, got:
-{}",
-        mount_dir_str,
-        log_content
+        "feedback log warning should reference the offending path {mount_dir_str:?}, got:
+{log_content}"
     );
 
     // The instance should now be registered in the node stack.
@@ -1242,20 +1223,18 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 
     // Verify the log file contains the streamed output
     let log_path = &start_response.accepted().log_path;
-    assert!(log_path.exists(), "log file should exist at {:?}", log_path);
+    assert!(log_path.exists(), "log file should exist at {log_path:?}");
 
     let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
     assert!(
         log_content.contains("Executing apptainer run"),
         "log file should contain the apptainer run command, got:
-{}",
-        log_content
+{log_content}"
     );
     assert!(
         log_content.contains(STDERR_MARKER),
         "log file should contain the stderr marker from the container process, got:
-{}",
-        log_content
+{log_content}"
     );
 }
 
@@ -1317,13 +1296,12 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
     let error_msg = start_response.end.failure_message();
     assert!(
         error_msg.contains("nonexistent_binary_peppy_test_xyz"),
-        "error should include the command that failed, got: {}",
-        error_msg
+        "error should include the command that failed, got: {error_msg}"
     );
 
     // The log file should exist and contain the error, not be empty
     let log_path = &start_response.accepted().log_path;
-    assert!(log_path.exists(), "log file should exist at {:?}", log_path);
+    assert!(log_path.exists(), "log file should exist at {log_path:?}");
 
     let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
     assert!(
@@ -1333,20 +1311,17 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
     assert!(
         log_content.contains("[error]"),
         "log file should contain an [error] entry, got:
-{}",
-        log_content
+{log_content}"
     );
     assert!(
         log_content.contains("Failed to start node"),
         "log file should contain the failure message, got:
-{}",
-        log_content
+{log_content}"
     );
     assert!(
         log_content.contains("nonexistent_binary_peppy_test_xyz"),
         "log file should contain the command that failed, got:
-{}",
-        log_content
+{log_content}"
     );
 }
 
@@ -1645,7 +1620,7 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
     );
     assert_eq!(
         started.node_stack.instance_state(instance_id.as_str()),
-        Some(core_node_api::InstanceState::Failed),
+        Some(InstanceState::Failed),
         "the crashed instance stays tracked so it remains visible in the stack"
     );
 
@@ -1779,8 +1754,7 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
     assert!(
         !log_content.contains("failed"),
         "a clean exit must not be recorded as a failure, got:
-{}",
-        log_content
+{log_content}"
     );
 
     // The health monitor stops the moment the instance goes terminal, so a node
@@ -1796,8 +1770,7 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
     assert!(
         !log_content.contains("became unhealthy"),
         "a finished node must never be reported as became-unhealthy, got:
-{}",
-        log_content
+{log_content}"
     );
 }
 
@@ -1915,8 +1888,7 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
     assert!(
         !log_content.contains("became unhealthy"),
         "no node may be reported unhealthy during a clean shutdown, got:
-{}",
-        log_content
+{log_content}"
     );
 }
 
@@ -1989,7 +1961,7 @@ async fn run_panel_node(
     started: &common::StartedCoreNode,
     node_name: &str,
     instance_id: &str,
-) -> common::NodeRunTestResponse {
+) -> NodeRunTestResponse {
     send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
@@ -2253,10 +2225,12 @@ async fn a_start_that_fails_before_its_ready_signal_leaves_no_process_of_its_gro
     .expect("the daemon accepts the start");
 
     let pid = poll_until(WAIT, "the daemon should spawn the instance", || {
-        started
-            .node_stack
-            .find(NODE_NAME, NODE_TAG)
-            .and_then(|handle| handle.read().instances().first().and_then(|i| i.pid()))
+        let handle = started.node_stack.find(NODE_NAME, NODE_TAG)?;
+        handle
+            .read()
+            .instances()
+            .first()
+            .and_then(node_stack::TrackedNodeInstance::pid)
     })
     .await;
     let children = poll_until(WAIT, "the instance should fork two children", || {

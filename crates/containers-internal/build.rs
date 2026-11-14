@@ -22,10 +22,10 @@ mod apptainer_build {
     /// Keep in sync with the same constants in `scripts/functions/lima.py`,
     /// which pins Go for the in-VM Linux target builds.
     const GO_VERSION: &str = "1.27.1";
-    /// SHA-256 of `go{GO_VERSION}.linux-amd64.tar.gz` from https://go.dev/dl.
+    /// SHA-256 of `go{GO_VERSION}.linux-amd64.tar.gz` from <https://go.dev/dl>.
     const GO_LINUX_AMD64_SHA256: &str =
         "63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445";
-    /// SHA-256 of `go{GO_VERSION}.linux-arm64.tar.gz` from https://go.dev/dl.
+    /// SHA-256 of `go{GO_VERSION}.linux-arm64.tar.gz` from <https://go.dev/dl>.
     const GO_LINUX_ARM64_SHA256: &str =
         "3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec";
 
@@ -266,10 +266,7 @@ mod apptainer_build {
     /// [`emit_constant_env_vars`]) so runtime code can locate the sentinel
     /// without a compile-time path naming the build machine.
     fn apptainer_cache_sentinel_name(version: &str) -> String {
-        format!(
-            ".peppy-version-{}-r{}-sq{}",
-            version, APPTAINER_RECIPE_REVISION, SQUASHFUSE_VERSION
-        )
+        format!(".peppy-version-{version}-r{APPTAINER_RECIPE_REVISION}-sq{SQUASHFUSE_VERSION}")
     }
 
     fn apptainer_cache_sentinel_path(cache_dir: &Path, version: &str) -> PathBuf {
@@ -281,18 +278,17 @@ mod apptainer_build {
         std::fs::write(
             &sentinel,
             format!(
-                "version={}\nrecipe={}\nsquashfuse={}\n",
-                version, APPTAINER_RECIPE_REVISION, SQUASHFUSE_VERSION
+                "version={version}\nrecipe={APPTAINER_RECIPE_REVISION}\nsquashfuse={SQUASHFUSE_VERSION}\n"
             ),
         )
-        .unwrap_or_else(|e| panic!("Failed to write cache sentinel {:?}: {}", sentinel, e));
+        .unwrap_or_else(|e| panic!("Failed to write cache sentinel {sentinel}: {e}", sentinel = sentinel.display()));
     }
 
     /// The bare directory name, also exported to the crate (see
     /// [`emit_constant_env_vars`]) so runtime code can find the cache without
     /// a compile-time path naming the build machine.
     fn apptainer_cache_dir_name(version: &str, arch: &str) -> String {
-        format!("apptainer-{}-{}-nosuid", version, arch)
+        format!("apptainer-{version}-{arch}-nosuid")
     }
 
     fn apptainer_cache_dir(version: &str, arch: &str) -> PathBuf {
@@ -304,7 +300,7 @@ mod apptainer_build {
     /// `Linux`/`aarch64`). Exported to the crate like the apptainer names
     /// above.
     fn lima_cache_dir_name(os: &str, arch: &str) -> String {
-        format!("lima-{}-{os}-{arch}", LIMA_VERSION)
+        format!("lima-{LIMA_VERSION}-{os}-{arch}")
     }
 
     /// The Lima host of a target: the `os` and `arch` its Lima archive is
@@ -328,7 +324,7 @@ mod apptainer_build {
     }
 
     /// Stable digest of a cache path, for `.copy-source` sentinels. The
-    /// sentinel only decides whether the copy under OUT_DIR is current, so a
+    /// sentinel only decides whether the copy under `OUT_DIR` is current, so a
     /// digest distinguishes source directories as well as the path did
     /// without writing the building machine's home directory into trees that
     /// ship inside release archives. The hash algorithm is not stable across
@@ -342,7 +338,7 @@ mod apptainer_build {
         format!("{:016x}", hasher.finish())
     }
 
-    /// The ELF e_machine a binary for `arch` must carry.
+    /// The ELF `e_machine` a binary for `arch` must carry.
     fn expected_elf_machine(arch: &str) -> u16 {
         match arch {
             "x86_64" => 62,
@@ -351,7 +347,7 @@ mod apptainer_build {
         }
     }
 
-    /// The ELF e_machine of the file at `path`, `None` when unreadable or not ELF.
+    /// The ELF `e_machine` of the file at `path`, `None` when unreadable or not ELF.
     fn elf_machine(path: &Path) -> Option<u16> {
         let mut header = [0u8; 20];
         let mut file = std::fs::File::open(path).ok()?;
@@ -396,7 +392,7 @@ mod apptainer_build {
         let matches = built == Some(expected_elf_machine(target_arch));
         if !matches {
             println!(
-                "cargo:warning=apptainer {} is ELF machine {:?}, but the {} target needs {}",
+                "cargo::warning=apptainer {} is ELF machine {:?}, but the {} target needs {}",
                 how,
                 built,
                 target_arch,
@@ -418,17 +414,16 @@ mod apptainer_build {
         // Fall back to rm -rf which can sometimes succeed where std::fs
         // cannot (e.g. when directory permissions differ).
         let _ = Command::new("rm").args(["-rf"]).arg(dir).status();
-        if dir.exists() {
-            panic!(
-                "Cannot remove stale apptainer cache at {:?} (likely contains root-owned files \
-                 from a previous Lima VM build). Please remove it manually:\n  \
-                 sudo rm -rf {:?}",
-                dir, dir
-            );
-        }
+        assert!(
+            !dir.exists(),
+            "Cannot remove stale apptainer cache at {dir} (likely contains root-owned files \
+             from a previous Lima VM build). Please remove it manually:\n  \
+             sudo rm -rf {dir:?}",
+            dir = dir.display()
+        );
     }
 
-    /// LIMA_HOME for the build-time VM instance.
+    /// `LIMA_HOME` for the build-time VM instance.
     ///
     /// Uses `~/.peppy/lima-build/` instead of the temp dir because macOS temp
     /// directories (`/var/folders/.../T/`) are very long and push Unix socket
@@ -536,7 +531,7 @@ mod apptainer_build {
         {
             return true;
         }
-        std::fs::remove_file(dest).ok();
+        let _ = std::fs::remove_file(dest);
         false
     }
 
@@ -545,7 +540,7 @@ mod apptainer_build {
     /// Lima archives contain paths like `bin/limactl`, `share/lima/templates/`, etc.
     fn extract_lima_archive(archive: &Path, dest_dir: &Path) -> bool {
         if dest_dir.exists() {
-            std::fs::remove_dir_all(dest_dir).ok();
+            let _ = std::fs::remove_dir_all(dest_dir);
         }
         std::fs::create_dir_all(dest_dir).expect("Failed to create lima extraction directory");
 
@@ -559,11 +554,11 @@ mod apptainer_build {
         match status {
             Ok(s) if s.success() => true,
             Ok(s) => {
-                println!("cargo:warning=Failed to extract Lima archive (exit: {})", s);
+                println!("cargo::warning=Failed to extract Lima archive (exit: {s})");
                 false
             }
             Err(e) => {
-                println!("cargo:warning=Failed to run tar for Lima extraction: {}", e);
+                println!("cargo::warning=Failed to run tar for Lima extraction: {e}");
                 false
             }
         }
@@ -588,14 +583,13 @@ mod apptainer_build {
 
         let Some(expected_sha256) = lima_archive_sha256(version, os, arch) else {
             println!(
-                "cargo:warning=Missing pinned SHA-256 for Lima {} {}-{} archive; refusing download",
-                version, os, arch
+                "cargo::warning=Missing pinned SHA-256 for Lima {version} {os}-{arch} archive; refusing download"
             );
             return None;
         };
 
         let downloads_dir = build_helpers::cache_dir("downloads");
-        let archive_path = downloads_dir.join(format!("lima-{}-{}-{}.tar.gz", version, os, arch));
+        let archive_path = downloads_dir.join(format!("lima-{version}-{os}-{arch}.tar.gz"));
         let url = lima_archive_url(version, os, arch);
         if !download_and_verify(&url, &archive_path, expected_sha256, "Lima archive") {
             return None;
@@ -605,12 +599,12 @@ mod apptainer_build {
             return None;
         }
 
-        std::fs::remove_file(&archive_path).ok();
+        let _ = std::fs::remove_file(&archive_path);
 
         if !cached_limactl.exists() {
             println!(
-                "cargo:warning=Lima archive extracted but bin/limactl not found in {:?}",
-                cache_dir
+                "cargo::warning=Lima archive extracted but bin/limactl not found in {cache_dir}",
+                cache_dir = cache_dir.display()
             );
             return None;
         }
@@ -636,31 +630,27 @@ mod apptainer_build {
         lima_arch: &str,
         (host_os, host_arch): (&str, &str),
     ) -> bool {
-        let agent_name = format!("lima-guestagent.Linux-{}.gz", lima_arch);
+        let agent_name = format!("lima-guestagent.Linux-{lima_arch}.gz");
         let extract_dir = build_helpers::cache_dir(&format!(
-            "lima-additional-guestagents-{}-{host_os}-{host_arch}",
-            LIMA_VERSION
+            "lima-additional-guestagents-{LIMA_VERSION}-{host_os}-{host_arch}"
         ));
         let src_agent = extract_dir.join("share/lima").join(&agent_name);
 
         if !src_agent.exists() {
             println!(
-                "cargo:warning=Fetching pinned Lima {} guest agent for {}...",
-                LIMA_VERSION, lima_arch
+                "cargo::warning=Fetching pinned Lima {LIMA_VERSION} guest agent for {lima_arch}..."
             );
             let downloads_dir = build_helpers::cache_dir("downloads");
             let archive_path = downloads_dir.join(format!(
-                "lima-additional-guestagents-{}-{host_os}-{host_arch}.tar.gz",
-                LIMA_VERSION
+                "lima-additional-guestagents-{LIMA_VERSION}-{host_os}-{host_arch}.tar.gz"
             ));
             let url = lima_additional_guestagents_url(LIMA_VERSION, host_os, host_arch);
             let Some(expected_sha256) =
                 lima_additional_guestagents_sha256(LIMA_VERSION, host_os, host_arch)
             else {
                 println!(
-                    "cargo:warning=Missing pinned SHA-256 for the Lima {} additional guest agents \
-                     of {host_os}-{host_arch}; refusing download",
-                    LIMA_VERSION
+                    "cargo::warning=Missing pinned SHA-256 for the Lima {LIMA_VERSION} additional guest agents \
+                     of {host_os}-{host_arch}; refusing download"
                 );
                 return false;
             };
@@ -673,7 +663,7 @@ mod apptainer_build {
                 return false;
             }
             let extracted = extract_lima_archive(&archive_path, &extract_dir);
-            std::fs::remove_file(&archive_path).ok();
+            let _ = std::fs::remove_file(&archive_path);
             if !extracted {
                 return false;
             }
@@ -681,8 +671,7 @@ mod apptainer_build {
 
         if !src_agent.exists() {
             println!(
-                "cargo:warning=Guest agent {} missing from pinned Lima {} additional agents",
-                agent_name, LIMA_VERSION
+                "cargo::warning=Guest agent {agent_name} missing from pinned Lima {LIMA_VERSION} additional agents"
             );
             return false;
         }
@@ -690,8 +679,8 @@ mod apptainer_build {
         let dest = lima_share.join(&agent_name);
         if let Err(e) = std::fs::copy(&src_agent, &dest) {
             println!(
-                "cargo:warning=Failed to install guest agent {} into {:?}: {}",
-                agent_name, lima_share, e
+                "cargo::warning=Failed to install guest agent {agent_name} into {lima_share}: {e}",
+                lima_share = lima_share.display()
             );
             return false;
         }
@@ -714,8 +703,8 @@ mod apptainer_build {
     /// Set `PEPPY_NO_ROSETTA=1` to force the QEMU fallback.
     fn rosetta_available() -> bool {
         env::var("PEPPY_NO_ROSETTA").unwrap_or_default() != "1"
-            && std::env::consts::ARCH == "aarch64"
-            && std::env::consts::OS == "macos"
+            && env::consts::ARCH == "aarch64"
+            && env::consts::OS == "macos"
             && Path::new("/Library/Apple/usr/libexec/oah").exists()
     }
 
@@ -724,8 +713,7 @@ mod apptainer_build {
     /// QEMU fallback path.
     fn build_vm_cpus() -> usize {
         std::thread::available_parallelism()
-            .map(|n| n.get().saturating_sub(2))
-            .unwrap_or(4)
+            .map_or(4, |n| n.get().saturating_sub(2))
             .clamp(2, 8)
     }
 
@@ -860,7 +848,7 @@ mod apptainer_build {
         let label = format!("lima-stop-{}", lima.instance);
         if !build_helpers::run_command_streaming(&mut cmd, &label).success {
             println!(
-                "cargo:warning=Failed to stop Lima {} instance; it may still be \
+                "cargo::warning=Failed to stop Lima {} instance; it may still be \
                  consuming host memory (stop it with `limactl stop {}`)",
                 lima.instance, lima.instance
             );
@@ -876,7 +864,7 @@ mod apptainer_build {
         let label = format!("lima-delete-{}", lima.instance);
         if !build_helpers::run_command_streaming(&mut cmd, &label).success {
             println!(
-                "cargo:warning=Failed to delete Lima {} instance; recreate may fail",
+                "cargo::warning=Failed to delete Lima {} instance; recreate may fail",
                 lima.instance
             );
         }
@@ -914,7 +902,7 @@ mod apptainer_build {
             // translated, so no `--arch` (which would force QEMU emulation).
             cmd.args(["--vm-type=vz", "--rosetta"]);
         } else if let Some(a) = arch {
-            cmd.arg(format!("--arch={}", a));
+            cmd.arg(format!("--arch={a}"));
         }
         cmd.arg(template);
         let label = format!("lima-create-{}", lima.instance);
@@ -942,7 +930,7 @@ mod apptainer_build {
             }
         }
 
-        dirs.push(PathBuf::from(format!("/usr/lib/{}-linux-gnu", target_arch)));
+        dirs.push(PathBuf::from(format!("/usr/lib/{target_arch}-linux-gnu")));
         dirs.push(PathBuf::from("/usr/lib64"));
         dirs.push(PathBuf::from("/usr/lib"));
         dirs.push(PathBuf::from("/lib64"));
@@ -958,16 +946,18 @@ mod apptainer_build {
     fn bundle_libseccomp(install_dir: &Path, target_arch: &str) -> bool {
         let Some(source) = locate_libseccomp(target_arch) else {
             println!(
-                "cargo:warning=Could not locate {} to bundle with apptainer; \
-                 the binaries would depend on the runtime host's libseccomp",
-                LIBSECCOMP_SONAME
+                "cargo::warning=Could not locate {LIBSECCOMP_SONAME} to bundle with apptainer; \
+                 the binaries would depend on the runtime host's libseccomp"
             );
             return false;
         };
 
         let lib_dir = install_dir.join(APPTAINER_BUNDLED_LIB_DIR);
         if let Err(e) = std::fs::create_dir_all(&lib_dir) {
-            println!("cargo:warning=Failed to create {:?}: {}", lib_dir, e);
+            println!(
+                "cargo::warning=Failed to create {lib_dir}: {e}",
+                lib_dir = lib_dir.display()
+            );
             return false;
         }
         // `fs::copy` follows the `libseccomp.so.2 -> libseccomp.so.2.x.y`
@@ -975,8 +965,9 @@ mod apptainer_build {
         let dest = lib_dir.join(LIBSECCOMP_SONAME);
         if let Err(e) = std::fs::copy(&source, &dest) {
             println!(
-                "cargo:warning=Failed to copy {:?} to {:?}: {}",
-                source, dest, e
+                "cargo::warning=Failed to copy {source} to {dest}: {e}",
+                source = source.display(),
+                dest = dest.display()
             );
             return false;
         }
@@ -1019,7 +1010,7 @@ mod apptainer_build {
     fn gocryptfs_sentinel_path(install_dir: &Path) -> PathBuf {
         install_dir
             .join("libexec/apptainer/bin")
-            .join(format!(".peppy-gocryptfs-version-{}", GOCRYPTFS_VERSION))
+            .join(format!(".peppy-gocryptfs-version-{GOCRYPTFS_VERSION}"))
     }
 
     /// Ensure `<install_dir>/libexec/apptainer/bin/gocryptfs` exists and matches
@@ -1037,15 +1028,13 @@ mod apptainer_build {
 
         let Some(arch) = gocryptfs_arch(target_arch) else {
             println!(
-                "cargo:warning=Skipping gocryptfs bundle: unsupported target arch {}",
-                target_arch
+                "cargo::warning=Skipping gocryptfs bundle: unsupported target arch {target_arch}"
             );
             return false;
         };
         let Some(expected_sha256) = gocryptfs_sha256(target_arch) else {
             println!(
-                "cargo:warning=Skipping gocryptfs bundle: no pinned SHA-256 for {}",
-                target_arch
+                "cargo::warning=Skipping gocryptfs bundle: no pinned SHA-256 for {target_arch}"
             );
             return false;
         };
@@ -1059,13 +1048,12 @@ mod apptainer_build {
 
         let downloads_dir = build_helpers::cache_dir("downloads");
         let archive_path = downloads_dir.join(format!(
-            "gocryptfs_v{}_linux-static_{}.tar.gz",
-            GOCRYPTFS_VERSION, arch
+            "gocryptfs_v{GOCRYPTFS_VERSION}_linux-static_{arch}.tar.gz"
         ));
 
         // Serialize concurrent download/extract attempts so parallel target
         // builds don't race on the shared archive in the downloads cache.
-        let lock_path = downloads_dir.join(format!(".gocryptfs-{}.lock", arch));
+        let lock_path = downloads_dir.join(format!(".gocryptfs-{arch}.lock"));
         let _lock = build_helpers::acquire_file_lock(&lock_path);
 
         if !download_gocryptfs_archive(&archive_path, GOCRYPTFS_VERSION, arch, expected_sha256) {
@@ -1074,8 +1062,8 @@ mod apptainer_build {
 
         if let Err(e) = std::fs::create_dir_all(&bin_dir) {
             println!(
-                "cargo:warning=Failed to create gocryptfs install directory {:?}: {}",
-                bin_dir, e
+                "cargo::warning=Failed to create gocryptfs install directory {bin_dir}: {e}",
+                bin_dir = bin_dir.display()
             );
             return false;
         }
@@ -1085,12 +1073,12 @@ mod apptainer_build {
         }
 
         // Clean up the archive; only useful for the one-shot install.
-        std::fs::remove_file(&archive_path).ok();
+        let _ = std::fs::remove_file(&archive_path);
 
         if !gocryptfs_bin.exists() {
             println!(
-                "cargo:warning=gocryptfs extracted but binary missing at {:?}",
-                gocryptfs_bin
+                "cargo::warning=gocryptfs extracted but binary missing at {gocryptfs_bin}",
+                gocryptfs_bin = gocryptfs_bin.display()
             );
             return false;
         }
@@ -1098,9 +1086,14 @@ mod apptainer_build {
         // Sentinel marks the cache as up-to-date for the pinned version.
         std::fs::write(
             &sentinel,
-            format!("version={}\narch={}\n", GOCRYPTFS_VERSION, arch),
+            format!("version={GOCRYPTFS_VERSION}\narch={arch}\n"),
         )
-        .unwrap_or_else(|e| panic!("Failed to write gocryptfs sentinel {:?}: {}", sentinel, e));
+        .unwrap_or_else(|e| {
+            panic!(
+                "Failed to write gocryptfs sentinel {sentinel}: {e}",
+                sentinel = sentinel.display()
+            )
+        });
 
         true
     }
@@ -1138,17 +1131,11 @@ mod apptainer_build {
         match status {
             Ok(s) if s.success() => true,
             Ok(s) => {
-                println!(
-                    "cargo:warning=Failed to extract gocryptfs binaries (exit: {})",
-                    s
-                );
+                println!("cargo::warning=Failed to extract gocryptfs binaries (exit: {s})");
                 false
             }
             Err(e) => {
-                println!(
-                    "cargo:warning=Failed to invoke tar for gocryptfs extract: {}",
-                    e
-                );
+                println!("cargo::warning=Failed to invoke tar for gocryptfs extract: {e}");
                 false
             }
         }
@@ -1162,10 +1149,8 @@ mod apptainer_build {
     fn complete_apptainer_cache(cache_dir: &Path, arch: &str) {
         assert!(
             ensure_gocryptfs_installed(cache_dir, arch),
-            "Failed to install gocryptfs {} into apptainer cache for {} at {:?}",
-            GOCRYPTFS_VERSION,
-            arch,
-            cache_dir
+            "Failed to install gocryptfs {GOCRYPTFS_VERSION} into apptainer cache for {arch} at {cache_dir}",
+            cache_dir = cache_dir.display()
         );
         assert_squashfuse_bundled(cache_dir);
     }
@@ -1230,11 +1215,11 @@ mod apptainer_build {
         let lock_path = source_cache.join(".build.lock");
         let _build_lock = build_helpers::acquire_file_lock(&lock_path);
 
-        let tarball_path = source_cache.join(format!("squashfuse-{}.tar.gz", SQUASHFUSE_VERSION));
-        let source_dir = source_cache.join(format!("squashfuse-{}", SQUASHFUSE_VERSION));
+        let tarball_path = source_cache.join(format!("squashfuse-{SQUASHFUSE_VERSION}.tar.gz"));
+        let source_dir = source_cache.join(format!("squashfuse-{SQUASHFUSE_VERSION}"));
 
         if source_dir.exists() {
-            std::fs::remove_dir_all(&source_dir).ok();
+            let _ = std::fs::remove_dir_all(&source_dir);
         }
 
         if !download_squashfuse_archive(&tarball_path) {
@@ -1251,7 +1236,7 @@ mod apptainer_build {
         ) {
             return false;
         }
-        std::fs::remove_file(&tarball_path).ok();
+        let _ = std::fs::remove_file(&tarball_path);
 
         // No `autogen.sh`: the release tarball ships a generated `configure`
         // (see [`squashfuse_source_url`]). `FLAGS=-std=c99` and
@@ -1265,7 +1250,7 @@ mod apptainer_build {
         ];
         for (program, args) in steps {
             if !run_squashfuse_step(&source_dir, program, args) {
-                std::fs::remove_dir_all(&source_dir).ok();
+                let _ = std::fs::remove_dir_all(&source_dir);
                 return false;
             }
         }
@@ -1273,15 +1258,15 @@ mod apptainer_build {
         let built = source_dir.join("squashfuse_ll");
         if !built.exists() {
             println!(
-                "cargo:warning=squashfuse build reported success but {:?} is missing",
-                built
+                "cargo::warning=squashfuse build reported success but {built} is missing",
+                built = built.display()
             );
-            std::fs::remove_dir_all(&source_dir).ok();
+            let _ = std::fs::remove_dir_all(&source_dir);
             return false;
         }
 
         let installed = install_squashfuse_binary(&built, &dest);
-        std::fs::remove_dir_all(&source_dir).ok();
+        let _ = std::fs::remove_dir_all(&source_dir);
         installed
     }
 
@@ -1319,15 +1304,15 @@ mod apptainer_build {
         let bin_dir = dest.parent().expect("squashfuse dest always has a parent");
         if let Err(e) = std::fs::create_dir_all(bin_dir) {
             println!(
-                "cargo:warning=Failed to create squashfuse install directory {:?}: {}",
-                bin_dir, e
+                "cargo::warning=Failed to create squashfuse install directory {bin_dir}: {e}",
+                bin_dir = bin_dir.display()
             );
             return false;
         }
         if let Err(e) = std::fs::copy(built, dest) {
             println!(
-                "cargo:warning=Failed to copy squashfuse binary to {:?}: {}",
-                dest, e
+                "cargo::warning=Failed to copy squashfuse binary to {dest}: {e}",
+                dest = dest.display()
             );
             return false;
         }
@@ -1348,10 +1333,10 @@ mod apptainer_build {
         let squashfuse = squashfuse_binary_path(install_dir);
         assert!(
             squashfuse.exists(),
-            "Bundled squashfuse missing at {:?}. Without it apptainer extracts every SIF \
-             into --tmpdir instead of FUSE-mounting it. Remove {:?} and rebuild.",
-            squashfuse,
-            install_dir
+            "Bundled squashfuse missing at {squashfuse}. Without it apptainer extracts every SIF \
+             into --tmpdir instead of FUSE-mounting it. Remove {install_dir} and rebuild.",
+            squashfuse = squashfuse.display(),
+            install_dir = install_dir.display()
         );
     }
 
@@ -1455,16 +1440,16 @@ mod apptainer_build {
         /// one absent compiler.
         fn satisfied(&self) -> Option<bool> {
             match self {
-                DepProbe::Unprobed => Some(true),
-                DepProbe::Binary(program) => Some(binary_runs(program)),
-                DepProbe::PkgConfig(module) => binary_runs("pkg-config").then(|| {
+                Self::Unprobed => Some(true),
+                Self::Binary(program) => Some(binary_runs(program)),
+                Self::PkgConfig(module) => binary_runs("pkg-config").then(|| {
                     probe_succeeds(Command::new("pkg-config").arg("--exists").arg(module))
                 }),
                 // Preprocess an empty translation unit with the header forced
                 // in, which is how `configure` itself decides: the answer comes
                 // from the compiler's own search path rather than from a guess
                 // at where this distro puts its headers.
-                DepProbe::Header(header) => binary_runs(HOST_CC).then(|| {
+                Self::Header(header) => binary_runs(HOST_CC).then(|| {
                     probe_succeeds(
                         Command::new(HOST_CC)
                             .args(["-x", "c", "-E", "-include"])
@@ -1478,12 +1463,12 @@ mod apptainer_build {
         /// How this probe failed, phrased so the reader can re-run it by hand.
         fn not_found_hint(&self) -> String {
             match self {
-                DepProbe::Binary(program) => format!("`{}` not on $PATH", program),
-                DepProbe::PkgConfig(module) => {
-                    format!("pkg-config module `{}` not found", module)
+                Self::Binary(program) => format!("`{program}` not on $PATH"),
+                Self::PkgConfig(module) => {
+                    format!("pkg-config module `{module}` not found")
                 }
-                DepProbe::Header(header) => format!("<{}> not found by {}", header, HOST_CC),
-                DepProbe::Unprobed => "no probe".to_string(),
+                Self::Header(header) => format!("<{header}> not found by {HOST_CC}"),
+                Self::Unprobed => "no probe".to_string(),
             }
         }
     }
@@ -1503,8 +1488,7 @@ mod apptainer_build {
     fn probe_succeeds(command: &mut Command) -> bool {
         silenced(command)
             .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
+            .is_ok_and(|status| status.success())
     }
 
     /// Discard a probe's stdio: these run for their exit status alone, and
@@ -1545,7 +1529,7 @@ mod apptainer_build {
         let source_dir = source_cache.join(format!("apptainer-{version}"));
 
         if source_dir.exists() {
-            std::fs::remove_dir_all(&source_dir).ok();
+            let _ = std::fs::remove_dir_all(&source_dir);
         }
 
         // Verified before anything reads the contents.
@@ -1569,12 +1553,12 @@ mod apptainer_build {
             return false;
         }
 
-        std::fs::remove_file(&tarball_path).ok();
+        let _ = std::fs::remove_file(&tarball_path);
 
         // The GitHub auto-generated tarball does not include a VERSION file,
         // but apptainer's mconfig requires either .git or VERSION to determine
         // the version.  Create it from the version we already know.
-        std::fs::write(source_dir.join("VERSION"), format!("{}\n", version))
+        std::fs::write(source_dir.join("VERSION"), format!("{version}\n"))
             .expect("Failed to write apptainer VERSION file");
 
         force_remove_dir(install_dir);
@@ -1595,7 +1579,7 @@ mod apptainer_build {
                 .arg(format!("--prefix={}", install_dir.display())),
             "configure apptainer build",
         ) {
-            std::fs::remove_dir_all(&source_dir).ok();
+            let _ = std::fs::remove_dir_all(&source_dir);
             return false;
         }
 
@@ -1607,7 +1591,7 @@ mod apptainer_build {
         )
         .success
         {
-            std::fs::remove_dir_all(&source_dir).ok();
+            let _ = std::fs::remove_dir_all(&source_dir);
             return false;
         }
 
@@ -1617,7 +1601,7 @@ mod apptainer_build {
                 .args(["-C", "builddir", "install"]),
             "install apptainer",
         ) {
-            std::fs::remove_dir_all(&source_dir).ok();
+            let _ = std::fs::remove_dir_all(&source_dir);
             return false;
         }
 
@@ -1625,7 +1609,7 @@ mod apptainer_build {
             return false;
         }
 
-        std::fs::remove_dir_all(&source_dir).ok();
+        let _ = std::fs::remove_dir_all(&source_dir);
 
         // Ship the libseccomp the binaries were just linked against, so they
         // never resolve a version-skewed one from the runtime host.
@@ -1652,7 +1636,7 @@ mod apptainer_build {
     /// installs through `run_command` instead. Returns false on an I/O error,
     /// failing the build rather than shipping an identifying tree.
     fn scrub_man_page_builder_home(install_dir: &Path) -> bool {
-        let Some(home) = std::env::var_os("HOME") else {
+        let Some(home) = env::var_os("HOME") else {
             // Without a home directory nothing was baked into the pages.
             return true;
         };
@@ -1665,8 +1649,8 @@ mod apptainer_build {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => {
                     println!(
-                        "cargo:warning=Failed to read man page directory {:?}: {}",
-                        dir, e
+                        "cargo::warning=Failed to read man page directory {dir}: {e}",
+                        dir = dir.display()
                     );
                     return false;
                 }
@@ -1686,7 +1670,10 @@ mod apptainer_build {
                 if contents.contains(home.as_ref()) {
                     let scrubbed = contents.replace(home.as_ref(), MAN_PAGE_HOME_PLACEHOLDER);
                     if let Err(e) = std::fs::write(&path, scrubbed) {
-                        println!("cargo:warning=Failed to scrub man page {:?}: {}", path, e);
+                        println!(
+                            "cargo::warning=Failed to scrub man page {path}: {e}",
+                            path = path.display()
+                        );
                         return false;
                     }
                 }
@@ -1717,22 +1704,17 @@ mod apptainer_build {
             "aarch64" => "aarch64",
             other => {
                 println!(
-                    "cargo:warning=Unsupported Lima VM architecture for apptainer build: {}",
-                    other
+                    "cargo::warning=Unsupported Lima VM architecture for apptainer build: {other}"
                 );
                 return false;
             }
         };
 
-        let is_cross = target_arch != std::env::consts::ARCH;
+        let is_cross = target_arch != env::consts::ARCH;
         let use_rosetta = is_cross && target_arch == "x86_64" && rosetta_available();
         // Only the QEMU cross-arch fallback needs `--arch` (and a matching guest
         // agent). The Rosetta path runs a native aarch64 VZ VM.
-        let arch_flag = if is_cross && !use_rosetta {
-            Some(lima_arch)
-        } else {
-            None
-        };
+        let arch_flag = (is_cross && !use_rosetta).then_some(lima_arch);
 
         // The QEMU fallback runs a foreign-arch VM, which needs the matching
         // guest agent. Sourcing it from the pinned Lima version keeps host and
@@ -1749,16 +1731,15 @@ mod apptainer_build {
                 .join("share/lima");
             if !ensure_cross_guest_agent(&lima_share, lima_arch, ("Darwin", "arm64")) {
                 println!(
-                    "cargo:warning=Could not provision the pinned {} guest agent; \
-                     falling back to SSH-only readiness (cross-arch VM start may be slower)",
-                    lima_arch
+                    "cargo::warning=Could not provision the pinned {lima_arch} guest agent; \
+                     falling back to SSH-only readiness (cross-arch VM start may be slower)"
                 );
             }
         }
 
         if !ensure_lima_instance(lima, LIMA_TEMPLATE, arch_flag, use_rosetta) {
             println!(
-                "cargo:warning=Could not ensure a running Lima instance for apptainer source build"
+                "cargo::warning=Could not ensure a running Lima instance for apptainer source build"
             );
             return false;
         }
@@ -1784,7 +1765,7 @@ mod apptainer_build {
             native_build_script(version, guest_install_dir)
         };
 
-        let label = format!("apptainer-build-{}", target_arch);
+        let label = format!("apptainer-build-{target_arch}");
         let mut cmd = lima.lima_command();
         cmd.args(["shell", lima.instance, "--", "bash", "-c", &build_script]);
         if !build_helpers::run_command_streaming(&mut cmd, &label).success {
@@ -2025,13 +2006,13 @@ echo "=== Apptainer build complete ==="
             Ok(o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 println!(
-                    "cargo:warning=Failed to copy installation from Lima VM (exit: {}): {}",
+                    "cargo::warning=Failed to copy installation from Lima VM (exit: {}): {}",
                     o.status, stderr
                 );
                 return false;
             }
             Err(e) => {
-                println!("cargo:warning=Failed to run tar pipe from Lima VM: {}", e);
+                println!("cargo::warning=Failed to run tar pipe from Lima VM: {e}");
                 return false;
             }
         }
@@ -2075,12 +2056,12 @@ echo "=== Apptainer build complete ==="
     // -----------------------------------------------------------------------
 
     fn emit_rerun_directives() {
-        println!("cargo:rerun-if-changed=build.rs");
-        println!("cargo:rerun-if-env-changed=PEPPY_APPTAINER_DIR");
-        println!("cargo:rerun-if-env-changed=PEPPY_LIMA_DIR");
-        println!("cargo:rerun-if-env-changed=PEPPY_CROSS_ARCH");
-        println!("cargo:rerun-if-env-changed=PEPPY_NO_ROSETTA");
-        println!("cargo:rerun-if-env-changed=PEPPY_SKIP_APPTAINER_PROVISION");
+        println!("cargo::rerun-if-changed=build.rs");
+        println!("cargo::rerun-if-env-changed=PEPPY_APPTAINER_DIR");
+        println!("cargo::rerun-if-env-changed=PEPPY_LIMA_DIR");
+        println!("cargo::rerun-if-env-changed=PEPPY_CROSS_ARCH");
+        println!("cargo::rerun-if-env-changed=PEPPY_NO_ROSETTA");
+        println!("cargo::rerun-if-env-changed=PEPPY_SKIP_APPTAINER_PROVISION");
     }
 
     fn emit_constant_env_vars() {
@@ -2090,18 +2071,15 @@ echo "=== Apptainer build complete ==="
         // directory inside the binary.
         let target_arch =
             env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "aarch64".to_string());
-        println!("cargo:rustc-env=LIMA_INSTANCE={}", LIMA_INSTANCE);
-        println!("cargo:rustc-env=LIMA_TEMPLATE={}", LIMA_TEMPLATE);
-        println!("cargo:rustc-env=APPTAINER_VERSION={}", APPTAINER_VERSION);
-        println!("cargo:rustc-env=LIMA_VERSION={}", LIMA_VERSION);
-        println!("cargo:rustc-env=GOCRYPTFS_VERSION={}", GOCRYPTFS_VERSION);
-        println!("cargo:rustc-env=SQUASHFUSE_VERSION={}", SQUASHFUSE_VERSION);
+        println!("cargo::rustc-env=LIMA_INSTANCE={LIMA_INSTANCE}");
+        println!("cargo::rustc-env=LIMA_TEMPLATE={LIMA_TEMPLATE}");
+        println!("cargo::rustc-env=APPTAINER_VERSION={APPTAINER_VERSION}");
+        println!("cargo::rustc-env=LIMA_VERSION={LIMA_VERSION}");
+        println!("cargo::rustc-env=GOCRYPTFS_VERSION={GOCRYPTFS_VERSION}");
+        println!("cargo::rustc-env=SQUASHFUSE_VERSION={SQUASHFUSE_VERSION}");
+        println!("cargo::rustc-env=GUEST_APPTAINER_DIR={GUEST_APPTAINER_DIR}");
         println!(
-            "cargo:rustc-env=GUEST_APPTAINER_DIR={}",
-            GUEST_APPTAINER_DIR
-        );
-        println!(
-            "cargo:rustc-env=APPTAINER_CACHE_DIR_NAME={}",
+            "cargo::rustc-env=APPTAINER_CACHE_DIR_NAME={}",
             apptainer_cache_dir_name(APPTAINER_VERSION, &target_arch)
         );
         // The apptainer of each Linux architecture, which a build for that
@@ -2111,25 +2089,25 @@ echo "=== Apptainer build complete ==="
             ("APPTAINER_CACHE_DIR_NAME_AARCH64", "aarch64"),
         ] {
             println!(
-                "cargo:rustc-env={variable}={}",
+                "cargo::rustc-env={variable}={}",
                 apptainer_cache_dir_name(APPTAINER_VERSION, arch)
             );
         }
         println!(
-            "cargo:rustc-env=APPTAINER_CACHE_SENTINEL_NAME={}",
+            "cargo::rustc-env=APPTAINER_CACHE_SENTINEL_NAME={}",
             apptainer_cache_sentinel_name(APPTAINER_VERSION)
         );
         let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
         let (lima_os, lima_arch) = lima_host_of(&target_os, &target_arch);
         println!(
-            "cargo:rustc-env=LIMA_CACHE_DIR_NAME={}",
+            "cargo::rustc-env=LIMA_CACHE_DIR_NAME={}",
             lima_cache_dir_name(lima_os, lima_arch)
         );
     }
 
     /// Downloads and caches the Lima of the host `lima_host` (`os`, `arch`),
     /// with the guest agent of the Linux architecture `other_arch`, which a
-    /// VM of that architecture runs, and copies it to OUT_DIR for release
+    /// VM of that architecture runs, and copies it to `OUT_DIR` for release
     /// packaging. `None` when Lima cannot be downloaded.
     fn setup_lima(out_dir: &str, lima_host: (&str, &str), other_arch: &str) -> Option<LimaConfig> {
         let (os, arch) = lima_host;
@@ -2138,7 +2116,7 @@ echo "=== Apptainer build complete ==="
         let has_other_agent = ensure_cross_guest_agent(&lima_share, other_arch, lima_host);
         if !has_other_agent {
             println!(
-                "cargo:warning=The Lima {LIMA_VERSION} guest agent of {other_arch} is not \
+                "cargo::warning=The Lima {LIMA_VERSION} guest agent of {other_arch} is not \
                  provisioned: a VM of that architecture cannot start from this build"
             );
         }
@@ -2165,7 +2143,7 @@ echo "=== Apptainer build complete ==="
         Some(lima)
     }
 
-    /// Copies the tree at `source` to `dest` under OUT_DIR, unless the
+    /// Copies the tree at `source` to `dest` under `OUT_DIR`, unless the
     /// `.copy-source` stamp in `dest` already holds `stamp`. Skipping the copy
     /// of an unchanged source avoids mtime bumps that trigger unnecessary
     /// recompilation. The stamp holds a digest of the source path, never the
@@ -2180,20 +2158,20 @@ echo "=== Apptainer build complete ==="
             return;
         }
         if dest.exists() {
-            std::fs::remove_dir_all(dest).ok();
+            let _ = std::fs::remove_dir_all(dest);
         }
         copy_dir_recursive(source, dest)
             .unwrap_or_else(|e| panic!("Failed to copy {what} to OUT_DIR: {e}"));
-        std::fs::write(&stamp_path, stamp).ok();
+        let _ = std::fs::write(&stamp_path, stamp);
     }
 
     /// Pre-build apptainer for all target architectures via Lima VMs.
     ///
-    /// By default only the native architecture is built. Set PEPPY_CROSS_ARCH=1
+    /// By default only the native architecture is built. Set `PEPPY_CROSS_ARCH=1`
     /// (used by the release script) to also build for non-native architectures.
     fn build_lima_targets(lima: &LimaConfig) {
         let cross_arch = env::var("PEPPY_CROSS_ARCH").unwrap_or_default() == "1";
-        let native_arch: &str = std::env::consts::ARCH;
+        let native_arch: &str = env::consts::ARCH;
         let targets: Vec<&str> = if cross_arch {
             vec!["aarch64", "x86_64"]
         } else {
@@ -2218,7 +2196,7 @@ echo "=== Apptainer build complete ==="
             // the sentinel under the lock also lets a waiting run skip a rebuild
             // the run ahead of it already finished.
             let lock_path = build_helpers::cache_dir("apptainer-source")
-                .join(format!(".lima-build-{}.lock", target));
+                .join(format!(".lima-build-{target}.lock"));
             let _build_lock = build_helpers::acquire_file_lock(&lock_path);
 
             // A mislabeled cache must fall through to the Lima rebuild here:
@@ -2269,19 +2247,15 @@ echo "=== Apptainer build complete ==="
             );
             assert!(
                 ok,
-                "Failed to build apptainer {} for {} in Lima VM",
-                APPTAINER_VERSION, target
+                "Failed to build apptainer {APPTAINER_VERSION} for {target} in Lima VM"
             );
             assert!(
                 target_cache.join("bin/apptainer").exists(),
-                "Apptainer build for {} completed but bin/apptainer missing",
-                target
+                "Apptainer build for {target} completed but bin/apptainer missing"
             );
             assert!(
                 ensure_gocryptfs_installed(&target_cache, target),
-                "Failed to install gocryptfs {} for {}",
-                GOCRYPTFS_VERSION,
-                target
+                "Failed to install gocryptfs {GOCRYPTFS_VERSION} for {target}"
             );
             // Built inside the guest by `apptainer_compile_steps`; assert here
             // so a guest-side failure surfaces as a missing binary rather than
@@ -2295,16 +2269,16 @@ echo "=== Apptainer build complete ==="
     /// same absolute path because Lima mounts the host home directory.
     /// The host home is not guessable from inside the guest (one release
     /// machine keeps it on an external volume), so the release driver states
-    /// it explicitly: lima.py exports PEPPY_HOST_HOME into the guest build.
+    /// it explicitly: lima.py exports `PEPPY_HOST_HOME` into the guest build.
     /// A build launched without it gets no cache here and falls through to a
     /// native source build, whose post-build ELF check refuses a wrong-ISA
     /// result before anything is cached or shipped.
     fn find_macos_cache_fallback(version: &str, arch: &str) -> Option<PathBuf> {
-        println!("cargo:rerun-if-env-changed=PEPPY_HOST_HOME");
+        println!("cargo::rerun-if-env-changed=PEPPY_HOST_HOME");
         let host_home = PathBuf::from(env::var("PEPPY_HOST_HOME").ok()?);
         let candidate = host_home
             .join(".peppy/tmp")
-            .join(format!("apptainer-{}-{}-nosuid", version, arch));
+            .join(format!("apptainer-{version}-{arch}-nosuid"));
         let sentinel = apptainer_cache_sentinel_path(&candidate, version);
         let usable = sentinel.exists()
             && candidate.join("bin/apptainer").exists()
@@ -2359,8 +2333,8 @@ echo "=== Apptainer build complete ==="
         );
         assert!(
             cache_dir.join("bin/apptainer").exists(),
-            "Apptainer source build completed but bin/apptainer not found in {:?}",
-            cache_dir
+            "Apptainer source build completed but bin/apptainer not found in {cache_dir}",
+            cache_dir = cache_dir.display()
         );
         complete_apptainer_cache(&cache_dir, arch);
         write_cache_sentinel(&cache_dir, APPTAINER_VERSION);
@@ -2368,7 +2342,7 @@ echo "=== Apptainer build complete ==="
         cache_dir
     }
 
-    pub fn run() {
+    pub(crate) fn run() {
         emit_rerun_directives();
         emit_constant_env_vars();
 
@@ -2381,8 +2355,7 @@ echo "=== Apptainer build complete ==="
             "linux" => false,
             other => {
                 println!(
-                    "cargo:warning=Skipping apptainer build: apptainer is Linux-only (target_os={})",
-                    other
+                    "cargo::warning=Skipping apptainer build: apptainer is Linux-only (target_os={other})"
                 );
                 return;
             }
@@ -2403,7 +2376,7 @@ echo "=== Apptainer build complete ==="
         // fine without it.
         if !use_lima && !binary_runs("fuse2fs") {
             println!(
-                "cargo:warning=fuse2fs not found on this host. The bundled rootless apptainer \
+                "cargo::warning=fuse2fs not found on this host. The bundled rootless apptainer \
                  needs it to mount EXT3 filesystem images; without it every container start logs \
                  `fuse2fs not found, will not be able to mount EXT3 filesystems` and EXT3 mounts \
                  are unavailable. Install it with `sudo apt-get install fuse2fs`."
@@ -2422,7 +2395,7 @@ echo "=== Apptainer build complete ==="
         // that cache.
         if env::var("PEPPY_SKIP_APPTAINER_PROVISION").as_deref() == Ok("1") {
             println!(
-                "cargo:warning=Skipping apptainer provisioning \
+                "cargo::warning=Skipping apptainer provisioning \
                  (PEPPY_SKIP_APPTAINER_PROVISION=1); this build cannot run containers"
             );
             return;
@@ -2438,13 +2411,12 @@ echo "=== Apptainer build complete ==="
         let lima = setup_lima(&out_dir, lima_host_of(&target_os, &arch), other_arch);
         match (use_lima, lima) {
             (true, Some(lima)) => build_lima_targets(&lima),
-            (true, None) => panic!(
-                "Could not download Lima {}. Lima is required for macOS builds.",
-                LIMA_VERSION
-            ),
+            (true, None) => {
+                panic!("Could not download Lima {LIMA_VERSION}. Lima is required for macOS builds.")
+            }
             (false, Some(_)) => {}
             (false, None) => println!(
-                "cargo:warning=Could not download Lima {LIMA_VERSION}: this build cannot build \
+                "cargo::warning=Could not download Lima {LIMA_VERSION}: this build cannot build \
                  for {other_arch} in an emulated VM"
             ),
         }
@@ -2469,7 +2441,7 @@ echo "=== Apptainer build complete ==="
         // crate without re-running the script that fills the cache, which repairs
         // nothing.
         let cache_sentinel = apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION);
-        println!("cargo:rerun-if-changed={}", cache_sentinel.display());
+        println!("cargo::rerun-if-changed={}", cache_sentinel.display());
 
         // Step 3: Copy apptainer installation to OUT_DIR for release packaging.
         // The stamp also names the bundled gocryptfs and squashfuse versions:

@@ -54,6 +54,10 @@ pub(crate) async fn listen_for_stack_list(
     Ok(handle)
 }
 
+#[expect(
+    clippy::unused_async,
+    reason = "the listener calls a handler that returns a future"
+)]
 async fn handle_stack_list_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
@@ -63,7 +67,7 @@ async fn handle_stack_list_request(
 ) -> ServiceAnswer {
     into_service_answer(handle_stack_list_request_inner(
         &context,
-        node_stack,
+        &node_stack,
         core_node,
         instance_id,
         &ownership,
@@ -72,7 +76,7 @@ async fn handle_stack_list_request(
 
 fn handle_stack_list_request_inner(
     context: &ServiceRequestContext,
-    node_stack: Arc<NodeStack>,
+    node_stack: &Arc<NodeStack>,
     core_node: String,
     instance_id: String,
     ownership: &crate::services::federation::SliceOwnership,

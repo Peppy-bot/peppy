@@ -28,7 +28,7 @@ async fn remove_repo_async(ctx: &Arc<AppContext>, id: u64) -> Result<()> {
         REQUEST_TIMEOUT,
     )
     .await
-    .map_err(|e| crate::commands::request_error("Failed to remove repository", e))?;
+    .map_err(|e| crate::commands::request_error("Failed to remove repository", &e))?;
 
     info!("Repository with id {id} removed successfully");
     // The removal landed, but the re-index that makes it take effect may not

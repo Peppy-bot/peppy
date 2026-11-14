@@ -1,6 +1,6 @@
 use super::*;
-use peppy_config_model::node::{FormatRuleViolation, MessageFormat};
 use serde_json::json;
+use std::assert_matches;
 use std::path::Path;
 
 /// Golden pairs: the format under `goldens/` and the committed schema the
@@ -66,7 +66,7 @@ fn golden_schemas_match_committed_output() {
 }
 
 fn compiled_validator(format_json5: &str) -> jsonschema::Validator {
-    let schema: serde_json::Value =
+    let schema: Value =
         serde_json::from_str(&rendered_schema(format_json5)).expect("schema parses back");
     jsonschema::validator_for(&schema).expect("the derived schema is a valid JSON Schema")
 }
@@ -93,11 +93,11 @@ fn golden_schemas_judge_canonical_instances() {
         "stamp": "2026-08-11T12:34:56.123456789Z",
         "tiny": 255,
         "small": 65535,
-        "medium": 4294967295u64,
+        "medium": 4_294_967_295_u64,
         "big": "18446744073709551615",
         "tiny_signed": -128,
         "small_signed": -32768,
-        "medium_signed": -2147483648i64,
+        "medium_signed": -2_147_483_648_i64,
         "big_signed": "-9223372036854775808",
         "ratio": 1.5,
         "precise": -2.5,
@@ -107,7 +107,10 @@ fn golden_schemas_judge_canonical_instances() {
         "the canonical full instance validates"
     );
     for (case, mutate) in [
-        ("u64 as a JSON number", json!(18446744073709551615u64)),
+        (
+            "u64 as a JSON number",
+            json!(18_446_744_073_709_551_615_u64),
+        ),
         ("u64 with leading zeros", json!("007")),
         ("u64 negative", json!("-1")),
     ] {
@@ -131,15 +134,15 @@ fn golden_schemas_judge_canonical_instances() {
         "u8 range is enforced"
     );
     let mut wide = full.clone();
-    wide["medium_signed"] = json!(2147483648i64);
+    wide["medium_signed"] = json!(2_147_483_648_i64);
     assert!(!all_primitives.is_valid(&wide), "i32 range is enforced");
     let mut missing = full.as_object().expect("object").clone();
     missing.remove("flag");
     assert!(
-        !all_primitives.is_valid(&serde_json::Value::Object(missing)),
+        !all_primitives.is_valid(&Value::Object(missing)),
         "every non-optional field is required"
     );
-    let mut extra = full.clone();
+    let mut extra = full;
     extra["surprise"] = json!(1);
     assert!(!all_primitives.is_valid(&extra), "objects are closed");
 
@@ -223,7 +226,7 @@ fn golden_schemas_judge_canonical_instances() {
         !arrays.is_valid(&wrong_len),
         "a fixed byte length pins the exact base64 text length"
     );
-    let mut bad_pose = good.clone();
+    let mut bad_pose = good;
     bad_pose["poses"] = json!([{"joint_name": "elbow"}]);
     assert!(
         !arrays.is_valid(&bad_pose),
@@ -253,11 +256,9 @@ fn a_fixed_length_array_of_non_scalars_is_refused() {
         let Err(err) = message_format_to_json_schema(&parse_format(source)) else {
             panic!("fixed arrays hold scalars only: {source}");
         };
-        assert!(
-            matches!(
-                err,
-                FormatRuleViolation::UnsupportedFixedArrayItemType { .. }
-            ),
+        assert_matches!(
+            err,
+            FormatRuleViolation::UnsupportedFixedArrayItemType { .. },
             "{source}: {err}"
         );
     }
@@ -267,10 +268,7 @@ fn a_fixed_length_array_of_non_scalars_is_refused() {
 fn a_reserved_field_name_is_refused() {
     let format = parse_format(r#"{ instance_id: "u32" }"#);
     let err = message_format_to_json_schema(&format).expect_err("reserved names are refused");
-    assert!(
-        matches!(err, FormatRuleViolation::ReservedFieldName { .. }),
-        "{err}"
-    );
+    assert_matches!(err, FormatRuleViolation::ReservedFieldName { .. }, "{err}");
 }
 
 /// The size bound is exact for closed shapes: serializing the worst-case
@@ -294,7 +292,7 @@ fn max_size_is_exact_for_bounded_formats() {
         max_serialized_json_bytes(&format),
         MaxSerializedSize::Bounded(44)
     );
-    let worst = json!({"id": 4294967295u64, "pair": {"x": -128, "y": -128}});
+    let worst = json!({"id": 4_294_967_295_u64, "pair": {"x": -128, "y": -128}});
     assert_eq!(serde_json::to_string(&worst).expect("serializes").len(), 44);
 
     let format = parse_format(r#"{ crc: { $type: "array", $items: "u8", $length: 5 } }"#);

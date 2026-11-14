@@ -36,6 +36,10 @@ const CHECK_COPY: &str = "composition_check";
 /// `composition_check_2`, ... that the stack neither declares as a core
 /// node link nor prefixes an instance id with. `repo index --check` and the
 /// trial joins of a launch's scope checks compose under it.
+#[expect(
+    clippy::maybe_infinite_iter,
+    reason = "the stack has a finite number of ids, so a numbered name is free"
+)]
 pub(super) fn pick_checked_copy_name(bare: &Expanded) -> CopyName {
     let ids: Vec<&str> = bare
         .deployments
@@ -69,7 +73,10 @@ pub(super) enum TrialRefusal {
 /// document. `repo index --check` tries every own-axis selection of every
 /// copy option this way, and a launch's scope checks every feature set.
 /// Returns the composed copy.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input, and a struct of them only moves the list"
+)]
 pub(super) fn compose_trial_join(
     prepared: &PreparedLauncher,
     stack: &UnitSelection,
@@ -143,7 +150,7 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
         Err(e) => return vec![format!("{label}: {e}")],
     };
     let mut problems = check_bare_launch(&prepared, &label);
-    let repeatable: Vec<Repeatable> = launcher
+    let repeatable: Vec<Repeatable<'_>> = launcher
         .repeatable_axes()
         .flat_map(|axis| {
             prepared
@@ -195,9 +202,11 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
 fn check_bare_launch(prepared: &PreparedLauncher, label: &str) -> Vec<String> {
     match prepared.launch(&[], &[]) {
         Ok(_)
-        | Err(CompositionError::UnresolvedAxis { .. })
-        | Err(CompositionError::CopyAxisUnfilled { .. })
-        | Err(CompositionError::UnresolvedCopyAxis(_)) => Vec::new(),
+        | Err(
+            CompositionError::UnresolvedAxis { .. }
+            | CompositionError::CopyAxisUnfilled { .. }
+            | CompositionError::UnresolvedCopyAxis(_),
+        ) => Vec::new(),
         Err(e) => vec![format!(
             "{label}: the bare launch (no `--with`) fails: {e}. A launch of what the file \
              deploys must start"

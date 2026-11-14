@@ -1,14 +1,14 @@
 //! Shared core for the framework slot-update services (`peer_update`,
 //! `observation_update`, `binding_update`). Each delivers ABSOLUTE per-slot
-//! state, keyed by the node's own slot link_id, and they share one protocol:
+//! state, keyed by the node's own slot `link_id`, and they share one protocol:
 //! registered pre-setup so delivery never waits on user `setup_fn`;
-//! daemon-authoritative, so a caller whose core_node is not this node's own
+//! daemon-authoritative, so a caller whose `core_node` is not this node's own
 //! daemon is rejected before slot state is touched; and sequence-gated and
 //! idempotent, so a delayed retry can never roll a slot back (a
 //! strictly-smaller sequence is stale, an equal one asserts the state the slot
 //! already holds, a larger one supersedes).
 //!
-//! Each service supplies only its request type via [`SlotUpdate`]: the wire
+//! Each service supplies only its request type via `SlotUpdate`: the wire
 //! decode, the slot key, and the whole slot state one absolute request
 //! asserts. The daemon-only guard, the sequence gate, unknown-slot rejection,
 //! the cardinality gate, and the shared [`SlotUpdateResponse`] ack live here
@@ -65,7 +65,7 @@ pub(crate) trait SlotUpdate: Sized {
     fn admits(cardinality: Cardinality, members: usize) -> bool;
 
     /// Extra structured fields for the receipt debug log, beyond
-    /// link_id/sequence (e.g. `members=2 live=1`).
+    /// `link_id/sequence` (e.g. `members=2 live=1`).
     fn log_detail(&self) -> String;
 }
 
@@ -88,6 +88,7 @@ fn members_phrase(members: usize) -> String {
 
 /// One declared slot the daemon delivers into: the cardinality the node's
 /// manifest gives it, and the watch channel holding its state.
+#[derive(Debug)]
 pub struct SlotChannel<S> {
     cardinality: Cardinality,
     sender: watch::Sender<S>,
@@ -114,7 +115,7 @@ impl<S> SlotChannel<S> {
 }
 
 /// Shared map of one channel per declared slot, keyed by the node's own slot
-/// link_id. Built once by the `Processor`; the map itself is immutable (slots
+/// `link_id`. Built once by the `Processor`; the map itself is immutable (slots
 /// are declared in the manifest), only the channels' state moves.
 pub(crate) type SlotChannels<S> = Arc<BTreeMap<String, SlotChannel<S>>>;
 
@@ -140,7 +141,7 @@ where
             .handle_requests(|context| {
                 let slots = Arc::clone(&slots);
                 let daemon_core_node = daemon_core_node.clone();
-                async move { handle_slot_update_request::<U>(context, &daemon_core_node, &slots) }
+                async move { handle_slot_update_request::<U>(&context, &daemon_core_node, &slots) }
             })
             .await
     });
@@ -148,7 +149,7 @@ where
 }
 
 fn handle_slot_update_request<U>(
-    context: ServiceRequestContext,
+    context: &ServiceRequestContext,
     daemon_core_node: &str,
     slots: &BTreeMap<String, SlotChannel<U::State>>,
 ) -> ServiceAnswer
@@ -184,6 +185,10 @@ where
 }
 
 /// The error reply of a refused delivery.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
 fn refusal(reason: impl ToString) -> Failure {
     Failure::new(PeppyFailureKind::Rejected, reason.to_string())
 }

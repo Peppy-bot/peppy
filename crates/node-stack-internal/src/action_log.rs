@@ -46,11 +46,12 @@ pub fn log_line(time: SystemTime, marker: Option<&str>, text: &str) -> String {
 ///
 /// Writes are best-effort: a line the file refuses is still exported, and the
 /// action goes on.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ActionLog {
     inner: Arc<Inner>,
 }
 
+#[derive(Debug)]
 struct Inner {
     exporter: LogExporter,
     state: Mutex<State>,
@@ -66,6 +67,7 @@ enum ExistingFile {
     Replace,
 }
 
+#[derive(Debug)]
 struct State {
     file: File,
     identity: Arc<LogIdentity>,
@@ -73,6 +75,7 @@ struct State {
 }
 
 /// What the exporter receives of a line.
+#[derive(Clone, Copy)]
 enum Exported {
     /// Nothing: the line is in the file only.
     No,
@@ -93,7 +96,7 @@ impl ActionLog {
         exporter: LogExporter,
     ) -> Result<Self, String> {
         let filename = LogFileName::parse(filename.to_owned())?;
-        Self::create_as(dir, filename, ExistingFile::Replace, exporter, |path| {
+        Self::create_as(dir, &filename, ExistingFile::Replace, exporter, |path| {
             LogIdentity::new(kind, path)
         })
     }
@@ -109,7 +112,7 @@ impl ActionLog {
         let filename = LogFileName::parse(format!("{}_{timestamp}.log", action.name()))?;
         Self::create_as(
             &peppy_dirs.logs_dir_launch(),
-            filename,
+            &filename,
             ExistingFile::KeepBeside,
             exporter,
             |path| LogIdentity::new(LogKind::Launch { action }, path).with_launch(launch_id),
@@ -132,7 +135,7 @@ impl ActionLog {
             label,
             node,
             launch_id,
-            file_timestamp(),
+            &file_timestamp(),
         )
     }
 
@@ -143,12 +146,12 @@ impl ActionLog {
         label: &str,
         node: Option<(&str, &str)>,
         launch_id: Option<&str>,
-        timestamp: String,
+        timestamp: &str,
     ) -> Result<Self, String> {
         let filename = LogFileName::parse(format!("{label}_{timestamp}.log"))?;
         Self::create_as(
             &peppy_dirs.logs_dir_add(),
-            filename,
+            &filename,
             ExistingFile::KeepBeside,
             exporter,
             |path| {
@@ -173,7 +176,7 @@ impl ActionLog {
         let filename = LogFileName::parse(format!("{name}_{tag}_{timestamp}.log"))?;
         Self::create_as(
             &peppy_dirs.logs_dir_build(),
-            filename,
+            &filename,
             ExistingFile::KeepBeside,
             exporter,
             |path| {
@@ -200,7 +203,7 @@ impl ActionLog {
         let filename = LogFileName::parse(format!("{instance_id}_{timestamp}.log"))?;
         Self::create_as(
             &peppy_dirs.logs_dir_run(),
-            filename,
+            &filename,
             ExistingFile::KeepBeside,
             exporter,
             |path| {
@@ -216,7 +219,7 @@ impl ActionLog {
     /// what the file does when a file of its name exists.
     fn create_as(
         dir: &Path,
-        filename: LogFileName,
+        filename: &LogFileName,
         existing: ExistingFile,
         exporter: LogExporter,
         identify: impl FnOnce(PathBuf) -> LogIdentity,
@@ -224,7 +227,7 @@ impl ActionLog {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("Failed to create logs directory: {e}"))?;
         let (file, path) = match existing {
-            ExistingFile::KeepBeside => create_free(dir, &filename),
+            ExistingFile::KeepBeside => create_free(dir, filename),
             ExistingFile::Replace => {
                 let path = dir.join(filename.as_str());
                 File::create(&path).map(|file| (file, path))
@@ -385,7 +388,7 @@ fn create_free(dir: &Path, filename: &LogFileName) -> std::io::Result<(File, Pat
 /// `filename` in `dir`, then `{stem}-2.log`, `{stem}-3.log` and so on.
 fn free_names(dir: &Path, filename: &LogFileName) -> impl Iterator<Item = PathBuf> {
     let filename = filename.as_str();
-    let stem = filename.strip_suffix(".log").unwrap_or(filename).to_owned();
+    let stem = filename.trim_suffix(".log").to_owned();
     let dir = dir.to_path_buf();
     std::iter::once(dir.join(filename))
         .chain((2u32..).map(move |n| dir.join(format!("{stem}-{n}.log"))))
@@ -430,7 +433,7 @@ impl LogFileName {
 
 /// A log and the feedback channel of its action: where the daemon reports the
 /// steps of an add, a build or a run.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Announcer {
     log: ActionLog,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
@@ -523,7 +526,7 @@ pub mod test_support {
         let prefix = format!("{instance_id}_");
         let mut logs: Vec<((String, u32), PathBuf)> = std::fs::read_dir(dir)
             .ok()?
-            .filter_map(|entry| entry.ok())
+            .filter_map(Result::ok)
             .filter_map(|entry| {
                 let name = entry.file_name();
                 let stem = name.to_str()?.strip_prefix(&prefix)?.strip_suffix(".log")?;
@@ -722,7 +725,11 @@ mod tests {
             .map(|record| log_line(record.time, Some("stdout"), &record.body))
             .collect();
         assert_eq!(written, expected);
-        assert!(records.windows(2).all(|pair| pair[0].time < pair[1].time));
+        assert!(
+            records
+                .array_windows()
+                .all(|[previous, next]| previous.time < next.time)
+        );
     }
 
     #[test]
@@ -931,9 +938,9 @@ mod tests {
         let stamp = || "20260101_000000_000".to_owned();
         let exporter = LogExporter::disabled();
         let batch =
-            ActionLog::for_add_at(&dirs, exporter.clone(), "source", None, None, stamp()).unwrap();
+            ActionLog::for_add_at(&dirs, exporter.clone(), "source", None, None, &stamp()).unwrap();
         let sub_add =
-            ActionLog::for_add_at(&dirs, exporter.clone(), "source", None, None, stamp()).unwrap();
+            ActionLog::for_add_at(&dirs, exporter, "source", None, None, &stamp()).unwrap();
         batch.note("Adding camera:v");
         sub_add.note("Cloning repository");
         batch.note("Batch add complete");

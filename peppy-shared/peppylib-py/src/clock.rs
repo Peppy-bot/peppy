@@ -26,7 +26,7 @@ use crate::runtime::PyNodeRunner;
 /// the request goes on the wire. Encoders/decoders use the same capnp wire
 /// schema as the Rust [`ClockRequest`].
 #[pyclass(name = "ClockRequest", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyClockRequest {
     inner: ClockRequest,
 }
@@ -59,7 +59,7 @@ impl PyClockRequest {
     fn decode(data: &[u8]) -> PyResult<Self> {
         ClockRequest::decode(data)
             .map(Self::from)
-            .map_err(|e| decode_err("ClockRequest", e))
+            .map_err(|e| decode_err("ClockRequest", &e))
     }
 }
 
@@ -69,7 +69,7 @@ impl PyClockRequest {
 /// and `server_send_time` (`t2`). `t3` is the client's local time on receive,
 /// which never goes on the wire.
 #[pyclass(name = "ClockResponse", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyClockResponse {
     inner: ClockResponse,
 }
@@ -112,7 +112,7 @@ impl PyClockResponse {
     fn decode(data: &[u8]) -> PyResult<Self> {
         ClockResponse::decode(data)
             .map(Self::from)
-            .map_err(|e| decode_err("ClockResponse", e))
+            .map_err(|e| decode_err("ClockResponse", &e))
     }
 }
 
@@ -122,7 +122,7 @@ impl PyClockResponse {
 /// [`synchronize`]) when you need to bound staleness with an NTP-style
 /// round-trip exchange.
 #[pyclass(name = "ClockTick", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyClockTick {
     inner: ClockTick,
 }
@@ -155,7 +155,7 @@ impl PyClockTick {
     fn decode(data: &[u8]) -> PyResult<Self> {
         ClockTick::decode(data)
             .map(Self::from)
-            .map_err(|e| decode_err("ClockTick", e))
+            .map_err(|e| decode_err("ClockTick", &e))
     }
 }
 
@@ -164,7 +164,7 @@ impl PyClockTick {
 /// Mirrors [`peppylib::clock::ClockSync`]. `synchronize` does not
 /// adjust the local clock: it only measures.
 #[pyclass(name = "ClockSync", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyClockSync {
     inner: ClockSync,
 }
@@ -208,7 +208,7 @@ fn synchronize_clock<'py>(
     node_runner: &PyNodeRunner,
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = Arc::clone(&node_runner.inner);
     let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let sync = synchronize(&runner, timeout).await.map_err(to_py_err)?;
@@ -221,6 +221,7 @@ fn synchronize_clock<'py>(
 /// Wraps the raw [`Subscription`] (not the Rust `ClockSubscription` adapter)
 /// so the Python lock guards the same inner state as
 /// [`crate::messaging::PySubscription`], with no double-mutex layering.
+#[derive(Debug)]
 #[pyclass(name = "ClockSubscription")]
 pub struct PyClockSubscription {
     inner: Arc<Mutex<Subscription>>,
@@ -236,7 +237,7 @@ impl PyClockSubscription {
             match guard.on_next_message().await {
                 Some(message) => {
                     let tick = ClockTick::decode(message.payload_bytes().as_ref())
-                        .map_err(|e| decode_err("ClockTick", e))?;
+                        .map_err(|e| decode_err("ClockTick", &e))?;
                     Ok(Some(PyClockTick::from(tick)))
                 }
                 None => Ok(None),
@@ -261,7 +262,7 @@ fn subscribe_clock_py<'py>(
     node_runner: &PyNodeRunner,
     buffer: PyTopicBuffer,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = Arc::clone(&node_runner.inner);
     crate::py_future::future_into_py(py, async move {
         let sub = subscribe(&runner, buffer.into())
             .await
@@ -280,6 +281,7 @@ fn subscribe_clock_py<'py>(
 /// Build via [`clock_for_node_py`]. A consumer opens its domain's
 /// subscription up front so subsequent `now_ns()` reads from the in-memory
 /// cache; a publisher reads what it last committed.
+#[derive(Debug)]
 #[pyclass(name = "PeppyClock")]
 pub struct PyPeppyClock {
     inner: PeppyClock,
@@ -303,7 +305,7 @@ fn clock_for_node_py<'py>(
     py: Python<'py>,
     node_runner: &PyNodeRunner,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let runner = node_runner.inner.clone();
+    let runner = Arc::clone(&node_runner.inner);
     crate::py_future::future_into_py(py, async move {
         let clock = for_node(&runner).await.map_err(to_py_err)?;
         Ok(PyPeppyClock { inner: clock })
@@ -315,7 +317,7 @@ fn clock_for_node_py<'py>(
 /// would have bound.
 // Taken only by reference from Python, so it needs no extraction impl.
 #[pyclass(name = "ClockBinding", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyClockBinding {
     pub(crate) inner: config::runtime::ClockBinding,
 }
@@ -383,13 +385,16 @@ impl PyClockBinding {
     /// `None` for wall time.
     #[getter]
     fn link_id(&self) -> Option<String> {
-        self.inner.domain().map(|domain| domain.link_id())
+        self.inner
+            .domain()
+            .map(config::runtime::ClockDomainId::link_id)
     }
 }
 
 /// The instance that supplies one simulated clock domain. Mirrors
 /// [`peppylib::clock::ClockPublisher`]: each `publish` commits the instant
 /// locally and sends it on the domain's stream.
+#[derive(Debug)]
 #[pyclass(name = "ClockPublisher")]
 pub struct PyClockPublisher {
     inner: Arc<ClockPublisher>,
@@ -402,10 +407,10 @@ impl PyClockPublisher {
     /// may or may not be a source branches on this one call.
     #[staticmethod]
     fn for_node<'py>(py: Python<'py>, node_runner: &PyNodeRunner) -> PyResult<Bound<'py, PyAny>> {
-        let runner = node_runner.inner.clone();
+        let runner = Arc::clone(&node_runner.inner);
         crate::py_future::future_into_py(py, async move {
             let publisher = ClockPublisher::for_node(&runner).await.map_err(to_py_err)?;
-            Ok(publisher.map(|publisher| PyClockPublisher {
+            Ok(publisher.map(|publisher| Self {
                 inner: Arc::new(publisher),
             }))
         })

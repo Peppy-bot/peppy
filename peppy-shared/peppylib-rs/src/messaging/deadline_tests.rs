@@ -12,9 +12,10 @@ use pmi::{
     ActionWireSender, Messenger, MessengerAdapter, MessengerBackend, MockAdapter, ResponseToken,
     ServiceKind, ServiceQueryKind, ServiceQueryable, ServiceWireReceiver, ServiceWireSender,
 };
+use std::assert_matches;
 use std::{
     cell::Cell,
-    future::{Future, poll_fn, ready},
+    future::{poll_fn, ready},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -140,10 +141,10 @@ async fn assert_no_request(handle: &MessengerHandle, queryable: &ServiceQueryabl
         .poll_service(&sender(), Payload::new(), ServiceQueryKind::Probe, None)
         .await
         .unwrap();
-    assert!(matches!(
-        queryable.rx.try_recv(),
-        Err(flume::TryRecvError::Empty)
-    ));
+    assert_matches!(
+        queryable.rx.try_recv().err(),
+        Some(flume::TryRecvError::Empty)
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -169,14 +170,14 @@ async fn pending_issuance_is_cancelled_at_the_deadline() {
     let mut issuance = Box::pin(within_service_deadline(Some(deadline), rx));
     assert!(poll!(issuance.as_mut()).is_pending());
     sleep_until(deadline).await;
-    assert!(matches!(poll!(issuance.as_mut()), Poll::Ready(None)));
+    assert_matches!(poll!(issuance.as_mut()), Poll::Ready(None));
     assert!(tx.is_closed(), "expiry must drop the pending future");
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_result_ready_when_polled_wins_at_and_after_the_deadline() {
     for elapsed in [
-        BUDGET - Duration::from_millis(1),
+        BUDGET.checked_sub(Duration::from_millis(1)).unwrap(),
         BUDGET,
         BUDGET + Duration::from_millis(1),
     ] {
@@ -200,7 +201,7 @@ async fn optional_deadline_preserves_future_results() {
     let (tx, rx) = oneshot::channel();
     let mut unbounded = Box::pin(within_service_deadline(None, rx));
     assert!(poll!(unbounded.as_mut()).is_pending());
-    advance(Duration::from_secs(86_400)).await;
+    advance(Duration::from_hours(24)).await;
     assert!(poll!(unbounded.as_mut()).is_pending());
     tx.send(42).unwrap();
     assert_eq!(unbounded.await, Some(Ok(42)));
@@ -275,7 +276,7 @@ async fn lock_wait_is_subtracted_from_the_transport_budget() {
     let delayed_request = delayed_service.rx.recv_async().await.unwrap();
     acknowledge(&delayed_request.token, delayed.as_mut(), &delayed_wake).await;
 
-    advance(BUDGET - lock_wait).await;
+    advance(BUDGET.checked_sub(lock_wait).unwrap()).await;
     tokio::join!(immediate_wake.0.notified(), delayed_wake.0.notified());
     assert_eq!(Instant::now(), started + BUDGET);
 
@@ -562,9 +563,8 @@ async fn issuance_errors_remain_transport_errors() {
             )
             .await
             .unwrap_err();
-        assert!(
-            matches!(error, Error::PeppyMessagingInterface(pmi::PeppyMessagingInterfaceError::PublishError { topic })
-            if topic == SERVICE)
+        assert_matches!(error, Error::PeppyMessagingInterface(pmi::PeppyMessagingInterfaceError::PublishError { topic })
+            if topic == SERVICE
         );
     }
 }
@@ -595,12 +595,12 @@ async fn liveliness_issuance_errors_remain_transport_errors() {
         .unwrap_err();
 
     for error in [probe_error, presence_error] {
-        assert!(matches!(
+        assert_matches!(
             error,
             Error::PeppyMessagingInterface(
                 pmi::PeppyMessagingInterfaceError::MessagingSessionError(_)
             )
-        ));
+        );
     }
 }
 

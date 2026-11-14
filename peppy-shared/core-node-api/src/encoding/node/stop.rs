@@ -20,7 +20,7 @@ impl NodeStopRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<node_capnp::node_stop_request::Builder>();
+            let mut request = builder.init_root::<node_capnp::node_stop_request::Builder<'_>>();
             request.set_instance_id(&self.instance_id);
         }
         encode_message(&builder)
@@ -28,7 +28,7 @@ impl NodeStopRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<node_capnp::node_stop_request::Reader>()?;
+        let request = reader.get_root::<node_capnp::node_stop_request::Reader<'_>>()?;
         Ok(Self {
             instance_id: request.get_instance_id()?.to_str()?.to_owned(),
         })
@@ -63,7 +63,7 @@ impl NodeStopResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_stop_response::Builder>();
+            let mut response = builder.init_root::<node_capnp::node_stop_response::Builder<'_>>();
             response.set_force_killed(self.force_killed);
         }
         encode_message(&builder)
@@ -71,7 +71,7 @@ impl NodeStopResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_stop_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::node_stop_response::Reader<'_>>()?;
         Ok(Self {
             force_killed: response.get_force_killed(),
         })
@@ -79,11 +79,11 @@ impl NodeStopResponse {
 }
 
 impl crate::encoding::Wire for NodeStopRequest {
-    type Root = crate::node_capnp::node_stop_request::Owned;
+    type Root = node_capnp::node_stop_request::Owned;
 }
 
 impl crate::encoding::Wire for NodeStopResponse {
-    type Root = crate::node_capnp::node_stop_response::Owned;
+    type Root = node_capnp::node_stop_response::Owned;
 }
 
 #[cfg(test)]

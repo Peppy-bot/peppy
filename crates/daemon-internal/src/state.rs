@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use auth::FederationIdentity;
 use daemon_config::consts::PeppyDirs;
 use serde::{Deserialize, Serialize};
-use std::fs::{self};
+use std::fs;
 use std::io;
 
 const DAEMON_STATE_FILENAME: &str = "daemon_state.json5";
@@ -52,7 +52,10 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is a distinct input, and a struct of them only moves the list"
+    )]
     pub fn new(
         core_node_name: impl Into<String>,
         messaging_host: impl Into<String>,
@@ -103,7 +106,7 @@ impl DaemonState {
         dir.as_ref().join(DAEMON_STATE_FILENAME)
     }
 
-    pub fn write_to(path: &Path, state: &DaemonState) -> Result<(), io::Error> {
+    pub fn write_to(path: &Path, state: &Self) -> Result<(), io::Error> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -142,16 +145,12 @@ impl DaemonState {
         };
 
         // `test_kill_process` is `kill(pid, 0)`: it sends no signal, just probes
-        // existence and signalling permission.
-        match test_kill_process(pid) {
-            Ok(()) => true,
-            // No such process.
-            Err(Errno::SRCH) => false,
-            // EPERM means the process exists but we may not signal it; any other
-            // probe error is treated as alive so a transient failure never
-            // discards a state file that may belong to a running daemon.
-            Err(_) => true,
-        }
+        // existence and signalling permission. Only `ESRCH` says that no such
+        // process exists. `EPERM` means the process exists but we may not
+        // signal it; any other probe error is treated as alive so a transient
+        // failure never discards a state file that may belong to a running
+        // daemon.
+        !matches!(test_kill_process(pid), Err(Errno::SRCH))
     }
 }
 
@@ -190,7 +189,7 @@ mod tests {
         );
         assert_eq!(
             read.command_line_key,
-            std::path::Path::new("/peppy/credentials/command_line.key")
+            Path::new("/peppy/credentials/command_line.key")
         );
         assert!(read.has_federation_control());
     }
@@ -243,7 +242,7 @@ mod tests {
     fn state_file_with_unknown_fields_still_parses() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("daemon_state.json5");
-        std::fs::write(
+        fs::write(
             &path,
             r#"{
                 "core_node_name": "old",
@@ -271,7 +270,7 @@ mod tests {
     fn an_invalid_namespace_fails_the_read() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("daemon_state.json5");
-        std::fs::write(
+        fs::write(
             &path,
             r#"{
                 "core_node_name": "bad",
@@ -286,7 +285,7 @@ mod tests {
         )
         .expect("write invalid state");
 
-        assert!(DaemonState::read_from(&path).is_err());
+        DaemonState::read_from(&path).unwrap_err();
     }
 
     /// A router id zenoh would refuse (a leading zero) fails the read the same
@@ -295,7 +294,7 @@ mod tests {
     fn an_invalid_router_id_fails_the_read() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("daemon_state.json5");
-        std::fs::write(
+        fs::write(
             &path,
             r#"{
                 "core_node_name": "bad",
@@ -310,7 +309,7 @@ mod tests {
         )
         .expect("write invalid state");
 
-        assert!(DaemonState::read_from(&path).is_err());
+        DaemonState::read_from(&path).unwrap_err();
     }
 
     #[test]

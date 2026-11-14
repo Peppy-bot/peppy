@@ -115,7 +115,7 @@ mod tests {
         for value in ["", "self", "has space", "has/slash", &"n".repeat(64)] {
             assert!(CoreNodeName::new(value).is_err(), "{value}");
             assert!(CoreNodeName::parse(value).is_err(), "{value}");
-            assert!(serde_json5::from_str::<CoreNodeName>(&format!("'{value}'")).is_err());
+            serde_json5::from_str::<CoreNodeName>(&format!("'{value}'")).unwrap_err();
         }
         for value in ["cn-robot-7", "Self", &"n".repeat(63)] {
             let name = CoreNodeName::new(value).unwrap();

@@ -9,6 +9,7 @@
 //! daemon that goes away. Every step waits on the mock's action, never on
 //! the clock: a deadline only bounds the failure path.
 
+use std::assert_matches;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -257,10 +258,10 @@ async fn a_join_gives_its_acceptance_then_each_line_in_order_then_its_end() {
         next_event(&mut running).await.expect("the end"),
         StackGoalEvent::Ended(failed_join_end())
     );
-    assert!(matches!(
+    assert_matches!(
         next_event(&mut running).await,
         Err(FollowError::Ended { operation: "Join" })
-    ));
+    );
 }
 
 /// Sends the join, which the daemon refuses with `refusal`, and returns the
@@ -289,7 +290,7 @@ async fn a_refused_goal_gives_the_daemons_failure_kind_and_reason() {
         DaemonFailureKind::Busy,
         DaemonFailureKind::Peppy(PeppyFailureKind::PreconditionFailed),
     ] {
-        let error = refused_join(Failure::new(kind, REFUSAL_REASON)).await;
+        let error = Box::pin(refused_join(Failure::new(kind, REFUSAL_REASON))).await;
         assert_eq!(
             error.to_string(),
             format!("Join goal refused ({kind}): {REFUSAL_REASON}")
@@ -306,7 +307,7 @@ async fn a_refused_goal_gives_the_daemons_failure_kind_and_reason() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_refusal_with_a_kind_outside_the_daemon_is_an_error() {
     let kind = config::failure_kind::FailureKindName::parse("unreachable").unwrap();
-    let error = refused_join(Failure::new(kind, REFUSAL_REASON)).await;
+    let error = Box::pin(refused_join(Failure::new(kind, REFUSAL_REASON))).await;
     let SendError::UnknownRefusalKind { operation, source } = &error else {
         panic!("expected an unknown refusal kind, got {error}")
     };
@@ -489,8 +490,9 @@ async fn a_daemon_that_goes_away_ends_the_goal_without_a_result() {
     drop(mesh.daemon.take());
     let gone = next_event(&mut running).await;
     let error = gone.expect_err("a daemon that is gone sends no result");
-    assert!(
-        matches!(error, FollowError::DaemonGone { operation: "Join" }),
+    assert_matches!(
+        error,
+        FollowError::DaemonGone { operation: "Join" },
         "{error}"
     );
     assert_eq!(
@@ -536,12 +538,10 @@ async fn a_caller_that_falls_behind_the_output_cancels_the_goal_and_says_so() {
     let error = next_event(&mut running)
         .await
         .expect_err("the caller fell behind the output");
-    assert!(
-        matches!(
+    assert_matches!(
             error,
             FollowError::FellBehind { operation: "Join", bound: fell_behind }
-                if fell_behind == bound
-        ),
+                if fell_behind == bound,
         "{error}"
     );
     assert_eq!(
@@ -551,10 +551,10 @@ async fn a_caller_that_falls_behind_the_output_cancels_the_goal_and_says_so() {
              messages, so it cancelled the join"
         )
     );
-    assert!(matches!(
+    assert_matches!(
         next_event(&mut running).await,
         Err(FollowError::Ended { operation: "Join" })
-    ));
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -570,8 +570,5 @@ async fn a_result_that_expired_before_its_request_ends_the_goal_saying_so() {
     let error = next_event(&mut running)
         .await
         .expect_err("the result is gone");
-    assert!(
-        matches!(error, FollowError::Expired { operation: "Join" }),
-        "{error}"
-    );
+    assert_matches!(error, FollowError::Expired { operation: "Join" }, "{error}");
 }

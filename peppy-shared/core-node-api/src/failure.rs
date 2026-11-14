@@ -87,7 +87,7 @@ impl From<DaemonFailureKind> for FailureKindName {
         match kind {
             DaemonFailureKind::Peppy(kind) => kind.into(),
             DaemonFailureKind::Busy | DaemonFailureKind::Halted | DaemonFailureKind::Leased => {
-                FailureKindName::parse(kind.name())
+                Self::parse(kind.name())
                     .expect("each kind of the daemon is a valid failure kind name")
             }
         }

@@ -26,7 +26,7 @@ pub(crate) const MOCK_CORE_NODE: &str = "mock-core";
 /// The mock peer's own slot id: what the node's `PeerInfo.peer_link_id`
 /// reports under the harness.
 pub(crate) const MOCK_PEER_LINK_ID: &str = "mock_peer";
-/// The producer-side link_id mock observed sources publish under.
+/// The producer-side `link_id` mock observed sources publish under.
 pub(crate) const MOCK_SOURCE_LINK_ID: &str = "mock_source";
 /// Wire identity of the fixtures' caller/observer session.
 pub(crate) const FIXTURE_CORE_NODE: &str = "fixture-core";
@@ -87,7 +87,7 @@ pub(crate) fn unreserved_member_name(
 }
 
 /// The member name for a dep-link interface: plain when the interface's own
-/// consumer-side link_id equals the dependency slot's, link-qualified
+/// consumer-side `link_id` equals the dependency slot's, link-qualified
 /// otherwise (a slot can bind several same-name interfaces through distinct
 /// manifest entries). Shared by both backends, so the member-naming rule must
 /// not drift between languages.
@@ -109,7 +109,7 @@ pub(crate) enum TargetSpec {
 }
 
 impl TargetSpec {
-    pub fn from_dependency(dependency: &DependencyContext) -> Self {
+    pub(crate) fn from_dependency(dependency: &DependencyContext) -> Self {
         match &dependency.origin {
             Some(origin) => Self::Contract {
                 name: origin.contract_name.clone(),
@@ -129,9 +129,9 @@ impl TargetSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct DepTopicSpec {
     pub name: String,
-    /// The topic's own consumer-side link_id: the production module nests
+    /// The topic's own consumer-side `link_id`: the production module nests
     /// under it (and the topic schema key derives from it). Usually equal to
-    /// the dependency slot's link_id, but the manifest can bind several
+    /// the dependency slot's `link_id`, but the manifest can bind several
     /// same-producer topics through distinct entries on one slot.
     pub module_link: String,
     pub format: MessageFormat,
@@ -143,7 +143,7 @@ pub(crate) struct DepTopicSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct DepServiceSpec {
     pub name: String,
-    /// The service's own consumer-side link_id (module nesting).
+    /// The service's own consumer-side `link_id` (module nesting).
     pub module_link: String,
     pub request: Option<MessageFormat>,
     pub response: Option<MessageFormat>,
@@ -153,7 +153,7 @@ pub(crate) struct DepServiceSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct DepActionSpec {
     pub name: String,
-    /// The action's own consumer-side link_id (module nesting).
+    /// The action's own consumer-side `link_id` (module nesting).
     pub module_link: String,
     pub messages: ConsumedActionMessage,
 }
@@ -295,7 +295,7 @@ fn non_empty_action_messages(messages: &ConsumedActionMessage) -> ConsumedAction
 }
 
 impl TestGenRegistry {
-    pub fn record_node_identity(&mut self, name: impl Into<String>, tag: impl Into<String>) {
+    pub(crate) fn record_node_identity(&mut self, name: impl Into<String>, tag: impl Into<String>) {
         self.node_identity = Some((name.into(), tag.into()));
     }
 
@@ -324,7 +324,7 @@ impl TestGenRegistry {
             })
     }
 
-    pub fn record_consumed_topic(
+    pub(crate) fn record_consumed_topic(
         &mut self,
         topic: &ConsumedTopic,
         format: &MessageFormat,
@@ -339,7 +339,7 @@ impl TestGenRegistry {
         });
     }
 
-    pub fn record_consumed_service(
+    pub(crate) fn record_consumed_service(
         &mut self,
         service: &ConsumedService,
         request: &MessageFormat,
@@ -354,7 +354,7 @@ impl TestGenRegistry {
         });
     }
 
-    pub fn record_consumed_action(
+    pub(crate) fn record_consumed_action(
         &mut self,
         action: &ConsumedAction,
         messages: &ConsumedActionMessage,
@@ -367,19 +367,27 @@ impl TestGenRegistry {
         });
     }
 
-    pub fn record_peer_emitted_topic(&mut self, topic: &NativeEmittedTopic, peer: &PeerContext) {
+    pub(crate) fn record_peer_emitted_topic(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        peer: &PeerContext,
+    ) {
         self.pairing_entry(peer)
             .node_emits
             .push(PairTopicSpec::from_topic(topic));
     }
 
-    pub fn record_peer_consumed_topic(&mut self, topic: &NativeEmittedTopic, peer: &PeerContext) {
+    pub(crate) fn record_peer_consumed_topic(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        peer: &PeerContext,
+    ) {
         self.pairing_entry(peer)
             .node_consumes
             .push(PairTopicSpec::from_topic(topic));
     }
 
-    pub fn record_observed_topic(
+    pub(crate) fn record_observed_topic(
         &mut self,
         topic: &NativeEmittedTopic,
         observer: &PeerContext,
@@ -397,7 +405,7 @@ impl TestGenRegistry {
             .push(PairTopicSpec::from_topic(topic));
     }
 
-    pub fn record_emitted_topic(
+    pub(crate) fn record_emitted_topic(
         &mut self,
         topic: &NativeEmittedTopic,
         origin: Option<&ContractOrigin>,
@@ -411,7 +419,7 @@ impl TestGenRegistry {
         });
     }
 
-    pub fn record_exposed_service(
+    pub(crate) fn record_exposed_service(
         &mut self,
         service: &NativeExposedService,
         origin: Option<&ContractOrigin>,
@@ -424,7 +432,7 @@ impl TestGenRegistry {
         });
     }
 
-    pub fn record_exposed_action(
+    pub(crate) fn record_exposed_action(
         &mut self,
         action: &NativeExposedAction,
         origin: Option<&ContractOrigin>,

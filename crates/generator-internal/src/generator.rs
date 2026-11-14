@@ -1,4 +1,4 @@
-pub mod common;
+pub(crate) mod common;
 #[cfg(test)]
 mod golden_support;
 pub(crate) mod naming;
@@ -6,10 +6,10 @@ pub(crate) mod scaffold_tree;
 #[cfg(test)]
 #[macro_use]
 mod test_helpers;
-pub mod python;
-pub mod rust;
+pub(crate) mod python;
+pub(crate) mod rust;
 pub(crate) mod testgen;
-pub mod types;
+pub(crate) mod types;
 
 use crate::error::{Error, Result};
 use config::{
@@ -79,7 +79,10 @@ use types::{DeploymentInterface, LanguageGenerator};
 ///   `node_dir/peppy.json5`) does not exist
 /// - The configuration file cannot be parsed
 /// - Code generation fails
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input, and a struct of them only moves the list"
+)]
 pub fn generate_peppygen_lib(
     language: PeppygenLanguage,
     node_dir: impl AsRef<Path>,
@@ -91,12 +94,11 @@ pub fn generate_peppygen_lib(
     node_tree: common::NodeTree,
 ) -> Result<()> {
     let node_dir = node_dir.as_ref();
-    let node_config_path = config_path
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| node_dir.join(NODE_CONFIG_FILE));
+    let node_config_path =
+        config_path.map_or_else(|| node_dir.join(NODE_CONFIG_FILE), Path::to_path_buf);
 
     let peppy_dir = node_dir.join(daemon_config::consts::PEPPY_OUTPUT_DIR);
-    std::fs::create_dir_all(&peppy_dir)?;
+    fs::create_dir_all(&peppy_dir)?;
     if !node_config_path.exists() {
         return Err(Error::NodeNotFound(node_config_path.display().to_string()));
     }
@@ -161,8 +163,8 @@ pub fn generate_peppygen_lib(
     Ok(())
 }
 
-/// Collects the node's own NATIVE exposed interfaces from a NodeConfig into
-/// DeploymentInterface instances. Contract-backed entries are skipped here:
+/// Collects the node's own NATIVE exposed interfaces from a `NodeConfig` into
+/// `DeploymentInterface` instances. Contract-backed entries are skipped here:
 /// their shapes live in the contract documents, which the daemon resolves
 /// (with the Tier B coverage check) into the pre-resolved interface vec this
 /// function's output is merged with.
@@ -233,7 +235,7 @@ fn ensure_node_cargo_toml(
         contents.parse().map_err(|e| {
             Error::Io(std::io::Error::new(
                 ErrorKind::InvalidData,
-                format!("failed to parse Cargo.toml: {}", e),
+                format!("failed to parse Cargo.toml: {e}"),
             ))
         })?
     } else {
@@ -626,9 +628,9 @@ mod tests {
         let custom_path = temp_dir.path().join("custom_peppy.json5");
         fs::write(&custom_path, custom_config).unwrap();
 
-        let peppy_dirs = daemon_config::consts::PeppyDirs::default();
+        let peppy_dirs = PeppyDirs::default();
         generate_peppygen_lib(
-            config::node::PeppygenLanguage::Rust,
+            PeppygenLanguage::Rust,
             &node_dir,
             Vec::new(),
             "test-hash",
@@ -678,9 +680,9 @@ mod tests {
         fs::create_dir_all(&node_dir).unwrap();
 
         // Do NOT write any peppy.json5; generation should fail with NodeNotFound
-        let peppy_dirs = daemon_config::consts::PeppyDirs::default();
+        let peppy_dirs = PeppyDirs::default();
         let result = generate_peppygen_lib(
-            config::node::PeppygenLanguage::Rust,
+            PeppygenLanguage::Rust,
             &node_dir,
             Vec::new(),
             "test-hash",
@@ -727,9 +729,9 @@ mod tests {
         )
         .unwrap();
 
-        let peppy_dirs = daemon_config::consts::PeppyDirs::default();
+        let peppy_dirs = PeppyDirs::default();
         generate_peppygen_lib(
-            config::node::PeppygenLanguage::Rust,
+            PeppygenLanguage::Rust,
             &node_dir,
             Vec::new(),
             "daemon-build-hash",

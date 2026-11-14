@@ -2,10 +2,11 @@ mod common;
 
 use common::{
     GOAL_TIMEOUT, GoalEnd, NodeAddSource, RESULT_TIMEOUT, acquire_container_test_guard,
-    archive_contains_entry, assert_failure, entity_artifact_path, path_env_with_dir_first,
-    read_file_from_archive, send_logged_node_build, send_node_add_and_wait,
-    send_node_build_and_wait, send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
-    start_core_node_with_mock_messenger_outside_home, write_executable_script, write_peppy_json5,
+    archive_contains_entry, assert_failure, entity_artifact_path, has_log_extension,
+    path_env_with_dir_first, read_file_from_archive, send_logged_node_build,
+    send_node_add_and_wait, send_node_build_and_wait, send_node_build_and_wait_forced,
+    start_core_node_with_mock_messenger, start_core_node_with_mock_messenger_outside_home,
+    write_executable_script, write_peppy_json5,
 };
 use config::failure_kind::PeppyFailureKind;
 use core_node_api::encoding::{NodeBuildFeedback, NodeBuildResult};
@@ -15,10 +16,10 @@ use std::path::Path;
 use std::time::Duration;
 
 const BUILD_CMD_MARKER_FILE: &str = "build_cmd_executed.marker";
-const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
+const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Helper: stage a node via `send_node_add_and_wait` and assert success.
-/// Returns (node_name, node_tag) for use in subsequent build calls.
+/// Returns (`node_name`, `node_tag`) for use in subsequent build calls.
 async fn stage_node_for_build<'a>(
     started_core_node: &common::StartedCoreNode,
     source: impl Into<NodeAddSource<'a>>,
@@ -329,16 +330,19 @@ fn read_build_log(
     node_name: &str,
     node_tag: &str,
 ) -> String {
+    assert!(!log_path.is_empty(), "log_path should not be empty");
     assert!(
-        !log_path.as_os_str().is_empty(),
-        "log_path should not be empty"
+        log_path.exists(),
+        "log file should exist at {log_path}",
+        log_path = log_path.display()
     );
-    assert!(log_path.exists(), "log file should exist at {log_path:?}");
 
     let log_dir = started_core_node.peppy_dirs.logs_dir_build();
     assert!(
         log_path.starts_with(&log_dir),
-        "log file should be in logs_dir_build(), expected to start with {log_dir:?}, got {log_path:?}"
+        "log file should be in logs_dir_build(), expected to start with {log_dir}, got {log_path}",
+        log_dir = log_dir.display(),
+        log_path = log_path.display()
     );
 
     let log_filename = log_path
@@ -347,13 +351,11 @@ fn read_build_log(
         .expect("should have log filename");
     assert!(
         log_filename.starts_with(&format!("{node_name}_{node_tag}_")),
-        "log filename should start with '<node_name>_<tag>_', got: {}",
-        log_filename
+        "log filename should start with '<node_name>_<tag>_', got: {log_filename}"
     );
     assert!(
-        log_filename.ends_with(".log"),
-        "log filename should end with '.log', got: {}",
-        log_filename
+        has_log_extension(log_filename),
+        "log filename should end with '.log', got: {log_filename}"
     );
 
     std::fs::read_to_string(log_path).expect("should be able to read log file")
@@ -386,7 +388,7 @@ async fn wait_for_building(node_stack: &node_stack::NodeStack, name: &str, tag: 
             .then_some(())
         },
     )
-    .await
+    .await;
 }
 
 /// `node build --force` on a node whose build is stuck mid-flight (the daemon
@@ -652,16 +654,14 @@ async fn listen_for_node_build_writes_log_file() {
     );
 
     assert!(
-        log_content.contains(&format!("[stdout] {}", STDOUT_MARKER)),
+        log_content.contains(&format!("[stdout] {STDOUT_MARKER}")),
         "log file should contain stdout marker with [stdout] prefix, got:
-{}",
-        log_content
+{log_content}"
     );
     assert!(
-        log_content.contains(&format!("[stderr] {}", STDERR_MARKER)),
+        log_content.contains(&format!("[stderr] {STDERR_MARKER}")),
         "log file should contain stderr marker with [stderr] prefix, got:
-{}",
-        log_content
+{log_content}"
     );
 }
 
@@ -930,8 +930,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     assert!(
         log_content.contains("[stdout]") || log_content.contains("[stderr]"),
         "log file should contain streamed build output with [stdout]/[stderr] prefixes, got:
-{}",
-        log_content
+{log_content}"
     );
 }
 
@@ -1095,8 +1094,7 @@ From: nowhere
     assert!(
         log_content.contains("[stdout]") || log_content.contains("[stderr]"),
         "log file should contain streamed build output, got:
-{}",
-        log_content
+{log_content}"
     );
 
     let mut feedback = Vec::new();
@@ -1160,20 +1158,17 @@ async fn listen_for_node_build_logs_error_on_spawn_failure() {
     assert!(
         log_content.contains("[error]"),
         "log file should contain an [error] entry, got:
-{}",
-        log_content
+{log_content}"
     );
     assert!(
         log_content.contains("build_cmd failed"),
         "log file should contain the failure message, got:
-{}",
-        log_content
+{log_content}"
     );
     assert!(
         log_content.contains("nonexistent_binary_peppy_test_xyz"),
         "log file should contain the command that failed, got:
-{}",
-        log_content
+{log_content}"
     );
 }
 

@@ -90,7 +90,7 @@ struct ParticipantSlice {
 fn partition_reservations<'a>(
     items: impl Iterator<Item = (&'a Deployment, &'a DeploymentRoot, &'a [PinnedItem])>,
     placements: &Placements,
-) -> std::result::Result<BTreeMap<String, Vec<String>>, String> {
+) -> Result<BTreeMap<String, Vec<String>>, String> {
     let coordinator = placements.coordinator();
     let mut by_core_node: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (deployment, root, closure_pins) in items {
@@ -123,7 +123,7 @@ fn partition_reservations<'a>(
 /// read from zenoh presence.
 pub(in crate::services::stack) async fn live_core_nodes(
     ctx: &StackChangeContext,
-) -> std::result::Result<BTreeSet<String>, String> {
+) -> Result<BTreeSet<String>, String> {
     CoreNodePresenceMessenger::live_core_node_names(
         &ctx.messenger,
         &ctx.bound_core_node,
@@ -141,7 +141,7 @@ pub(in crate::services::stack) async fn live_core_nodes(
 fn reject_unreachable_core_nodes(
     wanted: &BTreeSet<String>,
     live: &BTreeSet<String>,
-) -> std::result::Result<(), String> {
+) -> Result<(), String> {
     let missing: Vec<&String> = wanted.difference(live).collect();
     if missing.is_empty() {
         return Ok(());
@@ -224,26 +224,25 @@ async fn reserve_participants(
                     }
                 }
             }
-            Err(error) => match error.failure() {
-                // An answered refusal reserved nothing, so the peer owes no
-                // release.
-                Some(refusal) => {
+            Err(error) => {
+                if let Some(refusal) = error.failure() {
+                    // An answered refusal reserved nothing, so the peer owes
+                    // no release.
                     every_refusal_is_busy &= DaemonFailureKind::parse(refusal.kind().as_str())
                         == Some(DaemonFailureKind::Busy);
                     refusals.push(format!("`{core_node}` refused: {}", refusal.message()));
-                }
-                // An unanswered reservation is not a refusal: the request may
-                // have landed and reserved the peer with only the ack lost, so
-                // it is released with the ones that acked. Releasing a peer
-                // that never reserved succeeds as a no-op.
-                None => {
+                } else {
+                    // An unanswered reservation is not a refusal: the request
+                    // may have landed and reserved the peer with only the ack
+                    // lost, so it is released with the ones that acked.
+                    // Releasing a peer that never reserved succeeds as a no-op.
                     to_release.push(core_node.clone());
                     a_peer_is_unavailable = true;
                     refusals.push(format!(
                         "`{core_node}` did not answer the reservation: {error}"
                     ));
                 }
-            },
+            }
         }
     }
 
@@ -284,7 +283,7 @@ fn check_version(
     core_node: &str,
     response: &ParticipantReserveResponse,
     own_version: &str,
-) -> std::result::Result<(), String> {
+) -> Result<(), String> {
     if response.peppy_version == own_version {
         return Ok(());
     }
@@ -377,7 +376,7 @@ async fn release_participants(
     launch_id: &str,
     participants: &[String],
 ) {
-    join_all(participants.iter().map(|core_node| async move {
+    join_all(participants.iter().map(async |core_node| {
         let result = poll(
             &ParticipantReleaseRequest::new(launch_id),
             messenger,
@@ -393,17 +392,20 @@ async fn release_participants(
             // a reservation for a DIFFERENT launch, so this one never owned it
             // and its end with this coordinator will not clear it either. Worth its own
             // line, because it means two coordinators overlapped.
-            Err(e) => match e.failure() {
-                Some(refusal) => tracing::warn!(
-                    "`{core_node}` refused to release launch `{launch_id}`: {}",
-                    refusal.message()
-                ),
-                None => tracing::warn!(
-                    "could not release `{core_node}` from launch `{launch_id}` ({e}); its \
-                     reservation drops on its own when this coordinator reserves it for its \
-                     next launch or leaves the federation"
-                ),
-            },
+            Err(e) => {
+                if let Some(refusal) = e.failure() {
+                    tracing::warn!(
+                        "`{core_node}` refused to release launch `{launch_id}`: {}",
+                        refusal.message()
+                    );
+                } else {
+                    tracing::warn!(
+                        "could not release `{core_node}` from launch `{launch_id}` ({e}); its \
+                 reservation drops on its own when this coordinator reserves it for its \
+                 next launch or leaves the federation"
+                    );
+                }
+            }
         }
     }))
     .await;
@@ -646,7 +648,7 @@ mod tests {
     #[test]
     fn a_matching_version_passes() {
         let response = ParticipantReserveResponse::new("v0.20.0", "gen_1");
-        assert!(check_version("cn-atlas", &response, "v0.20.0").is_ok());
+        check_version("cn-atlas", &response, "v0.20.0").unwrap();
     }
 
     fn slice(core_node: &str) -> ParticipantSlice {

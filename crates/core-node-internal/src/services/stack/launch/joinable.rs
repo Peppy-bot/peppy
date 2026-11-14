@@ -42,7 +42,7 @@ impl JoinableBuild {
     }
 
     /// What the launch builds the node for, as its add line and its
-    /// refusals say it: `for stack joins of `openarm_sim`, `so101_sim``.
+    /// refusals say it: ``for stack joins of `openarm_sim`, `so101_sim` ``.
     pub(in crate::services::stack) fn purpose(&self) -> String {
         purpose(&self.options)
     }

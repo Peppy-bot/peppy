@@ -68,7 +68,6 @@ fn info_command_fails_without_daemon() {
     let err_msg = err.to_string();
     assert!(
         err_msg.contains("daemon") || err_msg.contains("state"),
-        "error message should mention daemon state issue. Got: {}",
-        err_msg
+        "error message should mention daemon state issue. Got: {err_msg}"
     );
 }

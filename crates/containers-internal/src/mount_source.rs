@@ -94,7 +94,7 @@ pub fn auto_created_warning(src: &str) -> String {
 /// like `/tmp`) is refused with the phrasing the spec validation uses, so the
 /// "nothing handed to the auto-create or the runtime is a blocked top-level
 /// dir" invariant survives expansion.
-pub fn expand_home_in_mount_spec(spec: &str) -> std::result::Result<String, String> {
+pub fn expand_home_in_mount_spec(spec: &str) -> Result<String, String> {
     expand_home_in_mount_spec_with(spec, dirs::home_dir().as_deref())
 }
 
@@ -116,10 +116,7 @@ pub fn home_mount_source_rejection(src: &str) -> Option<String> {
 
 /// [`expand_home_in_mount_spec`] with the home directory injected, so tests
 /// don't depend on the runner's real `$HOME`.
-fn expand_home_in_mount_spec_with(
-    spec: &str,
-    home: Option<&Path>,
-) -> std::result::Result<String, String> {
+fn expand_home_in_mount_spec_with(spec: &str, home: Option<&Path>) -> Result<String, String> {
     let src = mount_spec_source(spec);
     if !src.starts_with('~') {
         return Ok(spec.to_owned());

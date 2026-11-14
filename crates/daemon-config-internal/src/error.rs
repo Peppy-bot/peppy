@@ -16,7 +16,7 @@ use thiserror::Error;
 /// quote it back.
 const WALL_CLOCK_LITERAL: &str = crate::internal::launcher::WALL_CLOCK;
 
-pub type Result<T> = core::result::Result<T, Error>;
+pub(crate) type Result<T> = core::result::Result<T, Error>;
 
 /// Formats `items` as a `\n  - `-prefixed bulleted list (no leading or
 /// trailing newline outside the bullets themselves). Used to render
@@ -50,7 +50,7 @@ where
 /// On error, prepends the JSON path (e.g. `execution.run_cmd`) to standard
 /// serde error messages. `StructuredError`s (custom validation) are propagated
 /// unchanged since they already contain descriptive messages.
-pub fn deserialize_json5_with_path<'de, T>(content: &'de str) -> Result<T>
+pub(crate) fn deserialize_json5_with_path<'de, T>(content: &'de str) -> Result<T>
 where
     T: serde::de::Deserialize<'de>,
 {
@@ -108,8 +108,8 @@ pub enum SlotKind {
 impl core::fmt::Display for SlotKind {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
-            SlotKind::Node => "node",
-            SlotKind::Contract => "contract",
+            Self::Node => "node",
+            Self::Contract => "contract",
         })
     }
 }
@@ -226,6 +226,10 @@ impl std::error::Error for BindingCopyFillsSlotTwice {}
      `adjustments` under the copy's option, with `add_links: {{ {link_id}: [\"<id>\"] }}` on \
      `{owner_instance_id}`, and drop it from `{owner_instance_id}`'s `links`"
 )]
+#[expect(
+    clippy::struct_field_names,
+    reason = "each field is an id that the launcher vocabulary and the error text name so"
+)]
 pub struct BindingMemberOutsideCopy {
     pub instance_id: String,
     pub owner_instance_id: String,
@@ -248,8 +252,8 @@ pub struct ClockMismatch {
     pub a_clock: String,
     pub b: String,
     pub b_clock: String,
-    /// The connection, as the deployment writes it: `binding \`cam\``,
-    /// `pairing \`left_arm\`` or `observation \`arms\``.
+    /// The connection, as the deployment writes it: ``binding `cam` ``,
+    /// ``pairing `left_arm` `` or ``observation `arms` ``.
     pub via: String,
 }
 
@@ -257,7 +261,7 @@ pub struct ClockMismatch {
 /// `--link KEY`) that names no declared slot of the instance's node across
 /// any family: `depends_on.{nodes,contracts}` producer slots or
 /// `depends_on.pairings` participant/observer slots. Every link key must be a
-/// declared slot link_id; there are no free-form keys.
+/// declared slot `link_id`; there are no free-form keys.
 #[derive(Debug, Clone, Error)]
 #[error(
     "link `{link}` on instance `{owner_instance_id}` names no \
@@ -351,7 +355,7 @@ pub struct PairingTargetAmbiguous {
 }
 
 /// Payload for [`ParsingError::PairingSlotAlreadyPaired`]. A `one` or
-/// `zero_or_one` slot (instance × link_id) was claimed by more than one pair
+/// `zero_or_one` slot (instance × `link_id`) was claimed by more than one pair
 /// in the same plan, or is already paired in the running stack.
 #[derive(Debug, Clone, Error)]
 #[error(
@@ -365,7 +369,7 @@ pub struct PairingSlotAlreadyPaired {
 }
 
 /// Payload for [`ParsingError::PairAlreadyHeld`]. A `one_or_more` or
-/// `zero_or_more` slot (instance × link_id) already holds the pair a
+/// `zero_or_more` slot (instance × `link_id`) already holds the pair a
 /// declaration names.
 #[derive(Debug, Clone, Error)]
 #[error(
@@ -482,7 +486,7 @@ pub struct ObservationTargetNotObservable {
 /// participant slot and the observer spec did not name one. Mirror of
 /// [`PairingTargetAmbiguous`]; unlike pairing there is no exclusivity, so
 /// every candidate is available, but the observer must still pick which
-/// producer-side link_id to pin.
+/// producer-side `link_id` to pin.
 #[derive(Debug, Clone, Error)]
 #[error(
     "observer link `{key}` on instance `{owner_instance_id}`: target `{source_instance_id}` \
@@ -956,14 +960,14 @@ pub enum VacancyRefusal {
 impl std::fmt::Display for VacancyRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            VacancyRefusal::ManifestRequires { declare_emptiable } => write!(
+            Self::ManifestRequires { declare_emptiable } => write!(
                 f,
                 "The node manifest declares it required: link it, or declare {declare_emptiable}"
             ),
-            VacancyRefusal::NoEmptyState { requirement } => {
+            Self::NoEmptyState { requirement } => {
                 write!(f, "It has no empty state: it takes {requirement}")
             }
-            VacancyRefusal::SpelledDifferently { empty_spelling } => {
+            Self::SpelledDifferently { empty_spelling } => {
                 write!(f, "Its empty state is {empty_spelling}")
             }
         }
@@ -1070,14 +1074,14 @@ impl From<StructuredError> for ParsingError {
     fn from(s: StructuredError) -> Self {
         match s {
             StructuredError::InvalidDeploymentSource(detail) => {
-                ParsingError::InvalidDeploymentSource(detail)
+                Self::InvalidDeploymentSource(detail)
             }
-            StructuredError::DuplicateName(id) => ParsingError::DuplicateName(id),
+            StructuredError::DuplicateName(id) => Self::DuplicateName(id),
             StructuredError::UnknownInstanceId {
                 owner_instance_id,
                 link,
                 instance_id,
-            } => ParsingError::UnknownInstanceId {
+            } => Self::UnknownInstanceId {
                 owner_instance_id,
                 link,
                 instance_id,
@@ -1085,7 +1089,7 @@ impl From<StructuredError> for ParsingError {
             StructuredError::LinkSentinelKey {
                 owner_instance_id,
                 link,
-            } => ParsingError::LinkSentinelKey {
+            } => Self::LinkSentinelKey {
                 owner_instance_id,
                 link,
             },
@@ -1098,7 +1102,7 @@ impl From<serde_json5::Error> for ParsingError {
         let serde_json5::Error::Message { msg, .. } = err;
         match structured_refusal(&msg) {
             Some(refusal) => refusal,
-            None => ParsingError::CannotParseConfig(msg),
+            None => Self::CannotParseConfig(msg),
         }
     }
 }
@@ -1120,7 +1124,7 @@ pub enum Error {
 mod tests {
     use super::*;
 
-    /// A serde_json5 error carrying `msg`, as a custom deserializer raises it.
+    /// A `serde_json5` error carrying `msg`, as a custom deserializer raises it.
     fn make_err(msg: &str) -> serde_json5::Error {
         serde::de::Error::custom(msg)
     }
@@ -1136,7 +1140,7 @@ mod tests {
         if let ParsingError::InvalidDeploymentSource(msg) = err {
             assert_eq!(msg, "bad source");
         } else {
-            panic!("Expected InvalidDeploymentSource, got {:?}", err);
+            panic!("Expected InvalidDeploymentSource, got {err:?}");
         }
 
         // DuplicateName
@@ -1146,7 +1150,7 @@ mod tests {
         if let ParsingError::DuplicateName(id) = err {
             assert_eq!(id, "id1");
         } else {
-            panic!("Expected DuplicateName, got {:?}", err);
+            panic!("Expected DuplicateName, got {err:?}");
         }
     }
 
@@ -1157,7 +1161,7 @@ mod tests {
         if let ParsingError::CannotParseConfig(msg) = err {
             assert_eq!(msg, raw_msg);
         } else {
-            panic!("Expected CannotParseConfig, got {:?}", err);
+            panic!("Expected CannotParseConfig, got {err:?}");
         }
 
         let broken_json = "{ invalid json";
@@ -1165,7 +1169,7 @@ mod tests {
         if let ParsingError::CannotParseConfig(msg) = err {
             assert_eq!(msg, broken_json);
         } else {
-            panic!("Expected CannotParseConfig, got {:?}", err);
+            panic!("Expected CannotParseConfig, got {err:?}");
         }
     }
 

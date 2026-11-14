@@ -3,9 +3,13 @@ name = "latency-report"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # Pure, std-only leaf crate: percentile/summary math, duration/table formatting,
 # the machine-id-keyed baseline file, and CPU-turbo environment detection.
 # Shared by the offline latency bench (core-node), the daemon's stack benchmark
 # service and `peppy stack benchmark`.
+[lints]
+workspace = true
+
 [dependencies]

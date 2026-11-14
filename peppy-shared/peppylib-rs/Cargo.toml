@@ -2,10 +2,14 @@
 name = "peppylib-rs"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 homepage = "https://dev.peppy.bot"
 description = "The Peppy control library"
 license = "MIT OR Apache-2.0"
 readme = "Readme.md"
+
+[lints]
+workspace = true
 
 # The package is named `peppylib-rs` (to sit alongside `peppylib-py` in the
 # peppy-shared workspace), but the library target stays `peppylib` so this

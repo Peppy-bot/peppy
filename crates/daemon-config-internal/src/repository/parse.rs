@@ -8,6 +8,7 @@ use std::path::Path;
 /// position at the root of the scanned tree, so a caller never has to try
 /// parsing one speculatively: it is either there and readable or reading it
 /// is an error.
+#[derive(Debug)]
 pub struct PeppyRepositoryIndexParser;
 
 impl PeppyRepositoryIndexParser {
@@ -29,6 +30,7 @@ mod tests {
         error::{Error, ParsingError},
         repository::RepoItemKind,
     };
+    use std::assert_matches;
     use tempfile::NamedTempFile;
 
     const EVERY_KIND: &str = r#"{
@@ -78,20 +80,20 @@ mod tests {
 
     #[test]
     fn missing_file_rejected() {
-        assert!(matches!(
+        assert_matches!(
             PeppyRepositoryIndexParser::from_path("/path/does/not/exist.json5").unwrap_err(),
             Error::Parsing(ParsingError::CannotRead(..))
-        ));
+        );
     }
 
     #[test]
     fn empty_file_rejected() {
         let tmp = NamedTempFile::new().expect("temp file");
         std::fs::write(tmp.path(), b"").expect("write");
-        assert!(matches!(
+        assert_matches!(
             PeppyRepositoryIndexParser::from_path(tmp.path()).unwrap_err(),
             Error::Parsing(ParsingError::EmptyContent(_))
-        ));
+        );
     }
 
     #[test]

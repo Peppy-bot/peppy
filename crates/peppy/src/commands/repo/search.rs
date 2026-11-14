@@ -6,6 +6,7 @@ use super::identity_label;
 use crate::commands::colors::{COUNT_COLOR, NODE_COLOR, paint};
 use crate::commands::table::render_table;
 use crate::error::{Error, Result};
+use std::fmt::Write as _;
 
 /// `peppy repo search <query>`: every indexed item the query matches,
 /// listed with the summary of its description and where each document is
@@ -37,9 +38,10 @@ pub fn search_rendered(
     max_width: Option<usize>,
 ) -> Result<String> {
     let query = SearchQuery::parse(query).map_err(Error::ExecutionFailed)?;
-    let query = match text {
-        true => query.with_descriptions().map_err(Error::ExecutionFailed)?,
-        false => query,
+    let query = if text {
+        query.with_descriptions().map_err(Error::ExecutionFailed)?
+    } else {
+        query
     };
     let outcome =
         core_node::search_repo_items(peppy_dirs, &query).map_err(Error::ExecutionFailed)?;
@@ -66,10 +68,7 @@ fn render_human(
 ) -> String {
     let mut out = format!("{}\n", paint(colorize, NODE_COLOR, query.raw()));
     if outcome.matches.is_empty() {
-        out.push_str(&format!(
-            "  {}\n",
-            no_match_phrase(query, &outcome.excluded_hint)
-        ));
+        let _ = writeln!(out, "  {}", no_match_phrase(query, &outcome.excluded_hint));
     } else {
         out.push_str(&match_table(query, &outcome.matches, colorize, max_width));
     }
@@ -176,7 +175,7 @@ pub(super) fn query_json(query: &SearchQuery) -> serde_json::Value {
         "raw": query.raw(),
         "name": query.name_pattern(),
         "tag": query.tag_pattern(),
-        "sha256": query.digest().map(|digest| digest.as_str()),
+        "sha256": query.digest().map(config::fingerprint::ManifestFingerprint::as_str),
         "text": query.matches_descriptions(),
     })
 }
@@ -190,10 +189,7 @@ pub(super) fn matches_json(matches: &[MatchedItem]) -> serde_json::Value {
             serde_json::json!({
                 "kind": item.kind.as_str(),
                 "name": item.name,
-                "tag": match item.tag.is_empty() {
-                    true => serde_json::Value::Null,
-                    false => item.tag.clone().into(),
-                },
+                "tag": if item.tag.is_empty() { serde_json::Value::Null } else { item.tag.clone().into() },
                 "by_name": item.by_name,
                 "exact": item.exact,
                 "summary": summary(item),
@@ -224,19 +220,19 @@ pub(super) mod fixtures {
     use core_node_api::encoding::{RepoItemKind, RepoSourceKind};
     use daemon_config::repository::ManifestFingerprint;
 
-    pub const HUB: &str = "https://github.com/Peppy-bot/nodes-hub.git (ref: main)";
-    pub const CONTRACTS: &str = "https://github.com/Peppy-bot/contracts-hub.git (ref: main)";
-    pub const LAUNCHERS: &str = "https://github.com/Peppy-bot/launchers-hub.git (ref: main)";
+    pub(crate) const HUB: &str = "https://github.com/Peppy-bot/nodes-hub.git (ref: main)";
+    pub(crate) const CONTRACTS: &str = "https://github.com/Peppy-bot/contracts-hub.git (ref: main)";
+    pub(crate) const LAUNCHERS: &str = "https://github.com/Peppy-bot/launchers-hub.git (ref: main)";
 
-    pub fn query(raw: &str) -> SearchQuery {
+    pub(crate) fn query(raw: &str) -> SearchQuery {
         SearchQuery::parse(raw).expect("a valid query")
     }
 
-    pub fn sha(fill: char) -> String {
+    pub(crate) fn sha(fill: char) -> String {
         fill.to_string().repeat(64)
     }
 
-    pub fn node(name: &str, path: &str) -> IndexedNode {
+    pub(crate) fn node(name: &str, path: &str) -> IndexedNode {
         IndexedNode {
             node_name: name.to_owned(),
             node_tag: "v1".to_owned(),
@@ -250,7 +246,12 @@ pub(super) mod fixtures {
 
     /// A document stored at `path` in the repository `repo_id`, whose
     /// fingerprint repeats `fill`.
-    pub fn published(repo_id: u32, repo_label: &str, path: &str, fill: char) -> PublishedDoc {
+    pub(crate) fn published(
+        repo_id: u32,
+        repo_label: &str,
+        path: &str,
+        fill: char,
+    ) -> PublishedDoc {
         PublishedDoc {
             repo_id,
             repo_label: repo_label.to_owned(),
@@ -259,20 +260,20 @@ pub(super) mod fixtures {
         }
     }
 
-    pub fn contract() -> PublishedDoc {
+    pub(crate) fn contract() -> PublishedDoc {
         published(1002, CONTRACTS, "cameras/rgb_camera.json5", 'a')
     }
 
     /// The descriptions of a document whose paragraphs are `paragraphs`,
     /// with no member.
-    pub fn described(paragraphs: &[&str]) -> CachedDescriptions {
+    pub(crate) fn described(paragraphs: &[&str]) -> CachedDescriptions {
         serde_json::from_value(serde_json::json!({ "description": paragraphs }))
             .expect("the paragraphs are not blank")
     }
 
     /// A match by name, whose description says what `name` is; an MCP
     /// exposure has none.
-    pub fn matched(
+    pub(crate) fn matched(
         kind: RepoItemKind,
         name: &str,
         tag: &str,
@@ -293,7 +294,7 @@ pub(super) mod fixtures {
         }
     }
 
-    pub fn empty_report() -> SearchReport {
+    pub(crate) fn empty_report() -> SearchReport {
         SearchReport {
             name: "rgb_camera".to_owned(),
             tag: "v1".to_owned(),

@@ -59,7 +59,7 @@ async fn add_repo_async(
         REQUEST_TIMEOUT,
     )
     .await
-    .map_err(|e| crate::commands::request_error("Failed to add repository", e))?;
+    .map_err(|e| crate::commands::request_error("Failed to add repository", &e))?;
 
     info!("Repository '{label}' added successfully");
     Ok(())
@@ -102,9 +102,7 @@ pub(crate) fn parse_repo_source(
         }
         let path = std::path::Path::new(source_str);
         let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| {
-            std::env::current_dir()
-                .map(|cwd| cwd.join(path))
-                .unwrap_or_else(|_| path.to_path_buf())
+            std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
         });
         return Ok(RepoSource::Fs(resolved));
     }
@@ -206,7 +204,7 @@ mod tests {
                 assert!(repo_url.contains("github.com/org/repo"));
                 assert_eq!(repo_ref, GitRepoRef::Named("main".to_string()));
             }
-            other => panic!("expected Git variant, got {:?}", other),
+            other => panic!("expected Git variant, got {other:?}"),
         }
     }
 

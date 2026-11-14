@@ -201,9 +201,9 @@ pub(crate) fn spawn_health_monitor(p: HealthMonitorParams) {
             // would log spurious "unhealthy" / "Session not initialized" warnings
             // for the whole teardown window.
             tokio::select! {
-                _ = p.shutdown_token.cancelled() => return,
-                _ = p.instance_done.cancelled() => return,
-                _ = time.sleep(p.policy.interval) => {}
+                () = p.shutdown_token.cancelled() => return,
+                () = p.instance_done.cancelled() => return,
+                () = time.sleep(p.policy.interval) => {}
             }
 
             // Resolve the monitored instance once per tick. If it was removed
@@ -231,8 +231,8 @@ pub(crate) fn spawn_health_monitor(p: HealthMonitorParams) {
             // probe's budget runs on the time of the stack.
             let poll_result = tokio::select! {
                 biased;
-                _ = p.shutdown_token.cancelled() => return,
-                _ = p.instance_done.cancelled() => return,
+                () = p.shutdown_token.cancelled() => return,
+                () = p.instance_done.cancelled() => return,
                 result = time.bounded(
                     p.policy.timeout,
                     |budget| ServiceMessenger::poll(
@@ -277,10 +277,7 @@ pub(crate) fn spawn_health_monitor(p: HealthMonitorParams) {
             // does not re-emit the same warning every tick.
             match edge {
                 Some(HealthEdge::Down) => {
-                    let reason = probe_error
-                        .as_ref()
-                        .map(ToString::to_string)
-                        .unwrap_or_default();
+                    let reason = probe_error.as_ref().map_or_default(ToString::to_string);
                     tracing::warn!(
                         "Health monitor: instance '{}' of node '{}:{}' became unhealthy after {} \
                          consecutive missed health checks, last: {}",
@@ -400,9 +397,9 @@ async fn kill_silent_instance(p: &HealthMonitorParams, kill: HealthKill) {
     p.stack_log.record(&event);
     group.terminate(instance_id).await;
     tokio::select! {
-        _ = p.shutdown_token.cancelled() => return,
-        _ = p.instance_done.cancelled() => return,
-        _ = p.node_stack.time().sleep(force_kill_deadline(p.node_stack.shutdown_grace())) => {}
+        () = p.shutdown_token.cancelled() => return,
+        () = p.instance_done.cancelled() => return,
+        () = p.node_stack.time().sleep(force_kill_deadline(p.node_stack.shutdown_grace())) => {}
     }
     group.force_kill(instance_id).await;
 }
@@ -521,7 +518,7 @@ mod tests {
     fn kill_due_needs_an_unhealthy_instance_silent_past_the_bound() {
         use super::kill_due;
         use std::time::{Duration, Instant};
-        let kill_after = Duration::from_secs(60);
+        let kill_after = Duration::from_mins(1);
         let silent_since = Instant::now();
         let at_the_bound = silent_since + kill_after;
         let mut tracker = HealthTracker::new(threshold(1));
@@ -539,7 +536,7 @@ mod tests {
             kill_due(
                 &tracker,
                 silent_since,
-                at_the_bound - Duration::from_millis(1),
+                at_the_bound.checked_sub(Duration::from_millis(1)).unwrap(),
                 Some(kill_after)
             ),
             None,

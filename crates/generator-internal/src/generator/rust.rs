@@ -16,7 +16,7 @@ mod topics;
 pub(crate) mod type_mapping;
 
 pub(crate) use parameters::join_parameter_path;
-pub use parameters::{generate_parameters_struct, validate_parameter_schema};
+pub(crate) use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
     CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
@@ -69,7 +69,7 @@ use topics::{
 use type_mapping::render_tokens;
 
 /// Rust-specific implementation of the interface generator.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
@@ -200,7 +200,7 @@ impl RustGenerator {
         })
     }
 
-    /// Builds the fire_goal method for consumed actions using ActionMessenger::send_goal
+    /// Builds the `fire_goal` method for consumed actions using `ActionMessenger::send_goal`
     fn build_consumed_action_fire_goal_method(
         &mut self,
         context: &mut GenerationContext,
@@ -498,9 +498,8 @@ impl RustGenerator {
     /// is then mapped onto a generated enum so user code never has to name a
     /// `peppylib` type (the user crate only depends on the generated `peppygen`).
     fn build_consumed_action_cancel_method(
-        &mut self,
         context: &mut GenerationContext,
-    ) -> Result<(TokenStream, Vec<TokenStream>)> {
+    ) -> (TokenStream, Vec<TokenStream>) {
         let response_ident = Ident::new("CancelResponse", Span::call_site());
         let state_ident = Ident::new("CancelState", Span::call_site());
         context.add_struct(
@@ -546,15 +545,15 @@ impl RustGenerator {
             }
         };
 
-        Ok((method_tokens, helper_items))
+        (method_tokens, helper_items)
     }
 
-    /// Builds the on_next_feedback_message method for consumed actions.
+    /// Builds the `on_next_feedback_message` method for consumed actions.
     ///
     /// `schema_key` is the producer-scoped key from
     /// [`consumed_action_schema_keys`][`crate::generator::naming::consumed_action_schema_keys`]
-    /// and determines both the artifact name (drives the cap'n proto schema_id)
-    /// and the registered file_stem.
+    /// and determines both the artifact name (drives the cap'n proto `schema_id`)
+    /// and the registered `file_stem`.
     fn build_consumed_action_feedback_method(
         &mut self,
         context: &mut GenerationContext,
@@ -579,7 +578,7 @@ impl RustGenerator {
             &format_artifacts,
             &params,
         )?;
-        let reader_type = encoding.reader_type.clone();
+        let reader_type = encoding.reader_type;
 
         let helper_fn_ident = Ident::new("deserialize_feedback_payload", Span::call_site());
 
@@ -831,7 +830,7 @@ impl RustGenerator {
         };
         let mut items = message.context.into_tokens();
         items.push(method_tokens);
-        let rendered = render_tokens(quote! {
+        let rendered = render_tokens(&quote! {
             #header_tokens
             #( #items )*
         });
@@ -896,7 +895,7 @@ impl LanguageGenerator for RustGenerator {
             #( #struct_tokens )*
             #method_tokens
         };
-        let rendered = render_tokens(tokens);
+        let rendered = render_tokens(&tokens);
 
         let mut module_label = topic.name.trim().to_string();
         if module_label.is_empty() {
@@ -1004,13 +1003,13 @@ impl LanguageGenerator for RustGenerator {
 
         let mut module_label = service.name.trim().to_string();
         if sanitize_component(&module_label).is_empty() {
-            module_label = fn_name_str.clone();
+            module_label = fn_name_str;
         }
 
         let tokens: TokenStream = quote! {
             #( #service_tokens )*
         };
-        let rendered = render_tokens(tokens);
+        let rendered = render_tokens(&tokens);
         self.push_section(InterfaceArtifact::for_leaf(
             origin,
             &sanitize_node_display_name(&module_label),
@@ -1112,10 +1111,10 @@ impl LanguageGenerator for RustGenerator {
                 let deserializer_fn = build_action_request_deserializer(
                     &Ident::new("deserialize_goal_request", Span::call_site()),
                     spec,
-                    request_artifacts
-                        .as_ref()
-                        .map(|a| a.message_format())
-                        .unwrap_or(&MessageFormat(IndexMap::new())),
+                    request_artifacts.as_ref().map_or(
+                        &MessageFormat(IndexMap::new()),
+                        CapnpSchemaArtifacts::message_format,
+                    ),
                     &goal_data_params,
                     goal_struct_prefix,
                     goal_request_data_struct.as_ref(),
@@ -1242,7 +1241,7 @@ impl LanguageGenerator for RustGenerator {
         let tokens: TokenStream = quote! {
             #( #items )*
         };
-        let rendered = render_tokens(tokens);
+        let rendered = render_tokens(&tokens);
         self.push_section(InterfaceArtifact::for_leaf(
             origin,
             &sanitize_node_display_name(&action.name),
@@ -1306,7 +1305,7 @@ impl LanguageGenerator for RustGenerator {
         let tokens: TokenStream = quote! {
             #( #items )*
         };
-        let rendered = render_tokens(tokens);
+        let rendered = render_tokens(&tokens);
 
         self.push_section(InterfaceArtifact {
             module_path: vec![topic.link_id.clone(), topic.name.clone()],
@@ -1514,8 +1513,7 @@ impl LanguageGenerator for RustGenerator {
             fn_param_tokens.push(quote!(request: #request_struct_ident));
         }
 
-        let bound_producer_accessor_fn =
-            crate::generator::rust::topics::build_bound_producer_accessor_fn(dependency);
+        let bound_producer_accessor_fn = topics::build_bound_producer_accessor_fn(dependency);
 
         let target_selection_doc = doc_attrs(dependency.target_selection_doc());
         let function_token = quote! {
@@ -1558,7 +1556,7 @@ impl LanguageGenerator for RustGenerator {
         let tokens: TokenStream = quote! {
             #( #all_tokens )*
         };
-        let rendered = render_tokens(tokens);
+        let rendered = render_tokens(&tokens);
 
         self.push_section(InterfaceArtifact {
             module_path: vec![service.link_id.clone(), service.name.clone()],
@@ -1604,7 +1602,7 @@ impl LanguageGenerator for RustGenerator {
             #( #struct_tokens )*
             #method_tokens
         };
-        let rendered = render_tokens(tokens);
+        let rendered = render_tokens(&tokens);
         self.push_pair_topic_section(topic, peer, InterfaceKind::PeerEmittedTopic, rendered)
     }
 
@@ -1694,7 +1692,7 @@ impl LanguageGenerator for RustGenerator {
         helper_items.append(&mut goal_helpers);
 
         let (cancel_method, mut cancel_helpers) =
-            self.build_consumed_action_cancel_method(&mut context)?;
+            Self::build_consumed_action_cancel_method(&mut context);
         methods.push(cancel_method);
         helper_items.append(&mut cancel_helpers);
 
@@ -1742,8 +1740,7 @@ impl LanguageGenerator for RustGenerator {
             }
         };
 
-        let bound_producer_accessor_fn =
-            crate::generator::rust::topics::build_bound_producer_accessor_fn(dependency);
+        let bound_producer_accessor_fn = topics::build_bound_producer_accessor_fn(dependency);
 
         let mut items = vec![
             constants_tokens,
@@ -1766,7 +1763,7 @@ impl LanguageGenerator for RustGenerator {
         let tokens: TokenStream = quote! {
             #( #items )*
         };
-        let rendered = render_tokens(tokens);
+        let rendered = render_tokens(&tokens);
         self.push_section(InterfaceArtifact {
             module_path: vec![action.link_id.clone(), action.name.clone()],
             kind: InterfaceKind::ConsumedAction,

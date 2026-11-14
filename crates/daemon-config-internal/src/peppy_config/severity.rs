@@ -17,36 +17,36 @@ pub enum Severity {
 
 impl Severity {
     /// Every severity, from the least severe to the most.
-    pub const ALL: [Severity; 6] = [
-        Severity::Trace,
-        Severity::Debug,
-        Severity::Info,
-        Severity::Warn,
-        Severity::Error,
-        Severity::Fatal,
+    pub const ALL: [Self; 6] = [
+        Self::Trace,
+        Self::Debug,
+        Self::Info,
+        Self::Warn,
+        Self::Error,
+        Self::Fatal,
     ];
 
     /// The OpenTelemetry `SeverityNumber` of the severity.
     pub fn number(self) -> i32 {
         match self {
-            Severity::Trace => 1,
-            Severity::Debug => 5,
-            Severity::Info => 9,
-            Severity::Warn => 13,
-            Severity::Error => 17,
-            Severity::Fatal => 21,
+            Self::Trace => 1,
+            Self::Debug => 5,
+            Self::Info => 9,
+            Self::Warn => 13,
+            Self::Error => 17,
+            Self::Fatal => 21,
         }
     }
 
     /// The lowercase name of the severity.
     pub fn name(self) -> &'static str {
         match self {
-            Severity::Trace => "trace",
-            Severity::Debug => "debug",
-            Severity::Info => "info",
-            Severity::Warn => "warn",
-            Severity::Error => "error",
-            Severity::Fatal => "fatal",
+            Self::Trace => "trace",
+            Self::Debug => "debug",
+            Self::Info => "info",
+            Self::Warn => "warn",
+            Self::Error => "error",
+            Self::Fatal => "fatal",
         }
     }
 }
@@ -64,20 +64,15 @@ pub enum OtlpMinSeverity {
 
 impl OtlpMinSeverity {
     /// Every value of the setting, from the least severe to the most.
-    pub const ALL: [OtlpMinSeverity; 4] = [
-        OtlpMinSeverity::Trace,
-        OtlpMinSeverity::Debug,
-        OtlpMinSeverity::Info,
-        OtlpMinSeverity::Warn,
-    ];
+    pub const ALL: [Self; 4] = [Self::Trace, Self::Debug, Self::Info, Self::Warn];
 
     /// The severity the value names.
     pub fn severity(self) -> Severity {
         match self {
-            OtlpMinSeverity::Trace => Severity::Trace,
-            OtlpMinSeverity::Debug => Severity::Debug,
-            OtlpMinSeverity::Info => Severity::Info,
-            OtlpMinSeverity::Warn => Severity::Warn,
+            Self::Trace => Severity::Trace,
+            Self::Debug => Severity::Debug,
+            Self::Info => Severity::Info,
+            Self::Warn => Severity::Warn,
         }
     }
 

@@ -4,13 +4,15 @@
 //!
 //! This crate owns the wire-facing config tier every peppy surface builds
 //! on: the `peppy.json5` node config model, the runtime configs shipped to
-//! spawned nodes, codegen fingerprints, workspace namespaces, and the schema
-//! tags identifying each document shape, and, with the `atomic_write`
-//! feature, the `atomic_write` staging helper. (The Cap'n Proto schema of a
-//! [`node::MessageFormat`] and the parser of contract documents live in the
-//! `peppy-codec` crate; the daemon-side documents, launcher files, interface
-//! documents, `peppy_config.json5`, and the `PeppyDirs` filesystem layout,
-//! live in the peppy `daemon-config` crate, which builds on this one.)
+//! spawned nodes, codegen fingerprints, workspace namespaces, the schema
+//! tags identifying each document shape, the whole-unit counts of a
+//! `Duration` that these documents and the wire formats hold, and, with the
+//! `atomic_write` feature, the `atomic_write` staging helper. (The Cap'n
+//! Proto schema of a [`node::MessageFormat`] and the parser of contract
+//! documents live in the `peppy-codec` crate; the daemon-side documents,
+//! launcher files, interface documents, `peppy_config.json5`, and the
+//! `PeppyDirs` filesystem layout, live in the peppy `daemon-config` crate,
+//! which builds on this one.)
 //!
 //! Boundaries: it performs no I/O beyond reading/writing config files,
 //! fingerprints and the files that `atomic_write::publish_atomic` stages,
@@ -28,19 +30,20 @@ mod parsing;
 #[path = "."]
 mod internal {
     #[cfg(feature = "atomic_write")]
-    pub mod atomic_write;
-    pub mod consts;
-    pub mod contract_member;
-    pub mod description;
-    pub mod failure_kind;
-    pub mod fingerprint;
-    pub mod mark;
-    pub mod namespace;
-    pub mod node;
-    pub mod peppy_config;
-    pub mod repo_node_id;
-    pub mod runtime;
-    pub mod schema;
+    pub(crate) mod atomic_write;
+    pub(crate) mod consts;
+    pub(crate) mod contract_member;
+    pub(crate) mod description;
+    pub(crate) mod duration;
+    pub(crate) mod failure_kind;
+    pub(crate) mod fingerprint;
+    pub(crate) mod mark;
+    pub(crate) mod namespace;
+    pub(crate) mod node;
+    pub(crate) mod peppy_config;
+    pub(crate) mod repo_node_id;
+    pub(crate) mod runtime;
+    pub(crate) mod schema;
     pub(crate) mod word_name;
 }
 
@@ -86,6 +89,11 @@ pub mod description {
     pub use crate::internal::description::{
         BlankDescription, Description, DocumentDescription, NoParagraph,
     };
+}
+
+// -- duration --
+pub mod duration {
+    pub use crate::internal::duration::{saturating_millis, saturating_nanos};
 }
 
 // -- failure_kind --

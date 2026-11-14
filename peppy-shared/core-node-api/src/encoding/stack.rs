@@ -1,8 +1,8 @@
-pub mod benchmark;
-pub mod budgets;
-pub mod join;
-pub mod launch;
-pub mod list;
-pub mod remove;
-pub mod reset;
-pub mod words;
+pub(super) mod benchmark;
+pub(super) mod budgets;
+pub(super) mod join;
+pub(super) mod launch;
+pub(super) mod list;
+pub(super) mod remove;
+pub(super) mod reset;
+pub(super) mod words;

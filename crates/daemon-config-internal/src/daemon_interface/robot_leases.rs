@@ -614,7 +614,7 @@ mod tests {
             MoveTarget::try_from(request(None, Some("alpha"))),
             Ok(MoveTarget::Robot("alpha".to_owned()))
         );
-        assert!(MoveTarget::try_from(request(None, None)).is_err());
-        assert!(MoveTarget::try_from(request(Some("a"), Some("b"))).is_err());
+        MoveTarget::try_from(request(None, None)).unwrap_err();
+        MoveTarget::try_from(request(Some("a"), Some("b"))).unwrap_err();
     }
 }

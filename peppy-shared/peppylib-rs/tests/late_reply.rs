@@ -14,6 +14,7 @@ use peppylib::messaging::{
 use peppylib::testing::{acquire_mesh_serial, ensure_test_fd_limit, wait_service_reachable};
 use peppylib::types::Payload;
 use pmi::{MessengerBackend, ZenohAdapter};
+use std::assert_matches;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -84,9 +85,9 @@ struct EventFields {
 impl Visit for EventFields {
     fn record_str(&mut self, field: &Field, value: &str) {
         match field.name() {
-            "message" => self.message = value.to_owned(),
-            "service_name" => self.service_name = value.to_owned(),
-            "key_expr" => self.key_expr = value.to_owned(),
+            "message" => value.clone_into(&mut self.message),
+            "service_name" => value.clone_into(&mut self.service_name),
+            "key_expr" => value.clone_into(&mut self.key_expr),
             _ => {}
         }
     }
@@ -273,12 +274,10 @@ async fn run_routed_late_reply(recorder: &Arc<Recorder>) {
         .send(())
         .expect("caller waits for clock advancement");
     let result = caller.await.expect("caller runtime did not panic");
-    assert!(
-        matches!(
-            result,
-            Err(PeppyError::ServiceTimeout { ref instance_id, ref service_name })
-                if instance_id.as_deref() == Some(SERVER_INSTANCE) && service_name == SERVICE
-        ),
+    assert_matches!(
+            &result,
+            Err(PeppyError::ServiceTimeout { instance_id, service_name })
+                if instance_id.as_deref() == Some(SERVER_INSTANCE) && service_name == SERVICE,
         "the actual caller must time out after ACK, got {result:?}"
     );
 

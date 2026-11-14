@@ -85,6 +85,7 @@ pub struct JoinRequest<'a> {
 /// The bare stack of one stack selection, composed once, onto which a
 /// launch's scope checks join trial copies, each as `peppy stack join`
 /// composes it over a stack that holds no copy.
+#[derive(Debug)]
 pub struct TrialStack<'a> {
     prepared: &'a PreparedLauncher,
     selection: &'a UnitSelection,
@@ -534,8 +535,7 @@ impl PreparedLauncher {
             .option_deployments
             .iter()
             .find(|entry| entry.axis == axis && entry.option == option)
-            .map(OptionDeployment::entry_settings)
-            .unwrap_or_default()
+            .map_or_default(OptionDeployment::entry_settings)
             .overlaid_by(with, arguments, [])
     }
 

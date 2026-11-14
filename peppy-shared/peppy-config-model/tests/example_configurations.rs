@@ -26,7 +26,7 @@ fn find_node_configs(root: &Path) -> Vec<PathBuf> {
                 .to_str()
                 .is_some_and(|name| name == NODE_CONFIG_FILE)
         })
-        .map(|e| e.into_path())
+        .map(walkdir::DirEntry::into_path)
         .collect()
 }
 

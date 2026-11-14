@@ -138,10 +138,10 @@ async fn restart_task(
     let time = target.action.node_stack.time().clone();
     tokio::select! {
         biased;
-        _ = target.action.shutdown_token.cancelled() => return,
-        _ = reset.cancelled() => return,
-        _ = restart_token.cancelled() => return,
-        _ = time.sleep_from(scheduled_at, delay) => {}
+        () = target.action.shutdown_token.cancelled() => return,
+        () = reset.cancelled() => return,
+        () = restart_token.cancelled() => return,
+        () = time.sleep_from(scheduled_at, delay) => {}
     }
     let Some(admission) = target
         .action
@@ -160,8 +160,15 @@ async fn restart_task(
     else {
         return;
     };
-    let outcome =
-        start_next_process(&admission, &target, inputs, attempt, &restart_token, &reset).await;
+    let outcome = Box::pin(start_next_process(
+        &admission,
+        &target,
+        inputs,
+        attempt,
+        &restart_token,
+        &reset,
+    ))
+    .await;
     drop(admission);
 
     match outcome {
@@ -240,7 +247,7 @@ async fn start_next_process(
     // forwarder and the drain count lines regardless.
     let (feedback_tx, _) = mpsc::unbounded_channel();
     let (run_token, link) = child_cancelled_on_reset(restart_token, reset);
-    let outcome = super::gate::finish_on_reset(
+    let outcome = Box::pin(super::gate::finish_on_reset(
         run_node_respawn(
             goal,
             runtime_config,
@@ -259,7 +266,7 @@ async fn start_next_process(
         reset,
         super::gate::reset_drain_budget(target.action.node_stack.shutdown_grace()),
         || RunOutcome::Gone("the stack was reset".to_owned()),
-    )
+    ))
     .await;
     link.abort();
     outcome

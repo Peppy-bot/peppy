@@ -62,22 +62,20 @@ pub struct CapnpTimestamp {
 pub fn convert_time(timestamp: SystemTime) -> CapnpTimestamp {
     match timestamp.duration_since(UNIX_EPOCH) {
         Ok(duration) => CapnpTimestamp {
-            sec: duration.as_secs() as i64,
+            sec: i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
             nsec: duration.subsec_nanos(),
         },
         Err(err) => {
             let duration = err.duration();
-            let secs = duration.as_secs() as i64;
+            // The whole seconds before the epoch, as a negative count.
+            let sec = 0_i64.saturating_sub_unsigned(duration.as_secs());
             let nanos = duration.subsec_nanos();
 
             if nanos == 0 {
-                CapnpTimestamp {
-                    sec: -secs,
-                    nsec: 0,
-                }
+                CapnpTimestamp { sec, nsec: 0 }
             } else {
                 CapnpTimestamp {
-                    sec: -secs - 1,
+                    sec: sec - 1,
                     nsec: NANOS_PER_SEC - nanos,
                 }
             }
@@ -88,17 +86,14 @@ pub fn convert_time(timestamp: SystemTime) -> CapnpTimestamp {
 pub fn convert_time_from_capnp(timestamp: CapnpTimestamp) -> SystemTime {
     debug_assert!(timestamp.nsec < NANOS_PER_SEC);
 
+    // The distance of the whole seconds from the epoch, on its two sides.
+    let secs_from_epoch = timestamp.sec.unsigned_abs();
     if timestamp.sec >= 0 {
-        UNIX_EPOCH + Duration::new(timestamp.sec as u64, timestamp.nsec)
+        UNIX_EPOCH + Duration::new(secs_from_epoch, timestamp.nsec)
     } else if timestamp.nsec == 0 {
-        let secs_to_epoch = (-i128::from(timestamp.sec)) as u64;
-
-        UNIX_EPOCH - Duration::new(secs_to_epoch, 0)
+        UNIX_EPOCH - Duration::new(secs_from_epoch, 0)
     } else {
-        let secs_to_epoch = (-(i128::from(timestamp.sec) + 1)) as u64;
-        let nanos_to_epoch = (i128::from(NANOS_PER_SEC) - i128::from(timestamp.nsec)) as u32;
-
-        UNIX_EPOCH - Duration::new(secs_to_epoch, nanos_to_epoch)
+        UNIX_EPOCH - Duration::new(secs_from_epoch - 1, NANOS_PER_SEC - timestamp.nsec)
     }
 }
 
@@ -116,7 +111,7 @@ pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload
 /// by the [`capnp_empty_message!`] macro and the action cancel-ack codec.
 pub(crate) fn decode_message(
     mut data: &[u8],
-) -> Result<capnp::message::Reader<capnp::serialize::BufferSegments<&[u8]>>> {
+) -> Result<capnp::message::Reader<serialize::BufferSegments<&[u8]>>> {
     serialize::read_message_from_flat_slice(&mut data, ReaderOptions::default())
         .map_err(|e| crate::error::Error::Deserialization(e.to_string()))
 }
@@ -141,7 +136,7 @@ pub(crate) fn read_producer(
     ))
 }
 
-/// A slot's link_id from its text field, held to the wire's link_id rule.
+/// A slot's `link_id` from its text field, held to the wire's `link_id` rule.
 pub(crate) fn read_link_id(
     field: ::capnp::Result<::capnp::text::Reader<'_>>,
     codec: &str,

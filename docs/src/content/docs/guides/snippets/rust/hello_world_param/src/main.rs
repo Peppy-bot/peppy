@@ -39,7 +39,7 @@ async fn emit_hello_world_loop(runner: Arc<NodeRunner>, token: CancellationToken
 }
 
 fn main() -> Result<()> {
-    NodeBuilder::new().run(|args: Parameters, node_runner| async move {
+    NodeBuilder::new().run(async |args: Parameters, node_runner| {
         let runner = node_runner.clone();
         let token = node_runner.cancellation_token().clone();
 

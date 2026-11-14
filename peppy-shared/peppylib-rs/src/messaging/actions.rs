@@ -26,6 +26,7 @@ use tokio::sync::{Mutex as TokioMutex, Notify};
 use tokio::time::{Duration, Instant};
 use tracing::warn;
 
+#[derive(Debug)]
 pub struct ActionMessenger;
 
 /// How many unread feedback messages an action client keeps by default. A
@@ -61,15 +62,15 @@ pub fn wrap_goal_payload(goal_id: &str, user_payload: &[u8]) -> Result<Payload> 
     if goal_id.is_empty() {
         return Err(envelope_error("goal_id must be non-empty"));
     }
-    if goal_id.len() > u8::MAX as usize {
+    let Ok(goal_id_len) = u8::try_from(goal_id.len()) else {
         return Err(envelope_error(format!(
             "goal_id length {} exceeds wire limit {}",
             goal_id.len(),
             u8::MAX
         )));
-    }
+    };
     let mut buf = BytesMut::with_capacity(1 + goal_id.len() + user_payload.len());
-    buf.put_u8(goal_id.len() as u8);
+    buf.put_u8(goal_id_len);
     buf.extend_from_slice(goal_id.as_bytes());
     buf.extend_from_slice(user_payload);
     Ok(Payload::from(buf.freeze()))
@@ -100,9 +101,9 @@ pub fn unwrap_goal_payload(wire: &[u8]) -> Result<(&str, &[u8])> {
 /// user-payload offset is derived from the suffix length that
 /// [`unwrap_goal_payload`] returns (a sub-slice of the same buffer), so no
 /// payload copy happens. Shared by both goal-receive paths. The feedback path
-/// (`declare_from_wire`) additionally validates the goal_id with
+/// (`declare_from_wire`) additionally validates the `goal_id` with
 /// [`is_safe_goal_id`] before splicing it into a topic keyexpr; the no-feedback
-/// path does not, because there the goal_id is only a registry key / request
+/// path does not, because there the `goal_id` is only a registry key / request
 /// payload field and never reaches a keyexpr.
 fn split_goal_envelope(wire: &Bytes) -> Result<(String, Bytes)> {
     let (goal_id, user_payload) = unwrap_goal_payload(wire.as_ref())?;
@@ -121,15 +122,18 @@ pub fn wrap_goal_request(
     sender_generation: &str,
     user_payload: &[u8],
 ) -> Result<Payload> {
-    if sender_generation.is_empty() || sender_generation.len() > u8::MAX as usize {
-        return Err(envelope_error(format!(
-            "sender generation length {} is outside 1..={}",
-            sender_generation.len(),
-            u8::MAX
-        )));
-    }
+    let generation_len = match u8::try_from(sender_generation.len()) {
+        Ok(len) if len > 0 => len,
+        _ => {
+            return Err(envelope_error(format!(
+                "sender generation length {} is outside 1..={}",
+                sender_generation.len(),
+                u8::MAX
+            )));
+        }
+    };
     let mut body = BytesMut::with_capacity(1 + sender_generation.len() + user_payload.len());
-    body.put_u8(sender_generation.len() as u8);
+    body.put_u8(generation_len);
     body.extend_from_slice(sender_generation.as_bytes());
     body.extend_from_slice(user_payload);
     wrap_goal_payload(goal_id, &body)
@@ -231,11 +235,11 @@ pub enum GoalOutcome {
 impl GoalOutcome {
     pub fn status(&self) -> ResultStatus {
         match self {
-            GoalOutcome::Completed(_) => ResultStatus::Completed,
-            GoalOutcome::Cancelled { .. } => ResultStatus::Cancelled,
-            GoalOutcome::Failed(_) => ResultStatus::Failed,
-            GoalOutcome::Abandoned => ResultStatus::Abandoned,
-            GoalOutcome::Expired => ResultStatus::Expired,
+            Self::Completed(_) => ResultStatus::Completed,
+            Self::Cancelled { .. } => ResultStatus::Cancelled,
+            Self::Failed(_) => ResultStatus::Failed,
+            Self::Abandoned => ResultStatus::Abandoned,
+            Self::Expired => ResultStatus::Expired,
         }
     }
 }
@@ -247,13 +251,17 @@ impl GoalOutcome {
 /// - expired: `[3]`
 /// - failed: `[4][failure]` (the wire form of [`Failure`])
 ///
-/// Symmetric counterpart of [`unwrap_result_outcome`].
+/// Symmetric counterpart of `unwrap_result_outcome`.
 pub fn wrap_result_outcome(outcome: &GoalOutcome) -> Payload {
     let mut buf = BytesMut::new();
     buf.put_u8(outcome.status() as u8);
     match outcome {
         GoalOutcome::Completed(result) => buf.extend_from_slice(result.as_ref()),
         GoalOutcome::Cancelled { reason, result } => {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a reason that one message carries is far shorter than `u32::MAX` bytes"
+            )]
             buf.put_u32(reason.len() as u32);
             buf.extend_from_slice(reason.as_bytes());
             buf.extend_from_slice(result.as_ref());
@@ -397,7 +405,7 @@ impl ActionGoalReply {
     }
 }
 
-/// Whether a goal_id is safe to splice into the feedback topic key
+/// Whether a `goal_id` is safe to splice into the feedback topic key
 /// expression. Restricts to a single non-empty segment of ASCII
 /// alphanumerics, `_`, and `-` so wildcard markers (`*`, `**`, `+`, `#`)
 /// and topic separators (`/`) cannot escape the per-goal scope.
@@ -420,7 +428,7 @@ pub use core_node_api::{EmptyPayloadError, NonEmptyPayload};
 /// [`ActionGoalHandle::on_next_feedback`]. Regular feedback publishes go
 /// through [`ActionFeedbackPublisher::publish`], which takes a
 /// [`NonEmptyPayload`] so empty payloads cannot reach the publish path.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ActionFeedbackPublisher {
     inner: TopicPublisher,
 }
@@ -451,6 +459,7 @@ impl ActionFeedbackPublisher {
 /// the per-goal feedback publisher, the embedded `goal_id` and sender
 /// generation, and the envelope-stripped user payload ready to be decoded by
 /// the goal handler.
+#[derive(Debug)]
 pub struct DeclaredFeedback {
     pub publisher: ActionFeedbackPublisher,
     pub goal_id: String,
@@ -463,7 +472,7 @@ pub struct DeclaredFeedback {
 /// callers feed each incoming goal request's wire bytes to
 /// [`Self::declare_from_wire`], which extracts the client-originated
 /// `goal_id` and declares a feedback publisher scoped to that goal cycle.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ActionFeedbackPublisherFactory {
     messenger: MessengerHandle,
     receiver: ActionWireReceiver,
@@ -484,15 +493,15 @@ impl ActionFeedbackPublisherFactory {
     }
 
     /// Standard server-side entry point: unwrap the goal envelope, declare
-    /// a feedback publisher on the per-goal topic scoped to the link_id the
+    /// a feedback publisher on the per-goal topic scoped to the `link_id` the
     /// consumer targeted, and return both alongside the user payload so the
     /// caller can dispatch it to the goal handler.
     ///
     /// `link_id` comes from the goal request's parsed keyexpr (surfaced via
     /// [`crate::messaging::ServiceRequestContext::link_id`]). A producer
-    /// bound to multiple link_ids will see different link_ids for different
+    /// bound to multiple `link_ids` will see different `link_ids` for different
     /// goal requests, and each goal's feedback must be addressed back under
-    /// the link_id its consumer subscribed for.
+    /// the `link_id` its consumer subscribed for.
     pub async fn declare_from_wire(&self, link_id: &str, wire: Bytes) -> Result<DeclaredFeedback> {
         let request = split_goal_request(&wire)?;
         let publisher = self.declare_for_goal(link_id, &request.goal_id).await?;
@@ -505,7 +514,7 @@ impl ActionFeedbackPublisherFactory {
     }
 
     /// Declare the feedback publisher of the goal `goal_id`, under the
-    /// link_id its consumer targeted.
+    /// `link_id` its consumer targeted.
     async fn declare_for_goal(
         &self,
         link_id: &str,
@@ -569,7 +578,7 @@ const LIVELINESS_RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Consecutive token-absent probes required before the producer is declared
 /// gone. Two spaced probes ride out a transient routing flap without adding
 /// meaningful latency to real-death detection.
-const PRODUCER_GONE_CONFIRM_PROBES: usize = 2;
+const PRODUCER_GONE_CONFIRM_PROBES: u32 = 2;
 
 /// `true` once a liveliness token is confirmed absent: every confirmation
 /// probe found no token. Any probe that sees the token (or errors, e.g.
@@ -578,12 +587,12 @@ const PRODUCER_GONE_CONFIRM_PROBES: usize = 2;
 async fn confirm_gone<P, F>(probe: &P) -> bool
 where
     P: Fn() -> F,
-    F: std::future::Future<Output = Result<bool>>,
+    F: Future<Output = Result<bool>>,
 {
     for _ in 0..PRODUCER_GONE_CONFIRM_PROBES {
         tokio::time::sleep(PRODUCER_GONE_CONFIRM_DELAY).await;
         match probe().await {
-            Ok(false) => continue,
+            Ok(false) => {}
             Ok(true) | Err(_) => return false,
         }
     }
@@ -598,7 +607,7 @@ where
 async fn wait_until_confirmed_gone<P, F>(watch: LivelinessWatch, probe: P) -> bool
 where
     P: Fn() -> F,
-    F: std::future::Future<Output = Result<bool>>,
+    F: Future<Output = Result<bool>>,
 {
     // Initial resolve: the token is expected to replay as an immediate
     // `Alive` (the watch subscribes with history). Seeing nothing inside the
@@ -685,7 +694,7 @@ impl ProducerGoneWatch {
                 return;
             }
             let notified = self.notify.notified();
-            tokio::pin!(notified);
+            let mut notified = std::pin::pin!(notified);
             // Register interest before the re-check so a notify between the
             // check and the await cannot be missed.
             notified.as_mut().enable();
@@ -807,6 +816,7 @@ impl Drop for OverflowCancel {
 /// ended, also when the caller's future is dropped. [`Self::disarm`] keeps
 /// the cancel from going out, once the caller read the end of the goal or
 /// sent a cancel of its own.
+#[derive(Debug)]
 pub struct CancelOnDrop {
     messenger: MessengerHandle,
     sender: ActionWireSender,
@@ -876,7 +886,7 @@ impl ActionGoalHandle {
     /// Returns `Err(Error::ActionFeedbackOverflow)` once this caller fell
     /// behind by more unread messages than its bound: the buffer dropped
     /// the unread messages, and the handle cancelled the goal (see
-    /// [`Self::follow_feedback`]).
+    /// `Self::follow_feedback`).
     ///
     /// Returns `Err(Error::ActionFeedbackProducerGone)` when the producer
     /// instance this goal is pinned to disappears without publishing the
@@ -891,13 +901,13 @@ impl ActionGoalHandle {
         }
         let msg = tokio::select! {
             biased;
-            _ = self.feedback_overflow.raised() => {
+            () = self.feedback_overflow.raised() => {
                 return Err(self.overflow_error());
             }
             msg = self.feedback.on_next_message() => {
                 msg.ok_or(Error::ActionFeedbackChannelClosed)?
             }
-            _ = self.producer_gone.gone() => {
+            () = self.producer_gone.gone() => {
                 return Err(producer_gone_error(&self.sender));
             }
         };
@@ -989,6 +999,7 @@ fn abandoned_reply(sender: &ActionWireSender) -> ActionResultReply {
 }
 
 // https://docs.ros.org/en/foxy/_images/Action-SingleActionClient.gif
+#[derive(Debug)]
 pub struct ActionCreation {
     pub goal_service: ServiceEndpoint,
     pub cancel_service: ServiceEndpoint,
@@ -1004,7 +1015,7 @@ pub struct ActionCreation {
 
 impl ActionMessenger {
     /// Expose an action server. The producer declares its queryables under
-    /// the reserved default `_` link_id segment; consumers pin a specific
+    /// the reserved default `_` `link_id` segment; consumers pin a specific
     /// producer by `target_instance_id` derived from the consumer's
     /// binding map. `as_identity` must match what callers pass to
     /// [`Self::send_goal`].
@@ -1054,7 +1065,10 @@ impl ActionMessenger {
     ///
     /// Returns `(elapsed, response_bytes_received)` on a clean reply; propagates
     /// the error otherwise.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub async fn probe_latency(
         messenger: &MessengerHandle,
         bound_core_node: &str,
@@ -1100,7 +1114,7 @@ impl ActionMessenger {
     /// The goal carries the presence generation of this messenger as the
     /// sender `(as_core_node, as_instance_id)`: the provider cancels the
     /// goal once that sender is gone (see
-    /// [`MessengerHandle::client_presence`]). When the goal request gets no
+    /// `MessengerHandle::client_presence`). When the goal request gets no
     /// answer this caller can read (the goal service times out, or its
     /// answer does not decode), the caller sends a cancel of the goal before
     /// it returns the error, so a goal the provider accepted does not run on
@@ -1124,7 +1138,10 @@ impl ActionMessenger {
     /// Without that, every matching producer would run the handler
     /// concurrently; for actions with side effects (motor commands, file
     /// writes) that is a real-world safety hazard.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the segments of the wire address and the options of the call"
+    )]
     pub async fn send_goal(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -1150,19 +1167,17 @@ impl ActionMessenger {
         // the goal handler; only the discovered producer receives the real
         // goal request.
         let started_at = Instant::now();
-        let resolved: ProducerRef = match target {
-            Some(producer) => producer.clone(),
-            None => {
-                let probe_sender = ActionWireSender::new(
-                    as_core_node,
-                    as_instance_id,
-                    None,
-                    to_target.clone(),
-                    to_action_name,
-                )?;
-                discover_producer(messenger, &probe_sender.goal_service(), Some(goal_timeout))
-                    .await?
-            }
+        let resolved: ProducerRef = if let Some(producer) = target {
+            producer.clone()
+        } else {
+            let probe_sender = ActionWireSender::new(
+                as_core_node,
+                as_instance_id,
+                None,
+                to_target.clone(),
+                to_action_name,
+            )?;
+            discover_producer(messenger, &probe_sender.goal_service(), Some(goal_timeout)).await?
         };
 
         let sender = ActionWireSender::new(
@@ -1203,7 +1218,7 @@ impl ActionMessenger {
                 sender.clone(),
                 goal_id.clone(),
                 "its caller did not read the answer of the goal",
-            )
+            );
         };
         let goal_response = match messenger
             .poll_service(
@@ -1481,7 +1496,7 @@ pub fn encode_cancel_ack(state: CancelState) -> Result<Payload> {
     let mut builder = ::capnp::message::Builder::new_default();
     {
         let mut root =
-            builder.init_root::<crate::action_cancel_capnp::action_cancel_response::Builder>();
+            builder.init_root::<crate::action_cancel_capnp::action_cancel_response::Builder<'_>>();
         root.set_state(state as u8);
     }
     crate::encoding::encode_message(&builder)
@@ -1493,7 +1508,7 @@ pub fn encode_cancel_ack(state: CancelState) -> Result<Payload> {
 pub fn decode_cancel_ack(payload: &[u8]) -> Result<CancelState> {
     let reader = crate::encoding::decode_message(payload)?;
     let root = reader
-        .get_root::<crate::action_cancel_capnp::action_cancel_response::Reader>()
+        .get_root::<crate::action_cancel_capnp::action_cancel_response::Reader<'_>>()
         .map_err(|e| Error::Deserialization(e.to_string()))?;
     let tag = root.get_state();
     CancelState::from_tag(tag)
@@ -1503,6 +1518,7 @@ pub fn decode_cancel_ack(payload: &[u8]) -> Result<CancelState> {
 /// Lifecycle state of a goal's result, owned by the engine. A goal is `Pending`
 /// from accept until it reaches a terminal outcome; result polls park their
 /// responders in `Pending` and are drained on the transition to `Terminal`.
+#[derive(Debug)]
 enum GoalState {
     /// The worker is running. `waiters` is a `Vec`, not a single slot, because
     /// a relay may poll twice and several clients may race one `goal_id`.
@@ -1530,8 +1546,8 @@ impl CancelCause {
     /// A reason for the cancelled result, in the words of the cause.
     pub fn reason(self) -> &'static str {
         match self {
-            CancelCause::Caller => "cancelled by its caller",
-            CancelCause::SenderGone => "its sender is gone",
+            Self::Caller => "cancelled by its caller",
+            Self::SenderGone => "its sender is gone",
         }
     }
 }
@@ -1540,7 +1556,7 @@ impl CancelCause {
 /// sweeper evicts the terminal slot. Cheaply cloneable (all shared state is
 /// behind `Arc`), so the loops clone it out from under the `std` registry lock
 /// and then work on it without holding that lock across `.await`.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct GoalSlot {
     /// The caller that sent the goal, as the check of the endpoint verified
     /// it; `None` on an endpoint with no check. Only that caller cancels the
@@ -1560,7 +1576,7 @@ struct GoalSlot {
 
 /// The tokens linked to the cancel signal of one goal, each under the id of
 /// its [`CancelLink`].
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct LinkedTokens {
     next_id: u64,
     tokens: Vec<(u64, CancellationToken)>,
@@ -1623,6 +1639,7 @@ impl GoalSlot {
 /// The link of a token to the cancel signal of a goal, from
 /// [`GoalContext::cancel_at_signal`]. The link ends when it drops: a later
 /// signal leaves the token as it is.
+#[derive(Debug)]
 #[must_use = "the link ends when it drops"]
 pub struct CancelLink {
     linked: Arc<StdMutex<LinkedTokens>>,
@@ -1647,6 +1664,7 @@ type GoalRegistry = Arc<StdMutex<HashMap<String, GoalSlot>>>;
 /// A result poll that arrived for a `goal_id` not yet in the registry (it beat
 /// `accept`). Held until `accept` adopts it into the new slot or its `deadline`
 /// passes (the sweeper drops it; the client then falls back to its own timeout).
+#[derive(Debug)]
 struct PendingWaiter {
     responder: ServiceResponder,
     deadline: Instant,
@@ -1660,7 +1678,7 @@ struct PendingWaiter {
 type PendingWaiters = Arc<StdMutex<HashMap<String, Vec<PendingWaiter>>>>;
 
 /// Upper bound on total parked-before-accept responders, guarding against a
-/// flood of polls for never-registered goal_ids amplifying memory. On overflow
+/// flood of polls for never-registered `goal_ids` amplifying memory. On overflow
 /// the responder is dropped (the client falls back to its own timeout).
 const PENDING_WAITERS_CAP: usize = 1024;
 
@@ -1683,8 +1701,8 @@ type EarlyCancels = Arc<StdMutex<HashMap<(String, Option<VerifiedCaller>), Insta
 /// Whether `canceller` may cancel the goal of `slot`: only the sender of the
 /// goal, on an endpoint that verifies its callers. On an endpoint with no
 /// check both are `None`, so every caller may.
-fn may_cancel(slot: &GoalSlot, canceller: &Option<VerifiedCaller>) -> bool {
-    slot.owner == *canceller
+fn may_cancel(slot: &GoalSlot, canceller: Option<&VerifiedCaller>) -> bool {
+    slot.owner.as_ref() == canceller
 }
 
 /// The refusal of the cancel of `goal_id` by a client that did not send it.
@@ -1709,7 +1727,7 @@ const EARLY_CANCELS_CAP: usize = 1024;
 /// finds it.
 fn remember_early_cancel(
     goal_id: &str,
-    canceller: &Option<VerifiedCaller>,
+    canceller: Option<&VerifiedCaller>,
     registry: &GoalRegistry,
     early_cancels: &EarlyCancels,
 ) -> std::result::Result<CancelState, Failure> {
@@ -1719,7 +1737,7 @@ fn remember_early_cancel(
     }
     if early.len() < EARLY_CANCELS_CAP {
         early.insert(
-            (goal_id.to_string(), canceller.clone()),
+            (goal_id.to_string(), canceller.cloned()),
             Instant::now() + PENDING_WAITER_MAX_PARK,
         );
     }
@@ -1731,7 +1749,7 @@ fn remember_early_cancel(
 fn cancel_slot(
     goal_id: &str,
     slot: &GoalSlot,
-    canceller: &Option<VerifiedCaller>,
+    canceller: Option<&VerifiedCaller>,
 ) -> std::result::Result<CancelState, Failure> {
     if !may_cancel(slot, canceller) {
         return Err(cancel_of_another_client(goal_id));
@@ -1749,11 +1767,11 @@ fn cancel_slot(
 const SWEEP_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Maximum number of evicted-goal tombstones retained. Bounds memory; a poll
-/// for a goal_id that has aged out of this set parks and falls back to its
-/// timeout, exactly as a never-existed goal_id would.
+/// for a `goal_id` that has aged out of this set parks and falls back to its
+/// timeout, exactly as a never-existed `goal_id` would.
 const EXPIRED_TOMBSTONE_CAP: usize = 4096;
 
-/// Bounded, status-only record of goal_ids whose terminal result has been
+/// Bounded, status-only record of `goal_ids` whose terminal result has been
 /// evicted by the retention sweeper. A result poll for one resolves to
 /// [`GoalOutcome::Expired`] (and a cancel to [`CancelState::AlreadyTerminal`])
 /// immediately, rather than parking. Oldest entries fall out once the cap is hit.
@@ -1796,6 +1814,7 @@ impl ExpiredTombstones {
 type Tombstones = Arc<StdMutex<ExpiredTombstones>>;
 
 /// The live goals of one sender, and the task that watches its presence.
+#[derive(Debug)]
 struct SenderWatch {
     goals: HashSet<String>,
     task: TaskHandle<()>,
@@ -1860,7 +1879,7 @@ async fn run_sender_watch(
                 continue;
             }
         }
-        let goals = forget_sender().map(|watch| watch.goals).unwrap_or_default();
+        let goals = forget_sender().map_or_default(|watch| watch.goals);
         let slots: Vec<GoalSlot> = {
             let registry = registry.lock().unwrap();
             goals
@@ -1949,7 +1968,7 @@ async fn next_goal_request(
 ) -> Option<GoalRequest> {
     loop {
         let next = tokio::select! {
-            _ = stop.cancelled() => return None,
+            () = stop.cancelled() => return None,
             next = service.recv_next_request() => next,
         };
         let (context, responder) = match next {
@@ -2006,11 +2025,16 @@ async fn run_cancel_loop(
         // without holding the registry lock across the network reply.
         let found = registry.lock().unwrap().get(&goal_id).cloned();
         let state = match found {
-            Some(slot) => cancel_slot(&goal_id, &slot, &verified_caller),
+            Some(slot) => cancel_slot(&goal_id, &slot, verified_caller.as_ref()),
             None if tombstones.lock().unwrap().contains(&goal_id) => {
                 Ok(CancelState::AlreadyTerminal)
             }
-            None => remember_early_cancel(&goal_id, &verified_caller, &registry, &early_cancels),
+            None => remember_early_cancel(
+                &goal_id,
+                verified_caller.as_ref(),
+                &registry,
+                &early_cancels,
+            ),
         };
         let state = match state {
             Ok(state) => state,
@@ -2165,8 +2189,8 @@ async fn run_retention_sweeper(
 ) {
     loop {
         tokio::select! {
-            _ = stop.cancelled() => return,
-            _ = tokio::time::sleep(SWEEP_INTERVAL) => {}
+            () = stop.cancelled() => return,
+            () = tokio::time::sleep(SWEEP_INTERVAL) => {}
         }
         let now = Instant::now();
         sweep_once(&registry, &pending_waiters, &tombstones, now);
@@ -2256,6 +2280,7 @@ fn sweep_once(
 /// sender is gone and the sender grace of the action passed (zero unless
 /// [`Self::set_sender_grace`] sets it), each of its goals that did not end
 /// receives its cancel signal, with the cause [`CancelCause::SenderGone`].
+#[derive(Debug)]
 pub struct ConcurrentAction {
     goal_service: ServiceEndpoint,
     factory: ActionFeedbackPublisherFactory,
@@ -2358,8 +2383,9 @@ impl ConcurrentAction {
     }
 
     /// Override how long a completed-but-unfetched result stays routable after
-    /// its [`GoalContext`] drops (default [`RESULT_RETENTION_GRACE`]). Exposed
+    /// its [`GoalContext`] drops (default `RESULT_RETENTION_GRACE`). Exposed
     /// mainly so tests can exercise eviction without waiting the full window.
+    #[must_use]
     pub fn with_result_retention_grace(mut self, grace: Duration) -> Self {
         self.result_retention_grace = grace;
         self
@@ -2503,6 +2529,7 @@ impl Drop for ConcurrentAction {
 }
 
 /// The engine state a [`PendingGoal`] needs to register its goal.
+#[derive(Debug)]
 struct EngineShared {
     messenger: MessengerHandle,
     registry: GoalRegistry,
@@ -2546,6 +2573,7 @@ impl EngineShared {
 /// (empty when the action declares none), or [`refuse`](Self::refuse) with a
 /// failure. Both wrap the reply in the framework admission ack (see
 /// [`wrap_goal_accepted`] and [`wrap_goal_refused`]) before it reaches the wire.
+#[derive(Debug)]
 pub struct PendingGoal {
     goal_id: String,
     sender: ClientPresence,
@@ -2672,6 +2700,7 @@ impl PendingGoal {
 /// Carries the decoded request bytes, the per-goal feedback publisher, and the
 /// shared goal slot (cancel signal + result-delivery state). Cheaply movable
 /// into a spawned task.
+#[derive(Debug)]
 pub struct GoalContext {
     goal_id: String,
     sender: ClientPresence,
@@ -2928,8 +2957,8 @@ mod envelope_tests {
         )
     }
 
-    fn roundtrip_outcome(outcome: GoalOutcome) -> GoalOutcome {
-        let wire = wrap_result_outcome(&outcome).into_inner();
+    fn roundtrip_outcome(outcome: &GoalOutcome) -> GoalOutcome {
+        let wire = wrap_result_outcome(outcome).into_inner();
         unwrap_result_outcome(&wire).expect("unwrap outcome")
     }
 
@@ -2951,7 +2980,7 @@ mod envelope_tests {
             GoalOutcome::Abandoned,
             GoalOutcome::Expired,
         ] {
-            assert_eq!(roundtrip_outcome(outcome.clone()), outcome);
+            assert_eq!(roundtrip_outcome(&outcome), outcome);
         }
     }
 
@@ -3338,7 +3367,7 @@ mod envelope_tests {
         );
         let senders: SenderWatches = Arc::new(StdMutex::new(HashMap::new()));
         let watch = |goals: &[&str]| SenderWatch {
-            goals: goals.iter().map(|goal| goal.to_string()).collect(),
+            goals: goals.iter().map(ToString::to_string).collect(),
             task: spawn(std::future::pending::<()>()),
         };
         senders
@@ -3368,6 +3397,7 @@ mod engine_tests {
     use super::*;
     use futures::poll;
     use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+    use std::assert_matches;
 
     const CORE: &str = "engine_core";
     const PRODUCER: &str = "engine_producer";
@@ -3485,9 +3515,8 @@ mod engine_tests {
 
     /// How long the engine takes to confirm that a token it watched is gone:
     /// the confirmation probes, spaced by their delay.
-    const CONFIRM_GONE: Duration = Duration::from_millis(
-        PRODUCER_GONE_CONFIRM_DELAY.as_millis() as u64 * PRODUCER_GONE_CONFIRM_PROBES as u64,
-    );
+    const CONFIRM_GONE: Duration =
+        PRODUCER_GONE_CONFIRM_DELAY.saturating_mul(PRODUCER_GONE_CONFIRM_PROBES);
 
     /// A margin far below every delay the engine waits for, so that "just
     /// before" and "after" a deadline are distinct instants of the paused
@@ -3593,7 +3622,7 @@ mod engine_tests {
         drop((goal, caller));
 
         assert!(
-            !cancelled_within(&context, CONFIRM_GONE - MARGIN).await,
+            !cancelled_within(&context, CONFIRM_GONE.checked_sub(MARGIN).unwrap()).await,
             "the engine confirms the end of a sender before it cancels"
         );
         assert!(cancelled_within(&context, MARGIN * 2).await);
@@ -3613,7 +3642,11 @@ mod engine_tests {
         drop((goal, caller));
 
         assert!(
-            !cancelled_within(&context, CONFIRM_GONE + grace - MARGIN).await,
+            !cancelled_within(
+                &context,
+                (CONFIRM_GONE + grace).checked_sub(MARGIN).unwrap()
+            )
+            .await,
             "the goal is kept for the sender grace"
         );
         assert!(cancelled_within(&context, MARGIN * 2).await);
@@ -3674,7 +3707,7 @@ mod engine_tests {
             .await
             .unwrap();
 
-        assert!(!cancelled_within(&context, Duration::from_secs(60)).await);
+        assert!(!cancelled_within(&context, Duration::from_mins(1)).await);
         assert_eq!(context.cancel_cause(), None);
     }
 
@@ -3715,10 +3748,10 @@ mod engine_tests {
             GoalAnswer::Refused(failure) => assert_eq!(failure.kind().as_str(), "rejected"),
             GoalAnswer::Accepted(_) => panic!("a malformed request must be refused"),
         }
-        assert!(matches!(
+        assert_matches!(
             unwrap_goal_ack(&accepted.payload().into_inner()).unwrap(),
             GoalAnswer::Accepted(_)
-        ));
+        );
         assert_eq!(next_goal_id, "next_goal");
     }
 
@@ -3806,10 +3839,10 @@ mod engine_tests {
         let caller = process_on(&session);
         let (mut goal, context) = accept_and_overflow_one_message(&caller, &mut action).await;
 
-        assert!(matches!(
+        assert_matches!(
             goal.try_next_feedback(),
             Err(Error::ActionFeedbackOverflow { bound: 1, .. })
-        ));
+        );
         drop(goal);
 
         assert!(cancelled_within(&context, Duration::from_secs(5)).await);
@@ -3826,7 +3859,7 @@ mod engine_tests {
         let (goal, context) = accept_and_overflow_one_message(&caller, &mut action).await;
 
         assert!(
-            !cancelled_within(&context, Duration::from_secs(60)).await,
+            !cancelled_within(&context, Duration::from_mins(1)).await,
             "an overflow that no read finds cancels nothing"
         );
         context
@@ -3849,7 +3882,7 @@ mod engine_tests {
         let caller = process_on(&session);
         let (_goal, context) = send_and_accept(&caller, &mut action).await;
 
-        assert!(!cancelled_within(&context, Duration::from_secs(60)).await);
+        assert!(!cancelled_within(&context, Duration::from_mins(1)).await);
         assert_eq!(context.cancel_cause(), None);
     }
 
@@ -3877,7 +3910,7 @@ mod engine_tests {
 
         assert!(cancelled_within(&first_context, CONFIRM_GONE + MARGIN).await);
         assert_eq!(first_context.cancel_cause(), Some(CancelCause::SenderGone));
-        assert!(!cancelled_within(&second_context, Duration::from_secs(60)).await);
+        assert!(!cancelled_within(&second_context, Duration::from_mins(1)).await);
     }
 
     /// A goal whose sender declared no presence token (a sender that died
@@ -3898,7 +3931,7 @@ mod engine_tests {
         goal_reply.unwrap();
 
         let wait = LIVELINESS_RESOLVE_TIMEOUT + CONFIRM_GONE;
-        assert!(!cancelled_within(&context, wait - MARGIN).await);
+        assert!(!cancelled_within(&context, wait.checked_sub(MARGIN).unwrap()).await);
         assert!(cancelled_within(&context, MARGIN * 2).await);
         assert_eq!(context.cancel_cause(), Some(CancelCause::SenderGone));
     }

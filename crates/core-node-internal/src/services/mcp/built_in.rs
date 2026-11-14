@@ -72,8 +72,10 @@ fn resolve_peppy_executable(peppy_dirs: &PeppyDirs) -> Result<PeppyExecutable, S
     Err(format!(
         "cannot find the `peppy` executable that serves built-in MCP nodes: this daemon runs as {} \
          and {} does not exist",
-        own.map(|path| path.display().to_string())
-            .unwrap_or_else(|| "an unknown executable".to_owned()),
+        own.map_or_else(
+            || "an unknown executable".to_owned(),
+            |path| path.display().to_string()
+        ),
         installed.display()
     ))
 }
@@ -288,7 +290,7 @@ pub(crate) async fn run_built_in_add(
         plan.config,
         &manifest_path,
         launch,
-        resolved.spec.contracts.clone(),
+        resolved.spec.contracts,
     ) {
         return Err(record_add_failure(
             &announcer,

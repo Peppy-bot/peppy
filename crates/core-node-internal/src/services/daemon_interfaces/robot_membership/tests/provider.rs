@@ -37,6 +37,7 @@ use peppylib::testing::{
 use peppylib::types::Payload;
 use serde_json::{Value, json};
 use stack_goal::DaemonRoute;
+use std::assert_matches;
 use std::sync::Arc;
 
 const CORE_NODE: &str = "cn-desk";
@@ -515,7 +516,7 @@ async fn a_cancel_of_the_client_reaches_the_change_and_the_lock_holds_until_its_
 
     let during_the_undo = mesh.join("charlie").await;
     assert_eq!(
-        during_the_undo.refusal().map(|refusal| refusal.message()),
+        during_the_undo.refusal().map(Failure::message),
         Some(JOIN_BUSY_REASON),
         "the join lock holds while the daemon undoes the change"
     );
@@ -536,8 +537,7 @@ async fn a_change_with_no_end_fails_the_goal_and_frees_the_lock() {
     let (goal, context) = mesh.admitted_join("bravo").await;
     drop(context);
     let outcome = end_of(&mesh, &goal).await;
-    assert!(
-        matches!(&outcome, GoalOutcome::Failed(failure) if failure.message().starts_with("the addition of bravo failed")),
+    assert_matches!(&outcome, GoalOutcome::Failed(failure) if failure.message().starts_with("the addition of bravo failed"),
         "{outcome:?}"
     );
     join_succeeds(&mut mesh, "charlie").await;

@@ -32,6 +32,7 @@
 
 use super::types::{
     MessageFormat, NativeEmittedTopic, NativeExposedAction, NativeExposedService, SchemaType,
+    TypeToken,
 };
 use crate::common::type_token_name;
 use indexmap::IndexMap;
@@ -178,7 +179,7 @@ struct FormatRefinementVisitor;
 impl<'de> Visitor<'de> for FormatRefinementVisitor {
     type Value = FormatRefinement;
 
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("a non-empty map of field name to refinement")
     }
 
@@ -235,7 +236,7 @@ struct FieldRefinementVisitor;
 impl<'de> Visitor<'de> for FieldRefinementVisitor {
     type Value = FieldRefinement;
 
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(
             "a `{ $length: N }` leaf, a `{ $items: { ... } }` block, or a map of nested field \
              refinements",
@@ -311,7 +312,7 @@ impl<'de> Deserialize<'de> for StrictLength {
         impl Visitor<'_> for LengthVisitor {
             type Value = StrictLength;
 
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str("a non-negative integer `$length`")
             }
 
@@ -491,7 +492,7 @@ impl FieldRefinement {
                 let fixable = array
                     .items
                     .as_type_token()
-                    .is_some_and(|token| token.is_scalar());
+                    .is_some_and(TypeToken::is_scalar);
                 if !fixable {
                     problems.push(RefinementProblem {
                         path,
@@ -719,17 +720,17 @@ mod tests {
     #[test]
     fn parses_a_length_leaf() {
         let parsed: FormatRefinement =
-            serde_json5::from_str(r#"{ joint_positions: { $length: 7 } }"#).unwrap();
+            serde_json5::from_str(r"{ joint_positions: { $length: 7 } }").unwrap();
         assert_eq!(parsed.0["joint_positions"], FieldRefinement::Length(7));
     }
 
     #[test]
     fn parses_nested_object_and_items_paths() {
         let parsed: FormatRefinement = serde_json5::from_str(
-            r#"{
+            r"{
                 header: { frame: { $length: 3 } },
                 frames: { $items: { position: { $length: 3 } } },
-            }"#,
+            }",
         )
         .unwrap();
         let FieldRefinement::Object(header) = &parsed.0["header"] else {
@@ -745,9 +746,9 @@ mod tests {
     #[test]
     fn rejects_empty_blocks_at_every_level() {
         for (json5, needle) in [
-            (r#"{}"#, "empty format refinement"),
-            (r#"{ joints: {} }"#, "empty refinement pins nothing"),
-            (r#"{ frames: { $items: {} } }"#, "empty format refinement"),
+            (r"{}", "empty format refinement"),
+            (r"{ joints: {} }", "empty refinement pins nothing"),
+            (r"{ frames: { $items: {} } }", "empty format refinement"),
         ] {
             let err = serde_json5::from_str::<FormatRefinement>(json5)
                 .expect_err("empty blocks must be rejected");
@@ -766,18 +767,18 @@ mod tests {
                 "unknown modifier `$type`",
             ),
             (
-                r#"{ joints: { $optional: true } }"#,
+                r"{ joints: { $optional: true } }",
                 "unknown modifier `$optional`",
             ),
             (
-                r#"{ joints: { $length: 7, x: { $length: 1 } } }"#,
+                r"{ joints: { $length: 7, x: { $length: 1 } } }",
                 "mutually exclusive",
             ),
             (
-                r#"{ joints: { $length: 7, $items: { x: { $length: 1 } } } }"#,
+                r"{ joints: { $length: 7, $items: { x: { $length: 1 } } } }",
                 "mutually exclusive",
             ),
-            (r#"{ $length: 7 }"#, "at the root of a format refinement"),
+            (r"{ $length: 7 }", "at the root of a format refinement"),
         ] {
             let err = serde_json5::from_str::<FormatRefinement>(json5)
                 .expect_err("malformed refinements must be rejected");
@@ -792,8 +793,8 @@ mod tests {
     fn rejects_a_non_integer_length() {
         for json5 in [
             r#"{ joints: { $length: "seven" } }"#,
-            r#"{ joints: { $length: -1 } }"#,
-            r#"{ joints: { $length: 1.5 } }"#,
+            r"{ joints: { $length: -1 } }",
+            r"{ joints: { $length: 1.5 } }",
         ] {
             serde_json5::from_str::<FormatRefinement>(json5)
                 .expect_err("a length that is not a non-negative integer must be rejected");
@@ -808,7 +809,7 @@ mod tests {
         let err = serde_json5::from_str::<ActionRefinement>("{}")
             .expect_err("an empty action refinement must be rejected");
         assert!(err.to_string().contains("goal_service"), "{err}");
-        let err = serde_json5::from_str::<ActionRefinement>(r#"{ cancel_service: {} }"#)
+        let err = serde_json5::from_str::<ActionRefinement>(r"{ cancel_service: {} }")
             .expect_err("an unknown endpoint must be rejected");
         assert!(err.to_string().contains("cancel_service"), "{err}");
     }
@@ -816,11 +817,11 @@ mod tests {
     #[test]
     fn round_trips_through_serde() {
         let original: ActionRefinement = serde_json5::from_str(
-            r#"{
+            r"{
                 goal_service: { request_message_format: { joint_positions: { $length: 7 } } },
                 feedback_topic: { message_format: { frames: { $items: { position: { $length: 3 } } } } },
                 result_service: { response_message_format: { pose: { position: { $length: 3 } } } },
-            }"#,
+            }",
         )
         .unwrap();
         let serialized = serde_json5::to_string(&original).unwrap();
@@ -838,7 +839,7 @@ mod tests {
     }
 
     fn topic_refinement(message_format: &str) -> TopicRefinement {
-        serde_json5::from_str(&format!(r#"{{ message_format: {message_format} }}"#)).unwrap()
+        serde_json5::from_str(&format!(r"{{ message_format: {message_format} }}")).unwrap()
     }
 
     #[test]
@@ -850,7 +851,7 @@ mod tests {
                 velocities: { $type: "array", $items: "f64" },
             }"#,
         );
-        let refined = topic_refinement(r#"{ positions: { $length: 7 } }"#)
+        let refined = topic_refinement(r"{ positions: { $length: 7 } }")
             .apply(original.clone())
             .expect("a generic f64 array accepts a length");
         let format = refined.message_format.as_ref().unwrap();
@@ -878,10 +879,10 @@ mod tests {
             }"#,
         );
         let refined = topic_refinement(
-            r#"{
+            r"{
                 header: { frame: { $length: 4 } },
                 frames: { $items: { position: { $length: 3 } } },
-            }"#,
+            }",
         )
         .apply(original)
         .expect("nested paths resolve");
@@ -911,7 +912,7 @@ mod tests {
             }"#,
         );
         let problems = topic_refinement(
-            r#"{
+            r"{
                 positions: { $length: 7 },
                 label: { $length: 2 },
                 names: { $length: 2 },
@@ -919,7 +920,7 @@ mod tests {
                 samples: { $items: { x: { $length: 1 } } },
                 missing: { $length: 1 },
                 pose_again: { $length: 1 },
-            }"#,
+            }",
         )
         .apply(original)
         .expect_err("every pin above is inadmissible");
@@ -973,7 +974,7 @@ mod tests {
 
     #[test]
     fn nested_refinement_on_a_non_object_is_reported() {
-        let problems = topic_refinement(r#"{ positions: { x: { $length: 1 } } }"#)
+        let problems = topic_refinement(r"{ positions: { x: { $length: 1 } } }")
             .apply(topic(r#"{ positions: { $type: "array", $items: "f64" } }"#))
             .expect_err("stepping into an array as an object is inadmissible");
         assert_eq!(
@@ -989,7 +990,7 @@ mod tests {
 
     #[test]
     fn object_arrays_cannot_be_pinned() {
-        let problems = topic_refinement(r#"{ frames: { $length: 2 } }"#)
+        let problems = topic_refinement(r"{ frames: { $length: 2 } }")
             .apply(topic(
                 r#"{ frames: { $type: "array", $items: { $type: "object", x: "f64" } } }"#,
             ))
@@ -1009,7 +1010,7 @@ mod tests {
     fn a_topic_without_a_format_has_nothing_to_pin() {
         let bare: NativeEmittedTopic =
             serde_json5::from_str(r#"{ name: "tick", description: "A test member." }"#).unwrap();
-        let problems = topic_refinement(r#"{ x: { $length: 1 } }"#)
+        let problems = topic_refinement(r"{ x: { $length: 1 } }")
             .apply(bare)
             .expect_err("no format, no pin");
         assert_eq!(
@@ -1030,7 +1031,7 @@ mod tests {
         )
         .unwrap();
         let refinement: ServiceRefinement =
-            serde_json5::from_str(r#"{ response_message_format: { measured: { $length: 6 } } }"#)
+            serde_json5::from_str(r"{ response_message_format: { measured: { $length: 6 } } }")
                 .unwrap();
         let refined = refinement.apply(service).unwrap();
         assert_eq!(
@@ -1059,10 +1060,10 @@ mod tests {
         )
         .unwrap();
         let refinement: ActionRefinement = serde_json5::from_str(
-            r#"{
+            r"{
                 goal_service: { request_message_format: { joint_positions: { $length: 7 } } },
                 result_service: { response_message_format: { final_joint_positions: { $length: 7 } } },
-            }"#,
+            }",
         )
         .unwrap();
         let refined = refinement.apply(action.clone()).unwrap();
@@ -1078,10 +1079,10 @@ mod tests {
         );
 
         let absent: ActionRefinement = serde_json5::from_str(
-            r#"{
+            r"{
                 goal_service: { response_message_format: { accepted_at: { $length: 1 } } },
                 feedback_topic: { message_format: { progress: { $length: 1 } } },
-            }"#,
+            }",
         )
         .unwrap();
         let problems = absent.apply(action).expect_err("neither endpoint exists");

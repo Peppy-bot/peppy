@@ -16,7 +16,6 @@
 //! enrollment and the clock again. A machine that was suspended, or a clock
 //! that was set, thus moves the renewal by one interval at most.
 
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,7 +30,7 @@ use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 
 /// The longest sleep between two checks, and the delay before the next attempt
 /// after a renewal that failed with no delay from the platform.
-const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const CHECK_INTERVAL: Duration = Duration::from_hours(1);
 
 /// The shortest delay before the next attempt, for a platform that asks for
 /// no delay or for a delay of zero.
@@ -89,14 +88,14 @@ impl CertificateRenewal {
 
 impl ServeAsyncCommand for CertificateRenewal {
     fn run(self: Box<Self>) -> ServeAsyncHandle {
-        let CertificateRenewal {
+        let Self {
             deps,
             teardown_token,
         } = *self;
         let future = Box::pin(async move {
             tokio::select! {
-                _ = keep_certificate_valid(&deps) => {}
-                _ = teardown_token.cancelled() => {}
+                () = keep_certificate_valid(&deps) => {}
+                () = teardown_token.cancelled() => {}
             }
             Ok(())
         });
@@ -115,7 +114,7 @@ async fn keep_certificate_valid(deps: &RenewalDeps) {
 /// One check: read the enrollment and the clock, and renew the certificate
 /// when the renewal is due.
 async fn check_and_renew(deps: &RenewalDeps) -> Step {
-    let reader = deps.enrollment.clone();
+    let reader = Arc::clone(&deps.enrollment);
     let enrollment = match run_blocking(move || reader()).await {
         Ok(Some(enrollment)) => enrollment,
         Ok(None) => {
@@ -134,7 +133,7 @@ async fn check_and_renew(deps: &RenewalDeps) -> Step {
         return Step::Wait(time_until(certificate.renewal_due_at(), now).min(CHECK_INTERVAL));
     }
 
-    let renewer = deps.renewer.clone();
+    let renewer = Arc::clone(&deps.renewer);
     let renewed = run_blocking(move || renewer()).await;
     step_after_renewal(&enrollment, renewed)
 }
@@ -147,7 +146,7 @@ fn time_until(then_unix: i64, now_unix: i64) -> Duration {
 /// Logs the result of a renewal and says when the next check is.
 fn step_after_renewal(
     enrollment: &Enrollment,
-    renewed: std::result::Result<Enrollment, BlockingCallFailure>,
+    renewed: Result<Enrollment, BlockingCallFailure>,
 ) -> Step {
     let peer = &enrollment.document.peer_id;
     let failure = match renewed {
@@ -215,8 +214,7 @@ fn retry_delay(retry_after_secs: Option<u64>) -> Duration {
 /// a date.
 pub(crate) fn rfc3339(unix: i64) -> String {
     chrono::DateTime::from_timestamp(unix, 0)
-        .map(|time| time.to_rfc3339())
-        .unwrap_or_else(|| unix.to_string())
+        .map_or_else(|| unix.to_string(), |time| time.to_rfc3339())
 }
 
 #[cfg(test)]
@@ -289,15 +287,15 @@ mod tests {
         }
 
         fn deps(&self) -> RenewalDeps {
-            let on_disk = self.on_disk.clone();
+            let on_disk = Arc::clone(&self.on_disk);
             let (disk, script, renewals) = (
-                self.on_disk.clone(),
-                self.script.clone(),
-                self.renewals.clone(),
+                Arc::clone(&self.on_disk),
+                Arc::clone(&self.script),
+                Arc::clone(&self.renewals),
             );
-            let clock = self.now.clone();
-            let renewal_clock = self.now.clone();
-            let (slept_clock, sleeps) = (self.now.clone(), self.sleeps.clone());
+            let clock = Arc::clone(&self.now);
+            let renewal_clock = Arc::clone(&self.now);
+            let (slept_clock, sleeps) = (Arc::clone(&self.now), Arc::clone(&self.sleeps));
             RenewalDeps {
                 enrollment: Arc::new(move || match &*on_disk.lock().unwrap() {
                     Ok(enrollment) => Ok(enrollment.clone()),
@@ -323,7 +321,7 @@ mod tests {
                 clock: Arc::new(move || clock.load(Ordering::SeqCst)),
                 sleeper: Arc::new(move |time| {
                     sleeps.lock().unwrap().push(time);
-                    slept_clock.fetch_add(time.as_secs() as i64, Ordering::SeqCst);
+                    slept_clock.fetch_add(i64::try_from(time.as_secs()).unwrap(), Ordering::SeqCst);
                     Box::pin(async {})
                 }),
             }
@@ -351,7 +349,7 @@ mod tests {
 
         assert_eq!(
             check_and_renew(&machine.deps()).await,
-            Step::Wait(Duration::from_secs(120))
+            Step::Wait(Duration::from_mins(2))
         );
         assert!(machine.renewals().is_empty());
     }
@@ -394,7 +392,7 @@ mod tests {
     #[tokio::test]
     async fn a_refusal_waits_for_the_delay_the_platform_asked_for() {
         let cases = [
-            (Some(1800), Duration::from_secs(1800)),
+            (Some(1800), Duration::from_mins(30)),
             (Some(0), MIN_RETRY_DELAY),
             (None, CHECK_INTERVAL),
         ];

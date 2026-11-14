@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn a_document_description_is_a_list_and_not_one_string() {
-        assert!(serde_json::from_str::<DocumentDescription>(r#""What it is for.""#).is_err());
+        serde_json::from_str::<DocumentDescription>(r#""What it is for.""#).unwrap_err();
     }
 
     #[test]

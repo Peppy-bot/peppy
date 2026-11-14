@@ -440,7 +440,7 @@ methods! {
         /// stack, which does not hold the node.
         DaemonHeartbeat {
             name: "daemon_heartbeat",
-            summary: "Daemon liveness beacon; the payload is a constant ClockTick and only arrival matters.",
+            summary: "Daemon liveness beacon; the payload is a constant clock tick and only arrival matters.",
             message: ClockTick,
             schema: "clock.capnp",
         }

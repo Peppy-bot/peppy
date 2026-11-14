@@ -329,6 +329,7 @@ fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::apptainer::scratch_dir;
+    use std::assert_matches;
 
     /// An env lookup that only knows `vars`.
     fn env_of(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
@@ -555,8 +556,7 @@ mod tests {
         let err = RegistryAuthSource::from_env_with(env_of(&[]), None)
             .expect_err("no home and no override cannot be located");
 
-        assert!(
-            matches!(&err, Error::ConfigurationError(msg) if msg.contains("APPTAINER_CONFIGDIR")),
+        assert_matches!(&err, Error::ConfigurationError(msg) if msg.contains("APPTAINER_CONFIGDIR"),
             "unexpected error: {err}"
         );
     }
@@ -690,8 +690,9 @@ mod tests {
             .prepare()
             .expect_err("a symlinked directory must be refused");
 
-        assert!(
-            matches!(err, Error::SanitizedRegistryAuthUnwritable { .. }),
+        assert_matches!(
+            err,
+            Error::SanitizedRegistryAuthUnwritable { .. },
             "unexpected error: {err}"
         );
         assert_eq!(
@@ -712,7 +713,7 @@ mod tests {
 
         match err {
             Error::RegistryAuthFileInvalid { path, .. } => {
-                assert!(path.ends_with("home/.docker/config.json"), "path {path}")
+                assert!(path.ends_with("home/.docker/config.json"), "path {path}");
             }
             other => panic!("unexpected error: {other}"),
         }
@@ -731,7 +732,7 @@ mod tests {
 
         match err {
             Error::RegistryAuthFileUnreadable { path, .. } => {
-                assert!(path.ends_with("home/.docker/config.json"), "path {path}")
+                assert!(path.ends_with("home/.docker/config.json"), "path {path}");
             }
             other => panic!("unexpected error: {other}"),
         }

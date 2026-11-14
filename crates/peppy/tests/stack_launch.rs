@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use config::consts::NODE_CONFIG_FILE;
 use config::failure_kind::PeppyFailureKind;
 use core_node_api::NodeStage;
+use daemon_config::launcher::LaunchVariable;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::stack::{
@@ -230,7 +231,7 @@ async fn stack_launch_command_succeeds() {
     // The launched instance has to survive the post-launch
     // `instance_count() == 1` check and the explicit stop that follows, so tie
     // it to the test instead of a fixed `sleep`.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(&node_b_peppy_json5_path, &instances.sentinel());
 
     let messenger_handle = ctx
@@ -245,7 +246,11 @@ async fn stack_launch_command_succeeds() {
             .iter()
             .any(|n| n.label().contains(&format!("{node_a_name}:{node_tag}"))),
         "graph should contain node_a before launch. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 
     let instance_id = "node_b_instance";
@@ -311,13 +316,21 @@ async fn stack_launch_command_succeeds() {
             .iter()
             .any(|n| n.label().contains(&format!("{node_a_name}:{node_tag}"))),
         "graph should not contain node_a after launch. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 
     let node_b = graph.find_node(node_b_name, node_tag).unwrap_or_else(|| {
         panic!(
             "graph should contain node_b after launch. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            graph
+                .nodes
+                .iter()
+                .map(core_node_api::SerializedNode::label)
+                .collect::<Vec<_>>()
         )
     });
     assert_eq!(
@@ -344,7 +357,11 @@ async fn stack_launch_command_succeeds() {
     let node_b = graph.find_node(node_b_name, node_tag).unwrap_or_else(|| {
         panic!(
             "graph should contain node_b after stop. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            graph
+                .nodes
+                .iter()
+                .map(core_node_api::SerializedNode::label)
+                .collect::<Vec<_>>()
         )
     });
     assert_eq!(
@@ -411,7 +428,11 @@ async fn stack_launch_fails_when_a_node_never_becomes_healthy_and_clears_the_sta
             .iter()
             .any(|n| n.label().contains(&format!("{node_a_name}:{node_tag}"))),
         "graph should contain node_a before launch. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
@@ -453,7 +474,11 @@ async fn stack_launch_fails_when_a_node_never_becomes_healthy_and_clears_the_sta
             .iter()
             .any(|n| n.label().contains(&format!("{node_a_name}:{node_tag}"))),
         "node_a should be torn down by the failed launch, not restored. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 
     assert!(
@@ -462,18 +487,26 @@ async fn stack_launch_fails_when_a_node_never_becomes_healthy_and_clears_the_sta
             .iter()
             .any(|n| n.label().contains(&format!("{node_b_name}:{node_tag}"))),
         "node_b should not be present after a failed launch. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 
     assert_eq!(
         graph.nodes.len(),
         1,
         "only the root core node should remain after a failed launch. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 }
 
-/// The daemon, the context and the `node init`-scaffolded node_b that the
+/// The daemon, the context and the `node init`-scaffolded `node_b` that the
 /// timeout and build-failure tests launch.
 struct TimeoutTestHarness {
     ctx: Arc<AppContext>,
@@ -488,7 +521,7 @@ struct TimeoutTestHarness {
     _nodes_dir: tempfile::TempDir,
 }
 
-/// Scaffolds node_b with `node init` and writes a launcher that deploys one
+/// Scaffolds `node_b` with `node init` and writes a launcher that deploys one
 /// instance of it, so the caller can `override_*_cmd` before the launch. A
 /// failure reaches the caller through the `Result` of `StackCommand::execute`,
 /// so the setup installs no `LogCapture`.
@@ -545,7 +578,7 @@ async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
 }
 
 impl TimeoutTestHarness {
-    /// Registers node_b in the daemon's node cache. Called by each test
+    /// Registers `node_b` in the daemon's node cache. Called by each test
     /// after its `override_*` edit so the recorded fingerprint matches the
     /// bytes the launch materializes.
     fn register_caches(&self) {
@@ -680,13 +713,13 @@ async fn stack_launch_fails_when_the_max_timeout_is_hit() {
 /// The launcher's `links` entry reaches the consumer's runtime config as a
 /// slot binding stamped with the daemon's core node, and the producer carries
 /// no slot binding. Both runtime configs name the per-boot instance id of the
-/// daemon, which its presence token carries. Each dummy `sh` run_cmd copies the
+/// daemon, which its presence token carries. Each dummy `sh` `run_cmd` copies the
 /// file that `PEPPY_RUNTIME_CONFIG` names to a dump the test parses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_binds_the_consumer_slot_from_launcher_links() {
     // Instances must stay in the stack until the assertions below have read
     // them; a fixed `sleep` would make that a race against machine load.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -838,14 +871,14 @@ async fn stack_launch_binds_the_consumer_slot_from_launcher_links() {
 /// A `one_or_more` slot bound to two producer instances through the real
 /// daemon launch path: the launcher's array binding must reach the
 /// consumer's runtime config as the ordered two-member producer set, each
-/// member stamped with the daemon's core_node. This is the daemon-side
+/// member stamped with the daemon's `core_node`. This is the daemon-side
 /// twin of the validator unit tests: it proves the array shape survives
 /// launcher parse, plan validation, and boot-config serialization.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
     // Instances must stay in the stack until the assertions below have read
     // them; a fixed `sleep` would make that a race against machine load.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -973,7 +1006,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
 /// validation, before any node is added, built, or spawned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_launch_rejects_array_binding_on_a_one_slot() {
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -1154,7 +1187,11 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
             .iter()
             .any(|n| n.name == camera_name || n.name == lidar_name),
         "rejected launcher must not have added or spawned anything. Graph: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1220,7 +1257,7 @@ fn write_contract_v1_doc_with_topic(
 async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     // Instances must stay in the stack until the assertions below have read
     // them; a fixed `sleep` would make that a race against machine load.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -1621,7 +1658,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
 async fn stack_launch_binds_contract_slots_in_both_directions() {
     // Instances must stay in the stack until the assertions below have read
     // them; a fixed `sleep` would make that a race against machine load.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -1837,7 +1874,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
 async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
     // Instances must stay in the stack until the assertions below have read
     // their dumps; a fixed `sleep` would make that a race against machine load.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -2111,7 +2148,11 @@ async fn stack_launch_rejects_unbound_slot() {
             .iter()
             .any(|n| n.name == producer_name || n.name == consumer_name),
         "rejected launcher must not have added or spawned anything. Graph: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -2119,7 +2160,7 @@ async fn stack_launch_rejects_unbound_slot() {
 /// the earlier-started endpoint boots with its slot covered, the later one
 /// carries the request, and both running instances receive their
 /// `peer_update` pins live. The dummy `sh` nodes expose
-/// ready/health/shutdown/peer_update from the test process.
+/// `ready/health/shutdown/peer_update` from the test process.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_establishes_launcher_pairings() {
     let serve = ServeCommandEmulation::with_zenoh()
@@ -2139,7 +2180,7 @@ async fn stack_launch_establishes_launcher_pairings() {
     // Keep-alive rather than `sleep 30`: both instances must be live for the
     // pin assertions, and the teardown below ends them explicitly instead of
     // leaving the daemon to wait out its force-kill deadline once per instance.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let run_cmd = instances.keep_alive_argv();
     let arm_path = write_node_config_for_helper(
         nodes_dir.path(),
@@ -2272,7 +2313,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
     super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
 
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let run_cmd = instances.keep_alive_argv();
     // One arm manifest, whose `controller` slot the node itself declares
     // optional: some rigs drive the arm, some only watch it.
@@ -2437,7 +2478,7 @@ async fn stack_launch_delivers_observer_member_sets() {
     // member-set assertions, and the teardown below ends them explicitly
     // instead of leaving the daemon to wait out its force-kill deadline once
     // per instance.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let run_cmd = instances.keep_alive_argv();
     // The recorder copies the boot config the daemon wrote before keeping alive,
     // so the spawn seed survives the live delivery that replaces it in memory.
@@ -2755,7 +2796,7 @@ async fn stack_launch_rejects_a_path_shaped_deployment_source() {
 /// member going down moves only its own member.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_serves_a_commander_panels_observer_slots() {
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -3041,7 +3082,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
 async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot() {
     // Instances must stay in the stack until the assertions below have read
     // them; a fixed `sleep` would make that a race against machine load.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -3167,7 +3208,11 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
     assert!(
         graph.find_node(consumer_name, node_tag).is_some(),
         "the consumer should be in the stack. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(core_node_api::SerializedNode::label)
+            .collect::<Vec<_>>()
     );
     // The dependency's config still joins the stack: the deployment's pinned
     // closure carries every dependency, and the batch add materializes the
@@ -3176,7 +3221,11 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
     let recorder_node = graph.find_node(recorder_name, node_tag).unwrap_or_else(|| {
         panic!(
             "the dependency's config arrives with the deployment's pinned closure. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            graph
+                .nodes
+                .iter()
+                .map(core_node_api::SerializedNode::label)
+                .collect::<Vec<_>>()
         )
     });
     assert_eq!(
@@ -3299,7 +3348,7 @@ async fn stack_launch_flattens_a_composed_launcher() {
     );
     // The launched instance must outlive the post-launch stack-list check,
     // so tie it to the test instead of a fixed sleep.
-    let instances = peppy::test_support::InstanceLifetime::new();
+    let instances = InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(
         &node_path.join(NODE_CONFIG_FILE),
         &instances.sentinel(),
@@ -3485,7 +3534,7 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
 
     let msg = launch_with(
         vec!["mujoco".to_owned(), "robot=real".to_owned()],
-        composed_launcher.clone(),
+        composed_launcher,
     )
     .expect_err("two options on one axis must be refused")
     .to_string();
@@ -3575,8 +3624,8 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
 #[test]
 fn stack_resolve_prints_the_flat_launcher_and_report() {
     let dir = tempfile::tempdir().expect("temp dir");
-    std::fs::create_dir_all(dir.path().join("fragments")).expect("fragments dir");
-    std::fs::write(
+    fs::create_dir_all(dir.path().join("fragments")).expect("fragments dir");
+    fs::write(
         dir.path().join("fragments/recorder.json5"),
         r#"{
             peppy_schema: "launcher_fragment/v1",
@@ -3588,7 +3637,7 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
     )
     .expect("fragment");
     let launcher = dir.path().join("panel.json5");
-    std::fs::write(
+    fs::write(
         &launcher,
         r#"{
             peppy_schema: "launcher/v1",
@@ -3669,8 +3718,8 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
 #[test]
 fn stack_resolve_prints_the_launch_variables_after_the_adjustments() {
     let dir = tempfile::tempdir().expect("temp dir");
-    std::fs::create_dir_all(dir.path().join("fragments")).expect("fragments dir");
-    std::fs::write(
+    fs::create_dir_all(dir.path().join("fragments")).expect("fragments dir");
+    fs::write(
         dir.path().join("fragments/brain.json5"),
         r#"{
             peppy_schema: "launcher_fragment/v1",
@@ -3682,7 +3731,7 @@ fn stack_resolve_prints_the_launch_variables_after_the_adjustments() {
     )
     .expect("fragment");
     let launcher = dir.path().join("arm.json5");
-    std::fs::write(
+    fs::write(
         &launcher,
         r#"{
             peppy_schema: "launcher/v1",
@@ -3712,7 +3761,7 @@ fn stack_resolve_prints_the_launch_variables_after_the_adjustments() {
         brain
             .env_from_launch
             .iter()
-            .map(|variable| variable.as_str())
+            .map(LaunchVariable::as_str)
             .collect::<Vec<_>>(),
         ["GEMINI_API_KEY"],
         "{document}"
@@ -3723,9 +3772,9 @@ fn stack_resolve_prints_the_launch_variables_after_the_adjustments() {
         "{report_text}"
     );
 
-    std::fs::write(
+    fs::write(
         &launcher,
-        std::fs::read_to_string(&launcher)
+        fs::read_to_string(&launcher)
             .unwrap()
             .replace(r#"["GEMINI_API_KEY"]"#, r#"["PYTHONPATH"]"#),
     )
@@ -3748,7 +3797,7 @@ fn stack_resolve_prints_the_launch_variables_after_the_adjustments() {
 fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
     let dir = tempfile::tempdir().expect("temp dir");
     let launcher = dir.path().join("family.json5");
-    std::fs::write(
+    fs::write(
         &launcher,
         r#"{
             peppy_schema: "launcher/v1",
@@ -4207,6 +4256,7 @@ const CACHED_INSTANCE_ID: &str = "cached_launch_inst";
 
 /// Whether a [`CountedLaunch`] launch or build may reuse the artifact a
 /// previous build of identical sources stored.
+#[derive(Clone, Copy)]
 enum BuildCache {
     /// Reuses a cached artifact when one fits.
     Reuse,
@@ -4402,8 +4452,7 @@ impl CountedLaunch {
         )
         .await
         .find_node(CACHED_NODE_NAME, "v1")
-        .map(|node| node.instance_count())
-        .unwrap_or(0)
+        .map_or(0, core_node_api::SerializedNode::instance_count)
     }
 
     /// The node's stage in the stack and the ids of every instance of it the
@@ -4774,8 +4823,10 @@ async fn stack_build_builds_the_nodes_the_selection_runs() {
     let log_file = logs
         .lines()
         .find_map(|line| line.split_once("Build goal accepted, log file: "))
-        .map(|(_, path)| PathBuf::from(path.trim()))
-        .unwrap_or_else(|| panic!("the build names its log file: {logs}"));
+        .map_or_else(
+            || panic!("the build names its log file: {logs}"),
+            |(_, path)| PathBuf::from(path.trim()),
+        );
     assert!(
         log_file
             .file_name()

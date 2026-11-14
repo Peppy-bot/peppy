@@ -5,6 +5,7 @@ use daemon_config::launcher::{
     LinkValue, PeppyLauncher, PeppyLauncherParser, PreparedLauncher, RunningStack, Selection,
     SkipReason, SkippedAdjustment, UnitSelection,
 };
+use std::assert_matches;
 use std::path::Path;
 
 mod common;
@@ -233,9 +234,8 @@ fn a_copy_selects_its_options_own_axes_at_join() {
         &joined.launcher,
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::UnknownCopySelection { word, option, menu }
-            if word.to_string() == "engine" && option == "sim" && menu.contains("commander: `web`, `xr`")),
+    assert_matches!(&error, CompositionError::UnknownCopySelection { word, option, menu }
+            if word.to_string() == "engine" && option == "sim" && menu.contains("commander: `web`, `xr`"),
         "{error}"
     );
 }
@@ -284,9 +284,8 @@ fn join_overrides_apply_after_guarded_launcher_adjustments() {
         &joined.launcher,
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::DuplicateArgumentOverride { target, argument }
-            if target == "arm_inst" && argument == "speed"),
+    assert_matches!(&error, CompositionError::DuplicateArgumentOverride { target, argument }
+            if target == "arm_inst" && argument == "speed",
         "{error}"
     );
     let error = join_with(
@@ -299,9 +298,8 @@ fn join_overrides_apply_after_guarded_launcher_adjustments() {
         &joined.launcher,
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::ArgumentTargetAbsent { copy, target, .. }
-            if copy == "bravo" && target == "engine_inst"),
+    assert_matches!(&error, CompositionError::ArgumentTargetAbsent { copy, target, .. }
+            if copy == "bravo" && target == "engine_inst",
         "{error}"
     );
 }
@@ -310,9 +308,8 @@ fn join_overrides_apply_after_guarded_launcher_adjustments() {
 fn copies_are_never_selected_by_a_launch_word() {
     let prepared = fleet("");
     let error = prepared.launch(&words(&["real"]), &[]).unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::RepeatableAxisAtLaunch { word, axis, option }
-            if word.to_string() == "real" && axis == "robot" && option == "real"),
+    assert_matches!(&error, CompositionError::RepeatableAxisAtLaunch { word, axis, option }
+            if word.to_string() == "real" && axis == "robot" && option == "real",
         "{error}"
     );
     assert!(
@@ -320,9 +317,8 @@ fn copies_are_never_selected_by_a_launch_word() {
         "{error}"
     );
     let error = prepared.launch(&words(&["xr"]), &[]).unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::CopyAxisAtLaunch { word, axis, parent, option }
-            if word.to_string() == "xr" && axis == "commander" && option == "xr" && (parent == "real" || parent == "sim")),
+    assert_matches!(&error, CompositionError::CopyAxisAtLaunch { word, axis, parent, option }
+            if word.to_string() == "xr" && axis == "commander" && option == "xr" && (parent == "real" || parent == "sim"),
         "{error}"
     );
 }
@@ -352,8 +348,7 @@ fn the_constraints_see_the_stack_beside_the_copy() {
     .unwrap();
     assert_eq!(ids(&joined), ["alpha_arm_inst", "alpha_commander_inst"]);
     let error = join(&prepared, "real", "alpha", &launch.selection, &joined).unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::NameIsCoreNodeLink { name } if name == "alpha"),
+    assert_matches!(&error, CompositionError::NameIsCoreNodeLink { name } if name == "alpha",
         "{error}"
     );
 }
@@ -492,8 +487,7 @@ fn a_launch_time_join_composes_as_a_copy_of_the_entry() {
     let error = both
         .launch(&words(&["engine"]), &[launch_join("sim", "alpha")])
         .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::NameIsCoreNodeLink { name } if name == "alpha"),
+    assert_matches!(&error, CompositionError::NameIsCoreNodeLink { name } if name == "alpha",
         "{error}"
     );
     // Two `--join` copies under one name meet the same check.
@@ -503,8 +497,7 @@ fn a_launch_time_join_composes_as_a_copy_of_the_entry() {
             &[launch_join("sim", "bravo"), launch_join("sim", "bravo")],
         )
         .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::NameIsCoreNodeLink { name } if name == "bravo"),
+    assert_matches!(&error, CompositionError::NameIsCoreNodeLink { name } if name == "bravo",
         "{error}"
     );
     let error = both
@@ -598,9 +591,8 @@ fn a_copy_starts_something_and_selects_what_its_option_declares() {
         &launch.launcher,
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::CopyStartsNothing { copy, option }
-            if copy == "alpha" && option == "empty"),
+    assert_matches!(&error, CompositionError::CopyStartsNothing { copy, option }
+            if copy == "alpha" && option == "empty",
         "{error}"
     );
     let error = load_error(
@@ -608,9 +600,8 @@ fn a_copy_starts_something_and_selects_what_its_option_declares() {
             { name: "robot", cardinality: "zero_or_more", options: { real: {} } }
         ], deployments: [{ robot: "real", instances: [{ instance_id: "alpha", with: { commander: "web" } }] }] }"#,
     );
-    assert!(
-        matches!(&error, CompositionError::CopySelectsUnknownAxis { copy, axis, .. }
-            if copy == "alpha" && axis == "commander"),
+    assert_matches!(&error, CompositionError::CopySelectsUnknownAxis { copy, axis, .. }
+            if copy == "alpha" && axis == "commander",
         "{error}"
     );
     let stack_only = load(
@@ -621,7 +612,7 @@ fn a_copy_starts_something_and_selects_what_its_option_declares() {
         ], deployments: [{ robot: "real" }] }"#,
     );
     let launch = stack_only.launch(&[], &[]).unwrap();
-    assert!(matches!(
+    assert_matches!(
         join(
             &stack_only,
             "real",
@@ -630,7 +621,7 @@ fn a_copy_starts_something_and_selects_what_its_option_declares() {
             &launch.launcher
         ),
         Err(CompositionError::NoRepeatableAxis)
-    ));
+    );
     let launch = prepared.launch(&[], &[]).unwrap();
     let error = join(
         &prepared,
@@ -640,9 +631,8 @@ fn a_copy_starts_something_and_selects_what_its_option_declares() {
         &launch.launcher,
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::JoinUnknownOption { option, menu }
-            if option == "engine" && menu.contains("robot: `empty`, `real`, `sim`")),
+    assert_matches!(&error, CompositionError::JoinUnknownOption { option, menu }
+            if option == "engine" && menu.contains("robot: `empty`, `real`, `sim`"),
         "{error}"
     );
 }
@@ -652,11 +642,11 @@ fn flat_launchers_keep_their_selection_errors() {
     let prepared = load(
         r#"{peppy_schema: "launcher/v1", description: ["A test launcher."], deployments: []}"#,
     );
-    assert!(prepared.launch(&[], &[]).is_ok());
-    assert!(matches!(
+    prepared.launch(&[], &[]).unwrap();
+    assert_matches!(
         prepared.launch(&words(&["unknown"]), &[]),
         Err(CompositionError::WithOnFlatLauncher)
-    ));
+    );
 }
 
 #[test]
@@ -697,9 +687,8 @@ fn a_one_or_more_axis_starts_at_least_one_copy() {
     for deployments in ["", r#"{ robot: "sim", instances: [] }"#] {
         let deploys_none = load(&one_or_more_fleet(deployments));
         let error = deploys_none.launch(&[], &[]).unwrap_err();
-        assert!(
-            matches!(&error, CompositionError::CopyAxisUnfilled { axis, option, menu }
-                if axis == "robot" && option == "sim" && menu.contains("robot: `sim`")),
+        assert_matches!(&error, CompositionError::CopyAxisUnfilled { axis, option, menu }
+                if axis == "robot" && option == "sim" && menu.contains("robot: `sim`"),
             "{error}"
         );
         assert!(error.to_string().contains("--join sim:alpha"), "{error}");
@@ -742,9 +731,8 @@ fn a_removal_cannot_empty_a_one_or_more_axis() {
     let error = prepared
         .remove(&launch.launcher, record_of("alpha"), &launch.selection, &[])
         .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::CopyAxisEmptied { copy, axis, option }
-            if copy == "alpha" && axis == "robot" && option == "sim"),
+    assert_matches!(&error, CompositionError::CopyAxisEmptied { copy, axis, option }
+            if copy == "alpha" && axis == "robot" && option == "sim",
         "{error}"
     );
 }
@@ -945,9 +933,8 @@ fn an_options_adjustments_reach_only_the_units_that_selected_it() {
         launch.report.applied
     );
     let error = load_error(&document(r#", when: { nope: "x" }"#));
-    assert!(
-        matches!(&error, CompositionError::AdjustmentGuard { detail }
-            if detail.contains("fleet.json5, option `robot.sim`") && detail.contains("names axis `nope`")),
+    assert_matches!(&error, CompositionError::AdjustmentGuard { detail }
+            if detail.contains("fleet.json5, option `robot.sim`") && detail.contains("names axis `nope`"),
         "{error}"
     );
 }
@@ -1042,10 +1029,9 @@ fn an_adjustment_the_copies_run_cannot_read_a_stack_options_own_axis() {
         deployments: [{ robot: "openarm" }]
     }"#,
     );
-    assert!(
-        matches!(&error, CompositionError::CopyAdjustmentReadsOptionAxis { target, origin, copy_axis, axis }
+    assert_matches!(&error, CompositionError::CopyAdjustmentReadsOptionAxis { target, origin, copy_axis, axis }
             if target == "cam_inst" && origin == "fleet.json5, option `robot.openarm`"
-                && copy_axis == "cameras" && axis == "commander"),
+                && copy_axis == "cameras" && axis == "commander",
         "{error}"
     );
 }
@@ -1059,10 +1045,9 @@ fn an_adjustment_naming_a_copy_axis_targets_what_its_copies_define() {
         "constraints: [],",
         r#"constraints: [], adjustments: [{ target: "cam_inst", when: { robot: "sim" }, set_arguments: { filmed: true } }],"#,
     ));
-    assert!(
-        matches!(&error, CompositionError::CopyAdjustmentTargetUndefined(refused)
+    assert_matches!(&error, CompositionError::CopyAdjustmentTargetUndefined(refused)
             if refused.target == "cam_inst" && refused.origin == "fleet.json5, top-level `adjustments`"
-                && refused.copy_axis == "robot" && refused.in_reach.starts_with("target one of `")),
+                && refused.copy_axis == "robot" && refused.in_reach.starts_with("target one of `"),
         "{error}"
     );
 }
@@ -1097,20 +1082,18 @@ fn a_copy_entry_targeting_a_sibling_options_instance_is_refused() {
         r#"adjustments: [{ target: "cam_inst", set_arguments: { rendered: true } }]"#,
         "",
     ));
-    assert!(
-        matches!(&error, CompositionError::TargetDefinedNowhere { target, in_reach, .. }
-            if target == "cam_inst" && in_reach == "target one of `arm_inst`"),
+    assert_matches!(&error, CompositionError::TargetDefinedNowhere { target, in_reach, .. }
+            if target == "cam_inst" && in_reach == "target one of `arm_inst`",
         "{error}"
     );
     let error = load_error(&launcher(
         "",
         r#"adjustments: [{ target: "cam_inst", when: { robot: "sim" }, set_arguments: { rendered: true } }],"#,
     ));
-    assert!(
-        matches!(&error, CompositionError::CopyAdjustmentTargetUndefined(refused)
+    assert_matches!(&error, CompositionError::CopyAdjustmentTargetUndefined(refused)
             if refused.target == "cam_inst" && refused.copy_axis == "robot" && refused.named == "`sim`"
                 && refused.in_reach == "target one of `arm_inst`"
-                && refused.defining == ", or guard it `when: { robot: \"real\" }`"),
+                && refused.defining == ", or guard it `when: { robot: \"real\" }`",
         "{error}"
     );
     // Naming the option that defines it, the same entry runs there.
@@ -1136,10 +1119,9 @@ fn a_copy_entrys_guard_advice_stands_alone_when_nothing_is_in_reach() {
         adjustments: [{ target: "cam_inst", when: { robot: "sim" }, set_arguments: { rendered: true } }],
     }"#,
     );
-    assert!(
-        matches!(&error, CompositionError::CopyAdjustmentTargetUndefined(refused)
+    assert_matches!(&error, CompositionError::CopyAdjustmentTargetUndefined(refused)
             if refused.in_reach == "no instance runs beside it to target"
-                && refused.defining == "; guard it `when: { robot: \"real\" }`"),
+                && refused.defining == "; guard it `when: { robot: \"real\" }`",
         "{error}"
     );
 }
@@ -1163,9 +1145,8 @@ fn a_copy_entrys_dead_reference_names_only_the_ids_in_reach() {
         deployments: [{ source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] }],
     }"#,
     );
-    assert!(
-        matches!(&error, CompositionError::TargetDefinedNowhere { in_reach, .. }
-            if in_reach == "target one of `arm_inst`, `engine_inst`"),
+    assert_matches!(&error, CompositionError::TargetDefinedNowhere { in_reach, .. }
+            if in_reach == "target one of `arm_inst`, `engine_inst`",
         "{error}"
     );
 }
@@ -1362,10 +1343,9 @@ fn an_options_adjustment_cannot_target_a_sibling_options_instance() {
         deployments: [{ simulation: "waldo" }]
     }"#,
     );
-    assert!(
-        matches!(&error, CompositionError::TargetDefinedNowhere { target, origin, in_reach }
+    assert_matches!(&error, CompositionError::TargetDefinedNowhere { target, origin, in_reach }
             if target == "mujoco_inst" && origin == "fleet.json5, option `simulation.waldo`"
-                && in_reach == "target one of `waldo_inst`"),
+                && in_reach == "target one of `waldo_inst`",
         "{error}"
     );
 }
@@ -1476,10 +1456,9 @@ fn a_target_a_stack_option_and_a_copy_option_both_define_is_refused() {
         r#"adjustments: [{ target: "cam_inst", set_arguments: { rendered: true } }],"#,
         "",
     ));
-    assert!(
-        matches!(&error, CompositionError::AdjustmentTargetAmbiguous(ambiguous)
+    assert_matches!(&error, CompositionError::AdjustmentTargetAmbiguous(ambiguous)
             if ambiguous.target == "cam_inst" && ambiguous.stack == "simulation.isaac"
-                && ambiguous.copy_axis == "cameras" && ambiguous.copy_option == "wrist"),
+                && ambiguous.copy_axis == "cameras" && ambiguous.copy_option == "wrist",
         "{error}"
     );
     let message = error.to_string();
@@ -1524,16 +1503,14 @@ fn minted_ids_never_collide_with_the_stack_or_with_each_other() {
         &launch.launcher,
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::PrefixedIdCollision { id, .. } if id == "alpha_arm_inst"),
+    assert_matches!(&error, CompositionError::PrefixedIdCollision { id, .. } if id == "alpha_arm_inst",
         "{error}"
     );
     // `a` + `b_arm_inst` and `a_b` + `arm_inst` both mint `a_b_arm_inst`.
     let one = join(&prepared, "wide", "a", &launch.selection, &launch.launcher).unwrap();
     let error = join(&prepared, "real", "a_b", &launch.selection, &one).unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::PrefixedIdCollision { copy, id }
-            if copy == "a_b" && id == "a_b_arm_inst"),
+    assert_matches!(&error, CompositionError::PrefixedIdCollision { copy, id }
+            if copy == "a_b" && id == "a_b_arm_inst",
         "{error}"
     );
     assert_eq!(ids(&launch.launcher), ["alpha_arm_inst"]);
@@ -1566,9 +1543,8 @@ fn a_copy_cannot_place_itself() {
         &launch.launcher,
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::CopyInstancePlaced { copy, instance, core_node }
-            if copy == "alpha" && instance == "arm_inst" && core_node == "cloud"),
+    assert_matches!(&error, CompositionError::CopyInstancePlaced { copy, instance, core_node }
+            if copy == "alpha" && instance == "arm_inst" && core_node == "cloud",
         "{error}"
     );
     let error = join(
@@ -1579,8 +1555,7 @@ fn a_copy_cannot_place_itself() {
         &launch.launcher,
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::NameIsCoreNodeLink { name } if name == "cloud"),
+    assert_matches!(&error, CompositionError::NameIsCoreNodeLink { name } if name == "cloud",
         "{error}"
     );
     let error = PeppyLauncherParser::from_content(&document(
@@ -1753,9 +1728,8 @@ fn copies_configure_stack_nodes_together_and_joined_copies_cannot_change_them() 
         &launch.launcher,
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::JoinChangesExisting { instance, changes, .. }
-            if instance == "engine_inst" && changes == "arguments.hardware: \"v1\" -> \"v2\""),
+    assert_matches!(&error, CompositionError::JoinChangesExisting { instance, changes, .. }
+            if instance == "engine_inst" && changes == "arguments.hardware: \"v1\" -> \"v2\"",
         "{error}"
     );
     assert_eq!(serde_json::to_value(&launch.launcher).unwrap(), snapshot);
@@ -1783,9 +1757,8 @@ fn copies_configure_stack_nodes_together_and_joined_copies_cannot_change_them() 
         .iter()
         .find(|entry| entry.target == "engine_inst")
         .unwrap();
-    assert!(
-        matches!(&hardware.change, AppliedChange::Argument { old: Some(AnyType::String(old)), .. }
-            if old == "v1"),
+    assert_matches!(&hardware.change, AppliedChange::Argument { old: Some(AnyType::String(old)), .. }
+            if old == "v1",
         "{:?}",
         hardware.change
     );
@@ -1796,9 +1769,8 @@ fn copies_configure_stack_nodes_together_and_joined_copies_cannot_change_them() 
            { robot: "v2", instances: [{ instance_id: "bravo" }] }"#,
     ));
     let error = mixed.launch(&[], &[]).unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::CopiesConflict { first, second, target, .. }
-            if first == "alpha" && second == "bravo" && target == "engine_inst.arguments.hardware"),
+    assert_matches!(&error, CompositionError::CopiesConflict { first, second, target, .. }
+            if first == "alpha" && second == "bravo" && target == "engine_inst.arguments.hardware",
         "{error}"
     );
     let agreed = load(&document(
@@ -1978,9 +1950,8 @@ fn a_join_cannot_release_a_vacancy_it_pairs_nothing_into() {
         &launch.launcher,
     )
     .expect_err("nothing pairs into the slot");
-    assert!(
-        matches!(&err, CompositionError::JoinReleasesUnpairedVacancy { instance, slot, .. }
-            if instance == "simulation_inst" && slot == "arm"),
+    assert_matches!(&err, CompositionError::JoinReleasesUnpairedVacancy { instance, slot, .. }
+            if instance == "simulation_inst" && slot == "arm",
         "got: {err}"
     );
     let problems = composition_problems(&document);
@@ -2164,9 +2135,8 @@ fn a_join_cannot_drop_a_slot_the_stack_binds() {
         &launch.launcher,
     )
     .expect_err("a bound slot is what runs");
-    assert!(
-        matches!(&err, CompositionError::JoinChangesExisting { instance, changes, .. }
-            if instance == "simulation_inst" && changes.contains("links.arm")),
+    assert_matches!(&err, CompositionError::JoinChangesExisting { instance, changes, .. }
+            if instance == "simulation_inst" && changes.contains("links.arm"),
         "got: {err}"
     );
 }
@@ -2339,9 +2309,8 @@ fn an_option_axis_cannot_shadow_a_launcher_axis() {
         deployments: [{ simulation: "engine" }]
     }"#,
     );
-    assert!(
-        matches!(&error, CompositionError::AxisInReachTwice { axis, first, .. }
-            if axis == "simulation" && first == "the launcher"),
+    assert_matches!(&error, CompositionError::AxisInReachTwice { axis, first, .. }
+            if axis == "simulation" && first == "the launcher",
         "{error}"
     );
 }
@@ -2416,9 +2385,8 @@ fn a_copy_cannot_reuse_an_id_the_stack_defines() {
         &launch.launcher,
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::CopyReusesStackId { option, id }
-            if option == "sim" && id == "engine_inst"),
+    assert_matches!(&error, CompositionError::CopyReusesStackId { option, id }
+            if option == "sim" && id == "engine_inst",
         "{error}"
     );
 }
@@ -2455,9 +2423,8 @@ fn a_copy_reusing_several_stack_ids_names_the_first() {
         &launch.launcher,
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::CopyReusesStackId { option, id }
-            if option == "sim" && id == "a_inst"),
+    assert_matches!(&error, CompositionError::CopyReusesStackId { option, id }
+            if option == "sim" && id == "a_inst",
         "{error}"
     );
 }
@@ -2489,9 +2456,8 @@ fn a_stack_fragment_cannot_guard_on_a_copy_axis() {
     )
     .unwrap();
     let error = PreparedLauncher::load(&parsed, &directory.path().join("fleet.json5")).unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::GuardOnCopyAxis { target, axis, .. }
-            if target == "engine_inst" && axis == "robot"),
+    assert_matches!(&error, CompositionError::GuardOnCopyAxis { target, axis, .. }
+            if target == "engine_inst" && axis == "robot",
         "{error}"
     );
 }
@@ -2547,9 +2513,8 @@ fn removing_a_copy_takes_out_its_members_and_a_stack_link_keeps_it() {
     let error = prepared
         .remove(&launch.launcher, record_of("alpha"), &launch.selection, &[])
         .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::CopyStillLinked { copy, links }
-            if copy == "alpha" && links == "recorder_inst.arm -> alpha_arm_inst"),
+    assert_matches!(&error, CompositionError::CopyStillLinked { copy, links }
+            if copy == "alpha" && links == "recorder_inst.arm -> alpha_arm_inst",
         "{error}"
     );
 }
@@ -2652,45 +2617,40 @@ fn a_fragment_names_no_copy_axis_its_unit_cannot_fill() {
         deployments: [],
     }"#,
     );
-    assert!(
-        matches!(&error, CompositionError::ConstraintOnCopyAxis { origin, axis }
-            if origin == "inline option `simulation.engine`" && axis == "robot"),
+    assert_matches!(&error, CompositionError::ConstraintOnCopyAxis { origin, axis }
+            if origin == "inline option `simulation.engine`" && axis == "robot",
         "{error}"
     );
     let error = load_error(&two_copy_axes(
         r#"constraints: [{ forbids: [{ cameras: "wrist" }], reason: "no cameras on a simulated arm" }],"#,
         "",
     ));
-    assert!(
-        matches!(&error, CompositionError::ConstraintOnCopyAxis { origin, axis }
-            if origin == "inline option `robot.sim`" && axis == "cameras"),
+    assert_matches!(&error, CompositionError::ConstraintOnCopyAxis { origin, axis }
+            if origin == "inline option `robot.sim`" && axis == "cameras",
         "{error}"
     );
     let error = load_error(&two_copy_axes(
         r#"adjustments: [{ target: "arm_inst", when: { cameras: "wrist" }, set_arguments: { filmed: true } }],"#,
         "",
     ));
-    assert!(
-        matches!(&error, CompositionError::AdjustmentSpansCopyAxes { target, axes, .. }
-            if target == "arm_inst" && axes.contains("`cameras`") && axes.contains("`robot`")),
+    assert_matches!(&error, CompositionError::AdjustmentSpansCopyAxes { target, axes, .. }
+            if target == "arm_inst" && axes.contains("`cameras`") && axes.contains("`robot`"),
         "{error}"
     );
     let error = load_error(&two_copy_axes(
         "",
         r#"{ when: { robot: "sim" }, requires: [{ cameras: "wrist" }], reason: "a simulated arm is filmed" }"#,
     ));
-    assert!(
-        matches!(&error, CompositionError::ConstraintSpansCopyAxes { position: 1, axes }
-            if axes.contains("`cameras`") && axes.contains("`robot`")),
+    assert_matches!(&error, CompositionError::ConstraintSpansCopyAxes { position: 1, axes }
+            if axes.contains("`cameras`") && axes.contains("`robot`"),
         "{error}"
     );
     let error = load_error(&two_copy_axes("", "").replace(
         "constraints: [],",
         r#"constraints: [], adjustments: [{ target: "arm_inst", when: { robot: "sim", cameras: "wrist" }, set_arguments: { filmed: true } }],"#,
     ));
-    assert!(
-        matches!(&error, CompositionError::AdjustmentSpansCopyAxes { target, axes, .. }
-            if target == "arm_inst" && axes.contains("`cameras`") && axes.contains("`robot`")),
+    assert_matches!(&error, CompositionError::AdjustmentSpansCopyAxes { target, axes, .. }
+            if target == "arm_inst" && axes.contains("`cameras`") && axes.contains("`robot`"),
         "{error}"
     );
 }
@@ -2700,9 +2660,8 @@ fn a_fragment_names_no_copy_axis_its_unit_cannot_fill() {
 #[test]
 fn a_copy_fragment_declares_no_core_node_links() {
     let error = load_error(&two_copy_axes(r#"core_nodes: ["edge"],"#, ""));
-    assert!(
-        matches!(&error, CompositionError::CopyFragmentCoreNodes { origin, axis }
-            if origin == "inline option `robot.sim`" && axis == "robot"),
+    assert_matches!(&error, CompositionError::CopyFragmentCoreNodes { origin, axis }
+            if origin == "inline option `robot.sim`" && axis == "robot",
         "{error}"
     );
 }
@@ -2732,9 +2691,8 @@ fn a_file_copy_overrides_only_the_instances_it_selects() {
         ] }],
     }"#,
     );
-    assert!(
-        matches!(&error, CompositionError::ArgumentTargetAbsent { copy, target, available }
-            if copy == "alpha" && target == "xr_inst" && available == "`arm_inst`, `web_inst`"),
+    assert_matches!(&error, CompositionError::ArgumentTargetAbsent { copy, target, available }
+            if copy == "alpha" && target == "xr_inst" && available == "`arm_inst`, `web_inst`",
         "{error}"
     );
 }
@@ -2746,9 +2704,8 @@ fn a_file_copy_overrides_only_the_instances_it_selects() {
 fn copy_selection_refusals_name_the_copied_option() {
     let prepared = fleet("");
     let error = prepared.launch(&words(&["robot=nope"]), &[]).unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::RepeatableAxisUnknownOption { word, axis, menu }
-            if word.to_string() == "robot=nope" && axis == "robot" && menu.contains("real")),
+    assert_matches!(&error, CompositionError::RepeatableAxisUnknownOption { word, axis, menu }
+            if word.to_string() == "robot=nope" && axis == "robot" && menu.contains("real"),
         "{error}"
     );
     assert!(
@@ -2756,9 +2713,8 @@ fn copy_selection_refusals_name_the_copied_option() {
         "{error}"
     );
     let error = join_onto_launch(&prepared, "real", "alpha", &["nope"], &[]).unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::UnknownCopySelection { word, option, menu }
-            if word.to_string() == "nope" && option == "real" && menu.contains("commander")),
+    assert_matches!(&error, CompositionError::UnknownCopySelection { word, option, menu }
+            if word.to_string() == "nope" && option == "real" && menu.contains("commander"),
         "{error}"
     );
 }
@@ -2792,12 +2748,10 @@ fn the_report_files_copy_writes_and_copy_only_adjustments_under_the_copy() {
     );
     let launched = prepared.launch(&[], &[]).unwrap();
     let report = &launched.report;
-    assert!(
-        matches!(
+    assert_matches!(
             report.skipped.as_slice(),
             [SkippedAdjustment { target, reason: SkipReason::RunsInCopies(axis), origin }]
-                if target == "arm_inst" && axis == "robot" && origin == "fleet.json5, top-level `adjustments`"
-        ),
+                if target == "arm_inst" && axis == "robot" && origin == "fleet.json5, top-level `adjustments`",
         "{:?}",
         report.skipped
     );
@@ -2850,9 +2804,8 @@ fn binding_a_vacant_slot_from_the_stack_side_is_refused_with_the_spelling() {
         &launched.launcher,
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::JoinChangesExisting { changes, .. }
-            if changes.contains("links.arm is vacant; pair into it from the copy's own instance")),
+    assert_matches!(&error, CompositionError::JoinChangesExisting { changes, .. }
+            if changes.contains("links.arm is vacant; pair into it from the copy's own instance"),
         "{error}"
     );
 }
@@ -3117,9 +3070,8 @@ fn set_arguments_override_the_entrys_arguments_per_argument() {
         &["commander_inst.port=8910", "commander_inst.port=8911"],
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::DuplicateArgumentOverride { target, argument }
-            if target == "commander_inst" && argument == "port"),
+    assert_matches!(&error, CompositionError::DuplicateArgumentOverride { target, argument }
+            if target == "commander_inst" && argument == "port",
         "{error}"
     );
 }
@@ -3335,9 +3287,8 @@ fn copy_adjustments_run_after_the_launchers_and_before_the_copys_arguments() {
             { instance_id: "alpha", adjustments: [{ target: "nowhere_inst", set_arguments: { x: 1 } }] },
         ] }"#,
     ));
-    assert!(
-        matches!(&error, CompositionError::CopyAdjustmentTarget { target, origin, .. }
-            if target == "nowhere_inst" && origin == "adjustments of copy `alpha`"),
+    assert_matches!(&error, CompositionError::CopyAdjustmentTarget { target, origin, .. }
+            if target == "nowhere_inst" && origin == "adjustments of copy `alpha`",
         "{error}"
     );
 }
@@ -3379,16 +3330,14 @@ fn a_launch_word_selects_a_file_copys_own_axis() {
     assert!(ids(&launched.launcher).contains(&"engine_inst".to_owned()));
 
     let error = prepared.launch(&words(&["charlie.xr"]), &[]).unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::ScopedSelectionUnknownCopy { word, copy, copies }
+    assert_matches!(&error, CompositionError::ScopedSelectionUnknownCopy { word, copy, copies }
             if word.to_string() == "charlie.xr" && copy == "charlie"
-                && copies.starts_with("the launch starts `alpha`, `bravo`")),
+                && copies.starts_with("the launch starts `alpha`, `bravo`"),
         "{error}"
     );
     let error = prepared.launch(&words(&["alpha.nope"]), &[]).unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::UnknownCopySelection { word, option, .. }
-            if word.to_string() == "alpha.nope" && option == "real"),
+    assert_matches!(&error, CompositionError::UnknownCopySelection { word, option, .. }
+            if word.to_string() == "alpha.nope" && option == "real",
         "{error}"
     );
 }
@@ -3417,9 +3366,8 @@ fn a_file_copy_may_leave_an_axis_for_a_launch_word() {
     };
     let prepared = load(&document(""));
     let error = prepared.launch(&[], &[]).unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::UnresolvedCopyAxis(unresolved)
-            if unresolved.copy == "alpha" && unresolved.axis == "commander"),
+    assert_matches!(&error, CompositionError::UnresolvedCopyAxis(unresolved)
+            if unresolved.copy == "alpha" && unresolved.axis == "commander",
         "{error}"
     );
     assert!(
@@ -3455,7 +3403,7 @@ fn a_file_copy_may_leave_an_axis_for_a_launch_word() {
 
     // An override of an instance only one option defines is reported for
     // the other option the launch word may name.
-    let problems = composition_problems(&document(r#", arguments: { headset_inst: { fov: 1 } }"#));
+    let problems = composition_problems(&document(r", arguments: { headset_inst: { fov: 1 } }"));
     assert!(
         problems
             .iter()
@@ -3509,7 +3457,7 @@ fn a_file_copy_may_leave_two_axes_for_launch_words() {
 
     // An override of an instance only one commander defines is reported for
     // each camera the other commander runs beside.
-    let problems = composition_problems(&document(r#", arguments: { headset_inst: { fov: 1 } }"#));
+    let problems = composition_problems(&document(r", arguments: { headset_inst: { fov: 1 } }"));
     for combination in [
         "(commander=web) (camera=usb)",
         "(commander=web) (camera=ip)",
@@ -3538,8 +3486,9 @@ fn copy_adjustment_and_scoped_word_refusals_name_the_fix() {
     let error = prepared
         .launch(&words(&["alpha.xr", "alpha.commander=web"]), &[])
         .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::ConflictingSelection { .. }),
+    assert_matches!(
+        &error,
+        CompositionError::ConflictingSelection { .. },
         "{error}"
     );
 
@@ -3547,28 +3496,25 @@ fn copy_adjustment_and_scoped_word_refusals_name_the_fix() {
         r#"{ robot: "real", instances: [{ instance_id: "alpha",
             adjustments: [{ target: "arm_inst", when: { robot: "sim" }, set_arguments: { speed: 1 } }] }] }"#,
     ));
-    assert!(
-        matches!(&error, CompositionError::CopyAdjustmentOnCopyAxis { origin, axis }
-            if origin == "adjustments of copy `alpha`" && axis == "robot"),
+    assert_matches!(&error, CompositionError::CopyAdjustmentOnCopyAxis { origin, axis }
+            if origin == "adjustments of copy `alpha`" && axis == "robot",
         "{error}"
     );
     let error = load_error(&fleet_document(
         r#"{ robot: "sim", adjustments: [{ target: "engine_inst", set_arguments: { hardware: "v1" } }],
             instances: [{ instance_id: "alpha" }] }"#,
     ));
-    assert!(
-        matches!(&error, CompositionError::CopyAdjustmentTarget { origin, target, available }
+    assert_matches!(&error, CompositionError::CopyAdjustmentTarget { origin, target, available }
             if origin == "adjustments of `robot: sim`" && target == "engine_inst"
-                && available == "`arm_inst`, `commander_inst`"),
+                && available == "`arm_inst`, `commander_inst`",
         "{error}"
     );
     let error = load_error(&fleet_document(
         r#"{ robot: "real", instances: [{ instance_id: "alpha",
             adjustments: [{ target: "arm_inst", when: { nope: "x" }, set_arguments: { speed: 1 } }] }] }"#,
     ));
-    assert!(
-        matches!(&error, CompositionError::AdjustmentGuard { detail }
-            if detail.contains("adjustments of copy `alpha`")),
+    assert_matches!(&error, CompositionError::AdjustmentGuard { detail }
+            if detail.contains("adjustments of copy `alpha`"),
         "{error}"
     );
 
@@ -3617,9 +3563,8 @@ fn a_join_cannot_add_a_stack_instance_to_a_running_set() {
         &launch.launcher,
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::JoinAddsStackMember { name, instance, slot, target }
-            if name == "lens" && instance == "observer_inst" && slot == "robots" && target == "first"),
+    assert_matches!(&error, CompositionError::JoinAddsStackMember { name, instance, slot, target }
+            if name == "lens" && instance == "observer_inst" && slot == "robots" && target == "first",
         "{error}"
     );
     assert_eq!(
@@ -3753,9 +3698,8 @@ fn a_join_cannot_add_to_a_slot_holding_a_single_member() {
         &launch.launcher,
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::AddLinksOnNonArray { target, slot, .. }
-            if target == "observer_inst" && slot == "primary"),
+    assert_matches!(&error, CompositionError::AddLinksOnNonArray { target, slot, .. }
+            if target == "observer_inst" && slot == "primary",
         "{error}"
     );
     let refusal = error.to_string();
@@ -3986,9 +3930,8 @@ fn a_placed_word_whose_option_brings_no_instance_is_refused() {
         &launch.launcher,
     )
     .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::PlacedPartBringsNothing { axis, option, machine, .. }
-            if axis == "camera_rig" && option == "none" && machine == "cn-gpu-box"),
+    assert_matches!(&error, CompositionError::PlacedPartBringsNothing { axis, option, machine, .. }
+            if axis == "camera_rig" && option == "none" && machine == "cn-gpu-box",
         "{error}"
     );
     assert_eq!(
@@ -4030,9 +3973,8 @@ fn two_words_on_one_axis_place_it_once() {
             &launch.launcher,
         )
         .unwrap_err();
-        assert!(
-            matches!(&error, CompositionError::PartPlacedTwice { copy, axis, .. }
-                if copy == "alpha" && axis == "commander"),
+        assert_matches!(&error, CompositionError::PartPlacedTwice { copy, axis, .. }
+                if copy == "alpha" && axis == "commander",
             "{first} {second}: {error}"
         );
         assert!(
@@ -4120,8 +4062,7 @@ fn a_launch_word_places_a_part_of_the_copy_it_names() {
             &[launch_join("sim", "alpha")],
         )
         .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::ScopedSelectionUnknownCopy { copy, .. } if copy == "charlie"),
+    assert_matches!(&error, CompositionError::ScopedSelectionUnknownCopy { copy, .. } if copy == "charlie",
         "{error}"
     );
     let error = prepared

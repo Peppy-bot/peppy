@@ -4,7 +4,7 @@ use config::NodeArguments;
 pub use config::node::{QoSProfile, TopicRetention};
 
 /// Format a JSON schema validation error into a human-readable message.
-fn format_validation_error(error: &jsonschema::ValidationError) -> String {
+fn format_validation_error(error: &jsonschema::ValidationError<'_>) -> String {
     let message = error.to_string();
 
     // Extract field name from "required property" errors
@@ -37,19 +37,16 @@ where
     T: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     let json_value = serde_json::to_value(args).map_err(|e| {
-        crate::ParameterDeserializationError::single(format!(
-            "failed to serialize parameters: {}",
-            e
-        ))
+        crate::ParameterDeserializationError::single(format!("failed to serialize parameters: {e}"))
     })?;
 
     let schema = schemars::schema_for!(T);
     let schema_value = serde_json::to_value(&schema).map_err(|e| {
-        crate::ParameterDeserializationError::single(format!("failed to generate schema: {}", e))
+        crate::ParameterDeserializationError::single(format!("failed to generate schema: {e}"))
     })?;
 
     let validator = jsonschema::validator_for(&schema_value).map_err(|e| {
-        crate::ParameterDeserializationError::single(format!("failed to create validator: {}", e))
+        crate::ParameterDeserializationError::single(format!("failed to create validator: {e}"))
     })?;
 
     let errors: Vec<_> = validator.iter_errors(&json_value).collect();
@@ -61,8 +58,7 @@ where
 
     Ok(serde_json::from_value(json_value).map_err(|e| {
         crate::ParameterDeserializationError::single(format!(
-            "failed to deserialize parameters: {}",
-            e
+            "failed to deserialize parameters: {e}"
         ))
     })?)
 }

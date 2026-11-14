@@ -13,16 +13,19 @@ use std::collections::HashMap;
 
 /// The publish keys one session declared. `H` is the adapter's handle to a
 /// retaining topic's publisher.
+#[derive(Debug)]
 pub(crate) struct DeclaredTopics<H> {
     topics: HashMap<String, Declared<H>>,
 }
 
 /// What a session declared on one publish key.
+#[derive(Debug)]
 enum Declared<H> {
     LiveOnly,
     Retaining(RetainingTopic<H>),
 }
 
+#[derive(Debug)]
 struct RetainingTopic<H> {
     depth: RetentionDepth,
     qos: PublisherQoS,
@@ -135,6 +138,7 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use test_support::latest;
 
     const KEYEXPR: &str = "*/core/*/instance/topic/node/robot/v1/_/mode";
@@ -183,12 +187,10 @@ mod tests {
             (TopicRetention::LiveOnly, PublisherQoS::Standard),
         ] {
             let error = declared(&mut topics, retention, qos).expect_err("another policy or QoS");
-            assert!(
-                matches!(
-                    error,
-                    Error::RetainingTopicMismatch { ref topic, requested_retention, requested_qos, .. }
-                        if topic == KEYEXPR && requested_retention == retention && requested_qos == qos
-                ),
+            assert_matches!(
+                    &error,
+                    Error::RetainingTopicMismatch { topic, requested_retention, requested_qos, .. }
+                        if topic == KEYEXPR && *requested_retention == retention && *requested_qos == qos,
                 "{error}"
             );
         }
@@ -271,14 +273,12 @@ mod tests {
         let error = topics
             .refuse_live_only(KEYEXPR, PublisherQoS::Standard)
             .expect_err("the key retains");
-        assert!(
-            matches!(
-                error,
-                Error::RetainingTopicMismatch {
-                    requested_retention: TopicRetention::LiveOnly,
-                    ..
-                }
-            ),
+        assert_matches!(
+            error,
+            Error::RetainingTopicMismatch {
+                requested_retention: TopicRetention::LiveOnly,
+                ..
+            },
             "{error}"
         );
 

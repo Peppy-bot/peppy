@@ -68,7 +68,7 @@ pub struct McpExposure {
 /// not read-only, newest first: who called what, with what, and how it
 /// ended. The endpoint keeps the record in memory for the life of the
 /// process, and the tool itself leaves no entry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CallRecord {
     pub tool: PublicName,
@@ -317,7 +317,7 @@ where
 }
 
 /// Deserialize a document-order map, running `check_key` on each key and
-/// rejecting duplicates as `duplicate {key_label} `{key}``.
+/// rejecting duplicates as ``duplicate {key_label} `{key}` ``.
 fn deserialize_unique_map<'de, D, V>(
     deserializer: D,
     expecting: &'static str,
@@ -342,7 +342,7 @@ where
     {
         type Value = IndexMap<String, V>;
 
-        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             formatter.write_str(self.expecting)
         }
 
@@ -374,7 +374,7 @@ where
 
 /// Identity of an exposure document: the `name:tag` a launcher lists it by,
 /// plus descriptive labels for discovery and filtering.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ExposureManifest {
     pub name: Name,
@@ -397,7 +397,7 @@ where
 }
 
 /// Server-level identity advertised to MCP clients through `server/discover`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ServerIdentity {
     #[serde(deserialize_with = "deserialize_prose")]
@@ -416,7 +416,7 @@ pub struct ServerIdentity {
 /// elsewhere in peppy: when present, the resolved document's bytes must
 /// fingerprint to it; when absent, the bytes the deployment pins are the
 /// ones the exposure is validated against.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PinnedContractRef {
     pub name: Name,
@@ -429,7 +429,7 @@ pub struct PinnedContractRef {
 /// A reference to an interface of the peppy daemon a target draws its
 /// members from. The interface is compiled into peppy, which serves one tag
 /// of it, so the reference names it by `name:tag` and is never pinned.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct DaemonInterfaceRef {
     pub name: Name,
     pub tag: String,
@@ -456,7 +456,7 @@ struct RawDaemonInterfaceRef {
 
 /// Where a target draws its members from: a contract that node instances
 /// implement, or an interface that the peppy daemon serves.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TargetSource {
     /// A contract slot of the deployment, which the launcher fills.
     Contract(PinnedContractRef),
@@ -696,7 +696,7 @@ pub struct TopicExposure {
 /// frame as an image a model looks at, beside the rest of the message. It
 /// reads the snapshot its topic's resource serves and sends nothing to the
 /// Peppy graph.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PictureTool {
     pub tool: PublicName,
@@ -742,7 +742,7 @@ impl TopicExposure {
 /// picture: under a `representation`, the frame is published in the
 /// representation's codec as an image block beside the rest of the
 /// response, which is the document.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceExposure {
     #[serde(deserialize_with = "deserialize_member")]
@@ -833,7 +833,7 @@ where
 
 /// Inclusive numeric bounds on one request field. At least one bound must be
 /// set.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RestrictBounds {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -846,7 +846,7 @@ pub struct RestrictBounds {
 /// extension: the call returns a task handle, action feedback drives the
 /// observable task state, and cancellation forwards to the action's cancel
 /// path.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(try_from = "RawActionExposure", into = "RawActionExposure")]
 pub struct ActionExposure {
     pub member: String,
@@ -929,6 +929,10 @@ impl From<ActionExposure> for RawActionExposure {
     }
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde calls a `skip_serializing_if` function with a reference"
+)]
 fn is_false(value: &bool) -> bool {
     !value
 }
@@ -936,7 +940,7 @@ fn is_false(value: &bool) -> bool {
 /// What makes an exposure a per-robot surface: the tool that lists the
 /// robots, and what the listing reports of each robot beyond the targets it
 /// fills. Every call names its robot with [`ROBOT_ARGUMENT`].
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RobotSurface {
     pub list: ListTool,
@@ -992,7 +996,7 @@ impl RobotSurface {
 }
 
 /// The tool that lists the robots of the stack, with what each one fills.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ListTool {
     pub tool: PublicName,
@@ -1003,7 +1007,7 @@ pub struct ListTool {
 /// One thing the listing reports of each robot: the response of a service,
 /// called when the robot is listed and read through a target the robot
 /// fills once.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(try_from = "RawDescribe")]
 pub struct Describe {
     pub target: String,
@@ -1365,7 +1369,7 @@ mod tests {
         assert_eq!(
             record.bound,
             GoalBound::WholeGoal {
-                deadline_ms: NonZeroU64::new(900000).expect("nonzero")
+                deadline_ms: NonZeroU64::new(900_000).expect("nonzero")
             }
         );
     }
@@ -2277,7 +2281,7 @@ mod tests {
             Some(JpegQuality::new(80).expect("valid"))
         );
         assert_eq!(representation.fields.data, "frame");
-        assert_eq!(info.max_result_bytes.map(NonZeroU64::get), Some(524288));
+        assert_eq!(info.max_result_bytes.map(NonZeroU64::get), Some(524_288));
         assert_eq!(info.on_oversize, Some(OversizePolicy::Downscale));
         assert_eq!(
             info.content_policies(),

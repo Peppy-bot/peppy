@@ -19,7 +19,7 @@ use serde_json::Value;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-pub async fn listen_for_repo_add(
+pub(crate) async fn listen_for_repo_add(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
@@ -54,6 +54,10 @@ pub async fn listen_for_repo_add(
 /// repository or an id already in the list, or an oci repository in a peppy
 /// that has no release tag, and `attempt_failed` for a list the daemon
 /// cannot read or write.
+#[expect(
+    clippy::unused_async,
+    reason = "the listener calls a handler that returns a future"
+)]
 async fn handle_repo_add_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,
@@ -93,7 +97,7 @@ async fn handle_repo_add_request(
 
     let repos_path = repositories_list_path(&peppy_dirs);
 
-    let _guard = crate::services::repo::repos_file_lock().lock();
+    let guard = crate::services::repo::repos_file_lock().lock();
 
     let mut repos = read_or_create_repos(&peppy_dirs)
         .map_err(|error| failure(PeppyFailureKind::AttemptFailed, error))?;
@@ -102,7 +106,7 @@ async fn handle_repo_add_request(
     if has_entry_with_identity(&repos, new_identity) {
         return Err(failure(
             PeppyFailureKind::PreconditionFailed,
-            format!("repository '{}' already exists", new_identity),
+            format!("repository '{new_identity}' already exists"),
         ));
     }
 
@@ -111,7 +115,7 @@ async fn handle_repo_add_request(
     repos.push(repo_source_to_json(next_id, &request.source));
     write_repo_entries(&repos_path, &repos, "repositories").map_err(crate::Error::into_failure)?;
 
-    drop(_guard);
+    drop(guard);
 
     into_service_answer(RepoAddResponse::new().encode().map_err(Into::into))
 }
@@ -156,7 +160,7 @@ impl RepoIdPlacement {
 /// The id must be one a cache entry can be attributed to (below
 /// [`UNOWNED_REPO_ID`]): `repo list` skips any other repository and its
 /// nodes rank as unowned. Above `i64::MAX` the id would also make
-/// `repositories.json5` unreadable, since serde_json5 reads integers as
+/// `repositories.json5` unreadable, since `serde_json5` reads integers as
 /// `i64`, and every later repo, node and launch command would fail on it.
 fn next_repo_id(repos: &[Value], placement: RepoIdPlacement) -> std::result::Result<u64, Failure> {
     let no_room = |reason: &str| failure(PeppyFailureKind::PreconditionFailed, reason);

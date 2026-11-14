@@ -23,9 +23,9 @@ use std::path::Path;
 /// - Rejects two daemon targets of one daemon interface: a call names no
 ///   daemon target, so the daemon reads each call of an interface against
 ///   the one scope of that interface that the instance has.
-/// - Rejects pairing link_ids that are not wire-safe segments. A participant
-///   slot link_id is stamped verbatim into the producer-side link_id segment
-///   of every publish keyexpr, so it must be wire-safe. An observer link_id is
+/// - Rejects pairing `link_ids` that are not wire-safe segments. A participant
+///   slot `link_id` is stamped verbatim into the producer-side `link_id` segment
+///   of every publish keyexpr, so it must be wire-safe. An observer `link_id` is
 ///   a local resolution name only (never stamped on the wire), but it is held
 ///   to the same rule so both pairing forms share one parser.
 /// - Rejects duplicate `(name, tag)` pairs in `manifest.implements`
@@ -126,7 +126,7 @@ fn validate_document_pins(manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
-/// Validates the link_id direction rules and duplicate keys of the
+/// Validates the `link_id` direction rules and duplicate keys of the
 /// produced/consumed interface entries:
 ///
 /// - A `topics.emits` entry's `link_id` must name a `manifest.implements`
@@ -257,11 +257,11 @@ impl DependsOnList {
     /// The key of the list under `depends_on`, as error messages name it.
     fn key(self) -> &'static str {
         match self {
-            DependsOnList::Nodes => "nodes",
-            DependsOnList::Contracts => "contracts",
-            DependsOnList::Daemon => "daemon",
-            DependsOnList::Pairings => "pairings",
-            DependsOnList::PairingObservers => "pairing_observers",
+            Self::Nodes => "nodes",
+            Self::Contracts => "contracts",
+            Self::Daemon => "daemon",
+            Self::Pairings => "pairings",
+            Self::PairingObservers => "pairing_observers",
         }
     }
 }
@@ -293,7 +293,7 @@ fn depends_list_containing(depends_on: Option<&DependsOn>, link_id: &str) -> Opt
     None
 }
 
-/// The `depends_on.pairings` slot link_ids of a manifest. A participant slot is
+/// The `depends_on.pairings` slot `link_ids` of a manifest. A participant slot is
 /// the one `depends_on` kind a produced topic entry may reference: its role is
 /// a producer of the pairing document's topics. An observer plays no role and
 /// emits nothing, so `depends_on.pairing_observers` is excluded and a
@@ -365,7 +365,7 @@ fn disallowed_produced_link_id(
     }
 }
 
-/// A pairing slot link_id travels the wire as a keyexpr segment, so it must
+/// A pairing slot `link_id` travels the wire as a keyexpr segment, so it must
 /// obey the segment rules from `pmi::wire::Segment` (which this crate cannot
 /// name, because pmi depends on this crate): no `/`, no `@`, and not one of the reserved
 /// sentinels (`*`, `**`, and the default-link_id sentinel `_`). Emptiness and
@@ -412,6 +412,7 @@ fn validate_execution(execution: &Execution) -> Result<()> {
 }
 
 /// Parser responsible for extracting configuration from JSON5 documents
+#[derive(Debug)]
 pub struct NodeConfigParser;
 
 impl NodeConfigParser {
@@ -448,6 +449,7 @@ mod tests {
         error::Error,
         node::{ContainerConfig, EndpointKind, EndpointLabel, SetupTimeout},
     };
+    use std::assert_matches;
     use tempfile::NamedTempFile;
 
     /// Parses `json5`, which must fail with a parsing error, and returns that
@@ -534,29 +536,26 @@ mod tests {
         std::fs::write(tmp.path(), b"").unwrap();
         let result = NodeConfigParser::from_path(tmp.path());
         assert!(result.is_err());
-        assert!(matches!(
+        assert_matches!(
             result.unwrap_err(),
             Error::Parsing(ParsingError::EmptyContent(_))
-        ));
+        );
     }
 
     #[test]
     fn test_cannot_read_file() {
         let result = NodeConfigParser::from_path("/path/that/does/not/exist.json5");
         assert!(result.is_err());
-        assert!(matches!(
+        assert_matches!(
             result.unwrap_err(),
             Error::Parsing(ParsingError::CannotRead(_, _))
-        ));
+        );
     }
 
     #[test]
     fn test_cannot_parse_json5() {
-        let json5 = r#"{ manifest: [unclosed"#; // invalid JSON5
-        assert!(matches!(
-            parse_error(json5),
-            ParsingError::CannotParseConfig(_)
-        ));
+        let json5 = r"{ manifest: [unclosed"; // invalid JSON5
+        assert_matches!(parse_error(json5), ParsingError::CannotParseConfig(_));
     }
 
     #[test]
@@ -597,10 +596,10 @@ mod tests {
                 },
             },
         }"#;
-        assert!(matches!(
+        assert_matches!(
             parse_error(json5),
             ParsingError::ProcessAndContainerConflict
-        ));
+        );
     }
 
     #[test]
@@ -616,10 +615,7 @@ mod tests {
                 language: "rust",
             },
         }"#;
-        assert!(matches!(
-            parse_error(json5),
-            ParsingError::NoProcessOrContainer
-        ));
+        assert_matches!(parse_error(json5), ParsingError::NoProcessOrContainer);
     }
 
     #[test]
@@ -643,11 +639,9 @@ mod tests {
             },
         }"#;
         let error = parse_error(json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
-                ParsingError::DuplicateLinkId(id) if id == "shared"
-            ),
+                ParsingError::DuplicateLinkId(id) if id == "shared",
             "expected DuplicateLinkId(\"shared\"), got: {error:?}"
         );
     }
@@ -675,11 +669,9 @@ mod tests {
             },
         }"#;
         let error = parse_error(json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
-                ParsingError::DuplicateLinkId(id) if id == "shared"
-            ),
+                ParsingError::DuplicateLinkId(id) if id == "shared",
             "expected DuplicateLinkId(\"shared\") across nodes+contracts, got: {error:?}"
         );
     }
@@ -863,11 +855,9 @@ mod tests {
             execution: { language: "rust", run_cmd: ["./bin"] },
         }"#;
         let err = parse_error(json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
-                ParsingError::ObserverLinkNeverConsumed { link_id } if link_id == "observed_arm"
-            ),
+                ParsingError::ObserverLinkNeverConsumed { link_id } if link_id == "observed_arm",
             "expected ObserverLinkNeverConsumed(\"observed_arm\"), got: {err:?}"
         );
     }
@@ -902,11 +892,9 @@ mod tests {
             execution: { language: "rust", run_cmd: ["./bin"] },
         }"#;
         let err = parse_error(json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
-                ParsingError::EmitsOnObserverSlot { link_id } if link_id == "observed_arm"
-            ),
+                ParsingError::EmitsOnObserverSlot { link_id } if link_id == "observed_arm",
             "expected EmitsOnObserverSlot(\"observed_arm\"), got: {err:?}"
         );
     }
@@ -934,11 +922,9 @@ mod tests {
             },
         }"#;
         let error = parse_error(json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
-                ParsingError::DuplicateLinkId(id) if id == "shared"
-            ),
+                ParsingError::DuplicateLinkId(id) if id == "shared",
             "expected DuplicateLinkId(\"shared\") across contracts+pairings, got: {error:?}"
         );
     }
@@ -966,11 +952,9 @@ mod tests {
             },
         }"#;
         let error = parse_error(json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
-                ParsingError::PairingSentinelLinkId(id) if id == "ctrl@home"
-            ),
+                ParsingError::PairingSentinelLinkId(id) if id == "ctrl@home",
             "expected PairingSentinelLinkId(\"ctrl@home\"), got: {error:?}"
         );
     }
@@ -1042,7 +1026,7 @@ mod tests {
                 run_cmd: ["./bin"],
             },
         }"#;
-        assert!(NodeConfigParser::from_content(json5).is_err());
+        NodeConfigParser::from_content(json5).unwrap_err();
     }
 
     #[test]
@@ -1066,7 +1050,7 @@ mod tests {
                 run_cmd: ["./bin"],
             },
         }"#;
-        assert!(NodeConfigParser::from_content(json5).is_err());
+        NodeConfigParser::from_content(json5).unwrap_err();
     }
 
     #[test]
@@ -1083,7 +1067,7 @@ mod tests {
                 run_cmd: [],
             },
         }"#;
-        assert!(matches!(parse_error(json5), ParsingError::EmptyRunCmd));
+        assert_matches!(parse_error(json5), ParsingError::EmptyRunCmd);
     }
 
     /// Top-level system directories (e.g. `/tmp`) are blocked as mount sources
@@ -1108,8 +1092,9 @@ mod tests {
             },
         }"#;
         let error = parse_error(json5);
-        assert!(
-            matches!(&error, ParsingError::InvalidMountPath(_, _)),
+        assert_matches!(
+            &error,
+            ParsingError::InvalidMountPath(_, _),
             "expected InvalidMountPath error, got: {error:?}"
         );
     }
@@ -1135,8 +1120,9 @@ mod tests {
             },
         }"#;
         let error = parse_error(json5);
-        assert!(
-            matches!(&error, ParsingError::InvalidMountPath(_, _)),
+        assert_matches!(
+            &error,
+            ParsingError::InvalidMountPath(_, _),
             "expected InvalidMountPath error for /private/tmp, got: {error:?}"
         );
     }
@@ -1270,12 +1256,10 @@ mod tests {
             },
         }"#;
         let error = parse_error(json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
                 ParsingError::InvalidMountPathParameterRef(ref_path, _)
-                    if ref_path == "nonexistent"
-            ),
+                    if ref_path == "nonexistent",
             "expected InvalidMountPathParameterRef error, got: {error:?}"
         );
     }
@@ -1301,12 +1285,10 @@ mod tests {
             },
         }"#;
         let error = parse_error(json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
                 ParsingError::InvalidMountPathParameterRef(ref_path, reason)
-                    if ref_path == "frame_rate" && reason.contains("string")
-            ),
+                    if ref_path == "frame_rate" && reason.contains("string"),
             "expected InvalidMountPathParameterRef error about string type, got: {error:?}"
         );
     }
@@ -1419,18 +1401,9 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
         let c = container(&config);
-        assert_eq!(
-            c.apptainer_build_extra_args.as_deref().unwrap(),
-            &[] as &[String]
-        );
-        assert_eq!(
-            c.apptainer_run_extra_args.as_deref().unwrap(),
-            &[] as &[String]
-        );
-        assert_eq!(
-            c.lima_shell_extra_args.as_deref().unwrap(),
-            &[] as &[String]
-        );
+        assert_eq!(c.apptainer_build_extra_args.as_deref(), Some([].as_slice()));
+        assert_eq!(c.apptainer_run_extra_args.as_deref(), Some([].as_slice()));
+        assert_eq!(c.lima_shell_extra_args.as_deref(), Some([].as_slice()));
     }
 
     /// A manifest with the given `execution.endpoints` body, the rest minimal.
@@ -1678,11 +1651,9 @@ mod tests {
             let error = parse_error(&config_with_setup_key(&format!(
                 "setup_timeout_secs: {written},"
             )));
-            assert!(
-                matches!(
+            assert_matches!(
                     &error,
-                    ParsingError::SetupTimeoutOutOfRange { written: refused } if refused == shown
-                ),
+                    ParsingError::SetupTimeoutOutOfRange { written: refused } if refused == shown,
                 "{written}: {error:?}"
             );
             assert_eq!(
@@ -1754,10 +1725,7 @@ mod tests {
                 run_cmd: ["./bin"],
             },
         }"#;
-        assert!(matches!(
-            parse_error(json5),
-            ParsingError::MissingExecutionLanguage
-        ));
+        assert_matches!(parse_error(json5), ParsingError::MissingExecutionLanguage);
     }
 
     #[test]
@@ -1829,7 +1797,7 @@ mod tests {
         assert_eq!(peppy_schema, crate::schema::PeppySchema::NodeV1);
         assert_eq!(manifest.name.as_str(), "my_node");
         assert_eq!(manifest.tag, "v1");
-        assert_eq!(interfaces, crate::node::Interfaces::default());
+        assert_eq!(interfaces, Interfaces::default());
         assert_eq!(framework, crate::node::NodeFramework::default());
         assert_eq!(
             execution.run_cmd.as_deref(),
@@ -1897,15 +1865,13 @@ mod tests {
         let json5 = node_with(
             r#"{ name: "uvc_camera", tag: "v1", link_id: "cam_a" },
                { name: "uvc_camera", tag: "v1", link_id: "cam_b" }"#,
-            r#"{}"#,
+            r"{}",
         );
         let error = parse_error(&json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
                 ParsingError::DuplicateImplementsContract { name, tag }
-                    if name == "uvc_camera" && tag == "v1"
-            ),
+                    if name == "uvc_camera" && tag == "v1",
             "expected DuplicateImplementsContract, got: {error:?}"
         );
     }
@@ -1915,15 +1881,13 @@ mod tests {
         let json5 = node_with(
             r#"{ name: "uvc_camera", tag: "v-1", link_id: "cam_a" },
                { name: "uvc_camera", tag: "v_1", link_id: "cam_b" }"#,
-            r#"{}"#,
+            r"{}",
         );
         let error = parse_error(&json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
                 ParsingError::ImplementsTagSanitizationCollision { name, .. }
-                    if name == "uvc_camera"
-            ),
+                    if name == "uvc_camera",
             "expected ImplementsTagSanitizationCollision, got: {error:?}"
         );
     }
@@ -1948,7 +1912,7 @@ mod tests {
     fn a_contract_that_two_slots_pin_to_two_sha256_values_is_rejected() {
         let json5 = node_with(
             &format!(r#"{{ name: "uvc_camera", tag: "v1", link_id: "cam", sha256: "{SHA_A}" }}"#),
-            r#"{}"#,
+            r"{}",
         )
         .replace(
             "implements:",
@@ -1986,12 +1950,10 @@ mod tests {
             }}"#
         ));
         let error = parse_error(&json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
                 ParsingError::DocumentPinnedTwice { kind: DocumentKind::Pairing, name, .. }
-                    if name == "arm_link"
-            ),
+                    if name == "arm_link",
             "expected DocumentPinnedTwice, got: {error:?}"
         );
     }
@@ -2046,11 +2008,9 @@ mod tests {
             execution: { language: "rust", run_cmd: ["./bin"] },
         }"#;
         let error = parse_error(json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
-                ParsingError::DuplicateLinkId(id) if id == "shared"
-            ),
+                ParsingError::DuplicateLinkId(id) if id == "shared",
             "expected DuplicateLinkId across implements+depends_on, got: {error:?}"
         );
     }
@@ -2083,19 +2043,17 @@ mod tests {
             }}"#
             );
             let error = parse_error(&json5);
-            assert!(
-                matches!(
+            assert_matches!(
                     &error,
                     ParsingError::EmitsLinkIdNotImplements { link_id, found_in: f, .. }
-                        if link_id == "dep" && f == found_in
-                ),
+                        if link_id == "dep" && f == found_in,
                 "expected EmitsLinkIdNotImplements({found_in}), got: {error:?}"
             );
         }
     }
 
     /// Wraps a pairing slot + interfaces block in a minimal node config. The
-    /// slot is always `arm_link/v1` under link_id `arm`.
+    /// slot is always `arm_link/v1` under `link_id` `arm`.
     fn node_with_pairing(interfaces: &str) -> String {
         format!(
             r#"{{
@@ -2155,12 +2113,10 @@ mod tests {
             ),
         ] {
             let error = parse_error(&node_with_pairing(interfaces));
-            assert!(
-                matches!(
+            assert_matches!(
                     &error,
                     ParsingError::EmitsLinkIdNotImplements { section: s, link_id, found_in }
-                        if s == section && link_id == "arm" && found_in == "pairings"
-                ),
+                        if s == section && link_id == "arm" && found_in == "pairings",
                 "expected EmitsLinkIdNotImplements({section}) naming depends_on.pairings, got: {error:?}"
             );
         }
@@ -2181,12 +2137,10 @@ mod tests {
             ),
         ] {
             let error = parse_error(&node_with_pairing(interfaces));
-            assert!(
-                matches!(
+            assert_matches!(
                     &error,
                     ParsingError::LinkedEntryWithInlineShape { section: s, field: f, link_id, .. }
-                        if s == section && f == field && link_id == "arm"
-                ),
+                        if s == section && f == field && link_id == "arm",
                 "expected LinkedEntryWithInlineShape({field}), got: {error:?}"
             );
         }
@@ -2201,12 +2155,10 @@ mod tests {
             ] } }"#,
         );
         let error = parse_error(&json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
                 ParsingError::DuplicateInterfaceEntry { key, .. }
-                    if key == "arm:joint_commands"
-            ),
+                    if key == "arm:joint_commands",
             "expected DuplicateInterfaceEntry, got: {error:?}"
         );
     }
@@ -2218,12 +2170,10 @@ mod tests {
             r#"{ topics: { emits: [{ link_id: "typo", name: "video_stream" }] } }"#,
         );
         let error = parse_error(&json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
                 ParsingError::UndeclaredEmitsLinkId { link_id, .. }
-                    if link_id == "typo"
-            ),
+                    if link_id == "typo",
             "expected UndeclaredEmitsLinkId, got: {error:?}"
         );
     }
@@ -2240,12 +2190,10 @@ mod tests {
             }"#,
         );
         let error = parse_error(&json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
                 ParsingError::ConsumedItemReferencesImplementsLinkId { link_id }
-                    if link_id == "cam"
-            ),
+                    if link_id == "cam",
             "expected ConsumedItemReferencesImplementsLinkId, got: {error:?}"
         );
     }
@@ -2262,12 +2210,10 @@ mod tests {
             }"#,
         );
         let error = parse_error(&json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
                 ParsingError::DuplicateInterfaceEntry { key, .. }
-                    if key == "stream"
-            ),
+                    if key == "stream",
             "expected DuplicateInterfaceEntry, got: {error:?}"
         );
     }
@@ -2284,12 +2230,10 @@ mod tests {
             }"#,
         );
         let error = parse_error(&json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
                 ParsingError::DuplicateInterfaceEntry { key, .. }
-                    if key == "cam:video_stream"
-            ),
+                    if key == "cam:video_stream",
             "expected DuplicateInterfaceEntry, got: {error:?}"
         );
     }
@@ -2324,12 +2268,10 @@ mod tests {
             }"#,
         );
         let error = parse_error(&json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
                 ParsingError::LinkedEntryWithInlineShape { field, .. }
-                    if field == "qos_profile"
-            ),
+                    if field == "qos_profile",
             "expected LinkedEntryWithInlineShape, got: {error:?}"
         );
     }
@@ -2341,12 +2283,10 @@ mod tests {
             r#"{ topics: { emits: [{ message_format: { x: "f64" } }] } }"#,
         );
         let error = parse_error(&json5);
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
                 ParsingError::EmptyInterfaceName { section }
-                    if section == "topics.emits"
-            ),
+                    if section == "topics.emits",
             "expected EmptyInterfaceName, got: {error:?}"
         );
     }
@@ -2536,11 +2476,9 @@ mod tests {
             ),
         ] {
             let error = parse_error(&node_with("", interfaces));
-            assert!(
-                matches!(
+            assert_matches!(
                     &error,
-                    ParsingError::RefineWithoutLinkId { section: s, .. } if s == section
-                ),
+                    ParsingError::RefineWithoutLinkId { section: s, .. } if s == section,
                 "{section}: expected RefineWithoutLinkId, got: {error:?}"
             );
         }
@@ -2579,12 +2517,10 @@ mod tests {
                 }}"#
             );
             let error = parse_error(&json5);
-            assert!(
-                matches!(
+            assert_matches!(
                     &error,
                     ParsingError::RefineOnNodeSlot { section: s, link_id, .. }
-                        if s == section && link_id == "cam"
-                ),
+                        if s == section && link_id == "cam",
                 "{section}: expected RefineOnNodeSlot, got: {error:?}"
             );
         }
@@ -2651,7 +2587,7 @@ mod tests {
     }"#;
 
     /// A daemon target parses beside the other slot lists, and the node
-    /// consumes members of its interface through its link_id, as it does
+    /// consumes members of its interface through its `link_id`, as it does
     /// through a contract slot.
     #[test]
     fn a_daemon_target_parses_and_its_members_are_consumed_through_its_link_id() {
@@ -2732,7 +2668,7 @@ mod tests {
         }
     }
 
-    /// The link_id of a daemon target shares the one link_id namespace of
+    /// The `link_id` of a daemon target shares the one `link_id` namespace of
     /// `depends_on` and `implements`.
     #[test]
     fn the_link_id_of_a_daemon_target_clashes_with_every_other_slot() {
@@ -2747,8 +2683,7 @@ mod tests {
                 ),
                 FLEET_LEASE_HOLDER,
             ));
-            assert!(
-                matches!(&error, ParsingError::DuplicateLinkId(id) if id == "fleet"),
+            assert_matches!(&error, ParsingError::DuplicateLinkId(id) if id == "fleet",
                 "{other}: expected DuplicateLinkId(\"fleet\"), got: {error:?}"
             );
         }
@@ -2764,8 +2699,7 @@ mod tests {
                 execution: {{ language: "rust", run_cmd: ["./bin"] }},
             }}"#
         ));
-        assert!(
-            matches!(&error, ParsingError::DuplicateLinkId(id) if id == "fleet"),
+        assert_matches!(&error, ParsingError::DuplicateLinkId(id) if id == "fleet",
             "expected DuplicateLinkId(\"fleet\") across implements and daemon, got: {error:?}"
         );
     }
@@ -2781,31 +2715,27 @@ mod tests {
             ] }"#,
             FLEET_LEASE_HOLDER,
         ));
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
                 ParsingError::DuplicateDaemonInterface { name, first, second }
-                    if name == "robot_leases" && first == "fleet" && second == "other_fleet"
-            ),
+                    if name == "robot_leases" && first == "fleet" && second == "other_fleet",
             "expected DuplicateDaemonInterface, got: {error:?}"
         );
     }
 
     /// A daemon target is a slot whose members a node consumes: a produced
     /// entry naming it is refused with the list it is declared in, and an
-    /// undeclared link_id in a consumed entry stays an undeclared link_id.
+    /// undeclared `link_id` in a consumed entry stays an undeclared `link_id`.
     #[test]
     fn a_daemon_target_is_consumed_and_never_produced() {
         let error = parse_error(&daemon_target_node(
             r#"{ daemon: [{ name: "robot_leases", tag: "v1", link_id: "fleet" }] }"#,
             r#"{ services: { exposes: [{ link_id: "fleet", name: "list" }] } }"#,
         ));
-        assert!(
-            matches!(
+        assert_matches!(
                 &error,
                 ParsingError::EmitsLinkIdNotImplements { link_id, found_in, .. }
-                    if link_id == "fleet" && found_in == "daemon"
-            ),
+                    if link_id == "fleet" && found_in == "daemon",
             "expected EmitsLinkIdNotImplements from depends_on.daemon, got: {error:?}"
         );
 
@@ -2822,11 +2752,9 @@ mod tests {
             crate::node::MissingDependencyPolicy::RequireResolvable,
             |_, _| None,
         );
-        assert!(
-            matches!(
+        assert_matches!(
                 errors.as_slice(),
-                [ParsingError::UndeclaredLinkId { link_id, .. }] if link_id == "fleets"
-            ),
+                [ParsingError::UndeclaredLinkId { link_id, .. }] if link_id == "fleets",
             "expected UndeclaredLinkId(\"fleets\"), got: {errors:?}"
         );
     }

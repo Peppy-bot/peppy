@@ -56,6 +56,7 @@ pub const SETS_READ_WHOLE: &MemberAddressing = &MemberAddressing::WholeSet;
 /// validation. Built by the launcher with borrowed references to avoid
 /// cloning the full planned-deployment graph; consumed by
 /// [`validate_bindings`].
+#[derive(Debug)]
 pub struct BindingValidationItem<'a> {
     pub node_name: &'a str,
     pub node_tag: &'a str,
@@ -152,7 +153,7 @@ pub struct ValidatedBindings {
 ///    [`ParsingError::DuplicateInstanceIdAcrossStack`].
 /// 5. Every declared slot resolves. A `one` / `zero_or_one` /
 ///    `one_or_more` slot with no `links` entry emits one
-///    [`ParsingError::BindingSlotUnfulfilled`] per slot (in link_id order);
+///    [`ParsingError::BindingSlotUnfulfilled`] per slot (in `link_id` order);
 ///    a `zero_or_more` slot with no entry resolves to an explicit empty
 ///    set, and so does a `zero_or_one` slot the deployment wrote vacant.
 /// 6. A consumer whose addressing is [`MemberAddressing::ByCopy`] takes
@@ -585,8 +586,9 @@ fn slot_matches_producer(slot: &SlotMeta<'_>, producer: &BindingValidationItem<'
 mod tests {
     use super::super::compose::{CopyInstance, CopyRecord};
     use super::*;
+    use std::assert_matches;
 
-    /// The launching daemon's core_node stamped into every resolved
+    /// The launching daemon's `core_node` stamped into every resolved
     /// binding by these tests.
     const TEST_CORE: &str = "core_a";
 
@@ -711,6 +713,10 @@ mod tests {
     }
 
     /// Shorthand for the common single-producer expectation.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a test shorthand for a value that the code under test gives wrapped"
+    )]
     fn single(core_node: &str, instance_id: &str) -> Option<Vec<ProducerRef>> {
         Some(vec![ProducerRef::new(core_node, instance_id)])
     }
@@ -719,8 +725,10 @@ mod tests {
     /// the CLI's flag accumulation would build it.
     fn flags(targets: &[&str]) -> super::super::types::LinkValue {
         super::super::types::LinkValue::Bound(Selection::Flags(
-            super::super::types::LinkTargets::new(targets.iter().map(|t| t.to_string()).collect())
-                .expect("test targets are unique"),
+            super::super::types::LinkTargets::new(
+                targets.iter().map(ToString::to_string).collect(),
+            )
+            .expect("test targets are unique"),
         ))
     }
 
@@ -804,7 +812,7 @@ mod tests {
     }
 
     /// Rule 5: every unfulfilled slot on an instance gets its own error,
-    /// in link_id order, and a slot WITH a binding entry never
+    /// in `link_id` order, and a slot WITH a binding entry never
     /// double-reports. `cons1` declares three slots and binds only
     /// `middle`.
     #[test]
@@ -881,8 +889,8 @@ mod tests {
 
     /// Depends-on fixture with one slot per cardinality, all expecting
     /// `camera:v1` nodes: `main` (one, omitted), `wrist_camera`
-    /// (zero_or_one), `cameras` (one_or_more), `spare_cameras`
-    /// (zero_or_more).
+    /// (`zero_or_one`), `cameras` (`one_or_more`), `spare_cameras`
+    /// (`zero_or_more`).
     fn all_cardinalities_depends_on() -> DependsOn {
         parse_depends_on(
             r#"{
@@ -990,7 +998,7 @@ mod tests {
             ("main", Cardinality::One, r#"wrist: "prod1""#),
             ("wrist", Cardinality::ZeroOrOne, r#"main: "prod1""#),
         ] {
-            for producers in [r#"["prod1", "prod2"]"#, r#"["prod1"]"#, r#"[]"#] {
+            for producers in [r#"["prod1", "prod2"]"#, r#"["prod1"]"#, r"[]"] {
                 let cons_instances = parse_instances(&format!(
                     r#"[{{
                         instance_id: "cons1",
@@ -1353,10 +1361,9 @@ mod tests {
             item("camera", "v1", &prod_instances, None),
         ];
         let out = validate_bindings(&items, &all_local(), &no_copies());
-        assert!(matches!(
+        assert_matches!(
             out.errors.as_slice(),
-            [ParsingError::BindingCardinalityUnmet { binding, .. }] if binding == "cameras"
-        ));
+            [ParsingError::BindingCardinalityUnmet { binding, .. }] if binding == "cameras");
     }
 
     /// Rule 3 runs per bound instance on a multi slot: one bad target
@@ -1760,8 +1767,8 @@ mod tests {
         assert_eq!(instance_id, "ghost_producer");
     }
 
-    /// Rule 4: stack-wide instance_id duplicate across different
-    /// (node_name, node_tag).
+    /// Rule 4: stack-wide `instance_id` duplicate across different
+    /// (`node_name`, `node_tag`).
     #[test]
     fn rule4_rejects_stack_wide_duplicate_instance_id() {
         let camera_instances = parse_instances(r#"[{ instance_id: "shared_inst" }]"#);
@@ -2024,7 +2031,7 @@ mod tests {
         // instance and never repeated at the point of use.
         let placements = Placements::new(
             core_node("daemon_west"),
-            std::collections::BTreeMap::from([("prod2".to_owned(), core_node("daemon_east"))]),
+            BTreeMap::from([("prod2".to_owned(), core_node("daemon_east"))]),
         );
         let out = validate_bindings(&items, &placements, &no_copies());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
@@ -2254,8 +2261,7 @@ mod tests {
         let copies = CopyMembership::of(&[copy_of("alpha", &["left"])]);
         let out = validate_bindings(&items, &all_local(), &copies);
         assert_eq!(out.errors.len(), 1, "unexpected errors: {:?}", out.errors);
-        assert!(
-            matches!(&out.errors[0], ParsingError::UnknownInstanceId { instance_id, .. } if instance_id == "ghost"),
+        assert_matches!(&out.errors[0], ParsingError::UnknownInstanceId { instance_id, .. } if instance_id == "ghost",
             "got {:?}",
             out.errors[0]
         );

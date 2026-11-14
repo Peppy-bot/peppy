@@ -20,7 +20,7 @@ use crate::commands::table::render_columns;
 use crate::context::AppContext;
 use crate::error::Result;
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum WorkspaceCommands {
     /// Show the selected workspace
     Show {
@@ -43,6 +43,7 @@ pub enum WorkspaceCommands {
     Clear,
 }
 
+#[derive(Debug)]
 pub struct WorkspaceCommand {
     pub command: WorkspaceCommands,
     pub api_url: Option<String>,

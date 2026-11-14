@@ -36,8 +36,8 @@ mod tests {
 
     #[test]
     fn accepts_valid_name() {
-        assert!(validate_repo_node_name("robot_brain", "name").is_ok());
-        assert!(validate_repo_node_name("Camera-V2", "name").is_ok());
+        validate_repo_node_name("robot_brain", "name").unwrap();
+        validate_repo_node_name("Camera-V2", "name").unwrap();
     }
 
     #[test]
@@ -52,10 +52,10 @@ mod tests {
 
     #[test]
     fn accepts_valid_tag() {
-        assert!(validate_repo_node_tag("v1", "tag").is_ok());
-        assert!(validate_repo_node_tag("donut", "tag").is_ok());
-        assert!(validate_repo_node_tag("v2-rc1", "tag").is_ok());
-        assert!(validate_repo_node_tag("My_Tag-9", "tag").is_ok());
+        validate_repo_node_tag("v1", "tag").unwrap();
+        validate_repo_node_tag("donut", "tag").unwrap();
+        validate_repo_node_tag("v2-rc1", "tag").unwrap();
+        validate_repo_node_tag("My_Tag-9", "tag").unwrap();
     }
 
     #[test]

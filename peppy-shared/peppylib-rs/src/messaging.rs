@@ -85,6 +85,7 @@ use pmi::{
     ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
+use std::fmt;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -145,6 +146,17 @@ pub struct MessengerHandle {
     call_check: Option<Arc<dyn CallCheck>>,
 }
 
+impl fmt::Debug for MessengerHandle {
+    /// Shows whether the handle signs and checks calls: the signer holds a
+    /// key, and the check is a trait object, which has no text.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MessengerHandle")
+            .field("signs_calls", &self.call_signer.is_some())
+            .field("checks_calls", &self.call_check.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 /// The liveliness tokens of the identities a handle sends goals as, one per
 /// `(core_node, instance_id)`, declared at the first goal the handle sends
 /// as that identity. The provider of each goal watches the token of its
@@ -169,7 +181,7 @@ impl ClientPresenceTokens {
 
 /// 16 hex chars (64 bits) of correlation entropy, salted with `domain` so
 /// IDs from different namespaces (request, goal, ...) cannot collide on a
-/// timestamp + thread_id tie. A process-wide counter is folded in to keep
+/// timestamp + `thread_id` tie. A process-wide counter is folded in to keep
 /// IDs unique even when two calls land on the same thread within a single
 /// clock tick.
 pub(crate) fn generate_short_id(domain: &str) -> String {
@@ -177,8 +189,7 @@ pub(crate) fn generate_short_id(domain: &str) -> String {
 
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
+        .map_or_default(|d| d.as_nanos());
     let thread_id = std::thread::current().id();
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
 
@@ -199,6 +210,7 @@ pub(crate) fn generate_short_id(domain: &str) -> String {
 
 /// Transport for a [`MessengerConnect`]: plaintext TCP (`tcp/`, the default) or
 /// TLS (`tls/`), the latter validated against a [`pmi::TlsConfig`].
+#[derive(Debug)]
 enum Transport {
     Tcp,
     Tls(pmi::TlsConfig),
@@ -209,6 +221,7 @@ enum Transport {
 /// [`SessionScope::Discovery`]: the gossip seed list, the gossip toggle, and
 /// subscriber buffer sizing. The workspace namespace travels on
 /// [`MessengerConnect`] itself, not here.
+#[derive(Debug)]
 struct DiscoveryParams {
     seed_peers: Vec<String>,
     gossip: bool,
@@ -218,6 +231,7 @@ struct DiscoveryParams {
 /// How a [`MessengerConnect`] session attaches to the messaging fabric at
 /// `host:port`. Selected by [`MessengerConnect::scope`]; the default is
 /// [`SessionKind::GossipPeer`].
+#[derive(Debug)]
 enum SessionKind {
     /// Gossip peer: binds a wildcard listener and forms direct links with
     /// peers discovered via gossip seeded by `host:port`.
@@ -232,10 +246,11 @@ enum SessionKind {
 }
 
 /// How a [`MessengerConnect`] session resolves its workspace namespace, and
-/// which [`SessionKind`] it opens. Passed to [`MessengerConnect::scope`]. The
+/// which `SessionKind` it opens. Passed to [`MessengerConnect::scope`]. The
 /// two cases are mutually exclusive *by construction*: a session is either
 /// pinned to an explicit namespace or driven by a node's discovery config,
 /// never both.
+#[derive(Debug)]
 pub enum SessionScope<'a> {
     /// Open a pure client session under an explicit workspace namespace
     /// instead of the `local` default: no listener, no gossip
@@ -256,9 +271,10 @@ pub enum SessionScope<'a> {
 
 /// Fluent builder for opening a [`MessengerHandle`] session, returned by
 /// [`MessengerHandle::connect`]. Await it directly (it implements
-/// [`IntoFuture`](std::future::IntoFuture)) to perform the connect. Every
+/// [`IntoFuture`]) to perform the connect. Every
 /// builder method is infallible; the only failure point is the awaited connect,
 /// which yields `Result<MessengerHandle>`.
+#[derive(Debug)]
 pub struct MessengerConnect {
     host: String,
     port: u16,
@@ -274,6 +290,7 @@ impl MessengerConnect {
     /// and re-declares its subscriptions/queryables instead of going dead. Used
     /// by long-lived node processes; short-lived / CLI connections leave it off
     /// so a dead daemon fails fast rather than blocking on connection retries.
+    #[must_use]
     pub fn reconnecting(mut self) -> Self {
         self.reconnect = true;
         self
@@ -282,17 +299,19 @@ impl MessengerConnect {
     /// Dial the router over TLS (`tls/`), validating its certificate against the
     /// trust configured in `tls`, instead of the plaintext `tcp/` default. Used
     /// by an out-of-band prober that connects to a router's `tls/` listener.
+    #[must_use]
     pub fn tls(mut self, tls: pmi::TlsConfig) -> Self {
         self.transport = Transport::Tls(tls);
         self
     }
 
     /// Set how the session resolves its workspace namespace, and which
-    /// [`SessionKind`] it opens. The two cases, an explicit
+    /// `SessionKind` it opens. The two cases, an explicit
     /// [`Namespace`](SessionScope::Namespace) or a node's
     /// [`DiscoveryConfig`](SessionScope::Discovery), are mutually exclusive by
     /// construction, so a session can never request both at once. Left unset, the
     /// session opens under the `local` default namespace as a gossip peer.
+    #[must_use]
     pub fn scope(mut self, scope: SessionScope<'_>) -> Self {
         match scope {
             SessionScope::Namespace(ns) => {
@@ -321,10 +340,9 @@ impl MessengerConnect {
     }
 }
 
-impl std::future::IntoFuture for MessengerConnect {
+impl IntoFuture for MessengerConnect {
     type Output = Result<MessengerHandle>;
-    type IntoFuture =
-        std::pin::Pin<Box<dyn std::future::Future<Output = Result<MessengerHandle>> + Send>>;
+    type IntoFuture = std::pin::Pin<Box<dyn Future<Output = Result<MessengerHandle>> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
@@ -386,7 +404,7 @@ impl std::future::IntoFuture for MessengerConnect {
 /// deadline, so a reply the producer already sent is never discarded for the
 /// caller's own scheduling latency. `None` when the deadline passes with the
 /// future still pending, which drops it.
-async fn within_service_deadline<F: std::future::Future>(
+async fn within_service_deadline<F: Future>(
     deadline: Option<Instant>,
     future: F,
 ) -> Option<F::Output> {
@@ -490,6 +508,7 @@ impl MessengerHandle {
     /// This handle, signing with `signer` each user request that it sends to
     /// a daemon: a raw service or action of a daemon, or a member of a daemon
     /// interface. The daemon refuses such a call without a signature.
+    #[must_use]
     pub fn signing_calls_with(mut self, signer: CallSigner) -> Self {
         self.call_signer = Some(Arc::new(signer));
         self
@@ -498,6 +517,7 @@ impl MessengerHandle {
     /// This handle, running `check` on each call that an endpoint of the
     /// handle receives, before its handler reads it. A daemon gives its
     /// session the check of its senders.
+    #[must_use]
     pub fn checking_calls_with(mut self, check: Arc<dyn CallCheck>) -> Self {
         self.call_check = Some(check);
         self
@@ -532,8 +552,8 @@ impl MessengerHandle {
         instance_id: &str,
     ) -> Result<ClientPresence> {
         let client = ClientPresence {
-            core_node: Segment::try_from(core_node).map_err(pmi::SenderTargetError::from)?,
-            instance_id: Segment::try_from(instance_id).map_err(pmi::SenderTargetError::from)?,
+            core_node: Segment::try_from(core_node).map_err(SenderTargetError::from)?,
+            instance_id: Segment::try_from(instance_id).map_err(SenderTargetError::from)?,
             generation: self.client_presence.generation.clone(),
         };
         let identity = (client.core_node.clone(), client.instance_id.clone());
@@ -590,7 +610,7 @@ impl MessengerHandle {
             .map_err(Error::PeppyMessagingInterface)
     }
 
-    /// Pre-bind a per-goal action-feedback publisher under the link_id the
+    /// Pre-bind a per-goal action-feedback publisher under the `link_id` the
     /// consumer targeted in the goal request.
     pub(crate) async fn declare_action_feedback_publisher(
         &self,
@@ -808,13 +828,12 @@ impl MessengerHandle {
         let message = Message::from(reply.into_message());
         match kind {
             ServiceReplyKind::Failure => {
-                let failure =
-                    pmi::Failure::decode(message.payload_bytes().as_ref()).map_err(|err| {
-                        Error::InternalEncodingError {
-                            identifier: sender.to_service_name().to_string(),
-                            reason: format!("the error reply is not a failure: {err}"),
-                        }
-                    })?;
+                let failure = Failure::decode(message.payload_bytes().as_ref()).map_err(|err| {
+                    Error::InternalEncodingError {
+                        identifier: sender.to_service_name().to_string(),
+                        reason: format!("the error reply is not a failure: {err}"),
+                    }
+                })?;
                 Err(Error::ServiceFailed {
                     instance_id: sender.target_instance_id().map(str::to_string),
                     service_name: sender.to_service_name().to_string(),
@@ -848,7 +867,7 @@ impl MessengerHandle {
         // from dropping feedback or the end of the stream on the way. A
         // caller that reads slowly does not slow the publisher: its feedback
         // buffer never waits (see `pmi::FeedbackBuffer`).
-        let feedback_publisher_factory = actions::ActionFeedbackPublisherFactory::new(
+        let feedback_publisher_factory = ActionFeedbackPublisherFactory::new(
             self.clone(),
             recv.clone(),
             PublisherQoS::Important,

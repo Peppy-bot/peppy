@@ -162,10 +162,10 @@ mod tests {
     /// Spawns a one-shot stub daemon on `path` that reads the request line and
     /// runs `reply` with it, returning the request the stub observed.
     fn stub_daemon(
-        path: PathBuf,
+        path: &PathBuf,
         reply: impl FnOnce(&str, &mut UnixStream) + Send + 'static,
     ) -> std::thread::JoinHandle<String> {
-        let listener = UnixListener::bind(&path).expect("bind stub socket");
+        let listener = UnixListener::bind(path).expect("bind stub socket");
         std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept");
             let mut reader = BufReader::new(stream.try_clone().expect("clone"));
@@ -180,7 +180,7 @@ mod tests {
     fn poke_sends_refederate_and_parses_ok() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(FEDERATION_CONTROL_SOCK);
-        let handle = stub_daemon(path.clone(), |_req, stream| {
+        let handle = stub_daemon(&path, |_req, stream| {
             stream
                 .write_all(b"{\"status\":\"ok\",\"applied\":\"tls/cap.example:7443\"}\n")
                 .unwrap();
@@ -215,7 +215,7 @@ mod tests {
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join(FEDERATION_CONTROL_SOCK);
-            let handle = stub_daemon(path.clone(), move |_req, stream| {
+            let handle = stub_daemon(&path, move |_req, stream| {
                 stream.write_all(reply.as_bytes()).unwrap();
             });
             let outcome = poke_refederate(&path, Duration::from_secs(5));
@@ -241,7 +241,7 @@ mod tests {
         let path = dir.path().join(FEDERATION_CONTROL_SOCK);
         // Stub accepts and reads the request but never writes a reply, then
         // sleeps past the client's deadline before dropping the connection.
-        let handle = stub_daemon(path.clone(), |_req, _stream| {
+        let handle = stub_daemon(&path, |_req, _stream| {
             std::thread::sleep(Duration::from_millis(400));
         });
         let outcome = poke_refederate(&path, Duration::from_millis(150));

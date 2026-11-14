@@ -66,7 +66,7 @@ pub(crate) async fn run_pinned_add(
         Err(e) => {
             return fail(
                 PeppyFailureKind::AttemptFailed,
-                format!("Failed to read nodes cache: {}", e),
+                format!("Failed to read nodes cache: {e}"),
             );
         }
     };
@@ -127,7 +127,7 @@ pub(crate) async fn run_pinned_add(
             (nodes, doc_pins_json5)
         }
         NodeSource::ResolveRef { name, tag } => {
-            announcer.line(format!("Resolving {}:{} from repo cache", name, tag));
+            announcer.line(format!("Resolving {name}:{tag} from repo cache"));
             if entries.is_empty() {
                 return fail(
                     PeppyFailureKind::PreconditionFailed,
@@ -233,7 +233,7 @@ async fn execute_pinned_batch(
         Err(e) => {
             return fail(
                 PeppyFailureKind::Rejected,
-                format!("Dependency resolution failed: {}", e),
+                format!("Dependency resolution failed: {e}"),
             );
         }
     };
@@ -455,7 +455,7 @@ async fn run_single_batched_add(
     .map_err(|e| {
         Failure::new(
             PeppyFailureKind::AttemptFailed,
-            format!("Failed to create sub-add log: {}", e),
+            format!("Failed to create sub-add log: {e}"),
         )
     })?;
     batch_announcer.line(format!("{name}:{tag} logs to {}", log.path().display()));
@@ -597,7 +597,7 @@ impl Drop for RollbackGuard {
                             {
                                 handle.write().set_pending_working_dir(guard);
                             }
-                            debug!("Rolled back batched replacement of {}:{}", name, tag)
+                            debug!("Rolled back batched replacement of {}:{}", name, tag);
                         }
                         Err(e) => warn!(
                             "Batch-add rollback (restore previous) failed for {}:{}: {}",
@@ -618,8 +618,7 @@ impl Drop for RollbackGuard {
 mod tests {
     use super::*;
     use daemon_config::repository::{
-        EntryOrigin, GitCommit, ItemName, ItemTag, ManifestFingerprint, PinKind, PinnedItem,
-        RepoRelativePath,
+        GitCommit, ItemName, ItemTag, ManifestFingerprint, PinnedItem, RepoRelativePath,
     };
 
     fn materialized(
@@ -661,7 +660,7 @@ mod tests {
                         .expect("valid path"),
                 },
             },
-            root_dir: std::path::PathBuf::from("/unused"),
+            root_dir: PathBuf::from("/unused"),
             config,
             is_root,
         }

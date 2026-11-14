@@ -17,7 +17,7 @@ use peppylib::{MessengerHandle, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::warn;
 
-pub async fn listen_for_repo_list(
+pub(crate) async fn listen_for_repo_list(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
@@ -54,6 +54,10 @@ pub async fn listen_for_repo_list(
 ///
 /// A request that does not decode is `rejected`; a repository list the
 /// daemon cannot read is `attempt_failed`.
+#[expect(
+    clippy::unused_async,
+    reason = "the listener calls a handler that returns a future"
+)]
 async fn handle_repo_list_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,
@@ -103,7 +107,7 @@ fn repo_entry(repo: &ListedRepo, status: Option<&RepoStatus>) -> RepoListRepoEnt
         label: repo.label.clone(),
         source_type: repo.source.kind(),
         last_read_unix_secs: status.and_then(|s| s.last_read_unix_secs),
-        retained: status.is_some_and(|s| s.is_retained()),
+        retained: status.is_some_and(RepoStatus::is_retained),
         failed_read: status
             .and_then(|s| s.last_failure.as_ref())
             .map(|f| wire_failed_read(&f.read_failure, &f.message)),

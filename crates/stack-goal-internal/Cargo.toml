@@ -7,6 +7,10 @@ name = "stack-goal"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 # The goals, their admission, feedback and result codecs, and the budgets.

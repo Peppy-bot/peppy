@@ -9,6 +9,7 @@ use peppylib::messaging::{
 };
 use peppylib::types::Payload;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter, ZenohAdapter};
+use std::assert_matches;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, oneshot};
@@ -19,7 +20,7 @@ use tokio::task::JoinHandle;
 fn answer_next_request(mut endpoint: ServiceEndpoint, response: Payload) -> JoinHandle<()> {
     tokio::spawn(async move {
         endpoint
-            .handle_next_request(|_request| async move { Ok(response) })
+            .handle_next_request(async |_request| Ok(response))
             .await
             .expect("the endpoint answers its request");
     })
@@ -96,11 +97,11 @@ async fn a_failure_answer_reaches_the_caller_with_its_kind_and_message() {
     let answer = expected.clone();
     let handler = tokio::spawn(async move {
         service
-            .handle_next_request(|_request| async move { Err(answer) })
+            .handle_next_request(async |_request| Err(answer))
             .await
             .expect("the endpoint answers its first request");
         service
-            .handle_next_request(|request| async move { Ok(request.message().payload()) })
+            .handle_next_request(async |request| Ok(request.message().payload()))
             .await
             .expect("the endpoint answers its second request");
     });
@@ -143,7 +144,7 @@ async fn a_failure_answer_reaches_the_caller_with_its_kind_and_message() {
 async fn queryable_declarations(session: &Mutex<Messenger>) -> Vec<String> {
     match &session.lock().await.adapter {
         MessengerAdapter::Mock(adapter) => adapter.queryable_declarations(),
-        _ => unreachable!("the session is a mock"),
+        MessengerAdapter::Zenoh(_) => unreachable!("the session is a mock"),
     }
 }
 
@@ -174,7 +175,7 @@ async fn an_endpoint_that_handles_its_requests_answers_calls_with_no_deadline_ba
     .expect("listen should succeed");
     let serving = tokio::spawn(async move {
         endpoint
-            .handle_requests(|request| async move { Ok(request.message().payload()) })
+            .handle_requests(async |request| Ok(request.message().payload()))
             .await
     });
     let producer = ProducerRef::new(core_node, instance_id);
@@ -212,8 +213,9 @@ async fn an_endpoint_that_handles_its_requests_answers_calls_with_no_deadline_ba
     let error = call(b"third")
         .await
         .expect_err("no queryable receives the call");
-    assert!(
-        matches!(error, PeppyError::ServiceUnreachable { .. }),
+    assert_matches!(
+        error,
+        PeppyError::ServiceUnreachable { .. },
         "a call with no deadline to a service that does not listen is unreachable: {error:?}"
     );
 }
@@ -396,7 +398,7 @@ async fn service_contract_tag_hyphen_normalized() {
 }
 
 /// Discover-then-pin safety: when a consumer issues a wildcard
-/// `ServiceMessenger::poll` (target_instance_id = None) against two producers
+/// `ServiceMessenger::poll` (`target_instance_id` = None) against two producers
 /// exposing the same `(name, tag)`, only the discovered producer must run its
 /// user handler. The other receives only the discovery probe (filtered
 /// server-side before the handler runs) and stays idle.
@@ -437,7 +439,7 @@ async fn service_wildcard_poll_runs_handler_on_winner_only() {
         handler_count: Arc<AtomicUsize>,
         ready: oneshot::Sender<()>,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
-    ) -> tokio::task::JoinHandle<()> {
+    ) -> JoinHandle<()> {
         let handle = MessengerHandle::connect(&host, port)
             .await
             .expect("connect");

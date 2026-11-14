@@ -422,13 +422,15 @@ fn refuse_variables_given_two_values(
             .find(|entry| {
                 entry.target == id && matches!(entry.change, AppliedChange::EnvFromLaunch { .. })
             })
-            .map(|entry| format!("the adjustment in {}", entry.origin))
-            .unwrap_or_else(|| {
-                let document = defined
-                    .get(id)
-                    .expect("every instance of the unit is defined once");
-                format!("its entry in {document}")
-            })
+            .map_or_else(
+                || {
+                    let document = defined
+                        .get(id)
+                        .expect("every instance of the unit is defined once");
+                    format!("its entry in {document}")
+                },
+                |entry| format!("the adjustment in {}", entry.origin),
+            )
     };
     let mut found = Vec::new();
     for instance in deployments

@@ -21,6 +21,7 @@
 
 mod common;
 use common::{RECV_TIMEOUT, ZENOH_SERIAL, next_message_within, receiver, sender, test_node_target};
+use std::assert_matches;
 
 use bytes::Bytes;
 use config::node::TopicRetention;
@@ -472,7 +473,9 @@ async fn joins_during_a_publish_loop_read_an_increasing_stream_up_to_the_newest_
                 let subscription = subscribe(&subscriber_session, &topic, latest(depth)).await;
                 let values = next_values(&subscription, READS_PER_JOIN, "a value").await;
                 assert!(
-                    values.windows(2).all(|pair| pair[0] < pair[1]),
+                    values
+                        .array_windows()
+                        .all(|[previous, next]| previous < next),
                     "{topology:?}, depth {depth}, join {join}: {values:?} is not increasing"
                 );
             }
@@ -678,11 +681,9 @@ async fn a_second_declaration_states_the_same_retention_and_qos() {
         .expect("the same retention and QoS share the publisher");
 
     let refused = declare(&session, &topic, PublisherQoS::Standard, latest(3));
-    assert!(
-        matches!(
-            refused,
-            Err(PeppyMessagingInterfaceError::RetainingTopicMismatch { .. })
-        ),
+    assert_matches!(
+        refused.err(),
+        Some(PeppyMessagingInterfaceError::RetainingTopicMismatch { .. }),
         "another depth should be refused"
     );
 
@@ -700,11 +701,9 @@ async fn a_second_declaration_states_the_same_retention_and_qos() {
         PublisherQoS::Standard,
         latest(1),
     );
-    assert!(
-        matches!(
-            refused,
-            Err(PeppyMessagingInterfaceError::RetainingTopicMismatch { .. })
-        ),
+    assert_matches!(
+        refused.err(),
+        Some(PeppyMessagingInterfaceError::RetainingTopicMismatch { .. }),
         "a retaining declaration after a live-only one should be refused"
     );
     let one_shot = session
@@ -715,11 +714,9 @@ async fn a_second_declaration_states_the_same_retention_and_qos() {
             true,
         )
         .await;
-    assert!(
-        matches!(
-            one_shot,
-            Err(PeppyMessagingInterfaceError::RetainingTopicMismatch { .. })
-        ),
+    assert_matches!(
+        one_shot,
+        Err(PeppyMessagingInterfaceError::RetainingTopicMismatch { .. }),
         "a one-shot publish on a retaining topic should be refused"
     );
 }
@@ -814,7 +811,7 @@ async fn starting_the_session_again_forgets_its_retaining_topics() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_subscriber_that_reconnects_reads_the_current_value_then_live_values() {
     /// Covers the sessions' reconnect backoff; only a failure waits this long.
-    const RECONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+    const RECONNECT_TIMEOUT: Duration = Duration::from_mins(1);
     const TOPIC: &str = "reconnect";
     let _lock = ZENOH_SERIAL.lock().await;
     let mut router = start_router().await;

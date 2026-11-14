@@ -25,11 +25,6 @@ use crate::generator::golden_support::{
     assert_matches_golden, full_action_messages, parse, peer, push_artifact_section, push_section,
     register_bodyless_dependency, register_own_emitted_topics, register_own_services_and_actions,
 };
-use crate::generator::types::ConsumedActionMessage;
-use config::node::{
-    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    NativeExposedAction, NativeExposedService, TopicRetention,
-};
 
 const GOLDEN: GoldenDocument = GoldenDocument {
     relative_path: "src/generator/rust/tests/golden/rust_renderers.txt",
@@ -95,8 +90,8 @@ struct RenderedSurface {
 
 fn render_test_surfaces(mut generator: RustGenerator) -> RenderedSurface {
     let registry = std::mem::take(&mut generator.testgen);
-    super::super::mock::render(&mut generator, &registry).unwrap();
-    super::super::fixtures::render(&mut generator, &registry).unwrap();
+    mock::render(&mut generator, &registry).unwrap();
+    fixtures::render(&mut generator, &registry).unwrap();
     let mut schemas: Vec<CapnpSchema> = std::mem::take(&mut generator.schemas)
         .into_values()
         .collect();
@@ -158,7 +153,7 @@ fn render_everything() -> RenderedSurface {
 
         if cardinality == Cardinality::OneOrMore {
             let mut action: ConsumedAction = parse(CONSUMED_ACTION);
-            action.link_id = link_id.clone();
+            action.link_id = link_id;
             generator
                 .add_consumed_action(&action, &full_action_messages(), &dependency)
                 .unwrap();

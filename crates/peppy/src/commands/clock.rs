@@ -7,7 +7,7 @@ use crate::{context::AppContext, error::Error as CommandError};
 use clap::Subcommand;
 use std::sync::Arc;
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum ClockCommands {
     /// List the clock domains running across this federation: who supplies
     /// each one, whether it has started, and what reads it.
@@ -18,6 +18,7 @@ pub enum ClockCommands {
     },
 }
 
+#[derive(Debug)]
 pub struct ClockCommand {
     pub command: ClockCommands,
 }

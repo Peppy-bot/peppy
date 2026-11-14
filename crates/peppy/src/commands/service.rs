@@ -7,7 +7,7 @@ use crate::{context::AppContext, error::Error as CommandError};
 use clap::Subcommand;
 use std::sync::Arc;
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum ServiceCommands {
     /// Run the peppy service that listen to node communication, node configuration file changes and also act as a Zenoh router.
     /// This is the background service that runs with the systemd peppy service.
@@ -16,7 +16,7 @@ pub enum ServiceCommands {
         #[arg(long, default_value = "zenoh")]
         messaging_engine: String,
         /// Optional name for the core node. Overrides `core_node_name` in
-        /// ~/.peppy/conf/peppy_config.json5; when both are absent a
+        /// `~/.peppy/conf/peppy_config.json5`; when both are absent a
         /// machine-specific default is derived.
         #[arg(long)]
         core_node_name: Option<String>,
@@ -29,6 +29,7 @@ pub enum ServiceCommands {
     Uninstall {},
 }
 
+#[derive(Debug)]
 pub struct ServiceCommand {
     pub command: ServiceCommands,
 }
@@ -49,9 +50,9 @@ impl Command for ServiceCommand {
                 }
                 .execute(app_ctx)
             }
-            ServiceCommands::Install {} => install::InstallCommand {}.execute(app_ctx),
-            ServiceCommands::Stop {} => install::StopCommand {}.execute(app_ctx),
-            ServiceCommands::Uninstall {} => install::UninstallCommand {}.execute(app_ctx),
+            ServiceCommands::Install {} => install::InstallCommand.execute(app_ctx),
+            ServiceCommands::Stop {} => install::StopCommand.execute(app_ctx),
+            ServiceCommands::Uninstall {} => install::UninstallCommand.execute(app_ctx),
         }
     }
 }

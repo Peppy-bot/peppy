@@ -55,7 +55,7 @@ pub(super) fn teardown_budget_for(shutdown_grace_secs: u64) -> Duration {
         + Duration::from_secs(1)
 }
 
-pub struct MessagingRouter {
+pub(crate) struct MessagingRouter {
     messenger: Arc<Mutex<Messenger>>,
     messaging_ready: watch::Sender<bool>,
     /// Signaled (`true`) by the core node once its teardown has finished. The
@@ -73,7 +73,7 @@ pub struct MessagingRouter {
 }
 
 impl MessagingRouter {
-    pub fn new(
+    pub(crate) fn new(
         messenger: Arc<Mutex<Messenger>>,
         messaging_ready: watch::Sender<bool>,
         core_node_done: watch::Receiver<bool>,
@@ -114,8 +114,8 @@ impl ServeAsyncCommand for MessagingRouter {
                 info!("Messaging session initialized");
             }
 
-            messaging_ready.send(true).ok();
-            ready_tx.send(()).ok();
+            let _ = messaging_ready.send(true);
+            let _ = ready_tx.send(());
 
             // Router watchdog: probe the router's liveness and respawn managed
             // zenohd if it wedges. An adopted router is observed but never
@@ -127,8 +127,8 @@ impl ServeAsyncCommand for MessagingRouter {
                     tokio::select! {
                         // The watchdog loops for the daemon's lifetime; in
                         // practice only the shared token resolves this select.
-                        _ = run_router_watchdog(&messenger, &checker) => {}
-                        _ = teardown_token.cancelled() => {}
+                        () = run_router_watchdog(&messenger, &checker) => {}
+                        () = teardown_token.cancelled() => {}
                     }
                 }
                 None => {

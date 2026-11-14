@@ -111,6 +111,7 @@ fn tracked_instances(
 
 /// Idle + absolute-max timeout pair of the watchdog of a command that follows
 /// a daemon goal.
+#[derive(Debug)]
 pub struct TimeoutConfig {
     pub idle_secs: u64,
     pub max_secs: u64,
@@ -119,27 +120,20 @@ pub struct TimeoutConfig {
     pub flags: bool,
 }
 
-/// Parses a node_name:tag argument string into a tuple
+/// Parses a `node_name:tag` argument string into a tuple
 fn parse_node_ref(s: &str) -> Result<(String, String), String> {
-    let (node_name, tag) = s.split_once(':').ok_or_else(|| {
-        format!(
-            "invalid node reference '{}': expected node_name:tag format",
-            s
-        )
-    })?;
+    let (node_name, tag) = s
+        .split_once(':')
+        .ok_or_else(|| format!("invalid node reference '{s}': expected node_name:tag format"))?;
     let node_name = node_name.trim().to_string();
     let tag = tag.trim().to_string();
     if node_name.is_empty() {
         return Err(format!(
-            "invalid node reference '{}': node_name cannot be empty",
-            s
+            "invalid node reference '{s}': node_name cannot be empty"
         ));
     }
     if tag.is_empty() {
-        return Err(format!(
-            "invalid node reference '{}': tag cannot be empty",
-            s
-        ));
+        return Err(format!("invalid node reference '{s}': tag cannot be empty"));
     }
     Ok((node_name, tag))
 }
@@ -153,11 +147,11 @@ fn parse_description(s: &str) -> Result<Description, String> {
 fn parse_key_value_arg(s: &str) -> Result<(String, String), String> {
     let (key, value) = s
         .split_once('=')
-        .ok_or_else(|| format!("invalid argument format '{}': expected key=value", s))?;
+        .ok_or_else(|| format!("invalid argument format '{s}': expected key=value"))?;
     let key = key.trim().to_string();
     let value = value.trim().to_string();
     if key.is_empty() {
-        return Err(format!("invalid argument '{}': key cannot be empty", s));
+        return Err(format!("invalid argument '{s}': key cannot be empty"));
     }
     Ok((key, value))
 }
@@ -290,7 +284,7 @@ fn merge_link_flags(
     Ok(merged)
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum NodeCommands {
     /// Create a new peppy node
     #[command(visible_alias = "create")]
@@ -353,7 +347,7 @@ pub enum NodeCommands {
         #[arg(short = 'r', long)]
         run: bool,
         /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30).
-        /// These are passed to the node via PEPPY_RUNTIME_CONFIG and only make
+        /// These are passed to the node via `PEPPY_RUNTIME_CONFIG` and only make
         /// sense when `--run` is set; `requires = "run"` so a bare
         /// `peppy node add . frequency=30` errors at parse time instead of
         /// silently ignoring the argument.
@@ -444,7 +438,7 @@ pub enum NodeCommands {
     },
     /// Build a node previously added to the node stack
     Build {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        /// Node reference in the format `node_name:tag` (e.g., `my_node:v1`)
         #[arg(value_parser = parse_node_ref)]
         node_ref: (String, String),
         /// Idle timeout in seconds; resets on build output, bytes written to disk, or CPU time the build burns
@@ -472,7 +466,7 @@ pub enum NodeCommands {
     /// platform whose tag holds this revision already is skipped. It exits
     /// non-zero when a platform of the request was not published.
     Publish {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        /// Node reference in the format `node_name:tag` (e.g., `my_node:v1`)
         #[arg(value_parser = parse_node_ref)]
         node_ref: (String, String),
         /// Platforms to build and push beside the one of the daemon,
@@ -506,7 +500,7 @@ pub enum NodeCommands {
     /// Usage: `peppy node run <node_name>:<tag>` or `peppy node run --node-name <name> --tag <tag>`
     #[command(group(ArgGroup::new("node_source").required(true).args(["node_ref", "node_name"])))]
     Run {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        /// Node reference in the format `node_name:tag` (e.g., `my_node:v1`)
         #[arg(value_parser = parse_node_ref)]
         node_ref: Option<(String, String)>,
         /// Name of the node to spawn
@@ -516,7 +510,7 @@ pub enum NodeCommands {
         #[arg(long, requires = "node_name")]
         tag: Option<String>,
         /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30)
-        /// These are passed to the node via PEPPY_RUNTIME_CONFIG
+        /// These are passed to the node via `PEPPY_RUNTIME_CONFIG`
         #[arg(value_parser = parse_key_value_arg)]
         args: Vec<(String, String)>,
         /// Optional: specify a deterministic instance ID
@@ -604,7 +598,7 @@ pub enum NodeCommands {
     },
     /// Remove a node from the node stack
     Remove {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        /// Node reference in the format `node_name:tag` (e.g., `my_node:v1`)
         #[arg(value_parser = parse_node_ref)]
         node_ref: (String, String),
         /// Stop the node's running instances and clear its restarting, finished and failed ones before removing it. Without this flag the command asks first when the node tracks instances. An instance starting when the removal reaches it, or running a process that reached `running` after the removal began, keeps the node; once none is starting, run the removal again. `peppy node stop <instance-id> --core-node <daemon>` ends a restart's start, and a first start ends on its own
@@ -621,7 +615,7 @@ pub enum NodeCommands {
     /// with an error; inspecting sources on disk is the job of `node add`,
     /// not `node info`.
     Info {
-        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        /// Node reference in the format `node_name:tag` (e.g., `my_node:v1`)
         #[arg(value_parser = parse_node_ref)]
         node_ref: (String, String),
     },
@@ -646,7 +640,7 @@ pub enum NodeCommands {
         member: String,
         /// The kind of the member, for a service and an action of one name
         #[arg(long, value_enum)]
-        kind: Option<call::CallKind>,
+        kind: Option<CallKind>,
         /// A JSON5 file that holds the whole request or goal
         #[arg(long, value_name = "FILE")]
         args: Option<PathBuf>,
@@ -692,11 +686,12 @@ impl NodeCommands {
     pub fn prints_data(&self) -> bool {
         matches!(
             self,
-            NodeCommands::Call { .. } | NodeCommands::Echo { .. } | NodeCommands::Describe { .. }
+            Self::Call { .. } | Self::Echo { .. } | Self::Describe { .. }
         )
     }
 }
 
+#[derive(Debug)]
 pub struct NodeCommand {
     pub command: NodeCommands,
 }
@@ -768,9 +763,9 @@ impl Command for NodeCommand {
                 // an unbuilt node. `--sync` is independent (prerequisite, not
                 // a post-step) and is not implied by either.
                 let chain_build = build || run;
-                add::add_node(
+                add_node(
                     ctx,
-                    add::AddNodeParams {
+                    AddNodeParams {
                         source,
                         git_ref,
                         run_options,
@@ -902,7 +897,7 @@ impl Command for NodeCommand {
                 files,
             } => call::call(
                 ctx,
-                call::CallParams {
+                CallParams {
                     instance_id,
                     member,
                     kind,
@@ -914,10 +909,10 @@ impl Command for NodeCommand {
                 },
             ),
             NodeCommands::Echo { instance_id, topic } => {
-                echo::echo(ctx, echo::EchoParams { instance_id, topic })
+                echo::echo(ctx, EchoParams { instance_id, topic })
             }
             NodeCommands::Describe { instance_id, json } => {
-                describe::describe(ctx, describe::DescribeParams { instance_id, json })
+                describe::describe(ctx, DescribeParams { instance_id, json })
             }
         }
     }
@@ -941,8 +936,8 @@ mod tests {
             instance_id: instance_id.to_owned(),
             state,
             healthy: true,
-            slot_bindings: std::collections::BTreeMap::new(),
-            pairing_slots: std::collections::BTreeMap::new(),
+            slot_bindings: BTreeMap::new(),
+            pairing_slots: BTreeMap::new(),
             endpoints: Vec::new(),
             restart_status: core_node_api::RestartStatus::default(),
         };
@@ -1371,8 +1366,8 @@ mod tests {
             ("arm".to_string(), vacant_reason("set a=b upstream"))
         );
         // SLOT must be a wire segment.
-        assert!(parse_vacant_link("_=why").is_err());
-        assert!(parse_vacant_link("a/b=why").is_err());
+        parse_vacant_link("_=why").unwrap_err();
+        parse_vacant_link("a/b=why").unwrap_err();
         // A vacancy without a reason says only "not this one".
         assert!(
             parse_vacant_link("arm=")
@@ -1439,7 +1434,7 @@ mod tests {
     fn repeated_link_keys_accumulate_and_exact_duplicates_are_rejected() {
         let flags = |targets: &[&str]| {
             LinkValue::Bound(Selection::Flags(
-                LinkTargets::new(targets.iter().map(|t| t.to_string()).collect())
+                LinkTargets::new(targets.iter().map(ToString::to_string).collect())
                     .expect("test targets are unique"),
             ))
         };

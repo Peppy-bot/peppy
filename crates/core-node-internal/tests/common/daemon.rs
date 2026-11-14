@@ -1,4 +1,4 @@
-#![allow(dead_code)] // Each test binary uses only a subset of these shared helpers.
+#![allow(dead_code, reason = "each test binary uses a part of these helpers")]
 
 use super::poll::AbortOnDrop;
 use super::test_node_target;
@@ -15,7 +15,6 @@ use node_stack::NodeStack;
 use peppylib::messaging::{MessengerHandle, ServiceAnswer, ServiceRequestContext};
 use peppylib::runtime::spawn;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
-use std::future::Future;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,7 +28,7 @@ fn init_test_data_dir() -> (Option<TempDir>, PeppyDirs) {
     (Some(dir), peppy_dirs)
 }
 
-pub async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
+pub(crate) async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
     let adapter = MockAdapter::default();
     let mut messenger = Messenger::new(MessengerAdapter::Mock(adapter));
     messenger
@@ -39,7 +38,7 @@ pub async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
     Arc::new(Mutex::new(messenger))
 }
 
-pub struct StartedCoreNode {
+pub(crate) struct StartedCoreNode {
     pub shared_messenger: Arc<Mutex<Messenger>>,
     pub caller_handle: MessengerHandle,
     pub core_node_name: String,
@@ -75,7 +74,7 @@ impl StartedCoreNode {
     /// daemon started, signing with the key that the daemon wrote for its
     /// process. Any other id signs with the key of the command line, which
     /// the daemon refuses for that id.
-    pub fn handle_of(&self, instance_id: &str) -> MessengerHandle {
+    pub(crate) fn handle_of(&self, instance_id: &str) -> MessengerHandle {
         let spawned = self
             .instance_key_files
             .lock()
@@ -102,14 +101,14 @@ impl StartedCoreNode {
     /// `core_node` of its federation, which proves its key with a
     /// certificate of the CA of the federation, as the daemons of the other
     /// machines do.
-    pub fn remote_handle(&self, core_node: &str) -> MessengerHandle {
+    pub(crate) fn remote_handle(&self, core_node: &str) -> MessengerHandle {
         self.remote_handle_as(core_node, super::CALLER_INSTANCE_ID)
     }
 
     /// The session that calls the daemon as the client `instance_id` of the
     /// machine `core_node` of its federation, whose boot endorses the key of
     /// that client with a certificate of the CA of the federation.
-    pub fn remote_handle_as(&self, core_node: &str, instance_id: &str) -> MessengerHandle {
+    pub(crate) fn remote_handle_as(&self, core_node: &str, instance_id: &str) -> MessengerHandle {
         let directory = tempfile::tempdir().expect("a directory for a machine certificate");
         let files = self.machine_ca.write_machine(directory.path(), core_node);
         let machine = MachineCertificate::of_operator(
@@ -133,10 +132,10 @@ impl StartedCoreNode {
 }
 
 /// The name of the daemon of the tests.
-pub const TEST_CORE_NODE: &str = "test_core_node";
+pub(crate) const TEST_CORE_NODE: &str = "test_core_node";
 
 /// How long the test daemon waits for a started node's ready signal.
-pub const NODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const NODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn default_node_arguments() -> CoreNodeArguments {
     CoreNodeArguments {
@@ -158,18 +157,18 @@ fn default_node_arguments() -> CoreNodeArguments {
         // These daemons run standalone routers (no federation links), where
         // production also settles for zero.
         name_claim_settle: Duration::ZERO,
-        time_source: core_node::TimeSource::System,
-        reply_bounds: core_node::ReplyBounds::DEFAULT,
+        time_source: TimeSource::System,
+        reply_bounds: ReplyBounds::DEFAULT,
     }
 }
 
-pub async fn start_core_node_with_mock_messenger() -> StartedCoreNode {
+pub(crate) async fn start_core_node_with_mock_messenger() -> StartedCoreNode {
     start_core_node_with_mock_messenger_on(new_test_data_dir()).await
 }
 
 /// Boots the core node on a data root the test prepared, for a test of what
 /// the daemon does at start with the state it finds there.
-pub async fn start_core_node_with_mock_messenger_on(data_dir: TempDir) -> StartedCoreNode {
+pub(crate) async fn start_core_node_with_mock_messenger_on(data_dir: TempDir) -> StartedCoreNode {
     let peppy_dirs = PeppyDirs::new(data_dir.path());
     let shared_messenger = create_mock_messenger().await;
     start_core_node_with_messenger(
@@ -185,7 +184,7 @@ pub async fn start_core_node_with_mock_messenger_on(data_dir: TempDir) -> Starte
 /// Boots the core node on a mock messenger with a wait for the ready signal
 /// of a started node that is out of reach: a launch waits for each instance
 /// until the test answers its ready probe.
-pub async fn start_core_node_with_mock_messenger_and_no_ready_bound() -> StartedCoreNode {
+pub(crate) async fn start_core_node_with_mock_messenger_and_no_ready_bound() -> StartedCoreNode {
     let data_dir = new_test_data_dir();
     let peppy_dirs = PeppyDirs::new(data_dir.path());
     let mut arguments = default_node_arguments();
@@ -202,7 +201,7 @@ pub async fn start_core_node_with_mock_messenger_and_no_ready_bound() -> Started
 
 /// A data root for [`start_core_node_with_mock_messenger_on`], under the
 /// same test root as every other starter's.
-pub fn new_test_data_dir() -> TempDir {
+pub(crate) fn new_test_data_dir() -> TempDir {
     TempDir::new_in(config_test_support::test_tmp_root()).expect("test data dir")
 }
 
@@ -222,7 +221,7 @@ pub fn new_test_data_dir() -> TempDir {
 /// would pay that restart on every run (and disturb concurrently running
 /// container tests). With a stable path the restart happens at most once per
 /// machine. Contents are wiped on entry so runs stay independent.
-pub async fn start_core_node_with_mock_messenger_outside_home() -> StartedCoreNode {
+pub(crate) async fn start_core_node_with_mock_messenger_outside_home() -> StartedCoreNode {
     let root = std::env::temp_dir().join("peppy-test-outside-home-root");
     std::fs::create_dir_all(&root).expect("create stable outside-home test root");
     for entry in std::fs::read_dir(&root).expect("read stable outside-home test root") {
@@ -246,11 +245,11 @@ pub async fn start_core_node_with_mock_messenger_outside_home() -> StartedCoreNo
 }
 
 /// A setup budget of `secs` seconds, in range.
-pub fn setup_budget(secs: u64) -> SetupTimeout {
+pub(crate) fn setup_budget(secs: u64) -> SetupTimeout {
     SetupTimeout::from_secs(secs).expect("a setup budget in range")
 }
 
-pub async fn start_core_node_with_real_messenger() -> StartedCoreNode {
+pub(crate) async fn start_core_node_with_real_messenger() -> StartedCoreNode {
     start_real_core_node(
         default_node_arguments(),
         daemon_config::peppy_config::LocalNodesTopology::Peer,
@@ -261,13 +260,13 @@ pub async fn start_core_node_with_real_messenger() -> StartedCoreNode {
 /// Variant of [`start_core_node_with_real_messenger`] in an explicit messaging
 /// `topology`, for the dual-topology e2e tests parameterized over the
 /// topology.
-pub async fn start_core_node_with_real_messenger_topology(
+pub(crate) async fn start_core_node_with_real_messenger_topology(
     topology: daemon_config::peppy_config::LocalNodesTopology,
 ) -> StartedCoreNode {
     start_real_core_node(default_node_arguments(), topology).await
 }
 
-pub async fn start_core_node_with_real_messenger_and_timeouts(
+pub(crate) async fn start_core_node_with_real_messenger_and_timeouts(
     node_startup_timeout: Duration,
     default_setup_timeout: SetupTimeout,
 ) -> StartedCoreNode {
@@ -280,7 +279,7 @@ pub async fn start_core_node_with_real_messenger_and_timeouts(
 /// Variant of [`start_core_node_with_real_messenger_and_timeouts`] whose
 /// config names `publish_repository`, for the tests of the publish of
 /// container nodes to an OCI registry.
-pub async fn start_core_node_publishing_to(
+pub(crate) async fn start_core_node_publishing_to(
     repository: core_node_api::encoding::OciRepository,
     node_startup_timeout: Duration,
     default_setup_timeout: SetupTimeout,
@@ -358,7 +357,9 @@ async fn start_real_core_node_with(
 /// .shutdown_grace_secs`). For tests that assert timing around the grace
 /// window and need wider margins than the 5s default gives under parallel
 /// test load.
-pub async fn start_core_node_with_shutdown_grace(shutdown_grace_secs: u64) -> StartedCoreNode {
+pub(crate) async fn start_core_node_with_shutdown_grace(
+    shutdown_grace_secs: u64,
+) -> StartedCoreNode {
     let peppy_config = daemon_config::peppy_config::PeppyConfig {
         lifecycle: daemon_config::peppy_config::LifecycleConfig {
             shutdown_grace_secs,
@@ -372,7 +373,7 @@ pub async fn start_core_node_with_shutdown_grace(shutdown_grace_secs: u64) -> St
 /// Variant of [`start_core_node_with_mock_messenger`] whose config names a
 /// PyPI mirror (`peppy_config.pypi_mirror`), for the tests of Python builds
 /// that download from it.
-pub async fn start_core_node_with_pypi_mirror(
+pub(crate) async fn start_core_node_with_pypi_mirror(
     mirror: daemon_config::peppy_config::PackagesBaseUrl,
 ) -> StartedCoreNode {
     let peppy_config = daemon_config::peppy_config::PeppyConfig {
@@ -384,7 +385,7 @@ pub async fn start_core_node_with_pypi_mirror(
 
 /// Variant of [`start_core_node_with_mock_messenger`] whose default setup
 /// budget is `default_setup_timeout`.
-pub async fn start_core_node_with_default_setup_timeout(
+pub(crate) async fn start_core_node_with_default_setup_timeout(
     default_setup_timeout: SetupTimeout,
 ) -> StartedCoreNode {
     let mut args = default_node_arguments();
@@ -397,7 +398,7 @@ pub async fn start_core_node_with_default_setup_timeout(
 /// is the test's choice: the production value (3) to exercise the real
 /// tolerance, or 1 when the test asserts that no transition is ever logged and
 /// wants a regressed monitor to show itself on the first missed probe.
-pub fn fast_health_monitor(failure_threshold: u32) -> HealthMonitorPolicy {
+pub(crate) fn fast_health_monitor(failure_threshold: u32) -> HealthMonitorPolicy {
     HealthMonitorPolicy {
         interval: Duration::from_millis(200),
         timeout: Duration::from_millis(100),
@@ -408,7 +409,7 @@ pub fn fast_health_monitor(failure_threshold: u32) -> HealthMonitorPolicy {
 
 /// [`fast_health_monitor`] that kills an instance whose policy restarts on
 /// failure once it has answered no health check for `kill_after`.
-pub fn fast_health_monitor_with_kill(
+pub(crate) fn fast_health_monitor_with_kill(
     failure_threshold: u32,
     kill_after: Duration,
 ) -> HealthMonitorPolicy {
@@ -418,14 +419,14 @@ pub fn fast_health_monitor_with_kill(
     }
 }
 
-pub async fn start_core_node_with_health_monitor(
+pub(crate) async fn start_core_node_with_health_monitor(
     health_monitor: HealthMonitorPolicy,
 ) -> StartedCoreNode {
     start_core_node_with_supervision(health_monitor, parked_restart_backoff()).await
 }
 
 /// A core node whose health monitor and restart backoff the test chooses.
-pub async fn start_core_node_with_supervision(
+pub(crate) async fn start_core_node_with_supervision(
     health_monitor: HealthMonitorPolicy,
     restart_backoff: RestartBackoff,
 ) -> StartedCoreNode {
@@ -440,7 +441,7 @@ pub async fn start_core_node_with_supervision(
 /// [`start_core_node_with_supervision`] with a cooperative-shutdown grace
 /// of `shutdown_grace_secs`, which every kill's force-kill deadline grows
 /// from.
-pub async fn start_core_node_with_supervision_and_grace(
+pub(crate) async fn start_core_node_with_supervision_and_grace(
     health_monitor: HealthMonitorPolicy,
     restart_backoff: RestartBackoff,
     shutdown_grace_secs: u64,
@@ -454,14 +455,14 @@ pub async fn start_core_node_with_supervision_and_grace(
 /// How long each guard bound of a daemon on manual time lasts: no wait of a
 /// test comes near it on a host of any speed, so a wait of the daemon ends by
 /// its own outcome or once the test moves the time past it.
-pub const OUT_OF_REACH: Duration = Duration::from_secs(3600);
+pub(crate) const OUT_OF_REACH: Duration = Duration::from_hours(1);
 
 /// A core node whose supervision runs on a [`ManualTime`], which only the
 /// test advances, with `health_monitor`, `restart_backoff` and a
 /// cooperative-shutdown grace of `shutdown_grace_secs`. Its guard bounds,
 /// the ready wait, the setup budget and the bounds on the answers to its
 /// requests, are out of reach.
-pub async fn start_core_node_on_manual_time(
+pub(crate) async fn start_core_node_on_manual_time(
     health_monitor: HealthMonitorPolicy,
     restart_backoff: RestartBackoff,
     shutdown_grace_secs: u64,
@@ -498,7 +499,7 @@ fn config_with_grace(shutdown_grace_secs: u64) -> daemon_config::peppy_config::P
 /// Variant of [`start_core_node_with_mock_messenger`] whose log files export
 /// their lines at `min_severity` and above. Returns the receiving end of the
 /// exporter's queue, which the daemon's export worker holds in production.
-pub async fn start_core_node_with_log_export(
+pub(crate) async fn start_core_node_with_log_export(
     min_severity: Option<daemon_config::peppy_config::OtlpMinSeverity>,
 ) -> (StartedCoreNode, log_export::LogRecordReceiver) {
     let (data_dir, peppy_dirs) = init_test_data_dir();
@@ -630,13 +631,13 @@ async fn start_core_node(
 /// RAII guard for a test-spawned `Running` instance. On drop it calls
 /// `stop_instance` on the entity and SIGTERMs the real child process.
 #[must_use = "guard keeps the spawned child alive; drop it to tear down the instance"]
-pub struct TestRunningInstance {
+pub(crate) struct TestRunningInstance {
     pub pid: u32,
     pub instance_id: config::runtime::Name,
     handle: node_stack::EntityHandle,
-    _working_dir: Option<TempDir>,
-    _feedback_drain: tokio::task::JoinHandle<()>,
-    _shutdown_listener: Option<AbortOnDrop<peppylib::PeppyResult<()>>>,
+    working_dir: Option<TempDir>,
+    feedback_drain: tokio::task::JoinHandle<()>,
+    shutdown_listener: Option<AbortOnDrop<peppylib::PeppyResult<()>>>,
 }
 
 impl Drop for TestRunningInstance {
@@ -646,7 +647,7 @@ impl Drop for TestRunningInstance {
             .arg("-TERM")
             .arg(self.pid.to_string())
             .status();
-        self._feedback_drain.abort();
+        self.feedback_drain.abort();
     }
 }
 
@@ -676,7 +677,7 @@ fn make_real_output_sinks(
 ) -> (
     node_stack::OutputSinks,
     tokio::task::JoinHandle<()>,
-    std::path::PathBuf,
+    PathBuf,
 ) {
     use std::sync::atomic::AtomicBool;
 
@@ -711,7 +712,7 @@ struct PreparedChild {
 
 /// Drives a real `prepare_and_spawn` on the entity at `(name, tag)`, which
 /// must already be in `Ready`. Spawns a real child via the entity's existing
-/// `run_cmd`; callers are responsible for ensuring the node config's run_cmd
+/// `run_cmd`; callers are responsible for ensuring the node config's `run_cmd`
 /// is spawnable in the test environment.
 async fn prepare_and_spawn_on_ready_entity(
     started: &StartedCoreNode,
@@ -775,14 +776,14 @@ async fn prepare_and_spawn_on_ready_entity(
 /// the child as cooperatively terminated within its graceful window rather
 /// than having to force-kill a stubborn `sleep 10`. Returns a guard that
 /// SIGTERMs the child on drop.
-pub async fn spawn_real_running_instance(
+pub(crate) async fn spawn_real_running_instance(
     started: &StartedCoreNode,
     name: &str,
     tag: &str,
     instance_id: &config::runtime::Name,
 ) -> TestRunningInstance {
     let mut running = spawn_real_stuck_instance(started, name, tag, instance_id).await;
-    running._shutdown_listener =
+    running.shutdown_listener =
         Some(install_kill_on_shutdown_listener(started, name, instance_id, running.pid).await);
     running
 }
@@ -790,7 +791,7 @@ pub async fn spawn_real_running_instance(
 /// Variant of [`spawn_real_running_instance`] that skips installing a
 /// shutdown listener. Used by tests that want the production shutdown path to
 /// observe a stuck process that never terminates.
-pub async fn spawn_real_stuck_instance(
+pub(crate) async fn spawn_real_stuck_instance(
     started: &StartedCoreNode,
     name: &str,
     tag: &str,
@@ -818,16 +819,16 @@ pub async fn spawn_real_stuck_instance(
         pid,
         instance_id: instance_id.clone(),
         handle,
-        _working_dir: None,
-        _feedback_drain: feedback_drain,
-        _shutdown_listener: None,
+        working_dir: None,
+        feedback_drain,
+        shutdown_listener: None,
     }
 }
 
 /// Answers the ready probe the daemon sends to `instance_id` of `node`,
 /// standing in for a node process that has started, until the returned guard
 /// drops.
-pub async fn answer_ready_probe(
+pub(crate) async fn answer_ready_probe(
     started: &StartedCoreNode,
     node: &str,
     instance_id: &str,
@@ -848,7 +849,7 @@ pub async fn answer_ready_probe(
 /// Answers the health probes the daemon sends to `instance_id` of `node`,
 /// standing in for a node process that reports healthy, until the returned
 /// guard drops. A test drops the guard to make a running node stop answering.
-pub async fn answer_health_probes(
+pub(crate) async fn answer_health_probes(
     started: &StartedCoreNode,
     node: &str,
     instance_id: &str,
@@ -869,7 +870,7 @@ pub async fn answer_health_probes(
 /// Answers the ready and health probes the daemon sends to `instance_id` of
 /// `node`, standing in for a node process that reports healthy, until the
 /// returned guards drop.
-pub async fn answer_readiness(
+pub(crate) async fn answer_readiness(
     started: &StartedCoreNode,
     node: &str,
     instance_id: &str,
@@ -889,7 +890,7 @@ pub async fn answer_readiness(
 /// signal to a kill lets those tests cooperate quickly while still exercising the
 /// watcher-versus-stop interaction. The returned guard aborts the listener on
 /// drop.
-pub async fn install_kill_on_shutdown_listener(
+pub(crate) async fn install_kill_on_shutdown_listener(
     started: &StartedCoreNode,
     name: &str,
     instance_id: &config::runtime::Name,
@@ -920,7 +921,7 @@ pub async fn install_kill_on_shutdown_listener(
 /// signal on: the request SIGKILLs the process the stack records for the
 /// instance, a `Starting` one included, and is reported on the returned
 /// receiver. The guard aborts the listener on drop.
-pub async fn install_shutdown_listener_for_instance(
+pub(crate) async fn install_shutdown_listener_for_instance(
     started: &StartedCoreNode,
     name: &str,
     tag: &str,
@@ -951,7 +952,7 @@ pub async fn install_shutdown_listener_for_instance(
                 .instances()
                 .iter()
                 .find(|inst| inst.instance_id().as_str() == instance_id)
-                .and_then(|inst| inst.pid())
+                .and_then(node_stack::TrackedNodeInstance::pid)
         });
         if let Some(pid) = pid {
             let _ = std::process::Command::new("kill")
@@ -966,14 +967,14 @@ pub async fn install_shutdown_listener_for_instance(
 
 /// Gives mocks registered by hand a moment to subscribe before the run
 /// they answer.
-pub async fn settle() {
+pub(crate) async fn settle() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 }
 
 /// The `service` of the peer daemon `core_node`, served by its root
 /// instance and answering each request with `handler`, settled before it
 /// returns.
-pub async fn peer_daemon_service<F, Fut>(
+pub(crate) async fn peer_daemon_service<F, Fut>(
     started: &StartedCoreNode,
     core_node: &str,
     service: core_node_api::ServiceId,
@@ -1002,7 +1003,7 @@ where
 /// The `service` mock of `instance_id` of `name`: a node-side endpoint
 /// answering each request with `handler`, settled before it returns. The
 /// returned guard aborts it on drop.
-pub async fn node_service_mock<F, Fut>(
+pub(crate) async fn node_service_mock<F, Fut>(
     started: &StartedCoreNode,
     name: &str,
     instance_id: &str,
@@ -1037,12 +1038,12 @@ where
 /// neither committed nor aborted. On drop it SIGKILLs the child's whole process
 /// group (negative pid) so the held `sleep`s don't leak past the test.
 #[must_use = "guard keeps the half-started child alive; drop it to clean up"]
-pub struct TestStartingInstance {
+pub(crate) struct TestStartingInstance {
     pub pid: u32,
     pub instance_id: config::runtime::Name,
     _child: tokio::process::Child,
     _started_ctx: node_stack::StartedInstanceCtx,
-    _feedback_drain: tokio::task::JoinHandle<()>,
+    feedback_drain: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for TestStartingInstance {
@@ -1055,7 +1056,7 @@ impl Drop for TestStartingInstance {
         // drops this, teardown has usually already reaped the group, and the
         // helper ignores that ESRCH.
         node_stack::kill_process_group(self.pid);
-        self._feedback_drain.abort();
+        self.feedback_drain.abort();
     }
 }
 
@@ -1065,7 +1066,7 @@ impl Drop for TestStartingInstance {
 /// daemon teardown during the start window force-kills the `Starting`-window
 /// child instead of orphaning it. The caller is responsible for ensuring the
 /// node config's `run_cmd` is spawnable in the test environment.
-pub async fn spawn_real_starting_instance(
+pub(crate) async fn spawn_real_starting_instance(
     started: &StartedCoreNode,
     name: &str,
     tag: &str,
@@ -1084,14 +1085,14 @@ pub async fn spawn_real_starting_instance(
         instance_id: instance_id.clone(),
         _child: child,
         _started_ctx: started_ctx,
-        _feedback_drain: feedback_drain,
+        feedback_drain,
     }
 }
 
 /// For tests that push a config directly (bypassing `process_node_add`): drives
 /// the real `NodeEntity::build` (process-node archive path, no container) and
 /// then a real `prepare_and_spawn` + `commit_started`.
-pub async fn real_build_and_spawn_instance(
+pub(crate) async fn real_build_and_spawn_instance(
     started: &StartedCoreNode,
     name: &str,
     tag: &str,
@@ -1129,7 +1130,7 @@ pub async fn real_build_and_spawn_instance(
     build_drain.abort();
 
     let mut running = spawn_real_running_instance(started, name, tag, instance_id).await;
-    running._working_dir = Some(working_dir);
+    running.working_dir = Some(working_dir);
     running
 }
 

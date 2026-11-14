@@ -85,7 +85,7 @@ The second argument is a response timeout. Rust accepts `Option<Duration>`; Pyth
     use peppylib::clock::synchronize;
 
     fn main() -> Result<()> {
-        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_args: Parameters, node_runner| {
             let sync = synchronize(&node_runner, Some(Duration::from_secs(3))).await?;
 
             let local_ns = SystemTime::now()
@@ -156,7 +156,7 @@ Each `ClockTick` carries a single instant, read with `time()` in Rust and the `t
     use peppylib::messaging::TopicBuffer;
 
     fn main() -> Result<()> {
-        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_args: Parameters, node_runner| {
             tokio::spawn(async move {
                 let mut sub = subscribe(&node_runner, TopicBuffer::KeepLatest)
                     .await
@@ -282,7 +282,7 @@ Hot-path code reads whichever clock the instance was bound to through the genera
     use peppygen::{NodeBuilder, NodeRunner, Parameters, Result};
 
     fn main() -> Result<()> {
-        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_args: Parameters, node_runner| {
             // Idempotent. On a simulated domain this opens the subscription
             // so the background feeder is already running before `now_ns()`
             // is called below.

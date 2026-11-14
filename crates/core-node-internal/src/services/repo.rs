@@ -12,15 +12,15 @@ mod remove;
 mod search;
 pub(crate) mod status;
 
-pub use add::listen_for_repo_add;
-pub use exclude::listen_for_repo_exclude;
+pub(crate) use add::listen_for_repo_add;
+pub(crate) use exclude::listen_for_repo_exclude;
 pub use init::{InitOutcome, ensure_default_repos};
-pub use list::listen_for_repo_list;
-pub use refresh::listen_for_repo_refresh;
+pub(crate) use list::listen_for_repo_list;
+pub(crate) use refresh::listen_for_repo_refresh;
 pub(crate) use refresh::{
     VersionRefresh, failure_report, refresh_release_repositories_for_this_version,
 };
-pub use remove::listen_for_repo_remove;
+pub(crate) use remove::listen_for_repo_remove;
 pub use search::{
     Consumer, Implementer, IndexedNode, MatchedItem, Observer, Participant, PinStatus,
     PublishedDoc, SearchOutcome, SearchQuery, SearchReport, ShowOutcome, SlotPeers,
@@ -56,24 +56,24 @@ pub(crate) fn repository_noun(count: usize) -> &'static str {
 }
 
 /// Guards read-modify-write cycles on repositories.json5 and
-/// excluded_repositories.json5 to prevent concurrent corruption.
+/// `excluded_repositories.json5` to prevent concurrent corruption.
 pub(crate) fn repos_file_lock() -> &'static parking_lot::Mutex<()> {
-    static LOCK: std::sync::OnceLock<parking_lot::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| parking_lot::Mutex::new(()))
+    static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    &LOCK
 }
 
-/// Serializes `process_refresh` + `write_all_caches` so the user-facing repo_refresh
-/// action and the post-remove refresh in repo_remove cannot race on
-/// nodes.json5. The ActionState single-flight inside repo_refresh rejects
+/// Serializes `process_refresh` + `write_all_caches` so the user-facing `repo_refresh`
+/// action and the post-remove refresh in `repo_remove` cannot race on
+/// nodes.json5. The `ActionState` single-flight inside `repo_refresh` rejects
 /// concurrent *user* refreshes with a friendly error; this mutex is the
 /// correctness backstop that also covers the remove-triggered path.
 pub(crate) fn refresh_lock() -> &'static parking_lot::Mutex<()> {
-    static LOCK: std::sync::OnceLock<parking_lot::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| parking_lot::Mutex::new(()))
+    static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    &LOCK
 }
 
 /// Serialize a `RepoSource` with an assigned id into a JSON object for
-/// persisting in repositories.json5 / excluded_repositories.json5.
+/// persisting in repositories.json5 / `excluded_repositories.json5`.
 pub(crate) fn repo_source_to_json(id: u64, source: &RepoSource) -> Value {
     let mut map = serde_json::Map::new();
     map.insert("id".to_string(), Value::Number(id.into()));
@@ -129,7 +129,10 @@ pub(crate) enum RepoEntryError {
 /// The one place that reads an entry's fields: identity, attribution,
 /// exclusion and every read of a repository work on the value it returns.
 pub(crate) fn parse_repo_entry(entry: &Value) -> Result<RepoSource, RepoEntryError> {
-    let field = |key: &str| entry.get(key).and_then(|v| v.as_str());
+    let field = |key: &str| {
+        let v = entry.get(key)?;
+        v.as_str()
+    };
     match field("type").ok_or(RepoEntryError::Unrecognized)? {
         "fs" => {
             let path = field("path").ok_or(RepoEntryError::Unrecognized)?;
@@ -170,9 +173,10 @@ pub(crate) fn parse_repo_entry(entry: &Value) -> Result<RepoSource, RepoEntryErr
 /// - `Oci`: the `oci://` URL in its normal form.
 pub(crate) fn source_identity(source: &RepoSource) -> String {
     match source {
-        RepoSource::Fs(path) => std::fs::canonicalize(path)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| path.to_string_lossy().into_owned()),
+        RepoSource::Fs(path) => std::fs::canonicalize(path).map_or_else(
+            |_| path.to_string_lossy().into_owned(),
+            |p| p.to_string_lossy().into_owned(),
+        ),
         RepoSource::Git { repo_url, repo_ref } => match repo_ref.configured() {
             Some(r) => format!("{repo_url}@{r}"),
             None => repo_url.clone(),
@@ -288,9 +292,9 @@ impl RepoOwners {
 impl RepoOwner {
     fn owns(&self, origin: &EntryOrigin) -> bool {
         match (self, origin) {
-            (RepoOwner::Fs { root }, EntryOrigin::Fs { path }) => path.starts_with(root),
+            (Self::Fs { root }, EntryOrigin::Fs { path }) => path.starts_with(root),
             (
-                RepoOwner::Git { url, repo_ref },
+                Self::Git { url, repo_ref },
                 EntryOrigin::Git {
                     repo_url,
                     repo_ref: read_with_ref,
@@ -305,7 +309,7 @@ impl RepoOwner {
                         .configured()
                         .is_none_or(|pinned| read_with_ref.as_deref() == Some(pinned))
             }
-            (RepoOwner::Oci { repository }, EntryOrigin::Oci { url, .. }) => repository == url,
+            (Self::Oci { repository }, EntryOrigin::Oci { url, .. }) => repository == url,
             _ => false,
         }
     }
@@ -448,10 +452,10 @@ pub(crate) fn normalize_repo_entries(
         if let Some(id) = repo_entry_id(entry)
             && !seen_ids.insert(id)
         {
-            let file = file_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| file_path.to_string_lossy().into_owned());
+            let file = file_path.file_name().map_or_else(
+                || file_path.to_string_lossy().into_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
             return Err(crate::Error::DuplicateRepoId { id, file });
         }
     }
@@ -494,6 +498,7 @@ mod tests {
     use core_node_api::encoding::{GitRepoRef, GitRepoRefError, PeppyBuild, ReadRef, RepoSource};
     use daemon_config::consts::PeppyDirs;
     use serde_json::Value;
+    use std::assert_matches;
     use std::path::PathBuf;
 
     fn listed(id: u32, path: &str) -> ListedRepo {
@@ -600,10 +605,7 @@ mod tests {
             RepoEntryError::OciRef
         );
         let bad_url = serde_json::json!({"id": 900, "type": "oci", "url": "https://ghcr.io/x"});
-        assert!(matches!(
-            parse_repo_entry(&bad_url),
-            Err(RepoEntryError::OciUrl(_))
-        ));
+        assert_matches!(parse_repo_entry(&bad_url), Err(RepoEntryError::OciUrl(_)));
         let no_url = serde_json::json!({"id": 900, "type": "oci"});
         assert_eq!(parse_repo_entry(&no_url), Err(RepoEntryError::Unrecognized));
     }
@@ -701,7 +703,7 @@ mod tests {
         let ids: Vec<u32> = listed.iter().map(|repo| repo.id).collect();
         assert_eq!(ids, vec![7]);
         assert_eq!(listed[0].label, kept.to_string_lossy());
-        assert!(matches!(listed[0].source, RepoSource::Fs(_)));
+        assert_matches!(listed[0].source, RepoSource::Fs(_));
     }
 
     fn git_source(repo_ref: GitRepoRef) -> RepoSource {
@@ -742,7 +744,7 @@ mod tests {
 
     #[test]
     fn an_entry_parses_into_the_source_it_describes() {
-        let entry = |value: serde_json::Value| parse_repo_entry(&value);
+        let entry = |value: Value| parse_repo_entry(&value);
         assert_eq!(
             entry(serde_json::json!({ "type": "git", "url": "https://github.com/org/repo" })),
             Ok(git_source(GitRepoRef::RemoteHead))
@@ -776,7 +778,7 @@ mod tests {
 
     #[test]
     fn an_entry_peppy_cannot_read_is_refused_with_its_reason() {
-        let entry = |value: serde_json::Value| parse_repo_entry(&value);
+        let entry = |value: Value| parse_repo_entry(&value);
         assert_eq!(
             entry(serde_json::json!({
                 "type": "git", "url": "https://github.com/org/repo", "ref": "@{upstream}"
@@ -844,7 +846,7 @@ mod tests {
         }
     }
 
-    fn fs_origin(path: impl Into<std::path::PathBuf>) -> EntryOrigin {
+    fn fs_origin(path: impl Into<PathBuf>) -> EntryOrigin {
         EntryOrigin::Fs { path: path.into() }
     }
 

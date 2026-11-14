@@ -10,7 +10,6 @@ use super::*;
 use crate::generator::test_helpers::*;
 use config::consts::NODE_CONFIG_FILE;
 use std::fs;
-use std::path::Path;
 use tempfile::TempDir;
 
 /// Builds the crate of `generator` into `output_dir` with the default data

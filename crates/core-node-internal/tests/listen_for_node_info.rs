@@ -2,14 +2,15 @@ mod common;
 
 use common::{
     AbortOnDrop, GOAL_TIMEOUT, RESULT_TIMEOUT, TIMEOUTS, TestPackagesCache, answer_readiness,
-    poll_core_node, poll_core_node_failure, poll_node_info, real_build_and_spawn_instance,
-    send_node_add_and_wait, send_node_add_then_build, send_node_run_and_wait,
-    start_core_node_with_mock_messenger, write_peppy_json5,
+    has_log_extension, poll_core_node, poll_core_node_failure, poll_node_info,
+    real_build_and_spawn_instance, send_node_add_and_wait, send_node_add_then_build,
+    send_node_run_and_wait, start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node_api::encoding::{InstanceDocumentsRequest, NodeInfoRequest, NodeInfoResponse};
 use core_node_api::{InstanceState, NodeStage};
 use peppylib::messaging::MessengerHandle;
+use std::assert_matches;
 use std::sync::Arc;
 
 /// Happy path: add a node + start an instance, then `node info` reports the
@@ -92,7 +93,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
         .and_then(|name| name.to_str())
         .expect("a run log file name");
     assert!(
-        file_name.starts_with(&format!("{TARGET_INSTANCE_ID}_")) && file_name.ends_with(".log"),
+        file_name.starts_with(&format!("{TARGET_INSTANCE_ID}_")) && has_log_extension(file_name),
         "the run log is the instance's timestamped file: {file_name}"
     );
     assert!(
@@ -261,8 +262,9 @@ async fn node_info_reports_not_in_stack_and_recovers() {
         &NodeInfoRequest::new("ghost_node", "v999"),
     )
     .await;
-    assert!(
-        matches!(response, NodeInfoResponse::NotInStack),
+    assert_matches!(
+        response,
+        NodeInfoResponse::NotInStack,
         "expected NotInStack for an unknown `(name, tag)`, got: {response:?}"
     );
 

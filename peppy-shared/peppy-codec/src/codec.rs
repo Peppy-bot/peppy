@@ -178,13 +178,13 @@ fn encode_scalar(
         Scalar::U16 => builder.set_data_field::<u16>(offset, value::value_u16(value, name)?),
         Scalar::U32 => builder.set_data_field::<u32>(offset, value::value_u32(value, name)?),
         Scalar::U64 => {
-            builder.set_data_field::<u64>(offset, value::value_u64_decimal(value, name)?)
+            builder.set_data_field::<u64>(offset, value::value_u64_decimal(value, name)?);
         }
         Scalar::I8 => builder.set_data_field::<i8>(offset, value::value_i8(value, name)?),
         Scalar::I16 => builder.set_data_field::<i16>(offset, value::value_i16(value, name)?),
         Scalar::I32 => builder.set_data_field::<i32>(offset, value::value_i32(value, name)?),
         Scalar::I64 => {
-            builder.set_data_field::<i64>(offset, value::value_i64_decimal(value, name)?)
+            builder.set_data_field::<i64>(offset, value::value_i64_decimal(value, name)?);
         }
         Scalar::F32 => builder.set_data_field::<f32>(offset, value_f32(value, name)?),
         Scalar::F64 => builder.set_data_field::<f64>(offset, value::value_f64(value, name)?),
@@ -198,11 +198,15 @@ fn encode_scalar(
 /// letting an out-of-range value become `inf` on the wire.
 fn value_f32(value: &Value, name: &str) -> Result<f32, ConversionError> {
     let wide = value::value_f64(value, name)?;
-    if !wide.is_finite() || wide < f32::MIN as f64 || wide > f32::MAX as f64 {
+    if !wide.is_finite() || wide < f64::from(f32::MIN) || wide > f64::from(f32::MAX) {
         return Err(ConversionError(format!(
             "`{name}` is outside the range of a 32-bit float"
         )));
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is in the range of `f32`, and a 32-bit field takes the nearest `f32`"
+    )]
     Ok(wide as f32)
 }
 
@@ -298,22 +302,22 @@ fn encode_list(
         }),
         ListItems::Text => {
             let mut list = text_list::Builder::init_pointer(pointer, count);
-            for (index, item) in elements.iter().enumerate() {
-                list.set(index as u32, value::value_str(item, name)?);
+            for (index, item) in (0_u32..).zip(elements.iter()) {
+                list.set(index, value::value_str(item, name)?);
             }
             Ok(())
         }
         ListItems::Bytes => {
             let mut list = data_list::Builder::init_pointer(pointer, count);
-            for (index, item) in elements.iter().enumerate() {
-                list.set(index as u32, &value::value_bytes(item, name)?);
+            for (index, item) in (0_u32..).zip(elements.iter()) {
+                list.set(index, &value::value_bytes(item, name)?);
             }
             Ok(())
         }
         ListItems::Struct(layout) => {
             let mut list = init_struct_list(pointer, count, layout.shape)?;
-            for (index, item) in elements.iter().enumerate() {
-                let element = list.reborrow().get(index as u32).0;
+            for (index, item) in (0_u32..).zip(elements.iter()) {
+                let element = list.reborrow().get(index).0;
                 encode_struct(element, layout, item)?;
             }
             Ok(())
@@ -332,8 +336,8 @@ where
     ConversionError: From<E>,
 {
     let mut list = primitive_list::Builder::<T>::init_pointer(pointer, count);
-    for (index, item) in elements.iter().enumerate() {
-        list.set(index as u32, convert(item)?);
+    for (index, item) in (0_u32..).zip(elements.iter()) {
+        list.set(index, convert(item)?);
     }
     Ok(())
 }
@@ -526,6 +530,10 @@ mod tests {
         MessageCodec::new("codec_test", &format).expect("the format lays out")
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "each test builds the value in the call"
+    )]
     fn round_trip(codec: &MessageCodec, value: Value) -> Vec<u8> {
         let bytes = codec.encode(&value).expect("encodes");
         let decoded = codec.decode(&bytes).expect("decodes");
@@ -547,9 +555,9 @@ mod tests {
         round_trip(
             &codec,
             json!({
-                "flag": true, "tiny": 255, "small": 65535, "medium": 4294967295u32,
+                "flag": true, "tiny": 255, "small": 65535, "medium": 4_294_967_295_u32,
                 "big": "18446744073709551615",
-                "tiny_signed": -128, "small_signed": -32768, "medium_signed": -2147483648i32,
+                "tiny_signed": -128, "small_signed": -32768, "medium_signed": -2_147_483_648_i32,
                 "big_signed": "-9223372036854775808",
                 "ratio": 1.5, "precise": -2.25,
             }),
@@ -834,6 +842,6 @@ mod tests {
     #[test]
     fn decoding_refuses_bytes_that_are_not_a_framed_message() {
         let codec = codec(r#"{ count: "u32" }"#);
-        assert!(codec.decode(&[1, 2, 3]).is_err());
+        codec.decode(&[1, 2, 3]).unwrap_err();
     }
 }

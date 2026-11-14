@@ -7,7 +7,7 @@ use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 use syn::{File, parse2};
 
-pub fn schema_type_to_tokens(
+pub(crate) fn schema_type_to_tokens(
     schema: &SchemaType,
     struct_prefix: &str,
     field_name: &str,
@@ -71,7 +71,7 @@ pub fn schema_type_to_tokens(
     Ok(ty)
 }
 
-pub fn primitive_type_token(token: &TypeToken) -> TokenStream {
+pub(crate) fn primitive_type_token(token: &TypeToken) -> TokenStream {
     match token {
         TypeToken::Bool => quote!(bool),
         TypeToken::String => quote!(String),
@@ -90,8 +90,7 @@ pub fn primitive_type_token(token: &TypeToken) -> TokenStream {
     }
 }
 
-pub fn render_tokens(tokens: TokenStream) -> String {
+pub(crate) fn render_tokens(tokens: &TokenStream) -> String {
     parse2::<File>(tokens.clone())
-        .map(|file| prettyplease::unparse(&file))
-        .unwrap_or_else(|_| tokens.to_string())
+        .map_or_else(|_| tokens.to_string(), |file| prettyplease::unparse(&file))
 }

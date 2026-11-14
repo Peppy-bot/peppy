@@ -12,7 +12,7 @@ use super::storage::now_unix;
 use crate::error::{Error, Result};
 
 /// Exchanges `refresh_token` for a fresh access token at `token_endpoint`.
-pub fn refresh(
+pub(crate) fn refresh(
     http: &HttpClient,
     token_endpoint: &str,
     client_id: &str,

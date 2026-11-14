@@ -464,7 +464,7 @@ async fn start_record_episode(client: &Client, episode_name: &str) -> String {
     assert_eq!(created.task.status, TaskStatus::Working);
     assert_eq!(
         created.task.ttl_ms,
-        Some(601000),
+        Some(601_000),
         "the advertised TTL clears the 600000 ms whole-goal deadline, so the runtime's own \
          deadline error wins over the SDK's TTL sweep"
     );

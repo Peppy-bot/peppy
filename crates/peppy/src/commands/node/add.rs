@@ -6,6 +6,7 @@ use core_node_api::encoding::{
 };
 use daemon_config::launcher::LinkValue;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::io::BufRead;
 use std::path::Path;
 use std::sync::Arc;
@@ -30,6 +31,7 @@ use peppylib::core_node::transport::send_goal;
 /// same rule with `requires = "run"` so an invocation like `peppy node add .
 /// --link feed@cam_a` is rejected at parse time rather than silently
 /// dropped.
+#[derive(Debug)]
 pub struct RunAfterAddOptions {
     pub args: Vec<(String, String)>,
     pub instance_id: Option<String>,
@@ -62,6 +64,24 @@ pub struct AddNodeParams {
     /// Whether to chain a `node build` after the add succeeds. Set by the
     /// CLI when the user passes `--build` (or `--run`, which implies it).
     pub chain_build: bool,
+}
+
+/// Shows each parameter. The confirmation reader is a trait object, so only
+/// its presence is shown.
+impl fmt::Debug for AddNodeParams {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AddNodeParams")
+            .field("source", &self.source)
+            .field("git_ref", &self.git_ref)
+            .field("run_options", &self.run_options)
+            .field("timeouts", &self.timeouts)
+            .field("force", &self.force)
+            .field("confirm_reader", &self.confirm_reader.is_some())
+            .field("sync", &self.sync)
+            .field("chain_build", &self.chain_build)
+            .finish()
+    }
 }
 
 fn validate_git_ref(git_ref: Option<&str>) -> Result<Option<String>> {
@@ -208,7 +228,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         GOAL_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_add goal: {}", e)))?;
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_add goal: {e}")))?;
 
     let add_result = crate::commands::action_poll::run_action_with_feedback::<
         NodeAddGoalResponse,
@@ -334,7 +354,7 @@ async fn fetch_tracked_instances_for_name_tag(
     let tracked: Vec<_> = super::fetch_tracked_instances(conn, &node_name, &node_tag, timeout)
         .await
         .map_err(|e| {
-            Error::ExecutionFailed(format!("Failed to check node info before adding: {}", e))
+            Error::ExecutionFailed(format!("Failed to check node info before adding: {e}"))
         })?
         .into_iter()
         .filter(|(_, state)| has_or_awaits_process(*state))
@@ -350,7 +370,7 @@ fn confirm_overwrite(
 ) -> Result<bool> {
     crate::commands::confirm::confirm_prompt(
         &overwrite_question(node_name, tag, instances),
-        reader.as_mut().map(|r| r.as_mut() as &mut dyn BufRead),
+        reader.as_mut().map(|r| -> &mut dyn BufRead { r.as_mut() }),
     )
 }
 

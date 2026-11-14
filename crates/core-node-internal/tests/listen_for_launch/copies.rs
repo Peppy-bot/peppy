@@ -394,10 +394,9 @@ async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
     execute(&started, &launch).await.assert_completed();
     let join = robot_goal("alpha", "simulated");
     let (result, ()) = tokio::join!(execute(&started, &join), async {
-        let pid = common::poll_until(GOAL_TIMEOUT, "join build records its process", || {
-            fs::read_to_string(&pid_file)
-                .ok()
-                .and_then(|value| value.trim().parse::<u32>().ok())
+        let pid = poll_until(GOAL_TIMEOUT, "join build records its process", || {
+            let value = fs::read_to_string(&pid_file).ok()?;
+            value.trim().parse::<u32>().ok()
         })
         .await;
         let list = participant_request(&started, &StackListRequest::new()).await;
@@ -481,10 +480,9 @@ async fn a_cancelled_join_is_undone_and_ends_cancelled() {
         .assert_completed();
 
     let handle = send_accepted_stack_goal(&started, &robot_goal("alpha", "simulated")).await;
-    let pid = common::poll_until(GOAL_TIMEOUT, "join build records its process", || {
-        fs::read_to_string(&pid_file)
-            .ok()
-            .and_then(|value| value.trim().parse::<u32>().ok())
+    let pid = poll_until(GOAL_TIMEOUT, "join build records its process", || {
+        let value = fs::read_to_string(&pid_file).ok()?;
+        value.trim().parse::<u32>().ok()
     })
     .await;
     let end = cancel_and_follow_to_end(&started, handle, async {}).await;
@@ -1461,11 +1459,10 @@ impl MonitorSlots {
                 format!(
                     "{}:{}",
                     member.producer.instance_id,
-                    member
-                        .copy
-                        .as_ref()
-                        .map(|copy| format!("{}/{}", copy.name, copy.instance_id))
-                        .unwrap_or_else(|| "-".to_string())
+                    member.copy.as_ref().map_or_else(
+                        || "-".to_string(),
+                        |copy| format!("{}/{}", copy.name, copy.instance_id)
+                    )
                 )
             })
             .collect()
@@ -1525,7 +1522,7 @@ async fn a_monitor_holding_a_later_set_keeps_its_record_through_a_join() {
         .expect("the monitor runs")
         .slot_bindings
         .get("robots")
-        .map(|bound| bound.len());
+        .map(config::runtime::BoundProducers::len);
     assert_eq!(
         recorded,
         Some(0),

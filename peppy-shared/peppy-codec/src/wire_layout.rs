@@ -163,9 +163,9 @@ fn layout_struct(
     }
 
     let mut laid_out = Vec::with_capacity(fields.len());
-    for (index, (name, schema)) in fields.iter().enumerate() {
+    for (index, (name, schema)) in (0_u32..).zip(fields.iter()) {
         let field_path = join_path(path, name);
-        let compiled_field = compiled_fields.get(index as u32);
+        let compiled_field = compiled_fields.get(index);
         let compiled_name = compiled_field
             .get_name()?
             .to_str()
@@ -272,7 +272,7 @@ fn layout_array(
         other => {
             return Err(SchemaError::Layout(format!(
                 "field `{path}` compiled as {} but the message format declares an array",
-                type_name(other)
+                type_name(&other)
             )));
         }
     };
@@ -329,7 +329,7 @@ fn layout_timestamp(
     };
     let mut sec = None;
     let mut nsec = None;
-    for field in timestamp.get_fields()?.iter() {
+    for field in timestamp.get_fields()? {
         let name = field
             .get_name()?
             .to_str()
@@ -374,13 +374,13 @@ fn expect_struct<'a>(
         type_::Struct(struct_type) => nodes.struct_node(struct_type.get_type_id()),
         other => Err(SchemaError::Layout(format!(
             "field `{path}` compiled as {} but the message format declares {what}",
-            type_name(other)
+            type_name(&other)
         ))),
     }
 }
 
 fn expect_type(path: &str, expected: &str, compiled: type_::Reader<'_>) -> Result<()> {
-    let actual = type_name(compiled.which().map_err(not_in_schema)?);
+    let actual = type_name(&compiled.which().map_err(not_in_schema)?);
     if actual == expected {
         return Ok(());
     }
@@ -401,7 +401,7 @@ fn pointer_field(path: &str, offset: u32, target: PointerTarget) -> Result<Field
 /// The schema spelling of a compiled type, matching [`capnp_type_name`] for
 /// every type a message format produces other than the `Timestamp` struct,
 /// which is checked structurally by [`layout_timestamp`].
-fn type_name(compiled: type_::WhichReader<'_>) -> &'static str {
+fn type_name(compiled: &type_::WhichReader<'_>) -> &'static str {
     match compiled {
         type_::Void(()) => "Void",
         type_::Bool(()) => "Bool",

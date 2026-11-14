@@ -10,6 +10,7 @@ use super::facade::{
 use super::facade::{Apptainer, Backend, GuestSignal, is_uri, prepare_scratch_dir};
 use super::registry_auth::{RegistryAuth, RegistryAuthSource};
 use crate::error::Error;
+use std::assert_matches;
 use std::fs;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
@@ -125,7 +126,8 @@ fn native_facade_with_l4t_manifest(apptainer_dir: &Path, manifest_dir: &Path) ->
 
 /// Scratch directory shared by every [`native_facade`] in this test binary.
 /// Held in a static, so it is never dropped: the shared test root reclaims it
-/// once it is stale.
+/// once it is stale. A directory that cannot be made leaves the cell empty, so
+/// each test that needs it tries again and reports the failure itself.
 fn native_fixture_scratch() -> &'static Path {
     static SCRATCH: OnceLock<TempDir> = OnceLock::new();
     SCRATCH.get_or_init(super::scratch_dir).path()
@@ -187,8 +189,7 @@ fn run_bundled_binary_or_skip(binary: &Path, args: &[&str]) -> Option<std::proce
         );
     }
     eprintln!(
-        "SKIPPING: cannot invoke bundled binary at {:?}: {} (likely a sandboxed test env)",
-        binary, e
+        "SKIPPING: cannot invoke bundled binary at {binary:?}: {e} (likely a sandboxed test env)"
     );
     None
 }
@@ -199,9 +200,8 @@ fn run_bundled_binary_or_skip(binary: &Path, args: &[&str]) -> Option<std::proce
 /// restricted-state tests gate on `SetupStatus::apparmor_restricted` instead.
 #[cfg(target_os = "linux")]
 fn apparmor_restricts_userns() -> bool {
-    std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-        .map(|v| v.trim() == "1")
-        .unwrap_or(false)
+    fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+        .is_ok_and(|v| v.trim() == "1")
 }
 
 // ---------------------------------------------------------------------------
@@ -218,8 +218,7 @@ fn test_run_command_builds_correct_args() {
     assert_eq!(args[0], "run");
     assert!(
         args.last().unwrap().ends_with("image.sif"),
-        "last arg should be the image path, got: {:?}",
-        args
+        "last arg should be the image path, got: {args:?}"
     );
 }
 
@@ -313,8 +312,7 @@ fn test_apptainer_env_sets_process_env_on_native_build() {
     let args = cmd.build_args().expect("build_args should succeed");
     assert!(
         args.iter().all(|a| !a.contains("RUSTC_WRAPPER")),
-        "apptainer_env must not appear in argv, got: {:?}",
-        args
+        "apptainer_env must not appear in argv, got: {args:?}"
     );
 
     let std_cmd = cmd.into_std_command().expect("command should assemble");
@@ -324,8 +322,7 @@ fn test_apptainer_env_sets_process_env_on_native_build() {
             std::ffi::OsStr::new("APPTAINERENV_RUSTC_WRAPPER"),
             Some(std::ffi::OsStr::new("/peppy-cache/sccache"))
         )),
-        "expected APPTAINERENV_RUSTC_WRAPPER in process env, got: {:?}",
-        env
+        "expected APPTAINERENV_RUSTC_WRAPPER in process env, got: {env:?}"
     );
 }
 
@@ -388,8 +385,7 @@ fn a_lima_entry_that_would_break_a_line_is_refused() {
             .apptainer_env(key, value)
             .into_std_command()
             .expect_err("an entry that breaks a line is refused");
-        assert!(
-            matches!(&error, Error::GuestEnvEntryUnsendable { key: refused } if refused == key),
+        assert_matches!(&error, Error::GuestEnvEntryUnsendable { key: refused } if refused == key,
             "{key}: {error}"
         );
     }
@@ -476,7 +472,7 @@ fn test_bind_flag_accumulates() {
     let args = cmd.build_args().expect("build_args should succeed");
 
     let bind_count = args.iter().filter(|a| *a == "--bind").count();
-    assert_eq!(bind_count, 2, "should have 2 --bind flags, got: {:?}", args);
+    assert_eq!(bind_count, 2, "should have 2 --bind flags, got: {args:?}");
 }
 
 #[test]
@@ -493,8 +489,7 @@ fn test_bind_with_dest() {
     let bind_spec = &args[bind_idx + 1];
     assert!(
         bind_spec.ends_with("data:/mnt/data"),
-        "bind spec should have src:dest format, got: {}",
-        bind_spec
+        "bind spec should have src:dest format, got: {bind_spec}"
     );
 }
 
@@ -514,8 +509,7 @@ fn test_bind_with_opts() {
     let bind_spec = &args[bind_idx + 1];
     assert!(
         bind_spec.ends_with("data:/mnt/data:ro"),
-        "bind spec should have src:dest:opts format, got: {}",
-        bind_spec
+        "bind spec should have src:dest:opts format, got: {bind_spec}"
     );
 }
 
@@ -579,9 +573,8 @@ fn test_a_bind_path_holding_a_separator_is_refused() {
             .bind(src, dest, None)
             .build_args()
             .expect_err("a separator in a bind path is refused");
-        assert!(
-            matches!(&error, crate::Error::BindPathHoldsDelimiter { delimiter, .. }
-                if *delimiter == ':' || *delimiter == ','),
+        assert_matches!(&error, Error::BindPathHoldsDelimiter { delimiter, .. }
+                if *delimiter == ':' || *delimiter == ',',
             "got: {error}"
         );
     }
@@ -610,8 +603,7 @@ fn test_lima_shell_extra_args_does_not_affect_build_args() {
     assert_eq!(args[0], "run");
     assert!(
         !args.contains(&"--timeout".to_string()),
-        "lima_shell_extra_args should not appear in apptainer args: {:?}",
-        args
+        "lima_shell_extra_args should not appear in apptainer args: {args:?}"
     );
 }
 
@@ -660,8 +652,7 @@ fn test_raw_flag_passthrough() {
 
     assert!(
         args.contains(&"--force".to_string()),
-        "should contain --force: {:?}",
-        args
+        "should contain --force: {args:?}"
     );
 }
 
@@ -775,9 +766,8 @@ fn a_run_with_nv_fails_before_spawning_when_the_nv_list_cannot_be_updated() {
         .into_std_command()
         .expect_err("a list that cannot be read fails the command");
 
-    assert!(
-        matches!(&error, Error::NvliblistUpdateFailed { path, .. }
-            if *path == jetson.nvliblist().display().to_string()),
+    assert_matches!(&error, Error::NvliblistUpdateFailed { path, .. }
+            if *path == jetson.nvliblist().display().to_string(),
         "{error:?}"
     );
 }
@@ -845,7 +835,7 @@ fn test_from_valid_dir() {
         }
     };
     assert!(
-        !apptainer_bin.as_os_str().is_empty(),
+        !apptainer_bin.is_empty(),
         "the apptainer invocation binary path should be non-empty"
     );
 }
@@ -860,8 +850,7 @@ fn test_from_nonexistent_dir() {
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("bin/apptainer not found"),
-        "Expected 'bin/apptainer not found' in error, got: {}",
-        err_msg
+        "Expected 'bin/apptainer not found' in error, got: {err_msg}"
     );
 }
 
@@ -878,8 +867,7 @@ fn test_from_dir_fails_when_binary_missing() {
     let err_msg = err.to_string();
     assert!(
         err_msg.contains("bin/apptainer not found"),
-        "Expected 'bin/apptainer not found' in error, got: {}",
-        err_msg
+        "Expected 'bin/apptainer not found' in error, got: {err_msg}"
     );
 }
 
@@ -916,10 +904,9 @@ fn test_apptainer_version_integration() {
     let v = version.expect("apptainer --version should succeed");
     assert!(
         v.contains("apptainer"),
-        "Expected version string containing 'apptainer', got: {}",
-        v
+        "Expected version string containing 'apptainer', got: {v}"
     );
-    eprintln!("apptainer version: {}", v);
+    eprintln!("apptainer version: {v}");
 }
 
 // ---------------------------------------------------------------------------
@@ -956,13 +943,11 @@ fn test_translate_path_outside_home() {
         .to_string();
     assert!(
         err_msg.contains("not accessible inside the Lima VM"),
-        "Error should mention Lima VM inaccessibility, got: {}",
-        err_msg
+        "Error should mention Lima VM inaccessibility, got: {err_msg}"
     );
     assert!(
         err_msg.contains("/opt/external/file.def"),
-        "Error should include the offending path, got: {}",
-        err_msg
+        "Error should include the offending path, got: {err_msg}"
     );
 }
 
@@ -1188,8 +1173,7 @@ fn test_lima_instance_running_after_init() {
             let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
             assert_eq!(
                 status, "Running",
-                "Lima peppy instance should be Running after construction, got: '{}'",
-                status
+                "Lima peppy instance should be Running after construction, got: '{status}'"
             );
         }
         Backend::Native { .. } => {
@@ -1342,8 +1326,7 @@ fn check_setup_status_detects_stale_apparmor_profile_path() {
     // Read this install's profile and check if it references the current path.
     let profile = apparmor_profile_ref(&apptainer_dir);
     let profile_references_current_path = fs::read_to_string(&profile.file)
-        .map(|content| content.contains(&profile.starter_path))
-        .unwrap_or(false);
+        .is_ok_and(|content| content.contains(&profile.starter_path));
 
     if !profile_references_current_path {
         assert!(
@@ -1480,22 +1463,19 @@ fn apptainer_cache_dir_exists_with_sentinel() {
 
     assert!(
         install_dir.is_dir(),
-        "apptainer cache {:?} does not exist; was ~/.peppy deleted without rebuilding?",
-        install_dir
+        "apptainer cache {install_dir:?} does not exist; was ~/.peppy deleted without rebuilding?"
     );
 
     let sentinel = install_dir.join(crate::APPTAINER_CACHE_SENTINEL_NAME);
     assert!(
         sentinel.exists(),
-        "Cache sentinel {:?} is missing; the apptainer cache may be corrupt",
-        sentinel
+        "Cache sentinel {sentinel:?} is missing; the apptainer cache may be corrupt"
     );
 
     let apptainer_bin = install_dir.join("bin/apptainer");
     assert!(
         apptainer_bin.exists(),
-        "bin/apptainer not found in the apptainer cache {:?}",
-        install_dir
+        "bin/apptainer not found in the apptainer cache {install_dir:?}"
     );
 }
 
@@ -1506,7 +1486,7 @@ fn linux_apptainer_cache_dir() -> Option<PathBuf> {
     super::lima::peppy_home_dir(&format!("tmp/{}", crate::APPTAINER_CACHE_DIR_NAME))
 }
 
-/// The trees build.rs copies into OUT_DIR ship inside release archives: their
+/// The trees build.rs copies into `OUT_DIR` ship inside release archives: their
 /// `.copy-source` sentinels and the generated apptainer man pages must not
 /// carry the building machine's home directory.
 #[test]
@@ -1535,9 +1515,8 @@ fn out_dir_trees_carry_no_build_machine_paths() {
         // A PEPPY_SKIP_APPTAINER_PROVISION build provisions nothing; there is
         // no tree to check, same self-skip the integration tests apply.
         eprintln!(
-            "SKIPPING: no apptainer tree in OUT_DIR at {:?}; build without \
-             PEPPY_SKIP_APPTAINER_PROVISION to check it",
-            man_dir
+            "SKIPPING: no apptainer tree in OUT_DIR at {man_dir:?}; build without \
+             PEPPY_SKIP_APPTAINER_PROVISION to check it"
         );
         return;
     }
@@ -1578,8 +1557,7 @@ fn gocryptfs_bundled_in_apptainer_install_dir() {
     let gocryptfs_bin = install_dir.join("libexec/apptainer/bin/gocryptfs");
     assert!(
         gocryptfs_bin.exists(),
-        "gocryptfs binary missing at {:?}; apptainer encryption support will be disabled",
-        gocryptfs_bin
+        "gocryptfs binary missing at {gocryptfs_bin:?}; apptainer encryption support will be disabled"
     );
 
     // Bundle the xray helper too; same archive, useful for inspecting
@@ -1587,8 +1565,7 @@ fn gocryptfs_bundled_in_apptainer_install_dir() {
     let gocryptfs_xray = install_dir.join("libexec/apptainer/bin/gocryptfs-xray");
     assert!(
         gocryptfs_xray.exists(),
-        "gocryptfs-xray helper missing at {:?}",
-        gocryptfs_xray
+        "gocryptfs-xray helper missing at {gocryptfs_xray:?}"
     );
 
     // Sentinel encodes the version so a bump invalidates the cache.
@@ -1598,8 +1575,7 @@ fn gocryptfs_bundled_in_apptainer_install_dir() {
     ));
     assert!(
         sentinel.exists(),
-        "gocryptfs sentinel {:?} is missing; bundled binary may be stale",
-        sentinel
+        "gocryptfs sentinel {sentinel:?} is missing; bundled binary may be stale"
     );
 }
 
@@ -1628,9 +1604,7 @@ fn gocryptfs_bundled_binary_is_runnable() {
     let expected = format!("gocryptfs v{}", crate::GOCRYPTFS_VERSION);
     assert!(
         stdout.contains(&expected),
-        "bundled gocryptfs version mismatch: expected to find {:?} in {:?}",
-        expected,
-        stdout
+        "bundled gocryptfs version mismatch: expected to find {expected:?} in {stdout:?}"
     );
 }
 
@@ -1649,8 +1623,7 @@ fn gocryptfs_path_matches_apptainer_search_dir() {
 
     assert!(
         expected.exists(),
-        "gocryptfs should be bundled at {:?}",
-        expected
+        "gocryptfs should be bundled at {expected:?}"
     );
 }
 
@@ -1674,9 +1647,8 @@ fn squashfuse_bundled_in_apptainer_install_dir() {
     let squashfuse_bin = ready_apptainer_dir().join("libexec/apptainer/bin/squashfuse_ll");
     assert!(
         squashfuse_bin.exists(),
-        "squashfuse_ll missing at {:?}; apptainer would extract every SIF into --tmpdir \
-         instead of FUSE-mounting it",
-        squashfuse_bin
+        "squashfuse_ll missing at {squashfuse_bin:?}; apptainer would extract every SIF into --tmpdir \
+         instead of FUSE-mounting it"
     );
 }
 
@@ -1709,15 +1681,12 @@ fn squashfuse_bundled_binary_is_runnable() {
     let expected = format!("squashfuse {}", crate::SQUASHFUSE_VERSION);
     assert!(
         banner.contains(&expected),
-        "bundled squashfuse version mismatch: expected to find {:?} in {:?}",
-        expected,
-        banner
+        "bundled squashfuse version mismatch: expected to find {expected:?} in {banner:?}"
     );
     assert!(
         banner.contains("-o uid="),
         "bundled squashfuse_ll does not advertise `-o uid=`, so apptainer will not map file \
-         ownership into the container; banner was {:?}",
-        banner
+         ownership into the container; banner was {banner:?}"
     );
 }
 
@@ -1893,7 +1862,7 @@ fn native_build_fails_on_an_invalid_registry_auth_file() {
 
     match err {
         Error::RegistryAuthFileInvalid { path, .. } => {
-            assert_eq!(path, fixture.docker_config.display().to_string())
+            assert_eq!(path, fixture.docker_config.display().to_string());
         }
         other => panic!("unexpected error: {other}"),
     }
@@ -1950,9 +1919,7 @@ fn prepare_scratch_dir_tolerates_concurrent_preparation() {
     let scratch = tmp.path().join("apptainer");
 
     let failures: Vec<Error> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..16)
-            .map(|_| scope.spawn(|| prepare_scratch_dir(&scratch)))
-            .collect();
+        let handles: Vec<_> = Vec::from_fn(16, |_| scope.spawn(|| prepare_scratch_dir(&scratch)));
         handles
             .into_iter()
             .filter_map(|handle| handle.join().expect("probe thread should not panic").err())
@@ -2006,11 +1973,8 @@ fn prepare_scratch_dir_rejects_existing_non_writable_directory() {
     }
 
     let err = result.expect_err("a non-writable scratch directory should be rejected");
-    assert!(
-        matches!(&err, Error::ScratchDirUnavailable { path, .. } if path == &scratch.display().to_string()),
-        "expected ScratchDirUnavailable naming {:?}, got: {:?}",
-        scratch,
-        err
+    assert_matches!(&err, Error::ScratchDirUnavailable { path, .. } if path == &scratch.display().to_string(),
+        "expected ScratchDirUnavailable naming {scratch:?}, got: {err:?}"
     );
 }
 
@@ -2430,7 +2394,7 @@ fn ensure_host_mounts_is_noop_on_native() {
 
 /// The bundled `LIMA_VERSION` pin must be present and shaped like a version
 /// `parse_lima_version` can read, mirroring the bundled-binary checks that already
-/// exist for APPTAINER_VERSION and GOCRYPTFS_VERSION.
+/// exist for `APPTAINER_VERSION` and `GOCRYPTFS_VERSION`.
 #[test]
 fn lima_version_const_is_present_and_parses() {
     assert!(
@@ -2476,10 +2440,7 @@ impl GuestKillChild for FakeKillChild {
 /// A clock that advances by `step` on each call, starting at `base`, so a test
 /// can drive `await_guest_kill` deterministically past its deadline.
 #[cfg(unix)]
-fn stepping_clock(
-    base: std::time::Instant,
-    step: std::time::Duration,
-) -> impl FnMut() -> std::time::Instant {
+fn stepping_clock(base: std::time::Instant, step: Duration) -> impl FnMut() -> std::time::Instant {
     let mut n: u32 = 0;
     move || {
         let now = base + step * n;
@@ -2599,8 +2560,7 @@ fn wait_for_child_bounded_returns_exit_status_on_clean_exit() {
         stepping_clock(Instant::now(), Duration::from_secs(1)),
         |_| panic!("must not sleep: the child has already exited"),
     );
-    assert!(
-        matches!(result, Ok(Some(status)) if status.success()),
+    assert_matches!(result, Ok(Some(status)) if status.success(),
         "a clean exit should yield Ok(Some(success)), got: {result:?}"
     );
     assert!(!child.killed, "a cleanly-exited child must not be killed");
@@ -2627,8 +2587,9 @@ fn wait_for_child_bounded_returns_none_and_reaps_on_timeout() {
         stepping_clock(Instant::now(), Duration::from_secs(10)),
         |_| {},
     );
-    assert!(
-        matches!(result, Ok(None)),
+    assert_matches!(
+        result,
+        Ok(None),
         "a child that never exits should time out to Ok(None), got: {result:?}"
     );
     assert!(
@@ -2902,7 +2863,7 @@ impl BuildWithEscapedBusyProcess {
         let escaped = fs::read_to_string(format!("/proc/{escaped_pid}/stat"))
             .ok()
             .and_then(|stat| super::activity::parse_process_stat(&stat, TICKS_PER_SECOND));
-        if !escaped.is_some_and(|escaped| escaped.process_group != build.leader_pid()) {
+        if escaped.is_none_or(|escaped| escaped.process_group == build.leader_pid()) {
             build.stop();
             panic!("the spinning shell must run outside the leader's group, got {escaped:?}");
         }

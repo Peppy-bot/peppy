@@ -98,8 +98,7 @@ impl WatcherRegistry {
         self.by_instance
             .lock()
             .remove(instance_id)
-            .map(|watchers| watchers.into_iter().collect())
-            .unwrap_or_default()
+            .map_or_default(|watchers| watchers.into_iter().collect())
     }
 
     /// The union of the planner-named watchers and the pair peers this daemon

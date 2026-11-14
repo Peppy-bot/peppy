@@ -11,6 +11,7 @@ use config::runtime::Name;
 use core_node_api::encoding::NodeRemoveRequest;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
+use std::assert_matches;
 use std::sync::Arc;
 use tokio::sync::oneshot::error::TryRecvError;
 
@@ -465,8 +466,9 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     }
 
     // node_remove rejects the request before it sends any shutdown request.
-    assert!(
-        matches!(shutdown_rx.try_recv(), Err(TryRecvError::Empty)),
+    assert_matches!(
+        shutdown_rx.try_recv(),
+        Err(TryRecvError::Empty),
         "shutdown service should not be invoked when stop_instances=false"
     );
 }

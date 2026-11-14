@@ -8,7 +8,6 @@ use peppy_mcp_runtime::{ExposureServer, ExposureSet};
 use peppylib::messaging::MessengerHandle;
 use peppylib::testing::READINESS_TIMEOUT;
 use serde_json::{Value, json};
-use std::future::Future;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
@@ -319,9 +318,9 @@ impl LoopbackEndpoint {
     pub(crate) fn call_tool(
         &self,
         tool: &str,
-        arguments: Value,
+        arguments: &Value,
         progress_token: Option<&str>,
-    ) -> impl Future<Output = reqwest::Response> + Send + 'static {
+    ) -> impl Future<Output = reqwest::Response> + Send + 'static + use<> {
         let mut meta = json!({
             "io.modelcontextprotocol/protocolVersion": "2026-07-28",
             "io.modelcontextprotocol/clientInfo": { "name": "raw", "version": "0" },
@@ -357,7 +356,7 @@ impl LoopbackEndpoint {
     /// The JSON-RPC answer of a call that carries no progress token, whose
     /// response is the answer alone.
     pub(crate) async fn answer_of(&self, tool: &str, arguments: Value) -> Value {
-        let mut events = Events::of(self.call_tool(tool, arguments, None).await);
+        let mut events = Events::of(self.call_tool(tool, &arguments, None).await);
         let answer = events.next_message().await;
         assert_eq!(answer["id"], 1, "{answer}");
         answer

@@ -6,7 +6,7 @@ mod builder;
 pub(crate) mod cache;
 pub(crate) mod common;
 mod documents;
-pub mod endpoints;
+pub(super) mod endpoints;
 mod env;
 mod feedback;
 pub(crate) mod gate;
@@ -36,30 +36,32 @@ use core_node_api::encoding::InstanceEnd;
 use node_stack::{KeptRelations, NodeStack, Registrations};
 use std::sync::Arc;
 
-// Crate-external re-exports (paths that other crates / other `services::`
-// submodules reference as `crate::services::node::X`).
-pub use add::listen_for_node_add;
-pub use binding::BindingCoordinator;
-pub use builder::listen_for_node_build;
-pub use documents::listen_for_instance_documents;
+// Re-exports: a `pub` one is part of what the crate exports, and a narrower one
+// is a path that the other `services::` modules reference as
+// `crate::services::node::X`.
+pub(super) use add::listen_for_node_add;
+pub(super) use binding::BindingCoordinator;
+pub(super) use builder::listen_for_node_build;
+pub(super) use documents::listen_for_instance_documents;
 pub use health_monitor::HealthMonitorPolicy;
-pub use info::listen_for_node_info;
-pub use init::listen_for_node_init;
+pub(super) use info::listen_for_node_info;
+pub(super) use init::listen_for_node_init;
 pub use node_stack::{ManualTime, ReplyBounds, RestartBackoff, TimeSource};
-pub use observation::ObservationCoordinator;
-pub use pairing::PairingCoordinator;
+pub(super) use observation::ObservationCoordinator;
+pub(super) use pairing::PairingCoordinator;
 pub(crate) use relationship_notify::RelationshipNotifier;
-pub use remove::listen_for_node_remove;
-pub use run::{DaemonDefaults, NodeRunServiceConfig, listen_for_node_run};
+pub(super) use remove::listen_for_node_remove;
+pub(super) use run::{DaemonDefaults, NodeRunServiceConfig, listen_for_node_run};
 pub use stack_log::ExportDiscardLog;
+pub(super) use stop::listen_for_node_stop;
 pub use stop::{
-    TEARDOWN_REAP_BUDGET, force_kill_deadline, listen_for_node_stop, node_remove_bound,
-    node_stop_bound, teardown_all_instances,
+    TEARDOWN_REAP_BUDGET, force_kill_deadline, node_remove_bound, node_stop_bound,
+    teardown_all_instances,
 };
 pub(crate) use stop::{
     named_instances, stop_named_instance, stop_named_instances, teardown_timeout,
 };
-pub use sync::listen_for_node_sync;
+pub(super) use sync::listen_for_node_sync;
 
 pub(crate) use add::{NodeAddActionContext, create_add_log, dispatch_node_add, record_add_failure};
 pub(crate) use builder::{NodeBuildActionContext, run_node_build_for_entity};
@@ -113,7 +115,7 @@ use std::path::{Path, PathBuf};
 /// the instance plan so a participant can refuse a manifest that changed under
 /// it between preflight and dispatch. Computing it two ways would make that
 /// refusal fire on formatting.
-pub(crate) fn manifest_fingerprint(config: &NodeConfig) -> std::result::Result<String, String> {
+pub(crate) fn manifest_fingerprint(config: &NodeConfig) -> Result<String, String> {
     let serialized = json5_pretty::to_string_pretty(config)
         .map_err(|e| format!("failed to serialize node config for fingerprinting: {e}"))?;
     Ok(config::fingerprint::fingerprint_for_bytes(
@@ -425,9 +427,9 @@ mod tests {
 
     #[test]
     fn sanitize_repo_path_rejects_empty_input() {
-        assert!(sanitize_repo_path("").is_err());
-        assert!(sanitize_repo_path("   ").is_err());
-        assert!(sanitize_repo_path("///").is_err());
+        sanitize_repo_path("").unwrap_err();
+        sanitize_repo_path("   ").unwrap_err();
+        sanitize_repo_path("///").unwrap_err();
     }
 
     #[rstest::rstest]

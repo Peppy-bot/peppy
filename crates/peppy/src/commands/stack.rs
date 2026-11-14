@@ -25,7 +25,7 @@ use stack_goal::DEFAULT_BUDGETS;
 use super::Command;
 use crate::{context::AppContext, error::Error as CommandError};
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum StackCommands {
     /// Launch a stack from a launcher, replacing the current node stack.
     Launch(LauncherArgs),
@@ -45,7 +45,7 @@ pub enum StackCommands {
     Build(StackBuildArgs),
     /// Add a copy of one of the launcher's options to the running stack.
     ///
-    /// The copy's instances are minted as NAME_<instance-id>, the way
+    /// The copy's instances are minted as `NAME_<instance-id>`, the way
     /// `node run` adds an instance of a node. Where the option's fragments use
     /// `add_links`, the copy also joins its instances to a running instance's
     /// `one_or_more` or `zero_or_more` slot, which `stack list` then shows
@@ -141,7 +141,7 @@ pub enum StackCommands {
 }
 
 /// What `stack build` takes.
-#[derive(clap::Args)]
+#[derive(Debug, clap::Args)]
 pub struct StackBuildArgs {
     #[command(flatten)]
     pub launcher: LauncherArgs,
@@ -173,7 +173,7 @@ impl From<LauncherArgs> for StackBuildArgs {
 }
 
 /// What `stack launch` and `stack build` take.
-#[derive(clap::Args)]
+#[derive(Debug, clap::Args)]
 pub struct LauncherArgs {
     /// The launcher: a repository launcher's name, or a path to a
     /// `launcher/v1` file.
@@ -237,10 +237,10 @@ impl StackTimeouts {
 
 /// The copies `--join OPTION:NAME[@CORE_NODE]` composes with a launch,
 /// shared by launch, build, and resolve.
-#[derive(clap::Args, Default)]
+#[derive(Debug, clap::Args, Default)]
 pub struct LaunchJoins {
     /// A copy of OPTION, one of an axis that runs as copies, named NAME in
-    /// the launch, its base on CORE_NODE (the coordinator when no machine is
+    /// the launch, its base on `CORE_NODE` (the coordinator when no machine is
     /// given, which `self` also names): joined onto the launch as `stack
     /// join OPTION:NAME@CORE_NODE` joins one onto the running stack, and
     /// started with it by `stack launch`, its nodes built with it by `stack
@@ -257,7 +257,7 @@ pub struct LaunchJoins {
     pub joins: Vec<CopyReference>,
 }
 
-/// The one spelling for "a copy NAME of OPTION on CORE_NODE": the option
+/// The one spelling for "a copy NAME of OPTION on `CORE_NODE`": the option
 /// before the colon, the copy's name after it, held to a copy name's
 /// grammar, and after `@` the machine of its base. `stack join` takes it as
 /// its positional, and `--join` joins the copy onto a launch.
@@ -273,7 +273,7 @@ fn parse_copy_name(raw: &str) -> Result<CopyName, String> {
 
 /// The `--with` words of `stack join`: each selects an option of the copied
 /// option's own axes.
-#[derive(clap::Args, Default)]
+#[derive(Debug, clap::Args, Default)]
 pub struct JoinWords {
     /// Select one option of the copied option's own axes: `option` or
     /// `axis=option`. After `@`, the machine that runs the part the option
@@ -292,7 +292,7 @@ pub struct JoinWords {
 }
 
 /// The `--with` words of launch, build and resolve.
-#[derive(clap::Args, Default)]
+#[derive(Debug, clap::Args, Default)]
 pub struct LaunchWords {
     /// Select one option of a `components` axis: `option` or `axis=option`.
     /// The words swap what the launcher deploys on its `one` axes and turn
@@ -327,6 +327,7 @@ fn parse_launch_word(raw: &str) -> Result<LaunchWord, String> {
         .map_err(|error: core_node_api::encoding::WordError| error.to_string())
 }
 
+#[derive(Debug)]
 pub struct StackCommand {
     pub command: StackCommands,
 }
@@ -339,7 +340,7 @@ impl Command for StackCommand {
                 with,
                 arguments,
                 timeouts,
-            } => join::join(ctx, copy, with.words, arguments, timeouts),
+            } => join::join(ctx, copy, with.words, arguments, &timeouts),
             StackCommands::Remove { name } => remove::remove(ctx, name),
             StackCommands::List { json } => list::list_nodes(ctx, json),
             StackCommands::Reset { federated } => reset::reset_stack(ctx, federated),
@@ -347,7 +348,7 @@ impl Command for StackCommand {
                 launcher_config_path,
                 with,
                 joins,
-            } => resolve::resolve(launcher_config_path, with.words, joins.joins),
+            } => resolve::resolve(launcher_config_path, &with.words, &joins.joins),
             StackCommands::Launch(args) => {
                 info!("Launching stack...");
                 launch::launch::<LaunchGoal>(ctx, args, None)

@@ -1,8 +1,8 @@
-//! Python mirror of `tests/rust/topics_implements.rs`: same realsense_d435
+//! Python mirror of `tests/rust/topics_implements.rs`: same `realsense_d435`
 //! scenario, but verifying the Python generator emits the corresponding
 //! `peppygen/emitted_topics/{link_id}/{topic}.py` files
 //! with the right `__init__.py` chains and the matching `contract_name` /
-//! `contract_tag` strings inside each declare_publisher call.
+//! `contract_tag` strings inside each `declare_publisher` call.
 
 use crate::helpers::{generate_test_peppygen_lib, prepare_directories};
 use crate::implements_fixtures::{contract_backed_topic, make_video_stream_topic};
@@ -36,7 +36,7 @@ const NODE_CONFIG: &str = r#"{
 }
 "#;
 
-/// Realsense_d435 scenario for the Python generator: one native
+/// `Realsense_d435` scenario for the Python generator: one native
 /// `video_stream` publisher plus three resolved contract-backed interfaces
 /// (`depth_camera:v1`, `depth_camera:v2`, `uvc_camera:v1`) each shaped as
 /// `video_stream` with a distinguishing marker field. Verifies that:
@@ -44,7 +44,7 @@ const NODE_CONFIG: &str = r#"{
 ///      `emitted_topics/{link_id}/{topic}.py` while the
 ///      native artifact stays flat at `emitted_topics/{topic}.py`.
 ///   2. The `__init__.py` chain at each level imports its direct children.
-///   3. Each leaf's declare_publisher body passes the matching sender target to
+///   3. Each leaf's `declare_publisher` body passes the matching sender target to
 ///      the messenger: `peppylib.SenderTarget.contract(...)` for contract-backed
 ///      leaves and `peppylib.SenderTarget.node(...)` for the native leaf.
 ///   4. The per-interface marker fields land in their own files, proof the
@@ -187,9 +187,9 @@ fn nests_contract_backed_topics_under_link_id() {
 }
 
 /// Exercises hyphen-to-underscore normalization of the slot `link_id` for the
-/// Python generator: a link_id `depth-beta` becomes the directory `depth_beta`
+/// Python generator: a `link_id` `depth-beta` becomes the directory `depth_beta`
 /// (Python identifiers can't carry hyphens) while the literal `"v1-beta"` tag is
-/// still embedded in the declare_publisher body; the messaging layer normalizes hyphens
+/// still embedded in the `declare_publisher` body; the messaging layer normalizes hyphens
 /// at the wire boundary, so the generator keeps the raw value.
 #[test]
 fn hyphenated_link_id_lands_in_underscore_directory() {

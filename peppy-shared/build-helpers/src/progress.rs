@@ -1,17 +1,17 @@
 //! Reporting build-script progress to the person running the build.
 //!
-//! Cargo captures a build script's stdout, keeps every `cargo:warning=` line
+//! Cargo captures a build script's stdout, keeps every `cargo::warning=` line
 //! it finds, and replays them on every later build of that package, including
 //! the fully cached ones where the script never runs again. Progress reported
 //! that way outlives the work it described: a one-off tool compile keeps
 //! reprinting its whole log on every command until something invalidates the
 //! build script. Progress therefore goes straight to the terminal running the
-//! build, which cargo neither captures nor replays, and `cargo:warning=` stays
+//! build, which cargo neither captures nor replays, and `cargo::warning=` stays
 //! reserved for conditions the user has to act on.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex};
 
 /// Cargo paints its status bar on the last terminal line and leaves the cursor
 /// there with no trailing newline. `\r` returns to the start of that line and
@@ -24,7 +24,7 @@ const ERASE_STATUS_BAR: &str = "\r\x1b[2K";
 /// Prefer the [`progress!`](crate::progress!) macro at call sites; this is the
 /// function it forwards to. When the build has no controlling terminal (CI, an
 /// IDE, a piped build) the message is dropped: nobody is watching for it, and
-/// the alternative, a `cargo:warning=` line, would be replayed on every later
+/// the alternative, a `cargo::warning=` line, would be replayed on every later
 /// build. Failures are reported as warnings instead, so a build that goes
 /// wrong stays diagnosable without a terminal.
 pub fn report_progress(message: &str) {
@@ -38,10 +38,8 @@ pub fn report_progress(message: &str) {
     };
     // One `write_all` per line keeps a line intact when concurrent build
     // scripts write to the same terminal.
-    terminal
-        .write_all(progress_line(package_name().as_deref(), message).as_bytes())
-        .ok();
-    terminal.flush().ok();
+    let _ = terminal.write_all(progress_line(package_name().as_deref(), message).as_bytes());
+    let _ = terminal.flush();
 }
 
 /// The line written to the terminal for `message`.
@@ -71,16 +69,14 @@ fn package_name() -> Option<String> {
 /// cargo reads stdout and stderr through, so what goes there reaches the user
 /// live and is never recorded in the build-script output cargo replays.
 fn terminal() -> Option<&'static Mutex<File>> {
-    static TERMINAL: OnceLock<Option<Mutex<File>>> = OnceLock::new();
-    TERMINAL
-        .get_or_init(|| {
-            OpenOptions::new()
-                .write(true)
-                .open("/dev/tty")
-                .ok()
-                .map(Mutex::new)
-        })
-        .as_ref()
+    static TERMINAL: LazyLock<Option<Mutex<File>>> = LazyLock::new(|| {
+        OpenOptions::new()
+            .write(true)
+            .open("/dev/tty")
+            .ok()
+            .map(Mutex::new)
+    });
+    TERMINAL.as_ref()
 }
 
 /// Reports one line of build-script progress, formatted like `println!`.

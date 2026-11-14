@@ -1,6 +1,6 @@
 //! Transport-neutral addressing structs for peppy's messaging protocol.
 //!
-//! The schema (core_node / instance_id / target / topic|service|action / name)
+//! The schema (`core_node` / `instance_id` / target / topic|service|action / name)
 //! is peppy-specific. The zenoh-shaped wire format that encodes it lives in
 //! `wire::zenoh_format`.
 
@@ -22,7 +22,7 @@ impl Segment {
     }
 
     /// Reserved single-character segment placed at the `link_id` wire slot of
-    /// an emission that names no link_id. User-supplied input cannot
+    /// an emission that names no `link_id`. User-supplied input cannot
     /// construct this segment via `try_from` (the reserved-sentinel rule
     /// rejects `_`); the runtime uses this constructor to materialize the
     /// default sentinel at producer-side fan-out sites.
@@ -31,7 +31,7 @@ impl Segment {
     }
 
     /// Lenient parser used by runtime paths that need to accept the reserved
-    /// link_id default `_` alongside user-supplied link_ids. It rejects
+    /// `link_id` default `_` alongside user-supplied `link_ids`. It rejects
     /// `*` / `**`, so a publisher can never advertise itself on a wildcard.
     pub fn try_link_id(s: &str) -> Result<Self, SegmentError> {
         validate_segment_chars(s)?;
@@ -59,10 +59,10 @@ impl Segment {
     }
 }
 
-/// Wire literal at the `link_id` slot of an emission that names no link_id
+/// Wire literal at the `link_id` slot of an emission that names no `link_id`
 /// ([`Segment::default_link_id`]). An alias of
 /// `config::consts::DEFAULT_LINK_ID_SENTINEL`, the one definition, which the
-/// config parsers also reject as a slot link_id.
+/// config parsers also reject as a slot `link_id`.
 pub const DEFAULT_LINK_ID: &str = config::consts::DEFAULT_LINK_ID_SENTINEL;
 
 impl std::ops::Deref for Segment {
@@ -98,7 +98,7 @@ impl TryFrom<&str> for Segment {
 }
 
 /// The full sentinel set rejected by [`Segment::try_from`] (unlike
-/// [`Segment::try_link_id`], which admits the link_id default `_`).
+/// [`Segment::try_link_id`], which admits the `link_id` default `_`).
 fn is_reserved_sentinel(s: &str) -> bool {
     matches!(s, "*" | "**") || s == DEFAULT_LINK_ID
 }
@@ -390,10 +390,8 @@ impl ServiceKind {
     /// First segment of the service root (`"service"` or `"action"`).
     pub fn root_segment(self) -> &'static str {
         match self {
-            ServiceKind::Service => "service",
-            ServiceKind::ActionGoal | ServiceKind::ActionCancel | ServiceKind::ActionResult => {
-                "action"
-            }
+            Self::Service => "service",
+            Self::ActionGoal | Self::ActionCancel | Self::ActionResult => "action",
         }
     }
 
@@ -401,16 +399,16 @@ impl ServiceKind {
     /// or `None` for a plain service.
     pub fn suffix(self) -> Option<&'static str> {
         match self {
-            ServiceKind::Service => None,
-            ServiceKind::ActionGoal => Some("goal"),
-            ServiceKind::ActionCancel => Some("cancel"),
-            ServiceKind::ActionResult => Some("result"),
+            Self::Service => None,
+            Self::ActionGoal => Some("goal"),
+            Self::ActionCancel => Some("cancel"),
+            Self::ActionResult => Some("result"),
         }
     }
 }
 
 /// The precomputed `[root, discriminator, name, tag]` prefix segments of a
-/// service_root. Built once at receiver construction so the inbound-query
+/// `service_root`. Built once at receiver construction so the inbound-query
 /// parser can match without rebuilding strings. Single source of truth for the
 /// prefix shape, shared by [`ServiceWireReceiver::new`] and the action
 /// sub-service derivation in [`ActionWireReceiver`].
@@ -426,7 +424,7 @@ fn service_root_prefix(identity: &SenderTarget, kind: ServiceKind) -> [String; 4
 // ─── Topics ──────────────────────────────────────────────────────────────────
 
 /// One end of a pair as a pairing topic key names it: the instance's wire
-/// address and the link_id of its slot in the pair.
+/// address and the `link_id` of its slot in the pair.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WirePeer {
     pub(crate) core_node: Segment,
@@ -532,7 +530,7 @@ pub enum PairingRecipient {
 /// slots wildcarded and peppylib's `Subscription` wrapper filters incoming
 /// messages against the bound producer set above the adapter.
 /// `from_link_id` follows the same rule: `Some` pins to a producer's specific
-/// link_id (pairing subscriptions), `None` matches any.
+/// `link_id` (pairing subscriptions), `None` matches any.
 ///
 /// A pairing subscription also says which recipient it stands for
 /// ([`PairingRecipient`]), because a pairing emission names its peer:
@@ -554,7 +552,6 @@ pub struct TopicWireReceiver {
 }
 
 impl TopicWireReceiver {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         as_core_node: &str,
         as_instance_id: &str,
@@ -662,8 +659,8 @@ impl TopicWireReceiver {
     }
 
     /// Wire rule shared by every adapter: a subscriber that wildcards the
-    /// link_id slot (`from_link_id: None`) matches the publish under every
-    /// link_id and drops the ones marked secondary (see `TopicAttachment` in
+    /// `link_id` slot (`from_link_id: None`) matches the publish under every
+    /// `link_id` and drops the ones marked secondary (see `TopicAttachment` in
     /// `wire::zenoh_format`). A pinned subscriber ignores the marker, because
     /// its keyexpr selects one publish.
     pub fn drops_secondary_publishes(&self) -> bool {
@@ -691,12 +688,12 @@ fn producer_slots(
 /// on both slots (the discovery probe shape). The one representable
 /// half-address is core-without-instance via [`Self::scoped_to_core_node`],
 /// for callers that know which core node must answer but cannot know
-/// the producer's per-boot instance_id. Instance-without-core stays
+/// the producer's per-boot `instance_id`. Instance-without-core stays
 /// unrepresentable at this boundary.
-/// The link_id wire slot is always emitted as `*`: producers advertise under
+/// The `link_id` wire slot is always emitted as `*`: producers advertise under
 /// the reserved `_` segment, and Zenoh's matcher unifies the two.
 /// `signing` says how the sender signs the call, when it signs it (see
-/// [`crate::call_proof`]).
+/// `crate::call_proof`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceWireSender {
     pub(crate) bound_core_node: Segment,
@@ -734,6 +731,7 @@ impl ServiceWireSender {
     }
 
     /// The sender of a call that `signing` signs.
+    #[must_use]
     pub fn signed(mut self, signing: CallSigning) -> Self {
         self.signing = Some(signing);
         self
@@ -759,10 +757,10 @@ impl ServiceWireSender {
         self.target_core_node.as_deref()
     }
 
-    /// Scopes the selector's target core_node slot to `target_core_node`
+    /// Scopes the selector's target `core_node` slot to `target_core_node`
     /// while leaving the instance slot wildcarded: the core-without-instance
     /// half-address. The selector then matches only producers hosted by that
-    /// core node, regardless of their per-boot instance_id.
+    /// core node, regardless of their per-boot `instance_id`.
     pub fn scoped_to_core_node(mut self, target_core_node: &str) -> crate::error::Result<Self> {
         self.target_core_node = Some(Segment::try_from(target_core_node)?);
         self.target_instance_id = None;
@@ -779,8 +777,8 @@ impl ServiceWireSender {
 }
 
 /// Server-side addressing for a service. Producers always advertise their
-/// queryables under the reserved default `_` segment at the link_id wire
-/// slot; inbound queries carry `*` (callers always wildcard the link_id
+/// queryables under the reserved default `_` segment at the `link_id` wire
+/// slot; inbound queries carry `*` (callers always wildcard the `link_id`
 /// slot) or the `_` literal, and the dispatch filter at the adapter
 /// accepts both.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -791,7 +789,7 @@ pub struct ServiceWireReceiver {
     pub(crate) as_service_name: Segment,
     pub(crate) kind: ServiceKind,
     /// Precomputed `[root, discriminator, name, tag]` segments of the
-    /// service_root prefix. Derived from `(as_identity, kind)` at construction
+    /// `service_root` prefix. Derived from `(as_identity, kind)` at construction
     /// so the inbound query parser can match without rebuilding strings.
     service_root_prefix: [String; 4],
 }
@@ -827,7 +825,7 @@ impl ServiceWireReceiver {
 /// Feedback subscription is built per `goal_id` by the transport adapter.
 /// `target` is the producer's full `(core_node, instance_id)` wire address;
 /// `None` is a genuine wildcard on both slots (the discovery probe shape).
-/// The link_id wire slot is always `*`: producers advertise under the
+/// The `link_id` wire slot is always `*`: producers advertise under the
 /// reserved `_` segment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionWireSender {
@@ -912,8 +910,8 @@ impl ActionWireSender {
 }
 
 /// Server-side addressing for an action. Producers always advertise under the
-/// reserved default `_` link_id segment; the adapter accepts `*` or `_` at the
-/// link_id wire slot. Per-goal feedback publishes use the goal's own link_id
+/// reserved default `_` `link_id` segment; the adapter accepts `*` or `_` at the
+/// `link_id` wire slot. Per-goal feedback publishes use the goal's own `link_id`
 /// (extracted from the goal request).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionWireReceiver {

@@ -15,7 +15,7 @@ use tracing::{info, warn};
 
 /// How long an instance may answer no health check before the daemon kills
 /// it, under a policy that restarts after a failure.
-const KILL_AFTER_UNANSWERED: Duration = Duration::from_secs(60);
+const KILL_AFTER_UNANSWERED: Duration = Duration::from_mins(1);
 
 /// Cadence and tolerance of the per-node health monitor (see
 /// `core_node::services::node::health_monitor`). The monitor probes each
@@ -99,7 +99,7 @@ const DAEMON_HEARTBEAT_INTERVAL: Duration =
 /// over.
 const ROUTER_LINKS_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub struct CoreNodeRunner {
+pub(crate) struct CoreNodeRunner {
     core_node: CoreNode,
     /// The daemon's shared messenger, retained (alongside the clone moved into
     /// `core_node`) to build the router-links probe: the bounded wait for the
@@ -127,8 +127,11 @@ pub struct CoreNodeRunner {
 }
 
 impl CoreNodeRunner {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is a distinct input, and a struct of them only moves the list"
+    )]
+    pub(crate) fn new(
         messenger: Arc<Mutex<Messenger>>,
         core_node_name: Option<String>,
         node_startup_timeout: Duration,
@@ -191,7 +194,7 @@ impl CoreNodeRunner {
         }
     }
 
-    pub fn node_name(&self) -> &str {
+    pub(crate) fn node_name(&self) -> &str {
         self.core_node.node_name()
     }
 }
@@ -209,7 +212,7 @@ impl ServeAsyncCommand for CoreNodeRunner {
         let future = Box::pin(async move {
             // Tear down when the serve coordinator stops the generation.
             let teardown = serve_teardown_token.cancelled();
-            tokio::pin!(teardown);
+            let mut teardown = std::pin::pin!(teardown);
 
             if !*messaging_ready.borrow() {
                 info!("Waiting for messaging session before starting core node...");
@@ -249,19 +252,18 @@ impl ServeAsyncCommand for CoreNodeRunner {
 
             let log_export = log_export.start(core_node.node_name());
             let core_node_future = core_node.start_with_ready(Some(ready_tx));
-            tokio::pin!(core_node_future);
+            let mut core_node_future = std::pin::pin!(core_node_future);
 
             let mut shutdown_triggered = false;
             let result: Result<(), Error> = tokio::select! {
                 result = &mut core_node_future => {
                     result.map_err(|err| {
                         Error::ExecutionFailed(format!(
-                            "Core node commands listener failed: {}",
-                            err
+                            "Core node commands listener failed: {err}"
                         ))
                     })
                 }
-                _ = &mut teardown => {
+                () = &mut teardown => {
                     shutdown_triggered = true;
                     Ok(())
                 }
@@ -345,7 +347,7 @@ mod tests {
     /// the default grace.
     #[test]
     fn the_shipped_kill_window_outlasts_the_router_recovery() {
-        assert_eq!(KILL_AFTER_UNANSWERED, Duration::from_secs(60));
+        assert_eq!(KILL_AFTER_UNANSWERED, Duration::from_mins(1));
         let probe_to_probe = HEALTH_MONITOR.interval + HEALTH_MONITOR.timeout;
         assert_eq!(
             KILL_AFTER_UNANSWERED + probe_to_probe,

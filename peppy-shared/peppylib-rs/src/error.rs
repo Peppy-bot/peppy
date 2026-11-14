@@ -22,11 +22,11 @@ impl fmt::Display for ParameterDeserializationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0.as_slice() {
             [] => write!(f, "parameter deserialization error: unknown error"),
-            [single] => write!(f, "parameter deserialization error: {}", single),
+            [single] => write!(f, "parameter deserialization error: {single}"),
             multiple => {
                 write!(f, "missing required parameters:")?;
                 for msg in multiple {
-                    write!(f, "\n  - {}", msg)?;
+                    write!(f, "\n  - {msg}")?;
                 }
                 Ok(())
             }
@@ -386,7 +386,7 @@ pub enum Error {
     UnknownProducerSlot { link_id: String },
 
     /// Startup backstop for the launch-time rule "every declared
-    /// depends_on slot except `zero_or_more` carries a `slot_bindings`
+    /// `depends_on` slot except `zero_or_more` carries a `slot_bindings`
     /// entry": a daemon that validates bindings never ships a boot config
     /// missing such a slot's entry, so hitting this means version skew or
     /// a hand-edited boot config. A `zero_or_one` slot the deployment wrote

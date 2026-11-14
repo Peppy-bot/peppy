@@ -23,17 +23,17 @@ pub enum RepoSourceKind {
 impl RepoSourceKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            RepoSourceKind::Fs => "fs",
-            RepoSourceKind::Git => "git",
-            RepoSourceKind::Oci => "oci",
+            Self::Fs => "fs",
+            Self::Git => "git",
+            Self::Oci => "oci",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "fs" => Some(RepoSourceKind::Fs),
-            "git" => Some(RepoSourceKind::Git),
-            "oci" => Some(RepoSourceKind::Oci),
+            "fs" => Some(Self::Fs),
+            "git" => Some(Self::Git),
+            "oci" => Some(Self::Oci),
             _ => None,
         }
     }
@@ -74,9 +74,9 @@ impl RepoSource {
     /// (see `core-node`'s `services::repo::source_identity`).
     pub fn kind(&self) -> RepoSourceKind {
         match self {
-            RepoSource::Fs(_) => RepoSourceKind::Fs,
-            RepoSource::Git { .. } => RepoSourceKind::Git,
-            RepoSource::Oci(_) => RepoSourceKind::Oci,
+            Self::Fs(_) => RepoSourceKind::Fs,
+            Self::Git { .. } => RepoSourceKind::Git,
+            Self::Oci(_) => RepoSourceKind::Oci,
         }
     }
 
@@ -89,9 +89,9 @@ impl RepoSource {
     ///   it: `"url (ref: @{peppy-release}, reads peppy-release/v0.31.2)"`.
     pub fn display_label(&self, build: &PeppyBuild) -> String {
         match self {
-            RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
-            RepoSource::Oci(repository) => repository.to_string(),
-            RepoSource::Git { repo_url, repo_ref } => match (repo_ref, repo_ref.read_ref(build)) {
+            Self::Fs(path) => path.to_string_lossy().into_owned(),
+            Self::Oci(repository) => repository.to_string(),
+            Self::Git { repo_url, repo_ref } => match (repo_ref, repo_ref.read_ref(build)) {
                 (GitRepoRef::PeppyRelease, Some(read)) => format!(
                     "{repo_url} (ref: {PEPPY_RELEASE_REF}, reads {})",
                     read.short_name()
@@ -142,11 +142,13 @@ impl RepoAddRequest {
         }
     }
 
+    #[must_use]
     pub fn with_top(mut self, top: bool) -> Self {
         self.top = top;
         self
     }
 
+    #[must_use]
     pub fn with_id(mut self, id: u64) -> Self {
         self.id = Some(id);
         self
@@ -155,7 +157,7 @@ impl RepoAddRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<repo_capnp::repo_add_request::Builder>();
+            let mut request = builder.init_root::<repo_capnp::repo_add_request::Builder<'_>>();
             request.set_top(self.top);
             if let Some(id) = self.id {
                 request.reborrow().init_id().set_explicit(id);
@@ -179,7 +181,7 @@ impl RepoAddRequest {
         use crate::repo_capnp::repo_add_request::source::Which;
 
         let reader = decode_message(data)?;
-        let request = reader.get_root::<repo_capnp::repo_add_request::Reader>()?;
+        let request = reader.get_root::<repo_capnp::repo_add_request::Reader<'_>>()?;
         let top = request.get_top();
         // An `auto` discriminant is what a sender that never set the union
         // leaves on the wire, so a request that pins no id decodes as `None`.
@@ -240,23 +242,23 @@ impl RepoAddResponse {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<repo_capnp::repo_add_response::Builder>();
+        builder.init_root::<repo_capnp::repo_add_response::Builder<'_>>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<repo_capnp::repo_add_response::Reader>()?;
+        reader.get_root::<repo_capnp::repo_add_response::Reader<'_>>()?;
         Ok(Self)
     }
 }
 
 impl crate::encoding::Wire for RepoAddRequest {
-    type Root = crate::repo_capnp::repo_add_request::Owned;
+    type Root = repo_capnp::repo_add_request::Owned;
 }
 
 impl crate::encoding::Wire for RepoAddResponse {
-    type Root = crate::repo_capnp::repo_add_response::Owned;
+    type Root = repo_capnp::repo_add_response::Owned;
 }
 
 #[cfg(test)]
@@ -407,7 +409,7 @@ mod tests {
     fn add_request_decode_refuses_a_ref_peppy_cannot_read() {
         let mut builder = Builder::new_default();
         {
-            let request = builder.init_root::<repo_capnp::repo_add_request::Builder>();
+            let request = builder.init_root::<repo_capnp::repo_add_request::Builder<'_>>();
             let mut git = request.init_source().init_git();
             git.set_repo_url("https://github.com/org/repo");
             git.set_repo_ref("@{upstream}");
@@ -444,7 +446,7 @@ mod tests {
     fn add_request_decode_refuses_an_oci_url_that_names_no_repository() {
         let mut builder = Builder::new_default();
         {
-            let request = builder.init_root::<repo_capnp::repo_add_request::Builder>();
+            let request = builder.init_root::<repo_capnp::repo_add_request::Builder<'_>>();
             request.init_source().set_oci("oci://ghcr.io");
         }
         let bytes = encode_message(&builder).expect("encode");
@@ -493,7 +495,7 @@ mod tests {
 
     #[test]
     fn add_request_decode_rejects_malformed() {
-        assert!(RepoAddRequest::decode(b"not capnp").is_err());
+        RepoAddRequest::decode(b"not capnp").unwrap_err();
     }
 
     #[test]
@@ -507,6 +509,6 @@ mod tests {
 
     #[test]
     fn add_response_decode_rejects_malformed() {
-        assert!(RepoAddResponse::decode(b"not capnp").is_err());
+        RepoAddResponse::decode(b"not capnp").unwrap_err();
     }
 }

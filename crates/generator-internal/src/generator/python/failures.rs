@@ -75,11 +75,11 @@ pub(super) fn emit_failure_items(
                         "raise ValueError(f\"{{kind!r}} is not a failure kind of {{{member_name}}} (message: {{message!r}})\") from None"
                     ));
                 });
-                builder.py(r#"
+                builder.py(r"
 super().__init__(parsed.value, message)
 self.kind = parsed
 self.message = message
-"#);
+");
             },
         );
         builder.blank_line();

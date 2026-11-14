@@ -13,6 +13,7 @@ use crate::error::Result;
 use auth::client::Principal;
 use auth::{profile, storage};
 
+#[derive(Debug)]
 pub struct WhoamiCommand {
     pub api_url: Option<String>,
     /// Emit machine-readable JSON instead of human text.

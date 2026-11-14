@@ -149,7 +149,7 @@ pub fn check_env_var(name: &str, value: &str) -> Result<(), InvalidEnvVar> {
 
 /// Checks the name of one explicitly declared environment variable: a shell
 /// identifier, and not a forbidden key.
-pub fn check_env_name(name: &str) -> Result<(), InvalidEnvVar> {
+pub(crate) fn check_env_name(name: &str) -> Result<(), InvalidEnvVar> {
     if !is_valid_env_name(name) {
         return Err(InvalidEnvVar::Name {
             name: name.to_string(),
@@ -164,7 +164,7 @@ pub fn check_env_name(name: &str) -> Result<(), InvalidEnvVar> {
 }
 
 /// Checks the name of a variable that an instance takes from the launch
-/// environment: a name [`check_env_name`] accepts, which the forwarded
+/// environment: a name `check_env_name` accepts, which the forwarded
 /// environment of a launch can hold, so not one of the
 /// [`NEVER_FORWARDED_ENV_KEYS`]. The value is checked where it arrives: the
 /// CLI forwards only a value [`is_safe_env_value`] accepts, and the daemon
@@ -290,7 +290,7 @@ mod tests {
         );
         for name in NEVER_FORWARDED_ENV_KEYS
             .iter()
-            .map(|name| name.to_string())
+            .map(ToString::to_string)
             .chain(["pythonpath".to_string()])
         {
             assert_eq!(

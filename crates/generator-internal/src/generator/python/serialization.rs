@@ -15,7 +15,7 @@ use indexmap::IndexMap;
 /// `param_prefix` is the Python expression the field values are read from:
 /// `"request"` reads `request.<field>`, an empty prefix reads each field from
 /// a parameter of the same name.
-pub fn emit_new_capnp_message(
+pub(super) fn emit_new_capnp_message(
     builder: &mut PythonCodeBuilder,
     schema_info: &PythonSchemaInfo,
     format: &MessageFormat,

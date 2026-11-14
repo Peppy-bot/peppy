@@ -45,7 +45,6 @@ pub(crate) const RESYNC_REMEDY: &str = concat!(
 );
 
 use std::fmt;
-use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::task::JoinHandle as TokioJoinHandle;
@@ -149,6 +148,7 @@ impl CancellationToken {
     }
 
     /// Creates a child token that is cancelled when the parent is cancelled.
+    #[must_use]
     pub fn child_token(&self) -> Self {
         Self(self.0.child_token())
     }

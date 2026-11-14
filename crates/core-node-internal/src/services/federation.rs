@@ -47,6 +47,14 @@
 //! unit-testable without a messenger, a timer, or a sleep. Wiring the presence
 //! watch to it lives in the service handler below.
 
+#![cfg_attr(
+    not(any(test, feature = "test-support")),
+    expect(
+        unreachable_pub,
+        reason = "the `test-support` feature exports items of this module"
+    )
+)]
+
 mod service;
 
 pub(crate) use service::{
@@ -56,6 +64,7 @@ pub(crate) use service::{
     listen_for_relationship_notify,
 };
 
+use crate::services::node::gate::StackBusy;
 use crate::services::response::failure;
 use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
@@ -243,6 +252,7 @@ impl Drop for RestartAdmission {
 
 /// A hold on restarts, released when dropped: a removal's, or a test's.
 #[must_use = "restarts run again once the hold is dropped"]
+#[derive(Debug)]
 pub struct RestartHold {
     holds: tokio::sync::watch::Sender<usize>,
 }
@@ -298,7 +308,7 @@ impl SliceOwnership {
     /// restart.
     pub(crate) fn try_begin_change(
         &self,
-    ) -> std::result::Result<crate::services::node::gate::StackHold, Failure> {
+    ) -> Result<crate::services::node::gate::StackHold, Failure> {
         self.stack
             .try_begin_change()
             .map_err(|busy| busy.refusal(&self.admitted_restarts(), &self.core_node_name))
@@ -411,18 +421,18 @@ impl SliceOwnership {
     pub fn admit_node_goal(
         &self,
         goal: &impl LaunchScoped,
-    ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Failure> {
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Failure> {
         self.admit_node_change(goal.launch_id())
     }
 
     pub(crate) fn admit_node_change(
         &self,
         launch_id: Option<&str>,
-    ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Failure> {
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Failure> {
         let admission = self
             .stack
             .try_admit_node_goal()
-            .map_err(|busy| busy.failure())?;
+            .map_err(StackBusy::failure)?;
         if self.stack.cancellation().is_cancelled() {
             return Err(failure(
                 DaemonFailureKind::Busy,
@@ -476,14 +486,13 @@ impl SliceOwnership {
     ) -> Option<RestartAdmission> {
         loop {
             let reset = self.stack.cancellation();
-            let guard = match self.stack.try_admit_node_goal() {
-                Ok(guard) => guard,
-                Err(_) => {
-                    let _waiting = self.admission_wait(instance_id);
-                    tokio::select! {
-                        _ = cancel.cancelled() => return None,
-                        guard = self.stack.admit_node_goal_waiting() => guard,
-                    }
+            let guard = if let Ok(guard) = self.stack.try_admit_node_goal() {
+                guard
+            } else {
+                let _waiting = self.admission_wait(instance_id);
+                tokio::select! {
+                    () = cancel.cancelled() => return None,
+                    guard = self.stack.admit_node_goal_waiting() => guard,
                 }
             };
             if reset.is_cancelled() {
@@ -493,8 +502,8 @@ impl SliceOwnership {
                 drop(guard);
                 let _waiting = self.admission_wait(instance_id);
                 tokio::select! {
-                    _ = cancel.cancelled() => return None,
-                    _ = lifetime.ended() => continue,
+                    () = cancel.cancelled() => return None,
+                    () = lifetime.ended() => continue,
                 }
             }
             let mut holds = self.restart_holds.subscribe();
@@ -513,7 +522,7 @@ impl SliceOwnership {
             drop(guard);
             let _waiting = self.admission_wait(instance_id);
             tokio::select! {
-                _ = cancel.cancelled() => return None,
+                () = cancel.cancelled() => return None,
                 _ = holds.wait_for(|holds| *holds == 0) => {}
             }
         }
@@ -556,8 +565,8 @@ impl SliceOwnership {
         state
             .slice
             .as_ref()
-            .filter(|slice| slice.launch_id == launch_id)
-            .and(state.slice_daemon.clone())
+            .filter(|slice| slice.launch_id == launch_id)?;
+        state.slice_daemon.clone()
     }
 
     /// The launch this daemon's slice belongs to, reported on every
@@ -625,6 +634,7 @@ fn end_held_reservation(state: &mut OwnershipState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     /// Stands in for a real launch-scoped goal. The gate only ever reads
     /// `launch_id()`, so exercising it does not need a whole `NodeRunGoal`.
@@ -701,11 +711,9 @@ mod tests {
     fn re_reserving_the_same_launch_reports_the_reservation_as_already_held() {
         let ownership = SliceOwnership::new("cn-held");
         reserve_expecting_a_fresh_lifetime(&ownership, "launch-a", "cn-robot-7");
-        assert!(
-            matches!(
-                ownership.try_reserve("launch-a", "cn-robot-7"),
-                ReserveOutcome::AlreadyHeld
-            ),
+        assert_matches!(
+            ownership.try_reserve("launch-a", "cn-robot-7"),
+            ReserveOutcome::AlreadyHeld,
             "a retry of the same launch owes no second presence watch"
         );
     }
@@ -889,7 +897,7 @@ mod tests {
     #[test]
     fn local_work_is_excluded_while_another_launch_holds_the_daemon() {
         let ownership = SliceOwnership::new("cn-held");
-        assert!(ownership.admit_node_goal(&LOCAL).is_ok());
+        ownership.admit_node_goal(&LOCAL).unwrap();
 
         ownership.try_reserve("launch-a", "cn-robot-7");
 
@@ -926,7 +934,9 @@ mod tests {
             ownership.admit_node_goal(&Goal(Some("launch-a"))).is_ok(),
             "the reserving launch's own dispatch must pass once the slice is held"
         );
-        assert!(ownership.admit_node_goal(&Goal(Some("launch-b"))).is_err());
+        ownership
+            .admit_node_goal(&Goal(Some("launch-b")))
+            .unwrap_err();
     }
 
     /// A reservation admits a launch's node goals only beside that launch's
@@ -936,12 +946,16 @@ mod tests {
         let ownership = SliceOwnership::new("cn-held");
         ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"), "boot-1");
         ownership.try_reserve("launch-b", "cn-robot-7");
-        assert!(ownership.admit_node_goal(&Goal(Some("launch-b"))).is_err());
+        ownership
+            .admit_node_goal(&Goal(Some("launch-b")))
+            .unwrap_err();
 
         let ownership = SliceOwnership::new("cn-held");
         ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-8"), "boot-1");
         ownership.try_reserve("launch-a", "cn-robot-7");
-        assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_err());
+        ownership
+            .admit_node_goal(&Goal(Some("launch-a")))
+            .unwrap_err();
     }
 
     /// A launch holds a slice of this daemon only while it holds the
@@ -980,9 +994,15 @@ mod tests {
         let ownership = SliceOwnership::new("cn-held");
         let first = ownership.admit_node_goal(&LOCAL).unwrap();
         let second = ownership.admit_node_goal(&LOCAL).unwrap();
-        assert!(ownership.stack.try_begin_change().is_err());
+        assert_eq!(
+            ownership.stack.try_begin_change().err(),
+            Some(StackBusy::NodeGoals)
+        );
         drop(first);
-        assert!(ownership.stack.try_begin_change().is_err());
+        assert_eq!(
+            ownership.stack.try_begin_change().err(),
+            Some(StackBusy::NodeGoals)
+        );
         drop(second);
         let mutation = ownership.stack.try_begin_change().unwrap();
         let refusal = ownership
@@ -990,7 +1010,7 @@ mod tests {
             .expect_err("a stack change holds the stack");
         assert_eq!(refusal.kind().as_str(), "busy", "got: {refusal}");
         drop(mutation);
-        assert!(ownership.admit_node_goal(&LOCAL).is_ok());
+        ownership.admit_node_goal(&LOCAL).unwrap();
     }
 
     /// The slice record outlives the reservation: the reservation guards the
@@ -1051,7 +1071,7 @@ mod tests {
         let ownership = SliceOwnership::new("robot-host");
         ownership.try_reserve("launch-a", "coordinator");
         ownership.record_slice(LaunchIdentity::new("launch-a", "coordinator"), "boot-1");
-        assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_ok());
+        ownership.admit_node_goal(&Goal(Some("launch-a"))).unwrap();
         ownership.clear();
         let refusal = ownership
             .admit_node_goal(&Goal(Some("launch-a")))
@@ -1061,7 +1081,7 @@ mod tests {
             "precondition_failed",
             "a goal of an ended launch can never run; got: {refusal}"
         );
-        assert!(ownership.admit_node_goal(&LOCAL).is_ok());
+        ownership.admit_node_goal(&LOCAL).unwrap();
     }
 
     /// A busy refusal names each restart holding an admission, with the stop
@@ -1088,8 +1108,7 @@ mod tests {
         let refusal = || {
             let refusal = ownership
                 .try_begin_change()
-                .err()
-                .expect("admitted restarts hold the stack");
+                .expect_err("admitted restarts hold the stack");
             assert_eq!(refusal.kind().as_str(), "busy", "got: {refusal}");
             refusal.message().to_owned()
         };

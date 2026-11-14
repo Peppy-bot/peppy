@@ -43,7 +43,7 @@ struct AsyncSetup {
 /// with the daemon (via `config`) so its force-kill deadline always allows for
 /// this join; see [`config::peppy_config::EVENT_LOOP_JOIN_BUDGET_SECS`].
 fn event_loop_join_timeout_secs() -> f64 {
-    config::peppy_config::EVENT_LOOP_JOIN_BUDGET_SECS as f64
+    std::time::Duration::from_secs(config::peppy_config::EVENT_LOOP_JOIN_BUDGET_SECS).as_secs_f64()
 }
 
 /// Teardown handles for the persistent asyncio event-loop thread.
@@ -81,7 +81,7 @@ impl EventLoopShutdown {
             thread.call_method1("join", (join_timeout,))?;
             thread.call_method0("is_alive")?.is_truthy()
         });
-        if let Some(Ok(true)) = still_alive {
+        if matches!(still_alive, Some(Ok(true))) {
             eprintln!(
                 "peppy: asyncio event-loop thread did not stop within {join_timeout:.0}s; \
                  proceeding with shutdown (a background task may be ignoring cancellation)"
@@ -131,9 +131,8 @@ fn call_setup_function(
     event_loop_slot: &SharedEventLoopSlot,
 ) -> PyResult<Py<PyAny>> {
     let py_params = pythonize(py, params)
-        .map_err(|e| PyRuntimeError::new_err(format!("failed to convert params to Python: {e}")))?
-        .unbind();
-    let py_params = hydrate_parameters(py, py_params)?;
+        .map_err(|e| PyRuntimeError::new_err(format!("failed to convert params to Python: {e}")))?;
+    let py_params = hydrate_parameters(py, &py_params)?;
     let py_runner = Py::new(
         py,
         PyNodeRunner::with_event_loop_slot(Arc::clone(node_runner), Arc::clone(event_loop_slot)),
@@ -147,10 +146,10 @@ fn call_setup_function(
 /// Converts a plain Python dict into the generated `Parameters` dataclass
 /// instance by importing `peppygen.parameters.Parameters` and calling its
 /// `from_dict` classmethod.
-fn hydrate_parameters(py: Python<'_>, params: Py<PyAny>) -> PyResult<Py<PyAny>> {
+fn hydrate_parameters(py: Python<'_>, params: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let module = py.import("peppygen.parameters")?;
     let params_cls = module.getattr("Parameters")?;
-    let instance = params_cls.call_method1("from_dict", (params.bind(py),))?;
+    let instance = params_cls.call_method1("from_dict", (params,))?;
     Ok(instance.unbind())
 }
 
@@ -164,7 +163,7 @@ fn is_awaitable(value: &Bound<'_, PyAny>) -> PyResult<bool> {
 /// and `asyncio.run`) reject awaitables that are not coroutine objects, such
 /// as Tasks, Futures, and custom `__await__` classes. Anything that
 /// `asyncio.iscoroutine` does not accept is wrapped in a pure-Python coroutine
-/// that simply awaits it. Pure Python (not a PyCFunction) for the same reason
+/// that simply awaits it. Pure Python (not a `PyCFunction`) for the same reason
 /// as `create_event_loop_helpers`: the wrapper body runs on an event loop
 /// thread and must not put `catch_unwind` in the call path.
 fn coerce_to_coroutine<'py>(
@@ -352,7 +351,7 @@ async fn run_python_shutdown_hook(callback: Py<PyAny>, event_loop_slot: SharedEv
 /// By defining these helpers as pure Python (via `PyModule::from_code`), we keep
 /// `catch_unwind` out of the call path entirely, letting Python's own `try/except
 /// BaseException` handle any exception, foreign or otherwise.
-fn create_event_loop_helpers<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyModule>> {
+fn create_event_loop_helpers(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
     PyModule::from_code(
         py,
         c"
@@ -635,7 +634,10 @@ fn start_async_setup(
 /// the caller and turned into a stop+join of the already-running loop thread.
 /// Builds the loop teardown, registers the loop-drain shutdown hook, submits the
 /// setup coroutine, and spawns the setup-scoped shutdown monitor.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments are the distinct inputs of the async setup"
+)]
 fn build_async_setup(
     py: Python<'_>,
     helpers: &Bound<'_, PyModule>,
@@ -733,7 +735,7 @@ fn build_async_setup(
                 tokio::select! {
                     biased;
                     _ = &mut disarm_rx => false,
-                    _ = cancel_for_shutdown.cancelled() => true,
+                    () = cancel_for_shutdown.cancelled() => true,
                 }
             });
             if !cancelled_during_setup {
@@ -865,7 +867,8 @@ fn store_python_error(error_slot: &SharedPyError, err: PyErr) {
 }
 
 fn take_python_error(error_slot: &SharedPyError) -> Option<PyErr> {
-    error_slot.lock().ok().and_then(|mut guard| guard.take())
+    let mut guard = error_slot.lock().ok()?;
+    guard.take()
 }
 
 /// Held while an async setup runs. A stop that arrives during the setup (the
@@ -933,7 +936,8 @@ impl Drop for CancelSetupOnStop {
     }
 }
 
-/// Python wrapper for CancellationToken.
+/// Python wrapper for `CancellationToken`.
+#[derive(Debug)]
 #[pyclass(name = "CancellationToken")]
 pub struct PyCancellationToken {
     inner: CancellationToken,
@@ -966,7 +970,8 @@ impl PyCancellationToken {
     }
 }
 
-/// Python wrapper for NodeRunner.
+/// Python wrapper for `NodeRunner`.
+#[derive(Debug)]
 #[pyclass(name = "NodeRunner")]
 pub struct PyNodeRunner {
     pub(crate) inner: Arc<NodeRunner>,
@@ -1019,7 +1024,7 @@ impl PyNodeRunner {
             let runner = NodeRunner::new(processor)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            Ok(PyNodeRunner::new(Arc::new(runner)))
+            Ok(Self::new(Arc::new(runner)))
         })
     }
 
@@ -1524,9 +1529,9 @@ impl PyNodeRunner {
     }
 }
 
-/// Python wrapper for StandaloneConfig.
+/// Python wrapper for `StandaloneConfig`.
 #[pyclass(name = "StandaloneConfig", skip_from_py_object)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PyStandaloneConfig {
     inner: StandaloneConfig,
 }
@@ -1541,9 +1546,7 @@ impl PyStandaloneConfig {
     }
 
     /// Set runtime parameters from a Python dict or dataclass instance.
-    fn with_parameters(&self, py: Python<'_>, params: Py<PyAny>) -> PyResult<Self> {
-        let params = params.bind(py);
-
+    fn with_parameters(&self, py: Python<'_>, params: &Bound<'_, PyAny>) -> PyResult<Self> {
         // If the input is a dataclass instance, convert it to a dict so
         // that depythonize (which requires the mapping protocol) can handle it.
         let dataclasses = py.import("dataclasses")?;
@@ -1728,7 +1731,8 @@ impl PyStandaloneConfig {
     }
 }
 
-/// Python wrapper for NodeBuilder.
+/// Python wrapper for `NodeBuilder`.
+#[derive(Debug)]
 #[pyclass(name = "NodeBuilder")]
 pub struct PyNodeBuilder {
     standalone_config: Option<StandaloneConfig>,
@@ -1888,16 +1892,16 @@ impl PyNodeBuilder {
 
             run_result.map_err(|e| {
                 if let peppylib::PeppyError::NodeArgumentsValidation(
-                    config::NodeArgumentsError::MissingParameters(ref params),
-                ) = e
+                    config::NodeArgumentsError::MissingParameters(params),
+                ) = &e
                 {
-                    return PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                    return PyErr::new::<PyRuntimeError, _>(format!(
                         "missing required parameter(s) for standalone mode: {}. \
                          Provide them via StandaloneConfig().with_parameters()",
                         params.join(", ")
                     ));
                 }
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
+                PyErr::new::<PyRuntimeError, _>(e.to_string())
             })
         })
     }

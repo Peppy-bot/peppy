@@ -4,7 +4,7 @@
 //! binding-slot involvement.
 
 use super::*;
-use config::node::{Cardinality, NativeEmittedTopic};
+use std::assert_matches;
 
 const JOINT_STATES: &str = r#"
 {
@@ -18,12 +18,12 @@ const JOINT_STATES: &str = r#"
 }
 "#;
 
-fn peer_context() -> crate::generator::types::PeerContext {
-    crate::generator::types::PeerContext {
+fn peer_context() -> PeerContext {
+    PeerContext {
         link_id: "controller".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        cardinality: config::node::Cardinality::One,
+        cardinality: Cardinality::One,
     }
 }
 
@@ -274,7 +274,7 @@ fn peer_slot_state_is_cardinality_typed() {
             ],
         ),
     ] {
-        let peer = crate::generator::types::PeerContext {
+        let peer = PeerContext {
             cardinality,
             ..peer_context()
         };
@@ -302,11 +302,9 @@ fn peer_consumed_topic_requires_a_message_format() {
     let err = generator
         .add_peer_consumed_topic(&topic, &peer_context())
         .unwrap_err();
-    assert!(
-        matches!(
-            err,
-            crate::error::Error::PeerTopicMissingMessageFormat { .. }
-        ),
+    assert_matches!(
+        err,
+        crate::error::Error::PeerTopicMissingMessageFormat { .. },
         "expected PeerTopicMissingMessageFormat, got {err:?}"
     );
 }
@@ -321,8 +319,9 @@ fn duplicate_peer_module_path_is_a_collision_backstop() {
     let err = generator
         .add_peer_consumed_topic(&topic, &peer_context())
         .unwrap_err();
-    assert!(
-        matches!(err, crate::error::Error::PeerTopicNameCollision { .. }),
+    assert_matches!(
+        err,
+        crate::error::Error::PeerTopicNameCollision { .. },
         "expected PeerTopicNameCollision, got {err:?}"
     );
 }

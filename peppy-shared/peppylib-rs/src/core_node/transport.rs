@@ -17,7 +17,7 @@
 use std::time::Duration;
 
 use core_node_api::Payload;
-use core_node_api::encoding::*;
+use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use core_node_api::names;
 use core_node_api::{ActionGoal, ServiceId, ServiceRequest};
 
@@ -38,7 +38,7 @@ pub const DAEMON_GOAL_FEEDBACK_BOUND: FeedbackBound =
 /// escape hatch: the helper otherwise reaches 9 positional args.
 ///
 /// Control-plane calls always discover (no producer pin at the messenger):
-/// the daemon's services listen under a random per-boot instance_id no
+/// the daemon's services listen under a random per-boot `instance_id` no
 /// caller can know up front, and the daemon stays addressed through
 /// `to_target` (its identity rides in the service root), so discovery
 /// resolves exactly that daemon's endpoint. The exception is `node_stop`,
@@ -50,7 +50,7 @@ struct ServiceRoute<'a> {
     messenger: &'a MessengerHandle,
     bound_core_node: &'a str,
     as_instance_id: &'a str,
-    /// Target of the service. For daemon-hosted core_node services this is
+    /// Target of the service. For daemon-hosted `core_node` services this is
     /// `SenderTarget::node(to_core_node, CORE_NODE_TAG)`. For per-instance
     /// services (e.g. `node_stop`) it carries the target node's name+tag.
     to_target: SenderTarget,
@@ -142,7 +142,7 @@ pub async fn send_goal<G: ActionGoal>(
 
 /// `node_stop` is the only service whose listener may be hosted by a
 /// per-instance node rather than the daemon, so it routes by an explicit
-/// `to_target` (name + tag) instead of defaulting to the daemon's core_node
+/// `to_target` (name + tag) instead of defaulting to the daemon's `core_node`
 /// identity. Hand-written for that reason.
 ///
 /// User node names are not unique across daemons, so the `to_target`

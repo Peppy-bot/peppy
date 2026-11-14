@@ -258,10 +258,10 @@ impl ReadSource {
     /// `root` that has already been canonicalized.
     fn origin_of(&self, root: &Path, path: &RepoRelativePath) -> EntryOrigin {
         match self {
-            ReadSource::Fs { .. } => EntryOrigin::Fs {
+            Self::Fs { .. } => EntryOrigin::Fs {
                 path: root.join(path.as_path()),
             },
-            ReadSource::Git {
+            Self::Git {
                 repo_url,
                 repo_ref,
                 read_ref,
@@ -283,7 +283,7 @@ impl ReadSource {
     /// machine has no subtree opinion about.
     fn serves(&self, origin: &EntryOrigin) -> bool {
         match (self, origin) {
-            (ReadSource::Fs { excluded }, EntryOrigin::Fs { path }) => {
+            (Self::Fs { excluded }, EntryOrigin::Fs { path }) => {
                 !excluded.iter().any(|subtree| path.starts_with(subtree))
             }
             _ => true,
@@ -309,7 +309,7 @@ impl ReadSource {
 pub(crate) fn read_published_items(
     root: &Path,
     source: &ReadSource,
-) -> std::result::Result<Vec<PublishedItem>, (RepoReadFailure, String)> {
+) -> Result<Vec<PublishedItem>, (RepoReadFailure, String)> {
     let unreachable = |detail: String| (RepoReadFailure::Unreachable, detail);
     let contradictory = |detail: String| (RepoReadFailure::Conflict, detail);
 
@@ -361,9 +361,7 @@ pub(crate) fn read_published_items(
 /// The one place an identity crosses from what a repository declares into
 /// what a machine caches, so the two cannot disagree about which field
 /// holds what.
-pub(crate) fn build_cache_entries(
-    items: Vec<PublishedItem>,
-) -> std::result::Result<RepoItems, String> {
+pub(crate) fn build_cache_entries(items: Vec<PublishedItem>) -> Result<RepoItems, String> {
     let mut built = RepoItems::default();
     for item in items {
         // A tag is present for exactly the four tagged kinds, because the
@@ -394,7 +392,7 @@ pub(crate) fn build_cache_entries(
                     origin: item.origin,
                     descriptions,
                     repo_id: 0,
-                })
+                });
             }
             DeclaredContent::Contract { descriptions } => {
                 built.contracts.push(ContractCacheEntry {
@@ -404,7 +402,7 @@ pub(crate) fn build_cache_entries(
                     origin: item.origin,
                     descriptions,
                     repo_id: 0,
-                })
+                });
             }
             DeclaredContent::Pairing { descriptions } => built.pairings.push(PairingCacheEntry {
                 tag: tagged(item.tag, &item.name)?,
@@ -458,7 +456,7 @@ pub enum IndexError {
 fn format_conflicts(conflicts: &[RepoConflict]) -> String {
     conflicts
         .iter()
-        .map(|conflict| conflict.to_string())
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("; ")
 }
@@ -494,18 +492,18 @@ pub enum IndexDrift {
 impl std::fmt::Display for IndexDrift {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IndexDrift::Unlisted { kind, id, path } => write!(
+            Self::Unlisted { kind, id, path } => write!(
                 f,
                 "{path} declares {kind} `{id}`, which is not listed in {}",
                 daemon_config::consts::REPOSITORY_INDEX_FILE
             ),
-            IndexDrift::Unmatched {
+            Self::Unmatched {
                 kind,
                 id,
                 path,
                 detail,
             } => write!(f, "{kind} `{id}` points at {path}, which {detail}"),
-            IndexDrift::Moved {
+            Self::Moved {
                 kind,
                 id,
                 listed,
@@ -519,7 +517,7 @@ impl std::fmt::Display for IndexDrift {
 }
 
 /// Walks `root` and produces the index it should contain.
-pub fn generate_repository_index(root: &Path) -> Result<RepositoryIndex, IndexError> {
+pub(crate) fn generate_repository_index(root: &Path) -> Result<RepositoryIndex, IndexError> {
     let walked = walk_directory(root);
     if !walked.conflicts.is_empty() {
         return Err(IndexError::ContestedIdentity(walked.conflicts));
@@ -537,10 +535,7 @@ pub fn generate_repository_index(root: &Path) -> Result<RepositoryIndex, IndexEr
 
 /// Records one walked item in `index`, converting the strings the walk
 /// produced into the validated identity the index is keyed on.
-fn declare_walked_item(
-    index: &mut RepositoryIndex,
-    item: &WalkedItem,
-) -> std::result::Result<(), String> {
+fn declare_walked_item(index: &mut RepositoryIndex, item: &WalkedItem) -> Result<(), String> {
     let name = ItemName::parse(&item.name)?;
     let tag = if item.kind == RepoItemKind::Launcher {
         None
@@ -564,7 +559,10 @@ pub fn publish_repository_index(root: &Path) -> Result<RepositoryIndex, IndexErr
 }
 
 /// Writes `index` to `root`, replacing any existing one.
-pub fn write_repository_index(root: &Path, index: &RepositoryIndex) -> Result<(), IndexError> {
+pub(crate) fn write_repository_index(
+    root: &Path,
+    index: &RepositoryIndex,
+) -> Result<(), IndexError> {
     let path = root.join(daemon_config::consts::REPOSITORY_INDEX_FILE);
     let content = json5_pretty::to_string_pretty(index)
         .map_err(|e| IndexError::Unreadable(format!("failed to serialize the index: {e}")))?;
@@ -577,7 +575,7 @@ pub fn write_repository_index(root: &Path, index: &RepositoryIndex) -> Result<()
 }
 
 /// Reads the index committed at `root`.
-pub fn read_repository_index(root: &Path) -> Result<RepositoryIndex, IndexError> {
+pub(crate) fn read_repository_index(root: &Path) -> Result<RepositoryIndex, IndexError> {
     let path = root.join(daemon_config::consts::REPOSITORY_INDEX_FILE);
     PeppyRepositoryIndexParser::from_path(&path).map_err(|e| IndexError::Unreadable(e.to_string()))
 }
@@ -600,7 +598,7 @@ pub(crate) struct ResolvedItem {
 pub(crate) fn resolve_declared_item(
     root: &Path,
     item: &DeclaredItem<'_>,
-) -> std::result::Result<ResolvedItem, String> {
+) -> Result<ResolvedItem, String> {
     let joined = root.join(item.path.as_path());
     // Canonicalizing is the only way to catch a target reached through a
     // symlink that leaves the tree: the walk never follows a symlinked
@@ -620,7 +618,7 @@ pub(crate) fn resolve_declared_item(
 
     let declared = declaration_of(item.kind, content, item.path.as_path())
         .map_err(|detail| format!("is not a {}: {detail}", item.kind))?;
-    let expected_tag = item.tag.map(ItemTag::as_str).unwrap_or_default();
+    let expected_tag = item.tag.map_or_default(ItemTag::as_str);
     if declared.name != item.name.as_str() || declared.tag != expected_tag {
         let found = format_identity(&declared.name, &declared.tag);
         return Err(format!("declares `{found}`"));
@@ -651,11 +649,7 @@ struct Declaration {
 /// disagree. `Err` carries why the file is not a usable `kind`: it does not
 /// parse as one, carries a `peppy_schema` that is not this kind's, or (for a
 /// launcher) has no usable file stem to take a name from.
-fn declaration_of(
-    kind: RepoItemKind,
-    content: &str,
-    path: &Path,
-) -> std::result::Result<Declaration, String> {
+fn declaration_of(kind: RepoItemKind, content: &str, path: &Path) -> Result<Declaration, String> {
     match kind {
         RepoItemKind::Node => {
             let parsed = NodeConfigParser::from_content(content).map_err(|e| e.to_string())?;
@@ -797,7 +791,7 @@ pub fn check_repository_index(root: &Path) -> Result<Vec<IndexDrift>, IndexError
 
     // Sorted by rendered text so the report is reproducible in a test and
     // comparable between two machines.
-    drifts.sort_by_key(|drift| drift.to_string());
+    drifts.sort_by_key(ToString::to_string);
     Ok(drifts)
 }
 
@@ -841,10 +835,7 @@ fn check_compositions(root: &Path, generated: &RepositoryIndex) -> Result<(), In
 }
 
 fn identity_label(item: &DeclaredItem<'_>) -> String {
-    format_identity(
-        item.name.as_str(),
-        item.tag.map(ItemTag::as_str).unwrap_or_default(),
-    )
+    format_identity(item.name.as_str(), item.tag.map_or_default(ItemTag::as_str))
 }
 
 /// Walk a repository's working tree for the files that declare items.
@@ -930,13 +921,13 @@ fn declared_item_kind(schema: PeppySchema) -> Option<RepoItemKind> {
         PeppySchema::McpExposureV1 => Some(RepoItemKind::McpExposure),
         // The repository's own index declares no item. It is the output of
         // the walk, not an input to it.
-        PeppySchema::RepositoryV1 => None,
+        //
         // A fragment file declares no item either: it is a piece of the
         // launcher whose option references it. The walk recognizes the tag
         // so a fragment is never mistaken for an unrecognized schema; the
         // composition checks in `check_repository_index` read and validate
         // the fragments each launcher references.
-        PeppySchema::LauncherFragmentV1 => None,
+        PeppySchema::RepositoryV1 | PeppySchema::LauncherFragmentV1 => None,
     }
 }
 
@@ -991,8 +982,7 @@ fn collect_item(
     let relative_path = ctx
         .config_path
         .strip_prefix(ctx.root)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|p| p.to_string_lossy().into_owned());
     let mut skip = |reason: String| {
         debug!(
             "Skipping {} .json5 at {}: {}",
@@ -1161,6 +1151,7 @@ mod tests {
     use super::*;
     use config::consts::NODE_CONFIG_FILE;
     use config::fingerprint::fingerprint_for_bytes;
+    use std::assert_matches;
 
     /// The identities the walk found, of one kind, as `name:tag` labels.
     fn found(walked: &WalkResult, kind: RepoItemKind) -> Vec<String> {
@@ -1402,7 +1393,7 @@ mod tests {
         let index = generate_repository_index(&repo).expect("index the repository");
         write_repository_index(&repo, &index).expect("write the index");
 
-        let commit = daemon_config::repository::GitCommit::parse(&"a".repeat(40)).unwrap();
+        let commit = GitCommit::parse(&"a".repeat(40)).unwrap();
         let git = read_published_items(
             &repo,
             &ReadSource::Git {
@@ -1418,12 +1409,10 @@ mod tests {
         assert_eq!(entries.nodes[0].origin.path_str(), "nodes/a/peppy.json5");
         assert_eq!(entries.nodes[0].origin.commit(), Some(&commit));
 
-        let manifest = repo.join("nodes/a").join(config::consts::NODE_CONFIG_FILE);
+        let manifest = repo.join("nodes/a").join(NODE_CONFIG_FILE);
         assert_eq!(
             entries.nodes[0].sha256,
-            daemon_config::repository::ManifestFingerprint::of_bytes(
-                &std::fs::read(&manifest).unwrap()
-            ),
+            ManifestFingerprint::of_bytes(&std::fs::read(&manifest).unwrap()),
             "the fingerprint is of the bytes that declare the node"
         );
 
@@ -1571,7 +1560,7 @@ mod tests {
         write_node_json5(&repo.join("nodes/a"), "a", "v1");
         let index = generate_repository_index(&repo).expect("index the repository");
         write_repository_index(&repo, &index).expect("write the index");
-        std::fs::remove_file(repo.join("nodes/a").join(config::consts::NODE_CONFIG_FILE)).unwrap();
+        std::fs::remove_file(repo.join("nodes/a").join(NODE_CONFIG_FILE)).unwrap();
 
         let (kind, detail) = read_published_items(
             &repo,
@@ -1598,7 +1587,7 @@ mod tests {
             peek_peppy_schema(br#"{ peppy_schema: "repository/v99" }"#),
             None
         );
-        assert_eq!(peek_peppy_schema(br#"{ unrelated: true }"#), None);
+        assert_eq!(peek_peppy_schema(br"{ unrelated: true }"), None);
         assert_eq!(
             peek_peppy_schema(br#"{ peppy_schema: "repository/v1" }"#),
             Some(PeppySchema::RepositoryV1)
@@ -1666,7 +1655,7 @@ mod tests {
 
         let err = generate_repository_index(&repo).expect_err("a contested identity is refused");
 
-        assert!(matches!(err, IndexError::ContestedIdentity(_)));
+        assert_matches!(err, IndexError::ContestedIdentity(_));
         let message = err.to_string();
         assert!(message.contains("uvc:v1"), "{message}");
         assert!(message.contains("uvc/rust/peppy.json5"), "{message}");
@@ -1694,7 +1683,7 @@ mod tests {
         write_node_json5(&repo.join("dotted"), "my_sensor", "v0.1.0");
 
         let err = generate_repository_index(&repo).expect_err("a dotted tag is refused");
-        assert!(matches!(err, IndexError::Unrepresentable(_)));
+        assert_matches!(err, IndexError::Unrepresentable(_));
         let message = err.to_string();
         assert!(message.contains("dotted/peppy.json5"), "{message}");
         assert!(message.contains("v0.1.0"), "{message}");

@@ -98,7 +98,7 @@ async fn remove_inner(
         changed_slots(&copy.record, &active.planned, Change::Removal).map_err(rejected)?;
     check_not_emptied(&copy.record, &shrunk_slots, &remaining).map_err(precondition_failed)?;
     let removed: HashSet<_> = copy.record.instance_ids().map(Name::as_str).collect();
-    let remaining_planned = planned_from(&remaining, active.resolved.iter());
+    let remaining_planned = planned_from(&remaining, &active.resolved.iter());
     let copies = CopyMembership::of(&staying);
     // The copy supplies a clock when one of its instances publishes a domain
     // this stack reads.
@@ -796,7 +796,7 @@ mod tests {
             config::runtime::ClockIncarnation::try_from(1).unwrap(),
         );
         let reads_robot = config::runtime::ClockBinding::consumer(
-            robot.clone(),
+            robot,
             config::runtime::ProducerRef::new("cn-sim", "sim_inst"),
         );
         let clocks = daemon_config::launcher::ResolvedClocks::of_running([
@@ -864,7 +864,7 @@ mod tests {
         let name = CopyName::new("alpha").unwrap();
         let copy = StackCopy {
             record: CopyRecord {
-                name: name.clone(),
+                name,
                 axis: "robot".into(),
                 option: "station".into(),
                 selection: Default::default(),
@@ -1043,7 +1043,7 @@ mod tests {
             "precondition_failed",
             "the failure has the kind of the first machine's"
         );
-        assert!(StopWalk::default().finish().is_ok());
+        StopWalk::default().finish().unwrap();
     }
 
     /// The reservation holds the copy's instances and the sources whose

@@ -49,7 +49,7 @@ const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 /// `http_status_as_error(false)` makes 4xx/5xx return `Ok` so callers can inspect
 /// the body; a global timeout keeps a hung backend from blocking the CLI forever.
 /// A clone shares the agent.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct HttpClient {
     agent: ureq::Agent,
 }
@@ -196,6 +196,7 @@ mod tests {
     use super::*;
     use httpmock::Method::GET;
     use httpmock::MockServer;
+    use std::assert_matches;
 
     #[test]
     fn redact_strips_query() {
@@ -207,7 +208,7 @@ mod tests {
     fn client_uses_verified_platform_trust_roots() {
         let client = HttpClient::new();
         let tls = client.agent.config().tls_config();
-        assert!(matches!(tls.root_certs(), RootCerts::PlatformVerifier));
+        assert_matches!(tls.root_certs(), RootCerts::PlatformVerifier);
         assert!(tls.use_sni());
         assert!(!tls.disable_verification());
     }
@@ -266,7 +267,7 @@ mod tests {
         server.mock(|when, then| {
             when.method(GET).path("/large");
             then.status(200)
-                .body("a".repeat(MAX_RESPONSE_BYTES as usize + 1));
+                .body("a".repeat(usize::try_from(MAX_RESPONSE_BYTES).unwrap() + 1));
         });
 
         let message = HttpClient::new()

@@ -73,8 +73,8 @@ impl ArtifactKind {
     /// container artifact, `tar.zst` for a process artifact.
     pub(super) fn file_suffix(self) -> String {
         match self {
-            ArtifactKind::Container(platform) => container_file_suffix(platform),
-            ArtifactKind::Process => "tar.zst".to_owned(),
+            Self::Container(platform) => container_file_suffix(platform),
+            Self::Process => "tar.zst".to_owned(),
         }
     }
 
@@ -83,15 +83,15 @@ impl ArtifactKind {
     /// artifact.
     pub(super) fn platform(self) -> ArtifactPlatform {
         match self {
-            ArtifactKind::Container(platform) => platform,
-            ArtifactKind::Process => HOST_ARTIFACT_PLATFORM,
+            Self::Container(platform) => platform,
+            Self::Process => HOST_ARTIFACT_PLATFORM,
         }
     }
 
     fn label(self) -> &'static str {
         match self {
-            ArtifactKind::Container(_) => "container",
-            ArtifactKind::Process => "process",
+            Self::Container(_) => "container",
+            Self::Process => "process",
         }
     }
 }
@@ -329,7 +329,7 @@ fn hash_dir(
 /// the file size) and returns the number of bytes hashed.
 fn hash_file_contents(hasher: &mut Sha256, path: &Path) -> io::Result<u64> {
     let mut file = File::open(path)?;
-    let mut buf = [0u8; 64 * 1024];
+    let mut buf = vec![0u8; 64 * 1024];
     let mut copied = 0u64;
     loop {
         let n = file.read(&mut buf)?;
@@ -407,6 +407,7 @@ pub fn prune_siblings(artifact_path: &Path, platform: ArtifactPlatform) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::os::unix::fs::symlink;
 
     const AMD64: ArtifactKind = ArtifactKind::Container(ArtifactPlatform::LinuxAmd64);
@@ -594,7 +595,7 @@ mod tests {
     #[test]
     fn a_missing_root_fails_the_fingerprint() {
         let missing = Path::new("/nonexistent-peppy-fingerprint-root");
-        assert!(fingerprint_tree_for(missing, ArtifactKind::Process, VERSION, OS, ARCH).is_err());
+        fingerprint_tree_for(missing, ArtifactKind::Process, VERSION, OS, ARCH).unwrap_err();
     }
 
     #[test]
@@ -666,11 +667,9 @@ mod tests {
 
         let outcome = daemon_config::per_boot_root::clear_if_new_boot(&peppy_dirs).expect("clear");
 
-        assert!(
-            matches!(
-                outcome,
-                daemon_config::per_boot_root::ClearOutcome::Cleared { .. }
-            ),
+        assert_matches!(
+            outcome,
+            daemon_config::per_boot_root::ClearOutcome::Cleared { .. },
             "the root was used by an earlier boot"
         );
         let again = resolve();
@@ -834,15 +833,13 @@ mod tests {
                 "b".repeat(64)
             ))
         );
-        assert!(
-            pulled_artifact_path(
-                &peppy_dirs,
-                "waldo",
-                "../x",
-                &digest,
-                ArtifactPlatform::LinuxArm64
-            )
-            .is_err()
-        );
+        pulled_artifact_path(
+            &peppy_dirs,
+            "waldo",
+            "../x",
+            &digest,
+            ArtifactPlatform::LinuxArm64,
+        )
+        .unwrap_err();
     }
 }

@@ -17,7 +17,7 @@ pub(super) fn join(
     copy: CopyReference,
     words: Vec<SelectionWord>,
     arguments: Vec<ArgumentOverride>,
-    timeouts: StackTimeouts,
+    timeouts: &StackTimeouts,
 ) -> Result<()> {
     let budgets = timeouts.budgets().with_env_vars(caller_env_overrides());
     let goal = StackJoinGoal {

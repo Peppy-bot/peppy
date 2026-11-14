@@ -8,6 +8,7 @@ use crate::messaging::{PyMessengerHandle, to_py_err};
 /// Python wrapper for a shutdown signal receiver.
 ///
 /// When a shutdown request is received by the service, this receiver completes.
+#[derive(Debug)]
 #[pyclass(name = "ShutdownReceiver")]
 pub struct PyShutdownReceiver {
     inner: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
@@ -33,6 +34,7 @@ impl PyShutdownReceiver {
 }
 
 /// Python wrapper for the shutdown service.
+#[derive(Debug)]
 #[pyclass(name = "ShutdownService")]
 pub struct PyShutdownService;
 

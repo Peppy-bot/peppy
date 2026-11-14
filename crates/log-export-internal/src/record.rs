@@ -18,10 +18,10 @@ impl StackAction {
     /// The name of the action, as its command spells it.
     pub fn name(self) -> &'static str {
         match self {
-            StackAction::Launch => "launch",
-            StackAction::Build => "build",
-            StackAction::Join => "join",
-            StackAction::Remove => "remove",
+            Self::Launch => "launch",
+            Self::Build => "build",
+            Self::Join => "join",
+            Self::Remove => "remove",
         }
     }
 }
@@ -44,11 +44,11 @@ impl LogKind {
     /// `stack` for the stack log.
     pub(crate) fn name(self) -> &'static str {
         match self {
-            LogKind::Launch { .. } => "launch",
-            LogKind::Add => "add",
-            LogKind::Build => "build",
-            LogKind::Run => "run",
-            LogKind::Stack => "stack",
+            Self::Launch { .. } => "launch",
+            Self::Add => "add",
+            Self::Build => "build",
+            Self::Run => "run",
+            Self::Stack => "stack",
         }
     }
 }
@@ -83,6 +83,7 @@ impl LogIdentity {
         }
     }
 
+    #[must_use]
     pub fn with_node(self, name: impl Into<String>, tag: impl Into<String>) -> Self {
         Self {
             node: Some(NodeRef {
@@ -93,6 +94,7 @@ impl LogIdentity {
         }
     }
 
+    #[must_use]
     pub fn with_instance(self, instance_id: impl Into<String>) -> Self {
         Self {
             instance_id: Some(instance_id.into()),
@@ -100,6 +102,7 @@ impl LogIdentity {
         }
     }
 
+    #[must_use]
     pub fn with_launch(self, launch_id: Option<&str>) -> Self {
         Self {
             launch_id: launch_id.map(str::to_owned),
@@ -118,8 +121,8 @@ pub enum Iostream {
 impl Iostream {
     pub fn name(self) -> &'static str {
         match self {
-            Iostream::Stdout => "stdout",
-            Iostream::Stderr => "stderr",
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
         }
     }
 }

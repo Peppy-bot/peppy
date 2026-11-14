@@ -23,7 +23,7 @@ impl ClockRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<clock_capnp::clock_request::Builder>();
+            let mut request = builder.init_root::<clock_capnp::clock_request::Builder<'_>>();
             request.set_client_send_time(self.client_send_time);
         }
         encode_message(&builder)
@@ -31,7 +31,7 @@ impl ClockRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<clock_capnp::clock_request::Reader>()?;
+        let request = reader.get_root::<clock_capnp::clock_request::Reader<'_>>()?;
         Ok(Self {
             client_send_time: request.get_client_send_time(),
         })
@@ -57,7 +57,7 @@ impl ClockResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<clock_capnp::clock_response::Builder>();
+            let mut response = builder.init_root::<clock_capnp::clock_response::Builder<'_>>();
             response.set_client_send_time(self.client_send_time);
             response.set_server_recv_time(self.server_recv_time);
             response.set_server_send_time(self.server_send_time);
@@ -67,7 +67,7 @@ impl ClockResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<clock_capnp::clock_response::Reader>()?;
+        let response = reader.get_root::<clock_capnp::clock_response::Reader<'_>>()?;
         Ok(Self {
             client_send_time: response.get_client_send_time(),
             server_recv_time: response.get_server_recv_time(),
@@ -88,13 +88,13 @@ impl ClockOffsetRequest {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<clock_capnp::clock_offset_request::Builder>();
+        builder.init_root::<clock_capnp::clock_offset_request::Builder<'_>>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<clock_capnp::clock_offset_request::Reader>()?;
+        reader.get_root::<clock_capnp::clock_offset_request::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -138,7 +138,8 @@ impl ClockOffsetResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<clock_capnp::clock_offset_response::Builder>();
+            let mut response =
+                builder.init_root::<clock_capnp::clock_offset_response::Builder<'_>>();
             response.set_offset_ns(self.offset_ns);
             response.set_round_trip_delay_ns(self.round_trip_delay_ns);
             response.set_domain(self.domain.as_deref().unwrap_or(""));
@@ -148,7 +149,7 @@ impl ClockOffsetResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<clock_capnp::clock_offset_response::Reader>()?;
+        let response = reader.get_root::<clock_capnp::clock_offset_response::Reader<'_>>()?;
         Ok(Self {
             offset_ns: response.get_offset_ns(),
             round_trip_delay_ns: response.get_round_trip_delay_ns(),
@@ -191,7 +192,7 @@ impl ClockTick {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut tick = builder.init_root::<clock_capnp::clock_tick::Builder>();
+            let mut tick = builder.init_root::<clock_capnp::clock_tick::Builder<'_>>();
             tick.set_time(self.time);
         }
         encode_message(&builder)
@@ -201,7 +202,7 @@ impl ClockTick {
     /// [`Self::MIN_TIME_NS`] so the invariant holds for bytes off the wire too.
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let tick = reader.get_root::<clock_capnp::clock_tick::Reader>()?;
+        let tick = reader.get_root::<clock_capnp::clock_tick::Reader<'_>>()?;
         Ok(Self::new(tick.get_time()))
     }
 }
@@ -237,13 +238,13 @@ impl ClockListRequest {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<clock_capnp::clock_list_request::Builder>();
+        builder.init_root::<clock_capnp::clock_list_request::Builder<'_>>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<clock_capnp::clock_list_request::Reader>()?;
+        reader.get_root::<clock_capnp::clock_list_request::Reader<'_>>()?;
         Ok(Self)
     }
 }
@@ -294,12 +295,12 @@ impl ClockListResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<clock_capnp::clock_list_response::Builder>();
+            let mut response = builder.init_root::<clock_capnp::clock_list_response::Builder<'_>>();
             {
                 let count = capnp_list_len(self.domains.len(), "domains")?;
                 let mut domains = response.reborrow().init_domains(count);
-                for (index, info) in self.domains.iter().enumerate() {
-                    let mut entry = domains.reborrow().get(index as u32);
+                for (index, info) in (0_u32..).zip(self.domains.iter()) {
+                    let mut entry = domains.reborrow().get(index);
                     entry.set_name(info.domain.name.as_str());
                     entry.set_core_node(info.domain.core_node.as_str());
                     entry.set_incarnation(info.domain.incarnation.get());
@@ -319,8 +320,8 @@ impl ClockListResponse {
             }
             let count = capnp_list_len(self.consumers.len(), "consumers")?;
             let mut consumers = response.init_consumers(count);
-            for (index, info) in self.consumers.iter().enumerate() {
-                let mut entry = consumers.reborrow().get(index as u32);
+            for (index, info) in (0_u32..).zip(self.consumers.iter()) {
+                let mut entry = consumers.reborrow().get(index);
                 entry.set_instance_id(&info.instance_id);
                 entry.set_domain_name(info.domain.name.as_str());
                 entry.set_domain_core_node(info.domain.core_node.as_str());
@@ -332,9 +333,9 @@ impl ClockListResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<clock_capnp::clock_list_response::Reader>()?;
+        let response = reader.get_root::<clock_capnp::clock_list_response::Reader<'_>>()?;
         let mut domains = Vec::new();
-        for entry in response.get_domains()?.iter() {
+        for entry in response.get_domains()? {
             domains.push(ClockDomainInfo {
                 domain: read_domain(
                     entry.get_name()?.to_str()?,
@@ -351,7 +352,7 @@ impl ClockListResponse {
             });
         }
         let mut consumers = Vec::new();
-        for entry in response.get_consumers()?.iter() {
+        for entry in response.get_consumers()? {
             consumers.push(ClockConsumerInfo {
                 instance_id: entry.get_instance_id()?.to_str()?.to_owned(),
                 domain: read_domain(
@@ -374,23 +375,23 @@ impl crate::encoding::Wire for ClockListResponse {
 }
 
 impl crate::encoding::Wire for ClockRequest {
-    type Root = crate::clock_capnp::clock_request::Owned;
+    type Root = clock_capnp::clock_request::Owned;
 }
 
 impl crate::encoding::Wire for ClockResponse {
-    type Root = crate::clock_capnp::clock_response::Owned;
+    type Root = clock_capnp::clock_response::Owned;
 }
 
 impl crate::encoding::Wire for ClockOffsetRequest {
-    type Root = crate::clock_capnp::clock_offset_request::Owned;
+    type Root = clock_capnp::clock_offset_request::Owned;
 }
 
 impl crate::encoding::Wire for ClockOffsetResponse {
-    type Root = crate::clock_capnp::clock_offset_response::Owned;
+    type Root = clock_capnp::clock_offset_response::Owned;
 }
 
 impl crate::encoding::Wire for ClockTick {
-    type Root = crate::clock_capnp::clock_tick::Owned;
+    type Root = clock_capnp::clock_tick::Owned;
 }
 
 #[cfg(test)]
@@ -531,7 +532,7 @@ mod tests {
 
         let mut builder = Builder::new_default();
         builder
-            .init_root::<clock_capnp::clock_tick::Builder>()
+            .init_root::<clock_capnp::clock_tick::Builder<'_>>()
             .set_time(0);
         let raw_zero = encode_message(&builder).expect("encode");
         assert_eq!(

@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 pub struct NodeName(String);
 
 impl NodeName {
-    /// Creates a new NodeName after validating the input.
+    /// Creates a new `NodeName` after validating the input.
     pub fn new(name: impl Into<String>) -> Result<Self> {
         let name = name.into();
 
@@ -22,8 +22,7 @@ impl NodeName {
 
         if !first.is_ascii_alphabetic() {
             return Err(Error::InvalidNodeName(format!(
-                "Node name '{}' must start with a letter",
-                name
+                "Node name '{name}' must start with a letter"
             )));
         }
 
@@ -32,8 +31,7 @@ impl NodeName {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         {
             return Err(Error::InvalidNodeName(format!(
-                "Node name '{}' contains invalid characters",
-                name
+                "Node name '{name}' contains invalid characters"
             )));
         }
 
@@ -73,19 +71,19 @@ mod tests {
     #[test]
     fn test_node_name_validation() {
         // Valid names
-        assert!(NodeName::new("my_node").is_ok());
-        assert!(NodeName::new("node123").is_ok());
-        assert!(NodeName::new("test-node").is_ok());
-        assert!(NodeName::new("MyNode").is_ok());
+        NodeName::new("my_node").unwrap();
+        NodeName::new("node123").unwrap();
+        NodeName::new("test-node").unwrap();
+        NodeName::new("MyNode").unwrap();
 
         // Invalid names
-        assert!(NodeName::new("").is_err());
-        assert!(NodeName::new("123node").is_err()); // starts with number
-        assert!(NodeName::new("-node").is_err()); // starts with hyphen
-        assert!(NodeName::new("_node").is_err()); // starts with underscore
-        assert!(NodeName::new("node name").is_err()); // contains space
-        assert!(NodeName::new("node@name").is_err()); // contains invalid character
-        assert!(NodeName::new("node.name").is_err()); // contains dot
+        NodeName::new("").unwrap_err();
+        NodeName::new("123node").unwrap_err(); // starts with number
+        NodeName::new("-node").unwrap_err(); // starts with hyphen
+        NodeName::new("_node").unwrap_err(); // starts with underscore
+        NodeName::new("node name").unwrap_err(); // contains space
+        NodeName::new("node@name").unwrap_err(); // contains invalid character
+        NodeName::new("node.name").unwrap_err(); // contains dot
     }
 
     #[test]

@@ -23,7 +23,6 @@
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use auth::{AuthError, Enrollment, FederationIdentity};
 use daemon_config::consts::PeppyDirs;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,7 +44,7 @@ pub(crate) type EnrollmentReader = Arc<dyn Fn() -> auth::Result<Option<Enrollmen
 
 /// The future a [`Prober`] returns: `Ok(())` if the upstream's TLS link
 /// validates, `Err(reason)` (human-readable) otherwise.
-type ProbeFuture = Pin<Box<dyn Future<Output = std::result::Result<(), String>> + Send>>;
+type ProbeFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 
 /// Verifies that the federation link to `host:port` validates with a real TLS
 /// handshake presenting the enrolled identity. A boxed async closure so tests
@@ -61,7 +60,7 @@ pub(crate) type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 /// workers. A call that panics is a failure with the panic as its reason.
 pub(crate) async fn run_blocking<T: Send + 'static>(
     call: impl FnOnce() -> auth::Result<T> + Send + 'static,
-) -> std::result::Result<T, BlockingCallFailure> {
+) -> Result<T, BlockingCallFailure> {
     match tokio::task::spawn_blocking(call).await {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(error)) => Err(BlockingCallFailure::Refused(error)),
@@ -179,7 +178,7 @@ impl RouterFederation {
 
 impl ServeAsyncCommand for RouterFederation {
     fn run(self: Box<Self>) -> ServeAsyncHandle {
-        let RouterFederation {
+        let Self {
             deps,
             trigger_rx,
             generation,
@@ -190,8 +189,8 @@ impl ServeAsyncCommand for RouterFederation {
             // Race the poke loop against the shared token so the daemon can
             // exit promptly (the loop is otherwise infinite).
             tokio::select! {
-                _ = serve_pokes(&deps, trigger_rx, &generation, pinned) => {}
-                _ = teardown_token.cancelled() => {}
+                () = serve_pokes(&deps, trigger_rx, &generation, pinned) => {}
+                () = teardown_token.cancelled() => {}
             }
             Ok(())
         });
@@ -227,7 +226,7 @@ async fn reconcile(
     pinned: bool,
 ) -> FederationOutcome {
     // The read is file-backed; keep it off the async worker.
-    let reader = deps.enrollment.clone();
+    let reader = Arc::clone(&deps.enrollment);
     let enrollment = match run_blocking(move || reader()).await {
         Ok(enrollment) => enrollment,
         Err(BlockingCallFailure::Refused(error)) => {
@@ -319,9 +318,9 @@ mod tests {
     }
 
     /// A prober returning a fixed result and counting its calls.
-    fn counting_prober(result: std::result::Result<(), String>) -> (Prober, Arc<AtomicUsize>) {
+    fn counting_prober(result: Result<(), String>) -> (Prober, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
-        let counter = calls.clone();
+        let counter = Arc::clone(&calls);
         let prober: Prober = Arc::new(move |_host, _port, _tls, _timeout| -> ProbeFuture {
             counter.fetch_add(1, Ordering::SeqCst);
             let result = result.clone();
@@ -377,10 +376,13 @@ mod tests {
     async fn the_probe_receives_the_enrollments_identity_and_bound() {
         let seen: Arc<Mutex<Option<(String, u16, pmi::TlsConfig)>>> = Arc::new(Mutex::new(None));
         let timeout_millis = Arc::new(AtomicU64::new(0));
-        let (record, millis) = (seen.clone(), timeout_millis.clone());
+        let (record, millis) = (Arc::clone(&seen), Arc::clone(&timeout_millis));
         let prober: Prober = Arc::new(move |host, port, tls, timeout| -> ProbeFuture {
             *record.lock().unwrap() = Some((host, port, tls));
-            millis.store(timeout.as_millis() as u64, Ordering::SeqCst);
+            millis.store(
+                u64::try_from(timeout.as_millis()).unwrap(),
+                Ordering::SeqCst,
+            );
             Box::pin(async { Ok(()) })
         });
         let deps = FederationDeps { prober, ..deps() };
@@ -396,13 +398,13 @@ mod tests {
             tls.connect_identity,
             Some(pmi::ConnectIdentity {
                 certificate: enrolled.peer_certificate.clone(),
-                private_key: enrolled.peer_key.clone(),
+                private_key: enrolled.peer_key,
             })
         );
         assert!(tls.verify_name_on_connect);
         assert_eq!(
             timeout_millis.load(Ordering::SeqCst),
-            PROBE_TIMEOUT.as_millis() as u64
+            u64::try_from(PROBE_TIMEOUT.as_millis()).unwrap()
         );
     }
 
@@ -502,7 +504,7 @@ mod tests {
                         && reason.contains("peppy platform login")
                         && reason.contains("peppy platform enroll --replace"),
                     "{reason}"
-                )
+                );
             }
             other => panic!("expected Unreachable, got {other:?}"),
         }
@@ -512,7 +514,7 @@ mod tests {
     #[tokio::test]
     async fn an_unreadable_enrollment_reports_failed() {
         let failing: EnrollmentReader =
-            Arc::new(|| Err(auth::AuthError::Auth("enrollment material missing".into())));
+            Arc::new(|| Err(AuthError::Auth("enrollment material missing".into())));
         let deps = FederationDeps {
             enrollment: failing,
             ..deps()

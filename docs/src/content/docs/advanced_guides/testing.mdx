@@ -542,6 +542,7 @@ assert result.data.distance_mm == 120
   <TabItem label="Rust">
 ```rust
 use peppygen::fixtures::exposed_actions::move_arm;
+use std::assert_matches;
 use std::time::Duration;
 
 let mut goal = move_arm::send_goal(
@@ -555,10 +556,10 @@ assert!(goal.accepted);
 let feedback = goal.on_next_feedback().await?;
 assert!(feedback.progress > 0.0);
 let result = goal.get_result(Duration::from_secs(10)).await?;
-assert!(matches!(
+assert_matches!(
     result.outcome,
     move_arm::ResultOutcome::Completed(move_arm::ResultData { distance_mm: 120 })
-));
+);
 ```
   </TabItem>
 </Tabs>

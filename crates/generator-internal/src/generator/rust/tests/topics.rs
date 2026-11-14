@@ -1,9 +1,4 @@
 use super::*;
-use crate::error::Error;
-use config::node::{
-    ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    TopicRetention,
-};
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
@@ -178,13 +173,13 @@ fn emit_topic() {
 }
 
 /// An emitted topic declared through a `manifest.implements` slot is
-/// contract-addressed: the generated declare_publisher splices
+/// contract-addressed: the generated `declare_publisher` splices
 /// `SenderTarget::contract(contract_name, contract_tag)` instead of the
 /// runtime's own node identity.
 #[test]
 fn emitted_topic_via_contract_origin_targets_contract() {
     let topic = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
-    let origin = crate::ContractOrigin {
+    let origin = ContractOrigin {
         link_id: "depth_cam".to_string(),
         contract_name: "depth_camera".to_string(),
         contract_tag: "v1".to_string(),
@@ -567,7 +562,7 @@ fn emit_topic_with_dynamic_object_array() {
     );
 }
 
-/// A real manifest dep (link_id present) splices the runtime
+/// A real manifest dep (`link_id` present) splices the runtime
 /// consumer-filter lookup into the generated subscribe call: the
 /// resolved filter carries the bound producer's full
 /// `(core_node, instance_id)`, so a pinned topic slot sets both wire
@@ -617,7 +612,7 @@ fn consumed_topic_with_link_id_splices_runtime_bound_producer() {
 fn consumed_topic_accessor_is_cardinality_typed() {
     let cases = [
         (
-            config::node::Cardinality::ZeroOrOne,
+            Cardinality::ZeroOrOne,
             "pub fn bound_producer(",
             ") -> Option<&peppylib::messaging::ProducerRef>",
             ".optional_bound_producer(\"cam_left\")",
@@ -626,7 +621,7 @@ fn consumed_topic_accessor_is_cardinality_typed() {
             &[][..],
         ),
         (
-            config::node::Cardinality::OneOrMore,
+            Cardinality::OneOrMore,
             "pub fn bound_producers(",
             ") -> peppylib::messaging::NonEmptyProducers",
             ".non_empty_bound_producers(\"cam_left\")",
@@ -639,7 +634,7 @@ fn consumed_topic_accessor_is_cardinality_typed() {
             ][..],
         ),
         (
-            config::node::Cardinality::ZeroOrMore,
+            Cardinality::ZeroOrMore,
             "pub fn bound_producers(",
             ") -> Vec<peppylib::messaging::ProducerRef>",
             ".bound_producers(\"cam_left\")",
@@ -671,7 +666,7 @@ fn consumed_topic_accessor_is_cardinality_typed() {
                 &topic,
                 format,
                 TopicRetention::LiveOnly,
-                &crate::DependencyContext::native("uvc_camera", "v1", "cam_left", cardinality),
+                &DependencyContext::native("uvc_camera", "v1", "cam_left", cardinality),
             )
             .unwrap();
         let artifacts = render_artifacts(generator.into_artifacts());
@@ -973,13 +968,12 @@ fn clippy_single_emitted_topic_without_message_format() {
 
     run_clippy(&output_dir);
 
-    let emitted_topics_contents = std::fs::read_to_string(output_dir.join("src/emitted_topics.rs"))
+    let emitted_topics_contents = fs::read_to_string(output_dir.join("src/emitted_topics.rs"))
         .expect("failed to read emitted_topics module");
     assert_contains_all(&emitted_topics_contents, &["pub mod video_stream;"]);
 
-    let consumed_actions_contents =
-        std::fs::read_to_string(output_dir.join("src/consumed_actions.rs"))
-            .expect("failed to read consumed_actions module");
+    let consumed_actions_contents = fs::read_to_string(output_dir.join("src/consumed_actions.rs"))
+        .expect("failed to read consumed_actions module");
     assert_contains_all(
         &consumed_actions_contents,
         &["pub mod brain;", "pub mod controller;"],
@@ -1032,7 +1026,7 @@ fn compile_lib_with_emitted_and_consumed_topics() {
     );
 
     let lib_contents =
-        std::fs::read_to_string(output_dir.join("src/lib.rs")).expect("failed to read lib.rs");
+        fs::read_to_string(output_dir.join("src/lib.rs")).expect("failed to read lib.rs");
     assert_contains_all(
         &lib_contents,
         &["pub mod emitted_topics;", "pub mod consumed_topics;"],
@@ -1070,27 +1064,27 @@ fn compile_lib_with_emitted_and_consumed_topics() {
 /// parameters. Producer identity travels only as the full
 /// `(core_node, instance_id)` resolved at runtime from the bindings map.
 /// This test fails loudly if any generator exposes a `from_*` / `target_*`
-/// core_node or instance_id parameter.
+/// `core_node` or `instance_id` parameter.
 #[test]
 fn no_user_facing_producer_identity_params() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let topic_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
     let service: ConsumedService =
-        serde_json5::from_str(super::services::SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+        serde_json5::from_str(services::SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
     let request_format: MessageFormat =
-        serde_json5::from_str(super::services::SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
+        serde_json5::from_str(services::SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
     let response_format: MessageFormat =
-        serde_json5::from_str(super::services::SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1).unwrap();
+        serde_json5::from_str(services::SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1).unwrap();
 
     let action: ConsumedAction =
-        serde_json5::from_str(super::actions::SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+        serde_json5::from_str(actions::SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
     let goal_request_format: MessageFormat =
-        serde_json5::from_str(super::actions::SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
+        serde_json5::from_str(actions::SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
     let feedback_format: MessageFormat =
-        serde_json5::from_str(super::actions::SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
+        serde_json5::from_str(actions::SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
     let result_response_format: MessageFormat =
-        serde_json5::from_str(super::actions::SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
+        serde_json5::from_str(actions::SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: None,

@@ -97,13 +97,11 @@ fn assert_cargo_project(node_dir: &Path) {
         fs::read_to_string(&cargo_toml_path).expect("failed to read generated Cargo.toml");
     assert!(
         cargo_toml.contains("peppygen"),
-        "Cargo.toml should contain peppygen dependency, got:\n{}",
-        cargo_toml
+        "Cargo.toml should contain peppygen dependency, got:\n{cargo_toml}"
     );
     assert!(
         cargo_toml.contains(PEPPYGEN_OUTPUT_PATH),
-        "Cargo.toml should reference generated peppygen path, got:\n{}",
-        cargo_toml
+        "Cargo.toml should reference generated peppygen path, got:\n{cargo_toml}"
     );
 
     let main_rs_path = node_dir.join("src/main.rs");
@@ -128,23 +126,19 @@ fn assert_uv_project(node_dir: &Path, node_name: &str) {
         fs::read_to_string(&pyproject_toml_path).expect("failed to read generated pyproject.toml");
     assert!(
         pyproject_toml.contains("peppygen"),
-        "pyproject.toml should contain peppygen dependency, got:\n{}",
-        pyproject_toml
+        "pyproject.toml should contain peppygen dependency, got:\n{pyproject_toml}"
     );
     assert!(
         pyproject_toml.contains(PEPPYGEN_OUTPUT_PATH),
-        "pyproject.toml should reference generated peppygen path, got:\n{}",
-        pyproject_toml
+        "pyproject.toml should reference generated peppygen path, got:\n{pyproject_toml}"
     );
     assert!(
         pyproject_toml.contains("peppylib"),
-        "pyproject.toml should contain peppylib dependency, got:\n{}",
-        pyproject_toml
+        "pyproject.toml should contain peppylib dependency, got:\n{pyproject_toml}"
     );
     assert!(
         pyproject_toml.contains(PEPPYLIB_OUTPUT_PATH),
-        "pyproject.toml should reference deployed peppylib path, got:\n{}",
-        pyproject_toml
+        "pyproject.toml should reference deployed peppylib path, got:\n{pyproject_toml}"
     );
 
     let init_py_path = node_dir.join(format!("src/{node_name}/__init__.py"));

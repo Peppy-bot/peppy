@@ -83,11 +83,11 @@ async fn check_lang(lang: Lang) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "spawns real node processes; heavy: run via the dev->main latency.yml workflow"]
 async fn rust_roundtrip_latency_under_threshold() {
-    check_lang(Lang::Rust).await;
+    Box::pin(check_lang(Lang::Rust)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "spawns real node processes; heavy: run via the dev->main latency.yml workflow"]
 async fn python_roundtrip_latency_under_threshold() {
-    check_lang(Lang::Python).await;
+    Box::pin(check_lang(Lang::Python)).await;
 }

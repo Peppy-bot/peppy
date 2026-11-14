@@ -16,7 +16,7 @@ use tracing::debug;
 /// federated zenoh link). A well-formed reply is the liveness signal; the
 /// returned uptime is informational. Registered under the same identity as every
 /// other core-node service so callers address it as `(core_node_name, core)`.
-pub async fn listen_for_health(
+pub(super) async fn listen_for_health(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
@@ -34,9 +34,7 @@ pub async fn listen_for_health(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(move |context| async move {
-                handle_health_request(context, start_time).await
-            })
+            .handle_requests(move |context| handle_health_request(context, start_time))
             .await
             .map_err(Into::into)
     });
@@ -44,6 +42,10 @@ pub async fn listen_for_health(
     Ok(handle)
 }
 
+#[expect(
+    clippy::unused_async,
+    reason = "the listener calls a handler that returns a future"
+)]
 async fn handle_health_request(
     context: ServiceRequestContext,
     start_time: Instant,

@@ -19,6 +19,7 @@ use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err
 /// [`PyTopicMessage`] keeps its message: every getter borrows out of it, so
 /// receiving a request copies nothing and Python pays a single copy of the
 /// request body in the [`payload`](Self::payload) getter.
+#[derive(Debug)]
 #[pyclass(name = "ServiceRequestContext")]
 pub struct PyServiceRequestContext {
     inner: ServiceRequestContext,
@@ -31,7 +32,7 @@ impl PyServiceRequestContext {
         self.inner.request_id()
     }
 
-    /// The producer-side link_id whose queryable received this request.
+    /// The producer-side `link_id` whose queryable received this request.
     #[getter]
     fn link_id(&self) -> &str {
         self.inner.link_id()
@@ -54,7 +55,7 @@ impl PyServiceRequestContext {
 
     /// Returns the underlying message as a `TopicMessage`. Its `link_id` is
     /// empty, unlike this context's: a service request arrives on a query
-    /// keyexpr, whose caller slots encode no producer link_id.
+    /// keyexpr, whose caller slots encode no producer `link_id`.
     #[getter]
     fn message(&self) -> PyTopicMessage {
         PyTopicMessage::from(self.inner.message().clone())
@@ -71,6 +72,7 @@ impl From<ServiceRequestContext> for PyServiceRequestContext {
 /// request by [`PyServiceEndpoint::recv_next_request`]. Responding consumes
 /// the underlying token, so it is held behind an `Option` and taken on first
 /// use; a second respond raises `ValueError`.
+#[derive(Debug)]
 #[pyclass(name = "ServiceResponder")]
 pub struct PyServiceResponder {
     inner: Arc<Mutex<Option<ServiceResponder>>>,
@@ -102,10 +104,10 @@ impl PyServiceResponder {
     fn respond_failure<'py>(
         &self,
         py: Python<'py>,
-        kind: String,
+        kind: &str,
         message: String,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let failure = super::failure_from_py(&kind, message)?;
+        let failure = super::failure_from_py(kind, message)?;
         let inner = Arc::clone(&self.inner);
         super::future_into_py_unit(py, async move {
             let responder = inner
@@ -123,6 +125,7 @@ impl PyServiceResponder {
 }
 
 /// Python wrapper for a service endpoint that listens for incoming requests.
+#[derive(Debug)]
 #[pyclass(name = "ServiceEndpoint")]
 pub struct PyServiceEndpoint {
     pub(crate) inner: Arc<Mutex<ServiceEndpoint>>,
@@ -217,7 +220,7 @@ impl PyServiceEndpoint {
             let handler = &handler;
             let mut endpoint = inner.lock().await;
             endpoint
-                .handle_requests(|context| async move {
+                .handle_requests(async |context| {
                     let answer = python_answer(handler, context)
                         .await
                         .unwrap_or_else(|| Err(shutting_down()))?;
@@ -284,7 +287,8 @@ fn awaited_response_bytes(awaited: PyResult<Py<PyAny>>) -> Result<Vec<u8>, Failu
     }
 }
 
-/// Python wrapper for ServiceMessenger (request-response pattern).
+/// Python wrapper for `ServiceMessenger` (request-response pattern).
+#[derive(Debug)]
 #[pyclass(name = "ServiceMessenger")]
 pub struct PyServiceMessenger;
 
@@ -362,7 +366,10 @@ impl PyServiceMessenger {
     /// membership-checked member of the slot's bound set.
     #[staticmethod]
     #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, target=None, request_payload=vec![], response_timeout_secs=2.0))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments are the parameters of the Python method"
+    )]
     fn poll<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,

@@ -17,6 +17,7 @@ from .build import (
 )
 from .cli import ReleaseError, console
 from .download import CURL_DOWNLOAD_OPTIONS
+from .rust_version import RustVersion, workspace_rust_version
 
 LIMA_HOME = Path.home() / ".peppy" / "lima-build"
 LIMA_INSTANCE = "peppy"
@@ -24,6 +25,10 @@ LIMA_TEMPLATE = "template:ubuntu-24.04"
 GUEST_RUST_DIR = "/opt/peppy-rust"
 GUEST_RUSTUP_HOME = f"{GUEST_RUST_DIR}/rustup"
 GUEST_CARGO_HOME = f"{GUEST_RUST_DIR}/cargo"
+# The lines of a guest script that point rustup and cargo at the guest toolchain.
+_GUEST_RUST_ENVIRONMENT = f"""\
+export RUSTUP_HOME={GUEST_RUSTUP_HOME}
+export CARGO_HOME={GUEST_CARGO_HOME}"""
 
 # The Lima release the containers crate downloads and SHA-verifies. This MUST
 # stay in sync with LIMA_VERSION in crates/containers-internal/build.rs (which
@@ -248,8 +253,8 @@ def _ensure_pinned_go_in_vm(limactl: Path) -> None:
     """Install the pinned Go toolchain in the Lima VM if missing or wrong version.
 
     Idempotent: skips the download when the correct version is already present.
-    Kept separate from the Rust setup, which skips a VM that already has Rust,
-    so it runs on every VM, one with Rust and no pinned Go included.
+    Kept separate from the Rust installation, which skips a VM that already has
+    Rust, so it runs on every VM, one with Rust and no pinned Go included.
     """
     install_script = f"""\
 set -eu
@@ -277,7 +282,21 @@ rm -f /tmp/go-{GO_VERSION}.tar.gz
         )
 
 
-def ensure_rust_in_vm(limactl: Path) -> None:
+def ensure_rust_in_vm(limactl: Path, repo_root: Path) -> None:
+    """Give the Lima VM the toolchains that the release build of *repo_root* needs.
+
+    The VM gets the pinned Go, then Rust and the cross-compilation tools when
+    it has none, then a Rust that is not older than the `rust-version` of the
+    workspace: a VM that an earlier release made holds the Rust of that day.
+    """
+    _ensure_pinned_go_in_vm(limactl)
+    _install_rust_in_vm_if_missing(limactl)
+    _ensure_workspace_rust_in_vm(
+        limactl, workspace_rust_version(repo_root / "Cargo.toml")
+    )
+
+
+def _install_rust_in_vm_if_missing(limactl: Path) -> None:
     """Install Rust and cross-compilation tools inside the Lima VM if missing.
 
     The apt list also carries the apptainer build dependencies: the release
@@ -285,7 +304,6 @@ def ensure_rust_in_vm(limactl: Path) -> None:
     apptainer (and the squashfuse it bundles) from source there. Keep it in sync
     with `APPTAINER_BUILD_DEPS` in that build script.
     """
-    _ensure_pinned_go_in_vm(limactl)
     check = _run_limactl(
         limactl,
         [
@@ -306,8 +324,7 @@ def ensure_rust_in_vm(limactl: Path) -> None:
 set -eu
 sudo mkdir -p {GUEST_RUST_DIR}
 sudo chown "$(id -u):$(id -g)" {GUEST_RUST_DIR}
-export RUSTUP_HOME={GUEST_RUSTUP_HOME}
-export CARGO_HOME={GUEST_CARGO_HOME}
+{_GUEST_RUST_ENVIRONMENT}
 curl --proto '=https' --tlsv1.2 {CURL_DOWNLOAD_OPTIONS} https://sh.rustup.rs \
     | sh -s -- -y --no-modify-path
 export PATH="{GUEST_CARGO_HOME}/bin:$PATH"
@@ -324,6 +341,58 @@ sudo apt-get install -y -qq build-essential unzip gcc-x86-64-linux-gnu \
             f"failed to install Rust in Lima VM (exit {result.returncode})"
         )
     console.print("Rust toolchain installed in Lima VM.")
+
+
+def _rust_version_in_vm(limactl: Path) -> RustVersion:
+    """The release of the rustc that cargo runs in the Lima VM."""
+    result = _run_limactl(
+        limactl,
+        [
+            "shell",
+            LIMA_INSTANCE,
+            "--",
+            "bash",
+            "-c",
+            f"{_GUEST_RUST_ENVIRONMENT}\n{GUEST_CARGO_HOME}/bin/rustc --version",
+        ],
+    )
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to read the Rust release of the Lima VM (exit {result.returncode})"
+        )
+    return RustVersion.of_rustc(result.stdout)
+
+
+def _ensure_workspace_rust_in_vm(limactl: Path, required: RustVersion) -> None:
+    """Update the stable Rust of the Lima VM when it is older than *required*.
+
+    Raises ReleaseError when the update fails, or when the stable Rust is
+    still older than *required* after it.
+    """
+    installed = _rust_version_in_vm(limactl)
+    if installed >= required:
+        return
+
+    console.print(
+        f"Updating Rust {installed} in Lima VM: the workspace needs {required}..."
+    )
+    update_script = f"""\
+set -eu
+{_GUEST_RUST_ENVIRONMENT}
+{GUEST_CARGO_HOME}/bin/rustup update stable
+"""
+    result = _lima_shell(limactl, update_script)
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to update Rust in Lima VM (exit {result.returncode})"
+        )
+    updated = _rust_version_in_vm(limactl)
+    if updated < required:
+        raise ReleaseError(
+            f"the stable Rust of the Lima VM is {updated} after its update, "
+            f"and the workspace needs {required}"
+        )
+    console.print(f"Rust {updated} installed in Lima VM.")
 
 
 def _prebuilt_peppylib_so_dir() -> Path:
@@ -402,8 +471,7 @@ def cargo_build_in_lima(
     console.print(f"Building peppy for [bold]{target_triple}[/bold] in Lima VM...")
     build_script = f"""\
 set -eu
-export RUSTUP_HOME={GUEST_RUSTUP_HOME}
-export CARGO_HOME={GUEST_CARGO_HOME}
+{_GUEST_RUST_ENVIRONMENT}
 export PATH="{GUEST_GO_DIR}/bin:{GUEST_CARGO_HOME}/bin:$PATH"
 export GOTOOLCHAIN=local
 export PEPPY_GIT_TAG={shlex.quote(tag)}

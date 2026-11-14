@@ -65,10 +65,11 @@ fn target_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR") {
         return PathBuf::from(dir);
     }
-    // Cargo lays built binaries out under the workspace `target/` as
-    // `target/[<triple>/]<profile>/[deps/]`, so walking a bounded number of
-    // parents up from the running executable finds it without compiling the
-    // building machine's checkout path into the binary.
+    // Cargo puts a binary in `target/[<triple>/]<profile>/` and a bench or
+    // test executable in `target/[<triple>/]<profile>/build/<package>/<hash>/out/`,
+    // so walking a bounded number of parents up from the running executable
+    // finds the workspace `target/` without compiling the building machine's
+    // checkout path into the binary.
     if let Some(exe) = std::env::current_exe().ok()
         && let Some(dir) = workspace_target_dir_of(&exe)
     {
@@ -82,10 +83,15 @@ fn target_dir() -> PathBuf {
     }
 }
 
-/// The first ancestor of `exe` named `target`, or `None` within five levels.
+/// The deepest directory an executable sits in below the workspace `target/`:
+/// `<triple>/<profile>/build/<package>/<hash>/out`.
+const TARGET_DIR_SEARCH_DEPTH: usize = 6;
+
+/// The first ancestor of `exe` named `target`, or `None` when it is more than
+/// [`TARGET_DIR_SEARCH_DEPTH`] directories above the executable.
 fn workspace_target_dir_of(exe: &Path) -> Option<PathBuf> {
     let mut dir = exe.parent()?;
-    for _ in 0..5 {
+    for _ in 0..=TARGET_DIR_SEARCH_DEPTH {
         if dir.file_name() == Some(std::ffi::OsStr::new("target")) {
             return Some(dir.to_path_buf());
         }
@@ -101,7 +107,8 @@ mod target_dir_tests {
 
     #[test]
     fn finds_the_workspace_target_from_a_bench_binary_layout() {
-        let exe = Path::new("/ws/target/release/deps/bench-abc");
+        let exe =
+            Path::new("/ws/target/release/build/latency-report/0123456789abcdef/out/bench-abc");
         assert_eq!(
             workspace_target_dir_of(exe),
             Some(Path::new("/ws/target").to_path_buf())
@@ -115,6 +122,23 @@ mod target_dir_tests {
             workspace_target_dir_of(exe),
             Some(Path::new("/ws/target").to_path_buf())
         );
+    }
+
+    #[test]
+    fn finds_the_workspace_target_from_a_crosscompiled_bench_binary_layout() {
+        let exe = Path::new(
+            "/ws/target/aarch64-unknown-linux-gnu/release/build/latency-report/0123456789abcdef/out/bench-abc",
+        );
+        assert_eq!(
+            workspace_target_dir_of(exe),
+            Some(Path::new("/ws/target").to_path_buf())
+        );
+    }
+
+    #[test]
+    fn returns_none_for_a_target_directory_above_the_search_depth() {
+        let exe = Path::new("/ws/target/one/two/three/four/five/six/seven/bench-abc");
+        assert_eq!(workspace_target_dir_of(exe), None);
     }
 
     #[test]

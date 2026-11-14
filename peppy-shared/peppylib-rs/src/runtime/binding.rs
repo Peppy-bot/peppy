@@ -25,7 +25,7 @@ use crate::types::Message;
 use config::node::{QoSProfile, TopicRetention};
 use tokio::sync::watch;
 
-/// The consumer slot kind for the shared slot_stream engine: one pin per bound
+/// The consumer slot kind for the shared `slot_stream` engine: one pin per bound
 /// producer, keyed on its wire address.
 struct BoundFollow;
 
@@ -84,6 +84,7 @@ impl FollowedSlot for BoundFollow {
 /// one cannot starve a quiet one. A live-only topic delivers what a producer
 /// publishes while the slot follows it. A retaining topic also delivers the
 /// messages each producer retains.
+#[derive(Debug)]
 pub struct BoundSetSubscription {
     stream: SlotStream<BoundFollow>,
     shutdown: CancellationToken,
@@ -101,7 +102,7 @@ impl BoundSetSubscription {
             next = self.stream.next() => {
                 next.map(|(producer, message)| ((*producer).clone(), message))
             }
-            _ = self.shutdown.cancelled() => None,
+            () = self.shutdown.cancelled() => None,
         }
     }
 }
@@ -158,7 +159,10 @@ pub async fn subscribe_bound_set(
 /// serves embedders and tests that manage binding state themselves. `shutdown`
 /// bounds the wait on an empty set and ends the stream at node stop, and the
 /// stream also ends when `watch_rx`'s sender drops.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments are the identity of the slot, its watch channel and the options of the stream"
+)]
 pub async fn subscribe_bound_set_with_watch(
     messenger: MessengerHandle,
     as_core_node: String,

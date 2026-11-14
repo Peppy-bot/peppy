@@ -202,7 +202,7 @@ fn is_host_local_router(host: &str) -> bool {
 /// [`apply_daemon_defaults`], so the next daemon-global knob touches this
 /// struct and that function, not every context in between.
 #[derive(Clone)]
-pub struct DaemonDefaults {
+pub(crate) struct DaemonDefaults {
     /// Whether local-node gossip is enabled, injected into every spawned node.
     pub gossip: bool,
     /// Daemon-global subscriber buffer sizes, injected into every spawned node.
@@ -255,7 +255,7 @@ impl DaemonDefaults {
 }
 
 #[derive(Clone)]
-pub struct NodeRunServiceConfig {
+pub(crate) struct NodeRunServiceConfig {
     pub node_startup_timeout: Duration,
     /// The setup budget of an instance whose node declares none.
     pub default_setup_timeout: SetupTimeout,
@@ -323,7 +323,7 @@ struct ProcessNodeRunContext {
     sender_instance_id: String,
 }
 
-pub async fn listen_for_node_run(
+pub(crate) async fn listen_for_node_run(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
@@ -375,7 +375,7 @@ struct NodeRunGoalHandler {
 
 impl GoalHandler for NodeRunGoalHandler {
     async fn handle_goal(&self, pending: PendingGoal) {
-        handle_goal_request(pending, self.context.clone(), self.gate.clone()).await
+        handle_goal_request(pending, self.context.clone(), self.gate.clone()).await;
     }
 }
 
@@ -480,7 +480,7 @@ impl FeedbackSync {
             // Register for the next state change before re-checking, so a change
             // between the check and the await is not lost.
             let notified = self.changed.notified();
-            tokio::pin!(notified);
+            let mut notified = std::pin::pin!(notified);
             notified.as_mut().enable();
 
             if self.is_drained(require_stdout) {
@@ -492,7 +492,7 @@ impl FeedbackSync {
                 // state holds for the quiet window before closing.
                 match tokio::time::timeout(quiet_window, notified).await {
                     Err(_) => return true,
-                    Ok(_) => continue,
+                    Ok(()) => continue,
                 }
             }
 
@@ -566,7 +566,7 @@ pub(crate) async fn assemble_runtime_config(
         .messenger
         .messaging_endpoint()
         .await
-        .unwrap_or((DEFAULT_MESSAGING_HOST.to_string(), DEFAULT_MESSAGING_PORT));
+        .unwrap_or_else(|| (DEFAULT_MESSAGING_HOST.to_string(), DEFAULT_MESSAGING_PORT));
 
     // The clock travels whole: a domain's identity names the machine hosting
     // its publisher, so a binding means the same thing here as where it was
@@ -914,7 +914,7 @@ async fn handle_goal_request(
                 )))
             },
         );
-        tokio::pin!(work);
+        let mut work = std::pin::pin!(work);
 
         let mut feedback_open = true;
         let result = loop {
@@ -947,7 +947,7 @@ async fn handle_goal_request(
     });
 }
 
-/// Publishes one node_run feedback line onto the goal's feedback stream.
+/// Publishes one `node_run` feedback line onto the goal's feedback stream.
 ///
 /// Encoding failures are intentionally dropped: a single malformed line should
 /// not abort the run, and the line is already captured verbatim in the
@@ -969,7 +969,7 @@ async fn publish_node_run_feedback(publisher: &ActionFeedbackPublisher, line: Fe
 fn bind_daemon_targets(
     slot_bindings: &mut config::runtime::SlotBindings,
     manifest: &config::node::Manifest,
-    daemon: config::runtime::ProducerRef,
+    daemon: &config::runtime::ProducerRef,
 ) {
     for target in manifest.depends_on.iter().flat_map(|deps| &deps.daemon) {
         slot_bindings.insert(
@@ -1235,16 +1235,13 @@ async fn process_node_run(
         node_name, tag, instance_id_str
     );
 
-    let entity_handle = match ctx.action.node_stack.find(&node_name, &tag) {
-        Some(entity) => entity,
-        None => {
-            let msg = format!(
-                "Node '{node_name}:{tag}' not found in node stack. \
+    let Some(entity_handle) = ctx.action.node_stack.find(&node_name, &tag) else {
+        let msg = format!(
+            "Node '{node_name}:{tag}' not found in node stack. \
                  Run `peppy stack list` to see the nodes in the stack, or `peppy node add <dir>` \
                  to add it from its directory."
-            );
-            return refuse(&ctx, PeppyFailureKind::Rejected, msg);
-        }
+        );
+        return refuse(&ctx, PeppyFailureKind::Rejected, msg);
     };
 
     // Stack-wide `instance_id` uniqueness (spec rule 7): reject if the
@@ -1370,8 +1367,7 @@ async fn process_node_run(
         let guard = entity_handle.read();
         if guard.artifact_path().is_none() {
             let msg = format!(
-                "Node '{}:{}' is added but not built, run `peppy node build {}:{}` first.",
-                node_name, tag, node_name, tag
+                "Node '{node_name}:{tag}' is added but not built, run `peppy node build {node_name}:{tag}` first."
             );
             drop(guard);
             return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
@@ -1399,7 +1395,7 @@ async fn process_node_run(
     bind_daemon_targets(
         &mut runtime_config.node_instance.slot_bindings,
         &node_config.manifest,
-        stack_daemon,
+        &stack_daemon,
     );
 
     // The policy of a new instance, resolved here for every path that starts
@@ -1429,8 +1425,7 @@ async fn process_node_run(
         .manifest
         .depends_on
         .as_ref()
-        .map(|d| d.pairings.as_slice())
-        .unwrap_or_default();
+        .map_or_default(|d| d.pairings.as_slice());
     // The goal carries each vacancy's reason as text; this is where it becomes
     // the domain type the validator and the feedback line both speak.
     let vacant_reasons = match vacant_pairs
@@ -1440,7 +1435,7 @@ async fn process_node_run(
                 .map(|reason| (link_id.clone(), reason))
                 .map_err(|e| format!("pairing slot `{link_id}`: {e}"))
         })
-        .collect::<std::result::Result<std::collections::BTreeMap<_, _>, String>>()
+        .collect::<std::result::Result<BTreeMap<_, _>, String>>()
     {
         Ok(reasons) => reasons,
         Err(msg) => {
@@ -1590,7 +1585,7 @@ async fn process_node_run(
         // by the nodes already running.
         let mount_paths = resolved_mount_paths.clone();
         let peppy_dirs = ctx.action.peppy_dirs.clone();
-        let node_stack = ctx.action.node_stack.clone();
+        let node_stack = Arc::clone(&ctx.action.node_stack);
         let starting_instance_id = instance_id_str.to_owned();
         let setup = tokio::task::spawn_blocking(move || {
             let apptainer = match containers::Apptainer::new() {
@@ -1691,7 +1686,7 @@ async fn process_node_run(
     let runtime_config_json5 = match serde_json5::to_string(&launch_config) {
         Ok(json) => json,
         Err(e) => {
-            let msg = format!("Failed to serialize runtime config: {}", e);
+            let msg = format!("Failed to serialize runtime config: {e}");
             return refuse(&ctx, PeppyFailureKind::AttemptFailed, msg);
         }
     };
@@ -1760,22 +1755,22 @@ async fn process_node_run(
         return RunOutcome::Cancelled(msg);
     }
 
-    let (child, started_ctx) =
-        match node_stack::NodeEntity::prepare_and_spawn(&entity_handle, start_ctx).await {
-            Ok(t) => t,
-            Err(e) => {
-                let msg = e.to_string();
-                ctx.announcer.log().error(&msg);
-                feedback.close(instance_id_str, false).await;
-                return match e {
-                    // A stop removed the slot the respawn was for, or claimed
-                    // the start before its spawn.
-                    node_stack::NodeStackError::RespawnTargetMissing { .. }
-                    | node_stack::NodeStackError::StartClaimed { .. } => RunOutcome::Gone(msg),
-                    _ => RunOutcome::StartFailed(msg),
-                };
-            }
-        };
+    let (child, started_ctx) = match NodeEntity::prepare_and_spawn(&entity_handle, start_ctx).await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            let msg = e.to_string();
+            ctx.announcer.log().error(&msg);
+            feedback.close(instance_id_str, false).await;
+            return match e {
+                // A stop removed the slot the respawn was for, or claimed
+                // the start before its spawn.
+                node_stack::NodeStackError::RespawnTargetMissing { .. }
+                | node_stack::NodeStackError::StartClaimed { .. } => RunOutcome::Gone(msg),
+                _ => RunOutcome::StartFailed(msg),
+            };
+        }
+    };
 
     let abandon = StartAbandon {
         ctx: &ctx,
@@ -1830,7 +1825,7 @@ async fn process_node_run(
     // failure. The node does not listen for the shutdown request yet.
     let ready = tokio::select! {
         biased;
-        _ = cancel_token.cancelled() => Err(StartFailure::cancelled("ready-signal wait")),
+        () = cancel_token.cancelled() => Err(StartFailure::cancelled("ready-signal wait")),
         res = poll_startup_service(&signal_target, StartupProbe::Ready { first_start: respawn.is_none() }, ctx.action.node_startup_timeout, &child) => res.map(drop),
     };
     if let Err(failure) = ready {
@@ -1858,7 +1853,7 @@ async fn process_node_run(
     // hooks run.
     let setup = tokio::select! {
         biased;
-        _ = cancel_token.cancelled() => Err(StartFailure::cancelled("setup")),
+        () = cancel_token.cancelled() => Err(StartFailure::cancelled("setup")),
         res = poll_startup_service(&signal_target, StartupProbe::Health(&setup_budget), setup_budget.duration(), &child) => res.map(drop),
     };
 
@@ -1871,7 +1866,7 @@ async fn process_node_run(
             let host = host_addresses(&ctx.action.daemon_defaults.host_addresses);
             tokio::select! {
                 biased;
-                _ = cancel_token.cancelled() => Err(StartFailure::cancelled("setup")),
+                () = cancel_token.cancelled() => Err(StartFailure::cancelled("setup")),
                 res = poll_startup_service(&signal_target, StartupProbe::Endpoints, NODE_ENDPOINTS_TIMEOUT, &child) => {
                     res.and_then(|reply| {
                         let response = NodeEndpointsResponse::decode(reply.as_ref()).map_err(|e| {
@@ -1927,7 +1922,7 @@ async fn process_node_run(
             .await;
     }
     let group = started_ctx.group;
-    let commit_result = node_stack::NodeEntity::commit_started(
+    let commit_result = NodeEntity::commit_started(
         &entity_handle,
         child,
         started_ctx,
@@ -2085,7 +2080,7 @@ async fn process_node_run(
             }
         }
         Err(e) => {
-            let msg = format!("Failed to register instance: {}", e);
+            let msg = format!("Failed to register instance: {e}");
             ctx.action
                 .relationships
                 .pairing()
@@ -2344,7 +2339,7 @@ impl StartupProbe<'_> {
     }
 
     /// The failure when the probe's budget runs out.
-    fn timed_out(self, err: PeppyError) -> String {
+    fn timed_out(self, err: &PeppyError) -> String {
         match self {
             StartupProbe::Ready { first_start: true } => format!(
                 "startup timed out waiting for node to be ready (node may still be compiling): {err}"
@@ -2396,7 +2391,7 @@ async fn poll_startup_service<'a>(
                 instance_id: Some(target.target_instance_id.to_string()),
                 service_name: probe.service().to_string(),
             });
-            return Err(StartFailure::Reason(probe.timed_out(err)));
+            return Err(StartFailure::Reason(probe.timed_out(&err)));
         }
 
         let remaining = deadline - now;
@@ -2480,7 +2475,7 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
         // removal; on a self-exit (`Some`) it moves on below.
         let status = tokio::select! {
             biased;
-            _ = action.shutdown_token.cancelled() => None,
+            () = action.shutdown_token.cancelled() => None,
             status = child.wait() => Some(status),
         };
 
@@ -2892,7 +2887,7 @@ mod tests {
             Some(declared),
             SetupTimeout::DEFAULT,
         );
-        assert_eq!(budget.duration(), Duration::from_secs(180));
+        assert_eq!(budget.duration(), Duration::from_mins(3));
         assert_eq!(
             budget.source,
             SetupBudgetSource::Declared {
@@ -2927,7 +2922,7 @@ mod tests {
             service_name: NODE_HEALTH_SERVICE.to_owned(),
         };
         assert_eq!(
-            StartupProbe::Health(&budget).timed_out(err),
+            StartupProbe::Health(&budget).timed_out(&err),
             budget.timed_out()
         );
     }
@@ -2984,10 +2979,10 @@ mod tests {
         };
         assert!(
             StartupProbe::Ready { first_start: true }
-                .timed_out(timeout())
+                .timed_out(&timeout())
                 .contains("(node may still be compiling)")
         );
-        let restart = StartupProbe::Ready { first_start: false }.timed_out(timeout());
+        let restart = StartupProbe::Ready { first_start: false }.timed_out(&timeout());
         assert!(
             !restart.contains("compiling") && restart.ends_with("; its run log says why"),
             "{restart}"
@@ -3013,7 +3008,7 @@ mod tests {
     }
 
     fn runtime_config_for_test() -> RuntimeConfig {
-        let instance_id = config::runtime::Name::new("camera_front").unwrap();
+        let instance_id = Name::new("camera_front").unwrap();
         RuntimeConfig::new(
             "127.0.0.1",
             7448,
@@ -3066,7 +3061,7 @@ mod tests {
         ]);
         let daemon = config::runtime::ProducerRef::new("core_node", "core-node-boot");
 
-        bind_daemon_targets(&mut slot_bindings, &manifest, daemon.clone());
+        bind_daemon_targets(&mut slot_bindings, &manifest, &daemon);
 
         let bound_to_the_daemon = config::runtime::BoundProducers::from(daemon);
         assert_eq!(
@@ -3083,14 +3078,14 @@ mod tests {
     /// there is no window to close and nothing to compare against.
     #[test]
     fn a_run_with_no_planned_fingerprint_is_never_refused() {
-        assert!(refuse_stale_manifest("camera", "v1", None, &node_config_for_test()).is_ok());
+        refuse_stale_manifest("camera", "v1", None, &node_config_for_test()).unwrap();
     }
 
     #[test]
     fn a_run_whose_manifest_still_matches_the_plan_proceeds() {
         let config = node_config_for_test();
         let planned = super::super::manifest_fingerprint(&config).expect("fingerprintable");
-        assert!(refuse_stale_manifest("camera", "v1", Some(&planned), &config).is_ok());
+        refuse_stale_manifest("camera", "v1", Some(&planned), &config).unwrap();
     }
 
     /// The whole point of the check: the add phase replaced the manifest the
@@ -3250,10 +3245,7 @@ mod tests {
             // The node is stamped with the daemon's namespace, so it opens its
             // session under the same routing-isolation prefix as the daemon.
             assert_eq!(
-                cfg.discovery
-                    .namespace
-                    .as_ref()
-                    .map(|namespace| namespace.as_str()),
+                cfg.discovery.namespace.as_ref().map(pmi::Namespace::as_str),
                 Some("local")
             );
         }
@@ -3293,10 +3285,7 @@ mod tests {
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(&mut cfg, &defaults, false);
         assert_eq!(
-            cfg.discovery
-                .namespace
-                .as_ref()
-                .map(|namespace| namespace.as_str()),
+            cfg.discovery.namespace.as_ref().map(pmi::Namespace::as_str),
             Some("550e8400-e29b-41d4-a716-446655440000")
         );
     }
@@ -3447,7 +3436,7 @@ mod tests {
         feedback.sync.increment_read();
         feedback.sync.reader_idle();
         let closing = feedback.close("arm_inst", false);
-        tokio::pin!(closing);
+        let mut closing = std::pin::pin!(closing);
         assert!(
             tokio::time::timeout(Duration::from_millis(50), &mut closing)
                 .await
@@ -3538,7 +3527,7 @@ mod tests {
         // No readers registered, e.g. a failure before the child was spawned.
         // The long windows would block forever if the fast path were missing.
         let drained = sync
-            .wait_for_drain(Duration::from_secs(60), false, Duration::from_secs(60))
+            .wait_for_drain(Duration::from_mins(1), false, Duration::from_mins(1))
             .await;
         assert!(drained, "with no live readers there is nothing to drain");
     }

@@ -97,7 +97,7 @@ fn generate_peppygen_lib_minimal_config() {
         .expect("failed to create temp directory");
     let node_dir = temp_dir.path();
 
-    let config_path = node_dir.join(config::consts::NODE_CONFIG_FILE);
+    let config_path = node_dir.join(NODE_CONFIG_FILE);
     fs::write(&config_path, minimal_rust_node_config("minimal_node"))
         .expect("failed to write peppy.json5");
 
@@ -121,7 +121,7 @@ fn generate_peppygen_lib_copy_mode_deploys_real_dirs() {
         .expect("failed to create temp directory");
     let node_dir = temp_dir.path();
 
-    let config_path = node_dir.join(config::consts::NODE_CONFIG_FILE);
+    let config_path = node_dir.join(NODE_CONFIG_FILE);
     fs::write(&config_path, minimal_rust_node_config("copy_node"))
         .expect("failed to write peppy.json5");
 

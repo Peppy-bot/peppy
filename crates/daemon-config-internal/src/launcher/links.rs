@@ -181,32 +181,31 @@ impl LinkSlotKind {
             })
         };
         match self {
-            LinkSlotKind::Participant(Cardinality::ZeroOrOne)
-            | LinkSlotKind::Observer(Cardinality::ZeroOrOne)
-            | LinkSlotKind::Binding(Cardinality::ZeroOrOne) => None,
-            LinkSlotKind::Participant(Cardinality::One) => Some(VacancyRefusal::ManifestRequires {
+            Self::Participant(Cardinality::ZeroOrOne)
+            | Self::Observer(Cardinality::ZeroOrOne)
+            | Self::Binding(Cardinality::ZeroOrOne) => None,
+            Self::Participant(Cardinality::One) => Some(VacancyRefusal::ManifestRequires {
                 declare_emptiable: PARTICIPANT_EMPTIABLE_KEY,
             }),
-            LinkSlotKind::Participant(Cardinality::ZeroOrMore) => multi_slot_empty_set(),
-            LinkSlotKind::Participant(Cardinality::OneOrMore) => {
-                Some(VacancyRefusal::NoEmptyState {
-                    requirement: "at least one peer, or `cardinality: \"zero_or_more\"` on its \
+            Self::Participant(Cardinality::ZeroOrMore) => multi_slot_empty_set(),
+            Self::Participant(Cardinality::OneOrMore) => Some(VacancyRefusal::NoEmptyState {
+                requirement: "at least one peer, or `cardinality: \"zero_or_more\"` on its \
                                   `depends_on.pairings` entry",
-                })
-            }
-            LinkSlotKind::Observer(Cardinality::One) => Some(VacancyRefusal::ManifestRequires {
+            }),
+            Self::Observer(Cardinality::One) => Some(VacancyRefusal::ManifestRequires {
                 declare_emptiable: OBSERVER_EMPTIABLE_KEY,
             }),
-            LinkSlotKind::Binding(Cardinality::One) => Some(VacancyRefusal::ManifestRequires {
+            Self::Binding(Cardinality::One) => Some(VacancyRefusal::ManifestRequires {
                 declare_emptiable: BINDING_EMPTIABLE_KEY,
             }),
-            LinkSlotKind::Observer(Cardinality::ZeroOrMore)
-            | LinkSlotKind::Binding(Cardinality::ZeroOrMore) => multi_slot_empty_set(),
-            LinkSlotKind::Observer(Cardinality::OneOrMore) => Some(VacancyRefusal::NoEmptyState {
+            Self::Observer(Cardinality::ZeroOrMore) | Self::Binding(Cardinality::ZeroOrMore) => {
+                multi_slot_empty_set()
+            }
+            Self::Observer(Cardinality::OneOrMore) => Some(VacancyRefusal::NoEmptyState {
                 requirement: "at least one source, or `cardinality: \"zero_or_more\"` on its \
                               `depends_on.pairing_observers` entry",
             }),
-            LinkSlotKind::Binding(Cardinality::OneOrMore) => Some(VacancyRefusal::NoEmptyState {
+            Self::Binding(Cardinality::OneOrMore) => Some(VacancyRefusal::NoEmptyState {
                 requirement: "at least one bound producer, or `cardinality: \"zero_or_more\"` on \
                               its `depends_on.nodes` / `depends_on.contracts` entry",
             }),
@@ -218,20 +217,20 @@ impl LinkSlotKind {
     /// slot".
     fn describe(self) -> String {
         match self {
-            LinkSlotKind::Binding(cardinality) => {
+            Self::Binding(cardinality) => {
                 format!("a producer-binding slot (cardinality `{cardinality}`)")
             }
-            LinkSlotKind::Participant(cardinality) => {
+            Self::Participant(cardinality) => {
                 format!("a participant pairing slot (cardinality `{cardinality}`)")
             }
-            LinkSlotKind::Observer(cardinality) => {
+            Self::Observer(cardinality) => {
                 format!("an observer slot (cardinality `{cardinality}`)")
             }
         }
     }
 }
 
-/// The declared link_ids of one node, tagged by family, for logarithmic lookup
+/// The declared `link_ids` of one node, tagged by family, for logarithmic lookup
 /// and a stable declared-keys listing in error messages.
 struct DeclaredLinkSlots<'a> {
     by_id: BTreeMap<&'a str, LinkSlotKind>,
@@ -274,7 +273,7 @@ impl DeclaredLinkSlots<'_> {
         self.by_id.get(link).copied()
     }
 
-    /// Every declared link_id across all families, sorted for a deterministic
+    /// Every declared `link_id` across all families, sorted for a deterministic
     /// message.
     fn declared_csv(&self) -> String {
         self.by_id.keys().copied().collect::<Vec<_>>().join(", ")
@@ -287,7 +286,6 @@ mod tests {
     use super::super::compose::{CopyInstance, CopyRecord};
     use super::super::types::DeploymentInstance;
     use super::*;
-    use config::node::ImplementsEntry;
     use config::runtime::{CoreNodeName, Name};
 
     fn parse_instances(json5: &str) -> Vec<DeploymentInstance> {
@@ -307,7 +305,7 @@ mod tests {
             node_tag: "v1",
             instances,
             depends_on,
-            implements: &[] as &[ImplementsEntry],
+            implements: &[],
             addressing: SETS_READ_WHOLE,
         }
     }
@@ -589,7 +587,7 @@ mod tests {
                 node_tag: "v1",
                 instances: &cons_instances,
                 depends_on: Some(&depends_on),
-                implements: &[] as &[ImplementsEntry],
+                implements: &[],
                 addressing: &addressing,
             },
             item(&prod_instances, None),

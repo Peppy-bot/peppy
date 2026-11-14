@@ -1,5 +1,6 @@
 use parking_lot::RwLock;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -193,10 +194,10 @@ impl NodeStage {
     /// the wire (in `SerializedNode::stage` and `NodeInfo::stage`).
     pub fn to_serialized(&self) -> SerializedNodeStage {
         match self {
-            NodeStage::Added { .. } => SerializedNodeStage::Added,
-            NodeStage::Building { .. } => SerializedNodeStage::Building,
-            NodeStage::Ready { .. } => SerializedNodeStage::Ready,
-            NodeStage::Root { .. } => SerializedNodeStage::Root,
+            Self::Added { .. } => SerializedNodeStage::Added,
+            Self::Building { .. } => SerializedNodeStage::Building,
+            Self::Ready { .. } => SerializedNodeStage::Ready,
+            Self::Root { .. } => SerializedNodeStage::Root,
         }
     }
 
@@ -208,7 +209,7 @@ impl NodeStage {
     /// without needing to inject stages into a real entity.
     pub fn ensure_buildable(&self) -> std::result::Result<(), &'static str> {
         match self {
-            NodeStage::Added { .. } => Ok(()),
+            Self::Added { .. } => Ok(()),
             other => Err(other.name()),
         }
     }
@@ -219,7 +220,7 @@ impl NodeStage {
     /// of [`NodeStage::ensure_buildable`]; see its doc for the rationale.
     pub fn ensure_spawnable(&self) -> std::result::Result<(), &'static str> {
         match self {
-            NodeStage::Ready { .. } => Ok(()),
+            Self::Ready { .. } => Ok(()),
             other => Err(other.name()),
         }
     }
@@ -261,6 +262,28 @@ pub struct BuildContext<'a> {
     /// `uv.lock` from, or `None` for PyPI itself (`pypi_mirror` in
     /// `peppy_config.json5`). Other nodes ignore it.
     pub pypi_mirror: Option<&'a PackagesBaseUrl>,
+}
+
+/// Shows the inputs of the build. An environment value can be a secret, so
+/// the variables are shown by name.
+impl fmt::Debug for BuildContext<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BuildContext")
+            .field("working_dir", &self.working_dir)
+            .field("peppy_dirs", &self.peppy_dirs)
+            .field("announcer", &self.announcer)
+            .field("env_vars", &env_var_names(self.env_vars))
+            .field("cancel_token", &self.cancel_token)
+            .field("rebuild", &self.rebuild)
+            .field("pypi_mirror", &self.pypi_mirror)
+            .finish()
+    }
+}
+
+/// The names of `env_vars`, for a `Debug` output that shows no value.
+fn env_var_names(env_vars: &[(String, String)]) -> Vec<&str> {
+    env_vars.iter().map(|(name, _)| name.as_str()).collect()
 }
 
 /// What [`NodeEntity::build`] snapshots under its Phase 1 write lock, so the
@@ -313,7 +336,7 @@ pub struct StartContext<'a> {
     /// naming, and the eventual `TrackedNodeInstance::new`.
     pub instance_id: &'a Name,
     /// The runtime config to write to the per-spawn temp file. For container
-    /// nodes, the caller is responsible for any host_gateway rewriting before
+    /// nodes, the caller is responsible for any `host_gateway` rewriting before
     /// calling start (the entity treats this as opaque bytes).
     pub runtime_config_json5: &'a str,
     /// Producers bound to each of this instance's `depends_on` slots,
@@ -332,7 +355,7 @@ pub struct StartContext<'a> {
     pub launch: Option<LaunchIdentity>,
     /// The copy this instance belongs to, recorded on the
     /// `TrackedNodeInstance` so every pair it takes part in can name it.
-    pub copy: Option<config::runtime::Name>,
+    pub copy: Option<Name>,
     /// Whether this start registers a new instance, with its policy and the
     /// goal it keeps, or starts the next process of a `restarting` one.
     pub spawn: SpawnTarget,
@@ -357,6 +380,30 @@ pub struct StartContext<'a> {
     pub output_sinks: OutputSinks,
 }
 
+/// Shows the inputs of the start. An environment value and a parameter of
+/// the runtime configuration can be a secret, so the variables are shown by
+/// name and the configuration is not shown.
+impl fmt::Debug for StartContext<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StartContext")
+            .field("core_node", &self.core_node)
+            .field("run_log_path", &self.run_log_path)
+            .field("instance_id", &self.instance_id)
+            .field("slot_bindings", &self.slot_bindings)
+            .field("clock", &self.clock)
+            .field("launch", &self.launch)
+            .field("copy", &self.copy)
+            .field("spawn", &self.spawn)
+            .field("env_vars", &env_var_names(self.env_vars))
+            .field("mount_paths_resolved", &self.mount_paths_resolved)
+            .field("credential", &self.credential)
+            .field("peppy_dirs", &self.peppy_dirs)
+            .field("output_sinks", &self.output_sinks)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Output-pipeline plumbing forwarded by [`NodeEntity::prepare_and_spawn`]
 /// into the spawned reader tasks. Grouped into its own struct so the
 /// entity's `StartContext` surface only carries fields the entity actually
@@ -375,6 +422,18 @@ pub struct OutputSinks {
     /// successful publish. The daemon implements this for its `FeedbackSync`
     /// quiescence-detection primitive; tests can pass a no-op.
     pub hooks: Arc<dyn OutputReaderHooks>,
+}
+
+/// Shows the announcer and the gate. The hooks are a trait object that does
+/// not have to be `Debug`.
+impl fmt::Debug for OutputSinks {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OutputSinks")
+            .field("announcer", &self.announcer)
+            .field("publish_enabled", &self.publish_enabled)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OutputSinks {
@@ -689,7 +748,7 @@ impl NodeEntity {
     /// Returns the entity's monotonic generation token. Bumped by every
     /// constructor (`new`, `built_in`, `root`, `from_snapshot`) so the build
     /// path can distinguish "still the entity I started building" from
-    /// "wholesale replaced by a concurrent push_config".
+    /// "wholesale replaced by a concurrent `push_config`".
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -732,10 +791,10 @@ impl NodeEntity {
     /// present regardless of which stage the entity is in.
     pub fn config_path(&self) -> &Path {
         match &self.stage {
-            NodeStage::Added { config_path } => config_path,
-            NodeStage::Building { config_path } => config_path,
-            NodeStage::Ready { config_path, .. } => config_path,
-            NodeStage::Root { config_path, .. } => config_path,
+            NodeStage::Added { config_path }
+            | NodeStage::Building { config_path }
+            | NodeStage::Ready { config_path, .. }
+            | NodeStage::Root { config_path, .. } => config_path,
         }
     }
 
@@ -778,7 +837,7 @@ impl NodeEntity {
     /// **Failure contract:** on any failure the entity is left in `Building`
     /// (not rolled back to `Added`). The caller owns cleanup, typically by
     /// calling `NodeStack::remove_config`.
-    pub async fn build(handle: &Arc<RwLock<NodeEntity>>, ctx: BuildContext<'_>) -> Result<PathBuf> {
+    pub async fn build(handle: &Arc<RwLock<Self>>, ctx: BuildContext<'_>) -> Result<PathBuf> {
         // ---- Phase 1: Added → Building, snapshot inputs (brief write lock) ----
         let snapshot = {
             let mut guard = handle.write();
@@ -1042,8 +1101,8 @@ impl NodeEntity {
     }
 
     /// Undoes a start that did not reach `running`, from
-    /// [`prepare_and_spawn`] (on I/O failure during the spawn/wire phases),
-    /// [`abort_started`] (on caller-side ready/health failure) and
+    /// `prepare_and_spawn` (on I/O failure during the spawn/wire phases),
+    /// `abort_started` (on caller-side ready/health failure) and
     /// [`Self::undo_abandoned_start`] (a run that panicked): a new
     /// instance is removed; a respawn's slot returns to `restarting` with no
     /// pid, or is removed when a stop path claimed it meanwhile, so no slot
@@ -1051,7 +1110,7 @@ impl NodeEntity {
     ///
     /// Silent when the entity is no longer in `Ready` (a concurrent
     /// `push_config` replaced it) or the instance is not `Starting`.
-    fn undo_start(handle: &Arc<RwLock<NodeEntity>>, instance_id: &Name) {
+    fn undo_start(handle: &Arc<RwLock<Self>>, instance_id: &Name) {
         let mut guard = handle.write();
         let NodeStage::Ready { instances, .. } = &mut guard.stage else {
             return;
@@ -1072,7 +1131,7 @@ impl NodeEntity {
     /// the caller to kill before [`Self::undo_abandoned_start`]; `None` when
     /// the slot is not starting for `run` or its start had not forked.
     pub fn abandoned_start_group(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         instance_id: &Name,
         run: &StartRun,
     ) -> Option<ProcessGroup> {
@@ -1085,11 +1144,11 @@ impl NodeEntity {
     }
 
     /// Undoes the start `run` left in flight under `instance_id` when it
-    /// panicked, as [`Self::undo_start`] does; a slot not starting for `run`
+    /// panicked, as `Self::undo_start` does; a slot not starting for `run`
     /// is left alone. Returns whether the slot was still `run`'s: its start
     /// in flight, now undone, or the restart it had not begun.
     pub fn undo_abandoned_start(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         instance_id: &Name,
         run: &StartRun,
     ) -> bool {
@@ -1158,7 +1217,7 @@ impl NodeEntity {
     /// `Starting` instance is removed, or the respawn's slot reverted,
     /// before returning.
     pub async fn prepare_and_spawn(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         ctx: StartContext<'_>,
     ) -> Result<(Child, StartedInstanceCtx)> {
         // The key file goes away on every return before the spawn hands it
@@ -1334,7 +1393,7 @@ impl NodeEntity {
             Error::StartFailed {
                 node_name: node_name.clone(),
                 node_tag: node_tag.clone(),
-                reason: format!("failed to build spawn command: {}", e),
+                reason: format!("failed to build spawn command: {e}"),
             }
         })?;
 
@@ -1376,7 +1435,7 @@ impl NodeEntity {
                     .map_err(|e| Error::StartFailed {
                         node_name: node_name.clone(),
                         node_tag: node_tag.clone(),
-                        reason: format!("failed to spawn `{}`: {}", spawn_description, e),
+                        reason: format!("failed to spawn `{spawn_description}`: {e}"),
                     })
             }
         };
@@ -1444,7 +1503,7 @@ impl NodeEntity {
     /// place the set is written. A respawn's commit counts the restart. The
     /// run of the process starts at `now`.
     pub async fn commit_started(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         mut child: Child,
         started_ctx: StartedInstanceCtx,
         instance_id: Name,
@@ -1561,7 +1620,7 @@ impl NodeEntity {
     /// already, and the kill here only reaps what is left. The output readers
     /// are joined on `time`.
     pub async fn abort_started(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         child: Child,
         started_ctx: StartedInstanceCtx,
         error: String,
@@ -1680,7 +1739,7 @@ impl NodeEntity {
     /// lands after the flip finds the record on the slot. The process exited
     /// at `now`.
     pub fn mark_instance_exited(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         instance_id: &Name,
         pid: u32,
         cause: ExitCause,
@@ -1699,7 +1758,7 @@ impl NodeEntity {
     /// did not reach `running`, and takes the backoff's next attempt. `None`
     /// when the instance is not `restarting`, or a stop path claimed it.
     pub fn mark_start_failed(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         instance_id: &Name,
         exit: ExitCause,
         backoff: &RestartBackoff,
@@ -1714,7 +1773,7 @@ impl NodeEntity {
     /// Ends the restarts of a `Restarting` instance the daemon refused to
     /// start again: it is `Failed` from here. `false` when the instance is
     /// not `restarting`, or a stop path claimed it.
-    pub fn mark_restart_refused(handle: &Arc<RwLock<NodeEntity>>, instance_id: &Name) -> bool {
+    pub fn mark_restart_refused(handle: &Arc<RwLock<Self>>, instance_id: &Name) -> bool {
         Self::edit_awaiting_restart(handle, instance_id, |inst| {
             inst.state = InstanceState::Failed;
             inst.supervision.next_start = None;
@@ -1727,7 +1786,7 @@ impl NodeEntity {
     /// start that fails before its spawn and the next attempt's opening line
     /// names it as the previous log. A slot a stop path claimed records
     /// nothing: its start finds no slot to flip.
-    pub fn record_respawn_log(handle: &Arc<RwLock<NodeEntity>>, instance_id: &Name, path: PathBuf) {
+    pub fn record_respawn_log(handle: &Arc<RwLock<Self>>, instance_id: &Name, path: PathBuf) {
         Self::edit_awaiting_restart(handle, instance_id, |inst| inst.run_log_path = Some(path));
     }
 
@@ -1735,7 +1794,7 @@ impl NodeEntity {
     /// (`Restarting`, and no stop path claimed it), under the write lock.
     /// `None` when no such slot has the id.
     fn edit_awaiting_restart<T>(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         instance_id: &Name,
         edit: impl FnOnce(&mut TrackedNodeInstance) -> T,
     ) -> Option<T> {
@@ -1753,7 +1812,7 @@ impl NodeEntity {
     /// `Failed`) whatever `stopped_pid` is. A `Starting` instance, or one
     /// running another process (one a start committed meanwhile), stays.
     pub fn claim_and_remove(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         instance_id: &Name,
         stopped_pid: Option<u32>,
     ) -> SlotRemoval {
@@ -1851,7 +1910,7 @@ impl NodeEntity {
     /// start with what the slot holds now, and the pairs it held. `None` when
     /// the instance does not await its restart.
     pub fn respawn_inputs_of(
-        handle: &Arc<RwLock<NodeEntity>>,
+        handle: &Arc<RwLock<Self>>,
         instance_id: &Name,
     ) -> Option<RespawnInputs> {
         let guard = handle.read();
@@ -2077,7 +2136,7 @@ impl NodeEntity {
         producers: config::runtime::BoundProducers,
     ) -> bool {
         self.edit_instance(instance_id.as_str(), |inst| {
-            inst.set_slot_binding(link_id, producers)
+            inst.set_slot_binding(link_id, producers);
         })
     }
 
@@ -2091,7 +2150,7 @@ impl NodeEntity {
         producers: config::runtime::BoundProducers,
     ) -> bool {
         self.edit_restarting(instance_id.as_str(), |inst| {
-            inst.set_slot_binding(link_id, producers)
+            inst.set_slot_binding(link_id, producers);
         })
     }
 
@@ -2185,7 +2244,7 @@ pub struct TrackedNodeInstance {
     launch: Option<LaunchIdentity>,
     /// The copy this instance belongs to, as the launch composed it; `None`
     /// for an instance run on its own.
-    copy: Option<config::runtime::Name>,
+    copy: Option<Name>,
     /// Last `node_health` outcome recorded by the daemon's health monitor.
     /// Behind an `Arc<AtomicBool>` so the monitor can update it through the
     /// cheap clone returned by `NodeStack::find_by_instance_id`, without taking
@@ -2241,8 +2300,8 @@ impl TrackedNodeInstance {
             clock: config::runtime::ClockBinding::Wall,
             launch: None,
             copy: None,
-            healthy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            stopping: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            healthy: Arc::new(AtomicBool::new(true)),
+            stopping: Arc::new(AtomicBool::new(false)),
             shutdown_requests: 0,
             endpoints: Vec::new(),
             supervision: Supervision::default(),
@@ -2389,6 +2448,7 @@ impl TrackedNodeInstance {
     }
 
     /// Records the run log of the process this start makes.
+    #[must_use]
     pub fn with_run_log(mut self, path: PathBuf) -> Self {
         self.run_log_path = Some(path);
         self
@@ -2396,12 +2456,12 @@ impl TrackedNodeInstance {
 
     /// The copy this instance belongs to; `None` for an instance run on its
     /// own.
-    pub fn copy(&self) -> Option<&config::runtime::Name> {
+    pub fn copy(&self) -> Option<&Name> {
         self.copy.as_ref()
     }
 
     /// Records the copy this instance belongs to.
-    pub(crate) fn with_copy(mut self, copy: Option<config::runtime::Name>) -> Self {
+    pub(crate) fn with_copy(mut self, copy: Option<Name>) -> Self {
         self.copy = copy;
         self
     }
@@ -2480,9 +2540,7 @@ impl TrackedNodeInstance {
     /// the flag, so of two calls at once one returns `true`.
     #[must_use]
     fn claim_once(&self) -> bool {
-        let claimed = !self
-            .stopping
-            .swap(true, std::sync::atomic::Ordering::AcqRel);
+        let claimed = !self.stopping.swap(true, Ordering::AcqRel);
         self.supervision.restart_token.cancel();
         claimed
     }
@@ -2628,7 +2686,7 @@ impl TrackedNodeInstance {
         self.pid = None;
         self.endpoints.clear();
         self.supervision.next_start = None;
-        self.healthy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        self.healthy = Arc::new(AtomicBool::new(true));
         if let Some(files) = self.spawn_files.take() {
             files.remove();
         }
@@ -2662,7 +2720,7 @@ mod tests {
     use super::*;
     use crate::action_log::test_support::scratch_log;
     use config::node::ResolvedRestart;
-    use std::collections::BTreeMap;
+    use std::assert_matches;
     use tokio::sync::mpsc;
 
     /// The files of a fixture spawn, which no test reads.
@@ -2783,7 +2841,7 @@ mod tests {
 
         assert_eq!(built, slot.path);
         assert_eq!(handle.read().artifact_path(), Some(slot.path.as_path()));
-        assert!(matches!(handle.read().stage(), NodeStage::Ready { .. }));
+        assert_matches!(handle.read().stage(), NodeStage::Ready { .. });
         let line = feedback_rx.try_recv().expect("the reuse is announced").line;
         assert_eq!(
             line,
@@ -2800,14 +2858,12 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(entity.stage().to_serialized(), SerializedNodeStage::Ready);
-        assert!(
-            matches!(
-                entity.stage(),
-                NodeStage::Ready {
-                    artifact: Artifact::BuiltIn(_),
-                    ..
-                }
-            ),
+        assert_matches!(
+            entity.stage(),
+            NodeStage::Ready {
+                artifact: Artifact::BuiltIn(_),
+                ..
+            },
             "the recipe is the entity's artifact"
         );
         assert_eq!(
@@ -2888,8 +2944,9 @@ mod tests {
             Instant::now(),
         )
         .await;
-        assert!(
-            matches!(committed, Err(Error::InvalidStageTransition { .. })),
+        assert_matches!(
+            committed,
+            Err(Error::InvalidStageTransition { .. }),
             "a stale generation refuses the commit"
         );
         let emptied = tokio::time::timeout(Duration::from_secs(5), async {
@@ -3502,7 +3559,7 @@ mod tests {
             instance.supervision.run_started = Some(started);
             let handle = ready_entity_with(instance);
             let kill = HealthKill {
-                unanswered_for: Duration::from_secs(60),
+                unanswered_for: Duration::from_mins(1),
                 last_answer: last_answer_after.map(|after| started + after),
             };
             assert!(handle.write().arm_health_kill(id.as_str(), kill).is_some());
@@ -4060,12 +4117,10 @@ mod tests {
             Registrations::default,
         )
         .expect("a running instance exits");
-        assert!(
-            matches!(
+        assert_matches!(
                 exited.next,
                 Some(Attempt::Scheduled { attempt, delay, .. })
-                    if attempt.get() == 6 && delay == BACKOFF.max_delay
-            ),
+                    if attempt.get() == 6 && delay == BACKOFF.max_delay,
             "a short run backs off further: {:?}",
             exited.next
         );
@@ -4139,11 +4194,9 @@ mod tests {
         )
         .expect("a running instance exits");
         assert_eq!(handle.read().instances()[0].state(), InstanceState::Failed);
-        assert!(
-            matches!(
+        assert_matches!(
                 exited.next,
-                Some(Attempt::Capped { max_restarts, .. }) if max_restarts.get() == 2
-            ),
+                Some(Attempt::Capped { max_restarts, .. }) if max_restarts.get() == 2,
             "{:?}",
             exited.next
         );
@@ -4273,7 +4326,7 @@ mod tests {
             impl OutputReaderHooks for NoHooks {}
             StartContext {
                 core_node: "cn-a",
-                run_log_path: std::path::Path::new("run.log"),
+                run_log_path: Path::new("run.log"),
                 instance_id,
                 runtime_config_json5: "{}",
                 slot_bindings: BTreeMap::new(),
@@ -4283,7 +4336,7 @@ mod tests {
                 spawn: SpawnTarget::Respawn,
                 env_vars: &[],
                 mount_paths_resolved: &[],
-                credential: std::path::Path::new("no-such.key"),
+                credential: Path::new("no-such.key"),
                 peppy_dirs,
                 output_sinks: OutputSinks {
                     announcer: Announcer::new(scratch_log(), feedback_tx.clone()),
@@ -4297,8 +4350,7 @@ mod tests {
             NodeEntity::prepare_and_spawn(&handle, respawn(&other, &peppy_dirs, &feedback_tx))
                 .await
                 .expect_err("no slot waits under this id");
-        assert!(
-            matches!(&error, Error::RespawnTargetMissing { instance_id } if instance_id == "other-1"),
+        assert_matches!(&error, Error::RespawnTargetMissing { instance_id } if instance_id == "other-1",
             "{error}"
         );
         // A slot a stop path claimed, and one that is `Running`, refuse too.
@@ -4306,17 +4358,17 @@ mod tests {
         let error = NodeEntity::prepare_and_spawn(&handle, respawn(&id, &peppy_dirs, &feedback_tx))
             .await
             .expect_err("a claimed slot is a stop path's");
-        assert!(matches!(error, Error::RespawnTargetMissing { .. }));
+        assert_matches!(error, Error::RespawnTargetMissing { .. });
         assert!(NodeEntity::respawn_inputs_of(&handle, &id).is_none());
-        assert!(matches!(
+        assert_matches!(
             NodeEntity::claim_and_remove(&handle, &id, None),
             SlotRemoval::Removed(_)
-        ));
+        );
         assert!(handle.read().instances().is_empty());
         let error = NodeEntity::prepare_and_spawn(&handle, respawn(&id, &peppy_dirs, &feedback_tx))
             .await
             .expect_err("a stopped slot is gone");
-        assert!(matches!(error, Error::RespawnTargetMissing { .. }));
+        assert_matches!(error, Error::RespawnTargetMissing { .. });
         assert!(NodeEntity::respawn_inputs_of(&handle, &id).is_none());
         let running = Name::new("running-1").unwrap();
         let handle = ready_entity_with(TrackedNodeInstance::new(
@@ -4328,7 +4380,7 @@ mod tests {
             NodeEntity::prepare_and_spawn(&handle, respawn(&running, &peppy_dirs, &feedback_tx))
                 .await
                 .expect_err("a running slot is not respawned");
-        assert!(matches!(error, Error::RespawnTargetMissing { .. }));
+        assert_matches!(error, Error::RespawnTargetMissing { .. });
         assert_eq!(handle.read().instances()[0].state(), InstanceState::Running);
     }
 
@@ -4411,10 +4463,9 @@ mod tests {
 
         let capped_id = Name::new("waiting-4").unwrap();
         let handle = ready_entity_with(waiting_instance_under(&capped_id, capped(2)));
-        assert!(matches!(
+        assert_matches!(
             NodeEntity::mark_start_failed(&handle, &capped_id, spawn_failed.clone(), &BACKOFF, Instant::now()),
-            Some(Attempt::Scheduled { attempt, .. }) if attempt.get() == 2
-        ));
+            Some(Attempt::Scheduled { attempt, .. }) if attempt.get() == 2);
         let next = NodeEntity::mark_start_failed(
             &handle,
             &capped_id,
@@ -4423,11 +4474,9 @@ mod tests {
             Instant::now(),
         )
         .expect("the capped attempt is taken");
-        assert!(
-            matches!(
+        assert_matches!(
                 next,
-                Attempt::Capped { max_restarts, .. } if max_restarts.get() == 2
-            ),
+                Attempt::Capped { max_restarts, .. } if max_restarts.get() == 2,
             "{next:?}"
         );
         {
@@ -4553,14 +4602,14 @@ mod tests {
         let id = Name::new("waiting-8").unwrap();
         let mut slot = waiting_instance(&id);
         slot.set_healthy(false);
-        let previous = std::sync::Arc::clone(&slot.healthy);
+        let previous = Arc::clone(&slot.healthy);
         slot.begin_respawn();
         assert!(slot.healthy(), "the next process starts healthy");
         assert!(
-            !std::sync::Arc::ptr_eq(&previous, &slot.healthy),
+            !Arc::ptr_eq(&previous, &slot.healthy),
             "the flag is a new one"
         );
-        assert!(!previous.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!previous.load(Ordering::Acquire));
     }
 
     /// A respawn's start reports no start due: the one it waited for is
@@ -4831,12 +4880,10 @@ mod tests {
                 .write()
                 .record_observations_for_restart("waiting-7", &fleet_only)
         );
-        let both: BTreeMap<String, ObservationTargets> = [
-            ("sources".to_owned(), sources.clone()),
-            ("fleet".to_owned(), fleet),
-        ]
-        .into_iter()
-        .collect();
+        let both: BTreeMap<String, ObservationTargets> =
+            [("sources".to_owned(), sources), ("fleet".to_owned(), fleet)]
+                .into_iter()
+                .collect();
         assert_eq!(
             handle.read().instances()[0]
                 .supervision()
@@ -4863,7 +4910,7 @@ mod tests {
         assert_eq!(goal.lifecycle_watchers, watchers);
         let running = Name::new("running-7").unwrap();
         let handle = ready_entity_with(TrackedNodeInstance::new(
-            running.clone(),
+            running,
             InstanceState::Running,
             BTreeMap::new(),
         ));
@@ -4905,7 +4952,7 @@ mod tests {
                 pairing_name: "arm_link".to_owned(),
                 pairing_tag: "v1".to_owned(),
                 role: "arm".to_owned(),
-                cardinality: config::node::Cardinality::ZeroOrOne,
+                cardinality: Cardinality::ZeroOrOne,
                 copy: None,
             }),
         };

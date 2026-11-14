@@ -7,7 +7,7 @@ use crate::helpers::config_common::core_node_config;
 use crate::helpers::graph_query;
 
 /// The `brain` node, which consumes the `reset_sensor` service of `lidar:v1`
-/// over link_id `lidar`.
+/// over `link_id` `lidar`.
 fn brain_consuming_reset_sensor() -> config::node::NodeConfig {
     serde_json5::from_str(
         r#"{
@@ -128,7 +128,7 @@ fn service_dependency_fails_when_dependency_is_missing() {
         ..
     }))) = result
     else {
-        panic!("expected MissingDependency error, got {:?}", result);
+        panic!("expected MissingDependency error, got {result:?}");
     };
     assert_eq!(dependency, "lidar");
     assert_eq!(dependency_tag, "v1");
@@ -192,7 +192,7 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
     let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::MissingInterface(info)))) =
         result
     else {
-        panic!("expected MissingInterface error, got {:?}", result);
+        panic!("expected MissingInterface error, got {result:?}");
     };
     assert_eq!(info.dependency, "lidar");
     assert_eq!(info.dependency_tag, "v1");
@@ -244,7 +244,7 @@ fn service_dependency_fails_when_link_id_is_undeclared() {
         ..
     }))) = result
     else {
-        panic!("expected UndeclaredLinkId error, got {:?}", result);
+        panic!("expected UndeclaredLinkId error, got {result:?}");
     };
     assert_eq!(link_id, "nonexistent");
     assert_eq!(stack.len(), 1, "stack should only have core node");

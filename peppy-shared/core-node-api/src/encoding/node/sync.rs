@@ -37,7 +37,7 @@ impl NodeSyncRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<node_capnp::node_sync_request::Builder>();
+            let mut request = builder.init_root::<node_capnp::node_sync_request::Builder<'_>>();
             request.set_node_root_dir(encode_fs_path(&self.node_root_dir, "node_root_dir")?);
             request.set_git_hash(&self.git_hash);
             request.set_include_repositories(self.include_repositories);
@@ -47,7 +47,7 @@ impl NodeSyncRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<node_capnp::node_sync_request::Reader>()?;
+        let request = reader.get_root::<node_capnp::node_sync_request::Reader<'_>>()?;
         Ok(Self {
             node_root_dir: PathBuf::from(request.get_node_root_dir()?.to_str()?),
             git_hash: request.get_git_hash()?.to_str()?.to_owned(),
@@ -92,7 +92,7 @@ impl NodeSyncResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_sync_response::Builder>();
+            let mut response = builder.init_root::<node_capnp::node_sync_response::Builder<'_>>();
             let stack_count = capnp_list_len(
                 self.resolved_from_stack.len(),
                 "NodeSyncResponse.resolved_from_stack",
@@ -106,8 +106,8 @@ impl NodeSyncResponse {
                 "NodeSyncResponse.resolved_from_repositories",
             )?;
             let mut repo_list = response.init_resolved_from_repositories(repo_count);
-            for (i, entry) in self.resolved_from_repositories.iter().enumerate() {
-                let mut item = repo_list.reborrow().get(i as u32);
+            for (i, entry) in (0_u32..).zip(self.resolved_from_repositories.iter()) {
+                let mut item = repo_list.reborrow().get(i);
                 item.set_name(&entry.name);
                 item.set_tag(&entry.tag);
                 item.set_source_kind(entry.source_kind.as_str());
@@ -118,11 +118,11 @@ impl NodeSyncResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_sync_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::node_sync_response::Reader<'_>>()?;
         let resolved_from_stack = read_text_list(response.get_resolved_from_stack()?)?;
         let repositories = response.get_resolved_from_repositories()?;
         let mut resolved_from_repositories = Vec::with_capacity(repositories.len() as usize);
-        for item in repositories.iter() {
+        for item in repositories {
             let kind_str = item.get_source_kind()?.to_str()?;
             let source_kind = RepoSourceKind::parse(kind_str).ok_or_else(|| {
                 crate::Error::Decoding(format!(
@@ -143,11 +143,11 @@ impl NodeSyncResponse {
 }
 
 impl crate::encoding::Wire for NodeSyncRequest {
-    type Root = crate::node_capnp::node_sync_request::Owned;
+    type Root = node_capnp::node_sync_request::Owned;
 }
 
 impl crate::encoding::Wire for NodeSyncResponse {
-    type Root = crate::node_capnp::node_sync_response::Owned;
+    type Root = node_capnp::node_sync_response::Owned;
 }
 
 #[cfg(test)]
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn node_sync_response_without_provenance_lists_decodes_empty() {
         let mut builder = Builder::new_default();
-        builder.init_root::<node_capnp::node_sync_response::Builder>();
+        builder.init_root::<node_capnp::node_sync_response::Builder<'_>>();
         let encoded = encode_message(&builder).unwrap();
         let decoded = NodeSyncResponse::decode(&encoded).unwrap();
         assert_eq!(decoded, NodeSyncResponse::default());
@@ -223,7 +223,7 @@ mod tests {
     fn node_sync_response_decode_refuses_an_unknown_source_kind() {
         let mut builder = Builder::new_default();
         {
-            let response = builder.init_root::<node_capnp::node_sync_response::Builder>();
+            let response = builder.init_root::<node_capnp::node_sync_response::Builder<'_>>();
             let mut entry = response.init_resolved_from_repositories(1).get(0);
             entry.set_name("baz");
             entry.set_tag("v2");

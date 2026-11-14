@@ -11,7 +11,7 @@ use crate::error::Result;
 
 pub use catalog::mcp_catalog_rendered;
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum McpCommands {
     /// Serve the exposures of a launcher deployment.
     ///
@@ -36,6 +36,7 @@ pub enum McpCommands {
     },
 }
 
+#[derive(Debug)]
 pub struct McpCommand {
     pub command: McpCommands,
 }

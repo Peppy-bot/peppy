@@ -1,11 +1,10 @@
 use super::*;
 use crate::exporter::LogExporter;
-use crate::otlp::messages::{
-    ExportLogsPartialSuccess, ExportLogsServiceRequest, ExportLogsServiceResponse,
-};
+use crate::otlp::messages::{ExportLogsPartialSuccess, ExportLogsServiceRequest};
 use crate::record::{LogIdentity, LogKind};
 use crate::test_fixtures::{headers_file, resource};
 use daemon_config::peppy_config::Severity;
+use std::assert_matches;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -259,7 +258,10 @@ async fn the_wait_between_retries_doubles_up_to_thirty_seconds() {
 
     let times = harness.post_times();
     assert_eq!(times.len(), 9);
-    let waits: Vec<Duration> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    let waits: Vec<Duration> = times
+        .array_windows()
+        .map(|[previous, next]| (*next).checked_sub(*previous).unwrap())
+        .collect();
     let ceilings = [1, 2, 4, 8, 16, 30, 30, 30].map(Duration::from_secs);
     for (wait, ceiling) in waits.iter().zip(ceilings) {
         assert!(
@@ -304,8 +306,14 @@ async fn a_retry_after_of_zero_still_waits_for_the_backoff() {
 
     let times = harness.post_times();
     assert_eq!(times.len(), 3);
-    assert!(times[1] - times[0] >= SECOND / 2, "{times:?}");
-    assert!(times[2] - times[1] >= SECOND, "{times:?}");
+    assert!(
+        times[1].checked_sub(times[0]).unwrap() >= SECOND / 2,
+        "{times:?}"
+    );
+    assert!(
+        times[2].checked_sub(times[1]).unwrap() >= SECOND,
+        "{times:?}"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -563,10 +571,7 @@ fn each_answer_decides_what_becomes_of_the_request() {
         assert_eq!(status(delivered), Attempt::Delivered { rejected: 0 });
     }
     for retried in [429, 502, 503, 504] {
-        assert!(matches!(
-            status(retried),
-            Attempt::Retry { after: None, .. }
-        ));
+        assert_matches!(status(retried), Attempt::Retry { after: None, .. });
     }
     for unauthorized in [401, 403] {
         assert_eq!(

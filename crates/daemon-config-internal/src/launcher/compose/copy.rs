@@ -231,6 +231,7 @@ impl ComposedCopy {
 
 /// What one copy is asked to be: the option to copy, the name to run
 /// under, and the copy's own selection and overrides.
+#[derive(Clone, Copy)]
 pub(super) struct CopyRequest<'a> {
     pub axis: &'a str,
     pub loaded: &'a LoadedOption,
@@ -632,7 +633,7 @@ fn rewrite_report(
                 }
                 AppliedChange::LinkAdded { target, .. } => *target = rewrite(target),
                 AppliedChange::LinkRemoved { old, .. } => {
-                    rewrite_link(old, rewrite).map_err(collide)?
+                    rewrite_link(old, rewrite).map_err(collide)?;
                 }
             }
             Ok(entry)
@@ -688,11 +689,10 @@ pub(super) fn combine(
                         return Err(conflict(first, rendered.clone()));
                     }
                 }
-                (Some(Claim::Appended { .. }), AppliedChange::LinkAdded { .. }) => {}
+                (Some(Claim::Appended { .. }), AppliedChange::LinkAdded { .. }) | (None, _) => {}
                 (Some(Claim::Appended { copy: first }), _) => {
                     return Err(conflict(first, String::from("appended producers")));
                 }
-                (None, _) => {}
             }
             let instance = instance_named_mut(&mut flat.deployments, &entry.instance)
                 .expect("a copy writes only instances of the stack it composed over");
@@ -842,7 +842,7 @@ pub(super) fn attach(
                 if old != Some(new) {
                     return Err(refusal(format!(
                         "{field}: {}",
-                        transition(old.map(Name::to_string), new.to_string())
+                        transition(old.map(Name::to_string), new.as_ref())
                     )));
                 }
             }
@@ -854,7 +854,7 @@ pub(super) fn attach(
                         transition(
                             old.as_ref()
                                 .map(config::node::RestartDeclaration::launcher_spelling),
-                            new.launcher_spelling()
+                            &new.launcher_spelling()
                         )
                     )));
                 }
@@ -922,7 +922,7 @@ pub(super) fn against_running(
                     None => return None,
                 },
                 AppliedChange::Clock { old, .. } => {
-                    *old = running.framework.clock.clone();
+                    old.clone_from(&running.framework.clock);
                 }
                 AppliedChange::DaemonScope {
                     daemon_target, old, ..

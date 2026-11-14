@@ -18,12 +18,16 @@ struct PeppyConfigTemplate<'a> {
     peppylib_path: &'a str,
 }
 
-impl<'a> PeppyConfigTemplate<'a> {
-    pub const TEMPLATE_PATH: &'static str = "peppygen/rust/Cargo.toml.j2";
+impl PeppyConfigTemplate<'_> {
+    pub(crate) const TEMPLATE_PATH: &'static str = "peppygen/rust/Cargo.toml.j2";
 }
 
 #[derive(Template)]
 #[template(path = "peppygen/python/pyproject.toml.j2", escape = "none")]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the fields are the variables of the template"
+)]
 struct PeppyPythonConfigTemplate<'a> {
     peppylib_version: &'a str,
     python_min_version: &'a str,
@@ -31,7 +35,7 @@ struct PeppyPythonConfigTemplate<'a> {
 }
 
 impl PeppyPythonConfigTemplate<'_> {
-    pub const TEMPLATE_PATH: &'static str = "peppygen/python/pyproject.toml.j2";
+    pub(crate) const TEMPLATE_PATH: &'static str = "peppygen/python/pyproject.toml.j2";
 }
 
 /// Version of the deployed peppylib Python distribution.
@@ -40,11 +44,15 @@ impl PeppyPythonConfigTemplate<'_> {
 /// peppygen's exact `peppylib==<this>` requirement can never be satisfied
 /// from PyPI; a node missing the `.peppy/libs/peppylib` path source fails
 /// loudly instead of silently installing an outdated release. Intentionally
-/// differs from `peppylib.__version__` (which is stamped from PEPPY_GIT_TAG).
+/// differs from `peppylib.__version__` (which is stamped from `PEPPY_GIT_TAG`).
 pub(crate) const PYTHON_PEPPYLIB_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+peppy");
 
 #[derive(Template)]
 #[template(path = "peppylib/python/pyproject.toml.j2", escape = "none")]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the fields are the variables of the template"
+)]
 struct PeppylibPythonProjectTemplate<'a> {
     peppylib_version: &'a str,
     python_min_version: &'a str,
@@ -83,20 +91,17 @@ pub(crate) fn copy_embedded_templates(prefix: &str, to: &Path, peppylib_path: &s
             continue;
         }
 
-        match relative_path.strip_suffix(".j2") {
-            Some(rendered_path) => {
-                let rendered = render_template(file_path_str, peppylib_path)?;
-                write_creating_parent(&to.join(rendered_path), rendered.as_bytes())?;
-            }
-            None => {
-                let content = EmbeddedTemplates::get(file_path_str).ok_or_else(|| {
-                    io::Error::new(
-                        ErrorKind::NotFound,
-                        format!("embedded template not found: {file_path_str}"),
-                    )
-                })?;
-                write_creating_parent(&to.join(relative_path), content.data.as_ref())?;
-            }
+        if let Some(rendered_path) = relative_path.strip_suffix(".j2") {
+            let rendered = render_template(file_path_str, peppylib_path)?;
+            write_creating_parent(&to.join(rendered_path), rendered.as_bytes())?;
+        } else {
+            let content = EmbeddedTemplates::get(file_path_str).ok_or_else(|| {
+                io::Error::new(
+                    ErrorKind::NotFound,
+                    format!("embedded template not found: {file_path_str}"),
+                )
+            })?;
+            write_creating_parent(&to.join(relative_path), content.data.as_ref())?;
         }
     }
 
@@ -360,13 +365,15 @@ pub enum NodeTree {
 pub(crate) struct WorkspacePackageMetadata {
     pub version: &'static str,
     pub edition: &'static str,
+    pub rust_version: &'static str,
 }
 
 impl WorkspacePackageMetadata {
-    pub const fn embedded() -> Self {
+    pub(crate) const fn embedded() -> Self {
         Self {
             version: env!("CARGO_PKG_VERSION"),
             edition: "2024",
+            rust_version: env!("CARGO_PKG_RUST_VERSION"),
         }
     }
 }

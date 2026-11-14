@@ -29,8 +29,11 @@ use super::common::unanswered;
 
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-#[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
-pub async fn listen_for_node_stop(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a listener takes the identity of the daemon and the handles that the listeners share"
+)]
+pub(crate) async fn listen_for_node_stop(
     messenger: &MessengerHandle,
     core_node_node: &str,
     instance_id: &str,
@@ -54,8 +57,8 @@ pub async fn listen_for_node_stop(
     .await?;
 
     let handle = tokio::spawn(async move {
-        endpoint
-            .handle_requests(raw_calls.guard(ServiceId::NodeStop.name(), |context| {
+        Box::pin(
+            endpoint.handle_requests(raw_calls.guard(ServiceId::NodeStop.name(), |context| {
                 handle_node_stop_request(
                     context,
                     messenger.clone(),
@@ -63,11 +66,12 @@ pub async fn listen_for_node_stop(
                     core_instance_id.clone(),
                     Arc::clone(&node_stack),
                     relationships.clone(),
-                    ownership.clone(),
+                    Arc::clone(&ownership),
                 )
-            }))
-            .await
-            .map_err(Into::into)
+            })),
+        )
+        .await
+        .map_err(Into::into)
     });
 
     Ok(handle)
@@ -137,7 +141,7 @@ async fn handle_node_stop_request_inner(
         Err(e) => {
             return Err(failure(
                 PeppyFailureKind::Rejected,
-                format!("Invalid instance_id: {}", e),
+                format!("Invalid instance_id: {e}"),
             ));
         }
     };
@@ -158,7 +162,7 @@ async fn handle_node_stop_request_inner(
                 )
                 .await;
             }
-            SlotStep::ReadAgain => continue,
+            SlotStep::ReadAgain => {}
         }
     };
 
@@ -309,6 +313,7 @@ fn clear_without_process(entity_handle: &EntityHandle, instance_id: &Name) -> Sl
 }
 
 /// How a start a stop claimed ended.
+#[derive(Debug)]
 enum ClaimedStart {
     /// The claimed start's slot is gone; a slot now under the id is another
     /// instance's.
@@ -365,19 +370,19 @@ impl Refusal {
     /// The failure that refuses the stop of `instance_id`.
     fn failure(self, instance_id: &Name) -> Failure {
         match self {
-            Refusal::NotFound => failure(
+            Self::NotFound => failure(
                 PeppyFailureKind::Rejected,
                 format!("Node instance '{instance_id}' not found in node stack"),
             ),
-            Refusal::CoreNode => failure(PeppyFailureKind::Rejected, "Cannot stop the core node"),
-            Refusal::FirstStart => failure(
+            Self::CoreNode => failure(PeppyFailureKind::Rejected, "Cannot stop the core node"),
+            Self::FirstStart => failure(
                 PeppyFailureKind::PreconditionFailed,
                 format!(
                     "Node instance '{instance_id}' is in Starting state; retry after the start \
                      completes"
                 ),
             ),
-            Refusal::AlreadyBeingStopped => failure(
+            Self::AlreadyBeingStopped => failure(
                 PeppyFailureKind::PreconditionFailed,
                 format!("Node instance '{instance_id}' is already being stopped"),
             ),
@@ -526,30 +531,27 @@ async fn force_stop_instances(
     let _ = node_stack
         .time()
         .timeout(deadline, async {
-            let sends = doomed
-                .iter()
-                .filter(|d| d.pid.is_some())
-                .map(|d| async move {
-                    let result = send_shutdown_signal(
-                        messenger,
-                        core_node_node,
-                        core_instance_id,
-                        &d.node_name,
-                        &d.node_tag,
-                        &d.instance_id,
-                        node_stack,
-                    )
-                    .await;
-                    if let Err(e) = &result {
-                        debug!(
-                            "Cooperative shutdown of node instance '{}' failed; \
+            let sends = doomed.iter().filter(|d| d.pid.is_some()).map(async |d| {
+                let result = send_shutdown_signal(
+                    messenger,
+                    core_node_node,
+                    core_instance_id,
+                    &d.node_name,
+                    &d.node_tag,
+                    &d.instance_id,
+                    node_stack,
+                )
+                .await;
+                if let Err(e) = &result {
+                    debug!(
+                        "Cooperative shutdown of node instance '{}' failed; \
                          trying container signal fallback before force-kill: {}",
-                            d.instance_id.as_str(),
-                            e
-                        );
-                    }
-                    (d, result)
-                });
+                        d.instance_id.as_str(),
+                        e
+                    );
+                }
+                (d, result)
+            });
             let no_shutdown: Vec<&DoomedInstance> = futures::future::join_all(sends)
                 .await
                 .into_iter()
@@ -786,7 +788,7 @@ pub(crate) async fn stop_instances(
                 .map(|instance_id| {
                     let pid = guard
                         .claim_instance(instance_id)
-                        .and_then(|inst| inst.pid());
+                        .and_then(TrackedNodeInstance::pid);
                     DoomedInstance::of(&guard, instance_id.clone(), pid)
                 })
                 .collect()
@@ -1055,7 +1057,7 @@ impl DoomedInstance {
 /// it is the daemon itself. This does NOT wait the uncatchable-death grace
 /// period; that timer only governs a daemon that died without running cleanup.
 ///
-/// Delegates to [`force_stop_and_forget`]: the same phases as `peppy node
+/// Delegates to `force_stop_and_forget`: the same phases as `peppy node
 /// stop`, batched (one grace budget shared across all instances and every
 /// cooperative shutdown sent concurrently), then each instance is dropped
 /// from the stack, which keeps no pid whose process is gone.
@@ -1183,6 +1185,7 @@ fn pid_running_in(system: &sysinfo::System, pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     /// Each bound sums its terms: a stop's is its force phase (the force-kill
     /// deadline, the in-VM kill and the reap) and the notice of its end; a
@@ -1243,28 +1246,25 @@ mod tests {
     #[test]
     fn a_claimed_start_ends_by_its_slot() {
         let slot = |state: InstanceState, claimed: bool| {
-            let slot = TrackedNodeInstance::new(
-                Name::new("arm_inst").unwrap(),
-                state,
-                std::collections::BTreeMap::new(),
-            );
+            let slot =
+                TrackedNodeInstance::new(Name::new("arm_inst").unwrap(), state, BTreeMap::new());
             if claimed {
                 slot.mark_stopping();
             }
             Some(slot)
         };
         assert!(claimed_start(slot(InstanceState::Starting, true)).is_none());
-        assert!(matches!(
+        assert_matches!(
             claimed_start(slot(InstanceState::Running, true)),
             Some(ClaimedStart::Committed { .. })
-        ));
+        );
         for ended in [
             None,
             slot(InstanceState::Starting, false),
             slot(InstanceState::Running, false),
             slot(InstanceState::Restarting, true),
         ] {
-            assert!(matches!(claimed_start(ended), Some(ClaimedStart::Ended)));
+            assert_matches!(claimed_start(ended), Some(ClaimedStart::Ended));
         }
     }
 }

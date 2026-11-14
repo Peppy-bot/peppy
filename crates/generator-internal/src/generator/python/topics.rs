@@ -88,7 +88,7 @@ fn emit_published_message_types(
 }
 
 /// Emits the pure `build_message(...) -> bytes` serializer shared by the
-/// plain and peer publisher modules. Pure (no node_runner, no I/O), so a
+/// plain and peer publisher modules. Pure (no `node_runner`, no I/O), so a
 /// publish loop can build the payload off the asyncio event loop thread
 /// and hand only the finished bytes to the loop, keeping per-message
 /// serialization off the loop's GIL time.
@@ -128,8 +128,7 @@ fn tag_annotation(tag: SubscriptionTag) -> &'static str {
 /// The set-following sentence as a docstring suffix, empty on a scalar slot.
 fn follows_the_set_suffix(cardinality: Cardinality) -> String {
     crate::generator::types::follows_the_set_doc(cardinality)
-        .map(|sentence| format!(" {sentence}"))
-        .unwrap_or_default()
+        .map_or_default(|sentence| format!(" {sentence}"))
 }
 
 /// Emits what a consumer module decodes into, shared by the bound-set, peer
@@ -171,19 +170,19 @@ fn emit_subscription_class(builder: &mut PythonCodeBuilder, docstring: &str, tag
     builder.block("class Subscription:", |builder| {
         builder.docstring(docstring);
         builder.blank_line();
-        builder.py(r#"
+        builder.py(r"
 def __init__(self, inner) -> None:
     self._inner = inner
-"#);
+");
         builder.blank_line();
         builder.block(
             &format!("async def next(self) -> Optional[Tuple[{annotation}, Message]]:"),
             |builder| {
-                builder.py(r#"
+                builder.py(r"
 item = await self._inner.on_next_message()
 if item is None:
     return None
-"#);
+");
                 builder.line(&format!("{binding}, raw_message = item"));
                 builder.line("message = _deserialize_payload(raw_message.payload)");
                 builder.line(&format!("return {binding}, message"));
@@ -198,19 +197,19 @@ def __aiter__(self) -> "Subscription":
         builder.block(
             &format!("async def __anext__(self) -> Tuple[{annotation}, Message]:"),
             |builder| {
-                builder.py(r#"
+                builder.py(r"
 result = await self.next()
 if result is None:
     raise StopAsyncIteration
 return result
-"#);
+");
             },
         );
     });
 }
 
 /// Generates Python code for an emitted (publishing) topic.
-pub fn build_emitted_topic(
+pub(super) fn build_emitted_topic(
     topic: &NativeEmittedTopic,
     schema_info: Option<&PythonSchemaInfo>,
     origin: Option<&crate::generator::types::ContractOrigin>,
@@ -346,7 +345,7 @@ fn emit_peer_module_header(
 /// `build_message` plus a slot-scoped `declare_publisher`. A scalar slot's
 /// answers a `peppylib.TopicPublisher` driven with `publish`, a multi slot's
 /// a `peppylib.PeerPublisher` driven with `publish_to`.
-pub fn build_peer_emitted_topic(
+pub(super) fn build_peer_emitted_topic(
     topic: &NativeEmittedTopic,
     schema_info: Option<&PythonSchemaInfo>,
     peer: &crate::generator::types::PeerContext,
@@ -477,7 +476,7 @@ fn emit_observer_module_header(
 /// gets a `subscribe_observed`-backed one that follows each observed source
 /// instance's lifecycle and yields `(source, message)`. An observer plays no
 /// role, so it has no publisher.
-pub fn build_pair_topic_consumer(
+pub(super) fn build_pair_topic_consumer(
     topic: &NativeEmittedTopic,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
@@ -539,7 +538,7 @@ pub fn build_pair_topic_consumer(
 }
 
 /// Generates Python code for a consumed (receiving) topic.
-pub fn build_consumed_topic(
+pub(super) fn build_consumed_topic(
     topic: &ConsumedTopic,
     arguments: &MessageFormat,
     retention: TopicRetention,

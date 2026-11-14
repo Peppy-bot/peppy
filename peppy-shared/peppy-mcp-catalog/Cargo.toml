@@ -8,7 +8,11 @@ name = "peppy-mcp-catalog"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "The mcp_exposure/v1 document model, its validation against pinned contracts, and the exposure catalog it derives"
+
+[lints]
+workspace = true
 
 [dependencies]
 # The contract member shapes an exposure selects (`config::node` native

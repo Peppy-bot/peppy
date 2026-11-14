@@ -77,7 +77,7 @@ The final argument is a response timeout. Rust accepts anything that converts to
     use peppylib::datastore::{store, Encoding};
 
     fn main() -> Result<()> {
-        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_args: Parameters, node_runner| {
             store(
                 &node_runner,
                 "calibration/wrist_offset",
@@ -145,7 +145,7 @@ The owner is an instance the core node runs. `store_exclusive` from an `instance
     use peppylib::datastore::{store_exclusive, Encoding, ExclusiveStore};
 
     fn main() -> Result<()> {
-        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_args: Parameters, node_runner| {
             let answer = store_exclusive(
                 &node_runner,
                 "arm/left/driver",
@@ -211,7 +211,7 @@ The second argument is the same response timeout as above.
     use peppylib::datastore::get;
 
     fn main() -> Result<()> {
-        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_args: Parameters, node_runner| {
             let key = "calibration/wrist_offset";
             match get(&node_runner, key, Duration::from_secs(3)).await? {
                 Some(stored) => println!("wrist offset ({}): {:?}", stored.encoding, stored.value),
@@ -260,7 +260,7 @@ The only argument is the same response timeout as above.
     use peppylib::datastore::list;
 
     fn main() -> Result<()> {
-        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_args: Parameters, node_runner| {
             for entry in list(&node_runner, Duration::from_secs(3)).await? {
                 println!(
                     "{} ({}) last written by {}",
@@ -309,7 +309,7 @@ The second argument is the same response timeout as above.
     use peppylib::datastore::remove;
 
     fn main() -> Result<()> {
-        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+        NodeBuilder::new().run(async |_args: Parameters, node_runner| {
             let key = "calibration/wrist_offset";
             if remove(&node_runner, key, Duration::from_secs(3)).await? {
                 println!("removed {key}");
