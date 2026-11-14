@@ -5,6 +5,7 @@ pub(crate) mod facade;
 pub(crate) mod l4t_manifest;
 pub(crate) mod lima;
 pub(crate) mod registry_auth;
+#[cfg(target_os = "linux")]
 pub(crate) mod root_user_namespace;
 
 #[cfg(test)]

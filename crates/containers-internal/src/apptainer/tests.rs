@@ -1,3 +1,4 @@
+use super::absent_bind_paths::AbsentBindPaths;
 use super::activity::{
     BuildActivity, BuildActivityProbe, ProcessCpu, build_cpu_time, parse_guest_activity,
     parse_ps_cputime, parse_ps_process_table,
@@ -7,9 +8,10 @@ use super::facade::{
     ApparmorProfileRef, apparmor_profile_ref, check_setup_status, setup_fix_script,
     shell_escape_single_quoted,
 };
-use super::facade::{Apptainer, Backend, GuestSignal, is_uri, prepare_scratch_dir};
+use super::facade::{Apptainer, Backend, GuestSignal, is_uri, passes_contain, prepare_scratch_dir};
 use super::registry_auth::{RegistryAuth, RegistryAuthSource};
-use super::root_user_namespace::{ClosedInstallDir, PermissionClass, UserNamespace};
+#[cfg(target_os = "linux")]
+use super::root_user_namespace::UserNamespace;
 use crate::error::Error;
 use std::assert_matches;
 use std::fs;
@@ -80,6 +82,52 @@ fn ready_apptainer_dir() -> PathBuf {
 /// assert on assembled commands and must not depend on host state.
 const NATIVE_FIXTURE_TMP_DIR: &str = "/opt/peppy-tmp/apptainer";
 
+/// The parts of a Native-backend facade that a test controls. A part that a
+/// test does not name has the value of [`native_facade`].
+struct NativeFacadeFixture {
+    apptainer_dir: PathBuf,
+    registry_auth: RegistryAuth,
+    l4t_manifest_dir: PathBuf,
+    #[cfg(target_os = "linux")]
+    user_namespace: UserNamespace,
+    absent_bind_paths: AbsentBindPaths,
+}
+
+impl Default for NativeFacadeFixture {
+    fn default() -> Self {
+        let scratch = native_fixture_scratch();
+        Self {
+            apptainer_dir: PathBuf::from("/opt/apptainer"),
+            registry_auth: RegistryAuth {
+                source: RegistryAuthSource::Named(scratch.join("no-such-auth-file.json")),
+                sanitized_file: scratch.join("registry-auth/docker-config.json"),
+            },
+            l4t_manifest_dir: scratch.join("no-such-l4t-manifest-dir"),
+            #[cfg(target_os = "linux")]
+            user_namespace: UserNamespace::ApptainerDefault,
+            absent_bind_paths: AbsentBindPaths::default(),
+        }
+    }
+}
+
+impl NativeFacadeFixture {
+    fn build(self) -> Apptainer {
+        Apptainer {
+            apptainer_dir: self.apptainer_dir,
+            backend: Backend::Native {
+                apptainer_bin: PathBuf::from("/opt/apptainer/bin/apptainer"),
+                tmp_dir: PathBuf::from(NATIVE_FIXTURE_TMP_DIR),
+                registry_auth: self.registry_auth,
+                l4t_manifest_dir: self.l4t_manifest_dir,
+                #[cfg(target_os = "linux")]
+                user_namespace: self.user_namespace,
+                absent_bind_paths: self.absent_bind_paths,
+            },
+            extra_mounts: Vec::new(),
+        }
+    }
+}
+
 /// Builds a Native-backend facade for command-assembly and path-translation
 /// tests without touching host state. The apptainer path need not exist: these
 /// tests only inspect assembled argv, translated paths, and the no-op kill path.
@@ -87,84 +135,48 @@ const NATIVE_FIXTURE_TMP_DIR: &str = "/opt/peppy-tmp/apptainer";
 /// sanitized copy a build command writes lands in [`native_fixture_scratch`],
 /// never next to the host's real credentials. Its NVIDIA L4T manifest
 /// directory does not exist either, so a `--nv` command never reads the host's
-/// manifest.
+/// manifest. It is the facade of a daemon that is not root, on a host that has
+/// the source of each bind of apptainer.
 fn native_facade() -> Apptainer {
-    let scratch = native_fixture_scratch();
-    native_facade_with_registry_auth(RegistryAuth {
-        source: RegistryAuthSource::Named(scratch.join("no-such-auth-file.json")),
-        sanitized_file: scratch.join("registry-auth/docker-config.json"),
-    })
+    NativeFacadeFixture::default().build()
 }
 
 /// [`native_facade`] with the registry auth locations a test controls.
 fn native_facade_with_registry_auth(registry_auth: RegistryAuth) -> Apptainer {
-    Apptainer {
-        apptainer_dir: PathBuf::from("/opt/apptainer"),
-        backend: Backend::Native {
-            apptainer_bin: PathBuf::from("/opt/apptainer/bin/apptainer"),
-            tmp_dir: PathBuf::from(NATIVE_FIXTURE_TMP_DIR),
-            registry_auth,
-            l4t_manifest_dir: native_fixture_scratch().join("no-such-l4t-manifest-dir"),
-            user_namespace: UserNamespace::ApptainerDefault,
-            absent_bind_paths: Vec::new(),
-        },
-        extra_mounts: Vec::new(),
+    NativeFacadeFixture {
+        registry_auth,
+        ..NativeFacadeFixture::default()
     }
-}
-
-/// [`native_facade`] of a root daemon whose kernel cannot mount the zstd
-/// squashfs of an image: it asks apptainer for a user namespace.
-fn native_facade_forcing_user_namespace() -> Apptainer {
-    let mut facade = native_facade();
-    let Backend::Native { user_namespace, .. } = &mut facade.backend else {
-        unreachable!("native_facade builds the native backend");
-    };
-    *user_namespace = UserNamespace::Forced;
-    facade
-}
-
-/// [`native_facade`] of a root daemon whose kernel cannot mount the zstd
-/// squashfs of an image, with its apptainer installation below a home
-/// directory that root cannot enter from the user namespace.
-fn native_facade_out_of_reach_of_the_user_namespace() -> Apptainer {
-    let mut facade = native_facade();
-    let Backend::Native { user_namespace, .. } = &mut facade.backend else {
-        unreachable!("native_facade builds the native backend");
-    };
-    *user_namespace = UserNamespace::OutOfReach(ClosedInstallDir {
-        apptainer_dir: PathBuf::from("/home/user/.peppy/bin/apptainer"),
-        closed_dir: PathBuf::from("/home/user"),
-        class_of_root: PermissionClass::Others,
-    });
-    facade
-}
-
-/// `facade` on a host that has no `/etc/localtime`, the source of a
-/// `bind path` entry of `apptainer.conf`.
-fn on_a_host_without_localtime(mut facade: Apptainer) -> Apptainer {
-    let Backend::Native {
-        absent_bind_paths, ..
-    } = &mut facade.backend
-    else {
-        unreachable!("the fixture is for the native backend");
-    };
-    *absent_bind_paths = vec!["/etc/localtime".to_string()];
-    facade
+    .build()
 }
 
 /// [`native_facade`] with the apptainer install tree and the NVIDIA L4T
 /// manifest directory a test controls.
 fn native_facade_with_l4t_manifest(apptainer_dir: &Path, manifest_dir: &Path) -> Apptainer {
-    let mut facade = native_facade();
-    facade.apptainer_dir = apptainer_dir.to_path_buf();
-    let Backend::Native {
-        l4t_manifest_dir, ..
-    } = &mut facade.backend
-    else {
-        unreachable!("native_facade builds the native backend");
-    };
-    *l4t_manifest_dir = manifest_dir.to_path_buf();
-    facade
+    NativeFacadeFixture {
+        apptainer_dir: apptainer_dir.to_path_buf(),
+        l4t_manifest_dir: manifest_dir.to_path_buf(),
+        ..NativeFacadeFixture::default()
+    }
+    .build()
+}
+
+/// The binds of a host that has no `/etc/localtime`, with the `bind path`
+/// entries of the bundled `apptainer.conf`.
+fn binds_of_a_host_without_localtime() -> AbsentBindPaths {
+    AbsentBindPaths::of_config(
+        "bind path = /etc/localtime\nbind path = /etc/hosts\n",
+        |source| source == "/etc/localtime",
+    )
+}
+
+/// [`native_facade`] on a host that has no `/etc/localtime`.
+fn native_facade_on_a_host_without_localtime() -> Apptainer {
+    NativeFacadeFixture {
+        absent_bind_paths: binds_of_a_host_without_localtime(),
+        ..NativeFacadeFixture::default()
+    }
+    .build()
 }
 
 /// Scratch directory shared by every [`native_facade`] in this test binary.
@@ -298,87 +310,6 @@ fn test_build_command_builds_correct_args() {
 }
 
 #[test]
-fn a_run_that_forces_the_user_namespace_passes_userns_before_its_other_flags() {
-    let facade = native_facade_forcing_user_namespace();
-
-    let cmd = facade
-        .run("/images/node.sif")
-        .raw_flag("--nv")
-        .args(&["--port", "1"]);
-    let args = cmd.build_args().expect("build_args should succeed");
-
-    assert_eq!(
-        args,
-        ["run", "--userns", "--nv", "/images/node.sif", "--port", "1"]
-    );
-}
-
-#[test]
-fn an_exec_that_forces_the_user_namespace_passes_userns() {
-    let facade = native_facade_forcing_user_namespace();
-
-    let cmd = facade.exec("/images/node.sif", &["echo", "hello"]);
-    let args = cmd.build_args().expect("build_args should succeed");
-
-    assert_eq!(
-        args,
-        ["exec", "--userns", "/images/node.sif", "echo", "hello"]
-    );
-}
-
-/// A build mounts no image, so it needs no user namespace for one.
-#[test]
-fn a_build_that_forces_the_user_namespace_passes_no_userns() {
-    let facade = native_facade_forcing_user_namespace();
-
-    let (output, def) = build_paths_under_home();
-    let cmd = facade.build(&output, &def);
-    let args = cmd.build_args().expect("build_args should succeed");
-
-    assert!(
-        !args.iter().any(|arg| arg == "--userns"),
-        "a build should not ask for a user namespace, got: {args:?}"
-    );
-}
-
-#[test]
-fn a_run_and_an_exec_out_of_reach_of_the_user_namespace_name_the_closed_directory() {
-    let facade = native_facade_out_of_reach_of_the_user_namespace();
-
-    let run_error = facade
-        .run("/images/node.sif")
-        .build_args()
-        .expect_err("a run cannot start its container");
-    let exec_error = facade
-        .exec("/images/node.sif", &["echo", "hello"])
-        .build_args()
-        .expect_err("an exec cannot start its container");
-
-    for error in [run_error, exec_error] {
-        assert_matches!(
-            error,
-            Error::InstallDirClosedToRootInUserNamespace {
-                closed_dir,
-                chmod_class: 'o',
-                ..
-            } if closed_dir == "/home/user"
-        );
-    }
-}
-
-/// A build uses no user namespace, so it works where no container can start.
-#[test]
-fn a_build_out_of_reach_of_the_user_namespace_is_assembled() {
-    let facade = native_facade_out_of_reach_of_the_user_namespace();
-
-    let (output, def) = build_paths_under_home();
-    let cmd = facade.build(&output, &def);
-    let args = cmd.build_args().expect("build_args should succeed");
-
-    assert_eq!(args.first().map(String::as_str), Some("build"));
-}
-
-#[test]
 fn a_run_and_an_exec_with_the_default_of_apptainer_pass_no_userns() {
     let facade = native_facade();
 
@@ -397,7 +328,7 @@ fn a_run_and_an_exec_with_the_default_of_apptainer_pass_no_userns() {
 
 #[test]
 fn a_run_and_an_exec_skip_the_bind_path_that_the_host_does_not_have() {
-    let facade = on_a_host_without_localtime(native_facade());
+    let facade = native_facade_on_a_host_without_localtime();
 
     let run_args = facade
         .run("/images/node.sif")
@@ -425,30 +356,82 @@ fn a_run_and_an_exec_skip_the_bind_path_that_the_host_does_not_have() {
     );
 }
 
+/// Apptainer binds `/etc/hosts` and `/etc/localtime` into a contained
+/// container whatever its configuration holds, so a contained command skips
+/// the one that the host does not have also with a configuration that names
+/// neither.
 #[test]
-fn a_run_that_forces_the_user_namespace_also_skips_the_absent_bind_path() {
-    let facade = on_a_host_without_localtime(native_facade_forcing_user_namespace());
+fn a_contained_exec_skips_the_bind_of_a_contained_container_that_the_host_does_not_have() {
+    let facade = NativeFacadeFixture {
+        absent_bind_paths: AbsentBindPaths::of_config("mount hostfs = no\n", |source| {
+            source == "/etc/localtime"
+        }),
+        ..NativeFacadeFixture::default()
+    }
+    .build();
 
-    let cmd = facade.run("/images/node.sif");
-    let args = cmd.build_args().expect("build_args should succeed");
+    let contained_args = facade
+        .exec("/images/node.sif", &["true"])
+        .raw_flag("--contain")
+        .build_args()
+        .expect("build_args should succeed");
+    let args = facade
+        .exec("/images/node.sif", &["true"])
+        .build_args()
+        .expect("build_args should succeed");
 
     assert_eq!(
-        args,
+        contained_args,
         [
-            "run",
-            "--userns",
+            "exec",
             "--no-mount",
             "/etc/localtime",
-            "/images/node.sif"
+            "--contain",
+            "/images/node.sif",
+            "true"
         ]
     );
+    assert_eq!(args, ["exec", "/images/node.sif", "true"]);
 }
 
-/// A `bind path` entry whose source is absent does not stop a build, so a
-/// build skips none.
+#[test]
+fn the_flags_that_contain_a_container_are_read_as_apptainer_reads_them() {
+    let flags = |flags: &[&str]| -> Vec<String> { flags.iter().map(ToString::to_string).collect() };
+
+    for contained in [
+        &["--contain"][..],
+        &["--containall"],
+        &["-c"],
+        &["-C"],
+        &["--contain=true"],
+        &["--contain=false", "--contain"],
+        &["--cleanenv", "--containall", "--nv"],
+    ] {
+        assert!(
+            passes_contain(&flags(contained)),
+            "{contained:?} contain the container"
+        );
+    }
+    for not_contained in [
+        &[][..],
+        &["--cleanenv"],
+        &["--contain=false"],
+        &["--contain", "--contain=false"],
+        &["--containers"],
+        &["--cwd", "/"],
+    ] {
+        assert!(
+            !passes_contain(&flags(not_contained)),
+            "{not_contained:?} do not contain the container"
+        );
+    }
+}
+
+/// A bind whose source is absent does not stop a build, so a build skips
+/// none.
 #[test]
 fn a_build_skips_no_bind_path() {
-    let facade = on_a_host_without_localtime(native_facade());
+    let facade = native_facade_on_a_host_without_localtime();
 
     let (output, def) = build_paths_under_home();
     let cmd = facade.build(&output, &def);
@@ -470,6 +453,229 @@ fn a_lima_run_passes_no_userns() {
     let args = cmd.build_args().expect("build_args should succeed");
 
     assert_eq!(args, ["run", "docker://alpine"]);
+}
+
+/// The commands of a daemon that is the real root, which only a Linux host
+/// has: see `root_user_namespace`.
+#[cfg(target_os = "linux")]
+mod of_a_root_daemon {
+    use super::*;
+    use crate::apptainer::facade::SQUASHFS_COMPRESSION;
+    use crate::apptainer::root_user_namespace::fixtures::{
+        FakeHost, PRIVATE_HOME, root_daemon_on_a_kernel_without_zstd, sif_packed_with,
+    };
+    use crate::apptainer::root_user_namespace::{COMPRESSION_OF_BUILT_IMAGES, SquashfsCompression};
+
+    /// [`native_facade`] of a daemon that is the real root on `host`, with a
+    /// kernel that mounts no zstd squashfs.
+    fn facade_of_a_root_daemon(host: FakeHost) -> Apptainer {
+        NativeFacadeFixture {
+            user_namespace: root_daemon_on_a_kernel_without_zstd(host),
+            ..NativeFacadeFixture::default()
+        }
+        .build()
+    }
+
+    /// An image file packed with `compression`, in a scratch directory that
+    /// lives as long as the returned guard.
+    fn image_packed_with(compression: SquashfsCompression) -> (TempDir, String) {
+        let scratch = crate::apptainer::scratch_dir();
+        let image = scratch.path().join("node.sif");
+        fs::write(&image, sif_packed_with(compression)).expect("write the image");
+        let image = image
+            .to_str()
+            .expect("the scratch path is valid UTF-8")
+            .to_string();
+        (scratch, image)
+    }
+
+    /// Whether `error` says that root cannot enter `closed_dir`.
+    fn names_closed_dir(error: &Error, closed_dir: &str) -> bool {
+        matches!(
+            error,
+            Error::ClosedToRootInUserNamespace { closed_dir: named, .. } if named == closed_dir
+        )
+    }
+
+    #[test]
+    fn a_run_of_an_image_that_the_kernel_cannot_mount_passes_userns_before_its_other_flags() {
+        let facade = facade_of_a_root_daemon(FakeHost::default());
+        let (_scratch, image) = image_packed_with(SquashfsCompression::Zstd);
+
+        let cmd = facade.run(&image).raw_flag("--nv").args(&["--port", "1"]);
+        let args = cmd.build_args().expect("build_args should succeed");
+
+        assert_eq!(args, ["run", "--userns", "--nv", &image, "--port", "1"]);
+    }
+
+    #[test]
+    fn an_exec_of_an_image_that_the_kernel_cannot_mount_passes_userns() {
+        let facade = facade_of_a_root_daemon(FakeHost::default());
+        let (_scratch, image) = image_packed_with(SquashfsCompression::Zstd);
+
+        let cmd = facade.exec(&image, &["echo", "hello"]);
+        let args = cmd.build_args().expect("build_args should succeed");
+
+        assert_eq!(args, ["exec", "--userns", &image, "echo", "hello"]);
+    }
+
+    /// The container of such an image keeps the capabilities of the real
+    /// root.
+    #[test]
+    fn a_run_of_an_image_that_the_kernel_mounts_passes_no_userns() {
+        let facade = facade_of_a_root_daemon(FakeHost::default());
+        let (_scratch, image) = image_packed_with(SquashfsCompression::Gzip);
+
+        let cmd = facade.run(&image);
+        let args = cmd.build_args().expect("build_args should succeed");
+
+        assert_eq!(args, ["run", &image]);
+    }
+
+    /// A build mounts no image, so it needs no user namespace for one.
+    #[test]
+    fn a_build_passes_no_userns() {
+        let facade = facade_of_a_root_daemon(FakeHost::default());
+
+        let (output, def) = build_paths_under_home();
+        let cmd = facade.build(&output, &def);
+        let args = cmd.build_args().expect("build_args should succeed");
+
+        assert!(
+            !args.iter().any(|arg| arg == "--userns"),
+            "a build should not ask for a user namespace, got: {args:?}"
+        );
+    }
+
+    #[test]
+    fn a_run_and_an_exec_from_an_installation_out_of_reach_name_the_closed_directory() {
+        let facade = facade_of_a_root_daemon(FakeHost::default().with_dir("/opt", PRIVATE_HOME));
+        let (_scratch, image) = image_packed_with(SquashfsCompression::Zstd);
+
+        let run_error = facade
+            .run(&image)
+            .build_args()
+            .expect_err("a run cannot start its container");
+        let exec_error = facade
+            .exec(&image, &["echo", "hello"])
+            .build_args()
+            .expect_err("an exec cannot start its container");
+
+        for error in [run_error, exec_error] {
+            assert!(
+                names_closed_dir(&error, "/opt"),
+                "the error names the closed directory: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_run_with_a_bind_source_out_of_reach_names_the_closed_directory() {
+        let facade =
+            facade_of_a_root_daemon(FakeHost::default().with_dir("/home/user", PRIVATE_HOME));
+        let (_scratch, image) = image_packed_with(SquashfsCompression::Zstd);
+
+        let error = facade
+            .run(&image)
+            .bind("/srv/data", Some("/data"), None)
+            .bind("/home/user/.peppy/logs", None, Some("ro"))
+            .build_args()
+            .expect_err("a run cannot start its container");
+
+        assert!(
+            names_closed_dir(&error, "/home/user"),
+            "the error names the closed directory: {error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("the bind source /home/user/.peppy/logs"),
+            "the error names the bind source: {error}"
+        );
+    }
+
+    #[test]
+    fn a_run_with_a_working_directory_out_of_reach_names_the_closed_directory() {
+        let facade =
+            facade_of_a_root_daemon(FakeHost::default().with_dir("/home/user", PRIVATE_HOME));
+        let (_scratch, image) = image_packed_with(SquashfsCompression::Zstd);
+
+        let error = facade
+            .run(&image)
+            .working_dir(Path::new("/home/user/.peppy/instances/node"))
+            .build_args()
+            .expect_err("a run cannot start its container");
+
+        assert!(
+            names_closed_dir(&error, "/home/user"),
+            "the error names the closed directory: {error}"
+        );
+    }
+
+    /// An exec that names no working directory runs in the one of the
+    /// daemon.
+    #[test]
+    fn an_exec_from_a_working_directory_of_the_daemon_out_of_reach_is_refused() {
+        let host = FakeHost::default()
+            .with_dir("/home/user", PRIVATE_HOME)
+            .with_current_dir("/home/user");
+        let facade = facade_of_a_root_daemon(host);
+        let (_scratch, image) = image_packed_with(SquashfsCompression::Zstd);
+
+        let error = facade
+            .exec(&image, &["true"])
+            .build_args()
+            .expect_err("an exec cannot start its container");
+
+        assert!(
+            names_closed_dir(&error, "/home/user"),
+            "the error names the closed directory: {error}"
+        );
+    }
+
+    /// A build uses no user namespace, so it works where no container of
+    /// its image can start.
+    #[test]
+    fn a_build_from_an_installation_out_of_reach_is_assembled() {
+        let facade = facade_of_a_root_daemon(FakeHost::default().with_dir("/opt", PRIVATE_HOME));
+
+        let (output, def) = build_paths_under_home();
+        let cmd = facade.build(&output, &def);
+        let args = cmd.build_args().expect("build_args should succeed");
+
+        assert_eq!(args.first().map(String::as_str), Some("build"));
+    }
+
+    #[test]
+    fn a_run_that_forces_the_user_namespace_also_skips_the_absent_bind_path() {
+        let facade = NativeFacadeFixture {
+            user_namespace: root_daemon_on_a_kernel_without_zstd(FakeHost::default()),
+            absent_bind_paths: binds_of_a_host_without_localtime(),
+            ..NativeFacadeFixture::default()
+        }
+        .build();
+        let (_scratch, image) = image_packed_with(SquashfsCompression::Zstd);
+
+        let cmd = facade.run(&image);
+        let args = cmd.build_args().expect("build_args should succeed");
+
+        assert_eq!(
+            args,
+            ["run", "--userns", "--no-mount", "/etc/localtime", &image]
+        );
+    }
+
+    /// The daemon tells its operator about the images that peppy builds, so
+    /// it names the compression that a build packs them with.
+    #[test]
+    fn a_build_packs_with_the_compression_that_the_daemon_names_for_built_images() {
+        assert!(
+            SQUASHFS_COMPRESSION
+                .starts_with(&format!("-comp {} ", COMPRESSION_OF_BUILT_IMAGES.name())),
+            "{SQUASHFS_COMPRESSION} packs with {}",
+            COMPRESSION_OF_BUILT_IMAGES.name()
+        );
+    }
 }
 
 /// A node's own `--mksquashfs-args`, passed as a raw flag, comes after the
