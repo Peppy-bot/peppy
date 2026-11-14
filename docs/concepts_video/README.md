@@ -23,7 +23,7 @@ It writes these files into `build/`:
 
 | File | Use |
 |---|---|
-| `concepts_video.mp4` | The video. Upload it to YouTube |
+| `concepts_video.mp4` | The video, with 3840 x 2160 pixels and 60 frames in one second. Upload it to YouTube |
 | `concepts_video.en.srt` | The captions. Upload them with the video |
 | `concepts_video.chapters.txt` | One chapter for each segment. Paste it into the description of the video on YouTube, which makes the chapters from it |
 
@@ -32,6 +32,10 @@ Two builds of the same commit on the same machine give the same MP4 file, byte f
 YouTube gives each upload a new link. After an upload, put the id of the new link in the `YouTubeEmbed` of `docs/src/content/docs/quickstart.mdx`.
 
 `pixi run build <part id>` builds the video of one part only, into `build/<part id>.mp4`. A part is one segment, or `splash`: the splash screen with the first segment after it. The video of a segment has no splash screen.
+
+The page of the video has 1920 x 1080 pixels, and its timeline has 30 frames in one second. The build renders two pixels across each pixel of the page and two frames for each frame of the timeline. The render of the full video takes about 56 minutes on a machine with 16 processors.
+
+To look at a change sooner, `pixi run build --preview` renders a preview: a file with the pixels of the page and the frames of the timeline, which is ready in about 13 minutes. It writes `build/concepts_video.preview.mp4`, and `pixi run build <part id> --preview` writes `build/<part id>.preview.mp4`. A preview has the sound of the video.
 
 ## The files
 
@@ -97,6 +101,7 @@ The parts of `_parts.html.j2` give the header, the map of the acts, the problem 
 - The light is a studio of wide soft lamps (`LAMPS`), with no lamp that makes a hard shadow, so the dark robot is clear on the dark page.
 - With `grid`, the robot is on a floor: a disc that shows the grid of a simulation, or is plain.
 - `pointOnPage` gives the place on the page of a point of the robot, for a label or a wire.
+- The picture of a view has the pixels of the render, so the robot is as sharp as the page around it in the video and in a preview.
 
 All the views of the video share one WebGL context, and a view draws during its segment only.
 
@@ -122,6 +127,7 @@ A chapter keeps its words in the rail, on the right of its diagram, in the same 
 - A frame is a function of the time of the timeline only: no clock, and no random value without a seed. Place each tween at a time from `at`.
 - An element comes in with `Motion.show` or `gsap.fromTo`, so it is not visible before its time.
 - The smallest text is 28 px, and each part stays 96 px or more from the left and right sides of the frame and 54 px or more from its top and bottom.
+- A size is in pixels of the page, which has 1920 x 1080 pixels. The video has two pixels across each pixel of the page: a canvas draws with `window.devicePixelRatio` pixels across each pixel of the page, and a picture file has two pixels or more across each pixel of the size that the page shows it at.
 - A part that is in a box gets its place from the layout of CSS: a grid or a flex box with a padding. Thus the space on each side of the part comes from one value.
 - A wire gets its shape from `Motion.connect`, which reads the place of the two parts that it joins. Thus a wire always ends at its parts.
 
@@ -181,7 +187,7 @@ The root composition plays the music at a level that changes with the time (`too
 - Before the first sentence, the music goes 14 dB down. It stays at this level below the voice.
 - After the last sentence, the music goes out until the end of the video.
 
-To change the music, change the chords, the phrases or the levels in `tools/music.py`, run `pixi run build splash`, and listen to `build/splash.mp4`.
+To change the music, change the chords, the phrases or the levels in `tools/music.py`, run `pixi run build splash --preview`, and listen to `build/splash.preview.mp4`.
 
 ## The footage
 

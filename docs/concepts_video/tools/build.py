@@ -8,6 +8,10 @@ file, and writes the captions and the chapters. It writes each output into
 `pixi run build <part id>` builds the video of one part only, into
 `build/<part id>.mp4`. A part is one segment, or `splash`: the splash screen
 with the first segment after it.
+
+With `--preview`, the build renders a preview: a file with fewer pixels and
+fewer frames, which is ready much sooner. It writes the preview beside the
+video, into `build/<name>.preview.mp4`.
 """
 
 import argparse
@@ -29,10 +33,18 @@ from tools.voice_durations import RecordedDuration, read_voice_durations, write_
 # of the project, which runs on the compiled project before the render, also
 # stops on each warning that is a fault of a composition.
 RENDER_OPTIONS = ["--quality", "delivery", "--no-browser-gpu", "--workers", "4", "--strict"]
+# The video has 3840 x 2160 pixels and 60 frames in one second. The page of
+# the video has 1920 x 1080 pixels, so Chrome draws two pixels across each
+# pixel of the page. The timeline has 30 frames in one second, so each frame
+# of the timeline is two frames of the video.
+VIDEO_FRAMES_PER_SECOND = 60
+VIDEO_FORMAT = ["--resolution", "landscape-4k", "--fps", str(VIDEO_FRAMES_PER_SECOND)]
+# A preview has the pixels of the page and the frames of the timeline.
+PREVIEW_FORMAT = ["--resolution", "landscape", "--fps", str(FRAMES_PER_SECOND)]
 
 
 def main() -> None:
-    arguments = _parse_arguments()
+    arguments = parse_arguments()
     transcript, pinned, footage_list = project.read_project()
     part = None if arguments.part is None else project.part_of(transcript, arguments.part)
 
@@ -49,19 +61,36 @@ def main() -> None:
         write_voice_durations(paths.VOICE_DURATIONS, record)
         print(f"The voice changed: {paths.VOICE_DURATIONS.name} has the new durations. Commit it.")
 
+    output = video_file(arguments.part, arguments.preview)
+    render_format = PREVIEW_FORMAT if arguments.preview else VIDEO_FORMAT
     if part is not None:
-        _compile_and_render(part, record, voices, footage_list, chrome, paths.BUILD / f"{arguments.part}.mp4")
+        _compile_and_render(part, record, voices, footage_list, chrome, output, render_format)
         return
-    timeline = _compile_and_render(transcript, record, voices, footage_list, chrome, paths.VIDEO)
+    timeline = _compile_and_render(transcript, record, voices, footage_list, chrome, output, render_format)
     paths.CAPTIONS.write_text(captions.subrip_captions(transcript, timeline), encoding="utf-8")
     paths.CHAPTERS.write_text(captions.youtube_chapters(transcript, timeline), encoding="utf-8")
-    _report(transcript, timeline)
+    _report(transcript, timeline, output)
 
 
-def _parse_arguments() -> argparse.Namespace:
+def parse_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
+    """The arguments of the command. With no list, they are the arguments of the process."""
     parser = argparse.ArgumentParser(description="Build the concepts video.")
     parser.add_argument("part", nargs="?", help="build the video of this part only: the id of a segment, or `splash`")
-    return parser.parse_args()
+    parser.add_argument(
+        "--preview",
+        action="store_true",
+        help="render a preview with 1920 x 1080 pixels and 30 frames in one second, into `build/<name>.preview.mp4`",
+    )
+    return parser.parse_args(arguments)
+
+
+def video_file(part_id: str | None, is_preview: bool) -> Path:
+    """The file that the build writes: the video or the video of one part, or the preview of it.
+
+    A preview has a name of its own, so it never replaces a video.
+    """
+    name = paths.VIDEO.stem if part_id is None else part_id
+    return paths.BUILD / (f"{name}.preview.mp4" if is_preview else f"{name}.mp4")
 
 
 def _install_node_packages() -> None:
@@ -76,20 +105,21 @@ def _compile_and_render(
     footage_list: tuple[footage.FootageFile, ...],
     chrome: Path,
     output: Path,
+    render_format: list[str],
 ) -> Timeline:
-    """Compile the video of `transcript` into one project, and render it into `output`."""
+    """Compile the video of `transcript` into one project, and render it into `output` in `render_format`."""
     timeline = project.compile_with_media(transcript, record, voices, footage_list, paths.COMPILED_PROJECT)
     hyperframes.run(
-        ["render", str(paths.COMPILED_PROJECT), *RENDER_OPTIONS, "--output", str(output)],
+        ["render", str(paths.COMPILED_PROJECT), *RENDER_OPTIONS, *render_format, "--output", str(output)],
         extra_environment={"PRODUCER_HEADLESS_SHELL_PATH": str(chrome)},
     )
     return timeline
 
 
-def _report(transcript: Transcript, timeline: Timeline) -> None:
+def _report(transcript: Transcript, timeline: Timeline, output: Path) -> None:
     minutes, seconds = divmod(timeline.frames // FRAMES_PER_SECOND, 60)
     print(f"The video is {minutes} min {seconds} s long, in {len(transcript.segments)} chapters.")
-    print(f"Video:    {paths.VIDEO}")
+    print(f"Video:    {output}")
     print(f"Captions: {paths.CAPTIONS}")
     print(f"Chapters: {paths.CHAPTERS}")
 

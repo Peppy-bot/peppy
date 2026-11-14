@@ -33,6 +33,10 @@ const FIELD_OF_VIEW = 16;
 const FILL = 0.94;
 /* The view reads the size of the robot at angles this far apart, in degrees. */
 const ANGLE_STEP = 2;
+/* The pixels that the render draws across one pixel of the page. A render
+   at a larger size than the page draws more than one, and the picture of a
+   view has that many pixels, so the robot is as sharp as the page around it. */
+const PIXEL_DENSITY = window.devicePixelRatio;
 
 /* The points of the robot that a composition can name, in meters, in the
    frame of the model: x to the front of the robot, y up, z to its right. */
@@ -75,7 +79,7 @@ const FLOOR_RADIUS = 0.32;
 const FLOOR_RIM_POINTS = 96;
 /* The floor in the video: the colour of the grid of a simulation is the
    colour of data, and the colour of a plain floor is the colour of a line.
-   The grid has squares of `CELL` meters, and a width is in pixels. */
+   The grid has squares of `CELL` meters, and a width is in pixels of the page. */
 const FLOOR_LOOK = `
   const vec3 GRID_COLOUR = vec3(0.373, 0.831, 0.941);
   const vec3 PLAIN_COLOUR = vec3(0.58, 0.667, 0.863);
@@ -126,7 +130,7 @@ function makeFloor(height) {
   const material = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
-    uniforms: { grid: { value: 0 } },
+    uniforms: { grid: { value: 0 }, density: { value: PIXEL_DENSITY } },
     vertexShader: `
       varying vec2 place;
       void main() {
@@ -136,14 +140,15 @@ function makeFloor(height) {
     `,
     fragmentShader: `
       uniform float grid;
+      uniform float density;
       varying vec2 place;
       ${FLOOR_LOOK}
       void main() {
-        // How far the nearest line of the grid and the rim of the floor are, in pixels.
+        // How far the nearest line of the grid and the rim of the floor are, in pixels of the page.
         vec2 cell = place / CELL;
-        vec2 toLine = abs(fract(cell - 0.5) - 0.5) / fwidth(cell);
+        vec2 toLine = abs(fract(cell - 0.5) - 0.5) / (fwidth(cell) * density);
         float fromCenter = length(place);
-        float toRim = (${FLOOR_RADIUS.toFixed(3)} - fromCenter) / fwidth(fromCenter);
+        float toRim = (${FLOOR_RADIUS.toFixed(3)} - fromCenter) / (fwidth(fromCenter) * density);
         float line = (1.0 - smoothstep(0.0, LINE_WIDTH, min(toLine.x, toLine.y))) * 0.5 * grid;
         float rim = (1.0 - smoothstep(0.0, RIM_WIDTH, toRim)) * mix(0.55, 0.9, grid);
         float fill = mix(0.1, 0.07, grid);
@@ -256,8 +261,9 @@ function lightFrom(direction, lamps) {
   return light;
 }
 
-/* Give the picture of the stage the size of a view. The stage keeps its
-   size from one frame to the next of the same view. */
+/* Give the picture of the stage the size of the picture of a view, in
+   pixels of the render. The stage keeps its size from one frame to the next
+   of the same view. */
 function resizeStage(stage, width, height) {
   const size = stage.renderer.getSize(new THREE.Vector2());
   if (size.x === width && size.y === height) return;
@@ -362,10 +368,11 @@ function cornerOnPage(element) {
    robot at an angle of the turntable, which is valid when `ready` is. */
 function mount(options) {
   const canvas = options.canvas;
+  // The size of the view on the page, then the size of its picture.
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
-  canvas.width = width;
-  canvas.height = height;
+  canvas.width = Math.round(width * PIXEL_DENSITY);
+  canvas.height = Math.round(height * PIXEL_DENSITY);
   const picture = canvas.getContext("2d");
   const camera = new THREE.PerspectiveCamera(FIELD_OF_VIEW, width / height, 0.1, 50);
   const hasFloor = options.grid !== undefined;
@@ -403,9 +410,9 @@ function mount(options) {
     stage.floor.visible = hasFloor;
     if (hasFloor) stage.floor.material.uniforms.grid.value = valueAt(options.grid, time);
     aim(angle);
-    resizeStage(stage, width, height);
+    resizeStage(stage, canvas.width, canvas.height);
     stage.renderer.render(stage.scene, camera);
-    picture.clearRect(0, 0, width, height);
+    picture.clearRect(0, 0, canvas.width, canvas.height);
     picture.drawImage(stage.renderer.domElement, 0, 0);
   }
 
