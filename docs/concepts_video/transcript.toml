@@ -200,7 +200,7 @@ sha256 = "ebc9026501d87010c99b732aef5cfa906138d2b1d1b21cb968509ad401333b06"
 [[segment.voice]]
 id = "act"
 text = "Part one: one node."
-pause_after_seconds = 1.0
+pause_after_seconds = 2.0
 
 [[segment.voice]]
 id = "problem"
@@ -649,7 +649,7 @@ sha256 = "5e9ea01e50594fa6fa4d45f60acf8626bffe0f346cf32987c5911dbc8fa67f6e"
 [[segment.voice]]
 id = "act"
 text = "Part two: the stack."
-pause_after_seconds = 1.0
+pause_after_seconds = 2.0
 
 [[segment.voice]]
 id = "problem"
@@ -670,6 +670,7 @@ text = "An instance is one node in operation, and one node can have many."
 [[segment.voice]]
 id = "restart"
 text = "If an instance fails, the daemon starts it again."
+pause_after_seconds = 1.0
 
 [[segment.voice]]
 id = "one_graph"
@@ -895,6 +896,7 @@ text = "Peppy finds nodes, launchers, and contracts by name in repositories."
 [[segment.voice]]
 id = "nothing_to_clone"
 text = "Thus you have no repository to clone and no workspace to build."
+pause_after_seconds = 2.8
 
 [[segment.voice]]
 id = "two_steps"
@@ -970,7 +972,7 @@ sha256 = "8df1056c30abe4248e727c5828dae796255ba7887a5f2162484ea8272f5d574a"
 [[segment.voice]]
 id = "act"
 text = "Part three: the real world."
-pause_after_seconds = 1.0
+pause_after_seconds = 2.0
 
 [[segment.voice]]
 id = "problem"

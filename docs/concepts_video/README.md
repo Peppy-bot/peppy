@@ -71,7 +71,7 @@ A text between two backticks is a technical name: a command, a flag, a file name
 - A sentence of the voice has more than 25 words, which is the limit that ASD-STE100 gives for a descriptive sentence.
 - `voice_durations.json` does not agree with the sentences of the transcript.
 - A composition shows a text that is not in the transcript, does not show a text of its segment or of the splash screen, or names a footage file that is not in `footage.json`.
-- The video is longer than 10 minutes.
+- The video is longer than 10 minutes and 5 seconds.
 
 The test compares text, counts and hashes only. It calls no model.
 
@@ -116,6 +116,8 @@ A chapter keeps its words in the rail, on the right of its diagram, in the same 
 - One visual language in all segments: a node is a box with its interfaces, the stack is a graph that grows, a contract is a socket that several nodes fit, and a machine is a frame around a part of the graph. A term card and a comparison with ROS 2 have two different looks.
 - One layout in all segments: the header at the top, the diagram in the zone on the left (`.zone`), and the rail on the right. A scene with no rail has the full width (`.zone.is-full`).
 - One term card shows at a time, and it stays long enough to read.
+- A part that comes in stays at rest for 1.5 seconds or more before it goes out, and a text stays for the time that the viewer needs to read it.
+- A part comes in at a place only when the part that was there is gone. `Motion.swap` changes what a place shows, for example at a change of scene.
 - The id of each element starts with the id of the segment, because HyperFrames puts all the compositions on one page.
 - A frame is a function of the time of the timeline only: no clock, and no random value without a seed. Place each tween at a time from `at`.
 - An element comes in with `Motion.show` or `gsap.fromTo`, so it is not visible before its time.
@@ -138,6 +140,20 @@ The command opens each composition, or the one that it names, in the pinned Chro
 - The drawing of a canvas is not in the middle of the canvas, or goes to one of its sides.
 
 In a composition, `data-layout="free"` takes a part out of the check: a decoration, or a message that moves on a wire. `data-layout="over"` says that a part is over other parts on purpose: a tab on a border, a mark on an arrow, a label of a picture. Run the command after each change of a composition, then look at the pictures of the next section: the check reads no wire, and it reads the place of a drawing but not its look.
+
+### The motion check
+
+```sh
+pixi run motion [segment id]
+```
+
+The command opens each composition, or the one that it names, in the pinned Chrome. At each frame of the segment, it reads how much each box and each text shows, and its place. It reads the parts that the layout check reads, but for the canvases. It fails when it finds one of these faults (`tools/motion_rules.py`):
+
+- A part comes in and goes out again before the viewer can see it: it is at rest for less than 1.5 seconds. A part is at rest in a frame when it shows and is the same in the next frame.
+- A text goes out before the viewer can read it: it is at rest for less than 0.28 seconds for each of its words, which is the pace of the voice.
+- Two parts overlap while the two show, at rest or in motion, as a scene that comes in over the scene before it.
+
+Run the command after each change of a composition and after each change of the voice, because the times of a composition come from the voice. The check does not read the speed of a part: look at the video of the segment for that.
 
 ### The pictures of a composition
 
@@ -188,7 +204,7 @@ The build gets each tool that changes the result at a pinned version, from its s
 | Tool | Pinned in |
 |---|---|
 | Node.js, FFmpeg, Python, and the Python packages that make the voice and the music | `pixi.toml` and `pixi.lock` |
-| HyperFrames, GSAP, three.js, esbuild, and Puppeteer for the layout check | `package.json` and `package-lock.json` |
+| HyperFrames, GSAP, three.js, esbuild, and Puppeteer for the layout check and the motion check | `package.json` and `package-lock.json` |
 | The Chrome that renders | `pins.toml`. HyperFrames gets the Chrome of its version, and the build refuses another one |
 | Kokoro-82M, the model of the voice | `pins.toml`, with the SHA-256 of each file |
 | The 3D model of the OpenArm v2: the turntable model of the Waldo catalogue | `pins.toml`, with its SHA-256 |
@@ -201,4 +217,4 @@ A new build gives the same video until a person changes a version. To change one
 
 ## The checks of CI
 
-CI does not build the video. The job `concepts-video` of the workflow `Tests` runs `pixi run test` and `pixi run lint`, with no voice model, no Chrome and no footage. The tests calculate some music, which needs no file and no model. The layout check needs Chrome and the voice, so a person runs it.
+CI does not build the video. The job `concepts-video` of the workflow `Tests` runs `pixi run test` and `pixi run lint`, with no voice model, no Chrome and no footage. The tests calculate some music, which needs no file and no model. The layout check and the motion check need Chrome and the voice, so a person runs them.

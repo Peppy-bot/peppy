@@ -245,7 +245,7 @@
       // important. What the viewer gets comes after it.
       Motion.chapter(tl, ID, {
         duration: DURATION,
-        problem: [0.3, at.regular_project.start - 0.2],
+        problem: [0.3, at.regular_project.start + 0.1],
         concept: at.standalone.start - 0.3,
         terms: [
           ["standalone", at.standalone.start + 0.2, testStart],
@@ -257,8 +257,8 @@
 
       // A node is a regular project: the side of Peppy comes in with the
       // voice, one line for each task.
-      Motion.showBetween(tl, ID + "-tools", at.regular_project.start - 0.3, at.standalone.start - 0.2);
-      Motion.show(tl, ID + "-head-peppy", at.regular_project.start + 0.2, Motion.appears);
+      Motion.showBetween(tl, ID + "-tools", at.regular_project.start + 0.1, at.standalone.start - 0.3);
+      Motion.show(tl, ID + "-head-peppy", at.regular_project.start + 0.3, Motion.appears);
       Motion.show(tl, ID + "-peppy-1", Motion.within(at.regular_project, 0.6), Motion.fromSide);
       [0.08, 0.24, 0.4].forEach((share, index) => Motion.show(tl, ID + "-peppy-" + (index + 2), Motion.within(at.your_tools, share), Motion.fromSide));
       Motion.show(tl, ID + "-other", at.your_tools.end, Motion.appears);

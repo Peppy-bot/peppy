@@ -1,7 +1,5 @@
 """The command that checks the layout of the compositions."""
 
-import pytest
-
 from tools import layout
 from tools.layout_rules import BOX, Part
 from tools.timing import SegmentSlot, SentenceSlot
@@ -16,14 +14,6 @@ def test_the_check_samples_each_sentence_at_its_middle_at_its_end_and_at_the_end
     )
 
     assert layout.sample_times(slot) == [2.0, 2.95, 3.95, 6.0, 7.95, 9.4]
-
-
-def test_the_page_of_the_check_holds_what_the_template_of_the_composition_holds() -> None:
-    composition = "<template>\n  <style>#root {}</style>\n  <div id=\"root\"></div>\n</template>\n"
-
-    assert layout.composition_content(composition).split() == ["<style>#root", "{}</style>", "<div", 'id="root"></div>']
-    with pytest.raises(ValueError, match="has no template element"):
-        layout.composition_content("<div></div>")
 
 
 def test_a_fault_has_the_time_of_each_frame_that_has_it() -> None:

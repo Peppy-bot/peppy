@@ -373,11 +373,13 @@
       KEYS.forEach((key, index) => Motion.draw(tl, part("enrolls", key), at.enroll.start + 0.6 + index * 0.4, 0.7));
       // The machines of the project can reach each other: a message goes
       // from one machine to the other through the project, then back.
-      const LEG_SECONDS = 0.45;
-      const reaches = Motion.within(at.enroll, 0.52);
+      const LEG_SECONDS = 0.65;
+      const reaches = Motion.within(at.enroll, 0.5);
       [part("enrolls", "robot"), part("from-project", "cloud"), part("enrolls", "cloud"), part("from-project", "robot")].forEach(function (leg, index) {
         Motion.follow(tl, ID + "-signal", leg, reaches + index * LEG_SECONDS, LEG_SECONDS, 1);
       });
+      // The project passes each message on.
+      [1, 3].forEach((legs) => Motion.pulse(tl, ID + "-project", reaches + legs * LEG_SECONDS - 0.1));
 
       // The launch command gives each link the name of a core node.
       Motion.show(tl, ID + "-place", at.place.start + 0.2);

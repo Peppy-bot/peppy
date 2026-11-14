@@ -200,7 +200,18 @@ def _nearer_to_one_side(parts: list[Part], containers: dict[int, int]) -> list[s
 
 def _overlaps(parts: list[Part]) -> list[str]:
     """The pairs of parts that overlap, when no part of the pair is in the other."""
-    faults: list[str] = []
+    return [
+        f"{first.name} and {second.name} overlap by {width:.0f} px by {height:.0f} px"
+        for first, second, width, height in overlapping_pairs(parts)
+    ]
+
+
+def overlapping_pairs(parts: list[Part]) -> list[tuple[Part, Part, float, float]]:
+    """Each pair of parts that overlap, with the width and the height of the area that the two share.
+
+    A part that is over other parts on purpose overlaps no part, and a part overlaps no part that it is in.
+    """
+    pairs: list[tuple[Part, Part, float, float]] = []
     for index, first in enumerate(parts):
         for second in parts[index + 1 :]:
             if first.is_over or second.is_over:
@@ -212,8 +223,8 @@ def _overlaps(parts: list[Part]) -> list[str]:
             width = min(first.right, second.right) - max(first.left, second.left)
             height = min(first.bottom, second.bottom) - max(first.top, second.top)
             if width > 1.0 and height > 1.0:
-                faults.append(f"{first.name} and {second.name} overlap by {width:.0f} px by {height:.0f} px")
-    return faults
+                pairs.append((first, second, width, height))
+    return pairs
 
 
 def _drawings_off_the_middle(parts: list[Part]) -> list[str]:

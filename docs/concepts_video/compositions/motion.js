@@ -59,6 +59,13 @@ window.Motion = (function () {
     hide(timeline, target, end);
   }
 
+  /* Put `to` at the place of `from`: `from` is gone at `at`, and `to` comes
+     in from `at`, so the two never show together. */
+  function swap(timeline, from, to, at, options) {
+    hide(timeline, from, at);
+    show(timeline, to, at, options);
+  }
+
   /* Draw an SVG path that has `pathLength="1"`, from its start to its end. */
   function draw(timeline, target, at, duration) {
     timeline.fromTo(
@@ -304,8 +311,9 @@ window.Motion = (function () {
      `plan.map` is `[start, end]` of the scene that opens an act, with the
      map of the video, in a chapter that opens an act.
      `plan.problem` is `[start, end]` of the problem scene. The concept scene
-     comes in at its end, or at `plan.concept` in a chapter that has another
-     scene between the two. `plan.terms` holds the entries of `terms`.
+     comes in at its end, when the problem scene is gone, or at `plan.concept`
+     in a chapter that has another scene between the two. `plan.terms` holds
+     the entries of `terms`.
      `plan.benefit` is the time of what the viewer gets, and `plan.ros2` the
      time of the note about ROS 2, in a chapter that has one. */
   function chapter(timeline, id, plan) {
@@ -315,7 +323,7 @@ window.Motion = (function () {
     if (plan.map) {
       showBetween(timeline, `${id}-act`, plan.map[0], plan.map[1], appears);
       show(timeline, `${id}-act .act-heading`, plan.map[0], fromSide);
-      show(timeline, `${id}-act .map-act`, plan.map[0] + 0.2, { stagger: 0.12 });
+      show(timeline, `${id}-act .map-act`, plan.map[0] + 0.1, { stagger: 0.12 });
       pulse(timeline, `${id}-act .map-act.is-current`, plan.map[0] + 1.1);
     }
 
@@ -326,8 +334,8 @@ window.Motion = (function () {
     show(timeline, `${id}-problem .problem-number`, problemStart, { from: { opacity: 0, y: 60 }, duration: 0.9 });
 
     const conceptStart = plan.concept === undefined ? problemEnd : plan.concept;
-    show(timeline, `${id}-concept`, conceptStart - 0.1, appears);
-    show(timeline, `${id}-rail-problem`, conceptStart + 0.1, fromRight);
+    show(timeline, `${id}-concept`, conceptStart, appears);
+    show(timeline, `${id}-rail-problem`, conceptStart + 0.2, fromRight);
     terms(timeline, id, plan.terms || []);
 
     if (plan.benefit !== undefined) {
@@ -351,6 +359,7 @@ window.Motion = (function () {
     showHead,
     hide,
     showBetween,
+    swap,
     draw,
     drawArrow,
     fade,

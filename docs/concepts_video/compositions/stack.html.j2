@@ -203,13 +203,15 @@
         tl.to(ID + "-needs-" + name + "-head", { fill: value, duration: 0.3 }, time);
       };
 
+      // The box of the camera stays until the viewer sees that its instance runs again.
+      const graphTime = at.one_graph.start + 1.05;
       Motion.chapter(tl, ID, {
         duration: DURATION,
         map: [0.2, at.problem.start - 0.3],
         problem: [at.problem.start - 0.2, at.daemon.start - 0.2],
         terms: [
           ["daemon", at.daemon.start + 0.4, at.instance.start + 0.1],
-          ["instance", at.instance.start + 0.3, at.one_graph.start + 0.3],
+          ["instance", at.instance.start + 0.3, graphTime],
           ["no_cycle", at.no_cycle.start + 0.2, at.early.start - 0.1],
         ],
         benefit: at.early.start,
@@ -245,8 +247,8 @@
       [1, 2].forEach((number) => Motion.pulse(tl, ID + "-instance-" + number, Motion.within(at.instance, 0.5) + number * 0.4));
 
       // An instance fails, and the daemon starts it again.
-      const failTime = at.restart.start + 0.6;
-      const againTime = Motion.within(at.restart, 0.75);
+      const failTime = at.restart.start + 0.2;
+      const againTime = Motion.within(at.restart, 0.88);
       Motion.hide(tl, ID + "-running-2", failTime);
       Motion.showBetween(tl, ID + "-failed", failTime, againTime, Motion.appears);
       Motion.paint(tl, ID + "-instance-2", { borderColor: FAULT }, failTime);
@@ -257,27 +259,25 @@
 
       // The node stack: the box of the camera becomes one node of the graph,
       // then the other nodes and the dependencies come in.
-      const graphTime = at.one_graph.start;
-      Motion.hide(tl, [ID + "-holder", ID + "-root-holder"], graphTime + 0.35);
-      Motion.show(tl, ID + "-camera", graphTime + 0.2, Motion.appears);
-      Motion.draw(tl, ID + "-root-camera", graphTime + 0.4, 0.4);
-      Motion.show(tl, ID + "-arm", graphTime + 0.8);
-      Motion.draw(tl, ID + "-root-arm", graphTime + 1.0, 0.4);
-      Motion.show(tl, ID + "-brain", graphTime + 1.3);
-      ["camera", "arm"].forEach((name, index) => Motion.drawArrow(tl, ID + "-needs-" + name, Motion.within(at.one_graph, 0.4) + index * 0.3, 0.6));
-      Motion.paint(tl, ID + "-frame", { borderColor: Motion.colour("line-strong"), backgroundColor: "rgba(14, 22, 38, 0.55)" }, Motion.within(at.one_graph, 0.7));
-      Motion.show(tl, ID + "-stack-name", Motion.within(at.one_graph, 0.75));
+      Motion.swap(tl, [ID + "-holder", ID + "-root-holder"], ID + "-camera", graphTime, Motion.appears);
+      Motion.draw(tl, ID + "-root-camera", graphTime + 0.2, 0.4);
+      Motion.show(tl, ID + "-arm", graphTime + 0.5);
+      Motion.draw(tl, ID + "-root-arm", graphTime + 0.7, 0.4);
+      Motion.show(tl, ID + "-brain", graphTime + 0.9);
+      ["camera", "arm"].forEach((name, index) => Motion.drawArrow(tl, ID + "-needs-" + name, Motion.within(at.one_graph, 0.5) + index * 0.3, 0.6));
+      Motion.paint(tl, ID + "-frame", { borderColor: Motion.colour("line-strong"), backgroundColor: "rgba(14, 22, 38, 0.55)" }, Motion.within(at.one_graph, 0.75));
+      Motion.show(tl, ID + "-stack-name", Motion.within(at.one_graph, 0.8));
 
       // No cycle: an arrow back from the camera to the brain is not possible.
       // Thus the brain starts after the camera and the arm.
-      Motion.drawArrow(tl, ID + "-cycle", at.no_cycle.start + 0.3, 0.4);
-      Motion.show(tl, ID + "-cycle-refused", at.no_cycle.start + 0.8, grows);
-      Motion.hide(tl, [ID + "-cycle", ID + "-cycle-head", ID + "-cycle-refused"], Motion.within(at.no_cycle, 0.42));
-      [["camera", 0.5], ["arm", 0.62], ["brain", 0.8]].forEach(([name, share]) => Motion.pulse(tl, ID + "-" + name, Motion.within(at.no_cycle, share)));
+      Motion.drawArrow(tl, ID + "-cycle", at.no_cycle.start + 0.2, 0.4);
+      Motion.show(tl, ID + "-cycle-refused", at.no_cycle.start + 0.7, grows);
+      Motion.hide(tl, [ID + "-cycle", ID + "-cycle-head", ID + "-cycle-refused"], Motion.within(at.no_cycle, 0.66));
+      [["camera", 0.7], ["arm", 0.8], ["brain", 0.93]].forEach(([name, share]) => Motion.pulse(tl, ID + "-" + name, Motion.within(at.no_cycle, share)));
 
       // The stack makes sure of the interfaces of each dependency. A wrong
       // connection shows when the node is added.
-      Motion.pulse(tl, ID + "-brain", at.check.start + 0.2);
+      Motion.pulse(tl, ID + "-brain", at.check.start + 0.5);
       const checkTime = Motion.within(at.check, 0.42);
       colour("camera", OK, checkTime);
       Motion.show(tl, ID + "-camera-ok", checkTime, grows);

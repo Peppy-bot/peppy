@@ -207,7 +207,7 @@
           ["launcher", at.launcher.start + 0.4, at.by_name.start + 0.1],
           ["repository", at.by_name.start + 0.3, at.nothing_to_clone.start + 0.3],
         ],
-        benefit: at.nothing_to_clone.start + 0.2,
+        benefit: at.nothing_to_clone.start + 0.3,
       });
 
       // A launcher is one file that describes the full stack.
@@ -231,13 +231,14 @@
       Motion.show(tl, ID + "-store .pill", Motion.within(at.by_name, 0.25), { from: { opacity: 0, scale: 0.6, y: 0 }, stagger: 0.45 });
       Motion.drawArrow(tl, ID + "-finds", Motion.within(at.by_name, 0.7), 0.5);
 
-      // Thus a developer has no repository to clone and no workspace to build.
-      [0.35, 0.7, 1.05].forEach((share, index) => Motion.show(tl, ID + "-free-" + (index + 1), Motion.within(at.nothing_to_clone, share), Motion.fromSide));
+      // Thus a developer has no repository to clone and no workspace to build:
+      // one line comes in with each of the two, and a third line after them.
+      // The three lines stay during the silence after the sentence.
+      [0.2, 0.58, 1.03].forEach((share, index) => Motion.show(tl, ID + "-free-" + (index + 1), Motion.within(at.nothing_to_clone, share), Motion.fromSide));
 
       // The first run of a stack: the two steps of Peppy come in with the
       // voice, then the seven steps of ROS 2.
-      Motion.hide(tl, ID + "-concept", stepsTime + 0.2);
-      Motion.show(tl, ID + "-steps", stepsTime);
+      Motion.swap(tl, ID + "-concept", ID + "-steps", stepsTime);
       [0.55, 0.85].forEach((share, index) => Motion.show(tl, ID + "-steps-peppy-" + (index + 1), Motion.within(at.two_steps, share), Motion.fromSide));
       {{ range(1, screen.comparisons.first_run.ros2 | length + 1) | list | tojson }}.forEach(function (step) {
         Motion.show(tl, ID + "-steps-ros2-" + step, at.seven_steps.start + step * 0.4, Motion.fromSide);

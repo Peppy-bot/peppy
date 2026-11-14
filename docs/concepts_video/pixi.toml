@@ -43,3 +43,6 @@ lint = "python -m tools.lint"
 snapshot = "python -m tools.snapshot"
 # The check of the place of each part of the compositions, in the pinned Chrome.
 layout = "python -m tools.layout"
+# The check of the time that each part of the compositions stays on the
+# screen, and of the changes of scene, in the pinned Chrome.
+motion = "python -m tools.motion"

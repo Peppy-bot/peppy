@@ -244,9 +244,10 @@
       Motion.show(tl, ID + "-command", at.select.start + 0.1);
       const selects = Motion.within(at.select, 0.3);
       const command = Motion.boxOf(ID + "-command");
-      Motion.travel(tl, ID + "-word", { x: command.right - 110, y: command.top }, { x: first.x + ALONE_SHIFT, y: first.bottom }, selects, 0.5, 1);
-      Motion.paint(tl, axis(1, "option-1"), LIT, selects + 0.5);
-      Motion.pulse(tl, axis(1, "option-1"), selects + 0.5);
+      const WORD_SECONDS = 0.9;
+      Motion.travel(tl, ID + "-word", { x: command.right - 110, y: command.top }, { x: first.x + ALONE_SHIFT, y: first.bottom }, selects, WORD_SECONDS, 1);
+      Motion.paint(tl, axis(1, "option-1"), LIT, selects + WORD_SECONDS);
+      Motion.pulse(tl, axis(1, "option-1"), selects + WORD_SECONDS);
       // The launcher file stays the same.
       Motion.show(tl, ID + "-same", Motion.within(at.select, 0.62), Motion.appears);
 

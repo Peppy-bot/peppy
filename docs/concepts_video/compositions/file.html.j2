@@ -187,7 +187,7 @@
         const lines = Array.from({ length: part.last - part.first + 1 }, (_, index) => part.first + index);
         Motion.focusLines(tl, ID + "-file", lines, time);
         tl.fromTo(ID + "-bar-" + part.key, { opacity: 0, scaleY: 0 }, { opacity: 1, scaleY: 1, duration: 0.4, ease: "power2.out" }, time);
-        Motion.show(tl, ID + "-part-" + part.key, time + 0.15, Motion.fromRight);
+        Motion.show(tl, ID + "-part-" + part.key, time + 0.15, Motion.appears);
       });
       Motion.focusLines(tl, ID + "-file", [], at.file_parts.end + 0.2);
 
@@ -195,9 +195,8 @@
       // each interface.
       const readTime = Motion.within(at.sync, 0.3);
       const generateTime = Motion.within(at.sync, 0.54);
-      Motion.hide(tl, ID + "-declaration", at.sync.start + 0.1);
-      Motion.show(tl, ID + "-source", at.sync.start, Motion.grows);
-      Motion.show(tl, ID + "-sync", at.sync.start + 0.3);
+      Motion.swap(tl, ID + "-declaration", ID + "-source", at.sync.start + 0.1, Motion.grows);
+      Motion.show(tl, ID + "-sync", at.sync.start + 0.4);
       Motion.drawArrow(tl, ID + "-reads", readTime, 0.4);
       Motion.drawArrow(tl, ID + "-generates", generateTime, 0.4);
       Motion.show(tl, ID + "-generated", generateTime + 0.3);
@@ -209,8 +208,7 @@
 
       // A new message: the steps of ROS 2 come in fast, then the two steps
       // of Peppy come in with the voice.
-      Motion.hide(tl, ID + "-concept", at.new_message.start + 0.1);
-      Motion.show(tl, ID + "-steps", at.new_message.start - 0.1);
+      Motion.swap(tl, ID + "-concept", ID + "-steps", at.new_message.start - 0.1);
       {{ range(1, screen.comparisons.new_message.ros2 | length + 1) | list | tojson }}.forEach(function (step) {
         Motion.show(tl, ID + "-steps-ros2-" + step, at.new_message.start + 0.4 + step * 0.12, Motion.fromSide);
       });

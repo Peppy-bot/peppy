@@ -168,12 +168,12 @@
       const large = {{ camera_large | tojson }};
       const camera = part("topic", "from");
       tl.fromTo(camera, { opacity: 0, ...large, scale: large.scale * 0.86 }, { opacity: 1, ...large, duration: 0.5, ease: "power3.out" }, at.is_a_node.start);
-      [0.58, 0.8].forEach((share, index) => Motion.show(tl, ID + "-language-" + (index + 1), Motion.within(at.one_function, share)));
+      [0.5, 0.72].forEach((share, index) => Motion.show(tl, ID + "-language-" + (index + 1), Motion.within(at.one_function, share)));
 
       // The nodes exchange data in three ways. The camera goes to its place
       // in the first row, and the names of the three interfaces come in.
-      Motion.hide(tl, ID + "-languages", at.must_exchange.start + 0.3);
-      tl.to(camera, { x: 0, y: 0, scale: 1, duration: 0.8, ease: "power2.inOut" }, at.must_exchange.start);
+      Motion.hide(tl, ID + "-languages", at.must_exchange.start + 0.7);
+      tl.to(camera, { x: 0, y: 0, scale: 1, duration: 0.8, ease: "power2.inOut" }, at.must_exchange.start + 0.35);
       KINDS.forEach((kind, index) => Motion.show(tl, part(kind, "name"), Motion.within(at.must_exchange, 0.5) + index * 0.35, Motion.grows));
 
       // A topic: the camera gives pictures all the time, as a stream of

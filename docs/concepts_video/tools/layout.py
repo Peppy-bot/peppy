@@ -12,74 +12,27 @@ decoration and for a message in motion. `data-layout="over"` says that a part
 is over other parts on purpose, as a tab on a border or a mark on an arrow.
 """
 
-import argparse
-from contextlib import contextmanager
-from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-import json
 from pathlib import Path
-import re
-import subprocess
-import threading
-from typing import Iterator
 
-from tools import footage, paths, pins, project, voice
+from tools.composition_page import CompiledSegment, compiled_segments, segment_argument
 from tools.layout_rules import Part, frame_faults
 from tools.timing import SegmentSlot
-from tools.voice_durations import read_voice_durations
 
 PROBE = Path(__file__).resolve().parent / "layout_probe.mjs"
-TEMPLATE = re.compile(r"<template>(.*)</template>", re.DOTALL)
 # The content of a segment goes out during this time before the end of the segment.
 EXIT_SECONDS = 0.6
 # A sample this time before the end of a sentence or before the start of the
 # next one shows the parts of the sentence at rest.
 REST_SECONDS = 0.05
 
-PROBE_PAGE = """<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <script src="lib/gsap.min.js"></script>
-    <script src="lib/motion.js"></script>
-    <script src="lib/robot_view.js"></script>
-    <link rel="stylesheet" href="styles/video.css" />
-    <script>
-      window.__timelines = {{}};
-    </script>
-  </head>
-  <body>
-    {composition}
-  </body>
-</html>
-"""
-
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Check the layout of the compositions of the concepts video.")
-    parser.add_argument("segment", nargs="?", help="check this segment only, for example `opening`")
-    arguments = parser.parse_args()
-
-    transcript, pinned, footage_list = project.read_project()
-    segment_ids = [segment.id for segment in transcript.segments]
-    if arguments.segment is not None and arguments.segment not in segment_ids:
-        raise SystemExit(f"The video has no segment `{arguments.segment}`. Its segments are: {', '.join(segment_ids)}.")
-    wanted = segment_ids if arguments.segment is None else [arguments.segment]
-
-    chrome = pins.ensure_chrome(pinned)
-    pins.ensure_robot_model(pinned)
-    footage.fetch_absent(footage_list)
-    voices = voice.make_sentence_voices(transcript, pins.voice_tools_identity(pinned))
-    record = voice.record_of(voices, read_voice_durations(paths.VOICE_DURATIONS))
-
     fault_count = 0
-    for segment_id in wanted:
-        compiled = paths.BUILD / "parts" / segment_id
-        timeline = project.compile_with_media(transcript.part(segment_id), record, voices, footage_list, compiled)
-        frames = read_frames(compiled, segment_id, sample_times(timeline.segments[0]), chrome)
+    for segment in compiled_segments(segment_argument("Check the layout of the compositions of the concepts video.")):
+        frames = read_frames(segment, sample_times(segment.slot))
         faults = faults_with_their_times(frames)
         fault_count += len(faults)
-        print(f"Segment `{segment_id}`: {len(frames)} frames, {len(faults)} faults.")
+        print(f"Segment `{segment.id}`: {len(frames)} frames, {len(faults)} faults.")
         for fault, times in faults.items():
             print(f"  {fault} (at {', '.join(f'{time:g} s' for time in times)})")
     if fault_count > 0:
@@ -108,35 +61,10 @@ def sample_times(slot: SegmentSlot) -> list[float]:
     return sorted(time for time in times if time <= last)
 
 
-def read_frames(compiled: Path, segment_id: str, times: list[float], chrome: Path) -> list[tuple[float, list[Part]]]:
+def read_frames(segment: CompiledSegment, times: list[float]) -> list[tuple[float, list[Part]]]:
     """The parts that the composition of a compiled segment shows at each time."""
-    page = write_probe_page(compiled, segment_id)
-    with served(compiled) as address:
-        url = f"{address}/{page.name}"
-        completed = subprocess.run(
-            ["node", str(PROBE), str(chrome), url, segment_id, ",".join(str(time) for time in times)],
-            cwd=paths.PROJECT_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    return [(frame["time"], [part_of(record) for record in frame["parts"]]) for frame in json.loads(completed.stdout)]
-
-
-def write_probe_page(compiled: Path, segment_id: str) -> Path:
-    """Write the page of one composition alone, with the styles and the scripts of the compiled project."""
-    composition = (compiled / "compositions" / f"{segment_id}.html").read_text(encoding="utf-8")
-    page = compiled / f"layout_{segment_id}.html"
-    page.write_text(PROBE_PAGE.format(composition=composition_content(composition)), encoding="utf-8")
-    return page
-
-
-def composition_content(composition: str) -> str:
-    """What the template element of a compiled composition holds."""
-    found = TEMPLATE.search(composition)
-    if found is None:
-        raise ValueError("the compiled composition has no template element")
-    return found.group(1)
+    frames = segment.probe(PROBE, ",".join(str(time) for time in times))
+    return [(frame["time"], [part_of(record) for record in frame["parts"]]) for frame in frames]
 
 
 def part_of(record: dict) -> Part:
@@ -160,27 +88,6 @@ def faults_with_their_times(frames: list[tuple[float, list[Part]]]) -> dict[str,
         for fault in frame_faults(parts):
             faults.setdefault(fault, []).append(time)
     return faults
-
-
-@contextmanager
-def served(folder: Path) -> Iterator[str]:
-    """Serve the files of `folder` to this machine only, and give the address of the server."""
-    handler = partial(QuietHandler, directory=str(folder))
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_address[1]}"
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-class QuietHandler(SimpleHTTPRequestHandler):
-    """A handler that prints no line for a request."""
-
-    def log_message(self, format: str, *arguments: object) -> None:
-        return
 
 
 if __name__ == "__main__":
