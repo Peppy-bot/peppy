@@ -75,53 +75,18 @@ LINT_INPUTS = [
 # Suites with no cargo package: each one's whole world is a few trees,
 # toolchain included.
 #
-# The release scripts split across two of them because their two halves cost
-# orders of magnitude apart. The mocked half runs the whole tree in about a
+# The mocked half of the release scripts runs the whole tree in about a
 # second, so it is gated on the whole tree, and on the two files outside it
 # that the release scripts read: the resolve.py of the hub-ci-peppy action,
 # which they load for their model of the hubs (scripts/functions/hub_ci.py),
 # and the pixi manifest of the concepts video, whose tasks the docs gate runs
-# (scripts/functions/concepts_video.py). The install half installs a
-# release archive on a fresh runner, so it is gated on the files that decide
-# what gets installed and how: a change to the release-notes drafter or the
-# docs gate cannot alter what install.sh does to a machine.
+# (scripts/functions/concepts_video.py).
 TREE_SUITES = {
     # pixi run test-fast
     "scripts": [
         "scripts/**",
         ".github/actions/hub-ci-peppy/resolve.py",
         "docs/concepts_video/pixi.toml",
-    ],
-    # The install-script jobs, the install-archive-aarch64 job, and the
-    # install-archive job on a push to main. install.sh is what the runner
-    # runs; build_release.sh and build/build_release/cli produce the archive
-    # it installs (`build_release.sh --local --tag dev-<commit>`), with its
-    # build cache kept by the cargo-cache action and reported by the
-    # sticky-disk-report action it runs, and verify_release checks that
-    # archive before the build hands it on; the install-test action, the
-    # run_installer.sh it installs pixi with, run_tests.sh, conftest, the
-    # helpers and the three test modules are what drives it; and the
-    # manifests pin the pixi environment the tests run in.
-    "install_script": [
-        "scripts/install.sh",
-        "scripts/build_release.sh",
-        "scripts/functions/build.py",
-        "scripts/functions/build_release.py",
-        "scripts/functions/cli.py",
-        "scripts/functions/verify_release.py",
-        "scripts/run_installer.sh",
-        "scripts/run_tests.sh",
-        "scripts/tests/conftest.py",
-        "scripts/tests/install_helpers.py",
-        "scripts/tests/raspberry_pi_os.py",
-        "scripts/tests/test_install.py",
-        "scripts/tests/test_install_in_docker.py",
-        "scripts/tests/test_install_raspberry_pi.py",
-        "scripts/pixi.toml",
-        "scripts/pixi.lock",
-        ".github/actions/cargo-cache/**",
-        ".github/actions/sticky-disk-report/**",
-        ".github/actions/install-test/**",
     ],
     # pixi run test and pixi run lint in docs/concepts_video. Both read the
     # files of the video project alone. The check of its transcript against
@@ -130,6 +95,19 @@ TREE_SUITES = {
     # content starts nothing here.
     "concepts_video": ["docs/concepts_video/**"],
 }
+
+# The install half of the release scripts: the install-script jobs, the
+# install-archive-aarch64 job, and the install-archive job on a push to main.
+# Each leg installs a release archive on a machine of its own and launches the
+# quickstart there, which builds each node of the launch from nothing. So the
+# suite starts for a change of install.sh alone, the file that a user runs.
+# No other file starts it: not the tests that drive install.sh, not the build
+# of the archive, and not the CI plumbing that every other suite runs
+# through. The release runs the same tests before it publishes
+# (parallel-release.yml), and that run is the first install test of a change
+# to any other of their inputs.
+INSTALL_SCRIPT_SUITE = "install_script"
+INSTALL_SCRIPT = "scripts/install.sh"
 
 # The sealed tree, and the one member of it whose suite is not a cargo test:
 # peppylib-py's cdylib build and tests/python_tests.rs only wrap `pixi run
@@ -163,13 +141,12 @@ JOBS = {
 # its jobs name, and the one action every job of it starts with. An action is
 # an input of the jobs that use it and of no other, which is why the rest of
 # `.github/actions` is not here: the cargo plumbing is listed below for the
-# suites that build with it (and the cargo-cache action again for the install
-# suite, whose archive build keeps its cache there), the detection itself is
-# tested by the changes job before it is trusted and changes what runs rather
-# than how a suite runs, release-host-env belongs to the release workflow, and
-# hub-ci-peppy is the action of the hubs' CI, whose cases the changes job runs
-# on every change (its resolve.py is an input of the release scripts, listed
-# with them).
+# suites that build with it, the detection itself is tested by the changes job
+# before it is trusted and changes what runs rather than how a suite runs,
+# release-host-env belongs to the release workflow, install-test belongs to
+# the install suite, which starts for install.sh alone, and hub-ci-peppy is
+# the action of the hubs' CI, whose cases the changes job runs on every change
+# (its resolve.py is an input of the release scripts, listed with them).
 CI_INPUTS = [
     ".github/workflows/tests.yml",
     ".github/runs-on.yml",
@@ -177,10 +154,10 @@ CI_INPUTS = [
 ]
 
 # The plumbing the cargo suites build and run through, on top of CI_INPUTS:
-# the sticky-disk-report action is a step of the cargo-cache action. The two
-# scripts suites never touch it. The lint suite builds through the cargo
-# cache and never through cargo-suite; it is gated on the whole list, as the
-# other suites of the workspaces are.
+# the sticky-disk-report action is a step of the cargo-cache action. The
+# suites of TREE_SUITES never touch it. The lint suite builds through the
+# cargo cache and never through cargo-suite; it is gated on the whole list, as
+# the other suites of the workspaces are.
 CARGO_CI_INPUTS = [
     ".github/actions/cargo-cache/**",
     ".github/actions/sticky-disk-report/**",
@@ -189,10 +166,7 @@ CARGO_CI_INPUTS = [
 
 # What the `peppy` workspace resolves itself from: an input of the suites that
 # build `crates/`, and of them alone. The sealed tree resolves and locks on
-# its own and CI checks it out without these files. The install suite builds
-# a release archive from the workspace to install, and what it proves is what
-# install.sh does with that archive; the archive's own behaviour is what the
-# suites of `crates/` test.
+# its own and CI checks it out without these files.
 PEPPY_WORKSPACE_INPUTS = [
     "Cargo.toml",
     "Cargo.lock",
@@ -361,7 +335,9 @@ def select_everything() -> dict[str, str]:
     are exactly what a failed graph walk could not produce."""
     selection = {
         suite: "true"
-        for suite in [WORKSPACE_SUITE, LINT_SUITE] + list(SUITES) + list(TREE_SUITES)
+        for suite in [WORKSPACE_SUITE, LINT_SUITE, INSTALL_SCRIPT_SUITE]
+        + list(SUITES)
+        + list(TREE_SUITES)
     }
     selection.update(
         {
@@ -395,6 +371,7 @@ def select(files: Sequence[str]) -> dict[str, str]:
         selection[suite] = gate(crate_touched(manifests[package], extra + peppy_inputs))
     for suite, globs in TREE_SUITES.items():
         selection[suite] = gate(touches(files, globs + CI_INPUTS, ()))
+    selection[INSTALL_SCRIPT_SUITE] = gate(INSTALL_SCRIPT in files)
     selection[LINT_SUITE] = gate(
         touches(
             files,

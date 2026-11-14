@@ -475,11 +475,19 @@ EOF
 
     # cache_sudo_credentials: prime sudo's credential cache so later privileged
     # calls (including retries) do not each re-prompt for a password. No-op when
-    # already root or when sudo is not installed.
+    # already root, when sudo is not installed, or when sudo runs a command
+    # with no password. `sudo -v` is not run in that last case: it asks for a
+    # password unless every sudoers entry of the user has NOPASSWD, and a cloud
+    # image gives its user a NOPASSWD entry beside the `%sudo` entry of the
+    # distribution, which has none.
     cache_sudo_credentials() {
-        if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
-            sudo -v
+        if [ "$(id -u)" -eq 0 ] || ! command -v sudo >/dev/null 2>&1; then
+            return 0
         fi
+        if sudo -n true 2>/dev/null; then
+            return 0
+        fi
+        sudo -v
     }
 
     # run_privileged: run a shell command string as root, via sudo when not

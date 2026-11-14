@@ -50,9 +50,8 @@ outputs:
     value: ${{ steps.detect.outputs.concepts_video }}
   install_script:
     description: >-
-      Whether the inputs of the install.sh tests changed: what decides what a
-      runner installs and how, which is a much narrower set than the tree the
-      mocked half of the release scripts suite is gated on.
+      Whether scripts/install.sh changed: the one file whose change starts the
+      install.sh tests.
     value: ${{ steps.detect.outputs.install_script }}
   peppy_shared_packages:
     description: >-

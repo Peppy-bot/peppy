@@ -972,6 +972,20 @@ def release_repositories_file(hub_set: HubSet) -> str:
     return repositories_json([pinned_git_entry(resolved) for resolved in hub_set.hubs])
 
 
+def default_hubs_repositories_file(hub_set: HubSet) -> str:
+    """The repositories.json5 of an install that reads its default hubs at a
+    release set: every public hub, the defaults peppy bundles, at its id, its
+    git repository pinned at the commit of the set. A private hub is not in
+    it: the machine of a user holds no key that reads one."""
+    return repositories_json(
+        [
+            pinned_git_entry(resolved)
+            for resolved in hub_set.hubs
+            if resolved.hub.visibility is Visibility.PUBLIC
+        ]
+    )
+
+
 def hubs_document(hub_set: HubSet) -> dict:
     """The hubs of a set as an explicit set spells them."""
     return {
