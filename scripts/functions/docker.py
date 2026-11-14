@@ -12,7 +12,10 @@ images before every node build reads them:
 
 1. `build_all_base_images` pushes each image under a tag of its own, then
    probes each one on each platform: once with the regular Ubuntu mirror out
-   of reach, once with the snapshot service out of reach.
+   of reach, once with the snapshot service out of reach. It then checks, on
+   each platform, that the Rust of the image that Rust nodes build from is
+   not older than the `rust-version` of the crates of peppy that each node
+   builds.
 2. `move_latest_to` moves the `latest` tag of each image to that tag. The
    definition files of the hubs name `latest`.
 """
@@ -27,6 +30,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .cli import ReleaseError, console, need_cmd, prompt, run_with_error_handling
+from .rust_version import RustVersion, workspace_rust_version
 
 DOCKER_HUB_ACCOUNT = "peppybot"
 DOCKER_PLATFORMS: list[str] = ["linux/amd64", "linux/arm64"]
@@ -133,11 +137,16 @@ class AptSnapshot:
 
 @dataclass(frozen=True)
 class BaseImage:
-    """A base Docker image to build and push."""
+    """A base Docker image to build and push.
+
+    `holds_rust` is true for an image whose Rust toolchain builds the Rust
+    nodes.
+    """
 
     name: str
     dockerfile_dir: str
     repo: str
+    holds_rust: bool = False
 
 
 BASE_IMAGES: list[BaseImage] = [
@@ -150,8 +159,14 @@ BASE_IMAGES: list[BaseImage] = [
         name="rust-cargo",
         dockerfile_dir="rust_cargo",
         repo=f"{DOCKER_HUB_ACCOUNT}/rust-cargo-base",
+        holds_rust=True,
     ),
 ]
+
+# The manifest, relative to the repository, of the workspace whose crates each
+# node builds: a Rust node builds the peppylib of this workspace, and cargo
+# refuses to build it with a Rust older than its `rust-version`.
+NODE_CRATES_MANIFEST = Path("peppy-shared") / "Cargo.toml"
 
 
 DOCKER_HUB_REGISTRY = "https://index.docker.io/v1/"
@@ -439,10 +454,54 @@ def probe_base_image(
             )
 
 
-def build_all_base_images(scripts_dir: Path, tag: str, snapshot: AptSnapshot) -> None:
+def probe_rust_release(image: BaseImage, tag: str, required: RustVersion) -> None:
+    """Check that the Rust of the published *image*:*tag* builds a Rust node.
+
+    On each platform, a container of the image pulled from Docker Hub prints
+    the release of its rustc. Raises ReleaseError when a container does not
+    print one, or prints one older than *required*.
+    """
+    reference = f"{image.repo}:{tag}"
+    for platform in DOCKER_PLATFORMS:
+        console.print(f"Probing [bold]{reference}[/bold] on {platform} (rustc)...")
+        result = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--pull",
+                "always",
+                "--platform",
+                platform,
+                reference,
+                "rustc",
+                "--version",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise ReleaseError(
+                f"{reference} on {platform} does not run rustc "
+                f"(exit {result.returncode}): {result.stderr.strip()}"
+            )
+        found = RustVersion.of_rustc(result.stdout)
+        if found < required:
+            raise ReleaseError(
+                f"{reference} on {platform} holds Rust {found}: a Rust node "
+                f"needs Rust {required}, the rust-version of {NODE_CRATES_MANIFEST}"
+            )
+
+
+def build_all_base_images(
+    scripts_dir: Path, tag: str, snapshot: AptSnapshot, rust_version: RustVersion
+) -> None:
     """Build every base image on *snapshot*, push it under *tag*, and probe it.
 
-    `latest` does not move: see `move_latest_to`.
+    The probes check the apt sources of each image, and that the Rust of each
+    image that holds one is not older than *rust_version*. `latest` does not
+    move: see `move_latest_to`.
     """
     base_images_dir = scripts_dir / "base_images"
 
@@ -451,6 +510,10 @@ def build_all_base_images(scripts_dir: Path, tag: str, snapshot: AptSnapshot) ->
 
     for image in BASE_IMAGES:
         probe_base_image(image, tag, snapshot, base_images_dir)
+
+    for image in BASE_IMAGES:
+        if image.holds_rust:
+            probe_rust_release(image, tag, rust_version)
 
     console.print()
     for image in BASE_IMAGES:
@@ -595,7 +658,8 @@ def _run_build(tag: str | None) -> None:
 
     snapshot = AptSnapshot.at(_utc_now() - SNAPSHOT_AGE)
     scripts_dir = Path(__file__).resolve().parent.parent
-    build_all_base_images(scripts_dir, tag, snapshot)
+    rust_version = workspace_rust_version(scripts_dir.parent / NODE_CRATES_MANIFEST)
+    build_all_base_images(scripts_dir, tag, snapshot, rust_version)
 
     console.print()
     console.print(
