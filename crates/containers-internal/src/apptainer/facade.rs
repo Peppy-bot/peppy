@@ -1681,8 +1681,8 @@ impl CommandKind {
 
     /// Whether the command runs an image: a run and an exec do. Apptainer
     /// then mounts the squashfs of the image and binds the `bind path`
-    /// entries of its configuration. A build unpacks its base image and binds
-    /// none of the entries.
+    /// entries of its configuration. A build unpacks its base image, and an
+    /// entry whose source is absent does not stop it.
     fn runs_an_image(&self) -> bool {
         match self {
             Self::Run { .. } | Self::Exec { .. } => true,

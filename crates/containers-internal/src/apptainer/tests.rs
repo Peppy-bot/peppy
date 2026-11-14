@@ -391,7 +391,8 @@ fn a_run_that_forces_the_user_namespace_also_skips_the_absent_bind_path() {
     );
 }
 
-/// A build binds none of the `bind path` entries, so it skips none.
+/// A `bind path` entry whose source is absent does not stop a build, so a
+/// build skips none.
 #[test]
 fn a_build_skips_no_bind_path() {
     let facade = on_a_host_without_localtime(native_facade());
