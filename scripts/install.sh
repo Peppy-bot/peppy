@@ -871,7 +871,6 @@ EOF
     fi
 
     # ---- Apptainer container setup (post-install) ----------------------------
-    # TEMPORARY line, not for merge: it starts the install tests of this pull request.
     # Delegates AppArmor profile configuration to `peppy container setup`
     # which is the single source of truth for Apptainer system prerequisites.
     # On systems without AppArmor restrictions, this is a no-op.
