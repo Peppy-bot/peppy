@@ -396,19 +396,19 @@ impl RealRoot {
     /// cannot be read is taken not to be the real root, so that peppy passes
     /// no flag for it.
     fn of_this_process() -> Option<Self> {
-        if !rustix::process::getuid().is_root() {
+        if !nix::unistd::getuid().is_root() {
             return None;
         }
         let uid_map = fs::read_to_string(UID_MAP_FILE).ok()?;
         if !is_initial_user_namespace_map(&uid_map) {
             return None;
         }
-        let supplementary_groups = rustix::process::getgroups().ok()?;
+        let supplementary_groups = nix::unistd::getgroups().ok()?;
         Some(Self {
-            mapped_group: rustix::process::getgid().as_raw(),
+            mapped_group: nix::unistd::getgid().as_raw(),
             supplementary_groups: supplementary_groups
                 .into_iter()
-                .map(rustix::process::Gid::as_raw)
+                .map(nix::unistd::Gid::as_raw)
                 .collect(),
         })
     }

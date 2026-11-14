@@ -29,20 +29,21 @@ thiserror = "2.0"
 tracing = "0.1"
 
 # `sysconf(_SC_CLK_TCK)`, which converts the clock ticks `/proc/<pid>/stat`
-# accounts a build's CPU time in, and `geteuid`, which tells whether the user
-# is root: apptainer builds as root with no user namespace. nix's safe
-# wrappers keep the crate free of `unsafe`; `/proc` itself exists only on
-# Linux.
+# accounts a build's CPU time in, and the user and the groups of the process.
+# `geteuid` tells whether the user is root: apptainer builds as root with no
+# user namespace. `getuid`, `getgid` and `getgroups` tell whether the daemon
+# is the real root, for which apptainer mounts an image with the kernel and
+# not with the bundled squashfuse, and which groups root has in the user
+# namespace of apptainer. nix's safe wrappers keep the crate free of
+# `unsafe`; `/proc` itself exists only on Linux.
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { version = "0.31", default-features = false, features = ["feature", "user"] }
 # Reads `/proc/config.gz`, the configuration of the running kernel, which
 # tells the squashfs compressions that the kernel mounts.
 flate2 = "1"
-# The user and the groups of the daemon process, and the access control list
-# of a directory. They tell whether the daemon is root, for which apptainer
-# mounts an image with the kernel and not with the bundled squashfuse, and
-# which directories root enters from the user namespace of apptainer.
-rustix = { version = "1", features = ["fs", "process"] }
+# The access control list of a directory: for a directory that has one, the
+# kernel decides whether root enters it from the user namespace of apptainer.
+rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 # Only `test_tmp_root` is needed (no git fixtures), so no `git_fixtures` feature.

@@ -143,7 +143,7 @@ mod tests {
             .expect("read the permissions of the scratch directory");
 
         assert_eq!(access.mode & 0o777, 0o750);
-        assert_eq!(access.owner, rustix::process::geteuid().as_raw());
+        assert_eq!(access.owner, nix::unistd::geteuid().as_raw());
         assert!(!access.has_access_control_list);
     }
 
@@ -154,8 +154,8 @@ mod tests {
     #[test]
     fn the_kernel_tells_which_directory_root_of_a_user_namespace_enters() {
         let scratch = scratch_dir();
-        let own_group = rustix::process::getgid().as_raw();
-        let is_root = rustix::process::geteuid().is_root();
+        let own_group = nix::unistd::getgid().as_raw();
+        let is_root = nix::unistd::geteuid().is_root();
         let Some(enters_own_dir) = ThisHost
             .root_enters_from_user_namespace(scratch.path(), own_group)
             .filter(|_| !is_root)
