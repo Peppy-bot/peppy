@@ -2,6 +2,8 @@ use super::super::error::{Error, Result};
 use super::l4t_manifest::{self, L4T_MANIFEST_DIR, NVLIBLIST_PATH, NvliblistSync};
 use super::lima;
 use super::registry_auth::{APPTAINER_AUTH_FILE_ENV, RegistryAuth};
+#[cfg(target_os = "linux")]
+use super::unprivileged_user_namespace::UnprivilegedUserNamespace;
 use core_node_api::encoding::ArtifactPlatform;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -226,7 +228,8 @@ fn is_apparmor_manageable() -> bool {
 /// unprivileged user namespaces via fakeroot. This requires `newuidmap`
 /// (from the `uidmap` package). On systems where AppArmor restricts
 /// unprivileged user namespaces (e.g. Ubuntu 24.04+), an AppArmor profile
-/// must be installed to allow the `starter` binary to create them.
+/// must be installed to allow the `apptainer` and `starter` programs to
+/// create them.
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 #[expect(
@@ -238,9 +241,9 @@ pub struct SetupStatus {
     pub newuidmap_ok: bool,
     /// System restricts unprivileged user namespaces via AppArmor.
     pub apparmor_restricted: bool,
-    /// AppArmor profile for `starter` is installed and references the current
-    /// binary path (always `true` when `apparmor_restricted` is `false`,
-    /// or when AppArmor is not manageable).
+    /// AppArmor profile of the installation is installed and names the
+    /// current paths of its programs (always `true` when
+    /// `apparmor_restricted` is `false`, or when AppArmor is not manageable).
     pub apparmor_ok: bool,
     /// AppArmor profile is loaded into the kernel (always `true` when
     /// `apparmor_restricted` is `false`, or when AppArmor is not manageable).
@@ -249,32 +252,134 @@ pub struct SetupStatus {
     /// `false` when the AppArmor security filesystem is not mounted
     /// (e.g. inside Docker/Podman/BuildKit containers).
     pub apparmor_manageable: bool,
-    /// A shell script that fixes all failing checks, or `None` when everything
-    /// passes.
-    pub fix_script: Option<String>,
+    /// What the kernel answers to the request of a user namespace for a
+    /// container build.
+    pub user_namespace: UnprivilegedUserNamespace,
+    /// What the checks come to.
+    pub verdict: SetupVerdict,
+}
+
+/// What the checks of a [`SetupStatus`] come to, and what
+/// `peppy container setup` can do about them.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetupVerdict {
+    /// Every check passes: a container build has what it needs.
+    Ready,
+    /// Checks fail, and the shell script `fix_script` fixes each of them.
+    Fixable { fix_script: String },
+    /// The kernel refuses the user namespace of a container build, which no
+    /// fix repairs: each container build fails. `refusal` explains it.
+    /// `fix_script` fixes the other checks that fail, and is `None` when
+    /// each of them passes.
+    Unfixable {
+        refusal: String,
+        fix_script: Option<String>,
+    },
 }
 
 #[cfg(target_os = "linux")]
-impl SetupStatus {
-    /// Returns `true` when all prerequisites are met.
-    pub fn is_ok(&self) -> bool {
-        self.newuidmap_ok && self.apparmor_ok && self.apparmor_loaded
+impl SetupVerdict {
+    /// The verdict for the script that fixes the failing prerequisites
+    /// (`None` when each passes) and the answer of the kernel to the request
+    /// of a user namespace.
+    pub(crate) fn of(
+        fix_script: Option<String>,
+        user_namespace: &UnprivilegedUserNamespace,
+    ) -> Self {
+        if let Some(refusal) = user_namespace.refusal() {
+            return Self::Unfixable {
+                refusal,
+                fix_script,
+            };
+        }
+        match fix_script {
+            Some(fix_script) => Self::Fixable { fix_script },
+            None => Self::Ready,
+        }
     }
 }
 
+/// The prerequisites of the setup that `peppy container setup` has a fix
+/// for. To examine them reads files alone.
+#[cfg(target_os = "linux")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is the result of one check of the setup"
+)]
+struct Prerequisites {
+    newuidmap_ok: bool,
+    apparmor_restricted: bool,
+    apparmor_ok: bool,
+    apparmor_loaded: bool,
+    apparmor_manageable: bool,
+    /// The shell script that fixes the prerequisites that fail, or `None`
+    /// when each passes.
+    fix_script: Option<String>,
+}
+
+#[cfg(target_os = "linux")]
+impl Prerequisites {
+    /// Examines the prerequisites of the installation at `apptainer_dir`.
+    fn check(apptainer_dir: &Path) -> Self {
+        let apparmor_manageable = is_apparmor_manageable();
+
+        // newuidmap is required for fakeroot mode (unprivileged user namespaces).
+        // Ubuntu provides it in the `uidmap` package.
+        let newuidmap_ok = which("newuidmap").is_some();
+
+        // The procfs flag may read "1" even inside containers (inherited from
+        // the host kernel). Only treat it as restricted when AppArmor is also
+        // manageable; otherwise we'd try to load profiles into a kernel we
+        // have no access to.
+        let apparmor_restricted = apparmor_manageable
+            && std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+                .is_ok_and(|v| v.trim() == "1");
+
+        let profile = apparmor_profile_ref(apptainer_dir);
+        let apparmor_ok = !apparmor_restricted || profile_file_names_programs(&profile);
+        let apparmor_loaded = !apparmor_restricted || is_apparmor_profile_loaded(&profile.name);
+        // Both AppArmor checks pass on a system that does not restrict user
+        // namespaces, so the fix script needs no restriction flag of its own.
+        let fix_script = setup_fix_script(newuidmap_ok, apparmor_ok, apparmor_loaded, &profile);
+
+        Self {
+            newuidmap_ok,
+            apparmor_restricted,
+            apparmor_ok,
+            apparmor_loaded,
+            apparmor_manageable,
+            fix_script,
+        }
+    }
+}
+
+/// The variable of a profile file that holds the programs the profile
+/// attaches to.
+#[cfg(target_os = "linux")]
+const PROFILE_PROGRAMS_VARIABLE: &str = "@{peppy_apptainer_programs}";
+
 /// AppArmor profile identity for one apptainer installation.
+///
+/// The profile gives a user namespace to the two programs of the
+/// installation that ask the kernel for one: `apptainer`, before each build,
+/// and `starter`, for each container.
 ///
 /// The profile name embeds a stable hash of the canonical starter path, so
 /// every installation on a machine (the version-keyed build caches under
 /// `~/.peppy/tmp/`, installed release layouts, `PEPPY_APPTAINER_DIR`
 /// overrides) gets its own profile file under `/etc/apparmor.d/`. A single
-/// shared profile can only reference one starter path, so regenerating it for
-/// one installation would invalidate every other one: two build caches of
-/// different apptainer versions on one machine each need the profile, and
-/// whichever ran `peppy container setup` last would break the other.
+/// shared profile can only reference the programs of one installation, so
+/// regenerating it for one installation would invalidate every other one: two
+/// build caches of different apptainer versions on one machine each need the
+/// profile, and whichever ran `peppy container setup` last would break the
+/// other.
 #[cfg(target_os = "linux")]
 pub(crate) struct ApparmorProfileRef {
-    /// Canonical starter path, exactly as embedded in the profile body.
+    /// Canonical path of the `apptainer` program, which the profile body
+    /// names.
+    pub(crate) apptainer_path: String,
+    /// Canonical starter path, which the profile body names.
     pub(crate) starter_path: String,
     /// AppArmor profile name (`peppy-apptainer-<hash>`).
     pub(crate) name: String,
@@ -282,19 +387,90 @@ pub(crate) struct ApparmorProfileRef {
     pub(crate) file: PathBuf,
 }
 
+#[cfg(target_os = "linux")]
+impl ApparmorProfileRef {
+    /// The line of the profile file that names the programs the profile
+    /// attaches to.
+    fn programs_line(&self) -> String {
+        format!(
+            "{PROFILE_PROGRAMS_VARIABLE} = {} {}",
+            apparmor_quoted_literal(&self.apptainer_path),
+            apparmor_quoted_literal(&self.starter_path)
+        )
+    }
+
+    /// The content of the profile file, with no newline at its end.
+    fn body(&self) -> String {
+        format!(
+            "abi <abi/4.0>,\n\
+             include <tunables/global>\n\
+             \n\
+             {programs_line}\n\
+             \n\
+             profile {name} {PROFILE_PROGRAMS_VARIABLE} flags=(unconfined) {{\n\
+             \x20 userns,\n\
+             }}",
+            programs_line = self.programs_line(),
+            name = self.name,
+        )
+    }
+
+    /// The shell command that loads the profile file into the kernel.
+    fn load_command(&self) -> String {
+        format!("sudo apparmor_parser -r {}", self.file.display())
+    }
+
+    /// The shell command that writes the profile file and loads it into the
+    /// kernel. `printf` writes the body as it is: the `echo` of a shell can
+    /// read a backslash of the body as the start of an escape sequence.
+    fn write_and_load_command(&self) -> String {
+        format!(
+            "printf '%s\\n' '{body}' | sudo tee {file} > /dev/null \\\n  && {load}",
+            body = shell_escape_single_quoted(&self.body()),
+            file = self.file.display(),
+            load = self.load_command(),
+        )
+    }
+}
+
+/// `path` as a value of an AppArmor variable that matches that path alone:
+/// in quotes, so that a space does not end the value, with a backslash
+/// before each character that AppArmor reads as a part of a pattern, as the
+/// start of a variable or as the end of the quotes.
+#[cfg(target_os = "linux")]
+fn apparmor_quoted_literal(path: &str) -> String {
+    let mut quoted = String::with_capacity(path.len() + 2);
+    quoted.push('"');
+    for character in path.chars() {
+        if matches!(
+            character,
+            '\\' | '"' | '*' | '?' | '[' | ']' | '{' | '}' | '^' | ',' | '@'
+        ) {
+            quoted.push('\\');
+        }
+        quoted.push(character);
+    }
+    quoted.push('"');
+    quoted
+}
+
 /// Resolve the AppArmor profile identity for the installation at `apptainer_dir`.
 ///
-/// Uses the canonicalized starter path when the binary exists (the kernel
-/// resolves symlinks at exec time, so the profile must reference the resolved
-/// path) and falls back to the literal path otherwise.
+/// Uses the canonicalized path of each program when the binary exists (the
+/// kernel resolves symlinks at exec time, so the profile must reference the
+/// resolved path) and falls back to the literal path otherwise.
 #[cfg(target_os = "linux")]
 pub(crate) fn apparmor_profile_ref(apptainer_dir: &Path) -> ApparmorProfileRef {
-    let starter = apptainer_dir.join("libexec/apptainer/bin/starter");
-    let starter_canonical = starter.canonicalize().unwrap_or(starter);
-    let starter_path = starter_canonical.display().to_string();
+    let canonical_path = |program: &str| {
+        let path = apptainer_dir.join(program);
+        path.canonicalize().unwrap_or(path).display().to_string()
+    };
+    let apptainer_path = canonical_path("bin/apptainer");
+    let starter_path = canonical_path("libexec/apptainer/bin/starter");
     let name = format!("peppy-apptainer-{:016x}", fnv1a_64(starter_path.as_bytes()));
     let file = Path::new("/etc/apparmor.d").join(&name);
     ApparmorProfileRef {
+        apptainer_path,
         starter_path,
         name,
         file,
@@ -318,8 +494,8 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 /// Escape a value for interpolation inside a single-quoted shell string: each
 /// embedded quote terminates the string, inserts an escaped quote, and reopens
 /// it, so the surrounding quoting survives arbitrary path characters. The fix
-/// script embeds the starter path inside `echo '...'`; a home directory
-/// containing a quote must not break out of it.
+/// script embeds the paths of the programs inside a single-quoted string; a
+/// home directory containing a quote must not break out of it.
 #[cfg(target_os = "linux")]
 pub(crate) fn shell_escape_single_quoted(value: &str) -> String {
     value.replace('\'', r"'\''")
@@ -328,32 +504,27 @@ pub(crate) fn shell_escape_single_quoted(value: &str) -> String {
 /// Inspect the Apptainer user namespace prerequisites without failing on errors.
 ///
 /// Returns a [`SetupStatus`] describing which checks pass and which do not,
-/// along with a ready-to-run fix script when something needs attention.
+/// with a [`SetupVerdict`] that holds a ready-to-run fix script when
+/// something needs attention.
 ///
 /// The caller is responsible for resolving the `apptainer_dir`; use
 /// [`Apptainer::resolve_apptainer_dir`] or the `PEPPY_APPTAINER_DIR` env var.
+///
+/// # Blocking
+///
+/// Asks the kernel for a user namespace through one run of `unshare`.
 #[cfg(target_os = "linux")]
 pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
-    let apparmor_manageable = is_apparmor_manageable();
-
-    // newuidmap is required for fakeroot mode (unprivileged user namespaces).
-    // Ubuntu provides it in the `uidmap` package.
-    let newuidmap_ok = which("newuidmap").is_some();
-
-    // The procfs flag may read "1" even inside containers (inherited from
-    // the host kernel). Only treat it as restricted when AppArmor is also
-    // manageable; otherwise we'd try to load profiles into a kernel we
-    // have no access to.
-    let apparmor_restricted = apparmor_manageable
-        && std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-            .is_ok_and(|v| v.trim() == "1");
-
-    let profile = apparmor_profile_ref(apptainer_dir);
-    let apparmor_ok = !apparmor_restricted || profile_references_starter(&profile);
-    let apparmor_loaded = !apparmor_restricted || is_profile_loaded(&profile);
-    // Both AppArmor checks pass on a system that does not restrict user
-    // namespaces, so the fix script needs no restriction flag of its own.
-    let fix_script = setup_fix_script(newuidmap_ok, apparmor_ok, apparmor_loaded, &profile);
+    let Prerequisites {
+        newuidmap_ok,
+        apparmor_restricted,
+        apparmor_ok,
+        apparmor_loaded,
+        apparmor_manageable,
+        fix_script,
+    } = Prerequisites::check(apptainer_dir);
+    let user_namespace = UnprivilegedUserNamespace::for_build_user(apparmor_restricted);
+    let verdict = SetupVerdict::of(fix_script, &user_namespace);
 
     SetupStatus {
         newuidmap_ok,
@@ -361,26 +532,28 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
         apparmor_ok,
         apparmor_loaded,
         apparmor_manageable,
-        fix_script,
+        user_namespace,
+        verdict,
     }
 }
 
-/// Whether the profile file of `profile` exists and references its starter
-/// path. The hashed file name already namespaces installations; the content
-/// check additionally catches a manually edited or corrupted profile that
-/// would not grant the binary namespace privileges.
+/// Whether the profile file of `profile` exists and names the programs of
+/// its installation. The hashed file name already namespaces installations;
+/// the content check additionally catches a manually edited or corrupted
+/// profile that would not grant the two programs namespace privileges.
 #[cfg(target_os = "linux")]
-fn profile_references_starter(profile: &ApparmorProfileRef) -> bool {
+pub(crate) fn profile_file_names_programs(profile: &ApparmorProfileRef) -> bool {
+    let programs_line = profile.programs_line();
     std::fs::read_to_string(&profile.file)
-        .is_ok_and(|content| content.contains(&profile.starter_path))
+        .is_ok_and(|content| content.lines().any(|line| line == programs_line))
 }
 
-/// Whether the kernel has `profile` loaded. Reads the policy directory
-/// listing, which is world-readable, because
+/// Whether the kernel has the AppArmor profile `name` loaded. Reads the
+/// policy directory listing, which is world-readable, because
 /// `/sys/kernel/security/apparmor/profiles` requires `CAP_MAC_ADMIN`.
 #[cfg(target_os = "linux")]
-fn is_profile_loaded(profile: &ApparmorProfileRef) -> bool {
-    let kernel_entry_prefix = format!("{}.", profile.name);
+pub(crate) fn is_apparmor_profile_loaded(name: &str) -> bool {
+    let kernel_entry_prefix = format!("{name}.");
     std::fs::read_dir("/sys/kernel/security/apparmor/policy/profiles").is_ok_and(|entries| {
         entries.flatten().any(|e| {
             e.file_name()
@@ -390,10 +563,10 @@ fn is_profile_loaded(profile: &ApparmorProfileRef) -> bool {
     })
 }
 
-/// The shell script that fixes the failing checks, one step per failure
-/// joined with `&&`, or `None` when every check passes. A profile that is
-/// missing or stale is written and loaded in one step, so the load alone is
-/// for a profile that is in place but not loaded.
+/// The shell script that fixes the failing prerequisites, one step per
+/// failure joined with `&&`, or `None` when every prerequisite passes. A
+/// profile that is missing or stale is written and loaded in one step, so the
+/// load alone is for a profile that is in place but not loaded.
 #[cfg(target_os = "linux")]
 pub(crate) fn setup_fix_script(
     newuidmap_ok: bool,
@@ -408,23 +581,9 @@ pub(crate) fn setup_fix_script(
     }
 
     if !apparmor_ok {
-        steps.push(format!(
-            "echo 'abi <abi/4.0>,\n\
-             include <tunables/global>\n\
-             \n\
-             profile {profile_name} {starter_path} flags=(unconfined) {{\n\
-             \x20 userns,\n\
-             }}' | sudo tee {profile_file} > /dev/null \\\n  \
-             && sudo apparmor_parser -r {profile_file}",
-            profile_name = profile.name,
-            starter_path = shell_escape_single_quoted(&profile.starter_path),
-            profile_file = profile.file.display(),
-        ));
+        steps.push(profile.write_and_load_command());
     } else if !apparmor_loaded {
-        steps.push(format!(
-            "sudo apparmor_parser -r {}",
-            profile.file.display()
-        ));
+        steps.push(profile.load_command());
     }
 
     if steps.is_empty() {
@@ -433,32 +592,37 @@ pub(crate) fn setup_fix_script(
     Some(steps.join(" \\\n  && "))
 }
 
-/// Check that Apptainer's user namespace prerequisites are met.
-/// Returns an error with a copy-pasteable fix script when any check fails.
+/// Check that the prerequisites of Apptainer that have a fix are met.
+///
+/// Makes no request to the kernel for a user namespace: each construction of
+/// an [`Apptainer`] runs this check, and a refusal of the kernel has no fix
+/// to give. [`Apptainer::user_namespace_refusal`] makes the request.
 #[cfg(target_os = "linux")]
 fn check_userns_prerequisites(apptainer_dir: &Path) -> Result<()> {
-    let status = check_setup_status(apptainer_dir);
-    if status.is_ok() {
-        return Ok(());
+    match Prerequisites::check(apptainer_dir).fix_script {
+        None => Ok(()),
+        Some(fix_script) => Err(unmet_prerequisites_error(&fix_script)),
     }
+}
 
-    let script = status
-        .fix_script
-        .unwrap_or_else(|| "peppy container setup".to_string());
-    let indented: String = script.lines().fold(String::new(), |mut buf, line| {
+/// The error that gives the copy-pasteable `fix_script` of the prerequisites
+/// that fail.
+#[cfg(target_os = "linux")]
+pub(crate) fn unmet_prerequisites_error(fix_script: &str) -> Error {
+    let indented: String = fix_script.lines().fold(String::new(), |mut buf, line| {
         buf.push_str("  ");
         buf.push_str(line);
         buf.push('\n');
         buf
     });
-    Err(Error::ConfigurationError(format!(
+    Error::ConfigurationError(format!(
         "Apptainer's user namespace prerequisites are not met.\n\
          \n\
          To fix, run the following command:\n\
          \n\
          {indented}\n\
          Or run `peppy container setup` to fix this automatically."
-    )))
+    ))
 }
 
 impl Apptainer {
@@ -488,6 +652,22 @@ impl Apptainer {
     pub fn new() -> Result<Self> {
         let apptainer_dir = Self::resolve_apptainer_dir()?;
         Self::from_dir(apptainer_dir)
+    }
+
+    /// Why each container build of this machine fails, when the kernel
+    /// refuses the user namespace of a build, or `None` when it does not
+    /// refuse. No fix exists for a refusal, and the nodes that are not
+    /// containers run without the namespace.
+    ///
+    /// # Blocking
+    ///
+    /// As [`check_setup_status`].
+    #[cfg(target_os = "linux")]
+    pub fn user_namespace_refusal(&self) -> Option<String> {
+        match check_setup_status(&self.apptainer_dir).verdict {
+            SetupVerdict::Unfixable { refusal, .. } => Some(refusal),
+            SetupVerdict::Ready | SetupVerdict::Fixable { .. } => None,
+        }
     }
 
     /// The `Apptainer` that builds containers for `platform`.

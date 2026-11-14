@@ -275,8 +275,15 @@ pub fn check_runtime_prerequisites() -> Result<()> {
     // Apptainer user namespaces: on Ubuntu 24.04+ an AppArmor profile is
     // required to allow unprivileged user namespace creation.
     #[cfg(target_os = "linux")]
-    if let Err(e) = containers::Apptainer::new() {
-        return Err(crate::Error::RuntimeCheck(e.to_string()));
+    {
+        let apptainer =
+            containers::Apptainer::new().map_err(|e| crate::Error::RuntimeCheck(e.to_string()))?;
+        // A user namespace that the kernel refuses has no fix, and the nodes
+        // that are not containers run on such a machine: the daemon starts
+        // and tells why each container build fails.
+        if let Some(refusal) = apptainer.user_namespace_refusal() {
+            tracing::warn!("{refusal}");
+        }
     }
     Ok(())
 }
