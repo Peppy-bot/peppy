@@ -95,6 +95,7 @@ jobs:
       multi_daemon_e2e: ${{ steps.changes.outputs.multi_daemon_e2e }}
       docs_integration: ${{ steps.changes.outputs.docs_integration }}
       cross_check: ${{ steps.changes.outputs.cross_check }}
+      lint: ${{ steps.changes.outputs.lint }}
       scripts: ${{ steps.changes.outputs.scripts }}
       install_script: ${{ steps.changes.outputs.install_script }}
       peppy_shared_packages: ${{ steps.changes.outputs.peppy_shared_packages }}
@@ -667,6 +668,49 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo check --locked --target aarch64-unknown-linux-gnu -p peppy
 
+  # The lint tables of the two workspaces (`[workspace.lints]` of Cargo.toml
+  # and of peppy-shared/Cargo.toml) set each lint at `warn`, so a build and a
+  # test run go on past a finding. This job holds the code to them: clippy
+  # with every warning denied, on every target of each workspace and on each
+  # package alone (see the cargo-lint action).
+  #
+  # A lint needs no binding of another platform, so the job builds the host
+  # peppylib alone, as a `cargo clippy` on a laptop does.
+  lint:
+    needs: changes
+    if: needs.changes.outputs.lint == 'true'
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32+64/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=lint:30gb:lazy-init${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    permissions:
+      contents: read
+    env:
+      PEPPY_CROSS_BUILD: "0"
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: $/.github/actions/rust-build-env
+
+      # The target directory of the root workspace is on the sticky disk. The
+      # sealed workspace builds into peppy-shared/target on the root disk of
+      # the runner: it is the smaller of the two, and a lint of it compiles
+      # no test binary.
+      - uses: $/.github/actions/cargo-cache
+        with:
+          suite: lint
+
+      - name: Lint the peppy workspace
+        uses: $/.github/actions/cargo-lint
+
+      # This lint runs whatever the one above did, so one red workspace never
+      # hides the other.
+      - name: Lint the peppy-shared workspace
+        if: ${{ !cancelled() }}
+        uses: $/.github/actions/cargo-lint
+        with:
+          working-directory: peppy-shared
+
   # The lockfile, .github/workflows/actions.lock, holds the commit of each
   # action that the workflows of this repository use, and GitHub Actions runs
   # that commit only. This job fails when the lockfile does not agree with
@@ -717,6 +761,7 @@ jobs:
       - install-script-aarch64
       - peppy-shared
       - cross-check
+      - lint
       - lockfile
     # Runs whatever happened above: on the default condition a failed or
     # cancelled suite would leave this check unreported instead of red.

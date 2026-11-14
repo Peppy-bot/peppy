@@ -1,0 +1,50 @@
+name: Cargo lint
+description: >-
+  Holds one cargo workspace to its lint tables. The lint tables set each lint
+  at `warn`, so that a build goes on past a finding; this action runs clippy
+  with every warning denied (`build.warnings` of cargo), which covers the
+  lints of rustc and of clippy and the lints of cargo itself, such as a
+  dependency that no code uses. It lints every target of the workspace, then
+  each package alone: the build of the workspace joins the features that its
+  members turn on in each other, and a package built alone, as a release or a
+  consumer builds it, has its own features only. Expects the Rust toolchain
+  with clippy and the build cache to be in place.
+
+inputs:
+  working-directory:
+    description: The workspace to lint, relative to the repository root.
+    default: .
+
+runs:
+  using: composite
+  steps:
+    - name: Lint every target of the workspace
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        CARGO_BUILD_WARNINGS: deny
+      run: cargo clippy --workspace --all-targets --locked
+
+    # Every package is linted, so that one red package never hides another,
+    # and the step names each package that failed.
+    - name: Lint each package alone
+      if: ${{ !cancelled() }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        CARGO_BUILD_WARNINGS: deny
+      run: |
+        set -euo pipefail
+        packages=$(cargo metadata --no-deps --format-version 1 --locked |
+          python3 -c 'import json, sys; print("\n".join(sorted(package["name"] for package in json.load(sys.stdin)["packages"])))')
+        failed=()
+        for package in $packages; do
+          echo "::group::cargo clippy -p $package"
+          cargo clippy -p "$package" --locked || failed+=("$package")
+          echo "::endgroup::"
+        done
+        if [ ${#failed[@]} -gt 0 ]; then
+          list=$(printf '%s, ' "${failed[@]}")
+          echo "::error::clippy reports a warning or an error in these packages built alone: ${list%, }"
+          exit 1
+        fi

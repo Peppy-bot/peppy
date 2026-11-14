@@ -61,6 +61,17 @@ SUITES = {
 # under crates/ is gated on the moment its manifest lands.
 WORKSPACE_SUITE = "workspace"
 
+# The suite that lints the two workspaces with the cargo-lint action. Every
+# crate of both is its input, a member that no test suite builds by default
+# included, with what each workspace resolves itself from and the files below:
+# the clippy configuration of each workspace and the action itself.
+LINT_SUITE = "lint"
+LINT_INPUTS = [
+    "clippy.toml",
+    "peppy-shared/clippy.toml",
+    ".github/actions/cargo-lint/**",
+]
+
 # Suites with no cargo package: each one's whole world is a few trees,
 # toolchain included.
 #
@@ -127,6 +138,7 @@ JOBS = {
     "multi-daemon-e2e": ["multi_daemon_e2e"],
     "docs-integration": ["docs_integration"],
     "cross-check": ["cross_check"],
+    "lint": [LINT_SUITE],
     "release-scripts": ["scripts"],
     "install-archive-aarch64": ["install_script"],
     "install-script": ["install_script"],
@@ -153,7 +165,9 @@ CI_INPUTS = [
 
 # The plumbing the cargo suites build and run through, on top of CI_INPUTS:
 # the sticky-disk-report action is a step of the cargo-cache action. The two
-# scripts suites never touch it.
+# scripts suites never touch it. The lint suite builds through the cargo
+# cache and never through cargo-suite; it is gated on the whole list, as the
+# other suites of the workspaces are.
 CARGO_CI_INPUTS = [
     ".github/actions/cargo-cache/**",
     ".github/actions/sticky-disk-report/**",
@@ -333,7 +347,8 @@ def select_everything() -> dict[str, str]:
     it. The cargo selection is spelled `--workspace` because the package names
     are exactly what a failed graph walk could not produce."""
     selection = {
-        suite: "true" for suite in [WORKSPACE_SUITE] + list(SUITES) + list(TREE_SUITES)
+        suite: "true"
+        for suite in [WORKSPACE_SUITE, LINT_SUITE] + list(SUITES) + list(TREE_SUITES)
     }
     selection.update(
         {
@@ -367,6 +382,13 @@ def select(files: Sequence[str]) -> dict[str, str]:
         selection[suite] = gate(crate_touched(manifests[package], extra + peppy_inputs))
     for suite, globs in TREE_SUITES.items():
         selection[suite] = gate(touches(files, globs + CI_INPUTS, ()))
+    selection[LINT_SUITE] = gate(
+        touches(
+            files,
+            peppy_inputs + PEPPY_SHARED_INPUTS + LINT_INPUTS,
+            set(graph.directories.values()),
+        )
+    )
 
     shared = sorted(
         name
