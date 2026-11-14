@@ -928,6 +928,42 @@ mod tests {
         }
     }
 
+    /// The vendored manifest of a crate has no `[lints]` table, and a table
+    /// leaves a manifest together with the comment above it. A comment above
+    /// the `[lints]` table of a crate of `peppy-shared` would thus not reach
+    /// the node that vendors the crate.
+    #[test]
+    fn no_shared_crate_holds_a_comment_above_its_lint_table() {
+        let shared = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../peppy-shared");
+        let mut lint_tables = 0;
+        for entry in fs::read_dir(&shared).unwrap() {
+            let manifest_path = entry.unwrap().path().join("Cargo.toml");
+            let Ok(manifest) = fs::read_to_string(&manifest_path) else {
+                continue;
+            };
+            let manifest: DocumentMut = manifest.parse().unwrap();
+            let Some(lints) = manifest.get("lints").and_then(toml_edit::Item::as_table) else {
+                continue;
+            };
+            let above = lints
+                .decor()
+                .prefix()
+                .and_then(toml_edit::RawString::as_str)
+                .unwrap_or_default();
+            assert!(
+                !above.contains('#'),
+                "{} holds a comment above [lints]:\n{above}",
+                manifest_path.display()
+            );
+            lint_tables += 1;
+        }
+        assert!(
+            lint_tables > 0,
+            "no crate of {} has a lint table",
+            shared.display()
+        );
+    }
+
     /// The lints of the tool `tool` (`rust` or `clippy`) that the
     /// `[workspace.lints]` table of the manifest at `manifest_path` sets, each
     /// with its value as text. `[workspace.lints]` itself holds no key of its

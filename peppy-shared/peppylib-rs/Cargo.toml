@@ -8,13 +8,13 @@ description = "The Peppy control library"
 license = "MIT OR Apache-2.0"
 readme = "Readme.md"
 
+[lints]
+workspace = true
+
 # The package is named `peppylib-rs` (to sit alongside `peppylib-py` in the
 # peppy-shared workspace), but the library target stays `peppylib` so this
 # crate's own tests/doctests and every consumer keep `use peppylib::...`.
 # Consumers depend on it as `peppylib = { package = "peppylib-rs", path = ... }`.
-[lints]
-workspace = true
-
 [lib]
 name = "peppylib"
 
