@@ -325,7 +325,7 @@ sha256 = "81e0852e4a545dd872207ee95e114c3f0af3e95c025a0df2fd47cc8ae6189610"
 [[segment.source]]
 page = "guides/first_node.mdx"
 section = "Writing your first node"
-sha256 = "2bf9c8aec0f1104241f87a20ad7db169861bc71dd14681c98bdfbd630c16ca69"
+sha256 = "b6ef75b8712c7bec2a9b77a8d02bc811b2c7affe4809dc29f81da8f4742ed78e"
 
 [[segment.source]]
 page = "reference/coming_from_ros2.mdx"
@@ -432,7 +432,7 @@ chapter = "Run and test one node"
 [[segment.source]]
 page = "guides/first_node.mdx"
 section = "Project structure"
-sha256 = "ebd6106c477976ae31f2fdb4448305611c32a1d50e7b571a4145e74b8a4bea80"
+sha256 = "2d145a055a49f16141bc28f8cf2fbb1a94da7d59c30267b44d6bdb125479826f"
 
 [[segment.source]]
 page = "guides/standalone_node.mdx"
@@ -442,7 +442,7 @@ sha256 = "7b473d99c8147bd6ede951f78b921a48ccfb73666d83b30092b4812b79e202bf"
 [[segment.source]]
 page = "guides/standalone_node.mdx"
 section = "Debugging a node"
-sha256 = "78a58d900f4b6d6224ebce6f489abf9244d969c7a2bfe683ddcf7dd2821156b7"
+sha256 = "3062b97f349fc47a2879366050edb77b65196b370a2ea22cc82ef8524780a2e5"
 
 [[segment.source]]
 page = "advanced_guides/testing.mdx"
