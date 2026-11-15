@@ -101,7 +101,7 @@ The `Node images` line of `peppy container status` shows which of the two ways a
 | Line | Meaning |
 |------|---------|
 | `mounted` | Apptainer mounts the image of each node. |
-| `unpacked at each start (<directories> are on overlayfs)` | Each node starts from a copy of its image. The line names each directory on overlayfs among `/tmp`, `/var/tmp`, the home directory and the data root. |
+| `unpacked at each start (<directories> are on overlayfs)` | Each node starts from a copy of its image. The line names each directory on overlayfs among `/tmp`, `/var/tmp`, the home directory and the data root. It does not name a directory that is below another one of the list, such as a data root in the home directory. |
 
 The line is for the directories that each node has. A node with a mount whose source is on overlayfs starts from a copy also when the line shows `mounted`. The daemon writes the same information in its log.
 

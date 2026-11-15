@@ -123,6 +123,62 @@ fn build_and_run_container() {
     );
 }
 
+/// With `--unsquash`, which a daemon that is not root passes for a container
+/// that can write to a directory on overlayfs, apptainer unpacks the image
+/// into the scratch directory of the command and runs the container from the
+/// copy: the container has no squashfuse mount of its image. Apptainer
+/// removes the copy when the container ends.
+///
+/// Only a Linux host gives a command a scratch directory of its own.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_run_that_unpacks_its_image_uses_the_scratch_dir_of_its_command() {
+    let runscript = "    ls \"$SCRATCH_DIR\"\n    echo mounts:\n    cat /proc/self/mountinfo\n";
+    let Some((facade, tmp_dir, sif_path)) = build_container_with_runscript(runscript) else {
+        return;
+    };
+    let scratch = tmp_dir.path().join("scratch");
+    fs::create_dir(&scratch).expect("create the scratch directory");
+    let scratch_str = scratch.to_str().expect("the scratch path is valid UTF-8");
+
+    let output = facade
+        .run(&sif_path.to_string_lossy())
+        .raw_flag("--unsquash")
+        .scratch_dir(&scratch)
+        .bind(scratch_str, None, None)
+        .apptainer_env("SCRATCH_DIR", scratch_str)
+        .output()
+        .expect("the run should start");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "apptainer run --unsquash should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (scratch_entries, mounts) = stdout
+        .split_once("mounts:\n")
+        .expect("the runscript prints the two parts");
+    assert!(
+        scratch_entries
+            .lines()
+            .any(|entry| entry.starts_with("rootfs-")),
+        "apptainer should unpack the image into the scratch directory of the command, which \
+         holds: {scratch_entries:?}"
+    );
+    assert!(
+        !mounts.contains("squashfuse"),
+        "a container that runs from an unpacked image should have no squashfuse mount: {mounts}"
+    );
+    let left: Vec<_> = fs::read_dir(&scratch)
+        .expect("read the scratch directory")
+        .collect();
+    assert!(
+        left.is_empty(),
+        "apptainer should remove the unpacked image when the container ends, and left: {left:?}"
+    );
+}
+
 /// Integration test: build a container and execute a command inside it via `apptainer exec`.
 ///
 /// Exercises `Apptainer::exec()` with the real Apptainer runtime

@@ -201,22 +201,30 @@ pub(crate) struct UnprivilegedDaemon {
 }
 
 impl UnprivilegedDaemon {
-    /// The directories on overlayfs among those that apptainer binds into
-    /// each container (the directories for temporary files, then the home
-    /// directory) and then `directories`, each one time.
+    /// The outermost directories on overlayfs among those that apptainer
+    /// binds into each container (the directories for temporary files, then
+    /// the home directory) and then `directories`, each one time. A
+    /// directory below another of them is not in the list: a volume at the
+    /// outer one holds it also.
     fn directories_on_overlayfs(&self, directories: &[&Path]) -> Vec<PathBuf> {
-        let mut on_overlayfs: Vec<PathBuf> = Vec::new();
         let of_each_container = TEMPORARY_DIRECTORIES
             .into_iter()
             .map(Path::new)
             .chain(self.home.as_deref());
-        for directory in of_each_container.chain(directories.iter().copied()) {
-            if self.host.is_on_overlayfs(directory) && !on_overlayfs.iter().any(|d| d == directory)
-            {
-                on_overlayfs.push(directory.to_path_buf());
+        let on_overlayfs: Vec<&Path> = of_each_container
+            .chain(directories.iter().copied())
+            .filter(|directory| self.host.is_on_overlayfs(directory))
+            .collect();
+        let mut outermost: Vec<PathBuf> = Vec::new();
+        for directory in &on_overlayfs {
+            let is_below_another = on_overlayfs
+                .iter()
+                .any(|other| other != directory && directory.starts_with(other));
+            if !is_below_another && !outermost.iter().any(|listed| listed == directory) {
+                outermost.push(directory.to_path_buf());
             }
         }
-        on_overlayfs
+        outermost
     }
 }
 
@@ -378,7 +386,7 @@ mod tests {
         assert_eq!(
             unpacked_images.image_files(&[Path::new(DATA_ROOT)]),
             ImageFiles::Unpacked {
-                directories_on_overlayfs: paths(&["/tmp", "/var/tmp", HOME, DATA_ROOT]),
+                directories_on_overlayfs: paths(&["/tmp", "/var/tmp", HOME]),
             }
         );
     }
@@ -462,6 +470,41 @@ mod tests {
         assert_eq!(
             unpacked_images.flag_for(&command(Some("/srv/instances/camera_inst"), &[])),
             None
+        );
+    }
+
+    /// The data root below a home directory on overlayfs is not named: a
+    /// volume at the home directory holds it also. A data root that is not
+    /// below another directory of the list is named.
+    #[test]
+    fn a_directory_below_another_one_on_overlayfs_is_not_listed() {
+        let unpacked_images = daemon_that_is_not_root(FakeHost::docker_container());
+
+        assert_eq!(
+            unpacked_images.image_files(&[Path::new(DATA_ROOT), Path::new("/tmp/builds")]),
+            ImageFiles::Unpacked {
+                directories_on_overlayfs: paths(&["/tmp", "/var/tmp", HOME]),
+            }
+        );
+        assert_eq!(
+            unpacked_images.image_files(&[Path::new("/peppy-home")]),
+            ImageFiles::Unpacked {
+                directories_on_overlayfs: paths(&["/tmp", "/var/tmp", HOME, "/peppy-home"]),
+            }
+        );
+    }
+
+    /// The order of the directories does not decide which one is named.
+    #[test]
+    fn the_outer_directory_is_listed_when_the_inner_one_comes_first() {
+        let host = FakeHost::without_overlayfs().with_overlayfs_at("/data");
+        let unpacked_images = daemon_that_is_not_root(host);
+
+        assert_eq!(
+            unpacked_images.image_files(&[Path::new("/data/recordings"), Path::new("/data")]),
+            ImageFiles::Unpacked {
+                directories_on_overlayfs: paths(&["/data"]),
+            }
         );
     }
 
