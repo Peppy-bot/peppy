@@ -68,12 +68,24 @@ The first launch pulls the MuJoCo simulation image (a few hundred megabytes) and
 
 ## Step 3: Drive the arms
 
-Once the launcher prints `Launch complete`, open two browser tabs:
+The launch ends with the pages the stack serves, under `Web pages:`, one URL per address of the machine:
 
-| Address | What it is |
-|---|---|
-| **http://localhost:8080** | the MuJoCo viewer, showing both arms in the simulated world |
-| **http://localhost:8765** | the `openarm_web_commander` control panel |
+```
+Web pages:
+  alpha_commander_inst (openarm_web_commander:v1) @cn-sweet-edison
+    panel   http://127.0.0.1:8765
+            http://100.123.58.116:8765
+  simulation_inst (sim_mujoco:v1) @cn-sweet-edison
+    viewer  http://127.0.0.1:8080
+            http://100.123.58.116:8080
+```
+
+Open both pages, each in a browser tab:
+
+| Page | Address | What it is |
+|---|---|---|
+| `viewer` | **http://localhost:8080** | the MuJoCo viewer, showing both arms in the simulated world |
+| `panel` | **http://localhost:8765** | the `openarm_web_commander` control panel |
 
 Put them side by side. The panel opens in **Streaming** mode, with a card per arm: press **Enable** on one, drag any of its joint sliders or its gripper slider, and that side follows your input live in the viewer. The mode switch has three more modes to try once the arms move: **Actions** for one governed move to a target you compose, **Gestures** for a baked choreography, and **Motors** for a read-only view of every motor's health.
 
@@ -104,7 +116,7 @@ It prints the instance's state and health plus the path to its run log, which is
 
 **The panel won't load and `alpha_commander_inst` is not running.** Port 8765 is taken, usually by an earlier instance that is still up. Find it with `peppy stack list` and stop it with `peppy node stop <instance_id>`, then launch again.
 
-**The viewer isn't on 8080.** Something else holds that port, so the sim took the next free one. Read the port off the sim's run log (`peppy node info sim_mujoco:v1` prints its path), or pin one by setting `viewer_port` in the sim instance's `arguments` (flatten the launcher to a file with `peppy stack resolve openarm_simulation --with mujoco`, edit it, and launch the file).
+**The viewer isn't on 8080.** Something else holds that port, so the sim took one the operating system picked. The `viewer` lines under `Web pages:` are the addresses it serves, and `peppy node info sim_mujoco:v1` lists them again. To pin a port, set `viewer_port` in the sim instance's `arguments` (flatten the launcher to a file with `peppy stack resolve openarm_simulation --with mujoco`, edit it, and launch the file).
 
 **A build fails on Linux.** Apptainer needs packages of the distribution and unprivileged user namespaces, which the installer normally configures. Check with `peppy container status`, and repair it with `peppy container setup` (see [Containers](/advanced_guides/containers/)).
 
