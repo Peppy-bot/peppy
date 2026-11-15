@@ -129,7 +129,8 @@ def test_no_root_install_happy_path() -> None:
 def test_no_root_install_warns_about_a_missing_fuse2fs() -> None:
     """PEPPY_NO_ROOT_INSTALL=1 without fuse2fs: a warning, and the install succeeds.
 
-    The daemon starts without fuse2fs, and install.sh installs no package.
+    Container nodes build and run without fuse2fs, and install.sh installs no
+    package.
     """
     set_linger(True)
     install_container_node_packages()
@@ -140,8 +141,8 @@ def test_no_root_install_warns_about_a_missing_fuse2fs() -> None:
 
     assert_installed(result)
     assert (
-        "Warning: This machine does not have packages that the daemon starts "
-        "without: fuse2fs." in result.stdout + result.stderr
+        "Warning: This machine does not have packages that container nodes build "
+        "and run without: fuse2fs." in result.stdout + result.stderr
     ), f"install.sh should warn about fuse2fs{diagnostic(result)}"
     missing = login_shell("! command -v fuse2fs")
     assert missing.returncode == 0, (
