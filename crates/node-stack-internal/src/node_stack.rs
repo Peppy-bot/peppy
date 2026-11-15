@@ -14,8 +14,8 @@ pub use build_artifact_cache::{
 };
 use entity::serialize_node_entity;
 pub use entity::{
-    Artifact, BuildContext, BuiltInLaunch, NodeEntity, NodeStage, OutputSinks, PulledArtifact,
-    StartContext, StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard,
+    Artifact, BuildContext, BuiltInLaunch, CommittedProcess, NodeEntity, NodeStage, OutputSinks,
+    PulledArtifact, StartContext, StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard,
 };
 use pairing::PairingRegistry;
 pub use pairing::{PairEndpoint, Pairing, PlannedPair, RemoteSlotMeta, SlotAddr};

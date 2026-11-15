@@ -275,9 +275,9 @@ impl InstanceKeys {
 /// process-exit means a `CoreNode` can be constructed in tests and embedders
 /// without risking a host-process kill.
 pub fn check_runtime_prerequisites() -> Result<()> {
-    // The prerequisites of Apptainer that have a fix: the programs of the
-    // distribution that a build runs, and on Ubuntu 24.04+ the AppArmor
-    // profile that allows unprivileged user namespace creation.
+    // The prerequisite of Apptainer whose failure stops the daemon: on
+    // Ubuntu 24.04+ the AppArmor profile that allows unprivileged user
+    // namespace creation.
     #[cfg(target_os = "linux")]
     {
         let apptainer =
@@ -286,6 +286,14 @@ pub fn check_runtime_prerequisites() -> Result<()> {
         // that are not containers run on such a machine: the daemon starts
         // and tells why each container build fails.
         if let Some(refusal) = apptainer.user_namespace_refusal() {
+            tracing::warn!("{refusal}");
+        }
+        // Only a container build runs `newuidmap` and `mksquashfs`. A
+        // machine without them runs the images that it has and the nodes
+        // that are not containers: the daemon starts and tells why each
+        // container build stops, with the command that installs the
+        // packages.
+        if let Some(refusal) = apptainer.missing_build_programs() {
             tracing::warn!("{refusal}");
         }
     }
@@ -1055,7 +1063,14 @@ impl CoreNode {
             .expect("presence token lock never poisoned: the write-once holder cannot panic") =
             Some(token);
 
-        clear_instances_dir(&self.peppy_dirs);
+        // The removal of an unpacked image can take seconds, so it runs on a
+        // thread that can block.
+        let peppy_dirs = self.peppy_dirs.clone();
+        if let Err(error) =
+            tokio::task::spawn_blocking(move || clear_instances_dir(&peppy_dirs)).await
+        {
+            tracing::warn!("The removal of what earlier instances left did not end: {error}");
+        }
         // The key files of the instances of an earlier boot go with its
         // instances, and the command line gets its key file for this boot
         // before any endpoint takes a call.

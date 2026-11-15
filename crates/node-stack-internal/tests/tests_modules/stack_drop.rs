@@ -76,7 +76,8 @@ async fn dropping_the_last_stack_handle_kills_a_running_instance() {
         std::time::Instant::now(),
     )
     .await
-    .expect("commit_started should succeed");
+    .expect("commit_started should succeed")
+    .child;
 
     drop(stack);
 
@@ -121,7 +122,8 @@ async fn a_surviving_stack_handle_keeps_its_instances_alive() {
         std::time::Instant::now(),
     )
     .await
-    .expect("commit_started should succeed");
+    .expect("commit_started should succeed")
+    .child;
     let pid = child.id().expect("the child is still running");
 
     let survivor = stack.clone();

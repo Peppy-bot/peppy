@@ -167,6 +167,28 @@ mod container_e2e_tests {
             !log_content.contains("CodegenFingerprintRead"),
             "log file should not contain config fingerprint startup errors, got:\n{log_content}"
         );
+
+        // The apptainer command of the instance has a scratch directory of
+        // its own while its process runs. A SIGKILL gives apptainer no time
+        // to remove what it wrote there, so the daemon removes the directory
+        // once it has reaped the process. The directory of a later process
+        // of the instance has another name.
+        let scratch_dirs: Vec<std::path::PathBuf> =
+            std::fs::read_dir(started.peppy_dirs.container_scratch_dir())
+                .expect("the scratch directories of the container commands")
+                .map(|entry| entry.expect("a scratch directory").path())
+                .collect();
+        let [scratch_dir] = scratch_dirs.as_slice() else {
+            panic!("the running container should have one scratch directory, got {scratch_dirs:?}");
+        };
+        let pid = started_instance.pid.expect("the instance has a pid");
+        node_stack::kill_process_group(pid);
+        common::poll_until(
+            Duration::from_mins(1),
+            "the daemon removes the scratch directory of a container that was killed",
+            || (!scratch_dir.exists()).then_some(()),
+        )
+        .await;
     }
 
     /// End-to-end test: a container build's `%post` runs with the cargo

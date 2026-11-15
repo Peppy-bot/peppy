@@ -1407,7 +1407,8 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
         std::time::Instant::now(),
     )
     .await
-    .expect("commit_started should succeed");
+    .expect("commit_started should succeed")
+    .child;
     assert_eq!(
         returned_child.id(),
         Some(pid),
@@ -1773,7 +1774,8 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
         std::time::Instant::now(),
     )
     .await
-    .expect("commit_started should succeed");
+    .expect("commit_started should succeed")
+    .child;
     assert_eq!(
         returned_child.id(),
         Some(new_pid),
