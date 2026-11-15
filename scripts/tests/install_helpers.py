@@ -25,12 +25,16 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import json
 import os
 import platform
 import shlex
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -197,18 +201,99 @@ def show_step(
 
 
 def daemon_logs(home: Path) -> str:
-    """The end of each log that the daemon of *home* wrote for its launches,
-    its node builds and its node runs, for the report of a launch that failed.
+    """The end of each log that the daemon of *home* wrote for its stack, its
+    launches, its node builds and its node runs, for the report of a launch
+    that failed.
 
-    The run log of a node that stops after its start holds the error that
-    stopped it, which the output of the launch does not show.
+    The stack log tells how each instance that stopped ended. The run log of
+    a node that stops after its start holds the error that stopped it, which
+    the output of the launch does not show.
     """
     logs = login_shell(
-        f"tail -n 80 {home}/logs/launch/* {home}/logs/build/* {home}/logs/run/* 2>&1"
+        f"tail -n 80 {home}/stack_log.log {home}/logs/launch/* "
+        f"{home}/logs/build/* {home}/logs/run/* 2>&1"
     )
     return (
-        f"\n--- launch, node build and node run logs of the daemon ---\n{logs.stdout}"
+        "\n--- stack, launch, node build and node run logs of the daemon ---\n"
+        f"{logs.stdout}"
     )
+
+
+@dataclass(frozen=True)
+class StackInstance:
+    """One instance of the node stack, as `peppy stack list --json` reports
+    it."""
+
+    # The node of the instance, `<name>:<tag>`.
+    node: str
+    instance_id: str
+    state: str
+    healthy: bool
+
+    @property
+    def is_up(self) -> bool:
+        """Whether `peppy stack list` shows the instance as `running` under
+        `STATUS` and `healthy` under `HEALTH`."""
+        return self.state == "running" and self.healthy
+
+    def __str__(self) -> str:
+        health = "healthy" if self.healthy else "unhealthy"
+        return f"{self.instance_id} of {self.node}: {self.state}, {health}"
+
+
+def parse_stack_list(listing: str) -> list[StackInstance]:
+    """The instances of the stack of each daemon in *listing*, which is what
+    `peppy stack list --json` printed. A text that is not such a listing
+    fails the test."""
+    try:
+        document = json.loads(listing)
+        return [
+            _parse_stack_instance(node, instance)
+            for core_node in document["core_nodes"]
+            for node in core_node["stack"]["nodes"]
+            for instance in node["instances"]
+        ]
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        pytest.fail(
+            f"`peppy stack list --json` printed no stack listing ({error!r}):\n"
+            f"{listing}"
+        )
+
+
+def _parse_stack_instance(node: Mapping, instance: Mapping) -> StackInstance:
+    name, tag = node["name"], node["tag"]
+    instance_id, state, healthy = (
+        instance["instance_id"],
+        instance["state"],
+        instance["healthy"],
+    )
+    if not (
+        isinstance(name, str)
+        and isinstance(tag, str)
+        and isinstance(instance_id, str)
+        and isinstance(state, str)
+        and isinstance(healthy, bool)
+    ):
+        raise TypeError(f"an instance of another shape: {instance!r} of {node!r}")
+    return StackInstance(
+        node=f"{name}:{tag}", instance_id=instance_id, state=state, healthy=healthy
+    )
+
+
+# Ends the request of a page that a server accepts and does not answer.
+PAGE_TIMEOUT_SECONDS = 30
+
+
+def page_status(url: str) -> int:
+    """The HTTP status of the page at *url*, as a browser on this machine
+    gets it: the request goes to the server itself, through no proxy. A
+    server that does not answer raises OSError."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url, timeout=PAGE_TIMEOUT_SECONDS) as response:
+            return response.status
+    except urllib.error.HTTPError as refused:
+        return refused.code
 
 
 def assert_installed(result: subprocess.CompletedProcess[str]) -> None:

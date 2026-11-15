@@ -33,6 +33,8 @@ from .install_helpers import (
     install_container_node_packages,
     linux_only,
     login_shell,
+    page_status,
+    parse_stack_list,
     peppy_environment,
     peppy_home,
     pin_default_hubs,
@@ -53,6 +55,15 @@ QUICKSTART_LAUNCH = "peppy stack launch openarm_simulation --with mujoco"
 # cache, so each node of the launch builds from nothing: 7 to 10 minutes on
 # the 8 cores of a CI instance.
 QUICKSTART_LAUNCH_TIMEOUT_SECONDS = 30 * 60
+# The node of the MuJoCo simulation that the launch starts, as the quickstart
+# names it (`peppy node info sim_mujoco:v1`).
+QUICKSTART_SIMULATION_NODE = "sim_mujoco:v1"
+# The two pages that the quickstart opens once the launch is complete (step
+# 3), each with the name the quickstart gives it.
+QUICKSTART_PAGES = {
+    "the MuJoCo viewer": "http://localhost:8080",
+    "the control panel": "http://localhost:8765",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -351,9 +362,12 @@ def test_quickstart(capsys: pytest.CaptureFixture[str]) -> None:
     `Daemon Info` block, which is the answer of that service. On Linux, the
     launch of the quickstart then runs on that service: `peppy stack launch`
     returns once each node has built its container image, has started and has
-    ended its setup. On macOS, peppy runs each node in a Linux virtual
-    machine, and a macOS runner is a virtual machine that cannot start one,
-    so the test ends before the launch there.
+    ended its setup. The stack must then be the one that the quickstart
+    tells of: `peppy stack list` shows each instance as `running` and
+    `healthy`, the MuJoCo simulation among them, and the MuJoCo viewer and
+    the control panel answer at their addresses. On macOS, peppy runs each
+    node in a Linux virtual machine, and a macOS runner is a virtual machine
+    that cannot start one, so the test ends before the launch there.
 
     The log of the run shows what each step printed. The test resets the
     stack it launched, so the tests after it share the machine with no node.
@@ -397,6 +411,37 @@ def test_quickstart(capsys: pytest.CaptureFixture[str]) -> None:
         f"`{QUICKSTART_LAUNCH}` should exit with 0 and print `Launch complete`"
         f"{diagnostic(launch)}{daemon_logs(home)}"
     )
+
+    listing = login_shell(f"{environment} && peppy stack list --json")
+    assert listing.returncode == 0, (
+        f"`peppy stack list` should list the stack{diagnostic(listing)}"
+    )
+    instances = parse_stack_list(listing.stdout)
+    with capsys.disabled():
+        print("\n=== The instances of the stack ===", flush=True)
+        print("\n".join(str(instance) for instance in instances), flush=True)
+    stopped = [str(instance) for instance in instances if not instance.is_up]
+    assert not stopped, (
+        "each instance of the stack should be running and healthy after "
+        f"`Launch complete`, and these are not: {stopped}{daemon_logs(home)}"
+    )
+    assert QUICKSTART_SIMULATION_NODE in {instance.node for instance in instances}, (
+        f"the stack should hold an instance of {QUICKSTART_SIMULATION_NODE}, the "
+        f"MuJoCo simulation{diagnostic(listing)}"
+    )
+
+    for page, url in QUICKSTART_PAGES.items():
+        try:
+            status = page_status(url)
+        except OSError as unanswered:
+            pytest.fail(
+                f"{page} should answer at {url} after `Launch complete`: "
+                f"{unanswered}{daemon_logs(home)}"
+            )
+        assert status == 200, (
+            f"{page} at {url} should answer with the status 200, not {status}"
+            f"{daemon_logs(home)}"
+        )
 
     reset = login_shell(f"{environment} && peppy stack reset", timeout=600)
     assert reset.returncode == 0, f"the stack reset failed{diagnostic(reset)}"

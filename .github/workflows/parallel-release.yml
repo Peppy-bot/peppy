@@ -34,9 +34,10 @@ name: Parallel release
 # with the x86_64 archive. The release launches one launcher on those commits:
 # the quickstart test of the two Linux install-test legs runs the launch of
 # the quickstart, `peppy stack launch openarm_simulation --with mujoco`, on
-# the archive of its platform. Before it publishes the release, publish tags
-# each hub `peppy-release/<tag>` at its recorded commit: that tag is where a
-# peppy of this version reads its default hubs.
+# the archive of its platform, and checks that each node of the stack runs,
+# the MuJoCo simulation among them. Before it publishes the release, publish
+# tags each hub `peppy-release/<tag>` at its recorded commit: that tag is
+# where a peppy of this version reads its default hubs.
 # Nothing is published when a job before publish fails, or when publish fails
 # before its release step. Once publish ends, live-check reads the sites users
 # get the release from until they serve it.
@@ -328,8 +329,11 @@ jobs:
   # (see install-tests.yml). The quickstart test does the steps of the
   # quickstart on that machine: a full install, the background service that
   # the install registers, `peppy info`, then `peppy stack launch
-  # openarm_simulation --with mujoco` on that service. A peppy of this
-  # release reads each default hub at the tag `peppy-release/<tag>`, which
+  # openarm_simulation --with mujoco` on that service. After the launch,
+  # `peppy stack list` must show each instance as running and healthy, the
+  # MuJoCo simulation among them, and the MuJoCo viewer and the control
+  # panel must answer at the addresses that the quickstart gives. A peppy of
+  # this release reads each default hub at the tag `peppy-release/<tag>`, which
   # publish creates. So for that test the install reads each default hub at
   # its commit of the hub set, the commit that publish tags. The machine
   # holds no key for private-nodes-hub, as the machine of a user.
