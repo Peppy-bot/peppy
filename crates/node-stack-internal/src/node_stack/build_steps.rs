@@ -18,6 +18,7 @@ use crate::build_progress::{BuildProgressMonitor, LastOutputLine};
 use crate::node_stack::container_build_cache::{
     self, SoleUvCacheUse, UvCachePruneOutcome, UvCacheUse,
 };
+use crate::node_stack::container_scratch::ContainerScratch;
 use config::node::PeppygenLanguage;
 use containers::{BuildActivity, BuildActivityProbe};
 
@@ -508,8 +509,20 @@ async fn run_uv_cache_prune(
 ) -> Result<UvCachePruneOutcome, String> {
     let command = container_build_cache::uv_cache_prune_command();
     let command: Vec<&str> = command.iter().map(String::as_str).collect();
+    // Where apptainer unpacks the image when it does not mount it. The guard
+    // removes the directory when the prune is over, also what a prune that
+    // was killed left in it.
+    let scratch = match ContainerScratch::create(inputs.peppy_dirs) {
+        Ok(scratch) => scratch,
+        Err(e) => {
+            return Ok(UvCachePruneOutcome::Failed {
+                reason: format!("cannot make the scratch directory of the prune: {e}"),
+            });
+        }
+    };
     let mut cmd_builder = apptainer
         .exec(&image.to_string_lossy(), &command)
+        .scratch_dir(scratch.path())
         .clean_env()
         .raw_flag("--contain")
         .raw_flag("--no-home")

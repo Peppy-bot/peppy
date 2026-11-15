@@ -2,6 +2,7 @@ pub mod add_steps;
 mod build_artifact_cache;
 mod build_steps;
 mod container_build_cache;
+pub mod container_scratch;
 mod entity;
 mod pairing;
 mod pypi_mirror;

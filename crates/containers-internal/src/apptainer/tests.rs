@@ -9,6 +9,8 @@ use super::facade::{
     profile_file_names_programs, setup_fix, shell_escape_single_quoted, unmet_prerequisites_error,
 };
 use super::facade::{Apptainer, Backend, GuestSignal, is_uri, passes_contain, prepare_scratch_dir};
+#[cfg(target_os = "linux")]
+use super::image_files::UnpackedImages;
 use super::registry_auth::{RegistryAuth, RegistryAuthSource};
 #[cfg(target_os = "linux")]
 use super::root_user_namespace::UserNamespace;
@@ -97,6 +99,8 @@ struct NativeFacadeFixture {
     l4t_manifest_dir: PathBuf,
     #[cfg(target_os = "linux")]
     user_namespace: UserNamespace,
+    #[cfg(target_os = "linux")]
+    unpacked_images: UnpackedImages,
     absent_bind_paths: AbsentBindPaths,
 }
 
@@ -112,6 +116,8 @@ impl Default for NativeFacadeFixture {
             l4t_manifest_dir: scratch.join("no-such-l4t-manifest-dir"),
             #[cfg(target_os = "linux")]
             user_namespace: UserNamespace::ApptainerDefault,
+            #[cfg(target_os = "linux")]
+            unpacked_images: UnpackedImages::Never,
             absent_bind_paths: AbsentBindPaths::default(),
         }
     }
@@ -128,6 +134,8 @@ impl NativeFacadeFixture {
                 l4t_manifest_dir: self.l4t_manifest_dir,
                 #[cfg(target_os = "linux")]
                 user_namespace: self.user_namespace,
+                #[cfg(target_os = "linux")]
+                unpacked_images: self.unpacked_images,
                 absent_bind_paths: self.absent_bind_paths,
             },
             extra_mounts: Vec::new(),
@@ -142,8 +150,9 @@ impl NativeFacadeFixture {
 /// sanitized copy a build command writes lands in [`native_fixture_scratch`],
 /// never next to the host's real credentials. Its NVIDIA L4T manifest
 /// directory does not exist either, so a `--nv` command never reads the host's
-/// manifest. It is the facade of a daemon that is not root, on a host that has
-/// the source of each bind of apptainer.
+/// manifest. It is the facade of a daemon whose containers need no flag to
+/// get the files of their image, on a host that has the source of each bind
+/// of apptainer.
 fn native_facade() -> Apptainer {
     NativeFacadeFixture::default().build()
 }
@@ -460,6 +469,108 @@ fn a_lima_run_passes_no_userns() {
     let args = cmd.build_args().expect("build_args should succeed");
 
     assert_eq!(args, ["run", "docker://alpine"]);
+}
+
+/// The commands of a daemon that is not root, where a container can write to
+/// a directory on overlayfs: see `image_files`.
+#[cfg(target_os = "linux")]
+mod of_a_daemon_that_is_not_root_beside_overlayfs {
+    use super::*;
+    use crate::apptainer::image_files::fixtures::{FakeHost, HOME, daemon_that_is_not_root};
+
+    /// [`native_facade`] of a daemon that is not root on `host`.
+    fn facade_on(host: FakeHost) -> Apptainer {
+        NativeFacadeFixture {
+            unpacked_images: daemon_that_is_not_root(host),
+            ..NativeFacadeFixture::default()
+        }
+        .build()
+    }
+
+    #[test]
+    fn a_run_in_a_docker_container_unpacks_the_image_before_its_other_flags() {
+        let facade = facade_on(FakeHost::docker_container());
+
+        let args = facade
+            .run("/images/node.sif")
+            .raw_flag("--nv")
+            .build_args()
+            .expect("build_args should succeed");
+
+        assert_eq!(args, ["run", "--unsquash", "--nv", "/images/node.sif"]);
+    }
+
+    #[test]
+    fn an_exec_in_a_docker_container_unpacks_the_image() {
+        let facade = facade_on(FakeHost::docker_container());
+
+        let args = facade
+            .exec("/images/node.sif", &["echo", "hello"])
+            .build_args()
+            .expect("build_args should succeed");
+
+        assert_eq!(
+            args,
+            ["exec", "--unsquash", "/images/node.sif", "echo", "hello"]
+        );
+    }
+
+    /// A bind source on overlayfs is enough, on a host whose other
+    /// directories are not on overlayfs.
+    #[test]
+    fn a_run_with_a_bind_source_on_overlayfs_unpacks_the_image() {
+        let facade = facade_on(FakeHost::without_overlayfs().with_overlayfs_at("/data"));
+
+        let args = facade
+            .run("/images/node.sif")
+            .working_dir(Path::new("/srv/instances/node_inst"))
+            .bind("/data/recordings", None, None)
+            .build_args()
+            .expect("build_args should succeed");
+
+        assert_eq!(
+            args,
+            [
+                "run",
+                "--unsquash",
+                "--bind",
+                "/data/recordings",
+                "/images/node.sif"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_run_with_a_volume_at_each_directory_mounts_the_image() {
+        let host = FakeHost::docker_container().with_volumes(&["/tmp", "/var/tmp", HOME, "/srv"]);
+        let facade = facade_on(host);
+
+        let args = facade
+            .run("/images/node.sif")
+            .working_dir(Path::new("/srv/instances/node_inst"))
+            .build_args()
+            .expect("build_args should succeed");
+
+        assert_eq!(args, ["run", "/images/node.sif"]);
+    }
+
+    /// A build unpacks no image: apptainer makes the image in a directory of
+    /// the disk.
+    #[test]
+    fn a_build_in_a_docker_container_passes_no_unpack_flag() {
+        let facade = facade_on(FakeHost::docker_container());
+
+        let (output, def) = build_paths_under_home();
+        let args = facade
+            .build(&output, &def)
+            .build_args()
+            .expect("build_args should succeed");
+
+        assert!(
+            !args.iter().any(|arg| arg == "--unsquash"),
+            "a build should unpack no image, got: {args:?}"
+        );
+    }
 }
 
 /// The commands of a daemon that is the real root, which only a Linux host
@@ -2530,6 +2641,24 @@ fn native_command_sets_apptainer_tmpdir() {
     );
 }
 
+/// A command with a scratch directory of its own gives apptainer that
+/// directory, and not the one that the commands of the facade share.
+#[test]
+fn native_command_with_a_scratch_dir_of_its_own_sets_it_as_apptainer_tmpdir() {
+    let facade = native_facade();
+    let scratch_dir = Path::new("/opt/peppy-tmp/container_scratch/41_0");
+    let cmd = facade
+        .run("image.sif")
+        .scratch_dir(scratch_dir)
+        .into_std_command()
+        .expect("native command assembly should succeed");
+
+    assert_eq!(
+        command_env(&cmd, "APPTAINER_TMPDIR"),
+        Some(scratch_dir.to_path_buf())
+    );
+}
+
 /// The Lima backend leaves it unset: the command is handed to `limactl shell`,
 /// which does not carry the host environment into the guest, so setting it
 /// would only look like it worked.
@@ -2550,6 +2679,23 @@ fn lima_command_does_not_set_apptainer_tmpdir() {
         None,
         "a host-side APPTAINER_TMPDIR would not survive the hop into the guest"
     );
+}
+
+/// The Lima backend ignores the scratch directory of a command, for the
+/// same reason.
+#[test]
+fn lima_command_with_a_scratch_dir_of_its_own_does_not_set_apptainer_tmpdir() {
+    let facade = lima_facade();
+    let home = std::env::var("HOME").expect("HOME must be set");
+    let sif = PathBuf::from(&home).join("peppy_tmpdir_test/node.sif");
+
+    let cmd = facade
+        .run(sif.to_str().expect("utf-8 sif path"))
+        .scratch_dir(&PathBuf::from(&home).join("peppy_tmpdir_test/scratch"))
+        .into_std_command()
+        .expect("lima command assembly should succeed");
+
+    assert_eq!(command_env(&cmd, "APPTAINER_TMPDIR"), None);
 }
 
 /// The Docker config a Docker CLI web login leaves behind: the Docker Hub

@@ -33,6 +33,7 @@ use super::build_steps::{
     ContainerBuildInputs, archive_dir_to_storage, build_container_image, move_sif_to_storage,
     run_build_cmd,
 };
+use super::container_scratch;
 use super::pairing::{PlannedPair, SlotAddr};
 use super::pypi_mirror;
 use super::run_steps::{
@@ -463,19 +464,27 @@ impl OutputSinks {
 }
 
 /// The files that one spawn of an instance writes for its process: its
-/// runtime config and its key file. Both live as long as that process, and
-/// go together when it ends or its start fails.
+/// runtime config, its key file and, for a container, the scratch directory
+/// of its apptainer command. They live as long as that process, and go
+/// together when it ends or its start fails.
 #[derive(Debug, Clone)]
 pub(crate) struct SpawnFiles {
     pub(crate) runtime_config: PathBuf,
     pub(crate) credential: PathBuf,
+    /// Where apptainer unpacks the image of a container that it does not
+    /// mount (see [`container_scratch`]). `None` for a process that is not a
+    /// container.
+    pub(crate) container_scratch: Option<PathBuf>,
 }
 
 impl SpawnFiles {
-    /// Removes both files, best-effort: a file already gone is no error.
+    /// Removes the files, best-effort: a file already gone is no error.
     pub(crate) fn remove(&self) {
         let _ = std::fs::remove_file(&self.runtime_config);
         let _ = std::fs::remove_file(&self.credential);
+        if let Some(dir) = &self.container_scratch {
+            container_scratch::remove(dir);
+        }
     }
 }
 
@@ -1329,6 +1338,7 @@ impl NodeEntity {
         let SpawnCommand {
             mut command,
             runtime_config_path: runtime_config,
+            container_scratch,
             description: spawn_description,
         } = match (&artifact, node_config.execution.container.as_ref()) {
             (Artifact::BuiltIn(launch), _) => build_built_in_command(
@@ -1411,6 +1421,7 @@ impl NodeEntity {
         let spawn_files = SpawnFiles {
             runtime_config,
             credential: ctx.credential.to_path_buf(),
+            container_scratch,
         };
         let spawned = {
             let mut guard = handle.write();
@@ -2728,6 +2739,7 @@ mod tests {
         SpawnFiles {
             runtime_config: PathBuf::from("/nonexistent/runtime_config.json5"),
             credential: PathBuf::from("/nonexistent/instance.key"),
+            container_scratch: None,
         }
     }
 
@@ -3610,6 +3622,7 @@ mod tests {
             spawn_files: SpawnFiles {
                 runtime_config: instance_dir.join("peppy_runtime.json5"),
                 credential: instance_dir.join("instance.key"),
+                container_scratch: None,
             },
             stderr_buffer: StderrTail::new(),
             output_reader_handles: Vec::new(),
@@ -3623,8 +3636,8 @@ mod tests {
 
     /// A `sleep` child and the context `prepare_and_spawn` hands back for
     /// its start as `instance_id` on an entity of generation `generation`.
-    /// The instance dir and the runtime config file of the start exist under
-    /// `peppy_root`, so a test can see whether the commit removes them.
+    /// The instance dir and the files of the start exist under `peppy_root`,
+    /// so a test can see whether the commit removes them.
     fn sleeping_start(
         peppy_root: &Path,
         instance_id: &str,
@@ -3636,6 +3649,10 @@ mod tests {
         std::fs::write(&runtime_config_path, "{}").expect("runtime config file");
         let credential = peppy_root.join(format!("{instance_id}.key"));
         std::fs::write(&credential, "{}").expect("key file");
+        // What apptainer leaves of the image of a container that is killed.
+        let container_scratch = peppy_root.join(format!("{instance_id}_scratch"));
+        std::fs::create_dir_all(container_scratch.join("rootfs-1/root"))
+            .expect("container scratch directory");
         let child = tokio::process::Command::new("sleep")
             .arg("5")
             .spawn()
@@ -3651,6 +3668,7 @@ mod tests {
                 spawn_files: SpawnFiles {
                     runtime_config: runtime_config_path,
                     credential,
+                    container_scratch: Some(container_scratch),
                 },
                 stderr_buffer: StderrTail::new(),
                 output_reader_handles: Vec::new(),
@@ -3715,6 +3733,12 @@ mod tests {
         assert!(
             !spawn_files.credential.exists(),
             "a refused commit removes the key file"
+        );
+        assert!(
+            spawn_files
+                .container_scratch
+                .is_some_and(|dir| !dir.exists()),
+            "a refused commit removes the container scratch directory"
         );
     }
 

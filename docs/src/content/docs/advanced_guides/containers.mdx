@@ -62,6 +62,8 @@ The status also asks the kernel for a user namespace, as Apptainer does before e
 
 The setup has no fix for a namespace that the kernel refuses. `peppy container status` then exits with `1`. `peppy container setup` makes the fixes of the other prerequisites, writes a warning with the message of `unshare`, and exits with `0`. The daemon writes the same warning at its start: the nodes that are not containers run, and each container build fails.
 
+The `Node images` line tells how each node gets the files of its image: `mounted`, or `unpacked at each start` for a user that is not root where a node can write to a directory on overlayfs, as in a Docker container (see [Node images on overlayfs](#node-images-on-overlayfs)). An unpacked image is not a failure, and the status exits with `0`.
+
 To check the packages alone, add `--packages`:
 
 ```sh
@@ -77,6 +79,36 @@ On macOS, no setup is needed; containers run inside a Lima VM which handles perm
 ### Host files in a container
 
 Apptainer binds `/etc/localtime` and `/etc/hosts` of the host into each container, so a node has the time zone and the host names of the host. They are the `bind path` entries of the `apptainer.conf` that Peppy installs. When the host does not have the source of a `bind path` entry, Peppy skips that bind, and the node has what its image has at that path. A minimal host can be without `/etc/localtime`: the `ubuntu` Docker image has none until it gets the `tzdata` package.
+
+### Node images on overlayfs
+
+Apptainer gives a node the files of its image in one of two ways: it mounts the image, or it unpacks the image and starts the node from the copy. Peppy asks for the copy (`--unsquash`) when these two conditions apply together:
+
+- The daemon is not root.
+- A directory that the node can write to is on overlayfs: `/tmp`, `/var/tmp`, the home directory of the user of the daemon, the working directory of the node (which is in the data root), or the source of one of its mounts.
+
+The root file system of a Docker or Podman container is on overlayfs. So a daemon of a user that is not root starts each node from a copy of its image there, unless a volume or a tmpfs holds each of these directories.
+
+The cause is in the kernel. For a user that is not root, the mounted image is a FUSE file system in the user namespace of the node, and that namespace maps this user only. Overlayfs reads and writes a file with the credentials of the user that mounted it, and FUSE refuses a request of a user that the namespace does not map. A node that writes data of its mounted image to a file on overlayfs, for example a file that is compiled into its program, stops with `Bad address (os error 14)`. The copy is made of files of the disk, so a node that starts from it has no such fault.
+
+The copy has a cost:
+
+- Each start of a node unpacks its image with `unsquashfs`, which comes with the `squashfs-tools` package. A 400 MB image takes about one second on a fast disk.
+- The copy uses disk space while the node runs. It is in the data root, in `tmp/container_scratch`. Peppy removes it when the node stops, and removes at the start of the daemon each copy that an earlier daemon left.
+
+The `Node images` line of `peppy container status` shows which of the two ways applies:
+
+| Line | Meaning |
+|------|---------|
+| `mounted` | Apptainer mounts the image of each node. |
+| `unpacked at each start (<directories> are on overlayfs)` | Each node starts from a copy of its image. The line names each directory on overlayfs among `/tmp`, `/var/tmp`, the home directory and the data root. |
+
+The line is for the directories that each node has. A node with a mount whose source is on overlayfs starts from a copy also when the line shows `mounted`. The daemon writes the same information in its log.
+
+To get mounted images in a container, do one of these:
+
+- Put a volume or a tmpfs at each directory that the line names. For `/tmp` and `/var/tmp` of a Docker container, add `--tmpfs /tmp:exec --tmpfs /var/tmp:exec` to `docker run`, and put a volume at the home directory.
+- Run the daemon as root (see [Running the daemon as root](#running-the-daemon-as-root)).
 
 ### Running the daemon as root
 

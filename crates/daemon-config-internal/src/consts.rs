@@ -281,6 +281,15 @@ impl PeppyDirs {
         self.root.join("tmp")
     }
 
+    /// The scratch directories of the container commands of the daemon, one
+    /// for each command: apptainer writes the temporary files of the command
+    /// there, and unpacks there an image that it does not mount. The daemon
+    /// removes the directory of a command when the command is over, and
+    /// removes them all at its boot.
+    pub fn container_scratch_dir(&self) -> PathBuf {
+        self.tmp_dir().join("container_scratch")
+    }
+
     /// Directory holding peppy-managed runtime binaries.
     ///
     /// This resolves to `$PEPPY_HOME/bin`, defaulting to `~/.peppy/bin` in a

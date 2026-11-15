@@ -78,7 +78,9 @@ fn core_node_description() -> config::description::DocumentDescription {
 #[cfg(test)]
 mod tests;
 
-/// Clears instance directories from previous runs.
+/// Clears what the instances of previous runs left: their directories, and
+/// the scratch directories of their container commands, where apptainer
+/// leaves the unpacked image of a container that is killed.
 fn clear_instances_dir(peppy_dirs: &PeppyDirs) {
     let inst_dir = peppy_dirs.instances_dir();
     if inst_dir.exists()
@@ -86,6 +88,7 @@ fn clear_instances_dir(peppy_dirs: &PeppyDirs) {
     {
         tracing::warn!("Failed to clear instances directory: {}", e);
     }
+    node_stack::container_scratch::remove_all(peppy_dirs);
 }
 
 /// Returns this daemon's hostname for operator-facing annotations.
@@ -1018,8 +1021,10 @@ impl CoreNode {
     /// Side effects performed up front, before listeners are registered:
     /// - **Claims its core-node name** with a liveliness token and refuses to
     ///   boot if a foreign daemon already advertises that name.
-    /// - **Deletes the instances directory** (`peppy_dirs.instances_dir()`) to
-    ///   clear stale state from a previous run; see `clear_instances_dir`.
+    /// - **Deletes the instances directory** (`peppy_dirs.instances_dir()`)
+    ///   and the scratch directories of the container commands
+    ///   (`peppy_dirs.container_scratch_dir()`) to clear stale state from a
+    ///   previous run; see `clear_instances_dir`.
     /// - **Writes/updates `repositories.json5`** via [`repo::ensure_default_repos`]
     ///   so newly-bundled default repos land in pre-existing user configs.
     /// - **Reads again the repositories on `@{peppy-release}` that were read

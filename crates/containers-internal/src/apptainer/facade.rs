@@ -1,5 +1,7 @@
 use super::super::error::{Error, Result};
 use super::absent_bind_paths::{AbsentBindPaths, NO_MOUNT_FLAG};
+#[cfg(target_os = "linux")]
+use super::image_files::{ImageFiles, UnpackedImages};
 use super::l4t_manifest::{self, L4T_MANIFEST_DIR, NVLIBLIST_PATH, NvliblistSync};
 use super::lima;
 use super::registry_auth::{APPTAINER_AUTH_FILE_ENV, RegistryAuth};
@@ -185,6 +187,12 @@ pub(crate) enum Backend {
         /// apptainer uses a user namespace there on its own.
         #[cfg(target_os = "linux")]
         user_namespace: UserNamespace,
+        /// Which `run` and which `exec` ask apptainer to unpack the image;
+        /// see [`image_files`](super::image_files). The Lima backend has no
+        /// counterpart: no directory that a container of its guest writes to
+        /// is on overlayfs.
+        #[cfg(target_os = "linux")]
+        unpacked_images: UnpackedImages,
         /// The destinations of the binds of apptainer that a `run` or an
         /// `exec` skips, because this host does not have their source; see
         /// [`absent_bind_paths`](super::absent_bind_paths). The Lima backend
@@ -291,6 +299,9 @@ pub struct SetupStatus {
     /// What the kernel answers to the request of a user namespace for a
     /// container build.
     pub user_namespace: UnprivilegedUserNamespace,
+    /// How each node gets the files of its image. An unpacked image is not
+    /// a failure of the setup: it has no part in the verdict.
+    pub image_files: ImageFiles,
     /// What the checks come to.
     pub verdict: SetupVerdict,
 }
@@ -604,6 +615,9 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
     );
     let user_namespace = UnprivilegedUserNamespace::for_build_user(apparmor_restricted);
     let verdict = SetupVerdict::of(fix, &user_namespace);
+    let image_files = ImageFiles::of_the_nodes_of_the_build_user(
+        daemon_config::consts::PeppyDirs::default().root(),
+    );
 
     SetupStatus {
         programs,
@@ -612,6 +626,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
         apparmor_loaded,
         apparmor_manageable,
         user_namespace,
+        image_files,
         verdict,
     }
 }
@@ -848,6 +863,10 @@ impl Apptainer {
                 l4t_manifest_dir: PathBuf::from(L4T_MANIFEST_DIR),
                 #[cfg(target_os = "linux")]
                 user_namespace: UserNamespace::for_this_daemon(&apptainer_dir),
+                #[cfg(target_os = "linux")]
+                unpacked_images: UnpackedImages::for_this_daemon(
+                    daemon_config::consts::PeppyDirs::default().root(),
+                ),
                 absent_bind_paths: AbsentBindPaths::of_installation(&apptainer_dir),
             }
         };
@@ -1125,10 +1144,11 @@ impl Apptainer {
     // Command builders
     // -----------------------------------------------------------------------
 
-    /// The flags that this host needs on `command`, which runs `image`: the
-    /// user namespace of a root daemon whose kernel cannot mount the image,
-    /// then one `--no-mount` for each bind of apptainer whose source the host
-    /// does not have. The Lima backend needs none.
+    /// The flags that this host needs on `command`, which runs `image`: those
+    /// that decide how apptainer gives the container the files of the image
+    /// (see [`Self::image_files_flags`]), then one `--no-mount` for each bind
+    /// of apptainer whose source the host does not have. The Lima backend
+    /// needs none.
     ///
     /// # Errors
     ///
@@ -1145,31 +1165,39 @@ impl Apptainer {
         else {
             return Ok(Vec::new());
         };
-        let user_namespace_flag = self.user_namespace_flag(image, command)?;
+        let image_files_flags = self.image_files_flags(image, command)?;
         let no_mount_flags = absent_bind_paths
             .of_command(passes_contain(&command.flags))
             .iter()
             .flat_map(|destination| [NO_MOUNT_FLAG.to_string(), destination.clone()]);
-        Ok(user_namespace_flag
-            .map(str::to_string)
+        Ok(image_files_flags
             .into_iter()
+            .map(str::to_string)
             .chain(no_mount_flags)
             .collect())
     }
 
-    /// The flag that puts the container of `command`, which runs `image`, in
-    /// a user namespace, if the native backend needs one; see
-    /// [`root_user_namespace`](super::root_user_namespace).
+    /// The flags that decide how apptainer gives the container of `command`
+    /// the files of `image`, if the native backend needs one: the flag that
+    /// puts the container of a root daemon in a user namespace (see
+    /// [`root_user_namespace`](super::root_user_namespace)), then the flag
+    /// that unpacks the image for a daemon that is not root (see
+    /// [`image_files`](super::image_files)). No daemon gets the two.
     #[cfg(target_os = "linux")]
-    fn user_namespace_flag(
+    fn image_files_flags(
         &self,
         image: &str,
         command: &ApptainerCommand<'_>,
-    ) -> Result<Option<&'static str>> {
-        let Backend::Native { user_namespace, .. } = &self.backend else {
-            return Ok(None);
+    ) -> Result<Vec<&'static str>> {
+        let Backend::Native {
+            user_namespace,
+            unpacked_images,
+            ..
+        } = &self.backend
+        else {
+            return Ok(Vec::new());
         };
-        user_namespace.flag_for(&ImageCommand {
+        let image_command = ImageCommand {
             image: Path::new(image),
             apptainer_dir: &self.apptainer_dir,
             working_dir: command.working_dir.as_deref(),
@@ -1178,23 +1206,26 @@ impl Apptainer {
                 .iter()
                 .map(|bind| Path::new(&bind.src))
                 .collect(),
-        })
+        };
+        let user_namespace_flag = user_namespace.flag_for(&image_command)?;
+        let unpack_flag = unpacked_images.flag_for(&image_command);
+        Ok(user_namespace_flag.into_iter().chain(unpack_flag).collect())
     }
 
-    /// No flag: only a Linux host needs a user namespace for the containers
-    /// of a root daemon.
+    /// No flag: only a Linux host needs one to give a container the files of
+    /// its image.
     #[cfg(not(target_os = "linux"))]
     #[expect(
         clippy::unused_self,
         clippy::unnecessary_wraps,
         reason = "the signature is the one of the Linux implementation"
     )]
-    fn user_namespace_flag(
+    fn image_files_flags(
         &self,
         _image: &str,
         _command: &ApptainerCommand<'_>,
-    ) -> Result<Option<&'static str>> {
-        Ok(None)
+    ) -> Result<Vec<&'static str>> {
+        Ok(Vec::new())
     }
 
     /// Start building an `apptainer run` command.
@@ -2058,6 +2089,9 @@ pub struct ApptainerCommand<'a> {
     /// Host-side working directory for the apptainer process. See
     /// [`ApptainerCommand::working_dir`].
     working_dir: Option<PathBuf>,
+    /// The scratch directory of this command alone. See
+    /// [`ApptainerCommand::scratch_dir`].
+    scratch_dir: Option<PathBuf>,
 }
 
 /// Shows the command. A variable that goes into the container can hold a
@@ -2078,6 +2112,7 @@ impl fmt::Debug for ApptainerCommand<'_> {
             .field("lima_shell_extra_args", &self.lima_shell_extra_args)
             .field("cancel_pgid_path", &self.cancel_pgid_path)
             .field("working_dir", &self.working_dir)
+            .field("scratch_dir", &self.scratch_dir)
             .finish_non_exhaustive()
     }
 }
@@ -2095,6 +2130,7 @@ impl<'a> ApptainerCommand<'a> {
             lima_shell_extra_args: Vec::new(),
             cancel_pgid_path: None,
             working_dir: None,
+            scratch_dir: None,
         }
     }
 
@@ -2211,6 +2247,25 @@ impl<'a> ApptainerCommand<'a> {
         self
     }
 
+    /// Give the apptainer process `dir` (a host-side directory that exists)
+    /// for the temporary files of this command, in place of the scratch
+    /// directory that the commands of the facade share (see
+    /// [`apptainer_scratch_dir`]). Apptainer unpacks there an image that it
+    /// does not mount.
+    ///
+    /// Apptainer removes its temporary files when the command ends, and a
+    /// command that is killed leaves them. With a directory of its own, the
+    /// caller that kills the command removes what it left (see
+    /// [`remove_scratch_dir`](super::command_scratch::remove_scratch_dir)).
+    ///
+    /// The Lima backend ignores it: its commands run in the guest, whose
+    /// temporary files are on the disk of the guest.
+    #[must_use]
+    pub fn scratch_dir(mut self, dir: &Path) -> Self {
+        self.scratch_dir = Some(dir.to_path_buf());
+        self
+    }
+
     // -----------------------------------------------------------------------
     // Generic flag / args
     // -----------------------------------------------------------------------
@@ -2297,6 +2352,11 @@ impl<'a> ApptainerCommand<'a> {
             && let Some(auth_file) = self.facade.prepare_registry_auth_file()?
         {
             cmd.env(APPTAINER_AUTH_FILE_ENV, auth_file);
+        }
+        if let (Some(scratch_dir), Backend::Native { .. }) =
+            (&self.scratch_dir, &self.facade.backend)
+        {
+            cmd.env(APPTAINER_TMPDIR_ENV, scratch_dir);
         }
         Ok(cmd)
     }

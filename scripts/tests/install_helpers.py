@@ -197,10 +197,18 @@ def show_step(
 
 
 def daemon_logs(home: Path) -> str:
-    """The end of each log that the daemon of *home* wrote for its launches
-    and its node builds, for the report of a launch that failed."""
-    logs = login_shell(f"tail -n 80 {home}/logs/launch/* {home}/logs/build/* 2>&1")
-    return f"\n--- launch and node build logs of the daemon ---\n{logs.stdout}"
+    """The end of each log that the daemon of *home* wrote for its launches,
+    its node builds and its node runs, for the report of a launch that failed.
+
+    The run log of a node that stops after its start holds the error that
+    stopped it, which the output of the launch does not show.
+    """
+    logs = login_shell(
+        f"tail -n 80 {home}/logs/launch/* {home}/logs/build/* {home}/logs/run/* 2>&1"
+    )
+    return (
+        f"\n--- launch, node build and node run logs of the daemon ---\n{logs.stdout}"
+    )
 
 
 def assert_installed(result: subprocess.CompletedProcess[str]) -> None:

@@ -69,6 +69,7 @@ pub use build_io::{FeedbackLine, FeedbackOwner, FeedbackStream, OutputReaderHook
 pub use core_node_api::InstanceState;
 pub use instance_tasks::InstanceTasks;
 pub use node_stack::add_steps;
+pub use node_stack::container_scratch;
 pub use node_stack::{
     Artifact, Attempt, BuildContext, BuiltInLaunch, CACHED_BUILD_REUSE_PREFIX, EntityHandle,
     FirstStart, HealthKill, InstanceClock, KeptRelations, NodeEntity, NodeStack, NodeStage,

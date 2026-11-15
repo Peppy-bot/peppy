@@ -65,6 +65,11 @@ STATUS_MARK = "--- peppy container status ---"
 SETUP_APT_GET = "apt-get -o DPkg::Lock::Timeout=300"
 
 
+# The line of `peppy container status` that tells how each node gets the
+# files of its image.
+NODE_IMAGES_LINE = "Node images"
+
+
 def status_line(program: str, state: str) -> str:
     """The line of `peppy container status` for *program* in *state*."""
     return f"  {program:<23}: {state}"
@@ -78,7 +83,8 @@ def test_install_inside_container_installs_the_packages_of_container_nodes(
 
     Root builds with no fakeroot, so the setup installs squashfs-tools and
     fuse2fs, and not uidmap. Each check of `peppy container status` then
-    passes.
+    passes. The root file system of the container is on overlayfs, and root
+    has no fault there: each node of root mounts its image.
     """
     script = (
         f"{container_install_cmd(container_setup=True)} && "
@@ -104,6 +110,9 @@ def test_install_inside_container_installs_the_packages_of_container_nodes(
         status_line("newuidmap", "not required (the builds of root do not run it)")
         in status_output
     ), f"the status should not ask root for newuidmap{diagnostic(result)}"
+    assert status_line(NODE_IMAGES_LINE, "mounted") in status_output, (
+        f"each node of root should mount its image{diagnostic(result)}"
+    )
     assert "All checks passed. Container support is ready." in status_output, (
         f"each check should pass after the install{diagnostic(result)}"
     )
@@ -200,6 +209,10 @@ def test_install_as_a_user_that_is_not_root_installs_the_packages_through_sudo()
     installs uidmap also. The kernel of the host decides whether a container
     gives such a user a user namespace, so the test reads the lines of the
     packages in `peppy container status`, and not its exit status.
+
+    The root file system of the container is on overlayfs, so each directory
+    that a node of this user can write to is on it, and the status tells that
+    each node starts from an unpacked copy of its image.
     """
     user = "peppy-user"
     as_root = (
@@ -227,6 +240,17 @@ def test_install_as_a_user_that_is_not_root_installs_the_packages_through_sudo()
         assert status_line(program, "OK") in status_output, (
             f"the status should find {program}{diagnostic(result)}"
         )
+    unpacked = (
+        f"unpacked at each start (`/tmp`, `/var/tmp`, `/home/{user}` and "
+        f"`{CONTAINER_PEPPY_HOME}` are on overlayfs)"
+    )
+    assert status_line(NODE_IMAGES_LINE, unpacked) in status_output, (
+        f"the status should tell that each node starts from an unpacked image"
+        f"{diagnostic(result)}"
+    )
+    assert (
+        "Note: each node starts from an unpacked copy of its image" in status_output
+    ), f"the status should tell what an unpacked image costs{diagnostic(result)}"
 
 
 def test_install_admits_a_distribution_built_on_ubuntu(tmp_path: Path) -> None:

@@ -6,7 +6,9 @@ use std::io::IsTerminal;
 use clap::Subcommand;
 
 #[cfg(target_os = "linux")]
-use containers::{FailureSeverity, ProgramCheck, ProgramState, SetupVerdict, SystemPrograms};
+use containers::{
+    FailureSeverity, ImageFiles, ProgramCheck, ProgramState, SetupVerdict, SystemPrograms,
+};
 
 use super::Command;
 use crate::context::AppContext;
@@ -40,6 +42,11 @@ impl Command for ContainerCommand {
         }
     }
 }
+
+/// The section of the Containers guide that explains the unpacked images.
+#[cfg(target_os = "linux")]
+const UNPACKED_IMAGES_GUIDE: &str =
+    "https://docs.peppy.bot/advanced_guides/containers/#node-images-on-overlayfs";
 
 /// The installation directory of Apptainer that the checks are for.
 #[cfg(target_os = "linux")]
@@ -81,8 +88,16 @@ fn status() -> Result<()> {
         "  User namespace         : {}",
         user_namespace_state(&status.user_namespace)
     );
+    println!(
+        "  Node images            : {}",
+        image_files_state(&status.image_files)
+    );
     println!();
 
+    if let Some(note) = note_on_unpacked_images(&status.image_files) {
+        println!("{note}");
+        println!();
+    }
     let Some(advice) = advice_for_failing_checks(&status.verdict) else {
         println!("{}", summary_of_passing_checks(&status.verdict));
         return Ok(());
@@ -217,6 +232,31 @@ fn user_namespace_state(user_namespace: &containers::UnprivilegedUserNamespace) 
         Refused { answer } => format!("FAILED ({answer})"),
         Untested { reason } => format!("not tested ({reason})"),
     }
+}
+
+/// The state that the `Node images` line of `peppy container status` shows:
+/// how each node gets the files of its image.
+#[cfg(target_os = "linux")]
+fn image_files_state(image_files: &ImageFiles) -> String {
+    match image_files.cause_of_unpacking() {
+        None => "mounted".to_string(),
+        Some(cause) => format!("unpacked at each start ({cause})"),
+    }
+}
+
+/// What the status tells below its lines when peppy unpacks the image of
+/// each node: what this costs, and how to get mounted images. It is not a
+/// failure of the setup. `None` for images that peppy mounts.
+#[cfg(target_os = "linux")]
+fn note_on_unpacked_images(image_files: &ImageFiles) -> Option<String> {
+    image_files.cause_of_unpacking()?;
+    Some(format!(
+        "Note: each node starts from an unpacked copy of its image, because its user is not \
+         root and it can write to a directory on overlayfs. A start takes more time, and the \
+         copy uses disk space while the node runs.\n\
+         For mounted images, put a volume or a tmpfs at each directory that the `Node images` \
+         line names, or run the daemon as root. See {UNPACKED_IMAGES_GUIDE}"
+    ))
 }
 
 /// The warning of a setup on a machine whose kernel refuses the user
@@ -493,6 +533,36 @@ mod tests {
                 "{user_namespace:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_node_images_line_shows_how_a_node_gets_its_image() {
+        let unpacked = ImageFiles::Unpacked {
+            directories_on_overlayfs: vec!["/tmp".into(), "/home/operator".into()],
+        };
+
+        assert_eq!(image_files_state(&ImageFiles::Mounted), "mounted");
+        assert_eq!(
+            image_files_state(&unpacked),
+            "unpacked at each start (`/tmp` and `/home/operator` are on overlayfs)"
+        );
+    }
+
+    /// The note tells the cost and the two ways to mounted images, and
+    /// mounted images get none.
+    #[test]
+    fn the_note_on_unpacked_images_tells_how_to_get_mounted_images() {
+        let unpacked = ImageFiles::Unpacked {
+            directories_on_overlayfs: vec!["/tmp".into()],
+        };
+
+        let note = note_on_unpacked_images(&unpacked).expect("unpacked images have a note");
+
+        assert!(note.starts_with("Note: each node starts from an unpacked copy"));
+        assert!(note.contains("a volume or a tmpfs"));
+        assert!(note.contains("run the daemon as root"));
+        assert!(note.ends_with(UNPACKED_IMAGES_GUIDE));
+        assert_eq!(note_on_unpacked_images(&ImageFiles::Mounted), None);
     }
 
     /// The line of a missing program names the package to install. A
