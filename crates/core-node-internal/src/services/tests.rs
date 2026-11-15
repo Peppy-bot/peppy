@@ -329,6 +329,38 @@ async fn start_refuses_to_boot_when_name_already_claimed() {
     );
 }
 
+/// The boot clears what the instances of an earlier daemon left: their
+/// directories, and the scratch directories of their container commands,
+/// which hold the unpacked image of a container that was killed. The rest of
+/// the temporary directory of the daemon stays.
+#[cfg(unix)]
+#[test]
+fn the_boot_clears_the_instance_dirs_and_the_container_scratch_dirs() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let peppy_dirs = PeppyDirs::new(root.path());
+    let stale_instance = peppy_dirs.instances_dir().join("stale_instance");
+    std::fs::create_dir_all(&stale_instance).expect("instance dir of an earlier daemon");
+    // An unpacked image holds directories with the mode that they have in
+    // the image: here one that its owner cannot write to.
+    let unpacked_image = peppy_dirs
+        .container_scratch_dir()
+        .join("41_0/rootfs-1/root/usr");
+    std::fs::create_dir_all(&unpacked_image).expect("unpacked image of a killed container");
+    std::fs::write(unpacked_image.join("file"), b"content").expect("file of the image");
+    std::fs::set_permissions(&unpacked_image, std::fs::Permissions::from_mode(0o555))
+        .expect("read-only directory");
+    let kept = peppy_dirs.tmp_dir().join("kept");
+    std::fs::write(&kept, b"kept").expect("another temporary file");
+
+    clear_instances_dir(&peppy_dirs);
+
+    assert!(!peppy_dirs.instances_dir().exists());
+    assert!(!peppy_dirs.container_scratch_dir().exists());
+    assert!(kept.exists());
+}
+
 /// With no other daemon advertising the name, boot proceeds to the ready
 /// signal and the daemon's own presence token is live immediately.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

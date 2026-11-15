@@ -94,7 +94,7 @@ The cause is in the kernel. For a user that is not root, the mounted image is a 
 The copy has a cost:
 
 - Each start of a node unpacks its image with `unsquashfs`, which comes with the `squashfs-tools` package. A 400 MB image takes about one second on a fast disk.
-- The copy uses disk space while the node runs. It is in the data root, in `tmp/container_scratch`. Peppy removes it when the node stops, and removes at the start of the daemon each copy that an earlier daemon left.
+- The copy uses disk space while the node runs: as much as the files of the image, which can be some gigabytes for one node. It is in the data root, in `tmp/container_scratch`. Peppy removes it when the node stops, and removes at the start of the daemon each copy that an earlier daemon left.
 
 The `Node images` line of `peppy container status` shows which of the two ways applies:
 
