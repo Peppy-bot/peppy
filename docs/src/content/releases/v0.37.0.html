@@ -1,0 +1,44 @@
+<entry>
+  <title>v0.37.0</title>
+  <id>https://docs.peppy.bot/releases/v0-37-0/</id>
+  <updated>2026-11-15T00:00:00Z</updated>
+
+  <summary>Container nodes run in Docker and Podman, under a root daemon, and on minimal hosts, and the container setup does more.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.37.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Container nodes run in Docker and Podman, under a root daemon, and on minimal hosts, and the container setup does more.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on November 15, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;Building a Rust node now requires Rust 1.100 or later; update your Rust toolchain before you build.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;code&gt;peppy container setup&lt;/code&gt; installs the three distribution packages container nodes need (&lt;code&gt;uidmap&lt;/code&gt;, &lt;code&gt;squashfs-tools&lt;/code&gt;, and &lt;code&gt;fuse2fs&lt;/code&gt;) and works inside Docker and Podman containers.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;A daemon now starts when &lt;code&gt;newuidmap&lt;/code&gt;, &lt;code&gt;mksquashfs&lt;/code&gt;, or &lt;code&gt;fuse2fs&lt;/code&gt; is missing, running its other nodes and refusing each container build with the command that installs the missing package.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;code&gt;peppy container status&lt;/code&gt; reports every prerequisite, tests the kernel user namespace, shows how nodes get their image files, and takes &lt;code&gt;--packages&lt;/code&gt; to check build packages alone.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;A daemon running as root now runs container nodes, using a user namespace for an image whose squashfs its kernel cannot mount, as on WSL2 or the NVIDIA Jetson.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;A non-root daemon inside a Docker or Podman container now runs container nodes, unpacking each image at start when a writable directory sits on overlayfs.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Container nodes now start on a host that lacks &lt;code&gt;/etc/localtime&lt;/code&gt; or &lt;code&gt;/etc/hosts&lt;/code&gt;, such as a bare Ubuntu image, instead of failing on the missing bind source.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Node builds on the peppy base images read Ubuntu packages from a dated snapshot for repeatable versions, falling back to the regular Ubuntu mirror when it is unavailable.&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
