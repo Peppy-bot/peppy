@@ -69,6 +69,11 @@ def pull_request_event(head_branch, head_repository="Peppy-bot/nodes-hub"):
     }
 
 
+def run_url(run_id):
+    """The URL GitHub gives the peppy workflow run `run_id`."""
+    return f"https://github.com/{resolve.PEPPY_REPOSITORY}/actions/runs/{run_id}"
+
+
 def runs_response(*runs):
     """A workflow runs response of (id, status, conclusion) triples."""
     return {
@@ -78,7 +83,7 @@ def runs_response(*runs):
                 "id": run_id,
                 "status": status,
                 "conclusion": conclusion,
-                "html_url": resolve.run_url(run_id),
+                "html_url": run_url(run_id),
             }
             for run_id, status, conclusion in runs
         ],
@@ -86,7 +91,7 @@ def runs_response(*runs):
 
 
 def ci_run(status, conclusion=None, run_id=7):
-    return resolve.CiRun(run_id, status, conclusion, resolve.run_url(run_id))
+    return resolve.CiRun(run_id, status, conclusion, run_url(run_id))
 
 
 def artifacts_response(name, *artifacts):
@@ -129,21 +134,6 @@ def by_name(hub_set):
     return {resolved.hub.name: resolved for resolved in hub_set.hubs}
 
 
-def explicit_set_text(replaced=None, left_out=()):
-    """An explicit set pinning every hub at `main` and nodes-hub at the
-    checkout, with the entries of `replaced` (by hub name) swapped in and the
-    hubs named in `left_out` removed."""
-    entries = {
-        hub.name: {"ref": "peppy-release/v0.31.2", "commit": commit_of(hub, "main")}
-        for hub in resolve.HUBS
-    }
-    entries["nodes-hub"]["commit"] = CHECKOUT_COMMIT
-    entries.update(replaced or {})
-    for name in left_out:
-        del entries[name]
-    return json.dumps({"hubs": entries})
-
-
 def installed_peppy():
     return resolve.InstalledPeppy(
         build=resolve.PeppyBuild(
@@ -161,7 +151,7 @@ def installed_dev_build():
     return resolve.InstalledPeppy(
         build=resolve.PeppyBuild(
             kind=PeppyBuildKind.DEV_BUILD,
-            source=resolve.run_url(7),
+            source=run_url(7),
             description=f"the dev build of peppy branch `{SET_NAME}`",
             ref=SET_NAME,
             commit=PEPPY_BRANCH_COMMIT,
@@ -337,33 +327,24 @@ class LsRemote(unittest.TestCase):
 class PeppyBuildChoice(unittest.TestCase):
     def test_the_latest_release_policy_installs_the_latest_release(self):
         self.assertEqual(
-            resolve.choose_peppy_build(PeppyBuildPolicy.LATEST_RELEASE, False, None),
+            resolve.choose_peppy_build(PeppyBuildPolicy.LATEST_RELEASE, False),
             PeppyBuildKind.LATEST_RELEASE,
         )
 
     def test_the_dev_builds_policy_installs_a_dev_build(self):
         self.assertEqual(
-            resolve.choose_peppy_build(PeppyBuildPolicy.DEV_BUILDS, False, None),
+            resolve.choose_peppy_build(PeppyBuildPolicy.DEV_BUILDS, False),
             PeppyBuildKind.DEV_BUILD,
         )
 
     def test_a_fork_always_gets_the_latest_release_and_the_summary_says_so(self):
         for policy in PeppyBuildPolicy:
             with self.subTest(policy=policy):
-                kind = resolve.choose_peppy_build(policy, True, None)
+                kind = resolve.choose_peppy_build(policy, True)
                 self.assertEqual(kind, PeppyBuildKind.LATEST_RELEASE)
                 (note,) = resolve.peppy_build_notes(kind, True)
                 self.assertIn("fork", note)
                 self.assertIn("latest release", note)
-
-    def test_a_release_run_wins_over_every_policy(self):
-        for policy in PeppyBuildPolicy:
-            for from_fork in (False, True):
-                with self.subTest(policy=policy, from_fork=from_fork):
-                    self.assertEqual(
-                        resolve.choose_peppy_build(policy, from_fork, 123),
-                        PeppyBuildKind.RELEASE_RUN,
-                    )
 
     def test_no_note_without_a_fork(self):
         for kind in PeppyBuildKind:
@@ -376,14 +357,15 @@ class PeppyBuildChoice(unittest.TestCase):
 
 class RunnerArch(unittest.TestCase):
     def test_a_release_archive_matches_the_runner(self):
-        for kind in (PeppyBuildKind.LATEST_RELEASE, PeppyBuildKind.RELEASE_RUN):
-            for machine, arch in (
-                ("x86_64", Arch.X86_64),
-                ("aarch64", Arch.AARCH64),
-                ("arm64", Arch.AARCH64),
-            ):
-                with self.subTest(kind=kind, machine=machine):
-                    self.assertEqual(resolve.runner_arch(machine, kind), arch)
+        for machine, arch in (
+            ("x86_64", Arch.X86_64),
+            ("aarch64", Arch.AARCH64),
+            ("arm64", Arch.AARCH64),
+        ):
+            with self.subTest(machine=machine):
+                self.assertEqual(
+                    resolve.runner_arch(machine, PeppyBuildKind.LATEST_RELEASE), arch
+                )
 
     def test_a_dev_build_needs_an_x86_64_runner(self):
         self.assertEqual(
@@ -403,14 +385,10 @@ class RunnerArch(unittest.TestCase):
         with self.assertRaises(ResolveError):
             resolve.runner_arch("armv7l", PeppyBuildKind.LATEST_RELEASE)
 
-    def test_the_archive_names_follow_the_architecture(self):
+    def test_the_archive_name_follows_the_architecture(self):
         self.assertEqual(
             resolve.latest_release_url(Arch.AARCH64),
             "https://peppy.bot/latest/peppy-aarch64-unknown-linux-gnu.tgz",
-        )
-        self.assertEqual(
-            resolve.release_run_artifact_name(Arch.X86_64),
-            "archive-x86_64-unknown-linux-gnu",
         )
 
 
@@ -461,9 +439,7 @@ def uploaded_dev_build(commit=PEPPY_BRANCH_COMMIT, run_id=7):
 
 
 def pending_dev_build(commit=PEPPY_BRANCH_COMMIT):
-    return resolve.DevBuildPending(
-        commit, f"run `{resolve.run_url(7)}` is `in_progress`"
-    )
+    return resolve.DevBuildPending(commit, f"run `{run_url(7)}` is `in_progress`")
 
 
 class DevBuild(unittest.TestCase):
@@ -500,7 +476,7 @@ class DevBuild(unittest.TestCase):
         self.assertEqual(artifact.id, 71)
 
     def test_a_run_that_has_not_finished_is_pending(self):
-        url = resolve.run_url(7)
+        url = run_url(7)
         for status in ("queued", "in_progress"):
             for artifacts in ((), ((70, True),)):
                 with self.subTest(status=status, artifacts=artifacts):
@@ -524,7 +500,7 @@ class DevBuild(unittest.TestCase):
         self.assertEqual(
             pending,
             resolve.DevBuildPending(
-                PEPPY_BRANCH_COMMIT, f"run `{resolve.run_url(7)}` was cancelled"
+                PEPPY_BRANCH_COMMIT, f"run `{run_url(7)}` was cancelled"
             ),
         )
 
@@ -547,7 +523,7 @@ class DevBuild(unittest.TestCase):
                 )
 
     def test_a_finished_run_without_the_artifact_produced_no_dev_build(self):
-        url = resolve.run_url(7)
+        url = run_url(7)
         for conclusion in ("success", "failure", "timed_out"):
             with self.subTest(conclusion=conclusion):
                 with self.assertRaises(ResolveError) as refused:
@@ -558,7 +534,7 @@ class DevBuild(unittest.TestCase):
                 )
 
     def test_an_expired_artifact_is_refused_with_the_way_to_rebuild_it(self):
-        url = resolve.run_url(7)
+        url = run_url(7)
         with self.assertRaises(ResolveError) as refused:
             self.dev_build_artifact(ci_run("completed", "success"), (70, True))
         self.assertEqual(
@@ -612,7 +588,7 @@ class DevBuild(unittest.TestCase):
         self.assertEqual(fetched.build.kind, PeppyBuildKind.DEV_BUILD)
         self.assertEqual(fetched.build.ref, SET_NAME)
         self.assertEqual(fetched.build.commit, PEPPY_BRANCH_COMMIT)
-        self.assertEqual(fetched.build.source, resolve.run_url(7))
+        self.assertEqual(fetched.build.source, run_url(7))
 
     def test_a_job_that_installs_a_pending_dev_build_fails_with_the_way_on(self):
         heads, api = self.peppy_ci(
@@ -635,7 +611,7 @@ class DevBuild(unittest.TestCase):
         self.assertEqual(
             str(refused.exception),
             f"peppy dev build for `{PEPPY_BRANCH_COMMIT}` is not ready (run "
-            f"`{resolve.run_url(7)}` is `in_progress`); re-run this job when it "
+            f"`{run_url(7)}` is `in_progress`); re-run this job when it "
             "is uploaded.",
         )
 
@@ -909,11 +885,9 @@ class WaitForDevBuild(unittest.TestCase):
         self.assertEqual(self.clock.sleeps, [resolve.DEV_BUILD_POLL_SECONDS])
 
 
-def action_inputs(trigger=None, explicit_set=None, release_run_id=None, wait_only=True):
+def action_inputs(trigger=None, wait_only=True):
     return resolve.ActionInputs(
         hub_path="/runner/work/nodes-hub/nodes-hub",
-        explicit_set=explicit_set,
-        release_run_id=release_run_id,
         github_token="token",
         private_key_loaded=False,
         wait_only=wait_only,
@@ -963,177 +937,19 @@ class WaitForPeppy(unittest.TestCase):
         self.assertEqual(
             log,
             f"The dev build of peppy branch `{SET_NAME}` at `{PEPPY_BRANCH_COMMIT}` "
-            f"is uploaded: {resolve.run_url(7)}\n",
+            f"is uploaded: {run_url(7)}\n",
         )
-
-    def test_a_job_given_an_explicit_set_waits_for_the_dev_build_of_dev(self):
-        explicit_set = resolve.parse_explicit_set(explicit_set_text())
-        looked_for, _, _ = self.wait_for_peppy(action_inputs(explicit_set=explicit_set))
-        self.assertEqual(looked_for, [(None, "token")])
 
     def test_a_job_that_installs_no_dev_build_waits_for_nothing(self):
         fork = resolve.parse_trigger(
             "pull_request", pull_request_event(SET_NAME, "someone/nodes-hub")
         )
-        for inputs, kind in (
-            (action_inputs(trigger=fork), "latest-release"),
-            (action_inputs(release_run_id=123), "release-run"),
-        ):
-            with self.subTest(kind=kind):
-                looked_for, log, _ = self.wait_for_peppy(inputs)
-                self.assertEqual(looked_for, [])
-                self.assertEqual(
-                    log,
-                    f"Nothing to wait for: this job installs a `{kind}` peppy, not "
-                    "a dev build.\n",
-                )
-
-
-class ReleaseRun(unittest.TestCase):
-    NAME = resolve.release_run_artifact_name(Arch.AARCH64)
-    URL = resolve.run_url(9)
-
-    def artifacts(self, *artifacts):
-        return resolve.parse_artifacts(
-            artifacts_response(self.NAME, *artifacts), self.NAME
-        )
-
-    def test_the_run_archive_of_the_runner_is_used(self):
-        artifact = resolve.release_run_artifact(
-            self.URL, self.artifacts((90, False)), self.NAME
-        )
-        self.assertEqual(artifact.id, 90)
-
-    def test_a_release_run_without_the_archive_is_refused(self):
-        with self.assertRaises(ResolveError) as refused:
-            resolve.release_run_artifact(self.URL, self.artifacts(), self.NAME)
-        self.assertIn(self.NAME, str(refused.exception))
-
-    def test_an_expired_release_run_archive_is_refused(self):
-        with self.assertRaises(ResolveError) as refused:
-            resolve.release_run_artifact(
-                self.URL, self.artifacts((90, True)), self.NAME
-            )
-        self.assertIn("expired", str(refused.exception))
-
-
-class ExplicitSet(unittest.TestCase):
-    def refusal(self, text):
-        with self.assertRaises(ResolveError) as refused:
-            resolve.parse_explicit_set(text)
-        return str(refused.exception)
-
-    def test_an_explicit_set_is_used_as_given(self):
-        pins = resolve.parse_explicit_set(explicit_set_text())
-        hub_set = resolve.choose_hubs_from_explicit_set(
-            pins, NODES_HUB, CHECKOUT_COMMIT, True
-        )
-        self.assertIsNone(hub_set.name)
-        self.assertEqual(hub_set.notes, ())
-        resolved = by_name(hub_set)
-        self.assertEqual(list(resolved), [hub.name for hub in resolve.HUBS])
-        self.assertEqual(resolved["nodes-hub"].origin, HubOrigin.CHECKOUT)
-        self.assertEqual(resolved["nodes-hub"].ref, "checkout")
-        self.assertEqual(resolved["nodes-hub"].commit, CHECKOUT_COMMIT)
-        for hub in resolve.HUBS:
-            if hub is NODES_HUB:
-                continue
-            with self.subTest(hub=hub.name):
-                self.assertEqual(resolved[hub.name].origin, HubOrigin.EXPLICIT_SET)
-                self.assertEqual(resolved[hub.name].ref, "peppy-release/v0.31.2")
-                self.assertEqual(resolved[hub.name].commit, commit_of(hub, "main"))
-
-    def test_the_private_hub_of_an_explicit_set_needs_the_deploy_key(self):
-        pins = resolve.parse_explicit_set(explicit_set_text())
-        hub_set = resolve.choose_hubs_from_explicit_set(
-            pins, NODES_HUB, CHECKOUT_COMMIT, False
-        )
-        self.assertNotIn("private-nodes-hub", by_name(hub_set))
-        (note,) = hub_set.notes
-        self.assertIn("private-nodes-hub is left out", note)
-        self.assertIn("no deploy key", note)
-
-    def test_an_explicit_set_may_leave_out_the_private_hub(self):
-        pins = resolve.parse_explicit_set(
-            explicit_set_text(left_out=["private-nodes-hub"])
-        )
-        self.assertNotIn(PRIVATE_NODES_HUB, pins)
-        hub_set = resolve.choose_hubs_from_explicit_set(
-            pins, NODES_HUB, CHECKOUT_COMMIT, True
-        )
-        self.assertNotIn("private-nodes-hub", by_name(hub_set))
-        (note,) = hub_set.notes
-        self.assertIn("does not name it", note)
-
-    def test_an_explicit_set_that_is_not_json_is_refused(self):
-        self.assertIn("is not JSON", self.refusal("{hubs: "))
-
-    def test_an_explicit_set_of_the_wrong_shape_is_refused(self):
-        for text in (
-            "[]",
-            "{}",
-            '{"hubs": []}',
-            json.dumps({"hubs": {}, "name": "x"}),
-        ):
-            with self.subTest(text=text):
-                self.assertIn("must have the shape", self.refusal(text))
-
-    def test_an_explicit_set_entry_of_the_wrong_shape_is_refused(self):
-        commit = commit_of(NODES_HUB, "main")
-        for entry in (
-            "main",
-            {"commit": commit},
-            {"ref": "main", "commit": commit, "extra": 1},
-            {"ref": "", "commit": commit},
-            {"ref": 1, "commit": commit},
-        ):
-            with self.subTest(entry=entry):
-                self.assertIn(
-                    "entry of contracts-hub must have the shape",
-                    self.refusal(explicit_set_text({"contracts-hub": entry})),
-                )
-
-    def test_an_explicit_set_naming_an_unknown_hub_is_refused(self):
-        refusal = self.refusal(
-            explicit_set_text({"peppy": {"ref": "dev", "commit": "0" * 40}})
-        )
-        self.assertIn("unknown hub `peppy`", refusal)
-        for hub in resolve.HUBS:
-            self.assertIn(hub.name, refusal)
-
-    def test_an_explicit_set_with_a_bad_commit_is_refused(self):
-        for commit in ("A" * 40, "a" * 39, "a" * 41, "main", "g" * 40):
-            with self.subTest(commit=commit):
-                refusal = self.refusal(
-                    explicit_set_text({"mcp-hub": {"ref": "main", "commit": commit}})
-                )
-                self.assertIn(f"records `{commit}` for mcp-hub", refusal)
-
-    def test_an_explicit_set_leaving_out_a_public_hub_is_refused(self):
-        for hub in PUBLIC_HUBS:
-            with self.subTest(hub=hub.name):
-                refusal = self.refusal(explicit_set_text(left_out=[hub.name]))
-                self.assertIn(f"leaves out {hub.name}", refusal)
-
-    def test_an_explicit_set_leaving_out_the_hub_under_test_is_refused(self):
-        pins = resolve.parse_explicit_set(
-            explicit_set_text(left_out=["private-nodes-hub"])
-        )
-        with self.assertRaises(ResolveError) as refused:
-            resolve.choose_hubs_from_explicit_set(
-                pins, PRIVATE_NODES_HUB, CHECKOUT_COMMIT, True
-            )
-        self.assertIn("leaves out private-nodes-hub", str(refused.exception))
-
-    def test_a_checkout_the_explicit_set_does_not_record_is_refused(self):
-        pins = resolve.parse_explicit_set(explicit_set_text())
-        other = "e" * 40
-        with self.assertRaises(ResolveError) as refused:
-            resolve.choose_hubs_from_explicit_set(pins, NODES_HUB, other, True)
+        looked_for, log, _ = self.wait_for_peppy(action_inputs(trigger=fork))
+        self.assertEqual(looked_for, [])
         self.assertEqual(
-            str(refused.exception),
-            f"the checkout of nodes-hub is at {other}, but the set records "
-            f"{CHECKOUT_COMMIT}",
+            log,
+            "Nothing to wait for: this job installs a `latest-release` peppy, not "
+            "a dev build.\n",
         )
 
 
@@ -1343,18 +1159,75 @@ class ReleaseSetFile(unittest.TestCase):
             [(r.hub, r.ref, r.commit) for r in hub_set.hubs],
         )
 
-    def test_the_recorded_set_is_an_explicit_set_launchers_hub_takes(self):
-        hub_set, _ = read_release_set(self)
-        text = resolve.compact_json(resolve.release_set_document(hub_set))
-        pins = resolve.parse_explicit_set(text)
-        self.assertEqual(list(pins), list(resolve.HUBS))
+    def test_a_hub_of_a_release_set_comes_from_the_release_set(self):
+        hub_set = resolve.parse_release_set(release_set_text())
+        self.assertIsNone(hub_set.name)
+        self.assertEqual(hub_set.notes, ())
+        self.assertEqual(
+            [resolved.hub for resolved in hub_set.hubs], list(resolve.HUBS)
+        )
+        for resolved in hub_set.hubs:
+            with self.subTest(hub=resolved.hub.name):
+                self.assertEqual(resolved.origin, HubOrigin.RELEASE_SET)
+
+    def refusal(self, text):
+        with self.assertRaises(ResolveError) as refused:
+            resolve.parse_release_set(text)
+        return str(refused.exception)
 
     def test_a_release_set_leaving_out_a_hub_is_refused(self):
-        entries = json.loads(release_set_text())["hubs"]
-        del entries["private-nodes-hub"]
-        with self.assertRaises(ResolveError) as refused:
-            resolve.parse_release_set(json.dumps({"hubs": entries}))
-        self.assertIn("leaves out private-nodes-hub", str(refused.exception))
+        for hub in resolve.HUBS:
+            with self.subTest(hub=hub.name):
+                entries = json.loads(release_set_text())["hubs"]
+                del entries[hub.name]
+                self.assertIn(
+                    f"leaves out {hub.name}",
+                    self.refusal(json.dumps({"hubs": entries})),
+                )
+
+    def test_a_release_set_that_is_not_json_is_refused(self):
+        self.assertIn("is not JSON", self.refusal("{hubs: "))
+
+    def test_a_release_set_of_the_wrong_shape_is_refused(self):
+        for text in (
+            "[]",
+            "{}",
+            '{"hubs": []}',
+            json.dumps({"hubs": {}, "name": "x"}),
+        ):
+            with self.subTest(text=text):
+                self.assertIn("must have the shape", self.refusal(text))
+
+    def test_a_release_set_entry_of_the_wrong_shape_is_refused(self):
+        commit = commit_of(NODES_HUB, "main")
+        for entry in (
+            "main",
+            {"commit": commit},
+            {"ref": "main", "commit": commit, "extra": 1},
+            {"ref": "", "commit": commit},
+            {"ref": 1, "commit": commit},
+        ):
+            with self.subTest(entry=entry):
+                self.assertIn(
+                    "entry of contracts-hub must have the shape",
+                    self.refusal(release_set_text(**{"contracts-hub": entry})),
+                )
+
+    def test_a_release_set_naming_an_unknown_hub_is_refused(self):
+        refusal = self.refusal(
+            release_set_text(peppy={"ref": "dev", "commit": "0" * 40})
+        )
+        self.assertIn("unknown hub `peppy`", refusal)
+        for hub in resolve.HUBS:
+            self.assertIn(hub.name, refusal)
+
+    def test_a_release_set_with_a_bad_commit_is_refused(self):
+        for commit in ("A" * 40, "a" * 39, "a" * 41, "main", "g" * 40):
+            with self.subTest(commit=commit):
+                refusal = self.refusal(
+                    release_set_text(**{"mcp-hub": {"ref": "main", "commit": commit}})
+                )
+                self.assertIn(f"records `{commit}` for mcp-hub", refusal)
 
     def test_the_release_repositories_file_pins_every_hub_at_its_commit(self):
         hub_set = resolve.parse_release_set(
@@ -1500,8 +1373,6 @@ class ActionCommand(unittest.TestCase):
             os.environ,
             {
                 "INPUT_HUB_PATH": "/runner/work/nodes-hub/nodes-hub",
-                "INPUT_SET": "",
-                "INPUT_PEPPY_RUN_ID": "",
                 "INPUT_GITHUB_TOKEN": "token",
                 "INPUT_WAIT_ONLY": wait_only,
                 "PRIVATE_HUB_KEY_LOADED": "false",
@@ -1531,20 +1402,6 @@ class ActionCommand(unittest.TestCase):
         self.assertEqual(
             str(refused.exception), "`wait-only` must be `true` or `false`, got `yes`"
         )
-
-    def test_a_peppy_run_id_is_ascii_digits(self):
-        self.assertIsNone(resolve.parse_release_run_id(""))
-        self.assertEqual(resolve.parse_release_run_id("123"), 123)
-        # str.isdigit also holds for a superscript, which int() refuses, and
-        # for the digits of other scripts, which int() reads.
-        for text in ("12a", "-1", "\u00b2", "\u0661\u0662"):
-            with self.subTest(text=text):
-                with self.assertRaises(ResolveError) as refused:
-                    resolve.parse_release_run_id(text)
-                self.assertEqual(
-                    str(refused.exception),
-                    f"`peppy-run-id` must be a workflow run id, got `{text}`",
-                )
 
     def test_a_wait_only_job_waits_and_installs_nothing(self):
         for wait_only, called, not_called in (
@@ -1910,39 +1767,6 @@ class RepositoryFacts(unittest.TestCase):
         self.assert_workflow_has_line(workflow, f"name: {resolve.DEV_BUILD_ARTIFACT}")
         self.assert_workflow_has_line(
             workflow, f"path: dist/{Arch.X86_64.archive_name}"
-        )
-
-    def test_the_release_uploads_the_archives_this_action_downloads(self):
-        workflow = "parallel-release.yml"
-        name_template = "archive-${{ matrix.target }}"
-        self.assert_workflow_has_line(workflow, f"name: {name_template}")
-        self.assert_workflow_has_line(
-            workflow, "path: dist/peppy-${{ matrix.target }}.tgz"
-        )
-        for arch in Arch:
-            with self.subTest(arch=arch):
-                self.assert_workflow_has_line(workflow, f"- target: {arch.triple}")
-                self.assertEqual(
-                    resolve.release_run_artifact_name(arch),
-                    name_template.replace("${{ matrix.target }}", arch.triple),
-                )
-
-    def test_the_hub_launch_token_dispatches_in_launchers_hub_alone(self):
-        launchers_hub = resolve.HUBS_BY_NAME["launchers-hub"]
-        self.assert_workflow_has_line(
-            "parallel-release.yml", f"repositories: {launchers_hub.name}"
-        )
-        self.assert_workflow_has_line(
-            "parallel-release.yml", "permission-actions: write"
-        )
-
-    def test_the_hub_launch_stage_reads_its_run_with_the_job_token(self):
-        self.assert_has_line(
-            REPOSITORY_ROOT / "scripts/functions/cli.py",
-            'JOB_TOKEN_ENV = "PEPPY_JOB_TOKEN"',
-        )
-        self.assert_workflow_has_line(
-            "parallel-release.yml", "PEPPY_JOB_TOKEN: ${{ github.token }}"
         )
 
     def test_the_release_publish_token_covers_peppy_and_every_hub_of_the_set(self):

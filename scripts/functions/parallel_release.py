@@ -17,9 +17,6 @@ platform, all three at once, and no stage starts a VM:
 - `hub-check` (Linux): every hub of the hub set the release recorded, read at
   its commit by the daemon of the host's archive, installed, and its
   repository index checked there (see release_install_check.py).
-- `hub-launch` (any host): launchers-hub's tests, dispatched on the hub set the
-  release recorded and on the x86_64 archive of the run, waited for until they
-  succeed (see release_hubs.py).
 - `publish` (Linux): the tag of the release on every hub of the set, a check
   that the archive of the host, installed, reads the default hubs at that
   tag, the GitHub release from the three archives, then the notes committed
@@ -79,7 +76,6 @@ from .cli import (
     is_linux,
     is_macos_arm64,
     need_cmd,
-    require_job_token,
     require_release_token,
     run_with_error_handling,
     validate_release_environment,
@@ -109,7 +105,7 @@ from .lima import (
     require_prebuilt_peppylib_so,
 )
 from .release_docs_gate import verify_docs_gate
-from .release_hubs import check_launchers, tag_release_hubs
+from .release_hubs import tag_release_hubs
 from .release_install_check import check_hub_set, check_release_install
 from .release_line import (
     ALIGNED_BRANCH,
@@ -1104,36 +1100,6 @@ def run_hub_check(*, hub_set_path: Path, archive: Path) -> None:
     check_hub_set(load_release_set(hub_set_path), archive)
 
 
-# --- hub-launch ---
-
-
-def run_hub_launch(*, hub_set_path: Path, peppy_run_id: int) -> None:
-    """Run launchers-hub's tests on the hub set and on the archive of the
-    release run *peppy_run_id*, and wait until they succeed.
-
-    The release token dispatches the run. The job's own token reads it until
-    it completes, which takes longer than the hour a release token lasts.
-    """
-    dispatch_token = require_release_token()
-    read_token = require_job_token()
-    hub_set = load_release_set(hub_set_path)
-    slug = github_repo_slug()
-    run = check_launchers(
-        build_github_client(dispatch_token),
-        build_github_client(read_token),
-        slug.owner,
-        hub_set,
-        peppy_run_id,
-        sleep=time.sleep,
-        clock=time.monotonic,
-    )
-    console.print(
-        f"[green]Every launcher of the hub set launches with this release:"
-        f"[/green] {run.html_url}",
-        soft_wrap=True,
-    )
-
-
 # --- live-check ---
 
 # install.sh, relative to the repository root.
@@ -1162,15 +1128,6 @@ def _release_tag(value: str) -> str:
         return parse_release_version(value)
     except ReleaseError as e:
         raise argparse.ArgumentTypeError(str(e)) from e
-
-
-def _run_id(value: str) -> int:
-    run_id = value.strip()
-    if not re.fullmatch(r"[1-9][0-9]*", run_id):
-        raise argparse.ArgumentTypeError(
-            f"expected the id of a workflow run, got {value!r}"
-        )
-    return int(run_id)
 
 
 def _commit_sha(value: str) -> str:
@@ -1279,20 +1236,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="The archive of this host's platform, built by this run.",
     )
 
-    hub_launch = stages.add_parser(
-        "hub-launch",
-        help="Run launchers-hub's tests on the hub set and this run's archive.",
-    )
-    hub_launch.add_argument(
-        "--hub-set", required=True, type=Path, help="The hub set of the release."
-    )
-    hub_launch.add_argument(
-        "--peppy-run-id",
-        required=True,
-        type=_run_id,
-        help="The release run whose x86_64 archive the launchers-hub run installs.",
-    )
-
     publish = stages.add_parser(
         "publish",
         help="Tag the hubs, check the install, and publish the release.",
@@ -1347,8 +1290,6 @@ def _run_stage(args: argparse.Namespace) -> None:
             )
         case "hub-check":
             run_hub_check(hub_set_path=args.hub_set, archive=args.archive)
-        case "hub-launch":
-            run_hub_launch(hub_set_path=args.hub_set, peppy_run_id=args.peppy_run_id)
         case "publish":
             run_publish(
                 plan_path=args.plan,

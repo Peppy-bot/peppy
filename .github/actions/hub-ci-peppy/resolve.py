@@ -5,9 +5,7 @@ A change that spans several repositories lands as pull requests that share one
 head branch name, the set name. A hub's CI job tests its own checkout with the
 other hubs (its siblings) at the head of their branch of that name where they
 have one, and at the head of `main` where they do not. The peppy it runs is
-the latest release, or a peppy dev build (PEPPY_BUILD_POLICY), or the archive
-of a peppy release run when the job is given one. A release run gives the
-whole set as an explicit input instead, and the branch lookup is skipped.
+the latest release or a peppy dev build (PEPPY_BUILD_POLICY).
 
 Run without arguments, as the action runs it, the script installs that peppy
 (unpacked whole under RUNNER_TEMP, its `bin` on the job's PATH), gives the job
@@ -135,7 +133,7 @@ HUB_MAIN_BRANCH = "main"
 
 
 class PeppyBuildPolicy(Enum):
-    """Which peppy a job installs when it is given no release run."""
+    """Which peppy a job installs."""
 
     # The archive peppy.bot serves as the latest release.
     LATEST_RELEASE = "latest release"
@@ -152,7 +150,6 @@ class PeppyBuildKind(Enum):
 
     LATEST_RELEASE = "latest-release"
     DEV_BUILD = "dev-build"
-    RELEASE_RUN = "release-run"
 
 
 PEPPY_REPOSITORY = f"{ORGANISATION}/peppy"
@@ -214,15 +211,6 @@ def latest_release_url(arch: Arch) -> str:
     return f"https://peppy.bot/latest/{arch.archive_name}"
 
 
-def release_run_artifact_name(arch: Arch) -> str:
-    """The artifact a peppy release run uploads the archive of `arch` as."""
-    return f"archive-{arch.triple}"
-
-
-def run_url(run_id: int) -> str:
-    return f"https://github.com/{PEPPY_REPOSITORY}/actions/runs/{run_id}"
-
-
 # The event -------------------------------------------------------------------
 
 
@@ -268,7 +256,7 @@ class HubOrigin(Enum):
     CHECKOUT = "this checkout, the hub under test"
     SET_BRANCH = "its branch of the set"
     MAIN = "main"
-    EXPLICIT_SET = "the explicit set"
+    RELEASE_SET = "the release set"
     RELEASE_TAG = "its tag of this peppy release"
 
 
@@ -280,7 +268,7 @@ CHECKOUT_REF = "checkout"
 class ResolvedHub:
     hub: Hub
     origin: HubOrigin
-    # The branch, the explicit set's label, or CHECKOUT_REF.
+    # The branch, the ref a release set records, or CHECKOUT_REF.
     ref: str
     commit: str
 
@@ -377,7 +365,7 @@ def choose_hubs_by_branch(
     private_key_loaded: bool,
     heads_by_hub: Mapping[Hub, Mapping[str, str]],
 ) -> HubSet:
-    """The set of a job without an explicit set.
+    """The set of a job.
 
     `heads_by_hub` holds the branch heads of every sibling hub.
     """
@@ -393,128 +381,6 @@ def choose_hubs_by_branch(
 
 def ordered(hubs: Sequence[ResolvedHub]) -> tuple[ResolvedHub, ...]:
     return tuple(sorted(hubs, key=lambda resolved: resolved.hub.repository_id))
-
-
-# The explicit set ------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class PinnedHub:
-    """A hub as an explicit set records it."""
-
-    ref: str
-    commit: str
-
-
-EXPLICIT_SET_SHAPE = '{"hubs": {"<hub>": {"ref": "<label>", "commit": "<40 hex>"}}}'
-
-
-def parse_explicit_set(text: str) -> dict[Hub, PinnedHub]:
-    """The hubs an explicit set pins, by hub.
-
-    The set must name every public hub; private-nodes-hub is optional.
-    """
-    try:
-        document = json.loads(text)
-    except json.JSONDecodeError as error:
-        raise ResolveError(f"the explicit set is not JSON: {error}") from error
-    if (
-        not isinstance(document, dict)
-        or set(document) != {"hubs"}
-        or not isinstance(document["hubs"], dict)
-    ):
-        raise ResolveError(
-            f"the explicit set must have the shape {EXPLICIT_SET_SHAPE}, got {text}"
-        )
-    pins = {
-        parse_hub_name(name): parse_pinned_hub(name, entry)
-        for name, entry in document["hubs"].items()
-    }
-    missing = [
-        hub.name
-        for hub in HUBS
-        if hub.visibility is Visibility.PUBLIC and hub not in pins
-    ]
-    if missing:
-        raise ResolveError(
-            f"the explicit set leaves out {', '.join(missing)}; it must name "
-            "every public hub"
-        )
-    return pins
-
-
-def parse_hub_name(name: str) -> Hub:
-    hub = HUBS_BY_NAME.get(name)
-    if hub is None:
-        names = ", ".join(HUBS_BY_NAME)
-        raise ResolveError(
-            f"the explicit set names an unknown hub `{name}`; the hubs are {names}"
-        )
-    return hub
-
-
-def parse_pinned_hub(name: str, entry: object) -> PinnedHub:
-    if (
-        not isinstance(entry, dict)
-        or set(entry) != {"ref", "commit"}
-        or not all(isinstance(value, str) for value in entry.values())
-        or not entry["ref"]
-    ):
-        raise ResolveError(
-            f'the explicit set entry of {name} must have the shape {{"ref": '
-            f'"<label>", "commit": "<40 hex>"}}, got {json.dumps(entry)}'
-        )
-    if not COMMIT_PATTERN.fullmatch(entry["commit"]):
-        raise ResolveError(
-            f"the explicit set records `{entry['commit']}` for {name}, which is "
-            "not a 40-character lowercase hex commit"
-        )
-    return PinnedHub(ref=entry["ref"], commit=entry["commit"])
-
-
-def choose_hubs_from_explicit_set(
-    pins: Mapping[Hub, PinnedHub],
-    under_test: Hub,
-    checkout_commit: str,
-    private_key_loaded: bool,
-) -> HubSet:
-    """The set of a job given an explicit set, which must record the commit
-    the job checked out."""
-    pinned_under_test = pins.get(under_test)
-    if pinned_under_test is None:
-        raise ResolveError(
-            f"the explicit set leaves out {under_test.name}, the hub under test"
-        )
-    if pinned_under_test.commit != checkout_commit:
-        raise ResolveError(
-            f"the checkout of {under_test.name} is at {checkout_commit}, but the "
-            f"set records {pinned_under_test.commit}"
-        )
-    siblings, notes = [], []
-    for hub in HUBS:
-        if hub is under_test:
-            continue
-        pin = pins.get(hub)
-        if pin is None:
-            notes.append(
-                f"{hub.name} is left out of this run: the explicit set does not "
-                "name it."
-            )
-        elif not hub_is_readable(hub, private_key_loaded):
-            notes.append(
-                f"{hub.name} is left out of this run: no deploy key was given, so "
-                f"the commit the explicit set records for it, `{pin.commit}`, is "
-                "not part of this run."
-            )
-        else:
-            siblings.append(
-                ResolvedHub(hub, HubOrigin.EXPLICIT_SET, pin.ref, pin.commit)
-            )
-    return HubSet(
-        name=None,
-        hubs=ordered([checkout_hub(under_test, checkout_commit), *siblings]),
-        notes=tuple(notes),
-    )
 
 
 # The release set -------------------------------------------------------------
@@ -649,26 +515,63 @@ def require_private_hub_key(key_loaded: bool) -> None:
     )
 
 
+RELEASE_SET_SHAPE = (
+    '{"hubs": {"<hub>": {"ref": "<branch or tag>", "commit": "<40 hex>"}}}'
+)
+
+
 def parse_release_set(text: str) -> HubSet:
-    """A release set as `release-set` writes it: an explicit set that names
+    """A release set as `release-set` writes it: the ref and the commit of
     every hub."""
-    pins = parse_explicit_set(text)
-    missing = [hub.name for hub in HUBS if hub not in pins]
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ResolveError(f"the release set is not JSON: {error}") from error
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"hubs"}
+        or not isinstance(document["hubs"], dict)
+    ):
+        raise ResolveError(
+            f"the release set must have the shape {RELEASE_SET_SHAPE}, got {text}"
+        )
+    hubs = [
+        parse_release_set_hub(name, entry) for name, entry in document["hubs"].items()
+    ]
+    recorded = {resolved.hub for resolved in hubs}
+    missing = [hub.name for hub in HUBS if hub not in recorded]
     if missing:
         raise ResolveError(
             f"the release set leaves out {', '.join(missing)}; a release tests "
             "and tags every hub"
         )
-    return HubSet(
-        name=None,
-        hubs=ordered(
-            [
-                ResolvedHub(hub, HubOrigin.EXPLICIT_SET, pin.ref, pin.commit)
-                for hub, pin in pins.items()
-            ]
-        ),
-        notes=(),
-    )
+    return HubSet(name=None, hubs=ordered(hubs), notes=())
+
+
+def parse_release_set_hub(name: str, entry: object) -> ResolvedHub:
+    """A hub as a release set records it."""
+    hub = HUBS_BY_NAME.get(name)
+    if hub is None:
+        names = ", ".join(HUBS_BY_NAME)
+        raise ResolveError(
+            f"the release set names an unknown hub `{name}`; the hubs are {names}"
+        )
+    if (
+        not isinstance(entry, dict)
+        or set(entry) != {"ref", "commit"}
+        or not all(isinstance(value, str) for value in entry.values())
+        or not entry["ref"]
+    ):
+        raise ResolveError(
+            f'the release set entry of {name} must have the shape {{"ref": '
+            f'"<branch or tag>", "commit": "<40 hex>"}}, got {json.dumps(entry)}'
+        )
+    if not COMMIT_PATTERN.fullmatch(entry["commit"]):
+        raise ResolveError(
+            f"the release set records `{entry['commit']}` for {name}, which is "
+            "not a 40-character lowercase hex commit"
+        )
+    return ResolvedHub(hub, HubOrigin.RELEASE_SET, entry["ref"], entry["commit"])
 
 
 def index_check_arguments(hub: Hub, checkout: Path) -> list[str]:
@@ -705,17 +608,12 @@ def hub_names(hub_set: HubSet) -> str:
 # The choice of the peppy build -----------------------------------------------
 
 
-def choose_peppy_build(
-    policy: PeppyBuildPolicy, from_fork: bool, release_run_id: int | None
-) -> PeppyBuildKind:
+def choose_peppy_build(policy: PeppyBuildPolicy, from_fork: bool) -> PeppyBuildKind:
     """The peppy a job installs.
 
-    A release run's archive wins over everything: the release is what starts
-    such a job. A pull request from a fork runs without secrets, so it gets
-    the latest release whatever the policy.
+    A pull request from a fork runs without secrets, so it gets the latest
+    release whatever the policy.
     """
-    if release_run_id is not None:
-        return PeppyBuildKind.RELEASE_RUN
     if from_fork or policy is PeppyBuildPolicy.LATEST_RELEASE:
         return PeppyBuildKind.LATEST_RELEASE
     return PeppyBuildKind.DEV_BUILD
@@ -890,20 +788,6 @@ def dev_build_artifact(
     )
 
 
-def release_run_artifact(
-    url: str, artifacts: Sequence[Artifact], name: str
-) -> Artifact:
-    """The archive a peppy release run uploaded for this runner."""
-    artifact = newest_usable(artifacts)
-    if artifact is not None:
-        return artifact
-    if artifacts:
-        raise ResolveError(
-            f"the artifact `{name}` of peppy release run `{url}` expired."
-        )
-    raise ResolveError(f"peppy release run `{url}` has no artifact `{name}`.")
-
-
 @dataclass(frozen=True)
 class PeppyBuild:
     """The peppy build a job installs, and where it comes from."""
@@ -913,8 +797,8 @@ class PeppyBuild:
     source: str
     # What the build is, for the job summary.
     description: str
-    # The peppy branch and the commit of a dev build; None for the other
-    # builds, which no branch of a set gives.
+    # The peppy branch and the commit of a dev build; None for the latest
+    # release, which no branch of a set gives.
     ref: str | None
     commit: str | None
 
@@ -987,7 +871,7 @@ def default_hubs_repositories_file(hub_set: HubSet) -> str:
 
 
 def hubs_document(hub_set: HubSet) -> dict:
-    """The hubs of a set as an explicit set spells them."""
+    """The hubs of a set, as the `set` output and a release set spell them."""
     return {
         resolved.hub.name: {"ref": resolved.ref, "commit": resolved.commit}
         for resolved in hub_set.hubs
@@ -1021,8 +905,8 @@ def set_record_artifact_name(check_run_id: int) -> str:
 
 
 def release_set_document(hub_set: HubSet) -> dict:
-    """A release set in the schema of an explicit set, which the release
-    passes to launchers-hub's tests as it is."""
+    """A release set as `release-set` writes it and `parse_release_set`
+    reads it."""
     return {"hubs": hubs_document(hub_set)}
 
 
@@ -1415,27 +1299,6 @@ def fetch_dev_build(set_name: str | None, token: str, work_dir: Path) -> Fetched
     )
 
 
-def fetch_release_run(
-    run_id: int, arch: Arch, token: str, work_dir: Path
-) -> FetchedPeppy:
-    name = release_run_artifact_name(arch)
-    url = run_url(run_id)
-    artifact = release_run_artifact(
-        url, run_artifacts(run_id, name, GitHubReader(token)), name
-    )
-    archive = download_artifact_archive(artifact, arch, token, work_dir)
-    return FetchedPeppy(
-        PeppyBuild(
-            PeppyBuildKind.RELEASE_RUN,
-            url,
-            "the archive of a peppy release run",
-            ref=None,
-            commit=None,
-        ),
-        archive,
-    )
-
-
 def unpack_peppy(archive: Path, destination: Path) -> Path:
     """Unpack the whole archive, which the daemon needs around its binary (the
     bundled zenohd and apptainer), and return the `peppy` binary."""
@@ -1493,8 +1356,6 @@ class ActionInputs:
     """The action's inputs and the runner's environment, parsed once."""
 
     hub_path: str
-    explicit_set: dict[Hub, PinnedHub] | None
-    release_run_id: int | None
     github_token: str
     private_key_loaded: bool
     # Wait for the peppy dev build of the job, and install nothing.
@@ -1509,14 +1370,6 @@ def parse_hub_path(text: str) -> str:
     if not text:
         raise ResolveError("the `hub-path` input is empty")
     return os.path.abspath(text)
-
-
-def parse_release_run_id(text: str) -> int | None:
-    if not text:
-        return None
-    if not (text.isascii() and text.isdigit()):
-        raise ResolveError(f"`peppy-run-id` must be a workflow run id, got `{text}`")
-    return int(text)
 
 
 def parse_flag(name: str, text: str) -> bool:
@@ -1548,8 +1401,6 @@ def required_environment(name: str) -> str:
 # input left empty arrives as the empty string.
 ACTION_VARIABLES = (
     "INPUT_HUB_PATH",
-    "INPUT_SET",
-    "INPUT_PEPPY_RUN_ID",
     "INPUT_GITHUB_TOKEN",
     "INPUT_WAIT_ONLY",
     "PRIVATE_HUB_KEY_LOADED",
@@ -1560,10 +1411,6 @@ def inputs_from_environment() -> ActionInputs:
     action = {name: os.environ.get(name, "").strip() for name in ACTION_VARIABLES}
     return ActionInputs(
         hub_path=parse_hub_path(action["INPUT_HUB_PATH"]),
-        explicit_set=(
-            parse_explicit_set(action["INPUT_SET"]) if action["INPUT_SET"] else None
-        ),
-        release_run_id=parse_release_run_id(action["INPUT_PEPPY_RUN_ID"]),
         github_token=action["INPUT_GITHUB_TOKEN"],
         private_key_loaded=parse_flag(
             "PRIVATE_HUB_KEY_LOADED", action["PRIVATE_HUB_KEY_LOADED"]
@@ -1580,13 +1427,6 @@ def inputs_from_environment() -> ActionInputs:
 
 
 def resolve_hub_set(inputs: ActionInputs, checkout_commit: str) -> HubSet:
-    if inputs.explicit_set is not None:
-        return choose_hubs_from_explicit_set(
-            inputs.explicit_set,
-            inputs.under_test,
-            checkout_commit,
-            inputs.private_key_loaded,
-        )
     set_name = inputs.trigger.set_name
     branches = branches_to_look_up(HUB_MAIN_BRANCH, set_name)
     readable, _ = sibling_hubs(inputs.under_test, inputs.private_key_loaded)
@@ -1600,37 +1440,23 @@ def resolve_hub_set(inputs: ActionInputs, checkout_commit: str) -> HubSet:
     )
 
 
-def peppy_set_name(inputs: ActionInputs) -> str | None:
-    """The set name whose peppy branch gives the dev build of the job. A job
-    given an explicit set has none, and runs the dev build of `dev`."""
-    return None if inputs.explicit_set is not None else inputs.trigger.set_name
-
-
 def fetch_peppy(
-    kind: PeppyBuildKind,
-    arch: Arch,
-    inputs: ActionInputs,
-    set_name: str | None,
-    work_dir: Path,
+    kind: PeppyBuildKind, arch: Arch, inputs: ActionInputs, work_dir: Path
 ) -> FetchedPeppy:
-    if kind is PeppyBuildKind.RELEASE_RUN:
-        return fetch_release_run(
-            inputs.release_run_id, arch, inputs.github_token, work_dir
-        )
     if kind is PeppyBuildKind.DEV_BUILD:
-        return fetch_dev_build(set_name, inputs.github_token, work_dir)
+        return fetch_dev_build(inputs.trigger.set_name, inputs.github_token, work_dir)
     return fetch_latest_release(arch, work_dir)
 
 
 def install_peppy(
-    kind: PeppyBuildKind, arch: Arch, inputs: ActionInputs, set_name: str | None
+    kind: PeppyBuildKind, arch: Arch, inputs: ActionInputs
 ) -> InstalledPeppy:
     """Fetch the peppy archive, unpack it whole and put its `bin` on the PATH
     of the job's later steps."""
     work_dir = inputs.runner_temp / "peppy-download"
     shutil.rmtree(work_dir, ignore_errors=True)
     work_dir.mkdir(parents=True)
-    fetched = fetch_peppy(kind, arch, inputs, set_name, work_dir)
+    fetched = fetch_peppy(kind, arch, inputs, work_dir)
     dist_dir = inputs.runner_temp / "peppy-dist"
     peppy = unpack_peppy(fetched.archive, dist_dir)
     shutil.rmtree(work_dir)
@@ -1675,29 +1501,22 @@ def report_set(
         "GITHUB_OUTPUT",
         f"set={resolved_set}\npeppy-version={installed.version}\nrecord={record}\n",
     )
-    set_explanation = (
-        "the explicit `set` input names every hub"
-        if inputs.explicit_set is not None
-        else inputs.trigger.explanation
-    )
     append_to_runner_file(
         "GITHUB_STEP_SUMMARY",
         summary_markdown(
             hub_set,
             installed,
-            set_explanation,
+            inputs.trigger.explanation,
             peppy_build_notes(installed.build.kind, inputs.trigger.from_fork),
         ),
     )
 
 
 def run(inputs: ActionInputs) -> None:
-    kind = choose_peppy_build(
-        PEPPY_BUILD_POLICY, inputs.trigger.from_fork, inputs.release_run_id
-    )
+    kind = choose_peppy_build(PEPPY_BUILD_POLICY, inputs.trigger.from_fork)
     arch = runner_arch(inputs.machine, kind)
     hub_set = resolve_hub_set(inputs, checkout_head(inputs.hub_path))
-    installed = install_peppy(kind, arch, inputs, peppy_set_name(inputs))
+    installed = install_peppy(kind, arch, inputs)
     write_peppy_home(hub_set, inputs)
     report_set(hub_set, installed, inputs)
 
@@ -1707,19 +1526,17 @@ def wait_for_peppy(
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
-    """Wait until the peppy dev build of the job is uploaded. The other
-    builds are there before the job starts, so a job that installs one of
-    them waits for nothing."""
-    kind = choose_peppy_build(
-        PEPPY_BUILD_POLICY, inputs.trigger.from_fork, inputs.release_run_id
-    )
+    """Wait until the peppy dev build of the job is uploaded. The latest
+    release is there before the job starts, so a job that installs it waits
+    for nothing."""
+    kind = choose_peppy_build(PEPPY_BUILD_POLICY, inputs.trigger.from_fork)
     if kind is not PeppyBuildKind.DEV_BUILD:
         print(
             f"Nothing to wait for: this job installs a `{kind.value}` peppy, not a "
             "dev build."
         )
         return
-    set_name = peppy_set_name(inputs)
+    set_name = inputs.trigger.set_name
     github = GitHubReader(inputs.github_token)
     found = wait_for_dev_build(
         lambda: look_for_dev_build(set_name, github), monotonic, sleep
