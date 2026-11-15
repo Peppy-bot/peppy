@@ -118,7 +118,7 @@ fn packages_status() -> Result<()> {
 /// Writes one line for the check of each program of the distribution.
 #[cfg(target_os = "linux")]
 fn print_program_lines(programs: &SystemPrograms) {
-    for check in &programs.checks {
+    for check in programs.checks {
         println!("  {:<23}: {}", check.program.name(), program_state(check));
     }
 }
@@ -126,7 +126,7 @@ fn print_program_lines(programs: &SystemPrograms) {
 /// The state that the line of a program shows: what its check found, and for
 /// a missing program the package to install.
 #[cfg(target_os = "linux")]
-fn program_state(check: &ProgramCheck) -> String {
+fn program_state(check: ProgramCheck) -> String {
     let package = check.program.package();
     match check.state {
         ProgramState::Found => "OK".to_string(),
@@ -166,16 +166,11 @@ fn advice_for_missing_packages(programs: &SystemPrograms) -> Option<(FailureSeve
             packages_of(FailureSeverity::Warning)
         ),
     };
-    let indented_command = install_command
-        .lines()
-        .map(|line| format!("  {line}"))
-        .collect::<Vec<_>>()
-        .join("\n");
     Some((
         severity,
         format!(
             "{cause}\nTo install each missing package, run the following command:\n\n\
-             {indented_command}"
+             {install_command}"
         ),
     ))
 }
@@ -533,7 +528,7 @@ mod tests {
             ),
         ];
         for (check, state) in cases {
-            assert_eq!(program_state(&check), state, "{check:?}");
+            assert_eq!(program_state(check), state, "{check:?}");
         }
     }
 
@@ -615,14 +610,7 @@ mod tests {
             "The daemon does not start without packages that this machine does not have: \
              uidmap, squashfs-tools."
         );
-        assert_eq!(
-            command,
-            install_command
-                .lines()
-                .map(|line| format!("  {line}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
+        assert_eq!(command, install_command);
         assert!(
             command.ends_with("install -y uidmap squashfs-tools fuse2fs"),
             "{command}"

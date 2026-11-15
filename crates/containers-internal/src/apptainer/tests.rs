@@ -1969,25 +1969,30 @@ fn setup_fix_holds_a_step_for_each_failing_check() {
 
     // (programs, apparmor_ok, apparmor_loaded, script)
     let cases = [
-        (all, true, true, None),
-        (no_newuidmap, true, true, Some(INSTALL_UIDMAP.to_string())),
-        (all, false, true, Some(WRITE_PROFILE_WITH_SUDO.to_string())),
-        (all, false, false, Some(WRITE_PROFILE_WITH_SUDO.to_string())),
-        (all, true, false, Some(LOAD_PROFILE_WITH_SUDO.to_string())),
+        (&all, true, true, None),
+        (&no_newuidmap, true, true, Some(INSTALL_UIDMAP.to_string())),
+        (&all, false, true, Some(WRITE_PROFILE_WITH_SUDO.to_string())),
         (
-            no_newuidmap,
+            &all,
+            false,
+            false,
+            Some(WRITE_PROFILE_WITH_SUDO.to_string()),
+        ),
+        (&all, true, false, Some(LOAD_PROFILE_WITH_SUDO.to_string())),
+        (
+            &no_newuidmap,
             false,
             true,
             Some(uidmap_then(WRITE_PROFILE_WITH_SUDO)),
         ),
         (
-            no_newuidmap,
+            &no_newuidmap,
             false,
             false,
             Some(uidmap_then(WRITE_PROFILE_WITH_SUDO)),
         ),
         (
-            no_newuidmap,
+            &no_newuidmap,
             true,
             false,
             Some(uidmap_then(LOAD_PROFILE_WITH_SUDO)),
@@ -1995,7 +2000,7 @@ fn setup_fix_holds_a_step_for_each_failing_check() {
     ];
     for (programs, apparmor_ok, apparmor_loaded, script) in cases {
         let fix = setup_fix(
-            &programs,
+            programs,
             apparmor_ok,
             apparmor_loaded,
             &profile,

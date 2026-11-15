@@ -49,7 +49,8 @@ runs:
 
     # A peppy CI image (peppy-ubuntu24, peppy-ubuntu24-aarch64) and a release
     # host are provisioned for builds with setup_machine.sh, which puts on the
-    # machine packages (fuse2fs, uidmap) that install.sh is there to install.
+    # machine packages (fuse2fs, uidmap) that the container setup of install.sh
+    # is there to install.
     # That script also installs pixi, which no stock image carries, so a pixi
     # found before the step that installs one below is the trace of that
     # provisioning.
@@ -76,10 +77,10 @@ runs:
     # pixi only, for the Python environment the tests run in. Nothing a
     # release build needs is installed: the tests start from the image as a
     # user's machine would, and a build toolchain would put packages on it
-    # (fuse2fs, uidmap) that install.sh is there to install. Pinned to the
-    # version the CI image is provisioned with. The pixi installer downloads
-    # pixi with no retry of its own, so run_installer.sh runs it again when it
-    # fails.
+    # (fuse2fs, uidmap) that the container setup of install.sh is there to
+    # install. Pinned to the version the CI image is provisioned with. The
+    # pixi installer downloads pixi with no retry of its own, so
+    # run_installer.sh runs it again when it fails.
     - name: Install pixi
       shell: bash
       run: |

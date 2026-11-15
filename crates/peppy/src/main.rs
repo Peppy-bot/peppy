@@ -199,6 +199,25 @@ mod tests {
         );
     }
 
+    /// `peppy container status` examines each prerequisite, and with
+    /// `--packages` the packages of the distribution alone.
+    #[test]
+    fn container_status_takes_the_packages_flag() {
+        for (arguments, packages) in [
+            (&["peppy", "container", "status"][..], false),
+            (&["peppy", "container", "status", "--packages"][..], true),
+        ] {
+            let cli = Cli::try_parse_from(arguments).expect("the container status should parse");
+            assert_matches!(
+                cli.command,
+                Commands::Container {
+                    command: container::ContainerCommands::Status { packages: parsed }
+                } if parsed == packages,
+                "{arguments:?}"
+            );
+        }
+    }
+
     #[test]
     fn core_node_flag_parses_before_the_subcommand() {
         let cli = Cli::try_parse_from(["peppy", "--core-node", "robot-7", "info"])

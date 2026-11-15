@@ -138,7 +138,7 @@ pub struct ProgramCheck {
 
 /// The check of each [`SystemProgram`], in the order of
 /// [`SystemProgram::ALL`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemPrograms {
     pub checks: [ProgramCheck; 3],
 }

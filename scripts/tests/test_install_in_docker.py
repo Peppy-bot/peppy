@@ -3,8 +3,10 @@
 Two parts of install.sh are decided by the system it runs on rather than by
 the machine's state, and a container is a system of its own for each test:
 
-- The container path. Inside Docker or Podman install.sh skips D-Bus, linger,
-  fuse2fs and the Apptainer setup, which the container runtime has no use for.
+- The container path. Inside Docker or Podman install.sh skips D-Bus and
+  linger, which the container runtime has no use for. Its Apptainer setup
+  runs as on a host: it installs the packages that container nodes need, and
+  a bare image has none of them.
 - The platform check. install.sh reads os-release before it changes anything
   and stops on any Linux that is not Ubuntu, built on it, Debian or Raspberry
   Pi OS, on a 32-bit system, and on a glibc older than the release archives
@@ -19,11 +21,13 @@ the archive, so like every install test they run only on a disposable host
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 import pytest
 
 from .install_helpers import (
+    CONTAINER_PEPPY,
     CONTAINER_PEPPY_HOME,
     IS_LINUX_AARCH64,
     assert_binaries_load,
@@ -53,31 +57,69 @@ DEBIAN_TOO_OLD_IMAGE = "debian:bookworm"
 THIRTY_TWO_BIT_PACKAGES = "armhf" if IS_LINUX_AARCH64 else "i386"
 
 
-def test_install_inside_container() -> None:
-    """Inside a container install.sh installs peppy and skips the host setup."""
-    result = run_in_container(UBUNTU_IMAGE, container_install_cmd())
+# Divides the output of install.sh from the output of the `peppy container
+# status` that a script runs after it.
+STATUS_MARK = "--- peppy container status ---"
+
+# The apt-get of the fix script of `peppy container setup`.
+SETUP_APT_GET = "apt-get -o DPkg::Lock::Timeout=300"
+
+
+def status_line(program: str, state: str) -> str:
+    """The line of `peppy container status` for *program* in *state*."""
+    return f"  {program:<23}: {state}"
+
+
+@pytest.mark.parametrize("image", [UBUNTU_IMAGE, DEBIAN_IMAGE])
+def test_install_inside_container_installs_the_packages_of_container_nodes(
+    image: str,
+) -> None:
+    """In a bare container, as root, install.sh installs the packages that container nodes need.
+
+    Root builds with no fakeroot, so the setup installs squashfs-tools and
+    fuse2fs, and not uidmap. Each check of `peppy container status` then
+    passes.
+    """
+    script = (
+        f"{container_install_cmd(container_setup=True)} && "
+        f"echo '{STATUS_MARK}' && {CONTAINER_PEPPY} container status && "
+        "command -v mksquashfs && command -v fuse2fs && ! command -v newuidmap"
+    )
+
+    result = run_in_container(image, script)
 
     assert_installed(result)
-    assert "Skipped Apptainer setup (running inside a container)." in result.stdout, (
-        f"Missing the container skip message{diagnostic(result)}"
+    install_output, _, status_output = result.stdout.partition(STATUS_MARK)
+    for package in ("squashfs-tools", "fuse2fs"):
+        assert f"Install the {package} package" in install_output, (
+            f"the setup should tell that it installs {package}{diagnostic(result)}"
+        )
+    assert "Install the uidmap package" not in install_output, (
+        f"root does not need uidmap{diagnostic(result)}"
     )
-    assert "peppy requires the following system changes" not in result.stdout, (
-        f"install.sh should not change the container's system{diagnostic(result)}"
+    assert "(requires sudo)" not in install_output and "sudo: " not in result.stderr, (
+        f"root installs the packages with no sudo{diagnostic(result)}"
+    )
+    assert (
+        status_line("newuidmap", "not required (the builds of root do not run it)")
+        in status_output
+    ), f"the status should not ask root for newuidmap{diagnostic(result)}"
+    assert "All checks passed. Container support is ready." in status_output, (
+        f"each check should pass after the install{diagnostic(result)}"
     )
 
 
-def test_container_setup_has_nothing_to_do_inside_a_container() -> None:
-    """`peppy container setup` leaves AppArmor alone where it cannot manage it.
+def test_container_setup_has_nothing_to_do_after_the_install() -> None:
+    """After install.sh, `peppy container setup` has no fix left to make.
 
     A container on an Ubuntu 24.04 host reads the host kernel's
     apparmor_restrict_unprivileged_userns, but has no AppArmor security
-    filesystem to load a profile through. The container gets uidmap first, so
-    AppArmor is the only thing left for the setup to decide on.
+    filesystem to load a profile through: the setup leaves AppArmor alone
+    where it cannot manage it.
     """
     script = (
-        "apt-get update -qq && apt-get install -y -qq uidmap >/dev/null && "
-        f"{container_install_cmd()} && "
-        f"PEPPY_HOME={CONTAINER_PEPPY_HOME} {CONTAINER_PEPPY_HOME}/bin/peppy container setup"
+        f"{container_install_cmd(container_setup=True)} >/dev/null && "
+        f"{CONTAINER_PEPPY} container setup"
     )
 
     result = run_in_container(UBUNTU_IMAGE, script)
@@ -89,6 +131,102 @@ def test_container_setup_has_nothing_to_do_inside_a_container() -> None:
     assert "Nothing to do." in result.stdout, (
         f"Expected 'Nothing to do.'{diagnostic(result)}"
     )
+
+
+def test_install_without_the_container_setup_leaves_the_container_as_it_is() -> None:
+    """With PEPPY_NO_CONTAINER_SETUP, install.sh installs peppy and no package."""
+    script = (
+        f"{container_install_cmd()} && ! command -v mksquashfs && ! command -v fuse2fs"
+    )
+
+    result = run_in_container(UBUNTU_IMAGE, script)
+
+    assert_installed(result)
+    assert (
+        "Skipped Apptainer setup (PEPPY_NO_CONTAINER_SETUP is set)." in result.stdout
+    ), f"Missing the skip message{diagnostic(result)}"
+    assert "The following fixes are needed" not in result.stdout, (
+        f"install.sh should not run the setup{diagnostic(result)}"
+    )
+
+
+def test_no_root_install_names_the_missing_packages_that_the_daemon_needs() -> None:
+    """With PEPPY_NO_ROOT_INSTALL, install.sh installs no package and stops on those that the daemon needs.
+
+    A bare image has none of the packages. The daemon of root does not start
+    without squashfs-tools, and starts without fuse2fs. The error names the
+    first one, and gives the command that installs the two.
+    """
+    install = container_install_cmd(
+        container_setup=True, extra_env="PEPPY_NO_ROOT_INSTALL=1"
+    )
+    script = (
+        f"{install}; status=$?; "
+        "! command -v mksquashfs || echo 'a package was installed'; "
+        "exit $status"
+    )
+
+    result = run_in_container(UBUNTU_IMAGE, script)
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, (
+        f"install.sh should stop with status 1{diagnostic(result)}"
+    )
+    for line in (
+        status_line("newuidmap", "not required (the builds of root do not run it)"),
+        status_line("mksquashfs", "FAILED (install the squashfs-tools package)"),
+        status_line(
+            "fuse2fs",
+            "WARNING (install the fuse2fs package for the mount of an EXT3 image)",
+        ),
+        "The daemon does not start without packages that this machine does not "
+        "have: squashfs-tools.",
+        f"{SETUP_APT_GET} update \\\n"
+        f"  && {SETUP_APT_GET} install -y squashfs-tools fuse2fs",
+        "error: peppy is installed, but its daemon cannot start without these packages.",
+    ):
+        assert line in output, f"the output should hold {line!r}{diagnostic(result)}"
+    assert "a package was installed" not in result.stdout, (
+        f"install.sh should install no package{diagnostic(result)}"
+    )
+
+
+def test_install_as_a_user_that_is_not_root_installs_the_packages_through_sudo() -> (
+    None
+):
+    """In a container, install.sh gives a user that is not root the three packages, through sudo.
+
+    The builds of a user that is not root run newuidmap, so the setup
+    installs uidmap also. The kernel of the host decides whether a container
+    gives such a user a user namespace, so the test reads the lines of the
+    packages in `peppy container status`, and not its exit status.
+    """
+    user = "peppy-user"
+    as_root = (
+        "apt-get update -qq && apt-get install -y -qq sudo >/dev/null && "
+        f"useradd --create-home {user} && "
+        f"echo '{user} ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/{user} && "
+        f"install -d -o {user} -g {user} {CONTAINER_PEPPY_HOME}"
+    )
+    as_user = (
+        f"{container_install_cmd(container_setup=True)} && "
+        f"echo '{STATUS_MARK}' && {{ {CONTAINER_PEPPY} container status; true; }}"
+    )
+
+    result = run_in_container(
+        DEBIAN_IMAGE, f"{as_root} && su {user} -c {shlex.quote(as_user)}"
+    )
+
+    assert_installed(result)
+    install_output, _, status_output = result.stdout.partition(STATUS_MARK)
+    for package in ("uidmap", "squashfs-tools", "fuse2fs"):
+        assert f"Install the {package} package" in install_output, (
+            f"the setup should tell that it installs {package}{diagnostic(result)}"
+        )
+    for program in ("newuidmap", "mksquashfs", "fuse2fs"):
+        assert status_line(program, "OK") in status_output, (
+            f"the status should find {program}{diagnostic(result)}"
+        )
 
 
 def test_install_admits_a_distribution_built_on_ubuntu(tmp_path: Path) -> None:

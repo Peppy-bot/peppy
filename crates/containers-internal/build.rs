@@ -2370,7 +2370,7 @@ echo "=== Apptainer build complete ==="
         // back on. Apptainer searches its own libexec bin dir (where peppy
         // drops squashfuse_ll and gocryptfs) ahead of `$PATH` and ships no
         // fuse2fs binary itself, so the machines peppy runs containers on take
-        // it from their distro; `scripts/install.sh` installs it there. A
+        // it from their distro; `peppy container setup` installs it there. A
         // warning, not a panic: peppy also builds on machines that never
         // launch containers (CI, cross-compile hosts), and squashfs SIFs run
         // fine without it.

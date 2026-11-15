@@ -17,6 +17,8 @@ The installer supports Ubuntu 24.04 or later and the Linux distributions built o
 
 On Linux, Peppy needs a 64-bit system with glibc 2.38 or later. The installer reads the architecture of the packages with `dpkg --print-architecture`, because a 64-bit kernel can run a 32-bit system, and the glibc version with `getconf GNU_LIBC_VERSION`. It reads the glibc and not the release number, because a distribution built on Ubuntu numbers its releases its own way: Linux Mint 21, for example, is built on Ubuntu 22.04. On a 32-bit system, on an older glibc (glibc 2.35 on Ubuntu 22.04 and the distributions built on it, 2.36 on Debian 12), and on any other system, Fedora and Arch Linux among them, the installer stops with an error before it changes anything.
 
+On Linux, the installer runs `peppy container setup`, which installs the packages that container nodes need (`uidmap`, `squashfs-tools` and `fuse2fs`) and, where AppArmor restricts user namespaces, an AppArmor profile (see [Containers](/advanced_guides/containers/#setup-linux)). It does this in a Docker or Podman container also, where a bare image such as `ubuntu:24.04` or `debian:trixie` has none of these packages. In a container, the installer does not set up D-Bus and linger, which the background service of a host needs.
+
 This installer also sets up the `peppy` background service and populates the repository index that name-based launches resolve from. To skip that step, set `PEPPY_NO_SERVICE_INSTALL=1`. The flag skips the repository setup along with the service, so a launch by name then fails with `nodes.json5 not found or empty` until you run `peppy repo init` and `peppy repo update` yourself.
 
 :::note
@@ -60,9 +62,9 @@ To install Raspberry Pi OS (64-bit), use [Raspberry Pi Imager](https://www.raspb
 | `PEPPY_DOWNLOAD_URL` | Override the full download URL |
 | `PEPPY_NO_PATH_UPDATE` | If set, do not update the shell PATH config |
 | `PEPPY_FORCE_REINSTALL` | If set, skip the confirmation prompt when a daemon is running |
-| `PEPPY_NO_ROOT_INSTALL` | If set, never use sudo; missing dependencies become hard errors and Apptainer setup is deferred to `peppy container setup` |
+| `PEPPY_NO_ROOT_INSTALL` | If set, never use sudo and install no package. The installer stops with an error that names each missing package that the daemon needs and the command that installs them; a missing `fuse2fs` is a warning. The AppArmor profile is left to `peppy container setup` |
 | `PEPPY_NO_SERVICE_INSTALL` | If set, skip the service install and the repository init/refresh |
-| `PEPPY_NO_CONTAINER_SETUP` | If set, skip the Apptainer container setup (useful inside Docker/Podman) |
+| `PEPPY_NO_CONTAINER_SETUP` | If set, skip the Apptainer container setup, and so the packages that it installs |
 
 ## Verifying the installation
 
