@@ -62,7 +62,7 @@ To install Raspberry Pi OS (64-bit), use [Raspberry Pi Imager](https://www.raspb
 | `PEPPY_DOWNLOAD_URL` | Override the full download URL |
 | `PEPPY_NO_PATH_UPDATE` | If set, do not update the shell PATH config |
 | `PEPPY_FORCE_REINSTALL` | If set, skip the confirmation prompt when a daemon is running |
-| `PEPPY_NO_ROOT_INSTALL` | If set, never use sudo and install no package. The installer stops with an error that names each missing package that the daemon needs and the command that installs them; a missing `fuse2fs` is a warning. The AppArmor profile is left to `peppy container setup` |
+| `PEPPY_NO_ROOT_INSTALL` | If set, never use sudo and install no package. The installer stops with an error that names each missing package that a container build needs and the command that installs them; a missing `fuse2fs` is a warning. The AppArmor profile is left to `peppy container setup` |
 | `PEPPY_NO_SERVICE_INSTALL` | If set, skip the service install and the repository init/refresh |
 | `PEPPY_NO_CONTAINER_SETUP` | If set, skip the Apptainer container setup, and so the packages that it installs |
 
