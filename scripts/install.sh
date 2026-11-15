@@ -848,7 +848,6 @@ EOF
     fi
 
     # ---- Apptainer container setup (post-install) ----------------------------
-    # TEMPORARY line, not for merge: it starts the install tests of this pull request.
     # `peppy container setup` is the single source of truth for the system
     # prerequisites of Apptainer: it installs the packages that container
     # nodes need (uidmap, squashfs-tools, fuse2fs) and the AppArmor profile.
