@@ -1016,7 +1016,9 @@ fn refuse_stale_manifest(
 
 /// What preparing Apptainer for a container start found.
 enum ApptainerSetup {
-    Ready(containers::Apptainer),
+    /// On the heap: the facade is much larger than the message of the other
+    /// outcomes.
+    Ready(Box<containers::Apptainer>),
     /// Apptainer did not initialize, or its task panicked.
     InitFailed(String),
     /// The check of the start's host mounts against the containers running
@@ -1603,7 +1605,7 @@ async fn process_node_run(
                 &node_stack,
                 &starting_instance_id,
             ) {
-                Ok(()) => ApptainerSetup::Ready(apptainer),
+                Ok(()) => ApptainerSetup::Ready(Box::new(apptainer)),
                 Err(msg) => ApptainerSetup::Refused(msg),
             }
         })
@@ -1612,7 +1614,7 @@ async fn process_node_run(
             ApptainerSetup::InitFailed(format!("Apptainer initialization task failed: {e}"))
         });
         let apptainer = match setup {
-            ApptainerSetup::Ready(apptainer) => apptainer,
+            ApptainerSetup::Ready(apptainer) => *apptainer,
             ApptainerSetup::Refused(msg) => {
                 return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
             }

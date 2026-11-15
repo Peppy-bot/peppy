@@ -54,6 +54,27 @@ The setup has no fix for a namespace that the kernel refuses. `peppy container s
 On macOS, no setup is needed; containers run inside a Lima VM which handles permissions transparently.
 :::
 
+### Host files in a container
+
+Apptainer binds `/etc/localtime` and `/etc/hosts` of the host into each container, so a node has the time zone and the host names of the host. They are the `bind path` entries of the `apptainer.conf` that Peppy installs. When the host does not have the source of a `bind path` entry, Peppy skips that bind, and the node has what its image has at that path. A minimal host can be without `/etc/localtime`: the `ubuntu` Docker image has none until it gets the `tzdata` package.
+
+### Running the daemon as root
+
+Apptainer mounts the image of a container in one of two ways. For a daemon that is not root, it runs the container in a user namespace and mounts the image with its bundled `squashfuse_ll`. For a daemon that runs as root, the kernel mounts the image. Root inside a rootless container is not this root: Apptainer uses a user namespace and `squashfuse_ll` there too.
+
+A kernel mounts an image only when it is built with the compression of that image. Peppy packs each image with zstd, and some kernels cannot mount a zstd squashfs. The WSL2 kernel, which Docker Desktop on Windows also runs on, and the kernel of the NVIDIA Jetson are two of them. So a daemon that runs as root reads the compression of each image that it runs. For an image that its kernel cannot mount, Peppy passes `--userns` to Apptainer, and the container runs in a user namespace as it does for every other user. Peppy reads the kernel configuration from `/proc/config.gz`, then from `/boot/config-<kernel release>`, and looks for the line of the compression: `CONFIG_SQUASHFS_ZSTD=y` for zstd.
+
+In that user namespace:
+
+- A node has none of the capabilities of the real root. It cannot, for example, take a real-time priority.
+- Root has its rights on the files of root only. The Peppy installation, the working directory of the node and the source of each mount of the node must be in directories that root owns, that a group of the daemon can enter, or that every user can enter, and not below the private home directory of another user. When the installation is not, the daemon starts and writes a warning in its log. A container with one of these paths out of reach stops at its start with an error that names the directory and how to open it. A process node does not use the user namespace, so it works. A build works too: only the prune of the uv cache after the build of a Python node runs the image, and with a path out of reach the build output says that the cache is not pruned.
+
+A container whose image the kernel mounts runs without a user namespace, with the capabilities of the real root. On a kernel that mounts zstd squashfs, this is each container of a root daemon. On a kernel that does not, a node that needs these capabilities packs its image with a compression that the kernel mounts, with `apptainer_build_extra_args: ["--mksquashfs-args", "-comp gzip"]` (see [Extra runtime arguments](#extra-runtime-arguments)).
+
+:::note
+When Peppy can read no kernel configuration, it passes no flag. If a node of a root daemon then stops with `kernel reported a bad superblock for squashfs image partition`, set `APPTAINER_USERNS=1` in the environment of the daemon.
+:::
+
 ## Initializing a container node
 
 Pass the `--container` flag to `peppy node init`:

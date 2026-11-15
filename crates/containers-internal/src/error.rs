@@ -127,6 +127,32 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// A root daemon runs a container whose image its kernel cannot mount in
+    /// a user namespace, and root cannot enter `closed_dir` from it, so the
+    /// command cannot start its container. `compression` is the one of the
+    /// squashfs of the image, `role` says what `path` is for the command, and
+    /// `open_command` is the `chmod` command that lets root enter
+    /// `closed_dir`.
+    #[error(
+        "This daemon runs as root and its kernel cannot mount the {compression} squashfs of \
+         the image, so apptainer runs the container in a user namespace. In that namespace \
+         root has its rights on the files of root only, and it cannot enter {closed_dir} on \
+         the way to {role} {path}.\n\
+         \n\
+         To fix, do one of these:\n\
+         \x20 - let root enter the directory: {open_command}\n\
+         \x20 - keep peppy, its data and the mounts of a node in directories that root owns, \
+         such as the home directory of root\n\
+         \x20 - run the daemon as the user that owns the directory"
+    )]
+    ClosedToRootInUserNamespace {
+        compression: &'static str,
+        role: &'static str,
+        path: String,
+        closed_dir: String,
+        open_command: String,
+    },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 

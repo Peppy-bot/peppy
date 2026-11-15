@@ -1,9 +1,12 @@
+pub(crate) mod absent_bind_paths;
 pub(crate) mod activity;
 pub(crate) mod atomic_file;
 pub(crate) mod facade;
 pub(crate) mod l4t_manifest;
 pub(crate) mod lima;
 pub(crate) mod registry_auth;
+#[cfg(target_os = "linux")]
+pub(crate) mod root_user_namespace;
 #[cfg(target_os = "linux")]
 pub(crate) mod unprivileged_user_namespace;
 

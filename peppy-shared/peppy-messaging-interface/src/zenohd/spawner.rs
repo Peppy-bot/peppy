@@ -49,7 +49,12 @@ impl ZenohdSpawner {
         Ok(Self { requests })
     }
 
+    /// A spawner with no thread: it spawns inline.
     #[cfg(not(target_os = "linux"))]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the signature is the one of the Linux `start`, whose thread can fail to start"
+    )]
     pub(super) fn start() -> io::Result<Self> {
         Ok(Self {})
     }
@@ -64,7 +69,12 @@ impl ZenohdSpawner {
         answer.recv().map_err(|_| spawner_gone())?
     }
 
+    /// Spawns `command` inline and returns its child.
     #[cfg(not(target_os = "linux"))]
+    #[expect(
+        clippy::unused_self,
+        reason = "the signature is the one of the Linux `spawn`, which sends the command to the thread of the spawner"
+    )]
     pub(super) fn spawn(&self, mut command: Command) -> io::Result<Child> {
         command.spawn()
     }

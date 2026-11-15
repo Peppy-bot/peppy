@@ -1,7 +1,10 @@
 use super::super::error::{Error, Result};
+use super::absent_bind_paths::{AbsentBindPaths, NO_MOUNT_FLAG};
 use super::l4t_manifest::{self, L4T_MANIFEST_DIR, NVLIBLIST_PATH, NvliblistSync};
 use super::lima;
 use super::registry_auth::{APPTAINER_AUTH_FILE_ENV, RegistryAuth};
+#[cfg(target_os = "linux")]
+use super::root_user_namespace::{ImageCommand, UserNamespace};
 #[cfg(target_os = "linux")]
 use super::unprivileged_user_namespace::UnprivilegedUserNamespace;
 use core_node_api::encoding::ArtifactPlatform;
@@ -28,6 +31,14 @@ const APPTAINER_TMPDIR_ENV: &str = "APPTAINER_TMPDIR";
 /// The flag that binds the host's NVIDIA driver into a container.
 const NV_FLAG: &str = "--nv";
 
+/// The flags that contain a container: apptainer then binds `/etc/hosts` and
+/// `/etc/localtime` of the host into it, and not the `bind path` entries of
+/// its configuration.
+const CONTAIN_FLAGS: [&str; 2] = ["--contain", "--containall"];
+
+/// The short forms of [`CONTAIN_FLAGS`].
+const CONTAIN_SHORT_FLAGS: [&str; 2] = ["-c", "-C"];
+
 /// The `apptainer build` flag whose value apptainer passes on to `mksquashfs`.
 const MKSQUASHFS_ARGS_FLAG: &str = "--mksquashfs-args";
 
@@ -36,26 +47,47 @@ const MKSQUASHFS_ARGS_FLAG: &str = "--mksquashfs-args";
 /// apptainer's default, at the same size: an 850 MB Rust node image takes 5 s
 /// instead of 35 s on 14 cores. The bundled `squashfuse_ll` that mounts the
 /// image at run time reads zstd, and so does every `mksquashfs` of
-/// squashfs-tools 4.4 or later.
-const SQUASHFS_COMPRESSION: &str = "-comp zstd -Xcompression-level 3";
+/// squashfs-tools 4.4 or later. For a root daemon apptainer mounts the image
+/// with the kernel, and not every kernel reads zstd: see
+/// `root_user_namespace`, whose `COMPRESSION_OF_BUILT_IMAGES` names the same
+/// compression.
+pub(crate) const SQUASHFS_COMPRESSION: &str = "-comp zstd -Xcompression-level 3";
 
-/// Whether `flags` turn on apptainer's `--nv`. As in apptainer's flag parser,
-/// the flag is `--nv` or `--nv=<bool>`, and the last one wins.
+/// Whether `flags` turn on apptainer's `--nv`.
 fn passes_nv(flags: &[String]) -> bool {
+    passes_bool_flag(flags, NV_FLAG)
+}
+
+/// Whether `flags` contain the container of their command. A short form
+/// counts when it stands alone, and not in a group of short flags.
+pub(crate) fn passes_contain(flags: &[String]) -> bool {
+    CONTAIN_FLAGS
+        .into_iter()
+        .any(|name| passes_bool_flag(flags, name))
+        || flags
+            .iter()
+            .any(|flag| CONTAIN_SHORT_FLAGS.contains(&flag.as_str()))
+}
+
+/// Whether `flags` turn on the boolean flag `name` of apptainer, such as
+/// `--nv`. As in apptainer's flag parser, the flag is `<name>` or
+/// `<name>=<bool>`, and the last one wins.
+fn passes_bool_flag(flags: &[String], name: &str) -> bool {
     flags
         .iter()
         .rev()
-        .find_map(|flag| nv_flag_value(flag))
+        .find_map(|flag| bool_flag_value(flag, name))
         .unwrap_or(false)
 }
 
-/// The value that `flag` gives `--nv`, or `None` when it is another flag. The
-/// values read as true are the ones apptainer's flag parser reads as true.
-fn nv_flag_value(flag: &str) -> Option<bool> {
-    if flag == NV_FLAG {
+/// The value that `flag` gives the boolean flag `name`, or `None` when it is
+/// another flag. The values read as true are the ones apptainer's flag parser
+/// reads as true.
+fn bool_flag_value(flag: &str, name: &str) -> Option<bool> {
+    if flag == name {
         return Some(true);
     }
-    let value = flag.strip_prefix(NV_FLAG)?.strip_prefix('=')?;
+    let value = flag.strip_prefix(name)?.strip_prefix('=')?;
     Some(matches!(value, "1" | "t" | "T" | "true" | "TRUE" | "True"))
 }
 
@@ -145,6 +177,18 @@ pub(crate) enum Backend {
         /// [`l4t_manifest`]. The Lima backend has no
         /// counterpart: its guest is a VM on a Mac, never a Jetson.
         l4t_manifest_dir: PathBuf,
+        /// Which `run` and which `exec` ask apptainer for a user namespace;
+        /// see [`root_user_namespace`](super::root_user_namespace). The Lima
+        /// backend has no counterpart: the user of its guest is not root, so
+        /// apptainer uses a user namespace there on its own.
+        #[cfg(target_os = "linux")]
+        user_namespace: UserNamespace,
+        /// The destinations of the binds of apptainer that a `run` or an
+        /// `exec` skips, because this host does not have their source; see
+        /// [`absent_bind_paths`](super::absent_bind_paths). The Lima backend
+        /// has no counterpart: the sources are in its guest, an Ubuntu system
+        /// that has them.
+        absent_bind_paths: AbsentBindPaths,
     },
     /// macOS, and a build for another architecture: route commands through
     /// a Lima VM.
@@ -644,7 +688,9 @@ impl Apptainer {
     /// # Blocking
     ///
     /// Construction runs `ensure_ready`, so it is not free.
-    /// On Linux it only checks user namespace prerequisites. On macOS it boots the
+    /// On Linux it checks the user namespace prerequisites, and the first
+    /// construction of a root daemon also reads the kernel configuration (see
+    /// the `root_user_namespace` module). On macOS it boots the
     /// Lima VM and syncs the apptainer install into the guest, which can take
     /// minutes on first run, so call it from a blocking context (e.g.
     /// `tokio::task::spawn_blocking`). Use [`is_lima_ready`](Self::is_lima_ready)
@@ -741,6 +787,9 @@ impl Apptainer {
                 tmp_dir: apptainer_scratch_dir(),
                 registry_auth: RegistryAuth::from_env()?,
                 l4t_manifest_dir: PathBuf::from(L4T_MANIFEST_DIR),
+                #[cfg(target_os = "linux")]
+                user_namespace: UserNamespace::for_this_daemon(&apptainer_dir),
+                absent_bind_paths: AbsentBindPaths::of_installation(&apptainer_dir),
             }
         };
 
@@ -1015,6 +1064,78 @@ impl Apptainer {
     // -----------------------------------------------------------------------
     // Command builders
     // -----------------------------------------------------------------------
+
+    /// The flags that this host needs on `command`, which runs `image`: the
+    /// user namespace of a root daemon whose kernel cannot mount the image,
+    /// then one `--no-mount` for each bind of apptainer whose source the host
+    /// does not have. The Lima backend needs none.
+    ///
+    /// # Errors
+    ///
+    /// When the command needs the user namespace and root cannot reach a
+    /// path of the command from it: the container cannot start.
+    fn flags_to_run_an_image(
+        &self,
+        image: &str,
+        command: &ApptainerCommand<'_>,
+    ) -> Result<Vec<String>> {
+        let Backend::Native {
+            absent_bind_paths, ..
+        } = &self.backend
+        else {
+            return Ok(Vec::new());
+        };
+        let user_namespace_flag = self.user_namespace_flag(image, command)?;
+        let no_mount_flags = absent_bind_paths
+            .of_command(passes_contain(&command.flags))
+            .iter()
+            .flat_map(|destination| [NO_MOUNT_FLAG.to_string(), destination.clone()]);
+        Ok(user_namespace_flag
+            .map(str::to_string)
+            .into_iter()
+            .chain(no_mount_flags)
+            .collect())
+    }
+
+    /// The flag that puts the container of `command`, which runs `image`, in
+    /// a user namespace, if the native backend needs one; see
+    /// [`root_user_namespace`](super::root_user_namespace).
+    #[cfg(target_os = "linux")]
+    fn user_namespace_flag(
+        &self,
+        image: &str,
+        command: &ApptainerCommand<'_>,
+    ) -> Result<Option<&'static str>> {
+        let Backend::Native { user_namespace, .. } = &self.backend else {
+            return Ok(None);
+        };
+        user_namespace.flag_for(&ImageCommand {
+            image: Path::new(image),
+            apptainer_dir: &self.apptainer_dir,
+            working_dir: command.working_dir.as_deref(),
+            bind_sources: command
+                .bind_mounts
+                .iter()
+                .map(|bind| Path::new(&bind.src))
+                .collect(),
+        })
+    }
+
+    /// No flag: only a Linux host needs a user namespace for the containers
+    /// of a root daemon.
+    #[cfg(not(target_os = "linux"))]
+    #[expect(
+        clippy::unused_self,
+        clippy::unnecessary_wraps,
+        reason = "the signature is the one of the Linux implementation"
+    )]
+    fn user_namespace_flag(
+        &self,
+        _image: &str,
+        _command: &ApptainerCommand<'_>,
+    ) -> Result<Option<&'static str>> {
+        Ok(None)
+    }
 
     /// Start building an `apptainer run` command.
     ///
@@ -1813,6 +1934,18 @@ impl CommandKind {
             Self::Exec { container, .. } => is_uri(container),
         }
     }
+
+    /// The image that the command runs: a run and an exec run one. Apptainer
+    /// then mounts the squashfs of the image and binds paths of the host
+    /// into its container. A build runs none: it unpacks its base image, and
+    /// a bind whose source is absent does not stop it.
+    fn image_to_run(&self) -> Option<&str> {
+        match self {
+            Self::Run { image, .. } => Some(image),
+            Self::Exec { container, .. } => Some(container),
+            Self::Build { .. } => None,
+        }
+    }
 }
 
 /// Builder for an apptainer command with optional flags.
@@ -2080,6 +2213,10 @@ impl<'a> ApptainerCommand<'a> {
     /// host's NVIDIA L4T container manifest into the `--nv` library list (see
     /// [`l4t_manifest`]), so it also fails here when the
     /// manifest cannot be read or the list cannot be written.
+    ///
+    /// A command that runs an image fails here when it needs a user
+    /// namespace and root cannot reach one of its paths from that namespace
+    /// (see the `root_user_namespace` module).
     fn assemble_command(&self) -> Result<Command> {
         if passes_nv(&self.flags) {
             self.facade.prepare_nv_library_list()?;
@@ -2131,7 +2268,10 @@ impl<'a> ApptainerCommand<'a> {
     // Internal
     // -----------------------------------------------------------------------
 
-    /// Assemble the full argument vector: `[subcommand, ...flags, ...binds, ...positional]`.
+    /// Assemble the full argument vector:
+    /// `[subcommand, ...host flags, ...flags, ...binds, ...positional]`.
+    /// The host flags are those of [`Apptainer::flags_to_run_an_image`], for
+    /// a command that runs an image.
     ///
     /// Path translation for bind mounts and positional args happens here.
     pub(crate) fn build_args(&self) -> Result<Vec<String>> {
@@ -2147,10 +2287,15 @@ impl<'a> ApptainerCommand<'a> {
             .to_string(),
         );
 
-        // 2. Accumulated flags (no translation needed)
+        // 2. What this host needs to run an image
+        if let Some(image) = self.kind.image_to_run() {
+            args.extend(self.facade.flags_to_run_an_image(image, self)?);
+        }
+
+        // 3. Accumulated flags (no translation needed)
         args.extend(self.flags.iter().cloned());
 
-        // 3. Bind mounts (translate src paths for Lima)
+        // 4. Bind mounts (translate src paths for Lima)
         for bind in &self.bind_mounts {
             args.push("--bind".to_string());
             let translated_src = self.facade.translate_arg(&bind.src)?;
@@ -2180,7 +2325,7 @@ impl<'a> ApptainerCommand<'a> {
             }
         }
 
-        // 4. Positional args (with path translation)
+        // 5. Positional args (with path translation)
         match &self.kind {
             CommandKind::Run { image, args: extra } => {
                 args.push(self.facade.translate_arg(image)?);
