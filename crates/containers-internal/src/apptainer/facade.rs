@@ -95,18 +95,20 @@ fn bool_flag_value(flag: &str, name: &str) -> Option<bool> {
     Some(matches!(value, "1" | "t" | "T" | "true" | "TRUE" | "True"))
 }
 
-/// Scratch directory handed to apptainer as its `--tmpdir`.
+/// Scratch directory handed to apptainer as its `--tmpdir`, for a command
+/// that has no scratch directory of its own (see
+/// [`ApptainerCommand::scratch_dir`]).
 ///
-/// Apptainer only falls back to this when it cannot FUSE-mount an image's
-/// squashfs partition, in which case it `unsquashfs`-extracts the entire rootfs
-/// there ("Converting SIF file to temporary sandbox..."). peppy bundles
-/// `squashfuse_ll` precisely so that path is never taken, but the fallback is
-/// still reachable on a host with no `/dev/fuse`, and apptainer's own default
-/// (`/tmp`) is the worst possible place for it: on a distro that backs `/tmp`
-/// with tmpfs under a systemd per-user quota, extracting several node images
-/// fails with "Disk quota exceeded" partway through a stack launch. Rooting it
-/// in the peppy tree puts it on real storage sized like the rest of peppy's
-/// data.
+/// Apptainer `unsquashfs`-extracts the entire rootfs of an image into its
+/// `--tmpdir` ("Converting SIF file to temporary sandbox...") in two cases:
+/// when peppy asks for it (see [`image_files`](super::image_files)), and
+/// when it cannot FUSE-mount the squashfs partition of the image. peppy
+/// bundles `squashfuse_ll`, so the second case needs a host with no
+/// `/dev/fuse`. Apptainer's own default (`/tmp`) is the worst possible place
+/// for the extraction: on a distro that backs `/tmp` with tmpfs under a
+/// systemd per-user quota, extracting several node images fails with "Disk
+/// quota exceeded" partway through a stack launch. Rooting it in the peppy
+/// tree puts it on real storage sized like the rest of peppy's data.
 fn apptainer_scratch_dir() -> PathBuf {
     daemon_config::consts::PeppyDirs::default()
         .tmp_dir()
@@ -2249,9 +2251,8 @@ impl<'a> ApptainerCommand<'a> {
 
     /// Give the apptainer process `dir` (a host-side directory that exists)
     /// for the temporary files of this command, in place of the scratch
-    /// directory that the commands of the facade share (see
-    /// [`apptainer_scratch_dir`]). Apptainer unpacks there an image that it
-    /// does not mount.
+    /// directory that the commands of the facade share. Apptainer unpacks
+    /// there an image that it does not mount.
     ///
     /// Apptainer removes its temporary files when the command ends, and a
     /// command that is killed leaves them. With a directory of its own, the
