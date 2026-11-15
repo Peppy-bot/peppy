@@ -5,14 +5,15 @@ use super::activity::{
 };
 #[cfg(target_os = "linux")]
 use super::facade::{
-    ApparmorProfileRef, SetupVerdict, apparmor_profile_ref, check_setup_status,
-    profile_file_names_programs, setup_fix_script, shell_escape_single_quoted,
-    unmet_prerequisites_error,
+    ApparmorProfileRef, SetupFix, SetupVerdict, apparmor_profile_ref, check_setup_status,
+    profile_file_names_programs, setup_fix, shell_escape_single_quoted, unmet_prerequisites_error,
 };
 use super::facade::{Apptainer, Backend, GuestSignal, is_uri, passes_contain, prepare_scratch_dir};
 use super::registry_auth::{RegistryAuth, RegistryAuthSource};
 #[cfg(target_os = "linux")]
 use super::root_user_namespace::UserNamespace;
+#[cfg(target_os = "linux")]
+use super::system_programs::{FailureSeverity, Privilege, SystemProgram, SystemPrograms};
 #[cfg(target_os = "linux")]
 use super::unprivileged_user_namespace::UnprivilegedUserNamespace;
 use crate::error::Error;
@@ -36,17 +37,17 @@ use std::process::ExitStatus;
 
 /// Construct a fully-initialized `Apptainer` for integration tests that need
 /// the real runtime, or `None` (after printing a SKIPPING diagnostic) when
-/// this host does not meet the user namespace prerequisites. Prerequisites are
-/// machine state (an AppArmor profile installed via `peppy container setup`),
-/// not code under test, so integration tests self-skip on an unprovisioned
+/// this host does not meet the prerequisites of a container build.
+/// Prerequisites are machine state (packages and an AppArmor profile that
+/// `peppy container setup` installs), not code under test, so integration tests self-skip on an unprovisioned
 /// host, mirroring the setup-status tests below and the e2e suite in
 /// tests/facade.rs. Pure command-assembly and path-translation tests use
 /// [`native_facade`] / [`lima_facade`] instead: they must never depend on
 /// host state.
 fn ready_facade() -> Option<Apptainer> {
-    if !host_meets_userns_prerequisites() {
+    if !host_meets_build_prerequisites() {
         eprintln!(
-            "SKIPPING: apptainer user namespace prerequisites not met on this host; \
+            "SKIPPING: the prerequisites of a container build are not met on this host; \
              run `peppy container setup`"
         );
         return None;
@@ -57,13 +58,16 @@ fn ready_facade() -> Option<Apptainer> {
     )
 }
 
-/// Whether this host meets apptainer's user namespace prerequisites. Always
-/// `true` off Linux: macOS routes through the Lima VM and has no AppArmor
-/// prerequisites to check.
-fn host_meets_userns_prerequisites() -> bool {
+/// Whether this host meets the prerequisites of apptainer that a container
+/// build needs: each one that stops the daemon passes, and the kernel does
+/// not refuse a user namespace. Always `true` off Linux: macOS routes through
+/// the Lima VM and has no prerequisites to check.
+fn host_meets_build_prerequisites() -> bool {
     #[cfg(target_os = "linux")]
     {
-        check_setup_status(&ready_apptainer_dir()).verdict == SetupVerdict::Ready
+        let verdict = check_setup_status(&ready_apptainer_dir()).verdict;
+        !verdict.fix_is_required_by_the_daemon()
+            && !matches!(verdict, SetupVerdict::Unfixable { .. })
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -1649,16 +1653,17 @@ fn check_setup_status_reports_real_installation() {
 
     let status = check_setup_status(&apptainer_dir);
 
-    // On systems with newuidmap, without AppArmor restrictions and with a
-    // kernel that does not refuse a user namespace, everything should pass.
-    if status.newuidmap_ok
+    // On systems with each program of the distribution, without AppArmor
+    // restrictions and with a kernel that does not refuse a user namespace,
+    // everything should pass.
+    if status.programs.severity().is_none()
         && !status.apparmor_restricted
         && status.user_namespace.refusal().is_none()
     {
         assert_eq!(
             status.verdict,
             SetupVerdict::Ready,
-            "the setup should be ready when newuidmap is available, AppArmor does not \
+            "the setup should be ready when no program is missing, AppArmor does not \
              restrict and the kernel does not refuse a user namespace"
         );
     }
@@ -1689,7 +1694,7 @@ fn check_setup_status_no_apparmor_restriction() {
         status.apparmor_loaded,
         "apparmor_loaded should be true when not restricted"
     );
-    if status.newuidmap_ok && status.user_namespace.refusal().is_none() {
+    if status.programs.severity().is_none() && status.user_namespace.refusal().is_none() {
         assert_eq!(status.verdict, SetupVerdict::Ready);
     }
 }
@@ -1720,11 +1725,11 @@ fn check_setup_status_requires_apparmor_profile_loaded() {
         );
     }
 
-    // If both are true (and newuidmap is present, and the kernel does not
+    // If both are true (and no program is missing, and the kernel does not
     // refuse a user namespace), the full check passes.
     if status.apparmor_ok
         && status.apparmor_loaded
-        && status.newuidmap_ok
+        && status.programs.severity().is_none()
         && status.user_namespace.refusal().is_none()
     {
         assert_eq!(
@@ -1739,11 +1744,7 @@ fn check_setup_status_requires_apparmor_profile_loaded() {
 /// the verdict holds none.
 #[cfg(target_os = "linux")]
 fn fix_script_of(verdict: &SetupVerdict) -> Option<&str> {
-    match verdict {
-        SetupVerdict::Ready => None,
-        SetupVerdict::Fixable { fix_script } => Some(fix_script),
-        SetupVerdict::Unfixable { fix_script, .. } => fix_script.as_deref(),
-    }
+    verdict.fix().map(|fix| fix.script.as_str())
 }
 
 #[cfg(target_os = "linux")]
@@ -1917,53 +1918,164 @@ fn shell_escape_single_quoted_survives_embedded_quotes() {
     assert_eq!(shell_escape_single_quoted("/plain/path"), "/plain/path");
 }
 
-/// The fix script holds one step per failing prerequisite, in a fixed order,
-/// and is absent when every prerequisite passes. A profile that is missing or
-/// stale is written and loaded in one step, so a profile that only needs
-/// loading gets the load alone.
+/// A profile of the fix script tests, and the commands that write and load
+/// it for a user that is not root.
 #[cfg(target_os = "linux")]
-#[test]
-fn setup_fix_script_holds_a_step_for_each_failing_check() {
-    const INSTALL_UIDMAP: &str = "sudo apt-get install -y uidmap";
-    const WRITE_PROFILE: &str = "printf '%s\\n' 'abi <abi/4.0>,\n\
-         include <tunables/global>\n\
-         \n\
-         @{peppy_apptainer_programs} = \"/opt/a/bin/apptainer\" \
-         \"/opt/a/libexec/apptainer/bin/starter\"\n\
-         \n\
-         profile peppy-apptainer-0000000000000000 @{peppy_apptainer_programs} flags=(unconfined) {\n\
-         \x20 userns,\n\
-         }' | sudo tee /etc/apparmor.d/peppy-apptainer-0000000000000000 > /dev/null \\\n  \
-         && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
-    const LOAD_PROFILE: &str =
-        "sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
-    let profile = ApparmorProfileRef {
+fn fix_script_profile() -> ApparmorProfileRef {
+    ApparmorProfileRef {
         apptainer_path: "/opt/a/bin/apptainer".to_string(),
         starter_path: "/opt/a/libexec/apptainer/bin/starter".to_string(),
         name: "peppy-apptainer-0000000000000000".to_string(),
         file: PathBuf::from("/etc/apparmor.d/peppy-apptainer-0000000000000000"),
-    };
-    let uidmap_then = |step: &str| format!("{INSTALL_UIDMAP} \\\n  && {step}");
+    }
+}
 
-    // (newuidmap_ok, apparmor_ok, apparmor_loaded, script)
+#[cfg(target_os = "linux")]
+const WRITE_PROFILE_WITH_SUDO: &str = "printf '%s\\n' 'abi <abi/4.0>,\n\
+     include <tunables/global>\n\
+     \n\
+     @{peppy_apptainer_programs} = \"/opt/a/bin/apptainer\" \
+     \"/opt/a/libexec/apptainer/bin/starter\"\n\
+     \n\
+     profile peppy-apptainer-0000000000000000 @{peppy_apptainer_programs} flags=(unconfined) {\n\
+     \x20 userns,\n\
+     }' | sudo tee /etc/apparmor.d/peppy-apptainer-0000000000000000 > /dev/null \\\n  \
+     && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
+
+#[cfg(target_os = "linux")]
+const LOAD_PROFILE_WITH_SUDO: &str =
+    "sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
+
+/// The checks of the programs of a user that is not root, on a machine that
+/// has each program but those of `missing`.
+#[cfg(target_os = "linux")]
+fn programs_without(missing: &[SystemProgram]) -> SystemPrograms {
+    SystemPrograms::parse(false, |program| !missing.contains(&program))
+}
+
+/// The fix script holds one step per failing prerequisite, in a fixed order,
+/// and no fix exists when every prerequisite passes. A profile that is
+/// missing or stale is written and loaded in one step, so a profile that only
+/// needs loading gets the load alone.
+#[cfg(target_os = "linux")]
+#[test]
+fn setup_fix_holds_a_step_for_each_failing_check() {
+    const INSTALL_UIDMAP: &str = "sudo apt-get -o DPkg::Lock::Timeout=300 update \\\n  \
+         && sudo apt-get -o DPkg::Lock::Timeout=300 install -y uidmap";
+    let profile = fix_script_profile();
+    let uidmap_then = |step: &str| format!("{INSTALL_UIDMAP} \\\n  && {step}");
+    let all = programs_without(&[]);
+    let no_newuidmap = programs_without(&[SystemProgram::Newuidmap]);
+
+    // (programs, apparmor_ok, apparmor_loaded, script)
     let cases = [
-        (true, true, true, None),
-        (false, true, true, Some(INSTALL_UIDMAP.to_string())),
-        (true, false, true, Some(WRITE_PROFILE.to_string())),
-        (true, false, false, Some(WRITE_PROFILE.to_string())),
-        (true, true, false, Some(LOAD_PROFILE.to_string())),
-        (false, false, true, Some(uidmap_then(WRITE_PROFILE))),
-        (false, false, false, Some(uidmap_then(WRITE_PROFILE))),
-        (false, true, false, Some(uidmap_then(LOAD_PROFILE))),
+        (all, true, true, None),
+        (no_newuidmap, true, true, Some(INSTALL_UIDMAP.to_string())),
+        (all, false, true, Some(WRITE_PROFILE_WITH_SUDO.to_string())),
+        (all, false, false, Some(WRITE_PROFILE_WITH_SUDO.to_string())),
+        (all, true, false, Some(LOAD_PROFILE_WITH_SUDO.to_string())),
+        (
+            no_newuidmap,
+            false,
+            true,
+            Some(uidmap_then(WRITE_PROFILE_WITH_SUDO)),
+        ),
+        (
+            no_newuidmap,
+            false,
+            false,
+            Some(uidmap_then(WRITE_PROFILE_WITH_SUDO)),
+        ),
+        (
+            no_newuidmap,
+            true,
+            false,
+            Some(uidmap_then(LOAD_PROFILE_WITH_SUDO)),
+        ),
     ];
-    for (newuidmap_ok, apparmor_ok, apparmor_loaded, script) in cases {
+    for (programs, apparmor_ok, apparmor_loaded, script) in cases {
+        let fix = setup_fix(
+            &programs,
+            apparmor_ok,
+            apparmor_loaded,
+            &profile,
+            Privilege::Sudo,
+        );
+
         assert_eq!(
-            setup_fix_script(newuidmap_ok, apparmor_ok, apparmor_loaded, &profile),
-            script,
-            "newuidmap_ok={newuidmap_ok} apparmor_ok={apparmor_ok} \
-             apparmor_loaded={apparmor_loaded}"
+            fix,
+            script.map(|script| SetupFix {
+                script,
+                severity: FailureSeverity::StopsTheDaemon,
+                uses_sudo: true,
+            }),
+            "programs={programs:?} apparmor_ok={apparmor_ok} apparmor_loaded={apparmor_loaded}"
         );
     }
+}
+
+/// Root runs each command of the fix script as it is: a machine of root
+/// alone, such as a container of a bare image, has no `sudo`.
+#[cfg(target_os = "linux")]
+#[test]
+fn setup_fix_of_root_has_no_sudo() {
+    let profile = fix_script_profile();
+    let programs = SystemPrograms::parse(true, |_| false);
+
+    let fix = setup_fix(&programs, false, false, &profile, Privilege::Root)
+        .expect("programs to install and a profile to write");
+
+    assert_eq!(
+        fix,
+        SetupFix {
+            script: format!(
+                "apt-get -o DPkg::Lock::Timeout=300 update \\\n  \
+                 && apt-get -o DPkg::Lock::Timeout=300 install -y squashfs-tools fuse2fs \\\n  \
+                 && {}",
+                WRITE_PROFILE_WITH_SUDO.replace("sudo ", "")
+            ),
+            severity: FailureSeverity::StopsTheDaemon,
+            uses_sudo: false,
+        }
+    );
+    assert!(!fix.script.contains("sudo"), "{}", fix.script);
+}
+
+/// The daemon starts without `fuse2fs`, so a fix that installs it alone is a
+/// warning. Each other failure that the fix repairs stops the daemon.
+#[cfg(target_os = "linux")]
+#[test]
+fn setup_fix_is_a_warning_when_fuse2fs_alone_is_missing() {
+    const INSTALL_FUSE2FS: &str = "sudo apt-get -o DPkg::Lock::Timeout=300 update \\\n  \
+         && sudo apt-get -o DPkg::Lock::Timeout=300 install -y fuse2fs";
+    let profile = fix_script_profile();
+    let no_fuse2fs = programs_without(&[SystemProgram::Fuse2fs]);
+    let severity_of = |programs: &SystemPrograms, apparmor_loaded: bool| {
+        setup_fix(programs, true, apparmor_loaded, &profile, Privilege::Sudo)
+            .map(|fix| fix.severity)
+    };
+
+    assert_eq!(
+        setup_fix(&no_fuse2fs, true, true, &profile, Privilege::Sudo),
+        Some(SetupFix {
+            script: INSTALL_FUSE2FS.to_string(),
+            severity: FailureSeverity::Warning,
+            uses_sudo: true,
+        })
+    );
+    assert_eq!(
+        severity_of(&no_fuse2fs, false),
+        Some(FailureSeverity::StopsTheDaemon),
+        "a profile that is not loaded stops the daemon"
+    );
+    assert_eq!(
+        severity_of(
+            &programs_without(&[SystemProgram::Mksquashfs, SystemProgram::Fuse2fs]),
+            true
+        ),
+        Some(FailureSeverity::StopsTheDaemon),
+        "a missing mksquashfs stops the daemon"
+    );
 }
 
 /// The profile names each program in quotes, with a backslash before each
@@ -1972,7 +2084,7 @@ fn setup_fix_script_holds_a_step_for_each_failing_check() {
 /// single-quoted body that the fix script writes to the profile file.
 #[cfg(target_os = "linux")]
 #[test]
-fn setup_fix_script_names_a_path_with_special_characters_as_it_is() {
+fn setup_fix_names_a_path_with_special_characters_as_it_is() {
     let profile = ApparmorProfileRef {
         apptainer_path: r#"/home/o'brien/my "apps" [x] @{y},z*?^\a/bin/apptainer"#.to_string(),
         starter_path: "/home/o'brien/a b/libexec/apptainer/bin/starter".to_string(),
@@ -1980,7 +2092,15 @@ fn setup_fix_script_names_a_path_with_special_characters_as_it_is() {
         file: PathBuf::from("/etc/apparmor.d/peppy-apptainer-0000000000000000"),
     };
 
-    let script = setup_fix_script(true, false, true, &profile).expect("a profile to write");
+    let script = setup_fix(
+        &programs_without(&[]),
+        false,
+        true,
+        &profile,
+        Privilege::Sudo,
+    )
+    .expect("a profile to write")
+    .script;
 
     let programs_line = [
         "@{peppy_apptainer_programs} =",
@@ -1999,7 +2119,8 @@ fn setup_fix_script_names_a_path_with_special_characters_as_it_is() {
 #[cfg(target_os = "linux")]
 #[test]
 fn unmet_prerequisites_are_an_error_that_gives_the_script() {
-    const FIX_SCRIPT: &str = "sudo apt-get install -y uidmap \\\n  \
+    const FIX_SCRIPT: &str = "sudo apt-get -o DPkg::Lock::Timeout=300 update \\\n  \
+         && sudo apt-get -o DPkg::Lock::Timeout=300 install -y squashfs-tools \\\n  \
          && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
 
     let error = unmet_prerequisites_error(FIX_SCRIPT);
@@ -2007,21 +2128,28 @@ fn unmet_prerequisites_are_an_error_that_gives_the_script() {
     assert_matches!(
         &error,
         Error::ConfigurationError(message)
-            if message.contains(
-                "  sudo apt-get install -y uidmap \\\n    \
-                 && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000\n"
-            ) && message.contains("peppy container setup")
+            if message.starts_with("The prerequisites of Apptainer are not met.\n")
+                && message.contains(
+                    "  sudo apt-get -o DPkg::Lock::Timeout=300 update \\\n    \
+                     && sudo apt-get -o DPkg::Lock::Timeout=300 install -y squashfs-tools \\\n    \
+                     && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000\n"
+                )
+                && message.contains("peppy container setup")
     );
 }
 
 /// The verdict of a setup: ready when no prerequisite fails and the kernel
 /// does not refuse the user namespace, fixable when a prerequisite fails, and
-/// unfixable when the kernel refuses, with the script of the prerequisites
-/// that fail beside the refusal.
+/// unfixable when the kernel refuses, with the fix of the prerequisites that
+/// fail beside the refusal.
 #[cfg(target_os = "linux")]
 #[test]
-fn the_verdict_of_a_setup_holds_its_fix_script_and_the_refusal_of_the_kernel() {
-    const FIX_SCRIPT: &str = "sudo apt-get install -y uidmap";
+fn the_verdict_of_a_setup_holds_its_fix_and_the_refusal_of_the_kernel() {
+    let fix = SetupFix {
+        script: "sudo apt-get install -y uidmap".to_string(),
+        severity: FailureSeverity::StopsTheDaemon,
+        uses_sudo: true,
+    };
     let refused = UnprivilegedUserNamespace::Refused {
         answer: "unshare: unshare failed: Operation not permitted".to_string(),
     };
@@ -2042,21 +2170,77 @@ fn the_verdict_of_a_setup_holds_its_fix_script_and_the_refusal_of_the_kernel() {
             "{not_refused:?}"
         );
         assert_eq!(
-            SetupVerdict::of(Some(FIX_SCRIPT.to_string()), &not_refused),
-            SetupVerdict::Fixable {
-                fix_script: FIX_SCRIPT.to_string()
-            },
+            SetupVerdict::of(Some(fix.clone()), &not_refused),
+            SetupVerdict::Fixable { fix: fix.clone() },
             "{not_refused:?}"
         );
     }
 
-    for fix_script in [None, Some(FIX_SCRIPT.to_string())] {
+    for fix in [None, Some(fix)] {
         assert_eq!(
-            SetupVerdict::of(fix_script.clone(), &refused),
+            SetupVerdict::of(fix.clone(), &refused),
             SetupVerdict::Unfixable {
                 refusal: refusal.clone(),
-                fix_script
+                fix
             }
+        );
+    }
+}
+
+/// The daemon stops until the setup makes a fix whose failures stop it, and
+/// starts with a fix that repairs a warning alone or with no fix to make.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_daemon_needs_the_fix_of_a_failure_that_stops_it() {
+    let fix_of = |severity| SetupFix {
+        script: "sudo apt-get install -y fuse2fs".to_string(),
+        severity,
+        uses_sudo: true,
+    };
+    let refusal = || "The kernel refuses a user namespace.".to_string();
+
+    // (verdict, whether the daemon needs the fix)
+    let cases = [
+        (SetupVerdict::Ready, false),
+        (
+            SetupVerdict::Fixable {
+                fix: fix_of(FailureSeverity::Warning),
+            },
+            false,
+        ),
+        (
+            SetupVerdict::Fixable {
+                fix: fix_of(FailureSeverity::StopsTheDaemon),
+            },
+            true,
+        ),
+        (
+            SetupVerdict::Unfixable {
+                refusal: refusal(),
+                fix: None,
+            },
+            false,
+        ),
+        (
+            SetupVerdict::Unfixable {
+                refusal: refusal(),
+                fix: Some(fix_of(FailureSeverity::Warning)),
+            },
+            false,
+        ),
+        (
+            SetupVerdict::Unfixable {
+                refusal: refusal(),
+                fix: Some(fix_of(FailureSeverity::StopsTheDaemon)),
+            },
+            true,
+        ),
+    ];
+    for (verdict, is_required) in cases {
+        assert_eq!(
+            verdict.fix_is_required_by_the_daemon(),
+            is_required,
+            "{verdict:?}"
         );
     }
 }

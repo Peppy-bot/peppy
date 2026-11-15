@@ -272,8 +272,9 @@ impl InstanceKeys {
 /// process-exit means a `CoreNode` can be constructed in tests and embedders
 /// without risking a host-process kill.
 pub fn check_runtime_prerequisites() -> Result<()> {
-    // Apptainer user namespaces: on Ubuntu 24.04+ an AppArmor profile is
-    // required to allow unprivileged user namespace creation.
+    // The prerequisites of Apptainer that have a fix: the programs of the
+    // distribution that a build runs, and on Ubuntu 24.04+ the AppArmor
+    // profile that allows unprivileged user namespace creation.
     #[cfg(target_os = "linux")]
     {
         let apptainer =

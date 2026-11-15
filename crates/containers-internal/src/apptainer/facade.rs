@@ -6,7 +6,9 @@ use super::registry_auth::{APPTAINER_AUTH_FILE_ENV, RegistryAuth};
 #[cfg(target_os = "linux")]
 use super::root_user_namespace::{ImageCommand, UserNamespace};
 #[cfg(target_os = "linux")]
-use super::unprivileged_user_namespace::UnprivilegedUserNamespace;
+use super::system_programs::{AND_THEN, FailureSeverity, Privilege, SystemPrograms};
+#[cfg(target_os = "linux")]
+use super::unprivileged_user_namespace::{self, UnprivilegedUserNamespace};
 use core_node_api::encoding::ArtifactPlatform;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -235,16 +237,6 @@ pub struct Apptainer {
     pub(crate) extra_mounts: Vec<PathBuf>,
 }
 
-/// Check if a command is available in PATH.
-#[cfg(target_os = "linux")]
-fn which(cmd: &str) -> Option<PathBuf> {
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths).find_map(|dir| {
-        let full = dir.join(cmd);
-        full.is_file().then_some(full)
-    })
-}
-
 /// Check whether AppArmor profiles can actually be managed on this system.
 ///
 /// Returns `true` when the AppArmor security filesystem is fully mounted,
@@ -266,14 +258,14 @@ fn is_apparmor_manageable() -> bool {
     Path::new("/sys/kernel/security/apparmor/policy").is_dir()
 }
 
-/// Status of Apptainer user namespace prerequisites on the current system.
+/// The state of the prerequisites of Apptainer on this machine.
 ///
-/// Apptainer is built without setuid (`--without-suid`) and relies on
-/// unprivileged user namespaces via fakeroot. This requires `newuidmap`
-/// (from the `uidmap` package). On systems where AppArmor restricts
-/// unprivileged user namespaces (e.g. Ubuntu 24.04+), an AppArmor profile
-/// must be installed to allow the `apptainer` and `starter` programs to
-/// create them.
+/// Apptainer runs three programs of the Linux distribution that peppy does
+/// not bundle with it (see [`SystemPrograms`]). It is built without setuid
+/// (`--without-suid`), so a user that is not root builds in a user namespace,
+/// with fakeroot. On systems where AppArmor restricts unprivileged user
+/// namespaces (e.g. Ubuntu 24.04+), an AppArmor profile must be installed to
+/// allow the `apptainer` and `starter` programs to create them.
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 #[expect(
@@ -281,8 +273,8 @@ fn is_apparmor_manageable() -> bool {
     reason = "each flag is the result of one check of the setup"
 )]
 pub struct SetupStatus {
-    /// `newuidmap` is available in PATH (required for fakeroot).
-    pub newuidmap_ok: bool,
+    /// The check of each program of the distribution that Apptainer runs.
+    pub programs: SystemPrograms,
     /// System restricts unprivileged user namespaces via AppArmor.
     pub apparmor_restricted: bool,
     /// AppArmor profile of the installation is installed and names the
@@ -303,6 +295,20 @@ pub struct SetupStatus {
     pub verdict: SetupVerdict,
 }
 
+/// The fix of the checks of a [`SetupStatus`] that fail and that
+/// `peppy container setup` can repair.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetupFix {
+    /// The shell script that repairs each of these checks.
+    pub script: String,
+    /// What the most severe of these failures does to the daemon.
+    pub severity: FailureSeverity,
+    /// Whether the script runs its commands through `sudo`, which it does
+    /// for a user that is not root.
+    pub uses_sudo: bool,
+}
+
 /// What the checks of a [`SetupStatus`] come to, and what
 /// `peppy container setup` can do about them.
 #[cfg(target_os = "linux")]
@@ -310,37 +316,50 @@ pub struct SetupStatus {
 pub enum SetupVerdict {
     /// Every check passes: a container build has what it needs.
     Ready,
-    /// Checks fail, and the shell script `fix_script` fixes each of them.
-    Fixable { fix_script: String },
+    /// Checks fail, and `fix` repairs each of them.
+    Fixable { fix: SetupFix },
     /// The kernel refuses the user namespace of a container build, which no
     /// fix repairs: each container build fails. `refusal` explains it.
-    /// `fix_script` fixes the other checks that fail, and is `None` when
-    /// each of them passes.
+    /// `fix` repairs the other checks that fail, and is `None` when each of
+    /// them passes.
     Unfixable {
         refusal: String,
-        fix_script: Option<String>,
+        fix: Option<SetupFix>,
     },
 }
 
 #[cfg(target_os = "linux")]
 impl SetupVerdict {
-    /// The verdict for the script that fixes the failing prerequisites
-    /// (`None` when each passes) and the answer of the kernel to the request
-    /// of a user namespace.
-    pub(crate) fn of(
-        fix_script: Option<String>,
-        user_namespace: &UnprivilegedUserNamespace,
-    ) -> Self {
+    /// The verdict for the fix of the failing prerequisites (`None` when
+    /// each passes) and the answer of the kernel to the request of a user
+    /// namespace.
+    pub(crate) fn of(fix: Option<SetupFix>, user_namespace: &UnprivilegedUserNamespace) -> Self {
         if let Some(refusal) = user_namespace.refusal() {
-            return Self::Unfixable {
-                refusal,
-                fix_script,
-            };
+            return Self::Unfixable { refusal, fix };
         }
-        match fix_script {
-            Some(fix_script) => Self::Fixable { fix_script },
+        match fix {
+            Some(fix) => Self::Fixable { fix },
             None => Self::Ready,
         }
+    }
+
+    /// The fix of the checks that fail and have one, or `None` when no such
+    /// check fails.
+    #[must_use]
+    pub const fn fix(&self) -> Option<&SetupFix> {
+        match self {
+            Self::Ready => None,
+            Self::Fixable { fix } => Some(fix),
+            Self::Unfixable { fix, .. } => fix.as_ref(),
+        }
+    }
+
+    /// Whether the daemon stops at its start until `peppy container setup`
+    /// makes its fix.
+    #[must_use]
+    pub fn fix_is_required_by_the_daemon(&self) -> bool {
+        self.fix()
+            .is_some_and(|fix| fix.severity == FailureSeverity::StopsTheDaemon)
     }
 }
 
@@ -352,25 +371,22 @@ impl SetupVerdict {
     reason = "each flag is the result of one check of the setup"
 )]
 struct Prerequisites {
-    newuidmap_ok: bool,
+    programs: SystemPrograms,
     apparmor_restricted: bool,
     apparmor_ok: bool,
     apparmor_loaded: bool,
     apparmor_manageable: bool,
-    /// The shell script that fixes the prerequisites that fail, or `None`
-    /// when each passes.
-    fix_script: Option<String>,
+    /// The fix of the prerequisites that fail, or `None` when each passes.
+    fix: Option<SetupFix>,
 }
 
 #[cfg(target_os = "linux")]
 impl Prerequisites {
-    /// Examines the prerequisites of the installation at `apptainer_dir`.
-    fn check(apptainer_dir: &Path) -> Self {
+    /// Examines the prerequisites of the installation at `apptainer_dir`,
+    /// for a user that `builds_as_root` or not.
+    fn check(apptainer_dir: &Path, builds_as_root: bool) -> Self {
         let apparmor_manageable = is_apparmor_manageable();
-
-        // newuidmap is required for fakeroot mode (unprivileged user namespaces).
-        // Ubuntu provides it in the `uidmap` package.
-        let newuidmap_ok = which("newuidmap").is_some();
+        let programs = SystemPrograms::check(builds_as_root);
 
         // The procfs flag may read "1" even inside containers (inherited from
         // the host kernel). Only treat it as restricted when AppArmor is also
@@ -384,16 +400,22 @@ impl Prerequisites {
         let apparmor_ok = !apparmor_restricted || profile_file_names_programs(&profile);
         let apparmor_loaded = !apparmor_restricted || is_apparmor_profile_loaded(&profile.name);
         // Both AppArmor checks pass on a system that does not restrict user
-        // namespaces, so the fix script needs no restriction flag of its own.
-        let fix_script = setup_fix_script(newuidmap_ok, apparmor_ok, apparmor_loaded, &profile);
+        // namespaces, so the fix needs no restriction flag of its own.
+        let fix = setup_fix(
+            &programs,
+            apparmor_ok,
+            apparmor_loaded,
+            &profile,
+            Privilege::of_this_process(),
+        );
 
         Self {
-            newuidmap_ok,
+            programs,
             apparmor_restricted,
             apparmor_ok,
             apparmor_loaded,
             apparmor_manageable,
-            fix_script,
+            fix,
         }
     }
 }
@@ -459,20 +481,27 @@ impl ApparmorProfileRef {
         )
     }
 
-    /// The shell command that loads the profile file into the kernel.
-    fn load_command(&self) -> String {
-        format!("sudo apparmor_parser -r {}", self.file.display())
+    /// The shell command that loads the profile file into the kernel, for a
+    /// user that has `privilege`.
+    fn load_command(&self, privilege: Privilege) -> String {
+        format!(
+            "{}apparmor_parser -r {}",
+            privilege.prefix(),
+            self.file.display()
+        )
     }
 
     /// The shell command that writes the profile file and loads it into the
-    /// kernel. `printf` writes the body as it is: the `echo` of a shell can
-    /// read a backslash of the body as the start of an escape sequence.
-    fn write_and_load_command(&self) -> String {
+    /// kernel, for a user that has `privilege`. `printf` writes the body as
+    /// it is: the `echo` of a shell can read a backslash of the body as the
+    /// start of an escape sequence.
+    fn write_and_load_command(&self, privilege: Privilege) -> String {
         format!(
-            "printf '%s\\n' '{body}' | sudo tee {file} > /dev/null \\\n  && {load}",
+            "printf '%s\\n' '{body}' | {as_root}tee {file} > /dev/null{AND_THEN}{load}",
             body = shell_escape_single_quoted(&self.body()),
+            as_root = privilege.prefix(),
             file = self.file.display(),
-            load = self.load_command(),
+            load = self.load_command(privilege),
         )
     }
 }
@@ -545,11 +574,14 @@ pub(crate) fn shell_escape_single_quoted(value: &str) -> String {
     value.replace('\'', r"'\''")
 }
 
-/// Inspect the Apptainer user namespace prerequisites without failing on errors.
+/// Inspect the prerequisites of Apptainer without failing on errors.
 ///
 /// Returns a [`SetupStatus`] describing which checks pass and which do not,
 /// with a [`SetupVerdict`] that holds a ready-to-run fix script when
 /// something needs attention.
+///
+/// The checks are for the user of the container builds: the user of this
+/// process, or the caller of `sudo` when `sudo` runs this process as root.
 ///
 /// The caller is responsible for resolving the `apptainer_dir`; use
 /// [`Apptainer::resolve_apptainer_dir`] or the `PEPPY_APPTAINER_DIR` env var.
@@ -560,18 +592,21 @@ pub(crate) fn shell_escape_single_quoted(value: &str) -> String {
 #[cfg(target_os = "linux")]
 pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
     let Prerequisites {
-        newuidmap_ok,
+        programs,
         apparmor_restricted,
         apparmor_ok,
         apparmor_loaded,
         apparmor_manageable,
-        fix_script,
-    } = Prerequisites::check(apptainer_dir);
+        fix,
+    } = Prerequisites::check(
+        apptainer_dir,
+        unprivileged_user_namespace::build_user_is_root(),
+    );
     let user_namespace = UnprivilegedUserNamespace::for_build_user(apparmor_restricted);
-    let verdict = SetupVerdict::of(fix_script, &user_namespace);
+    let verdict = SetupVerdict::of(fix, &user_namespace);
 
     SetupStatus {
-        newuidmap_ok,
+        programs,
         apparmor_restricted,
         apparmor_ok,
         apparmor_loaded,
@@ -579,6 +614,15 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
         user_namespace,
         verdict,
     }
+}
+
+/// The check of each program of the distribution that Apptainer runs, for
+/// the user of the container builds (see [`check_setup_status`]). To examine
+/// them reads `PATH` and its directories alone.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn check_system_programs() -> SystemPrograms {
+    SystemPrograms::check(unprivileged_user_namespace::build_user_is_root())
 }
 
 /// Whether the profile file of `profile` exists and names the programs of
@@ -607,45 +651,60 @@ pub(crate) fn is_apparmor_profile_loaded(name: &str) -> bool {
     })
 }
 
-/// The shell script that fixes the failing prerequisites, one step per
-/// failure joined with `&&`, or `None` when every prerequisite passes. A
-/// profile that is missing or stale is written and loaded in one step, so the
-/// load alone is for a profile that is in place but not loaded.
+/// The fix of the failing prerequisites, or `None` when every prerequisite
+/// passes. Its script holds one step per failure, joined with `&&`, for a
+/// user that has `privilege`: one step installs the package of each program
+/// that is missing. A profile that is missing or stale is written and loaded
+/// in one step, so the load alone is for a profile that is in place but not
+/// loaded.
+///
+/// A profile that fails stops the daemon, as a missing program that the
+/// builds of the user run does.
 #[cfg(target_os = "linux")]
-pub(crate) fn setup_fix_script(
-    newuidmap_ok: bool,
+pub(crate) fn setup_fix(
+    programs: &SystemPrograms,
     apparmor_ok: bool,
     apparmor_loaded: bool,
     profile: &ApparmorProfileRef,
-) -> Option<String> {
-    let mut steps: Vec<String> = Vec::new();
-
-    if !newuidmap_ok {
-        steps.push("sudo apt-get install -y uidmap".to_string());
-    }
-
-    if !apparmor_ok {
-        steps.push(profile.write_and_load_command());
+    privilege: Privilege,
+) -> Option<SetupFix> {
+    let install_step = programs.install_step(privilege);
+    let profile_step = if !apparmor_ok {
+        Some(profile.write_and_load_command(privilege))
     } else if !apparmor_loaded {
-        steps.push(profile.load_command());
-    }
+        Some(profile.load_command(privilege))
+    } else {
+        None
+    };
+    let profile_severity = profile_step
+        .as_ref()
+        .map(|_| FailureSeverity::StopsTheDaemon);
+    let severity = programs.severity().max(profile_severity)?;
 
-    if steps.is_empty() {
-        return None;
-    }
-    Some(steps.join(" \\\n  && "))
+    let steps: Vec<String> = install_step.into_iter().chain(profile_step).collect();
+    Some(SetupFix {
+        script: steps.join(AND_THEN),
+        severity,
+        uses_sudo: privilege == Privilege::Sudo,
+    })
 }
 
-/// Check that the prerequisites of Apptainer that have a fix are met.
+/// Check that the prerequisites of Apptainer that the daemon needs are met.
+///
+/// The check is for the user of this process, which runs `apptainer`. A
+/// failure that is a warning alone (see [`FailureSeverity`]) passes.
 ///
 /// Makes no request to the kernel for a user namespace: each construction of
 /// an [`Apptainer`] runs this check, and a refusal of the kernel has no fix
 /// to give. [`Apptainer::user_namespace_refusal`] makes the request.
 #[cfg(target_os = "linux")]
-fn check_userns_prerequisites(apptainer_dir: &Path) -> Result<()> {
-    match Prerequisites::check(apptainer_dir).fix_script {
-        None => Ok(()),
-        Some(fix_script) => Err(unmet_prerequisites_error(&fix_script)),
+fn check_required_prerequisites(apptainer_dir: &Path) -> Result<()> {
+    let builds_as_root = nix::unistd::geteuid().is_root();
+    match Prerequisites::check(apptainer_dir, builds_as_root).fix {
+        Some(fix) if fix.severity == FailureSeverity::StopsTheDaemon => {
+            Err(unmet_prerequisites_error(&fix.script))
+        }
+        Some(_) | None => Ok(()),
     }
 }
 
@@ -660,7 +719,7 @@ pub(crate) fn unmet_prerequisites_error(fix_script: &str) -> Error {
         buf
     });
     Error::ConfigurationError(format!(
-        "Apptainer's user namespace prerequisites are not met.\n\
+        "The prerequisites of Apptainer are not met.\n\
          \n\
          To fix, run the following command:\n\
          \n\
@@ -688,7 +747,7 @@ impl Apptainer {
     /// # Blocking
     ///
     /// Construction runs `ensure_ready`, so it is not free.
-    /// On Linux it checks the user namespace prerequisites, and the first
+    /// On Linux it checks the prerequisites that the daemon needs, and the first
     /// construction of a root daemon also reads the kernel configuration (see
     /// the `root_user_namespace` module). On macOS it boots the
     /// Lima VM and syncs the apptainer install into the guest, which can take
@@ -806,7 +865,8 @@ impl Apptainer {
     /// Called once during construction.
     ///
     /// On Linux (`Backend::Native`): prepares the scratch directory apptainer is
-    /// pointed at and verifies user namespace prerequisites (AppArmor).
+    /// pointed at and verifies the prerequisites that the daemon needs (the
+    /// programs of the distribution, AppArmor).
     ///
     /// On macOS (`Backend::Lima`): boots the Lima VM if it is not already running,
     /// and syncs the apptainer installation into the guest. This may take minutes
@@ -821,7 +881,7 @@ impl Apptainer {
                 // struggling.
                 prepare_scratch_dir(tmp_dir)?;
                 #[cfg(target_os = "linux")]
-                check_userns_prerequisites(&self.apptainer_dir)?;
+                check_required_prerequisites(&self.apptainer_dir)?;
                 Ok(())
             }
             Backend::Lima {

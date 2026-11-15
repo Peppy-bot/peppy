@@ -8,6 +8,8 @@ pub(crate) mod registry_auth;
 #[cfg(target_os = "linux")]
 pub(crate) mod root_user_namespace;
 #[cfg(target_os = "linux")]
+pub(crate) mod system_programs;
+#[cfg(target_os = "linux")]
 pub(crate) mod unprivileged_user_namespace;
 
 #[cfg(test)]
@@ -22,7 +24,11 @@ pub(crate) fn scratch_dir() -> tempfile::TempDir {
 pub use activity::{BuildActivity, BuildActivityProbe};
 pub use facade::{Apptainer, ApptainerCommand, emulation_problem};
 #[cfg(target_os = "linux")]
-pub use facade::{SetupStatus, SetupVerdict, check_setup_status};
+pub use facade::{SetupFix, SetupStatus, SetupVerdict, check_setup_status, check_system_programs};
 pub use registry_auth::RegistryAuthFile;
+#[cfg(target_os = "linux")]
+pub use system_programs::{
+    FailureSeverity, ProgramCheck, ProgramState, SystemProgram, SystemPrograms,
+};
 #[cfg(target_os = "linux")]
 pub use unprivileged_user_namespace::UnprivilegedUserNamespace;

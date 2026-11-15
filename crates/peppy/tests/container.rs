@@ -15,7 +15,7 @@ fn container_status_runs_without_daemon() {
     // status may return Ok (all checks pass) or Err (some checks fail);
     // either is a valid outcome.  We just verify it doesn't panic.
     let _result = ContainerCommand {
-        command: ContainerCommands::Status,
+        command: ContainerCommands::Status { packages: false },
     }
     .execute(&ctx);
 }

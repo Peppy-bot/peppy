@@ -108,6 +108,12 @@ impl UnprivilegedUserNamespace {
     }
 }
 
+/// Whether the user of the container builds is root, which builds with no
+/// user namespace and no fakeroot.
+pub(crate) fn build_user_is_root() -> bool {
+    BuildUser::of_this_process() == BuildUser::Root
+}
+
 /// The user whose container builds the request is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BuildUser {

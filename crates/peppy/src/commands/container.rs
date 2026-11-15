@@ -6,7 +6,7 @@ use std::io::IsTerminal;
 use clap::Subcommand;
 
 #[cfg(target_os = "linux")]
-use containers::SetupVerdict;
+use containers::{FailureSeverity, ProgramCheck, ProgramState, SetupVerdict, SystemPrograms};
 
 use super::Command;
 use crate::context::AppContext;
@@ -17,7 +17,11 @@ use crate::error::Result;
 #[derive(Debug, Subcommand)]
 pub enum ContainerCommands {
     /// Check container prerequisites and show what needs fixing
-    Status,
+    Status {
+        /// Check only the packages of the Linux distribution that container nodes need
+        #[arg(long)]
+        packages: bool,
+    },
     /// Interactively fix container prerequisites (may prompt for sudo)
     Setup,
 }
@@ -30,7 +34,8 @@ pub struct ContainerCommand {
 impl Command for ContainerCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
         match self.command {
-            ContainerCommands::Status => status(),
+            ContainerCommands::Status { packages: false } => status(),
+            ContainerCommands::Status { packages: true } => packages_status(),
             ContainerCommands::Setup => setup(),
         }
     }
@@ -53,14 +58,7 @@ fn status() -> Result<()> {
     if !status.apparmor_manageable {
         println!("  AppArmor               : not manageable (security filesystem not mounted)");
     }
-    println!(
-        "  newuidmap              : {}",
-        if status.newuidmap_ok {
-            "OK"
-        } else {
-            "FAILED (install uidmap package)"
-        }
-    );
+    print_program_lines(&status.programs);
     if !status.apparmor_manageable {
         println!("  AppArmor profile       : skipped (AppArmor not manageable)");
     } else if status.apparmor_restricted {
@@ -86,30 +84,128 @@ fn status() -> Result<()> {
     println!();
 
     let Some(advice) = advice_for_failing_checks(&status.verdict) else {
-        println!("All checks passed. Container support is ready.");
+        println!("{}", summary_of_passing_checks(&status.verdict));
         return Ok(());
     };
     Err(Error::ExecutionFailed(advice))
 }
 
-/// What the user does about checks that fail, or `None` when each check
-/// passes: run the setup when it has a fix to make, and read the cause of a
-/// failure that has none.
+/// The status of the packages alone: the programs of the Linux distribution
+/// that Apptainer runs. It fails when the daemon stops at its start without
+/// one of them, and gives the command that installs each missing package.
+#[cfg(target_os = "linux")]
+fn packages_status() -> Result<()> {
+    let programs = containers::check_system_programs();
+
+    println!("Container packages");
+    println!("------------------");
+    print_program_lines(&programs);
+    println!();
+
+    match advice_for_missing_packages(&programs) {
+        None => {
+            println!("Each package that container nodes need is installed.");
+            Ok(())
+        }
+        Some((FailureSeverity::Warning, advice)) => {
+            eprintln!("Warning: {advice}");
+            Ok(())
+        }
+        Some((FailureSeverity::StopsTheDaemon, advice)) => Err(Error::ExecutionFailed(advice)),
+    }
+}
+
+/// Writes one line for the check of each program of the distribution.
+#[cfg(target_os = "linux")]
+fn print_program_lines(programs: &SystemPrograms) {
+    for check in &programs.checks {
+        println!("  {:<23}: {}", check.program.name(), program_state(check));
+    }
+}
+
+/// The state that the line of a program shows: what its check found, and for
+/// a missing program the package to install.
+#[cfg(target_os = "linux")]
+fn program_state(check: &ProgramCheck) -> String {
+    let package = check.program.package();
+    match check.state {
+        ProgramState::Found => "OK".to_string(),
+        ProgramState::NotRequired => "not required (the builds of root do not run it)".to_string(),
+        ProgramState::Missing(FailureSeverity::StopsTheDaemon) => {
+            format!("FAILED (install the {package} package)")
+        }
+        ProgramState::Missing(FailureSeverity::Warning) => format!(
+            "WARNING (install the {package} package for {})",
+            check.program.purpose()
+        ),
+    }
+}
+
+/// What the user does about packages that are missing, with what the most
+/// severe absence does to the daemon, or `None` when no package is missing:
+/// the packages to install and the command that installs them.
+#[cfg(target_os = "linux")]
+fn advice_for_missing_packages(programs: &SystemPrograms) -> Option<(FailureSeverity, String)> {
+    let severity = programs.severity()?;
+    let install_command = programs.install_command()?;
+    let packages_of = |wanted: FailureSeverity| {
+        programs
+            .missing()
+            .filter(|(_, severity)| *severity == wanted)
+            .map(|(program, _)| program.package())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let cause = match severity {
+        FailureSeverity::StopsTheDaemon => format!(
+            "The daemon does not start without packages that this machine does not have: {}.",
+            packages_of(FailureSeverity::StopsTheDaemon)
+        ),
+        FailureSeverity::Warning => format!(
+            "This machine does not have packages that the daemon starts without: {}.",
+            packages_of(FailureSeverity::Warning)
+        ),
+    };
+    let indented_command = install_command
+        .lines()
+        .map(|line| format!("  {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some((
+        severity,
+        format!(
+            "{cause}\nTo install each missing package, run the following command:\n\n\
+             {indented_command}"
+        ),
+    ))
+}
+
+/// What the user does about checks that fail, or `None` when no check that
+/// the daemon or a container build needs fails: run the setup when it has a
+/// fix that the daemon needs, and read the cause of a failure that has none.
 #[cfg(target_os = "linux")]
 fn advice_for_failing_checks(verdict: &SetupVerdict) -> Option<String> {
     const RUN_THE_SETUP: &str = "Some checks failed. Run `peppy container setup` to fix.";
 
     match verdict {
         SetupVerdict::Ready => None,
-        SetupVerdict::Fixable { .. } => Some(RUN_THE_SETUP.to_string()),
-        SetupVerdict::Unfixable {
-            refusal,
-            fix_script: Some(_),
-        } => Some(format!("{RUN_THE_SETUP}\n{refusal}")),
-        SetupVerdict::Unfixable {
-            refusal,
-            fix_script: None,
-        } => Some(refusal.clone()),
+        SetupVerdict::Fixable { .. } => verdict
+            .fix_is_required_by_the_daemon()
+            .then(|| RUN_THE_SETUP.to_string()),
+        SetupVerdict::Unfixable { refusal, .. } if verdict.fix_is_required_by_the_daemon() => {
+            Some(format!("{RUN_THE_SETUP}\n{refusal}"))
+        }
+        SetupVerdict::Unfixable { refusal, .. } => Some(refusal.clone()),
+    }
+}
+
+/// The last line of a status with no advice to give: each check passes, or
+/// the one failure is a warning that the setup has a fix for.
+#[cfg(target_os = "linux")]
+const fn summary_of_passing_checks(verdict: &SetupVerdict) -> &'static str {
+    match verdict.fix() {
+        None => "All checks passed. Container support is ready.",
+        Some(_) => "Container support is ready. Run `peppy container setup` to fix the warnings.",
     }
 }
 
@@ -148,18 +244,13 @@ fn refusal_warning(refusal: &str) -> String {
 fn end_after_fixes(verdict: &SetupVerdict) -> Result<Option<String>> {
     match verdict {
         SetupVerdict::Ready => Ok(None),
-        SetupVerdict::Unfixable {
-            refusal,
-            fix_script: None,
-        } => Ok(Some(refusal_warning(refusal))),
-        SetupVerdict::Fixable { .. }
-        | SetupVerdict::Unfixable {
-            fix_script: Some(_),
-            ..
-        } => Err(Error::ExecutionFailed(
-            "Some checks still failing after running fixes. Check permissions manually."
-                .to_string(),
-        )),
+        SetupVerdict::Unfixable { refusal, fix: None } => Ok(Some(refusal_warning(refusal))),
+        SetupVerdict::Fixable { .. } | SetupVerdict::Unfixable { fix: Some(_), .. } => {
+            Err(Error::ExecutionFailed(
+                "Some checks still failing after running fixes. Check permissions manually."
+                    .to_string(),
+            ))
+        }
     }
 }
 
@@ -176,12 +267,25 @@ fn status() -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the Linux form of this function can fail, and both forms have one caller"
+)]
+fn packages_status() -> Result<()> {
+    println!("Container packages");
+    println!("------------------");
+    println!("  The packages that container nodes need are only required on Linux.");
+    println!("  On macOS, containers run inside a Lima VM (no setup needed).");
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn setup() -> Result<()> {
     let apptainer_dir = apptainer_dir()?;
     let status = containers::check_setup_status(&apptainer_dir);
 
-    let fix_script = match &status.verdict {
+    let fix = match &status.verdict {
         SetupVerdict::Ready => {
             if !status.apparmor_manageable {
                 println!(
@@ -194,10 +298,7 @@ fn setup() -> Result<()> {
         }
         // The setup has no fix to make, so it changes nothing and ends with
         // success: a second run has no other result.
-        SetupVerdict::Unfixable {
-            refusal,
-            fix_script: None,
-        } => {
+        SetupVerdict::Unfixable { refusal, fix: None } => {
             eprintln!("{}", refusal_warning(refusal));
             return Ok(());
         }
@@ -205,19 +306,24 @@ fn setup() -> Result<()> {
         // leave the container builds failing.
         SetupVerdict::Unfixable {
             refusal,
-            fix_script: Some(fix_script),
+            fix: Some(fix),
         } => {
             eprintln!("{}", refusal_warning(refusal));
-            eprintln!("The fixes below do not repair this cause. The daemon needs them to start.");
+            eprintln!("{}", note_on_fixes_beside_a_refusal(fix.severity));
             eprintln!();
-            fix_script
+            fix
         }
-        SetupVerdict::Fixable { fix_script } => fix_script,
+        SetupVerdict::Fixable { fix } => fix,
     };
 
     println!("The following fixes are needed:");
-    if !status.newuidmap_ok {
-        println!("  - Install uidmap package (provides newuidmap for fakeroot)");
+    for (program, _) in status.programs.missing() {
+        println!(
+            "  - Install the {} package (provides {} for {})",
+            program.package(),
+            program.name(),
+            program.purpose()
+        );
     }
     if status.apparmor_restricted && !status.apparmor_ok {
         println!("  - Install/update AppArmor profile for Apptainer");
@@ -228,7 +334,7 @@ fn setup() -> Result<()> {
 
     // Check if we're in an interactive terminal
     if std::io::stdin().is_terminal() {
-        print!("Apply these fixes now? (requires sudo) [Y/n] ");
+        print!("{} ", question_before_fixes(fix.uses_sudo));
         use std::io::Write;
         let _ = std::io::stdout().flush();
 
@@ -239,14 +345,14 @@ fn setup() -> Result<()> {
             println!();
             println!("Skipped. You can apply the fixes manually:");
             println!();
-            println!("{fix_script}");
+            println!("{}", fix.script);
             return Ok(());
         }
     }
 
     let exit_status = std::process::Command::new("sh")
         .arg("-c")
-        .arg(fix_script)
+        .arg(&fix.script)
         .status()
         .map_err(|e| Error::ExecutionFailed(format!("Failed to run fix script: {e}")))?;
 
@@ -269,6 +375,30 @@ fn setup() -> Result<()> {
     Ok(())
 }
 
+/// What the setup tells about its fixes on a machine whose kernel refuses
+/// the user namespace of a container build: they do not repair the refusal,
+/// and the daemon stops at its start without those of `severity`
+/// [`FailureSeverity::StopsTheDaemon`].
+#[cfg(target_os = "linux")]
+const fn note_on_fixes_beside_a_refusal(severity: FailureSeverity) -> &'static str {
+    match severity {
+        FailureSeverity::StopsTheDaemon => {
+            "The fixes below do not repair this cause. The daemon needs them to start."
+        }
+        FailureSeverity::Warning => "The fixes below do not repair this cause.",
+    }
+}
+
+/// The question of the setup before it makes its fixes. A fix script that
+/// `uses_sudo` can ask for the password of the user.
+#[cfg(target_os = "linux")]
+const fn question_before_fixes(uses_sudo: bool) -> &'static str {
+    if uses_sudo {
+        return "Apply these fixes now? (requires sudo) [Y/n]";
+    }
+    "Apply these fixes now? [Y/n]"
+}
+
 #[cfg(not(target_os = "linux"))]
 #[expect(
     clippy::unnecessary_wraps,
@@ -282,24 +412,54 @@ fn setup() -> Result<()> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    use containers::UnprivilegedUserNamespace;
+    use containers::{SetupFix, SystemProgram, UnprivilegedUserNamespace};
 
     const ANSWER: &str = "unshare: unshare failed: Operation not permitted";
     const REFUSAL: &str = "The kernel refuses a user namespace.";
-    const FIX_SCRIPT: &str = "sudo apt-get install -y uidmap";
+    const RUN_THE_SETUP: &str = "Some checks failed. Run `peppy container setup` to fix.";
 
-    fn fixable() -> SetupVerdict {
+    /// The fix of checks that fail with `severity`.
+    fn fix_of(severity: FailureSeverity) -> SetupFix {
+        SetupFix {
+            script: "sudo apt-get install -y uidmap".to_string(),
+            severity,
+            uses_sudo: true,
+        }
+    }
+
+    fn fixable(severity: FailureSeverity) -> SetupVerdict {
         SetupVerdict::Fixable {
-            fix_script: FIX_SCRIPT.to_string(),
+            fix: fix_of(severity),
         }
     }
 
     /// The verdict of a refusal that has no fix, with or without another
-    /// check that fails and has one.
-    fn unfixable(fix_script: Option<&str>) -> SetupVerdict {
+    /// check that fails with `severity` and has one.
+    fn unfixable(severity: Option<FailureSeverity>) -> SetupVerdict {
         SetupVerdict::Unfixable {
             refusal: REFUSAL.to_string(),
-            fix_script: fix_script.map(str::to_owned),
+            fix: severity.map(fix_of),
+        }
+    }
+
+    fn check(program: SystemProgram, state: ProgramState) -> ProgramCheck {
+        ProgramCheck { program, state }
+    }
+
+    /// The checks of a machine on which the programs of `missing` are
+    /// missing, each with what its absence does to the daemon.
+    fn programs_without(missing: &[(SystemProgram, FailureSeverity)]) -> SystemPrograms {
+        SystemPrograms {
+            checks: SystemProgram::ALL.map(|program| {
+                let severity = missing
+                    .iter()
+                    .find(|(candidate, _)| *candidate == program)
+                    .map(|(_, severity)| *severity);
+                check(
+                    program,
+                    severity.map_or(ProgramState::Found, ProgramState::Missing),
+                )
+            }),
         }
     }
 
@@ -340,33 +500,150 @@ mod tests {
         }
     }
 
+    /// The line of a missing program names the package to install. A
+    /// program that the daemon starts without is a warning.
+    #[test]
+    fn the_line_of_a_program_shows_what_its_check_found() {
+        let cases = [
+            (check(SystemProgram::Newuidmap, ProgramState::Found), "OK"),
+            (
+                check(SystemProgram::Newuidmap, ProgramState::NotRequired),
+                "not required (the builds of root do not run it)",
+            ),
+            (
+                check(
+                    SystemProgram::Newuidmap,
+                    ProgramState::Missing(FailureSeverity::StopsTheDaemon),
+                ),
+                "FAILED (install the uidmap package)",
+            ),
+            (
+                check(
+                    SystemProgram::Mksquashfs,
+                    ProgramState::Missing(FailureSeverity::StopsTheDaemon),
+                ),
+                "FAILED (install the squashfs-tools package)",
+            ),
+            (
+                check(
+                    SystemProgram::Fuse2fs,
+                    ProgramState::Missing(FailureSeverity::Warning),
+                ),
+                "WARNING (install the fuse2fs package for the mount of an EXT3 image)",
+            ),
+        ];
+        for (check, state) in cases {
+            assert_eq!(program_state(&check), state, "{check:?}");
+        }
+    }
+
     #[test]
     fn a_status_that_passes_has_no_advice() {
         assert_eq!(advice_for_failing_checks(&SetupVerdict::Ready), None);
+        assert_eq!(
+            summary_of_passing_checks(&SetupVerdict::Ready),
+            "All checks passed. Container support is ready."
+        );
+    }
+
+    /// The daemon starts without `fuse2fs`: the status passes, and its last
+    /// line names the command that installs the package.
+    #[test]
+    fn a_status_whose_one_failure_is_a_warning_passes_and_names_the_setup() {
+        let verdict = fixable(FailureSeverity::Warning);
+
+        assert_eq!(advice_for_failing_checks(&verdict), None);
+        assert_eq!(
+            summary_of_passing_checks(&verdict),
+            "Container support is ready. Run `peppy container setup` to fix the warnings."
+        );
     }
 
     #[test]
     fn a_failing_status_tells_to_run_the_setup_that_has_a_fix() {
         assert_eq!(
-            advice_for_failing_checks(&fixable()).as_deref(),
-            Some("Some checks failed. Run `peppy container setup` to fix.")
+            advice_for_failing_checks(&fixable(FailureSeverity::StopsTheDaemon)).as_deref(),
+            Some(RUN_THE_SETUP)
         );
     }
 
     #[test]
     fn a_failing_status_explains_the_refusal_that_has_no_fix() {
-        assert_eq!(
-            advice_for_failing_checks(&unfixable(None)).as_deref(),
-            Some(REFUSAL)
-        );
+        for no_fix_that_the_daemon_needs in [None, Some(FailureSeverity::Warning)] {
+            assert_eq!(
+                advice_for_failing_checks(&unfixable(no_fix_that_the_daemon_needs)).as_deref(),
+                Some(REFUSAL),
+                "{no_fix_that_the_daemon_needs:?}"
+            );
+        }
 
-        // A second check that fails, with a fix: the advice has the two.
+        // A second check that fails, with a fix that the daemon needs: the
+        // advice has the two.
         assert_eq!(
-            advice_for_failing_checks(&unfixable(Some(FIX_SCRIPT))),
-            Some(format!(
-                "Some checks failed. Run `peppy container setup` to fix.\n{REFUSAL}"
-            ))
+            advice_for_failing_checks(&unfixable(Some(FailureSeverity::StopsTheDaemon))),
+            Some(format!("{RUN_THE_SETUP}\n{REFUSAL}"))
         );
+    }
+
+    #[test]
+    fn a_machine_that_has_each_package_gets_no_advice() {
+        assert_eq!(advice_for_missing_packages(&programs_without(&[])), None);
+    }
+
+    /// The advice names the packages that the daemon does not start
+    /// without, and its command installs each missing package.
+    #[test]
+    fn the_advice_names_each_missing_package_that_the_daemon_needs() {
+        let programs = programs_without(&[
+            (SystemProgram::Newuidmap, FailureSeverity::StopsTheDaemon),
+            (SystemProgram::Mksquashfs, FailureSeverity::StopsTheDaemon),
+            (SystemProgram::Fuse2fs, FailureSeverity::Warning),
+        ]);
+        let install_command = programs
+            .install_command()
+            .expect("missing programs have packages to install");
+
+        let (severity, advice) =
+            advice_for_missing_packages(&programs).expect("packages are missing");
+
+        assert_eq!(severity, FailureSeverity::StopsTheDaemon);
+        let (cause, command) = advice
+            .split_once("\nTo install each missing package, run the following command:\n\n")
+            .expect("the advice gives the command after the cause");
+        assert_eq!(
+            cause,
+            "The daemon does not start without packages that this machine does not have: \
+             uidmap, squashfs-tools."
+        );
+        assert_eq!(
+            command,
+            install_command
+                .lines()
+                .map(|line| format!("  {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        assert!(
+            command.ends_with("install -y uidmap squashfs-tools fuse2fs"),
+            "{command}"
+        );
+    }
+
+    #[test]
+    fn the_advice_for_a_package_that_the_daemon_starts_without_is_a_warning() {
+        let programs = programs_without(&[(SystemProgram::Fuse2fs, FailureSeverity::Warning)]);
+
+        let (severity, advice) =
+            advice_for_missing_packages(&programs).expect("a package is missing");
+
+        assert_eq!(severity, FailureSeverity::Warning);
+        assert!(
+            advice.starts_with(
+                "This machine does not have packages that the daemon starts without: fuse2fs.\n"
+            ),
+            "{advice}"
+        );
+        assert!(advice.ends_with("install -y fuse2fs"), "{advice}");
     }
 
     #[test]
@@ -377,6 +654,31 @@ mod tests {
              Each container build fails on this machine. The daemon runs the nodes that are \
              not containers."
         );
+    }
+
+    /// Beside a refusal, the setup tells that the daemon needs its fixes
+    /// only when one of them repairs a failure that stops the daemon.
+    #[test]
+    fn the_note_on_fixes_beside_a_refusal_tells_whether_the_daemon_needs_them() {
+        assert_eq!(
+            note_on_fixes_beside_a_refusal(FailureSeverity::StopsTheDaemon),
+            "The fixes below do not repair this cause. The daemon needs them to start."
+        );
+        assert_eq!(
+            note_on_fixes_beside_a_refusal(FailureSeverity::Warning),
+            "The fixes below do not repair this cause."
+        );
+    }
+
+    /// Root runs the fix script with no `sudo`, so the question names
+    /// `sudo` for a user that is not root only.
+    #[test]
+    fn the_question_before_the_fixes_names_sudo_for_a_script_that_uses_it() {
+        assert_eq!(
+            question_before_fixes(true),
+            "Apply these fixes now? (requires sudo) [Y/n]"
+        );
+        assert_eq!(question_before_fixes(false), "Apply these fixes now? [Y/n]");
     }
 
     #[test]
@@ -396,7 +698,12 @@ mod tests {
 
     #[test]
     fn a_check_that_fails_after_its_fix_is_the_error_of_the_setup() {
-        for verdict in [fixable(), unfixable(Some(FIX_SCRIPT))] {
+        for verdict in [
+            fixable(FailureSeverity::StopsTheDaemon),
+            fixable(FailureSeverity::Warning),
+            unfixable(Some(FailureSeverity::StopsTheDaemon)),
+            unfixable(Some(FailureSeverity::Warning)),
+        ] {
             assert_eq!(
                 message_of(end_after_fixes(&verdict).unwrap_err()),
                 "Some checks still failing after running fixes. Check permissions manually.",
