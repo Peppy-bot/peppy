@@ -23,9 +23,9 @@ set -eu
 #   PEPPY_DOWNLOAD_URL       Override full download URL
 #   PEPPY_NO_PATH_UPDATE     If set, do not update shell PATH config
 #   PEPPY_FORCE_REINSTALL    If set, skip confirmation when daemon is running (for non-interactive installs)
-#   PEPPY_NO_ROOT_INSTALL    If set, never use sudo. Missing deps become hard errors; Apptainer setup is deferred to 'peppy container setup'
+#   PEPPY_NO_ROOT_INSTALL    If set, never use sudo and install no package. Missing deps become hard errors; the AppArmor profile is left to 'peppy container setup'
 #   PEPPY_NO_SERVICE_INSTALL If set, skips the installation of the daemon in systemd
-#   PEPPY_NO_CONTAINER_SETUP If set, skips the Apptainer container setup (useful inside Docker/Podman)
+#   PEPPY_NO_CONTAINER_SETUP If set, skips the Apptainer container setup, which installs the packages that container nodes need
 
 __wrap__() {
     IS_TTY=false
@@ -570,14 +570,6 @@ EOF
         [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || echo "no")" = "yes" ]
     }
 
-    # Returns 0 if the fuse2fs ext2/3/4 FUSE mount helper is installed. The
-    # bundled rootless apptainer needs it to mount EXT3 filesystem images;
-    # peppy ships squashfuse_ll and gocryptfs next to apptainer, but not this
-    # one, so it must come from the distro.
-    check_fuse2fs() {
-        command -v fuse2fs >/dev/null 2>&1
-    }
-
     # Every apt-get this script runs goes through this rather than the bare
     # command. apt-get gives up the moment another process holds the dpkg lock
     # ("Could not get lock /var/lib/dpkg/lock-frontend. It is held by process
@@ -594,12 +586,15 @@ EOF
     APT_GET="apt-get -o DPkg::Lock::Timeout=300"
 
     # ---- Linux system dependency checks (pre-download) -------------------------
-    # Checks and installs pre-download dependencies (dbus, linger, curl, fuse2fs).
-    # Apptainer setup is handled post-install by `peppy container setup`.
+    # Checks and installs pre-download dependencies (dbus, linger, curl).
+    # The packages that container nodes need (uidmap, squashfs-tools,
+    # fuse2fs) are not in this step: `peppy container setup` has the only
+    # list of them, and installs them post-install.
     #
     # Inside containers (Docker/Podman), D-Bus and linger are irrelevant:
     # the daemon is managed by the container runtime, not systemd.
     # Only curl/wget is still checked (needed to download the archive).
+    # PEPPY_NO_CONTAINER_SETUP skips D-Bus and linger as a container does.
     #
     # When PEPPY_NO_ROOT_INSTALL is set, sudo is never used. Missing
     # dependencies become hard errors with manual-install instructions.
@@ -625,15 +620,6 @@ EOF
                     echo "" >&2
                     echo "error: loginctl linger is not enabled for user ${CURRENT_USER}." >&2
                     echo "       Enable it manually: sudo loginctl enable-linger ${CURRENT_USER}" >&2
-                    echo "" >&2
-                    exit 1
-                fi
-
-                if ! check_fuse2fs; then
-                    echo "" >&2
-                    echo "error: fuse2fs not found." >&2
-                    echo "       Rootless apptainer needs it to mount EXT3 filesystem images." >&2
-                    echo "       Install it manually: sudo apt-get install fuse2fs" >&2
                     echo "" >&2
                     exit 1
                 fi
@@ -666,15 +652,6 @@ EOF
                 if ! check_linger_enabled; then
                     ENABLE_LINGER_USER="$(id -un)"
                     ALL_LABELS="${ALL_LABELS}  - Enable systemd linger for user ${ENABLE_LINGER_USER} (allows peppy daemon to run after SSH disconnect)\n"
-                fi
-
-                # fuse2fs: the ext2/3/4 FUSE mounter the bundled rootless
-                # apptainer uses for EXT3 filesystem images. Unlike
-                # squashfuse_ll and gocryptfs it is not bundled with peppy,
-                # so it comes from the distro.
-                if ! check_fuse2fs; then
-                    APT_PACKAGES="${APT_PACKAGES} fuse2fs"
-                    ALL_LABELS="${ALL_LABELS}  - Install fuse2fs (needed to mount EXT3 filesystems in rootless containers)\n"
                 fi
             fi
 
@@ -871,22 +848,34 @@ EOF
     fi
 
     # ---- Apptainer container setup (post-install) ----------------------------
-    # Delegates AppArmor profile configuration to `peppy container setup`
-    # which is the single source of truth for Apptainer system prerequisites.
-    # On systems without AppArmor restrictions, this is a no-op.
-    # Inside containers (Docker/Podman), AppArmor profiles cannot be loaded
-    # (requires CAP_MAC_ADMIN), so setup is skipped automatically.
+    # `peppy container setup` is the single source of truth for the system
+    # prerequisites of Apptainer: it installs the packages that container
+    # nodes need (uidmap, squashfs-tools, fuse2fs) and the AppArmor profile.
+    # Inside containers (Docker/Podman) it runs as on a host: AppArmor
+    # profiles cannot be loaded there (requires CAP_MAC_ADMIN), so it installs
+    # the packages only.
+    #
+    # The setup ends with an error when it cannot make the fix of a failure,
+    # and when the user refuses that fix: the installer then stops. A package
+    # whose absence is a warning (fuse2fs) does not stop it: the setup writes
+    # the warning and ends with success.
+    #
+    # When PEPPY_NO_ROOT_INSTALL is set, nothing is installed:
+    # `peppy container status --packages` examines the packages, and fails
+    # with their names and the command that installs them when a container
+    # build stops without one of them. The AppArmor profile, which names
+    # the path of this install, stays a step for `peppy container setup`.
     if [ "$PLATFORM" != "apple-darwin" ]; then
-        if [ -n "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
+        if [ -n "${PEPPY_NO_CONTAINER_SETUP:-}" ]; then
+            echo "Skipped Apptainer setup (PEPPY_NO_CONTAINER_SETUP is set)."
+        elif [ -n "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
+            if ! "$PEPPY_BIN_DIR/peppy" container status --packages; then
+                echo "error: peppy is installed, but no container node builds without these packages." >&2
+                echo "       Install them, then run the installer again." >&2
+                exit 1
+            fi
             echo "Skipped Apptainer setup (PEPPY_NO_ROOT_INSTALL is set)."
             echo "Run 'peppy container setup' later if AppArmor blocks container support."
-        elif $IN_CONTAINER; then
-            flush_progress_line
-            if [ -n "${PEPPY_NO_CONTAINER_SETUP:-}" ]; then
-                echo "Skipped Apptainer setup (PEPPY_NO_CONTAINER_SETUP is set)."
-            else
-                echo "Skipped Apptainer setup (running inside a container)."
-            fi
         elif ! "$PEPPY_BIN_DIR/peppy" container setup; then
             echo "error: Apptainer container setup failed." >&2
             echo "       You can retry manually: $PEPPY_BIN_DIR/peppy container setup" >&2

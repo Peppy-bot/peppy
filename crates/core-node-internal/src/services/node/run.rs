@@ -32,8 +32,8 @@ use daemon_config::launcher::VacantReason;
 use daemon_config::peppy_config::PeppyConfig;
 use futures::FutureExt;
 use node_stack::{
-    self, ActionLog, Announcer, EntityHandle, FirstStart, NodeEntity, NodeStack, PlannedPair,
-    ProcessGroup, RestartBackoff, SpawnTarget, StartRun, StartedInstanceCtx,
+    self, ActionLog, Announcer, CommittedProcess, EntityHandle, FirstStart, NodeEntity, NodeStack,
+    PlannedPair, ProcessGroup, RestartBackoff, SpawnTarget, StartRun, StartedInstanceCtx,
 };
 use peppylib::encoding::endpoints::{NodeEndpointsRequest, NodeEndpointsResponse};
 use peppylib::encoding::health::NodeHealthRequest;
@@ -49,6 +49,7 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -722,7 +723,7 @@ async fn end_abandoned_start(
             .dissolve_for_instance(instance_id.as_str())
             .await;
     }
-    NodeEntity::undo_abandoned_start(&entity, instance_id, run)
+    NodeEntity::undo_abandoned_start(&entity, instance_id, run).await
 }
 
 /// The run a start makes: a new instance's from `goal`, which its slot
@@ -1934,7 +1935,10 @@ async fn process_node_run(
     )
     .await;
     match commit_result {
-        Ok(committed_child) => {
+        Ok(CommittedProcess {
+            child: committed_child,
+            container_scratch,
+        }) => {
             // The registrations an exit takes are in place before the
             // exit watcher that takes them exists: this instance's own
             // observer slots, which the `on_instance_running` observer
@@ -1976,6 +1980,7 @@ async fn process_node_run(
 
             spawn_exit_watcher(ExitWatcherParams {
                 child: committed_child,
+                container_scratch,
                 instance_done: instance_done.clone(),
                 group,
                 target: RestartTarget {
@@ -2427,6 +2432,10 @@ struct ExitWatcherParams {
     /// The committed node process, owned by the watcher from here on. `wait()`
     /// observes its exit and reaps it.
     child: Child,
+    /// The scratch directory of the apptainer command of a container, which
+    /// the watcher removes once it has reaped `child`. `None` for a process
+    /// that is not a container.
+    container_scratch: Option<PathBuf>,
     /// Cancelled once the process exits, to stop this instance's health monitor.
     instance_done: CancellationToken,
     /// The process group to signal once the leader has exited, so a forked
@@ -2441,7 +2450,10 @@ struct ExitWatcherParams {
 }
 
 /// Spawns a background task of the instance that owns a committed node's
-/// [`Child`] and waits for its process to exit on its own. Closes the gap
+/// [`Child`] and waits for its process to exit on its own. The task reaps
+/// the process on each of its ends, also one that a stop path or the daemon
+/// teardown caused, and then removes the scratch directory of the apptainer
+/// command of a container. Closes the gap
 /// where a node that finishes its work and shuts itself down (a one-shot
 /// node), or that crashes, would otherwise stay `Running` forever, with only
 /// the health monitor flipping it to a misleading `unhealthy`. On every exit it sees, the host process group is
@@ -2460,6 +2472,7 @@ struct ExitWatcherParams {
 fn spawn_exit_watcher(p: ExitWatcherParams) {
     let ExitWatcherParams {
         mut child,
+        container_scratch,
         instance_done,
         group,
         target,
@@ -2492,6 +2505,7 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
         // path owns removal, so do not record a terminal state here.
         let Some(status) = status else {
             let _ = child.wait().await;
+            remove_container_scratch(container_scratch).await;
             return;
         };
 
@@ -2515,7 +2529,7 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
         // A `wait()` error (the OS refused to report the status, vanishingly
         // rare) is an unclean exit, the conservative reading. Nothing is
         // recorded on a slot a stop claimed meanwhile, or on a new instance's.
-        let Some(record) = NodeEntity::mark_instance_exited(
+        let record = NodeEntity::mark_instance_exited(
             &target.entity_handle,
             &target.instance_id,
             group.pid,
@@ -2523,7 +2537,18 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
             &action.restart_backoff,
             action.node_stack.time().now(),
             || action.relationships.take_registrations(&instance_id_str),
-        ) else {
+        );
+
+        // The process and its group are gone, by an exit of its own, by the
+        // health monitor or by a stop path, so the scratch directory of its
+        // apptainer command goes: apptainer leaves there the unpacked image
+        // of a container that is killed. The slot has its state before the
+        // removal, which can take seconds, and the next process of a restart
+        // starts after it, so the disk holds one unpacked image of the
+        // instance at a time.
+        remove_container_scratch(container_scratch).await;
+
+        let Some(record) = record else {
             return;
         };
 
@@ -2571,6 +2596,15 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
             spawn_next_attempt(target, next);
         }
     });
+}
+
+/// Removes the scratch directory of the apptainer command of a container
+/// whose process the caller has reaped. Nothing to do for a process that is
+/// not a container.
+async fn remove_container_scratch(container_scratch: Option<PathBuf>) {
+    if let Some(dir) = container_scratch {
+        node_stack::container_scratch::remove_in_blocking_task(dir).await;
+    }
 }
 
 /// Writes a refusal of the run to its run log and answers it with `kind`.

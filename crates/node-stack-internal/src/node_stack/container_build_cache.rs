@@ -504,7 +504,8 @@ const NO_UV_IN_IMAGE: &str = "no uv command outside a virtual environment";
 ///   The cache directory is an argument. From uv 0.9.16 on,
 ///   `UV_LOCK_TIMEOUT=0` makes the prune stop at once, instead of waiting,
 ///   when a uv process outside this daemon holds the lock of the cache; an
-///   older uv waits until [`UV_CACHE_PRUNE_TIMEOUT`] stops it.
+///   older uv waits until the time limit of the prune stops it (see
+///   [`uv_cache_prune_time_limit`]).
 pub(super) fn uv_cache_prune_command() -> [String; 5] {
     let script = format!(
         r#"set -f
@@ -526,10 +527,27 @@ exit 127"#
     ]
 }
 
-/// The time a prune has. A prune ends in seconds, and a prune that hangs must
-/// not hold up the build: the build idle clock sees no output from it. A
-/// prune stopped part way is safe, and the next prune continues it.
+/// The time a prune has when apptainer mounts the image. Such a prune ends
+/// in seconds, and a prune that hangs must not hold up the build: the build
+/// idle clock sees no output from it. A prune stopped part way is safe, and
+/// the next prune continues it.
 pub(super) const UV_CACHE_PRUNE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The time more that a prune has when apptainer unpacks the image before
+/// the prune starts (see [`containers::ApptainerCommand::unpacks_its_image`]).
+/// The extraction of an image of some gigabytes takes minutes on a slow
+/// disk, and the limit still stops a prune that hangs.
+pub(super) const UV_CACHE_PRUNE_UNPACK_ALLOWANCE: Duration = Duration::from_mins(10);
+
+/// The time that a prune has: [`UV_CACHE_PRUNE_TIMEOUT`], and
+/// [`UV_CACHE_PRUNE_UNPACK_ALLOWANCE`] more for a command that
+/// `unpacks_its_image`.
+pub(super) const fn uv_cache_prune_time_limit(unpacks_its_image: bool) -> Duration {
+    if unpacks_its_image {
+        return UV_CACHE_PRUNE_TIMEOUT.saturating_add(UV_CACHE_PRUNE_UNPACK_ALLOWANCE);
+    }
+    UV_CACHE_PRUNE_TIMEOUT
+}
 
 /// The time a prune has to stop after a SIGTERM, which lets apptainer
 /// unmount the image and remove a temporary sandbox before a SIGKILL.
@@ -549,8 +567,9 @@ pub(super) enum UvCachePruneOutcome {
     /// The image the build wrote has no `uv` command outside a virtual
     /// environment.
     NoUvInImage,
-    /// The prune did not end within [`UV_CACHE_PRUNE_TIMEOUT`].
-    TimedOut,
+    /// The prune did not end within `time_limit` (see
+    /// [`uv_cache_prune_time_limit`]).
+    TimedOut { time_limit: Duration },
     /// Any other failure, with its reason.
     Failed { reason: String },
 }
@@ -611,9 +630,9 @@ impl UvCachePruneOutcome {
             Self::NoUvInImage => {
                 format!("uv cache not pruned, because the image has {NO_UV_IN_IMAGE}")
             }
-            Self::TimedOut => format!(
+            Self::TimedOut { time_limit } => format!(
                 "uv cache not pruned: the prune did not end in {} s",
-                UV_CACHE_PRUNE_TIMEOUT.as_secs()
+                time_limit.as_secs()
             ),
             Self::Failed { reason } => {
                 format!("uv cache not pruned: {}", statement_of(reason))
@@ -1517,8 +1536,16 @@ mod tests {
                  outside a virtual environment",
             ),
             (
-                UvCachePruneOutcome::TimedOut,
+                UvCachePruneOutcome::TimedOut {
+                    time_limit: uv_cache_prune_time_limit(false),
+                },
                 "Container build cache: uv cache not pruned: the prune did not end in 30 s",
+            ),
+            (
+                UvCachePruneOutcome::TimedOut {
+                    time_limit: uv_cache_prune_time_limit(true),
+                },
+                "Container build cache: uv cache not pruned: the prune did not end in 630 s",
             ),
             (
                 UvCachePruneOutcome::Failed {

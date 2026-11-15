@@ -92,6 +92,12 @@ else:
 # Where each container sees the two files it is given, and where it installs.
 CONTAINER_INSTALL_SCRIPT = "/peppy-test/install.sh"
 CONTAINER_PEPPY_HOME = "/peppy-home"
+# The peppy that install.sh installs in a container, with its PEPPY_HOME.
+CONTAINER_PEPPY = f"PEPPY_HOME={CONTAINER_PEPPY_HOME} {CONTAINER_PEPPY_HOME}/bin/peppy"
+
+# The packages that container nodes need. `peppy container setup` has the
+# list that peppy installs from, and install.sh runs that setup.
+CONTAINER_NODE_PACKAGES = ("uidmap", "squashfs-tools", "fuse2fs")
 
 # Where the kernel shows the device tree of the board, the path install.sh
 # reads to identify a Raspberry Pi.
@@ -191,10 +197,18 @@ def show_step(
 
 
 def daemon_logs(home: Path) -> str:
-    """The end of each log that the daemon of *home* wrote for its launches
-    and its node builds, for the report of a launch that failed."""
-    logs = login_shell(f"tail -n 80 {home}/logs/launch/* {home}/logs/build/* 2>&1")
-    return f"\n--- launch and node build logs of the daemon ---\n{logs.stdout}"
+    """The end of each log that the daemon of *home* wrote for its launches,
+    its node builds and its node runs, for the report of a launch that failed.
+
+    The run log of a node that stops after its start holds the error that
+    stopped it, which the output of the launch does not show.
+    """
+    logs = login_shell(
+        f"tail -n 80 {home}/logs/launch/* {home}/logs/build/* {home}/logs/run/* 2>&1"
+    )
+    return (
+        f"\n--- launch, node build and node run logs of the daemon ---\n{logs.stdout}"
+    )
 
 
 def assert_installed(result: subprocess.CompletedProcess[str]) -> None:
@@ -373,13 +387,23 @@ mkdir -p {HOMES_ROOT}
 """
 
 
-def container_install_cmd() -> str:
-    """install.sh as a container user runs it: no service, since no systemd runs."""
+def container_install_cmd(*, container_setup: bool = False, extra_env: str = "") -> str:
+    """install.sh as a container user runs it: no service, since no systemd runs.
+
+    With *container_setup*, install.sh runs its Apptainer setup, as it does
+    for a user: the setup installs the packages that container nodes need
+    from the package repositories of the distribution. Without it, the
+    install sets PEPPY_NO_CONTAINER_SETUP, so a test whose subject is not the
+    setup needs no package repository and leaves the packages of its
+    container as they are.
+    """
     archive = f"/peppy-test/{release_archive().name}"
-    return (
-        f"PEPPY_HOME={CONTAINER_PEPPY_HOME} PEPPY_NO_SERVICE_INSTALL=1 "
-        f"sh {CONTAINER_INSTALL_SCRIPT} {archive}"
-    )
+    env_parts = f"PEPPY_HOME={CONTAINER_PEPPY_HOME} PEPPY_NO_SERVICE_INSTALL=1"
+    if not container_setup:
+        env_parts = f"{env_parts} PEPPY_NO_CONTAINER_SETUP=1"
+    if extra_env:
+        env_parts = f"{env_parts} {extra_env}"
+    return f"{env_parts} sh {CONTAINER_INSTALL_SCRIPT} {archive}"
 
 
 def run_in_container(
@@ -576,12 +600,18 @@ def apparmor_profile_unloaded(profile: Path) -> Iterator[None]:
         _set_apparmor_profile_loaded(profile, True)
 
 
-def set_fuse2fs_installed(installed: bool) -> None:
-    """Install or remove fuse2fs, the one package install.sh installs itself."""
-    if installed:
-        run_as_root(
-            "command -v fuse2fs >/dev/null 2>&1 "
-            f"|| {{ {APT_GET} update -qq && {APT_GET} install -y -qq fuse2fs; }}"
-        )
-        return
+def install_container_node_packages() -> None:
+    """Install each package that container nodes need."""
+    packages = " ".join(CONTAINER_NODE_PACKAGES)
+    run_as_root(f"{APT_GET} update -qq && {APT_GET} install -y -qq {packages}")
+
+
+def remove_fuse2fs() -> None:
+    """Remove fuse2fs, one of the packages that container nodes need.
+
+    It is the one that the tests remove from the machine they run on. On
+    Ubuntu snapd depends on squashfs-tools, so the removal of squashfs-tools
+    removes snapd also. The tests in Docker start from images that have none
+    of the packages (see test_install_in_docker.py).
+    """
     run_as_root(f"! dpkg -s fuse2fs >/dev/null 2>&1 || {APT_GET} remove -y -qq fuse2fs")

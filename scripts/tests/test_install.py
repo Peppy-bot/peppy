@@ -30,13 +30,14 @@ from .install_helpers import (
     diagnostic,
     install_apparmor_profile,
     install_cmd,
+    install_container_node_packages,
     linux_only,
     login_shell,
     peppy_environment,
     peppy_home,
     pin_default_hubs,
+    remove_fuse2fs,
     remove_peppy,
-    set_fuse2fs_installed,
     set_linger,
     show_step,
 )
@@ -74,9 +75,13 @@ def test_install() -> None:
 
 @linux_only
 def test_install_applies_missing_system_changes() -> None:
-    """On a machine without linger or fuse2fs, install.sh sets up both."""
+    """On a machine without linger or fuse2fs, install.sh sets up both.
+
+    install.sh enables linger itself. Its Apptainer setup installs fuse2fs,
+    as it installs each package that container nodes need.
+    """
     set_linger(False)
-    set_fuse2fs_installed(False)
+    remove_fuse2fs()
     home = peppy_home("sysdeps")
 
     result = login_shell(install_cmd(home), timeout=600)
@@ -85,11 +90,8 @@ def test_install_applies_missing_system_changes() -> None:
     assert "Enable systemd linger for user" in result.stdout, (
         f"install.sh should ask to enable linger{diagnostic(result)}"
     )
-    assert "Install fuse2fs" in result.stdout, (
-        f"install.sh should ask to install fuse2fs{diagnostic(result)}"
-    )
-    assert "Pre-download dependencies configured." in result.stdout, (
-        f"install.sh should report the package install{diagnostic(result)}"
+    assert "Install the fuse2fs package" in result.stdout, (
+        f"the setup of install.sh should tell that it installs fuse2fs{diagnostic(result)}"
     )
     state = login_shell(
         'command -v fuse2fs && loginctl show-user "$(id -un)" -p Linger --value'
@@ -103,12 +105,15 @@ def test_install_applies_missing_system_changes() -> None:
 def test_no_root_install_happy_path() -> None:
     """PEPPY_NO_ROOT_INSTALL=1 with every prerequisite met: install succeeds, container setup skipped."""
     set_linger(True)
-    set_fuse2fs_installed(True)
+    install_container_node_packages()
     home = peppy_home("noroot")
 
     result = login_shell(install_cmd(home, extra_env="PEPPY_NO_ROOT_INSTALL=1"))
 
     assert_installed(result)
+    assert "Each package that container nodes need is installed." in result.stdout, (
+        f"install.sh should examine the packages{diagnostic(result)}"
+    )
     assert "Skipped Apptainer setup" in result.stdout, (
         f"Missing setup skip message{diagnostic(result)}"
     )
@@ -117,6 +122,31 @@ def test_no_root_install_happy_path() -> None:
     )
     assert check.returncode == 0, (
         f"apptainer dir and binary should exist{diagnostic(check)}"
+    )
+
+
+@linux_only
+def test_no_root_install_warns_about_a_missing_fuse2fs() -> None:
+    """PEPPY_NO_ROOT_INSTALL=1 without fuse2fs: a warning, and the install succeeds.
+
+    Container nodes build and run without fuse2fs, and install.sh installs no
+    package.
+    """
+    set_linger(True)
+    install_container_node_packages()
+    remove_fuse2fs()
+    home = peppy_home("norootfuse2fs")
+
+    result = login_shell(install_cmd(home, extra_env="PEPPY_NO_ROOT_INSTALL=1"))
+
+    assert_installed(result)
+    assert (
+        "Warning: This machine does not have packages that container nodes build "
+        "and run without: fuse2fs." in result.stdout + result.stderr
+    ), f"install.sh should warn about fuse2fs{diagnostic(result)}"
+    missing = login_shell("! command -v fuse2fs")
+    assert missing.returncode == 0, (
+        f"install.sh should install no package{diagnostic(missing)}"
     )
 
 

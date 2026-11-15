@@ -79,7 +79,7 @@ pub mod consts {
         PEPPY_CODEC_OUTPUT_PATH, PEPPY_GIT_TAG, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR,
         PEPPY_VERSION, PEPPYLIB_OUTPUT_PATH, PLATFORM_SELECTION_FILE, PeppyDirs, PeppyRoot,
         REPOSITORY_INDEX_FILE, RootLifetime, artifact_version, non_empty_env_path, peppy_build,
-        peppy_root, peppy_root_dir, set_app_env,
+        peppy_root, peppy_root_dir, peppy_root_dir_of_user, set_app_env,
     };
 }
 

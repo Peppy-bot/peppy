@@ -61,8 +61,8 @@ runs:
     # unprivileged, through fakeroot. Ubuntu 24.04 ships
     # kernel.apparmor_restrict_unprivileged_userns=1, which denies that to any
     # binary without a matching AppArmor profile, so every test that builds or
-    # runs a container fails with "Apptainer's user namespace prerequisites are
-    # not met" and a fix script naming the starter binary. Clearing the knob is
+    # runs a container fails with "The prerequisites of Apptainer are not met"
+    # and a fix script naming the starter binary. Clearing the knob is
     # what peppy itself does inside the Lima guest it provisions (see
     # apptainer/lima.rs); the alternative, the per-installation AppArmor
     # profile, is keyed to the path of the install's starter binary and would

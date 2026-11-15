@@ -33,6 +33,7 @@ use super::build_steps::{
     ContainerBuildInputs, archive_dir_to_storage, build_container_image, move_sif_to_storage,
     run_build_cmd,
 };
+use super::container_scratch;
 use super::pairing::{PlannedPair, SlotAddr};
 use super::pypi_mirror;
 use super::run_steps::{
@@ -463,20 +464,54 @@ impl OutputSinks {
 }
 
 /// The files that one spawn of an instance writes for its process: its
-/// runtime config and its key file. Both live as long as that process, and
-/// go together when it ends or its start fails.
+/// runtime config, its key file and, for a container, the scratch directory
+/// of its apptainer command. They live as long as that process, and go when
+/// it ends or its start fails.
 #[derive(Debug, Clone)]
 pub(crate) struct SpawnFiles {
     pub(crate) runtime_config: PathBuf,
     pub(crate) credential: PathBuf,
+    /// Where apptainer unpacks the image of a container that it does not
+    /// mount (see [`container_scratch`]). `None` for a process that is not a
+    /// container, and on the slot of an instance from its commit on: the
+    /// owner of the committed process removes the directory (see
+    /// [`CommittedProcess`]).
+    pub(crate) container_scratch: Option<PathBuf>,
 }
 
 impl SpawnFiles {
-    /// Removes both files, best-effort: a file already gone is no error.
-    pub(crate) fn remove(&self) {
+    /// Removes the runtime config and the key file, best-effort: a file
+    /// already gone is no error. The two files are small, so a caller can
+    /// hold the lock of the entity.
+    pub(crate) fn remove_config_and_key(&self) {
         let _ = std::fs::remove_file(&self.runtime_config);
         let _ = std::fs::remove_file(&self.credential);
     }
+
+    /// Removes each file of the spawn of a process that is over, best-effort.
+    /// The scratch directory can hold an unpacked image, whose removal can
+    /// take seconds: it runs on a thread that can block, and the caller
+    /// holds no lock of an entity.
+    pub(crate) async fn remove(&self) {
+        self.remove_config_and_key();
+        if let Some(dir) = &self.container_scratch {
+            container_scratch::remove_in_blocking_task(dir.clone()).await;
+        }
+    }
+}
+
+/// The process of an instance that [`NodeEntity::commit_started`] committed,
+/// which its caller owns from there.
+#[derive(Debug)]
+pub struct CommittedProcess {
+    /// The live process. The caller watches it for its exit and reaps it.
+    pub child: Child,
+    /// The scratch directory of the apptainer command of a container, or
+    /// `None` for a process that is not a container. Apptainer leaves there
+    /// the unpacked image of a container that is killed, so the caller
+    /// removes it with [`container_scratch::remove_in_blocking_task`] once it
+    /// has reaped `child`.
+    pub container_scratch: Option<PathBuf>,
 }
 
 /// State handed back from [`NodeEntity::prepare_and_spawn`]. The caller owns
@@ -1110,20 +1145,24 @@ impl NodeEntity {
     ///
     /// Silent when the entity is no longer in `Ready` (a concurrent
     /// `push_config` replaced it) or the instance is not `Starting`.
-    fn undo_start(handle: &Arc<RwLock<Self>>, instance_id: &Name) {
+    ///
+    /// Returns the files of the spawn that the slot recorded at its fork,
+    /// if any, and removes none of them: the lock of the entity is held
+    /// here, and the scratch directory of a container can hold an unpacked
+    /// image. A caller that has not removed these files itself removes them
+    /// with [`SpawnFiles::remove`].
+    fn undo_start(handle: &Arc<RwLock<Self>>, instance_id: &Name) -> Option<SpawnFiles> {
         let mut guard = handle.write();
         let NodeStage::Ready { instances, .. } = &mut guard.stage else {
-            return;
+            return None;
         };
-        let Some(pos) = instances.iter().position(|inst| {
+        let pos = instances.iter().position(|inst| {
             inst.instance_id() == instance_id && inst.state() == InstanceState::Starting
-        }) else {
-            return;
-        };
+        })?;
         if instances[pos].starts_a_restart() && !instances[pos].is_stopping() {
-            instances[pos].revert_respawn();
+            instances[pos].revert_respawn()
         } else {
-            instances.remove(pos);
+            instances.remove(pos).spawn_files
         }
     }
 
@@ -1147,7 +1186,13 @@ impl NodeEntity {
     /// panicked, as `Self::undo_start` does; a slot not starting for `run`
     /// is left alone. Returns whether the slot was still `run`'s: its start
     /// in flight, now undone, or the restart it had not begun.
-    pub fn undo_abandoned_start(
+    ///
+    /// The panic lost each other record of the files of the spawn, so this
+    /// removes the ones that the slot recorded at the fork. The caller has
+    /// killed the process group of the start before (see
+    /// [`Self::abandoned_start_group`]): the scratch directory of a
+    /// container holds the unpacked image that apptainer leaves then.
+    pub async fn undo_abandoned_start(
         handle: &Arc<RwLock<Self>>,
         instance_id: &Name,
         run: &StartRun,
@@ -1158,8 +1203,8 @@ impl NodeEntity {
             .map_or((false, false), |inst| {
                 (inst.starts_for(run), inst.awaits_restart_of(run))
             });
-        if starts_for_run {
-            Self::undo_start(handle, instance_id);
+        if starts_for_run && let Some(spawn_files) = Self::undo_start(handle, instance_id) {
+            spawn_files.remove().await;
         }
         starts_for_run || awaits_its_restart
     }
@@ -1329,6 +1374,7 @@ impl NodeEntity {
         let SpawnCommand {
             mut command,
             runtime_config_path: runtime_config,
+            container_scratch,
             description: spawn_description,
         } = match (&artifact, node_config.execution.container.as_ref()) {
             (Artifact::BuiltIn(launch), _) => build_built_in_command(
@@ -1411,6 +1457,7 @@ impl NodeEntity {
         let spawn_files = SpawnFiles {
             runtime_config,
             credential: ctx.credential.to_path_buf(),
+            container_scratch,
         };
         let spawned = {
             let mut guard = handle.write();
@@ -1439,11 +1486,15 @@ impl NodeEntity {
                     })
             }
         };
-        let (mut child, pid) = spawned.inspect_err(|_| {
-            let _ = std::fs::remove_dir_all(&instance_dir);
-            spawn_files.remove();
-            Self::undo_start(handle, ctx.instance_id);
-        })?;
+        let (mut child, pid) = match spawned {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&instance_dir);
+                spawn_files.remove().await;
+                Self::undo_start(handle, ctx.instance_id);
+                return Err(error);
+            }
+        };
         credential_guard.defuse();
 
         // ---- Phase 4: wire output streaming ----
@@ -1484,7 +1535,9 @@ impl NodeEntity {
     /// transitions `Starting → Running`. Returns the live `Child` so the caller
     /// can watch it for exit (see the process-exit watcher in `node_run`),
     /// which moves a self-exit to `Restarting`, `Finished` or `Failed` by the
-    /// instance's policy.
+    /// instance's policy. With the `Child` comes the scratch directory of a
+    /// container, which the caller removes once it has reaped the process
+    /// (see [`CommittedProcess`]).
     ///
     /// Does NOT join the output reader handles; they remain alive past return
     /// so the daemon keeps streaming the running node's stdout/stderr.
@@ -1509,7 +1562,7 @@ impl NodeEntity {
         instance_id: Name,
         endpoints: Vec<InstanceEndpoint>,
         now: Instant,
-    ) -> Result<Child> {
+    ) -> Result<CommittedProcess> {
         // Helper: every error path kills the start's process group, its
         // forked children and a container's in-VM group included, before the
         // leader is reaped, so the group's id is still its own; tokio `Child`
@@ -1548,15 +1601,18 @@ impl NodeEntity {
             // before returning so nothing orphans.
             kill_start(&mut child, group, instance_id.as_str()).await;
             let _ = std::fs::remove_dir_all(&instance_dir);
-            spawn_files.remove();
+            spawn_files.remove().await;
             return Err(error);
         }
 
         // Successful commit: hand the live Child back without killing.
         // The OS process keeps running; the caller moves it into the
         // exit watcher, which observes the eventual exit (clean or
-        // crash) and reaps the process.
-        Ok(child)
+        // crash), reaps the process and removes its scratch directory.
+        Ok(CommittedProcess {
+            child,
+            container_scratch: spawn_files.container_scratch,
+        })
     }
 
     /// The entity half of [`Self::commit_started`]: flips the `Starting`
@@ -1651,7 +1707,7 @@ impl NodeEntity {
         // files of the spawn. Once the child has been killed and the readers
         // drained, nothing else holds file descriptors into them.
         let _ = std::fs::remove_dir_all(&instance_dir);
-        spawn_files.remove();
+        spawn_files.remove().await;
 
         // Generation guard: only touch the entity's instances list if it is
         // still the same entity we registered against. A concurrent
@@ -2182,13 +2238,15 @@ impl NodeEntity {
 
 /// Best-effort cleanup of the on-disk artifacts the start path recorded on
 /// a removed instance. Errors are ignored so a removed file or a missing
-/// directory does not block the lifecycle transition.
+/// directory does not block the lifecycle transition. The scratch directory
+/// of a container is not one of them: the owner of the committed process
+/// removes it (see [`CommittedProcess`]).
 fn remove_instance_files(removed: &TrackedNodeInstance) {
     if let Some(dir) = removed.instance_dir() {
         let _ = std::fs::remove_dir_all(dir);
     }
     if let Some(files) = &removed.spawn_files {
-        files.remove();
+        files.remove_config_and_key();
     }
 }
 
@@ -2573,11 +2631,16 @@ impl TrackedNodeInstance {
 
     /// Same-module mutator used by `NodeEntity::commit_started` to flip a
     /// `Starting` instance to `Running` and record the instance directory
-    /// produced by `prepare_and_spawn`. The pid and the spawn files stay as
-    /// recorded at spawn. Not exported.
+    /// produced by `prepare_and_spawn`. The pid, the runtime config and the
+    /// key file stay as recorded at spawn. The slot gives up the scratch
+    /// directory of a container: the owner of the committed process removes
+    /// it (see [`CommittedProcess`]). Not exported.
     fn set_running(&mut self, instance_dir: PathBuf) {
         self.state = InstanceState::Running;
         self.instance_dir = Some(instance_dir);
+        if let Some(files) = &mut self.spawn_files {
+            files.container_scratch = None;
+        }
     }
 
     /// Same-module mutator that records the spawned child's pid and the files
@@ -2688,17 +2751,18 @@ impl TrackedNodeInstance {
         self.supervision.next_start = None;
         self.healthy = Arc::new(AtomicBool::new(true));
         if let Some(files) = self.spawn_files.take() {
-            files.remove();
+            files.remove_config_and_key();
         }
     }
 
     /// Same-module mutator used by `NodeEntity::undo_start`
     /// when the next process of a `Restarting` instance fails to start: the
-    /// slot waits again, with no pid.
-    fn revert_respawn(&mut self) {
+    /// slot waits again, with no pid. Returns the files of the spawn that
+    /// the slot recorded at the fork, if any, for the caller to remove.
+    fn revert_respawn(&mut self) -> Option<SpawnFiles> {
         self.state = InstanceState::Restarting;
         self.pid = None;
-        self.spawn_files = None;
+        self.spawn_files.take()
     }
 
     /// Same-module mutator used by `NodeEntity::commit_starting_instance` once the
@@ -2728,6 +2792,7 @@ mod tests {
         SpawnFiles {
             runtime_config: PathBuf::from("/nonexistent/runtime_config.json5"),
             credential: PathBuf::from("/nonexistent/instance.key"),
+            container_scratch: None,
         }
     }
 
@@ -2992,7 +3057,8 @@ mod tests {
             Instant::now(),
         )
         .await
-        .expect("commit_started should succeed");
+        .expect("commit_started should succeed")
+        .child;
         let _ = child.start_kill();
         let _ = child.wait().await;
 
@@ -3298,8 +3364,8 @@ mod tests {
     /// kill, then its slot is undone: a respawn's slot waits again, a claimed
     /// one leaves, and a first start's leaves; another run's start under the
     /// id is left to that run.
-    #[test]
-    fn an_abandoned_start_is_undone() {
+    #[tokio::test]
+    async fn an_abandoned_start_is_undone() {
         let group = |is_container| {
             Some(ProcessGroup {
                 pid: PID,
@@ -3338,11 +3404,10 @@ mod tests {
             None,
             "a restart's start is no first start's, even of its own goal"
         );
-        assert!(!NodeEntity::undo_abandoned_start(
-            &handle,
-            &id,
-            &StartRun::New(Arc::clone(&own_goal))
-        ));
+        assert!(
+            !NodeEntity::undo_abandoned_start(&handle, &id, &StartRun::New(Arc::clone(&own_goal)))
+                .await
+        );
         assert_eq!(
             handle.read().instances()[0].state(),
             InstanceState::Starting
@@ -3351,11 +3416,7 @@ mod tests {
             NodeEntity::abandoned_start_group(&handle, &id, &respawn_run(&handle, 0)),
             group(false)
         );
-        assert!(NodeEntity::undo_abandoned_start(
-            &handle,
-            &id,
-            &respawn_run(&handle, 0)
-        ));
+        assert!(NodeEntity::undo_abandoned_start(&handle, &id, &respawn_run(&handle, 0)).await);
         assert_eq!(
             handle.read().instances()[0].state(),
             InstanceState::Restarting
@@ -3371,7 +3432,7 @@ mod tests {
             NodeEntity::abandoned_start_group(&handle, &claimed, &respawn_run(&handle, 0)),
             group(false)
         );
-        NodeEntity::undo_abandoned_start(&handle, &claimed, &respawn_run(&handle, 0));
+        NodeEntity::undo_abandoned_start(&handle, &claimed, &respawn_run(&handle, 0)).await;
         assert!(
             handle.read().instances().is_empty(),
             "a claimed start leaves with its slot"
@@ -3384,7 +3445,7 @@ mod tests {
             None,
             "a start that never forked leaves no group"
         );
-        NodeEntity::undo_abandoned_start(&handle, &unforked, &respawn_run(&handle, 0));
+        NodeEntity::undo_abandoned_start(&handle, &unforked, &respawn_run(&handle, 0)).await;
         assert_eq!(
             handle.read().instances()[0].state(),
             InstanceState::Restarting
@@ -3400,11 +3461,7 @@ mod tests {
             None,
             "a later restart's start is not an earlier respawn's"
         );
-        assert!(!NodeEntity::undo_abandoned_start(
-            &handle,
-            &later,
-            &respawn_run(&handle, 0)
-        ));
+        assert!(!NodeEntity::undo_abandoned_start(&handle, &later, &respawn_run(&handle, 0)).await);
         assert_eq!(
             handle.read().instances()[0].state(),
             InstanceState::Starting,
@@ -3414,7 +3471,7 @@ mod tests {
         let not_begun = Name::new("abandoned-not-begun").unwrap();
         let handle = ready_entity_with(waiting_instance(&not_begun));
         assert!(
-            NodeEntity::undo_abandoned_start(&handle, &not_begun, &respawn_run(&handle, 0)),
+            NodeEntity::undo_abandoned_start(&handle, &not_begun, &respawn_run(&handle, 0)).await,
             "a respawn that had not begun its start leaves its restart open"
         );
         assert_eq!(
@@ -3427,7 +3484,8 @@ mod tests {
         waiting.supervision.restart_count = 1;
         let handle = ready_entity_with(waiting);
         assert!(
-            !NodeEntity::undo_abandoned_start(&handle, &later_waiting, &respawn_run(&handle, 0)),
+            !NodeEntity::undo_abandoned_start(&handle, &later_waiting, &respawn_run(&handle, 0))
+                .await,
             "a later restart awaiting its start is not an earlier respawn's"
         );
         assert_eq!(
@@ -3448,11 +3506,7 @@ mod tests {
             None,
             "a restart's start of a later instance under the id is not an earlier one's"
         );
-        assert!(!NodeEntity::undo_abandoned_start(
-            &handle,
-            &replaced,
-            &earlier_instance
-        ));
+        assert!(!NodeEntity::undo_abandoned_start(&handle, &replaced, &earlier_instance).await);
         assert_eq!(
             handle.read().instances()[0].state(),
             InstanceState::Starting
@@ -3488,7 +3542,7 @@ mod tests {
                 NodeEntity::abandoned_start_group(&handle, &first, &other_run),
                 None
             );
-            NodeEntity::undo_abandoned_start(&handle, &first, &other_run);
+            NodeEntity::undo_abandoned_start(&handle, &first, &other_run).await;
             assert_eq!(
                 handle.read().instances()[0].state(),
                 InstanceState::Starting,
@@ -3499,7 +3553,7 @@ mod tests {
             NodeEntity::abandoned_start_group(&handle, &first, &StartRun::New(Arc::clone(&goal))),
             group(false)
         );
-        NodeEntity::undo_abandoned_start(&handle, &first, &StartRun::New(Arc::clone(&goal)));
+        NodeEntity::undo_abandoned_start(&handle, &first, &StartRun::New(Arc::clone(&goal))).await;
         assert!(
             handle.read().instances().is_empty(),
             "a first start leaves with its slot"
@@ -3610,6 +3664,7 @@ mod tests {
             spawn_files: SpawnFiles {
                 runtime_config: instance_dir.join("peppy_runtime.json5"),
                 credential: instance_dir.join("instance.key"),
+                container_scratch: None,
             },
             stderr_buffer: StderrTail::new(),
             output_reader_handles: Vec::new(),
@@ -3623,8 +3678,8 @@ mod tests {
 
     /// A `sleep` child and the context `prepare_and_spawn` hands back for
     /// its start as `instance_id` on an entity of generation `generation`.
-    /// The instance dir and the runtime config file of the start exist under
-    /// `peppy_root`, so a test can see whether the commit removes them.
+    /// The instance dir and the files of the start exist under `peppy_root`,
+    /// so a test can see whether the commit removes them.
     fn sleeping_start(
         peppy_root: &Path,
         instance_id: &str,
@@ -3636,6 +3691,10 @@ mod tests {
         std::fs::write(&runtime_config_path, "{}").expect("runtime config file");
         let credential = peppy_root.join(format!("{instance_id}.key"));
         std::fs::write(&credential, "{}").expect("key file");
+        // What apptainer leaves of the image of a container that is killed.
+        let container_scratch = peppy_root.join(format!("{instance_id}_scratch"));
+        std::fs::create_dir_all(container_scratch.join("rootfs-1/root"))
+            .expect("container scratch directory");
         let child = tokio::process::Command::new("sleep")
             .arg("5")
             .spawn()
@@ -3651,6 +3710,7 @@ mod tests {
                 spawn_files: SpawnFiles {
                     runtime_config: runtime_config_path,
                     credential,
+                    container_scratch: Some(container_scratch),
                 },
                 stderr_buffer: StderrTail::new(),
                 output_reader_handles: Vec::new(),
@@ -3715,6 +3775,124 @@ mod tests {
         assert!(
             !spawn_files.credential.exists(),
             "a refused commit removes the key file"
+        );
+        assert!(
+            spawn_files
+                .container_scratch
+                .is_some_and(|dir| !dir.exists()),
+            "a refused commit removes the container scratch directory"
+        );
+    }
+
+    /// Puts on `handle` the `Starting` slot of the first start of
+    /// `sensor_inst`, which recorded the files of `started_ctx` at the fork
+    /// of `child` as `prepare_and_spawn` records them. Returns the goal of
+    /// that first start.
+    fn register_sleeping_start(
+        handle: &Arc<RwLock<NodeEntity>>,
+        child: &Child,
+        started_ctx: &StartedInstanceCtx,
+    ) -> Arc<NodeRunGoal> {
+        let id = Name::new("sensor_inst").unwrap();
+        let first_start = FirstStart::fixture(&id, "sensor", "v1");
+        let goal = Arc::clone(&first_start.goal);
+        let mut starting = TrackedNodeInstance::new(id, InstanceState::Starting, BTreeMap::new())
+            .with_first_start(first_start);
+        starting.set_starting_process(
+            child.id().expect("the child has a pid"),
+            started_ctx.spawn_files.clone(),
+        );
+        let mut guard = handle.write();
+        let NodeStage::Ready { instances, .. } = &mut guard.stage else {
+            panic!("the fixture entity is Ready")
+        };
+        instances.push(starting);
+        goal
+    }
+
+    /// The commit hands the scratch directory of a container to the owner
+    /// of the process, and the slot gives it up. A stop holds the lock of
+    /// the entity, so it removes the runtime config and the key file, and no
+    /// unpacked image.
+    #[tokio::test]
+    async fn commit_started_hands_the_container_scratch_to_the_owner_of_the_process() {
+        let peppy_root = tempfile::tempdir().expect("peppy_root tempdir");
+        let handle = ready_entity_with_all(Vec::new());
+        let generation = handle.read().generation;
+        let (child, started_ctx) = sleeping_start(peppy_root.path(), "sensor_inst", generation);
+        let spawn_files = started_ctx.spawn_files.clone();
+        let scratch = spawn_files
+            .container_scratch
+            .clone()
+            .expect("the start of a container has a scratch directory");
+        register_sleeping_start(&handle, &child, &started_ctx);
+        let id = Name::new("sensor_inst").unwrap();
+
+        let mut committed = NodeEntity::commit_started(
+            &handle,
+            child,
+            started_ctx,
+            id.clone(),
+            Vec::new(),
+            Instant::now(),
+        )
+        .await
+        .expect("commit_started should succeed");
+
+        assert_eq!(
+            committed.container_scratch.as_deref(),
+            Some(scratch.as_path())
+        );
+        let on_the_slot = handle.read().instances()[0]
+            .spawn_files
+            .as_ref()
+            .and_then(|files| files.container_scratch.clone());
+        assert_eq!(on_the_slot, None, "the slot gives up the scratch directory");
+
+        assert!(handle.write().stop_instance(&id).is_some());
+        assert!(!spawn_files.runtime_config.exists());
+        assert!(!spawn_files.credential.exists());
+        assert!(
+            scratch.is_dir(),
+            "a stop leaves the scratch directory to the owner of the process"
+        );
+
+        let _ = committed.child.start_kill();
+        let _ = committed.child.wait().await;
+        container_scratch::remove_in_blocking_task(scratch.clone()).await;
+        assert!(!scratch.exists());
+    }
+
+    /// A start that panicked leaves the slot alone to tell the files of its
+    /// spawn. The undo of that start removes them, with what apptainer left
+    /// in the scratch directory of a container that was killed.
+    #[tokio::test]
+    async fn undo_abandoned_start_removes_the_files_of_the_spawn() {
+        let peppy_root = tempfile::tempdir().expect("peppy_root tempdir");
+        let handle = ready_entity_with_all(Vec::new());
+        let generation = handle.read().generation;
+        let (mut child, started_ctx) = sleeping_start(peppy_root.path(), "sensor_inst", generation);
+        let spawn_files = started_ctx.spawn_files.clone();
+        let goal = register_sleeping_start(&handle, &child, &started_ctx);
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+
+        let was_of_the_run = NodeEntity::undo_abandoned_start(
+            &handle,
+            &Name::new("sensor_inst").unwrap(),
+            &StartRun::New(goal),
+        )
+        .await;
+
+        assert!(was_of_the_run);
+        assert!(handle.read().instances().is_empty());
+        assert!(!spawn_files.runtime_config.exists());
+        assert!(!spawn_files.credential.exists());
+        assert!(
+            spawn_files
+                .container_scratch
+                .is_some_and(|dir| !dir.exists()),
+            "the undo removes the container scratch directory"
         );
     }
 

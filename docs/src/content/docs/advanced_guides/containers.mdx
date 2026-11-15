@@ -20,16 +20,30 @@ On macOS, Apptainer runs transparently inside a [Lima](https://lima-vm.io/) virt
 
 ## Setup (Linux)
 
-On Linux, Apptainer uses unprivileged user namespaces which may require a one-time system configuration. The installer handles this automatically, but if you skipped it or installed Peppy manually you can run:
+On Linux, container nodes need three packages of the distribution, and Apptainer uses unprivileged user namespaces which may require a one-time system configuration. The installer handles this automatically, on a host and in a Docker or Podman container, but if you skipped it or installed Peppy manually you can run:
 
 ```sh
 peppy container setup
 ```
 
-This configures the following (prompting for `sudo` when needed):
+This configures the following (through `sudo` for a user that is not root, and with no `sudo` for root):
 
-1. **uidmap package**: installs `newuidmap` (required for fakeroot mode).
+1. **Packages**: installs the package of each program of the table below that is missing. It reads the package lists first (`apt-get update`), so it also works in a container of a bare image, which has none.
 2. **AppArmor profile** (on systems that restrict unprivileged user namespaces via AppArmor): installs a profile for the `apptainer` and `starter` programs of the installation, which allows them to create user namespaces, and loads it into the kernel. When the profile already exists but is not loaded, it is reloaded without being rewritten.
+
+The setup installs `fuse2fs` last, in an installation of its own. When that installation fails (the distribution of the machine does not have the package, for example), each other fix is made: the setup writes a warning and exits with `0`.
+
+In a terminal, the setup asks before it makes its fixes. When you answer `n`, it prints the commands and makes no change. It then exits with `1` when a container build or the daemon needs one of the fixes, and with `0` when the only fix is the installation of `fuse2fs`.
+
+Peppy bundles Apptainer, and Apptainer runs three programs that come from the distribution:
+
+| Program | Package | What uses it | Without it |
+|---------|---------|--------------|------------|
+| `newuidmap` | `uidmap` | The fakeroot build of a user that is not root. | Each container build of a user that is not root stops. Root builds with no fakeroot, so the checks do not ask root for `newuidmap`. |
+| `mksquashfs` | `squashfs-tools` | Each node build: it packs the image. | Each container build stops. |
+| `fuse2fs` | `fuse2fs` | The mount of an EXT3 image. | Each container start writes `fuse2fs not found, will not be able to mount EXT3 filesystems`. The images that Peppy builds are squashfs images, which build and run without it. |
+
+A bare `ubuntu:24.04` or `debian:trixie` image has none of the three packages.
 
 To check the current state without making any changes:
 
@@ -37,7 +51,13 @@ To check the current state without making any changes:
 peppy container status
 ```
 
-This prints a pass/fail summary of each prerequisite and exits with code `0` (all pass) or `1` (something needs fixing).
+This prints a pass/fail summary of each prerequisite and exits with code `0` (all pass) or `1` (something needs fixing). A missing `fuse2fs` is a warning: its line shows `WARNING`, and the status exits with `0`. For root, the line of `newuidmap` shows `not required`.
+
+The daemon makes the same checks at its start:
+
+- Without the AppArmor profile, on a system that needs one, the daemon stops. Its error gives the commands that repair each failing check.
+- Without `newuidmap` or `mksquashfs`, the daemon starts and writes a warning. Only a container build runs these two programs, so the images that the daemon has and the nodes that are not containers run. Each container build stops before it starts Apptainer, with an error that gives the command that installs each missing package. A build finds a package that you install while the daemon runs.
+- Without `fuse2fs`, the daemon starts.
 
 The status also asks the kernel for a user namespace, as Apptainer does before each container build: it runs `unshare --user /bin/true` as the user of the builds, which is the caller of `sudo` when `sudo` runs the command. The `User namespace` line shows the answer:
 
@@ -50,6 +70,16 @@ The status also asks the kernel for a user namespace, as Apptainer does before e
 
 The setup has no fix for a namespace that the kernel refuses. `peppy container status` then exits with `1`. `peppy container setup` makes the fixes of the other prerequisites, writes a warning with the message of `unshare`, and exits with `0`. The daemon writes the same warning at its start: the nodes that are not containers run, and each container build fails.
 
+The `Node images` line tells how each node gets the files of its image: `mounted`, or `unpacked at each start` for a user that is not root where a node can write to a directory on overlayfs, as in a Docker container (see [Node images on overlayfs](#node-images-on-overlayfs)). An unpacked image is not a failure, and the status exits with `0`.
+
+To check the packages alone, add `--packages`:
+
+```sh
+peppy container status --packages
+```
+
+It exits with `1` when a container build stops without a package that is missing, and gives the command that installs each missing package.
+
 :::note
 On macOS, no setup is needed; containers run inside a Lima VM which handles permissions transparently.
 :::
@@ -57,6 +87,38 @@ On macOS, no setup is needed; containers run inside a Lima VM which handles perm
 ### Host files in a container
 
 Apptainer binds `/etc/localtime` and `/etc/hosts` of the host into each container, so a node has the time zone and the host names of the host. They are the `bind path` entries of the `apptainer.conf` that Peppy installs. When the host does not have the source of a `bind path` entry, Peppy skips that bind, and the node has what its image has at that path. A minimal host can be without `/etc/localtime`: the `ubuntu` Docker image has none until it gets the `tzdata` package.
+
+### Node images on overlayfs
+
+Apptainer gives a node the files of its image in one of two ways: it mounts the image, or it unpacks the image and starts the node from the copy. Peppy asks for the copy (`--unsquash`) when these two conditions apply together:
+
+- The daemon is not root.
+- A directory that the node can write to is on overlayfs: `/tmp`, `/var/tmp`, the home directory of the user of the daemon, the working directory of the node (which is in the data root), the source of one of its mounts, or a path of the host that a flag of its `apptainer_run_extra_args` names (`--bind`, `--mount`, `--home`, `--workdir`, `--overlay`).
+
+The root file system of a Docker or Podman container is on overlayfs. So a daemon of a user that is not root starts each node from a copy of its image there, unless a volume or a tmpfs holds each of these directories.
+
+The cause is in the kernel. For a user that is not root, the mounted image is a FUSE file system in the user namespace of the node, and that namespace maps this user only. Overlayfs reads and writes a file with the credentials of the user that mounted it, and FUSE refuses a request of a user that the namespace does not map. A node that writes data of its mounted image to a file on overlayfs, for example a file that is compiled into its program, stops with `Bad address (os error 14)`. The copy is made of files of the disk, so a node that starts from it has no such fault.
+
+The copy has a cost:
+
+- Each start of a node unpacks its image with `unsquashfs`, which comes with the `squashfs-tools` package. A 400 MB image takes about one second on a fast disk.
+- The copy uses disk space while the node runs: as much as the files of the image, which can be some gigabytes for one node. It is in the data root, in `tmp/container_scratch`. Apptainer removes it when the node ends. Peppy removes what a node that was killed left, when the process of the node is over and before a restart of the node starts, and removes at the start of the daemon each copy that an earlier daemon left.
+
+The `Node images` line of `peppy container status` shows which of the two ways applies:
+
+| Line | Meaning |
+|------|---------|
+| `mounted` | Apptainer mounts the image of each node. |
+| `unpacked at each start (<directories> are on overlayfs)` | Each node starts from a copy of its image. The line names each directory on overlayfs among `/tmp`, `/var/tmp`, the home directory and the data root. It does not name a directory that is below another one of the list, such as a data root in the home directory. |
+
+The line is for the directories that each node has. A node with a mount whose source is on overlayfs starts from a copy also when the line shows `mounted`. The daemon writes the same information in its log.
+
+The status reads the data root as the command resolves it: `PEPPY_HOME` when the command has that variable, or else the default data root in the home directory of the user of the builds. `sudo` does not give the `PEPPY_HOME` of its caller to the command, so for a daemon with a data root that `PEPPY_HOME` names, give the variable to the command also (`sudo PEPPY_HOME=<data root> peppy container status`).
+
+To get mounted images in a container, do one of these:
+
+- Put a volume or a tmpfs at each directory that the line names. For `/tmp` and `/var/tmp` of a Docker container, add `--tmpfs /tmp:exec --tmpfs /var/tmp:exec` to `docker run`, and put a volume at the home directory.
+- Run the daemon as root (see [Running the daemon as root](#running-the-daemon-as-root)).
 
 ### Running the daemon as root
 
@@ -600,7 +662,10 @@ of the build output says so:
 The prune runs the first `uv` on the `PATH` of the image that is not in a
 Python virtual environment, as `%post` does not see the virtual environment
 that a `%environment` puts on `PATH`. There is no prune when the image has
-no such `uv`, and the daemon stops a prune that runs for 30 seconds. uv also
+no such `uv`, and the daemon stops a prune that runs for 30 seconds. Where
+Apptainer unpacks the image before the prune (see
+[Node images on overlayfs](#node-images-on-overlayfs)), the prune has
+10 minutes more, for the time that the extraction takes. uv also
 removes the entries of a cache layout that is not its own: nodes whose
 images have uv versions with different cache layouts remove each other's
 entries.

@@ -69,10 +69,11 @@ pub use build_io::{FeedbackLine, FeedbackOwner, FeedbackStream, OutputReaderHook
 pub use core_node_api::InstanceState;
 pub use instance_tasks::InstanceTasks;
 pub use node_stack::add_steps;
+pub use node_stack::container_scratch;
 pub use node_stack::{
-    Artifact, Attempt, BuildContext, BuiltInLaunch, CACHED_BUILD_REUSE_PREFIX, EntityHandle,
-    FirstStart, HealthKill, InstanceClock, KeptRelations, NodeEntity, NodeStack, NodeStage,
-    OUTPUT_READER_JOIN_BUDGET, OutputSinks, PairEndpoint, Pairing, PairingNodeSnapshot,
+    Artifact, Attempt, BuildContext, BuiltInLaunch, CACHED_BUILD_REUSE_PREFIX, CommittedProcess,
+    EntityHandle, FirstStart, HealthKill, InstanceClock, KeptRelations, NodeEntity, NodeStack,
+    NodeStage, OUTPUT_READER_JOIN_BUDGET, OutputSinks, PairEndpoint, Pairing, PairingNodeSnapshot,
     PlannedPair, ProcessClaim, PublishSettings, PulledArtifact, Registrations, RemoteSlotMeta,
     RespawnInputs, RestartBackoff, RunningHealth, SlotAddr, SlotLeft, SlotRemoval, SpawnTarget,
     StartContext, StartRun, StartedInstanceCtx, StartingClaim, TrackedNodeInstance,

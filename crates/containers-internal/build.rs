@@ -110,8 +110,9 @@ mod apptainer_build {
     /// into `--tmpdir` ("Converting SIF file to temporary sandbox..."). On a
     /// distro that puts `/tmp` on tmpfs with a systemd per-user quota that
     /// fails with "Disk quota exceeded" once a few node instances are up, so
-    /// bundling this binary is what keeps a stack launch off the extract path
-    /// entirely. `mconfig`/`make` do not build it: apptainer's own packaging
+    /// bundling this binary is what keeps a stack launch off the extract path,
+    /// except where peppy asks for the extraction (the `image_files` module of
+    /// the facade). `mconfig`/`make` do not build it: apptainer's own packaging
     /// compiles it separately and installs it next to `starter`, which is what
     /// [`build_and_install_squashfuse`] mirrors.
     ///
@@ -2370,7 +2371,7 @@ echo "=== Apptainer build complete ==="
         // back on. Apptainer searches its own libexec bin dir (where peppy
         // drops squashfuse_ll and gocryptfs) ahead of `$PATH` and ships no
         // fuse2fs binary itself, so the machines peppy runs containers on take
-        // it from their distro; `scripts/install.sh` installs it there. A
+        // it from their distro; `peppy container setup` installs it there. A
         // warning, not a panic: peppy also builds on machines that never
         // launch containers (CI, cross-compile hosts), and squashfs SIFs run
         // fine without it.

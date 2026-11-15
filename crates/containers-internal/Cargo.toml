@@ -34,10 +34,13 @@ tracing = "0.1"
 # user namespace. `getuid`, `getgid` and `getgroups` tell whether the daemon
 # is the real root, for which apptainer mounts an image with the kernel and
 # not with the bundled squashfuse, and which groups root has in the user
-# namespace of apptainer. nix's safe wrappers keep the crate free of
-# `unsafe`; `/proc` itself exists only on Linux.
+# namespace of apptainer. `statfs` tells whether a directory that a container
+# can write to is on overlayfs, where apptainer unpacks the image of a daemon
+# that is not root, and the user database gives the home directory of that
+# user. nix's safe wrappers keep the crate free of `unsafe`; `/proc` itself
+# exists only on Linux.
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["feature", "user"] }
+nix = { version = "0.31", default-features = false, features = ["feature", "fs", "user"] }
 # Reads `/proc/config.gz`, the configuration of the running kernel, which
 # tells the squashfs compressions that the kernel mounts.
 flate2 = "1"

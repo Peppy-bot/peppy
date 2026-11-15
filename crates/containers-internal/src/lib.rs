@@ -9,9 +9,13 @@ mod error;
 mod mount_source;
 
 pub use apptainer::{Apptainer, ApptainerCommand, emulation_problem};
-pub use apptainer::{BuildActivity, BuildActivityProbe, RegistryAuthFile};
+pub use apptainer::{BuildActivity, BuildActivityProbe, RegistryAuthFile, remove_scratch_dir};
 #[cfg(target_os = "linux")]
-pub use apptainer::{SetupStatus, SetupVerdict, UnprivilegedUserNamespace, check_setup_status};
+pub use apptainer::{
+    FailureSeverity, ImageFiles, ProgramCheck, ProgramState, SetupFix, SetupStatus, SetupVerdict,
+    SystemProgram, SystemPrograms, UnprivilegedUserNamespace, check_setup_status,
+    check_system_programs,
+};
 pub use error::{Error, Result};
 pub use mount_source::{
     auto_created_warning, data_root_mount_rejection, ensure_bind_source, expand_home_in_mount_spec,

@@ -18,6 +18,7 @@ use crate::build_progress::{BuildProgressMonitor, LastOutputLine};
 use crate::node_stack::container_build_cache::{
     self, SoleUvCacheUse, UvCachePruneOutcome, UvCacheUse,
 };
+use crate::node_stack::container_scratch::{self, ContainerScratch};
 use config::node::PeppygenLanguage;
 use containers::{BuildActivity, BuildActivityProbe};
 
@@ -506,10 +507,47 @@ async fn run_uv_cache_prune(
     inputs: &ContainerBuildInputs<'_>,
     build_key: Option<String>,
 ) -> Result<UvCachePruneOutcome, String> {
+    // Where apptainer unpacks the image when it does not mount it.
+    let scratch = match ContainerScratch::create(inputs.peppy_dirs) {
+        Ok(scratch) => scratch,
+        Err(e) => {
+            return Ok(UvCachePruneOutcome::Failed {
+                reason: format!("cannot make the scratch directory of the prune: {e}"),
+            });
+        }
+    };
+    let outcome = run_uv_cache_prune_in(
+        scratch.path(),
+        sole_use,
+        apptainer,
+        image,
+        inputs,
+        build_key,
+    )
+    .await;
+    // The prune is over. A prune that was killed leaves the unpacked image in
+    // the directory, and its removal can take seconds: it runs on a thread
+    // that can block. The guard removes the directory of a prune whose
+    // future is dropped before this line.
+    container_scratch::remove_in_blocking_task(scratch.keep()).await;
+    outcome
+}
+
+/// Runs the prune of [`run_uv_cache_prune`], whose apptainer command has the
+/// scratch directory `scratch_dir`.
+async fn run_uv_cache_prune_in(
+    scratch_dir: &Path,
+    sole_use: &SoleUvCacheUse,
+    apptainer: containers::Apptainer,
+    image: &Path,
+    inputs: &ContainerBuildInputs<'_>,
+    build_key: Option<String>,
+) -> Result<UvCachePruneOutcome, String> {
     let command = container_build_cache::uv_cache_prune_command();
     let command: Vec<&str> = command.iter().map(String::as_str).collect();
     let mut cmd_builder = apptainer
         .exec(&image.to_string_lossy(), &command)
+        .scratch_dir(scratch_dir)
         .clean_env()
         .raw_flag("--contain")
         .raw_flag("--no-home")
@@ -520,6 +558,10 @@ async fn run_uv_cache_prune(
     if let Some(key) = &build_key {
         cmd_builder = cmd_builder.cancel_pgid(key);
     }
+    // The extraction of an image that apptainer unpacks comes before the
+    // prune, in the same command, so that command has more time.
+    let time_limit =
+        container_build_cache::uv_cache_prune_time_limit(cmd_builder.unpacks_its_image());
     let std_cmd = match cmd_builder.into_std_command() {
         Ok(std_cmd) => std_cmd,
         Err(e) => {
@@ -531,7 +573,8 @@ async fn run_uv_cache_prune(
 
     let outcome = run_uv_cache_prune_child(
         std_cmd,
-        tokio::time::sleep(container_build_cache::UV_CACHE_PRUNE_TIMEOUT),
+        time_limit,
+        tokio::time::sleep(time_limit),
         container_build_cache::UV_CACHE_PRUNE_STOP_GRACE,
         inputs.announcer.log().clone(),
         inputs.cancel_token,
@@ -539,7 +582,7 @@ async fn run_uv_cache_prune(
     .await;
     // The host process group of the prune is dead; under Lima, its guest
     // process group can still run.
-    if matches!(outcome, Err(_) | Ok(UvCachePruneOutcome::TimedOut))
+    if matches!(outcome, Err(_) | Ok(UvCachePruneOutcome::TimedOut { .. }))
         && let Some(key) = build_key
     {
         kill_guest_process_group(apptainer, key).await;
@@ -547,8 +590,9 @@ async fn run_uv_cache_prune(
     outcome
 }
 
-/// Runs the prune process `std_cmd` until it ends or `deadline` comes. Its
-/// lines go to `log` only. Returns `Err` when `cancel_token` fires.
+/// Runs the prune process `std_cmd` until it ends or `deadline` comes, which
+/// is when the prune has had `time_limit`. Its lines go to `log` only.
+/// Returns `Err` when `cancel_token` fires.
 ///
 /// At `deadline`, the process group of the prune gets a SIGTERM and
 /// `stop_grace` to stop, and then a SIGKILL. On a SIGTERM, apptainer stops
@@ -556,6 +600,7 @@ async fn run_uv_cache_prune(
 /// SIGKILL leaves behind.
 async fn run_uv_cache_prune_child(
     std_cmd: std::process::Command,
+    time_limit: Duration,
     deadline: impl Future<Output = ()>,
     stop_grace: Duration,
     log: ActionLog,
@@ -595,7 +640,7 @@ async fn run_uv_cache_prune_child(
             {
                 return Err(cancelled);
             }
-            return Ok(UvCachePruneOutcome::TimedOut);
+            return Ok(UvCachePruneOutcome::TimedOut { time_limit });
         }
     };
     match ended {
@@ -854,14 +899,25 @@ mod tests {
         )
         .expect("create the build log");
         let log_path = log.path();
-        let result =
-            run_uv_cache_prune_child(std_cmd, deadline, stop_grace, log, cancel_token).await;
+        let result = run_uv_cache_prune_child(
+            std_cmd,
+            PRUNE_TIME_LIMIT,
+            deadline,
+            stop_grace,
+            log,
+            cancel_token,
+        )
+        .await;
         let log_text = std::fs::read_to_string(log_path).expect("read the build log");
         (result, log_text)
     }
 
     /// Bounds a hang only: the outcome never depends on how fast the host is.
     const PRUNE_HANG_GUARD: Duration = Duration::from_mins(5);
+
+    /// The time limit that the outcome of a prune past its deadline names.
+    /// No test waits for it: each test gives the deadline itself.
+    const PRUNE_TIME_LIMIT: Duration = Duration::from_secs(30);
 
     /// A deadline that never comes within a test.
     fn no_deadline() -> tokio::time::Sleep {
@@ -948,7 +1004,12 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert_eq!(result, Ok(UvCachePruneOutcome::TimedOut));
+        assert_eq!(
+            result,
+            Ok(UvCachePruneOutcome::TimedOut {
+                time_limit: PRUNE_TIME_LIMIT
+            })
+        );
         assert!(
             log.contains("[stderr] stopped on SIGTERM"),
             "the prune must get a SIGTERM before a SIGKILL, got:\n{log}"
@@ -969,7 +1030,12 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert_eq!(result, Ok(UvCachePruneOutcome::TimedOut));
+        assert_eq!(
+            result,
+            Ok(UvCachePruneOutcome::TimedOut {
+                time_limit: PRUNE_TIME_LIMIT
+            })
+        );
     }
 
     /// A cancel during the prune cancels the build, as a cancel during the

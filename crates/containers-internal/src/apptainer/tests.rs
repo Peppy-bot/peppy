@@ -5,14 +5,17 @@ use super::activity::{
 };
 #[cfg(target_os = "linux")]
 use super::facade::{
-    ApparmorProfileRef, SetupVerdict, apparmor_profile_ref, check_setup_status,
-    profile_file_names_programs, setup_fix_script, shell_escape_single_quoted,
-    unmet_prerequisites_error,
+    ApparmorProfileRef, SetupFix, SetupVerdict, apparmor_profile_ref, check_setup_status,
+    profile_file_names_programs, setup_fix, shell_escape_single_quoted, unmet_prerequisites_error,
 };
 use super::facade::{Apptainer, Backend, GuestSignal, is_uri, passes_contain, prepare_scratch_dir};
+#[cfg(target_os = "linux")]
+use super::image_files::UnpackedImages;
 use super::registry_auth::{RegistryAuth, RegistryAuthSource};
 #[cfg(target_os = "linux")]
 use super::root_user_namespace::UserNamespace;
+#[cfg(target_os = "linux")]
+use super::system_programs::{FailureSeverity, Privilege, SystemProgram, SystemPrograms};
 #[cfg(target_os = "linux")]
 use super::unprivileged_user_namespace::UnprivilegedUserNamespace;
 use crate::error::Error;
@@ -36,17 +39,17 @@ use std::process::ExitStatus;
 
 /// Construct a fully-initialized `Apptainer` for integration tests that need
 /// the real runtime, or `None` (after printing a SKIPPING diagnostic) when
-/// this host does not meet the user namespace prerequisites. Prerequisites are
-/// machine state (an AppArmor profile installed via `peppy container setup`),
-/// not code under test, so integration tests self-skip on an unprovisioned
+/// this host does not meet the prerequisites of a container build.
+/// Prerequisites are machine state (packages and an AppArmor profile that
+/// `peppy container setup` installs), not code under test, so integration tests self-skip on an unprovisioned
 /// host, mirroring the setup-status tests below and the e2e suite in
 /// tests/facade.rs. Pure command-assembly and path-translation tests use
 /// [`native_facade`] / [`lima_facade`] instead: they must never depend on
 /// host state.
 fn ready_facade() -> Option<Apptainer> {
-    if !host_meets_userns_prerequisites() {
+    if !host_meets_build_prerequisites() {
         eprintln!(
-            "SKIPPING: apptainer user namespace prerequisites not met on this host; \
+            "SKIPPING: the prerequisites of a container build are not met on this host; \
              run `peppy container setup`"
         );
         return None;
@@ -57,13 +60,15 @@ fn ready_facade() -> Option<Apptainer> {
     )
 }
 
-/// Whether this host meets apptainer's user namespace prerequisites. Always
-/// `true` off Linux: macOS routes through the Lima VM and has no AppArmor
-/// prerequisites to check.
-fn host_meets_userns_prerequisites() -> bool {
+/// Whether this host meets the prerequisites of apptainer that a container
+/// build needs: each one whose failure stops the daemon or a build passes,
+/// and the kernel does not refuse a user namespace. Always `true` off Linux: macOS routes through
+/// the Lima VM and has no prerequisites to check.
+fn host_meets_build_prerequisites() -> bool {
     #[cfg(target_os = "linux")]
     {
-        check_setup_status(&ready_apptainer_dir()).verdict == SetupVerdict::Ready
+        let verdict = check_setup_status(&ready_apptainer_dir()).verdict;
+        !verdict.fix_repairs_a_failure() && !matches!(verdict, SetupVerdict::Unfixable { .. })
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -93,6 +98,10 @@ struct NativeFacadeFixture {
     l4t_manifest_dir: PathBuf,
     #[cfg(target_os = "linux")]
     user_namespace: UserNamespace,
+    #[cfg(target_os = "linux")]
+    unpacked_images: UnpackedImages,
+    #[cfg(target_os = "linux")]
+    system_programs: fn() -> SystemPrograms,
     absent_bind_paths: AbsentBindPaths,
 }
 
@@ -108,9 +117,27 @@ impl Default for NativeFacadeFixture {
             l4t_manifest_dir: scratch.join("no-such-l4t-manifest-dir"),
             #[cfg(target_os = "linux")]
             user_namespace: UserNamespace::ApptainerDefault,
+            #[cfg(target_os = "linux")]
+            unpacked_images: UnpackedImages::Never,
+            #[cfg(target_os = "linux")]
+            system_programs: each_system_program,
             absent_bind_paths: AbsentBindPaths::default(),
         }
     }
+}
+
+/// The checks of a machine that has each program of the distribution that
+/// Apptainer runs.
+#[cfg(target_os = "linux")]
+fn each_system_program() -> SystemPrograms {
+    SystemPrograms::parse(false, |_| true)
+}
+
+/// The checks of a machine that has no program of the distribution that
+/// Apptainer runs.
+#[cfg(target_os = "linux")]
+fn no_system_program() -> SystemPrograms {
+    SystemPrograms::parse(false, |_| false)
 }
 
 impl NativeFacadeFixture {
@@ -124,6 +151,10 @@ impl NativeFacadeFixture {
                 l4t_manifest_dir: self.l4t_manifest_dir,
                 #[cfg(target_os = "linux")]
                 user_namespace: self.user_namespace,
+                #[cfg(target_os = "linux")]
+                unpacked_images: self.unpacked_images,
+                #[cfg(target_os = "linux")]
+                system_programs: self.system_programs,
                 absent_bind_paths: self.absent_bind_paths,
             },
             extra_mounts: Vec::new(),
@@ -138,8 +169,9 @@ impl NativeFacadeFixture {
 /// sanitized copy a build command writes lands in [`native_fixture_scratch`],
 /// never next to the host's real credentials. Its NVIDIA L4T manifest
 /// directory does not exist either, so a `--nv` command never reads the host's
-/// manifest. It is the facade of a daemon that is not root, on a host that has
-/// the source of each bind of apptainer.
+/// manifest. It is the facade of a daemon whose containers need no flag to
+/// get the files of their image, on a host that has the source of each bind
+/// of apptainer.
 fn native_facade() -> Apptainer {
     NativeFacadeFixture::default().build()
 }
@@ -456,6 +488,172 @@ fn a_lima_run_passes_no_userns() {
     let args = cmd.build_args().expect("build_args should succeed");
 
     assert_eq!(args, ["run", "docker://alpine"]);
+}
+
+/// The commands of a daemon that is not root, where a container can write to
+/// a directory on overlayfs: see `image_files`.
+#[cfg(target_os = "linux")]
+mod of_a_daemon_that_is_not_root_beside_overlayfs {
+    use super::*;
+    use crate::apptainer::image_files::fixtures::{FakeHost, HOME, daemon_that_is_not_root};
+
+    /// [`native_facade`] of a daemon that is not root on `host`.
+    fn facade_on(host: FakeHost) -> Apptainer {
+        NativeFacadeFixture {
+            unpacked_images: daemon_that_is_not_root(host),
+            ..NativeFacadeFixture::default()
+        }
+        .build()
+    }
+
+    #[test]
+    fn a_run_in_a_docker_container_unpacks_the_image_before_its_other_flags() {
+        let facade = facade_on(FakeHost::docker_container());
+
+        let args = facade
+            .run("/images/node.sif")
+            .raw_flag("--nv")
+            .build_args()
+            .expect("build_args should succeed");
+
+        assert_eq!(args, ["run", "--unsquash", "--nv", "/images/node.sif"]);
+    }
+
+    #[test]
+    fn an_exec_in_a_docker_container_unpacks_the_image() {
+        let facade = facade_on(FakeHost::docker_container());
+
+        let args = facade
+            .exec("/images/node.sif", &["echo", "hello"])
+            .build_args()
+            .expect("build_args should succeed");
+
+        assert_eq!(
+            args,
+            ["exec", "--unsquash", "/images/node.sif", "echo", "hello"]
+        );
+    }
+
+    /// A bind source on overlayfs is enough, on a host whose other
+    /// directories are not on overlayfs.
+    #[test]
+    fn a_run_with_a_bind_source_on_overlayfs_unpacks_the_image() {
+        let facade = facade_on(FakeHost::without_overlayfs().with_overlayfs_at("/data"));
+
+        let args = facade
+            .run("/images/node.sif")
+            .working_dir(Path::new("/srv/instances/node_inst"))
+            .bind("/data/recordings", None, None)
+            .build_args()
+            .expect("build_args should succeed");
+
+        assert_eq!(
+            args,
+            [
+                "run",
+                "--unsquash",
+                "--bind",
+                "/data/recordings",
+                "/images/node.sif"
+            ]
+        );
+    }
+
+    /// A node gives raw flags in `apptainer_run_extra_args`. A path of the
+    /// host that such a flag names is in the container as a bind source is.
+    #[test]
+    fn a_run_whose_raw_flag_names_a_path_on_overlayfs_unpacks_the_image() {
+        for flags in [
+            &["--bind", "/data/recordings:/recordings"][..],
+            &["-B=/data/recordings"][..],
+            &[
+                "--mount",
+                "type=bind,source=/data/recordings,destination=/recordings",
+            ][..],
+            &["--home", "/data/home"][..],
+            &["--workdir", "/data/work"][..],
+            &["--overlay", "/data/overlay"][..],
+        ] {
+            let facade = facade_on(FakeHost::without_overlayfs().with_overlayfs_at("/data"));
+            let mut command = facade
+                .run("/images/node.sif")
+                .working_dir(Path::new("/srv/instances/node_inst"));
+            for flag in flags {
+                command = command.raw_flag(flag);
+            }
+
+            let args = command.build_args().expect("build_args should succeed");
+
+            assert_eq!(args[..2], ["run", "--unsquash"], "{flags:?}");
+        }
+    }
+
+    /// Apptainer reads a path that is not absolute from the working
+    /// directory of the command.
+    #[test]
+    fn a_raw_flag_with_a_relative_path_is_read_in_the_working_directory_of_the_command() {
+        let host = FakeHost::without_overlayfs().with_overlayfs_at("/srv/instances/node_inst/data");
+        let facade = facade_on(host);
+
+        let command = facade
+            .run("/images/node.sif")
+            .working_dir(Path::new("/srv/instances/node_inst"))
+            .raw_flag("--bind")
+            .raw_flag("data:/data");
+
+        assert!(command.unpacks_its_image());
+    }
+
+    #[test]
+    fn a_run_with_a_volume_at_each_directory_mounts_the_image() {
+        let host = FakeHost::docker_container().with_volumes(&["/tmp", "/var/tmp", HOME, "/srv"]);
+        let facade = facade_on(host);
+
+        let command = facade
+            .run("/images/node.sif")
+            .working_dir(Path::new("/srv/instances/node_inst"))
+            .raw_flag("--bind")
+            .raw_flag("/srv/data");
+
+        assert!(!command.unpacks_its_image());
+        let args = command.build_args().expect("build_args should succeed");
+        assert_eq!(args, ["run", "--bind", "/srv/data", "/images/node.sif"]);
+    }
+
+    /// A caller reads whether a command unpacks its image, which takes the
+    /// time of the extraction before the container starts.
+    #[test]
+    fn a_command_tells_whether_it_unpacks_its_image() {
+        let facade = facade_on(FakeHost::docker_container());
+        let (output, def) = build_paths_under_home();
+
+        assert!(facade.run("/images/node.sif").unpacks_its_image());
+        assert!(
+            facade
+                .exec("/images/node.sif", &["echo", "hello"])
+                .unpacks_its_image()
+        );
+        assert!(!facade.build(&output, &def).unpacks_its_image());
+        assert!(!native_facade().run("/images/node.sif").unpacks_its_image());
+    }
+
+    /// A build unpacks no image: apptainer makes the image in a directory of
+    /// the disk.
+    #[test]
+    fn a_build_in_a_docker_container_passes_no_unpack_flag() {
+        let facade = facade_on(FakeHost::docker_container());
+
+        let (output, def) = build_paths_under_home();
+        let args = facade
+            .build(&output, &def)
+            .build_args()
+            .expect("build_args should succeed");
+
+        assert!(
+            !args.iter().any(|arg| arg == "--unsquash"),
+            "a build should unpack no image, got: {args:?}"
+        );
+    }
 }
 
 /// The commands of a daemon that is the real root, which only a Linux host
@@ -1649,16 +1847,17 @@ fn check_setup_status_reports_real_installation() {
 
     let status = check_setup_status(&apptainer_dir);
 
-    // On systems with newuidmap, without AppArmor restrictions and with a
-    // kernel that does not refuse a user namespace, everything should pass.
-    if status.newuidmap_ok
+    // On systems with each program of the distribution, without AppArmor
+    // restrictions and with a kernel that does not refuse a user namespace,
+    // everything should pass.
+    if status.programs.severity().is_none()
         && !status.apparmor_restricted
         && status.user_namespace.refusal().is_none()
     {
         assert_eq!(
             status.verdict,
             SetupVerdict::Ready,
-            "the setup should be ready when newuidmap is available, AppArmor does not \
+            "the setup should be ready when no program is missing, AppArmor does not \
              restrict and the kernel does not refuse a user namespace"
         );
     }
@@ -1689,7 +1888,7 @@ fn check_setup_status_no_apparmor_restriction() {
         status.apparmor_loaded,
         "apparmor_loaded should be true when not restricted"
     );
-    if status.newuidmap_ok && status.user_namespace.refusal().is_none() {
+    if status.programs.severity().is_none() && status.user_namespace.refusal().is_none() {
         assert_eq!(status.verdict, SetupVerdict::Ready);
     }
 }
@@ -1720,11 +1919,11 @@ fn check_setup_status_requires_apparmor_profile_loaded() {
         );
     }
 
-    // If both are true (and newuidmap is present, and the kernel does not
+    // If both are true (and no program is missing, and the kernel does not
     // refuse a user namespace), the full check passes.
     if status.apparmor_ok
         && status.apparmor_loaded
-        && status.newuidmap_ok
+        && status.programs.severity().is_none()
         && status.user_namespace.refusal().is_none()
     {
         assert_eq!(
@@ -1739,11 +1938,7 @@ fn check_setup_status_requires_apparmor_profile_loaded() {
 /// the verdict holds none.
 #[cfg(target_os = "linux")]
 fn fix_script_of(verdict: &SetupVerdict) -> Option<&str> {
-    match verdict {
-        SetupVerdict::Ready => None,
-        SetupVerdict::Fixable { fix_script } => Some(fix_script),
-        SetupVerdict::Unfixable { fix_script, .. } => fix_script.as_deref(),
-    }
+    verdict.fix().map(|fix| fix.script.as_str())
 }
 
 #[cfg(target_os = "linux")]
@@ -1917,51 +2112,220 @@ fn shell_escape_single_quoted_survives_embedded_quotes() {
     assert_eq!(shell_escape_single_quoted("/plain/path"), "/plain/path");
 }
 
-/// The fix script holds one step per failing prerequisite, in a fixed order,
-/// and is absent when every prerequisite passes. A profile that is missing or
-/// stale is written and loaded in one step, so a profile that only needs
-/// loading gets the load alone.
+/// A profile of the fix script tests, and the commands that write and load
+/// it for a user that is not root.
 #[cfg(target_os = "linux")]
-#[test]
-fn setup_fix_script_holds_a_step_for_each_failing_check() {
-    const INSTALL_UIDMAP: &str = "sudo apt-get install -y uidmap";
-    const WRITE_PROFILE: &str = "printf '%s\\n' 'abi <abi/4.0>,\n\
-         include <tunables/global>\n\
-         \n\
-         @{peppy_apptainer_programs} = \"/opt/a/bin/apptainer\" \
-         \"/opt/a/libexec/apptainer/bin/starter\"\n\
-         \n\
-         profile peppy-apptainer-0000000000000000 @{peppy_apptainer_programs} flags=(unconfined) {\n\
-         \x20 userns,\n\
-         }' | sudo tee /etc/apparmor.d/peppy-apptainer-0000000000000000 > /dev/null \\\n  \
-         && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
-    const LOAD_PROFILE: &str =
-        "sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
-    let profile = ApparmorProfileRef {
+fn fix_script_profile() -> ApparmorProfileRef {
+    ApparmorProfileRef {
         apptainer_path: "/opt/a/bin/apptainer".to_string(),
         starter_path: "/opt/a/libexec/apptainer/bin/starter".to_string(),
         name: "peppy-apptainer-0000000000000000".to_string(),
         file: PathBuf::from("/etc/apparmor.d/peppy-apptainer-0000000000000000"),
-    };
-    let uidmap_then = |step: &str| format!("{INSTALL_UIDMAP} \\\n  && {step}");
+    }
+}
 
-    // (newuidmap_ok, apparmor_ok, apparmor_loaded, script)
+#[cfg(target_os = "linux")]
+const WRITE_PROFILE_WITH_SUDO: &str = "printf '%s\\n' 'abi <abi/4.0>,\n\
+     include <tunables/global>\n\
+     \n\
+     @{peppy_apptainer_programs} = \"/opt/a/bin/apptainer\" \
+     \"/opt/a/libexec/apptainer/bin/starter\"\n\
+     \n\
+     profile peppy-apptainer-0000000000000000 @{peppy_apptainer_programs} flags=(unconfined) {\n\
+     \x20 userns,\n\
+     }' | sudo tee /etc/apparmor.d/peppy-apptainer-0000000000000000 > /dev/null \\\n  \
+     && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
+
+#[cfg(target_os = "linux")]
+const LOAD_PROFILE_WITH_SUDO: &str =
+    "sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
+
+/// The checks of the programs of a user that is not root, on a machine that
+/// has each program but those of `missing`.
+#[cfg(target_os = "linux")]
+fn programs_without(missing: &[SystemProgram]) -> SystemPrograms {
+    SystemPrograms::parse(false, |program| !missing.contains(&program))
+}
+
+/// The fix script holds one step per failing prerequisite, in a fixed order,
+/// and no fix exists when every prerequisite passes. A profile that is
+/// missing or stale is written and loaded in one step, so a profile that only
+/// needs loading gets the load alone. A profile that fails stops the daemon,
+/// and a missing `newuidmap` alone stops each container build.
+#[cfg(target_os = "linux")]
+#[test]
+fn setup_fix_holds_a_step_for_each_failing_check() {
+    const INSTALL_UIDMAP: &str = "sudo apt-get -o DPkg::Lock::Timeout=300 update \\\n  \
+         && sudo apt-get -o DPkg::Lock::Timeout=300 install -y uidmap";
+    let profile = fix_script_profile();
+    let uidmap_then = |step: &str| format!("{INSTALL_UIDMAP} \\\n  && {step}");
+    let all = programs_without(&[]);
+    let no_newuidmap = programs_without(&[SystemProgram::Newuidmap]);
+
+    // (programs, apparmor_ok, apparmor_loaded, script, severity)
+    let stops_the_daemon = FailureSeverity::StopsTheDaemon;
     let cases = [
-        (true, true, true, None),
-        (false, true, true, Some(INSTALL_UIDMAP.to_string())),
-        (true, false, true, Some(WRITE_PROFILE.to_string())),
-        (true, false, false, Some(WRITE_PROFILE.to_string())),
-        (true, true, false, Some(LOAD_PROFILE.to_string())),
-        (false, false, true, Some(uidmap_then(WRITE_PROFILE))),
-        (false, false, false, Some(uidmap_then(WRITE_PROFILE))),
-        (false, true, false, Some(uidmap_then(LOAD_PROFILE))),
+        (&all, true, true, None, stops_the_daemon),
+        (
+            &no_newuidmap,
+            true,
+            true,
+            Some(INSTALL_UIDMAP.to_string()),
+            FailureSeverity::StopsEachBuild,
+        ),
+        (
+            &all,
+            false,
+            true,
+            Some(WRITE_PROFILE_WITH_SUDO.to_string()),
+            stops_the_daemon,
+        ),
+        (
+            &all,
+            false,
+            false,
+            Some(WRITE_PROFILE_WITH_SUDO.to_string()),
+            stops_the_daemon,
+        ),
+        (
+            &all,
+            true,
+            false,
+            Some(LOAD_PROFILE_WITH_SUDO.to_string()),
+            stops_the_daemon,
+        ),
+        (
+            &no_newuidmap,
+            false,
+            true,
+            Some(uidmap_then(WRITE_PROFILE_WITH_SUDO)),
+            stops_the_daemon,
+        ),
+        (
+            &no_newuidmap,
+            false,
+            false,
+            Some(uidmap_then(WRITE_PROFILE_WITH_SUDO)),
+            stops_the_daemon,
+        ),
+        (
+            &no_newuidmap,
+            true,
+            false,
+            Some(uidmap_then(LOAD_PROFILE_WITH_SUDO)),
+            stops_the_daemon,
+        ),
     ];
-    for (newuidmap_ok, apparmor_ok, apparmor_loaded, script) in cases {
+    for (programs, apparmor_ok, apparmor_loaded, script, severity) in cases {
+        let fix = setup_fix(
+            programs,
+            apparmor_ok,
+            apparmor_loaded,
+            &profile,
+            Privilege::Sudo,
+        );
+
         assert_eq!(
-            setup_fix_script(newuidmap_ok, apparmor_ok, apparmor_loaded, &profile),
-            script,
-            "newuidmap_ok={newuidmap_ok} apparmor_ok={apparmor_ok} \
-             apparmor_loaded={apparmor_loaded}"
+            fix,
+            script.map(|script| SetupFix {
+                script,
+                severity,
+                uses_sudo: true,
+            }),
+            "programs={programs:?} apparmor_ok={apparmor_ok} apparmor_loaded={apparmor_loaded}"
+        );
+    }
+}
+
+/// Root runs each command of the fix script as it is: a machine of root
+/// alone, such as a container of a bare image, has no `sudo`.
+#[cfg(target_os = "linux")]
+#[test]
+fn setup_fix_of_root_has_no_sudo() {
+    let profile = fix_script_profile();
+    let programs = SystemPrograms::parse(true, |_| false);
+
+    let fix = setup_fix(&programs, false, false, &profile, Privilege::Root)
+        .expect("programs to install and a profile to write");
+
+    assert_eq!(
+        fix,
+        SetupFix {
+            script: format!(
+                "apt-get -o DPkg::Lock::Timeout=300 update \\\n  \
+                 && apt-get -o DPkg::Lock::Timeout=300 install -y squashfs-tools \\\n  \
+                 && {} \\\n  \
+                 && apt-get -o DPkg::Lock::Timeout=300 install -y fuse2fs",
+                WRITE_PROFILE_WITH_SUDO.replace("sudo ", "")
+            ),
+            severity: FailureSeverity::StopsTheDaemon,
+            uses_sudo: false,
+        }
+    );
+    assert!(!fix.script.contains("sudo"), "{}", fix.script);
+}
+
+/// The package whose absence is a warning is the last step of the script,
+/// in an installation of its own: a distribution that does not have that
+/// package stops no fix that the daemon or a container build needs.
+#[cfg(target_os = "linux")]
+#[test]
+fn setup_fix_installs_the_package_of_a_warning_after_each_other_fix() {
+    const APT_GET: &str = "sudo apt-get -o DPkg::Lock::Timeout=300";
+    let profile = fix_script_profile();
+    let no_program = SystemPrograms::parse(false, |_| false);
+
+    let fix = setup_fix(&no_program, true, false, &profile, Privilege::Sudo)
+        .expect("programs to install and a profile to load");
+
+    assert_eq!(
+        fix.script,
+        format!(
+            "{APT_GET} update \\\n  \
+             && {APT_GET} install -y uidmap squashfs-tools \\\n  \
+             && {LOAD_PROFILE_WITH_SUDO} \\\n  \
+             && {APT_GET} install -y fuse2fs"
+        )
+    );
+}
+
+/// The severity of a fix is the one of the most severe failure that it
+/// repairs: a warning for `fuse2fs` alone, a stop of each container build for
+/// a program that a build runs, and a stop of the daemon for the profile.
+#[cfg(target_os = "linux")]
+#[test]
+fn setup_fix_has_the_severity_of_its_most_severe_failure() {
+    const INSTALL_FUSE2FS: &str = "sudo apt-get -o DPkg::Lock::Timeout=300 update \\\n  \
+         && sudo apt-get -o DPkg::Lock::Timeout=300 install -y fuse2fs";
+    let profile = fix_script_profile();
+    let no_fuse2fs = programs_without(&[SystemProgram::Fuse2fs]);
+    let severity_of = |programs: &SystemPrograms, apparmor_loaded: bool| {
+        setup_fix(programs, true, apparmor_loaded, &profile, Privilege::Sudo)
+            .map(|fix| fix.severity)
+    };
+
+    assert_eq!(
+        setup_fix(&no_fuse2fs, true, true, &profile, Privilege::Sudo),
+        Some(SetupFix {
+            script: INSTALL_FUSE2FS.to_string(),
+            severity: FailureSeverity::Warning,
+            uses_sudo: true,
+        })
+    );
+    assert_eq!(
+        severity_of(&no_fuse2fs, false),
+        Some(FailureSeverity::StopsTheDaemon),
+        "a profile that is not loaded stops the daemon"
+    );
+    for build_program in [SystemProgram::Newuidmap, SystemProgram::Mksquashfs] {
+        assert_eq!(
+            severity_of(
+                &programs_without(&[build_program, SystemProgram::Fuse2fs]),
+                true
+            ),
+            Some(FailureSeverity::StopsEachBuild),
+            "a missing {} stops each container build",
+            build_program.name()
         );
     }
 }
@@ -1972,7 +2336,7 @@ fn setup_fix_script_holds_a_step_for_each_failing_check() {
 /// single-quoted body that the fix script writes to the profile file.
 #[cfg(target_os = "linux")]
 #[test]
-fn setup_fix_script_names_a_path_with_special_characters_as_it_is() {
+fn setup_fix_names_a_path_with_special_characters_as_it_is() {
     let profile = ApparmorProfileRef {
         apptainer_path: r#"/home/o'brien/my "apps" [x] @{y},z*?^\a/bin/apptainer"#.to_string(),
         starter_path: "/home/o'brien/a b/libexec/apptainer/bin/starter".to_string(),
@@ -1980,7 +2344,15 @@ fn setup_fix_script_names_a_path_with_special_characters_as_it_is() {
         file: PathBuf::from("/etc/apparmor.d/peppy-apptainer-0000000000000000"),
     };
 
-    let script = setup_fix_script(true, false, true, &profile).expect("a profile to write");
+    let script = setup_fix(
+        &programs_without(&[]),
+        false,
+        true,
+        &profile,
+        Privilege::Sudo,
+    )
+    .expect("a profile to write")
+    .script;
 
     let programs_line = [
         "@{peppy_apptainer_programs} =",
@@ -1999,7 +2371,8 @@ fn setup_fix_script_names_a_path_with_special_characters_as_it_is() {
 #[cfg(target_os = "linux")]
 #[test]
 fn unmet_prerequisites_are_an_error_that_gives_the_script() {
-    const FIX_SCRIPT: &str = "sudo apt-get install -y uidmap \\\n  \
+    const FIX_SCRIPT: &str = "sudo apt-get -o DPkg::Lock::Timeout=300 update \\\n  \
+         && sudo apt-get -o DPkg::Lock::Timeout=300 install -y squashfs-tools \\\n  \
          && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
 
     let error = unmet_prerequisites_error(FIX_SCRIPT);
@@ -2007,21 +2380,28 @@ fn unmet_prerequisites_are_an_error_that_gives_the_script() {
     assert_matches!(
         &error,
         Error::ConfigurationError(message)
-            if message.contains(
-                "  sudo apt-get install -y uidmap \\\n    \
-                 && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000\n"
-            ) && message.contains("peppy container setup")
+            if message.starts_with("The prerequisites of Apptainer are not met.\n")
+                && message.contains(
+                    "  sudo apt-get -o DPkg::Lock::Timeout=300 update \\\n    \
+                     && sudo apt-get -o DPkg::Lock::Timeout=300 install -y squashfs-tools \\\n    \
+                     && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000\n"
+                )
+                && message.contains("peppy container setup")
     );
 }
 
 /// The verdict of a setup: ready when no prerequisite fails and the kernel
 /// does not refuse the user namespace, fixable when a prerequisite fails, and
-/// unfixable when the kernel refuses, with the script of the prerequisites
-/// that fail beside the refusal.
+/// unfixable when the kernel refuses, with the fix of the prerequisites that
+/// fail beside the refusal.
 #[cfg(target_os = "linux")]
 #[test]
-fn the_verdict_of_a_setup_holds_its_fix_script_and_the_refusal_of_the_kernel() {
-    const FIX_SCRIPT: &str = "sudo apt-get install -y uidmap";
+fn the_verdict_of_a_setup_holds_its_fix_and_the_refusal_of_the_kernel() {
+    let fix = SetupFix {
+        script: "sudo apt-get install -y uidmap".to_string(),
+        severity: FailureSeverity::StopsTheDaemon,
+        uses_sudo: true,
+    };
     let refused = UnprivilegedUserNamespace::Refused {
         answer: "unshare: unshare failed: Operation not permitted".to_string(),
     };
@@ -2042,23 +2422,144 @@ fn the_verdict_of_a_setup_holds_its_fix_script_and_the_refusal_of_the_kernel() {
             "{not_refused:?}"
         );
         assert_eq!(
-            SetupVerdict::of(Some(FIX_SCRIPT.to_string()), &not_refused),
-            SetupVerdict::Fixable {
-                fix_script: FIX_SCRIPT.to_string()
-            },
+            SetupVerdict::of(Some(fix.clone()), &not_refused),
+            SetupVerdict::Fixable { fix: fix.clone() },
             "{not_refused:?}"
         );
     }
 
-    for fix_script in [None, Some(FIX_SCRIPT.to_string())] {
+    for fix in [None, Some(fix)] {
         assert_eq!(
-            SetupVerdict::of(fix_script.clone(), &refused),
+            SetupVerdict::of(fix.clone(), &refused),
             SetupVerdict::Unfixable {
                 refusal: refusal.clone(),
-                fix_script
+                fix
             }
         );
     }
+}
+
+/// A fix repairs a failure when one of its checks stops the daemon or each
+/// container build. A fix of a warning alone, and no fix to make, repair
+/// none.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_fix_repairs_a_failure_unless_each_of_its_checks_is_a_warning() {
+    let fix_of = |severity| SetupFix {
+        script: "sudo apt-get install -y fuse2fs".to_string(),
+        severity,
+        uses_sudo: true,
+    };
+    let refusal = || "The kernel refuses a user namespace.".to_string();
+
+    // (verdict, whether its fix repairs a failure)
+    let cases = [
+        (SetupVerdict::Ready, false),
+        (
+            SetupVerdict::Fixable {
+                fix: fix_of(FailureSeverity::Warning),
+            },
+            false,
+        ),
+        (
+            SetupVerdict::Fixable {
+                fix: fix_of(FailureSeverity::StopsEachBuild),
+            },
+            true,
+        ),
+        (
+            SetupVerdict::Fixable {
+                fix: fix_of(FailureSeverity::StopsTheDaemon),
+            },
+            true,
+        ),
+        (
+            SetupVerdict::Unfixable {
+                refusal: refusal(),
+                fix: None,
+            },
+            false,
+        ),
+        (
+            SetupVerdict::Unfixable {
+                refusal: refusal(),
+                fix: Some(fix_of(FailureSeverity::Warning)),
+            },
+            false,
+        ),
+        (
+            SetupVerdict::Unfixable {
+                refusal: refusal(),
+                fix: Some(fix_of(FailureSeverity::StopsTheDaemon)),
+            },
+            true,
+        ),
+    ];
+    for (verdict, repairs_a_failure) in cases {
+        assert_eq!(
+            verdict.fix_repairs_a_failure(),
+            repairs_a_failure,
+            "{verdict:?}"
+        );
+    }
+}
+
+/// A build runs `newuidmap` and `mksquashfs`. On a machine without them it
+/// stops before apptainer starts, with the command that installs them. A
+/// `run` and an `exec` run none of them.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_build_is_refused_on_a_machine_without_its_programs() {
+    let facade = NativeFacadeFixture {
+        system_programs: no_system_program,
+        ..NativeFacadeFixture::default()
+    }
+    .build();
+    let (output, def) = build_paths_under_home();
+
+    let error = facade
+        .build(&output, &def)
+        .into_std_command()
+        .expect_err("a build without its programs should be refused");
+
+    let Error::ConfigurationError(refusal) = &error else {
+        panic!("expected a configuration error, got {error:?}");
+    };
+    assert_eq!(
+        Some(refusal),
+        facade.missing_build_programs().as_ref(),
+        "the error of a build is the refusal that the daemon writes at its start"
+    );
+    assert!(
+        refusal.starts_with("A container build runs programs that this machine does not have: "),
+        "{refusal}"
+    );
+    assert!(
+        refusal.ends_with("install -y fuse2fs"),
+        "the refusal should end with the command that installs the packages: {refusal}"
+    );
+    facade
+        .run("/images/node.sif")
+        .into_std_command()
+        .expect("a run needs no program of a build");
+    facade
+        .exec("/images/node.sif", &["echo", "hello"])
+        .into_std_command()
+        .expect("an exec needs no program of a build");
+}
+
+/// A machine that has each program of a build refuses none.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_build_is_not_refused_on_a_machine_with_its_programs() {
+    let facade = native_facade();
+    let (output, def) = build_paths_under_home();
+
+    assert_eq!(facade.missing_build_programs(), None);
+    facade
+        .build(&output, &def)
+        .into_std_command()
+        .expect("a build with its programs should assemble");
 }
 
 // ---------------------------------------------------------------------------
@@ -2341,6 +2842,24 @@ fn native_command_sets_apptainer_tmpdir() {
     );
 }
 
+/// A command with a scratch directory of its own gives apptainer that
+/// directory, and not the one that the commands of the facade share.
+#[test]
+fn native_command_with_a_scratch_dir_of_its_own_sets_it_as_apptainer_tmpdir() {
+    let facade = native_facade();
+    let scratch_dir = Path::new("/opt/peppy-tmp/container_scratch/41_0");
+    let cmd = facade
+        .run("image.sif")
+        .scratch_dir(scratch_dir)
+        .into_std_command()
+        .expect("native command assembly should succeed");
+
+    assert_eq!(
+        command_env(&cmd, "APPTAINER_TMPDIR"),
+        Some(scratch_dir.to_path_buf())
+    );
+}
+
 /// The Lima backend leaves it unset: the command is handed to `limactl shell`,
 /// which does not carry the host environment into the guest, so setting it
 /// would only look like it worked.
@@ -2361,6 +2880,23 @@ fn lima_command_does_not_set_apptainer_tmpdir() {
         None,
         "a host-side APPTAINER_TMPDIR would not survive the hop into the guest"
     );
+}
+
+/// The Lima backend ignores the scratch directory of a command, for the
+/// same reason.
+#[test]
+fn lima_command_with_a_scratch_dir_of_its_own_does_not_set_apptainer_tmpdir() {
+    let facade = lima_facade();
+    let home = std::env::var("HOME").expect("HOME must be set");
+    let sif = PathBuf::from(&home).join("peppy_tmpdir_test/node.sif");
+
+    let cmd = facade
+        .run(sif.to_str().expect("utf-8 sif path"))
+        .scratch_dir(&PathBuf::from(&home).join("peppy_tmpdir_test/scratch"))
+        .into_std_command()
+        .expect("lima command assembly should succeed");
+
+    assert_eq!(command_env(&cmd, "APPTAINER_TMPDIR"), None);
 }
 
 /// The Docker config a Docker CLI web login leaves behind: the Docker Hub

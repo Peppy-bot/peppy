@@ -108,6 +108,28 @@ impl UnprivilegedUserNamespace {
     }
 }
 
+/// Whether the user of the container builds is root, which builds with no
+/// user namespace and no fakeroot.
+pub(crate) fn build_user_is_root() -> bool {
+    BuildUser::of_this_process() == BuildUser::Root
+}
+
+/// Whether the user of the container builds is the caller of `sudo`, which
+/// runs this process as root.
+pub(crate) fn build_user_is_the_caller_of_sudo() -> bool {
+    matches!(BuildUser::of_this_process(), BuildUser::SudoCaller { .. })
+}
+
+/// The id of the user whose daemon builds and runs the containers: the user
+/// of this process, or the caller of `sudo` when `sudo` runs it.
+pub(crate) fn build_user_id() -> nix::unistd::Uid {
+    match BuildUser::of_this_process() {
+        BuildUser::Root => nix::unistd::Uid::from_raw(0),
+        BuildUser::ThisUser => nix::unistd::geteuid(),
+        BuildUser::SudoCaller { uid, .. } => nix::unistd::Uid::from_raw(uid),
+    }
+}
+
 /// The user whose container builds the request is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BuildUser {

@@ -281,6 +281,15 @@ impl PeppyDirs {
         self.root.join("tmp")
     }
 
+    /// The scratch directories of the container commands of the daemon, one
+    /// for each command: apptainer writes the temporary files of the command
+    /// there, and unpacks there an image that it does not mount. The daemon
+    /// removes the directory of a command when the command is over, and
+    /// removes them all at its boot.
+    pub fn container_scratch_dir(&self) -> PathBuf {
+        self.tmp_dir().join("container_scratch")
+    }
+
     /// Directory holding peppy-managed runtime binaries.
     ///
     /// This resolves to `$PEPPY_HOME/bin`, defaulting to `~/.peppy/bin` in a
@@ -411,6 +420,20 @@ pub fn peppy_root() -> PeppyRoot {
 /// The path of [`peppy_root`].
 pub fn peppy_root_dir() -> PathBuf {
     peppy_root().path
+}
+
+/// The data root that this process resolves for a user whose home directory
+/// is `user_home`, with the precedence of [`peppy_root`]: `PEPPY_HOME` of
+/// this process, or else the default root of the build below `user_home`.
+/// It is for a process that examines the data root of another user, as a
+/// command that `sudo` runs does for the caller of `sudo`.
+pub fn peppy_root_dir_of_user(user_home: Option<PathBuf>) -> PathBuf {
+    resolve_root(
+        std::env::var_os(config::consts::PEPPY_HOME_ENV),
+        app_env(),
+        user_home,
+    )
+    .path
 }
 
 /// Interprets an env var value as a path override. An empty value is

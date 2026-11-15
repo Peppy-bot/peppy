@@ -19,6 +19,7 @@ use tracing::{debug, warn};
 use crate::action_log::{ActionLog, Announcer, STDERR_TAIL_HEADER};
 use crate::archive::extract_tar_zst;
 use crate::build_io::StderrTail;
+use crate::node_stack::container_scratch::ContainerScratch;
 use crate::process_group::ProcessGroup;
 use crate::time_source::TimeSource;
 
@@ -146,6 +147,10 @@ fn spawn_as_process_group_leader(_command: &mut Command) {}
 pub(super) struct SpawnCommand {
     pub(super) command: Command,
     pub(super) runtime_config_path: PathBuf,
+    /// The scratch directory of the command of a container node (see
+    /// [`ContainerScratch`]), which the caller removes when the process is
+    /// over. `None` for a command that runs no container.
+    pub(super) container_scratch: Option<PathBuf>,
     /// What the command runs (the joined `run_cmd`, or the Apptainer invocation),
     /// surfaced in the spawn-failure error so a bad `run_cmd` is identifiable.
     pub(super) description: String,
@@ -307,6 +312,7 @@ fn assemble_command(
     Ok(SpawnCommand {
         command,
         runtime_config_path,
+        container_scratch: None,
         description: spec.description,
     })
 }
@@ -473,6 +479,11 @@ pub(super) async fn build_container_command(
     // already removes it during instance teardown.
     let mut runtime_config_guard = TempFileGuard::new(runtime_config_path.clone());
 
+    // The scratch directory of this start. The guard removes it on any early
+    // return between here and the successful spawn; on success the caller
+    // owns it with the other files of the spawn.
+    let container_scratch = ContainerScratch::create(peppy_dirs)?;
+
     let sif_str = sif_path
         .to_str()
         .ok_or_else(|| std::io::Error::other("SIF path is not valid UTF-8"))?;
@@ -550,9 +561,13 @@ pub(super) async fn build_container_command(
     // `current_dir`; under Lima the facade `cd`s inside the guest (aborting if
     // the directory is not mounted) instead of relying on `limactl shell`'s
     // silent, canonicalizing host-cwd propagation.
+    // `scratch_dir`: where apptainer unpacks the image when it does not mount
+    // it. The daemon removes it when the process is over, because apptainer
+    // leaves the unpacked image of a container that is killed.
     let mut apptainer_cmd = apptainer
         .run(sif_str)
         .working_dir(working_dir)
+        .scratch_dir(container_scratch.path())
         .cancel_pgid(instance_id)
         .clean_env();
     for arg in apptainer_run_extra_args {
@@ -621,6 +636,7 @@ pub(super) async fn build_container_command(
     Ok(SpawnCommand {
         command,
         runtime_config_path,
+        container_scratch: Some(container_scratch.keep()),
         description: format!("apptainer run {}", sif_path.display()),
     })
 }

@@ -78,7 +78,9 @@ fn core_node_description() -> config::description::DocumentDescription {
 #[cfg(test)]
 mod tests;
 
-/// Clears instance directories from previous runs.
+/// Clears what the instances of previous runs left: their directories, and
+/// the scratch directories of their container commands, where apptainer
+/// leaves the unpacked image of a container that is killed.
 fn clear_instances_dir(peppy_dirs: &PeppyDirs) {
     let inst_dir = peppy_dirs.instances_dir();
     if inst_dir.exists()
@@ -86,6 +88,7 @@ fn clear_instances_dir(peppy_dirs: &PeppyDirs) {
     {
         tracing::warn!("Failed to clear instances directory: {}", e);
     }
+    node_stack::container_scratch::remove_all(peppy_dirs);
 }
 
 /// Returns this daemon's hostname for operator-facing annotations.
@@ -272,8 +275,9 @@ impl InstanceKeys {
 /// process-exit means a `CoreNode` can be constructed in tests and embedders
 /// without risking a host-process kill.
 pub fn check_runtime_prerequisites() -> Result<()> {
-    // Apptainer user namespaces: on Ubuntu 24.04+ an AppArmor profile is
-    // required to allow unprivileged user namespace creation.
+    // The prerequisite of Apptainer whose failure stops the daemon: on
+    // Ubuntu 24.04+ the AppArmor profile that allows unprivileged user
+    // namespace creation.
     #[cfg(target_os = "linux")]
     {
         let apptainer =
@@ -282,6 +286,14 @@ pub fn check_runtime_prerequisites() -> Result<()> {
         // that are not containers run on such a machine: the daemon starts
         // and tells why each container build fails.
         if let Some(refusal) = apptainer.user_namespace_refusal() {
+            tracing::warn!("{refusal}");
+        }
+        // Only a container build runs `newuidmap` and `mksquashfs`. A
+        // machine without them runs the images that it has and the nodes
+        // that are not containers: the daemon starts and tells why each
+        // container build stops, with the command that installs the
+        // packages.
+        if let Some(refusal) = apptainer.missing_build_programs() {
             tracing::warn!("{refusal}");
         }
     }
@@ -1017,8 +1029,10 @@ impl CoreNode {
     /// Side effects performed up front, before listeners are registered:
     /// - **Claims its core-node name** with a liveliness token and refuses to
     ///   boot if a foreign daemon already advertises that name.
-    /// - **Deletes the instances directory** (`peppy_dirs.instances_dir()`) to
-    ///   clear stale state from a previous run; see `clear_instances_dir`.
+    /// - **Deletes the instances directory** (`peppy_dirs.instances_dir()`)
+    ///   and the scratch directories of the container commands
+    ///   (`peppy_dirs.container_scratch_dir()`) to clear stale state from a
+    ///   previous run; see `clear_instances_dir`.
     /// - **Writes/updates `repositories.json5`** via [`repo::ensure_default_repos`]
     ///   so newly-bundled default repos land in pre-existing user configs.
     /// - **Reads again the repositories on `@{peppy-release}` that were read
@@ -1049,7 +1063,14 @@ impl CoreNode {
             .expect("presence token lock never poisoned: the write-once holder cannot panic") =
             Some(token);
 
-        clear_instances_dir(&self.peppy_dirs);
+        // The removal of an unpacked image can take seconds, so it runs on a
+        // thread that can block.
+        let peppy_dirs = self.peppy_dirs.clone();
+        if let Err(error) =
+            tokio::task::spawn_blocking(move || clear_instances_dir(&peppy_dirs)).await
+        {
+            tracing::warn!("The removal of what earlier instances left did not end: {error}");
+        }
         // The key files of the instances of an earlier boot go with its
         // instances, and the command line gets its key file for this boot
         // before any endpoint takes a call.
