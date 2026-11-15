@@ -4,33 +4,20 @@ description: >-
   that spans several repositories lands as pull requests that share one head
   branch name, the set name: each sibling hub runs at the head of its branch of
   that name, or at the head of main when it has none, next to the checkout of
-  the hub under test. The peppy is the latest release, a peppy dev build or the
-  archive of a peppy release run (see PEPPY_BUILD_POLICY in resolve.py). The
-  action unpacks that peppy under RUNNER_TEMP and puts its bin on PATH, exports
-  PEPPY_HOME, and writes the repositories.json5 there that pins every hub of
-  the set. It starts no daemon. It reports the set to the job summary and to
-  the `set` output, and uploads it as the set record of the job. A peppy dev
-  build that is not uploaded yet fails the job with the way to go on. A job
-  runs it once: the set record is named after the job. With `wait-only`, the
-  action instead waits for that dev build and does nothing else.
+  the hub under test. The peppy is the latest release or a peppy dev build (see
+  PEPPY_BUILD_POLICY in resolve.py). The action unpacks that peppy under
+  RUNNER_TEMP and puts its bin on PATH, exports PEPPY_HOME, and writes the
+  repositories.json5 there that pins every hub of the set. It starts no
+  daemon. It reports the set to the job summary and to the `set` output, and
+  uploads it as the set record of the job. A peppy dev build that is not
+  uploaded yet fails the job with the way to go on. A job runs it once: the
+  set record is named after the job. With `wait-only`, the action instead
+  waits for that dev build and does nothing else.
 
 inputs:
   hub-path:
     description: The checkout of the hub under test.
     default: ${{ github.workspace }}
-  set:
-    description: >-
-      An explicit set as JSON, which replaces the lookup by branch name:
-      {"hubs": {"<hub>": {"ref": "<label>", "commit": "<40 hex>"}}}. It names
-      every public hub, and the hub under test at the commit of its checkout.
-      private-nodes-hub is optional.
-    default: ""
-  peppy-run-id:
-    description: >-
-      The id of a peppy workflow run whose artifact
-      `archive-<arch>-unknown-linux-gnu` is the peppy to install, whatever the
-      policy.
-    default: ""
   private-nodes-hub-deploy-key:
     description: >-
       The SSH deploy key of private-nodes-hub. Without it, private-nodes-hub is
@@ -58,10 +45,10 @@ outputs:
   set:
     description: >-
       The resolved set as compact JSON: {"name": <set name or null>, "peppy":
-      {"build": "latest-release" | "dev-build" | "release-run", "version":
+      {"build": "latest-release" | "dev-build", "version":
       "<peppy --version>", "source": "<download URL or run URL>", "ref":
       <peppy branch of a dev build or null>, "commit": <40 hex of a dev build
-      or null>}, "hubs": {"<hub>": {"ref": "<branch, label or checkout>",
+      or null>}, "hubs": {"<hub>": {"ref": "<branch or checkout>",
       "commit": "<40 hex>"}}}.
     value: ${{ steps.resolve.outputs.set }}
   peppy-version:
@@ -90,8 +77,6 @@ runs:
       run: python3 "$GITHUB_ACTION_PATH/resolve.py"
       env:
         INPUT_HUB_PATH: ${{ inputs.hub-path }}
-        INPUT_SET: ${{ inputs.set }}
-        INPUT_PEPPY_RUN_ID: ${{ inputs.peppy-run-id }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
         INPUT_WAIT_ONLY: ${{ inputs.wait-only }}
         PRIVATE_HUB_KEY_LOADED: ${{ inputs.private-nodes-hub-deploy-key != '' }}

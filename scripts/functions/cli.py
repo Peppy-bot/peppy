@@ -18,11 +18,6 @@ console = Console(stderr=True)
 # App, made by the job that runs the stage. It lasts one hour.
 RELEASE_TOKEN_ENV = "PEPPY_RELEASE_TOKEN"
 
-# Env var the release scripts read the job's own GITHUB_TOKEN from. It only
-# reads, and it lasts as long as the job, so a stage that waits longer than
-# the hour of a release token reads with it.
-JOB_TOKEN_ENV = "PEPPY_JOB_TOKEN"
-
 RELEASE_TRIPLES: tuple[str, ...] = (
     "aarch64-apple-darwin",
     "x86_64-unknown-linux-gnu",
@@ -66,27 +61,15 @@ def prompt_yn(label: str, default_yes: bool = False) -> bool:
     return Confirm.ask(label, default=default_yes)
 
 
-def _require_token(env_var: str) -> str:
-    token = os.environ.get(env_var, "").strip()
-    if not token:
-        raise ReleaseError(f"{env_var} env var is required")
-    return token
-
-
 def require_release_token() -> str:
     """Return the GitHub release token held in the RELEASE_TOKEN_ENV env var.
 
     Raises ReleaseError if it is unset or blank.
     """
-    return _require_token(RELEASE_TOKEN_ENV)
-
-
-def require_job_token() -> str:
-    """Return the job's own GitHub token held in the JOB_TOKEN_ENV env var.
-
-    Raises ReleaseError if it is unset or blank.
-    """
-    return _require_token(JOB_TOKEN_ENV)
+    token = os.environ.get(RELEASE_TOKEN_ENV, "").strip()
+    if not token:
+        raise ReleaseError(f"{RELEASE_TOKEN_ENV} env var is required")
+    return token
 
 
 def validate_release_environment(required_commands: Sequence[str]) -> str:
