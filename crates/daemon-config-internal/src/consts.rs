@@ -422,6 +422,20 @@ pub fn peppy_root_dir() -> PathBuf {
     peppy_root().path
 }
 
+/// The data root that this process resolves for a user whose home directory
+/// is `user_home`, with the precedence of [`peppy_root`]: `PEPPY_HOME` of
+/// this process, or else the default root of the build below `user_home`.
+/// It is for a process that examines the data root of another user, as a
+/// command that `sudo` runs does for the caller of `sudo`.
+pub fn peppy_root_dir_of_user(user_home: Option<PathBuf>) -> PathBuf {
+    resolve_root(
+        std::env::var_os(config::consts::PEPPY_HOME_ENV),
+        app_env(),
+        user_home,
+    )
+    .path
+}
+
 /// Interprets an env var value as a path override. An empty value is
 /// treated as unset rather than as the empty path, so `FOO=` behaves
 /// like `unset FOO`. Takes the value (not the var name) so callers stay

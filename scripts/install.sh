@@ -855,17 +855,22 @@ EOF
     # profiles cannot be loaded there (requires CAP_MAC_ADMIN), so it installs
     # the packages only.
     #
+    # The setup ends with an error when it cannot make the fix of a failure,
+    # and when the user refuses that fix: the installer then stops. A package
+    # whose absence is a warning (fuse2fs) does not stop it: the setup writes
+    # the warning and ends with success.
+    #
     # When PEPPY_NO_ROOT_INSTALL is set, nothing is installed:
     # `peppy container status --packages` examines the packages, and fails
-    # with their names and the command that installs them when the daemon
-    # cannot start without one of them. The AppArmor profile, which names
+    # with their names and the command that installs them when a container
+    # build stops without one of them. The AppArmor profile, which names
     # the path of this install, stays a step for `peppy container setup`.
     if [ "$PLATFORM" != "apple-darwin" ]; then
         if [ -n "${PEPPY_NO_CONTAINER_SETUP:-}" ]; then
             echo "Skipped Apptainer setup (PEPPY_NO_CONTAINER_SETUP is set)."
         elif [ -n "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
             if ! "$PEPPY_BIN_DIR/peppy" container status --packages; then
-                echo "error: peppy is installed, but its daemon cannot start without these packages." >&2
+                echo "error: peppy is installed, but no container node builds without these packages." >&2
                 echo "       Install them, then run the installer again." >&2
                 exit 1
             fi

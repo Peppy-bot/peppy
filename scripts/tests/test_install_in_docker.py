@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from .install_helpers import (
+    APT_GET,
     CONTAINER_PEPPY,
     CONTAINER_PEPPY_HOME,
     IS_LINUX_AARCH64,
@@ -60,10 +61,6 @@ THIRTY_TWO_BIT_PACKAGES = "armhf" if IS_LINUX_AARCH64 else "i386"
 # Divides the output of install.sh from the output of the `peppy container
 # status` that a script runs after it.
 STATUS_MARK = "--- peppy container status ---"
-
-# The apt-get of the fix script of `peppy container setup`.
-SETUP_APT_GET = "apt-get -o DPkg::Lock::Timeout=300"
-
 
 # The line of `peppy container status` that tells how each node gets the
 # files of its image.
@@ -159,12 +156,12 @@ def test_install_without_the_container_setup_leaves_the_container_as_it_is() -> 
     )
 
 
-def test_no_root_install_names_the_missing_packages_that_the_daemon_needs() -> None:
+def test_no_root_install_names_the_missing_packages_that_a_build_needs() -> None:
     """With PEPPY_NO_ROOT_INSTALL, install.sh installs no package and stops on those that the daemon needs.
 
-    A bare image has none of the packages. The daemon of root does not start
-    without squashfs-tools, and starts without fuse2fs. The error names the
-    first one, and gives the command that installs the two.
+    A bare image has none of the packages. Each container build of root
+    stops without squashfs-tools, and none stops without fuse2fs. The error
+    names the first one, and gives the command that installs the two.
     """
     install = container_install_cmd(
         container_setup=True, extra_env="PEPPY_NO_ROOT_INSTALL=1"
@@ -188,15 +185,88 @@ def test_no_root_install_names_the_missing_packages_that_the_daemon_needs() -> N
             "fuse2fs",
             "WARNING (install the fuse2fs package for the mount of an EXT3 image)",
         ),
-        "The daemon does not start without packages that this machine does not "
+        "Each container build stops without packages that this machine does not "
         "have: squashfs-tools.",
-        f"{SETUP_APT_GET} update \\\n"
-        f"  && {SETUP_APT_GET} install -y squashfs-tools fuse2fs",
-        "error: peppy is installed, but its daemon cannot start without these packages.",
+        f"{APT_GET} update \\\n"
+        f"  && {APT_GET} install -y squashfs-tools \\\n"
+        f"  && {APT_GET} install -y fuse2fs",
+        "error: peppy is installed, but no container node builds without these packages.",
     ):
         assert line in output, f"the output should hold {line!r}{diagnostic(result)}"
     assert "a package was installed" not in result.stdout, (
         f"install.sh should install no package{diagnostic(result)}"
+    )
+
+
+def test_install_goes_on_when_the_package_of_a_warning_does_not_install() -> None:
+    """install.sh installs peppy on a machine whose distribution does not give fuse2fs.
+
+    The fix script of the setup installs fuse2fs last, in a step of its own,
+    so squashfs-tools is installed when that step fails. No container build
+    needs fuse2fs: the setup writes a warning and install.sh goes on.
+    """
+    no_fuse2fs = (
+        "printf 'Package: fuse2fs\\nPin: release *\\nPin-Priority: -1\\n' "
+        "> /etc/apt/preferences.d/no-fuse2fs"
+    )
+    script = (
+        f"{no_fuse2fs} && {container_install_cmd(container_setup=True)} && "
+        f"echo '{STATUS_MARK}' && {CONTAINER_PEPPY} container status && "
+        "command -v mksquashfs && ! command -v fuse2fs"
+    )
+
+    result = run_in_container(UBUNTU_IMAGE, script)
+
+    assert_installed(result)
+    install_output, _, status_output = result.stdout.partition(STATUS_MARK)
+    assert (
+        "Warning: these packages are not installed: fuse2fs (for the mount of an "
+        "EXT3 image)." in result.stderr
+    ), f"the setup should warn that fuse2fs is not installed{diagnostic(result)}"
+    assert "Apptainer container setup failed" not in result.stderr, (
+        f"a warning should not stop install.sh{diagnostic(result)}"
+    )
+    assert status_line("mksquashfs", "OK") in status_output, (
+        f"the setup should install squashfs-tools{diagnostic(result)}"
+    )
+    assert (
+        status_line(
+            "fuse2fs",
+            "WARNING (install the fuse2fs package for the mount of an EXT3 image)",
+        )
+        in status_output
+    ), f"the status should show the warning{diagnostic(result)}"
+
+
+def test_container_setup_fails_when_the_user_refuses_the_fixes_of_a_failure() -> None:
+    """`peppy container setup` ends with an error when the user answers `n` to fixes that a build needs.
+
+    The setup asks only in a terminal, which `script` gives it. install.sh
+    stops on that error, so it does not go on as if the packages were
+    installed.
+    """
+    setup_in_a_terminal = shlex.quote(f"{CONTAINER_PEPPY} container setup")
+    script = (
+        f"{container_install_cmd()} >/dev/null && "
+        f"printf 'n\\n' | script -qec {setup_in_a_terminal} /dev/null; "
+        "status=$?; ! command -v mksquashfs || echo 'a package was installed'; "
+        "exit $status"
+    )
+
+    result = run_in_container(UBUNTU_IMAGE, script)
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, (
+        f"the setup should end with status 1{diagnostic(result)}"
+    )
+    for line in (
+        "Apply these fixes now? [Y/n]",
+        "Skipped. You can apply the fixes manually:",
+        "The fixes were not made. Each container build stops until they are made.",
+    ):
+        assert line in output, f"the output should hold {line!r}{diagnostic(result)}"
+    assert "a package was installed" not in output, (
+        f"a refused setup should install no package{diagnostic(result)}"
     )
 
 

@@ -15,9 +15,14 @@
 //! installs the packages read it.
 //!
 //! `newuidmap` is a setuid root program, so it comes from the distribution in
-//! all cases, and the fix script has a step that installs packages. The two
-//! other programs are packages of that step, and not programs that peppy
+//! all cases, and the fix script has steps that install packages. The two
+//! other programs are packages of those steps, and not programs that peppy
 //! builds for each architecture.
+//!
+//! Only a container build runs `newuidmap` and `mksquashfs`. A daemon
+//! without them starts, runs the images that it has and the nodes that are
+//! not containers, and stops each container build with the command that
+//! installs them (see [`SystemPrograms::build_refusal`]).
 
 use std::path::PathBuf;
 
@@ -87,7 +92,7 @@ impl SystemProgram {
     const fn severity_when_missing(self, builds_as_root: bool) -> Option<FailureSeverity> {
         match self {
             Self::Newuidmap if builds_as_root => None,
-            Self::Newuidmap | Self::Mksquashfs => Some(FailureSeverity::StopsTheDaemon),
+            Self::Newuidmap | Self::Mksquashfs => Some(FailureSeverity::StopsEachBuild),
             Self::Fuse2fs => Some(FailureSeverity::Warning),
         }
     }
@@ -97,10 +102,21 @@ impl SystemProgram {
 /// severe to the most severe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FailureSeverity {
-    /// The daemon starts, and the nodes that peppy builds run.
+    /// The daemon starts, and the nodes that peppy builds build and run.
     Warning,
+    /// The daemon starts and stops each container build. The images that it
+    /// has and the nodes that are not containers run.
+    StopsEachBuild,
     /// The daemon stops at its start.
     StopsTheDaemon,
+}
+
+impl FailureSeverity {
+    /// Whether the check is a failure, and not a warning alone.
+    #[must_use]
+    pub fn is_a_failure(self) -> bool {
+        self > Self::Warning
+    }
 }
 
 /// What the check of one [`SystemProgram`] finds.
@@ -179,29 +195,98 @@ impl SystemPrograms {
 
     /// The shell command that installs the package of each program that is
     /// missing, for the user of this process, or `None` when no program is
-    /// missing. It is the step of the fix script that installs the packages.
+    /// missing. It holds the steps of the fix script that install the
+    /// packages (see [`InstallSteps`]).
     #[must_use]
     pub fn install_command(&self) -> Option<String> {
-        self.install_step(Privilege::of_this_process())
+        self.install_steps(Privilege::of_this_process()).joined()
     }
 
-    /// As [`SystemPrograms::install_command`], for a user that has
-    /// `privilege`. The step reads the package lists before the installation:
-    /// a machine that has none (a container of a bare image) finds no package
-    /// without them.
-    pub(crate) fn install_step(&self, privilege: Privilege) -> Option<String> {
-        let packages: Vec<&str> = self
+    /// The steps of the fix script that install the package of each program
+    /// that is missing, for a user that has `privilege`.
+    pub(crate) fn install_steps(&self, privilege: Privilege) -> InstallSteps {
+        let apt_get = format!("{}{APT_GET}", privilege.prefix());
+        let install_step_of = |is_a_failure: bool| {
+            let packages: Vec<&str> = self
+                .missing()
+                .filter(|(_, severity)| severity.is_a_failure() == is_a_failure)
+                .map(|(program, _)| program.package())
+                .collect();
+            (!packages.is_empty()).then(|| format!("{apt_get} install -y {}", packages.join(" ")))
+        };
+        let of_failures = install_step_of(true);
+        let of_warnings = install_step_of(false);
+        // The first of the two steps reads the package lists: a machine that
+        // has none (a container of a bare image) finds no package without
+        // them.
+        let after_update = |install: String| format!("{apt_get} update{AND_THEN}{install}");
+        match of_failures {
+            Some(of_failures) => InstallSteps {
+                of_failures: Some(after_update(of_failures)),
+                of_warnings,
+            },
+            None => InstallSteps {
+                of_failures: None,
+                of_warnings: of_warnings.map(after_update),
+            },
+        }
+    }
+
+    /// Why each container build of a daemon stops on this machine, or `None`
+    /// when the machine has each program that a build of the user runs. The
+    /// text names the programs that are missing and gives the command that
+    /// installs each missing package.
+    #[must_use]
+    pub fn build_refusal(&self) -> Option<String> {
+        let missing: Vec<String> = self
             .missing()
-            .map(|(program, _)| program.package())
+            .filter(|(_, severity)| severity.is_a_failure())
+            .map(|(program, _)| {
+                format!(
+                    "`{}` (the {} package), for {}",
+                    program.name(),
+                    program.package(),
+                    program.purpose()
+                )
+            })
             .collect();
-        if packages.is_empty() {
+        if missing.is_empty() {
             return None;
         }
-        let apt_get = format!("{}{APT_GET}", privilege.prefix());
+        let install_command = self.install_command()?;
         Some(format!(
-            "{apt_get} update{AND_THEN}{apt_get} install -y {}",
-            packages.join(" ")
+            "A container build runs programs that this machine does not have: {}.\n\
+             To install each missing package, run the following command:\n\n\
+             {install_command}",
+            missing.join("; ")
         ))
+    }
+}
+
+/// The steps of the fix script that install the package of each program that
+/// is missing. Each step is one shell command.
+///
+/// The packages whose absence is a warning have a step of their own, which
+/// is the last step of the fix script: a package that the distribution of
+/// the machine does not have stops that step alone, after each fix that the
+/// daemon or a container build needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InstallSteps {
+    /// Installs the packages whose absence is a failure.
+    pub(crate) of_failures: Option<String>,
+    /// Installs the packages whose absence is a warning.
+    pub(crate) of_warnings: Option<String>,
+}
+
+impl InstallSteps {
+    /// The steps as one shell command, or `None` when no program is missing.
+    fn joined(self) -> Option<String> {
+        let steps: Vec<String> = self
+            .of_failures
+            .into_iter()
+            .chain(self.of_warnings)
+            .collect();
+        (!steps.is_empty()).then(|| steps.join(AND_THEN))
     }
 }
 
@@ -293,22 +378,27 @@ mod tests {
 
             assert_eq!(programs.missing().count(), 0, "root={builds_as_root}");
             assert_eq!(programs.severity(), None, "root={builds_as_root}");
+            assert_eq!(programs.build_refusal(), None, "root={builds_as_root}");
             for privilege in [Privilege::Root, Privilege::Sudo] {
-                assert_eq!(programs.install_step(privilege), None, "{privilege:?}");
+                assert_eq!(
+                    programs.install_steps(privilege).joined(),
+                    None,
+                    "{privilege:?}"
+                );
             }
         }
     }
 
     /// A user that is not root builds with fakeroot, which runs `newuidmap`:
-    /// without it, and without `mksquashfs`, the daemon stops. Without
-    /// `fuse2fs` the daemon starts.
+    /// without it, and without `mksquashfs`, each container build stops.
+    /// Without `fuse2fs` the nodes that peppy builds build and run.
     #[test]
     fn a_user_that_is_not_root_needs_newuidmap_and_mksquashfs() {
         assert_eq!(
             states(&programs(false, &[])),
             [
-                ProgramState::Missing(FailureSeverity::StopsTheDaemon),
-                ProgramState::Missing(FailureSeverity::StopsTheDaemon),
+                ProgramState::Missing(FailureSeverity::StopsEachBuild),
+                ProgramState::Missing(FailureSeverity::StopsEachBuild),
                 ProgramState::Missing(FailureSeverity::Warning),
             ]
         );
@@ -323,7 +413,7 @@ mod tests {
                 states(&programs(true, in_path)),
                 [
                     ProgramState::NotRequired,
-                    ProgramState::Missing(FailureSeverity::StopsTheDaemon),
+                    ProgramState::Missing(FailureSeverity::StopsEachBuild),
                     ProgramState::Missing(FailureSeverity::Warning),
                 ],
                 "in PATH: {in_path:?}"
@@ -342,28 +432,41 @@ mod tests {
         assert_eq!(without_fuse2fs.severity(), Some(FailureSeverity::Warning));
         assert_eq!(
             without_mksquashfs.severity(),
-            Some(FailureSeverity::StopsTheDaemon)
+            Some(FailureSeverity::StopsEachBuild)
         );
     }
 
-    /// One step installs the package of each program that is missing, after
-    /// it reads the package lists. Root runs the two commands as they are,
-    /// and each other user runs them through `sudo`.
     #[test]
-    fn the_install_step_holds_each_missing_package_and_sudo_for_a_user_that_is_not_root() {
-        // (builds_as_root, programs in PATH, privilege, step)
+    fn a_warning_is_not_a_failure() {
+        assert!(!FailureSeverity::Warning.is_a_failure());
+        assert!(FailureSeverity::StopsEachBuild.is_a_failure());
+        assert!(FailureSeverity::StopsTheDaemon.is_a_failure());
+    }
+
+    /// The packages that a build needs and the package whose absence is a
+    /// warning have a step each, and the first step reads the package lists.
+    /// Root runs the commands as they are, and each other user runs them
+    /// through `sudo`.
+    #[test]
+    fn the_install_steps_hold_each_missing_package_and_sudo_for_a_user_that_is_not_root() {
+        // (builds_as_root, programs in PATH, privilege, step of the
+        // failures, step of the warnings)
         let cases = [
             (
                 false,
                 &[][..],
                 Privilege::Sudo,
-                format!("sudo {UPDATE} \\\n  && sudo {INSTALL} uidmap squashfs-tools fuse2fs"),
+                Some(format!(
+                    "sudo {UPDATE} \\\n  && sudo {INSTALL} uidmap squashfs-tools"
+                )),
+                Some(format!("sudo {INSTALL} fuse2fs")),
             ),
             (
                 true,
                 &[][..],
                 Privilege::Root,
-                format!("{UPDATE} \\\n  && {INSTALL} squashfs-tools fuse2fs"),
+                Some(format!("{UPDATE} \\\n  && {INSTALL} squashfs-tools")),
+                Some(format!("{INSTALL} fuse2fs")),
             ),
             // `sudo` runs the command of a user that is not root: the builds
             // are the ones of that user, and the script runs as root.
@@ -371,22 +474,78 @@ mod tests {
                 false,
                 &[SystemProgram::Mksquashfs, SystemProgram::Fuse2fs][..],
                 Privilege::Root,
-                format!("{UPDATE} \\\n  && {INSTALL} uidmap"),
+                Some(format!("{UPDATE} \\\n  && {INSTALL} uidmap")),
+                None,
             ),
+            // With no other package to install, the step of the warnings
+            // reads the package lists.
             (
                 false,
                 &[SystemProgram::Newuidmap, SystemProgram::Mksquashfs][..],
                 Privilege::Sudo,
-                format!("sudo {UPDATE} \\\n  && sudo {INSTALL} fuse2fs"),
+                None,
+                Some(format!("sudo {UPDATE} \\\n  && sudo {INSTALL} fuse2fs")),
             ),
         ];
-        for (builds_as_root, in_path, privilege, step) in cases {
+        for (builds_as_root, in_path, privilege, of_failures, of_warnings) in cases {
             assert_eq!(
-                programs(builds_as_root, in_path).install_step(privilege),
-                Some(step),
+                programs(builds_as_root, in_path).install_steps(privilege),
+                InstallSteps {
+                    of_failures,
+                    of_warnings,
+                },
                 "root={builds_as_root} in PATH: {in_path:?} {privilege:?}"
             );
         }
+    }
+
+    /// The package whose absence is a warning comes last in the command, in
+    /// an installation of its own: a distribution without that package still
+    /// installs the others.
+    #[test]
+    fn the_joined_steps_install_the_package_of_a_warning_last() {
+        assert_eq!(
+            programs(false, &[]).install_steps(Privilege::Root).joined(),
+            Some(format!(
+                "{UPDATE} \\\n  && {INSTALL} uidmap squashfs-tools \\\n  && {INSTALL} fuse2fs"
+            ))
+        );
+    }
+
+    /// A build of a user that is not root stops without `newuidmap` or
+    /// `mksquashfs`, and the refusal gives the command that installs each
+    /// missing package. A missing `fuse2fs` stops no build.
+    #[test]
+    fn a_build_is_refused_without_a_program_that_it_runs() {
+        let no_program = programs(false, &[]);
+        let refusal = no_program
+            .build_refusal()
+            .expect("a build stops without its programs");
+
+        assert!(
+            refusal.starts_with(
+                "A container build runs programs that this machine does not have: `newuidmap` \
+                 (the uidmap package), for the fakeroot build of a user that is not root; \
+                 `mksquashfs` (the squashfs-tools package), for each node build, which packs \
+                 its image with it.\n"
+            ),
+            "{refusal}"
+        );
+        assert!(
+            refusal.ends_with(&no_program.install_command().expect("packages to install")),
+            "{refusal}"
+        );
+
+        let without_fuse2fs = programs(
+            false,
+            &[SystemProgram::Newuidmap, SystemProgram::Mksquashfs],
+        );
+        assert_eq!(without_fuse2fs.build_refusal(), None);
+        // Root builds with no fakeroot, so `mksquashfs` is enough for it.
+        assert_eq!(
+            programs(true, &[SystemProgram::Mksquashfs]).build_refusal(),
+            None
+        );
     }
 
     /// The command for the user of this process has `sudo` for each user but
@@ -403,7 +562,9 @@ mod tests {
         assert_eq!(command.starts_with("sudo "), !is_root, "{command}");
         assert_eq!(
             Some(command),
-            programs.install_step(Privilege::of_this_process())
+            programs
+                .install_steps(Privilege::of_this_process())
+                .joined()
         );
     }
 

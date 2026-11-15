@@ -111,7 +111,7 @@ impl Host for ThisHost {
     }
 
     fn current_dir(&self) -> Option<PathBuf> {
-        std::env::current_dir().ok()
+        super::working_dir_of_this_process()
     }
 }
 

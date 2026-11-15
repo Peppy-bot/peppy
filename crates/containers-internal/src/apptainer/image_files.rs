@@ -39,7 +39,7 @@
 //! (`--contain`, `--no-home`, a read-only bind) gets an unpacked image that
 //! it does not need, which costs time and disk space and nothing else.
 
-use super::root_user_namespace::ImageCommand;
+use super::root_user_namespace::{ImageCommand, working_dir_of_this_process};
 use super::unprivileged_user_namespace;
 use nix::sys::statfs::{OVERLAYFS_SUPER_MAGIC, statfs};
 use nix::unistd::{Uid, User};
@@ -72,14 +72,25 @@ impl ImageFiles {
     /// How the nodes of the daemon of the user of the container builds get
     /// the files of their images: the user of this process, or the caller of
     /// `sudo` when `sudo` runs it. The answer is for the directories that
-    /// each node has, of which `data_root` holds its working directory and
+    /// each node has, of which the data root holds its working directory and
     /// its view of the data of the daemon. A node with a bind source on
     /// overlayfs gets an unpacked image where this answer is
     /// [`ImageFiles::Mounted`].
-    pub(crate) fn of_the_nodes_of_the_build_user(data_root: &Path) -> Self {
+    ///
+    /// The data root is the one that this process resolves for that user:
+    /// `PEPPY_HOME` when this process has it, or else the default data root
+    /// in the home directory of that user. `sudo` gives this process the
+    /// home directory of root and no `PEPPY_HOME` of its caller, so the
+    /// home directory of the caller comes from the user database.
+    pub(crate) fn of_the_nodes_of_the_build_user() -> Self {
         let user = unprivileged_user_namespace::build_user_id();
-        UnpackedImages::for_daemon(user, home_of(user), Box::new(ThisHost))
-            .image_files(&[data_root])
+        let home = home_of(user);
+        let data_root = if unprivileged_user_namespace::build_user_is_the_caller_of_sudo() {
+            daemon_config::consts::peppy_root_dir_of_user(home.clone())
+        } else {
+            daemon_config::consts::peppy_root_dir()
+        };
+        UnpackedImages::for_daemon(user, home, Box::new(ThisHost)).image_files(&[&data_root])
     }
 
     /// Why apptainer unpacks the image, as a clause that names each
@@ -144,12 +155,9 @@ impl UnpackedImages {
         let Self::BesideOverlayfs(daemon) = self else {
             return None;
         };
-        let dir_of_the_daemon = match command.working_dir {
-            Some(_) => None,
-            None => daemon.host.current_dir(),
-        };
-        let working_dir = command.working_dir.or(dir_of_the_daemon.as_deref());
-        let directories: Vec<&Path> = working_dir
+        let dir_of_the_process = command.dir_of_the_process(|| daemon.host.current_dir());
+        let directories: Vec<&Path> = dir_of_the_process
+            .as_deref()
             .into_iter()
             .chain(command.bind_sources.iter().copied())
             .collect();
@@ -256,7 +264,7 @@ impl Host for ThisHost {
     }
 
     fn current_dir(&self) -> Option<PathBuf> {
-        std::env::current_dir().ok()
+        working_dir_of_this_process()
     }
 }
 

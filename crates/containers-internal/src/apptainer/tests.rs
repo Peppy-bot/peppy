@@ -61,15 +61,14 @@ fn ready_facade() -> Option<Apptainer> {
 }
 
 /// Whether this host meets the prerequisites of apptainer that a container
-/// build needs: each one that stops the daemon passes, and the kernel does
-/// not refuse a user namespace. Always `true` off Linux: macOS routes through
+/// build needs: each one whose failure stops the daemon or a build passes,
+/// and the kernel does not refuse a user namespace. Always `true` off Linux: macOS routes through
 /// the Lima VM and has no prerequisites to check.
 fn host_meets_build_prerequisites() -> bool {
     #[cfg(target_os = "linux")]
     {
         let verdict = check_setup_status(&ready_apptainer_dir()).verdict;
-        !verdict.fix_is_required_by_the_daemon()
-            && !matches!(verdict, SetupVerdict::Unfixable { .. })
+        !verdict.fix_repairs_a_failure() && !matches!(verdict, SetupVerdict::Unfixable { .. })
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -101,6 +100,8 @@ struct NativeFacadeFixture {
     user_namespace: UserNamespace,
     #[cfg(target_os = "linux")]
     unpacked_images: UnpackedImages,
+    #[cfg(target_os = "linux")]
+    system_programs: fn() -> SystemPrograms,
     absent_bind_paths: AbsentBindPaths,
 }
 
@@ -118,9 +119,25 @@ impl Default for NativeFacadeFixture {
             user_namespace: UserNamespace::ApptainerDefault,
             #[cfg(target_os = "linux")]
             unpacked_images: UnpackedImages::Never,
+            #[cfg(target_os = "linux")]
+            system_programs: each_system_program,
             absent_bind_paths: AbsentBindPaths::default(),
         }
     }
+}
+
+/// The checks of a machine that has each program of the distribution that
+/// Apptainer runs.
+#[cfg(target_os = "linux")]
+fn each_system_program() -> SystemPrograms {
+    SystemPrograms::parse(false, |_| true)
+}
+
+/// The checks of a machine that has no program of the distribution that
+/// Apptainer runs.
+#[cfg(target_os = "linux")]
+fn no_system_program() -> SystemPrograms {
+    SystemPrograms::parse(false, |_| false)
 }
 
 impl NativeFacadeFixture {
@@ -136,6 +153,8 @@ impl NativeFacadeFixture {
                 user_namespace: self.user_namespace,
                 #[cfg(target_os = "linux")]
                 unpacked_images: self.unpacked_images,
+                #[cfg(target_os = "linux")]
+                system_programs: self.system_programs,
                 absent_bind_paths: self.absent_bind_paths,
             },
             extra_mounts: Vec::new(),
@@ -540,18 +559,82 @@ mod of_a_daemon_that_is_not_root_beside_overlayfs {
         );
     }
 
+    /// A node gives raw flags in `apptainer_run_extra_args`. A path of the
+    /// host that such a flag names is in the container as a bind source is.
+    #[test]
+    fn a_run_whose_raw_flag_names_a_path_on_overlayfs_unpacks_the_image() {
+        for flags in [
+            &["--bind", "/data/recordings:/recordings"][..],
+            &["-B=/data/recordings"][..],
+            &[
+                "--mount",
+                "type=bind,source=/data/recordings,destination=/recordings",
+            ][..],
+            &["--home", "/data/home"][..],
+            &["--workdir", "/data/work"][..],
+            &["--overlay", "/data/overlay"][..],
+        ] {
+            let facade = facade_on(FakeHost::without_overlayfs().with_overlayfs_at("/data"));
+            let mut command = facade
+                .run("/images/node.sif")
+                .working_dir(Path::new("/srv/instances/node_inst"));
+            for flag in flags {
+                command = command.raw_flag(flag);
+            }
+
+            let args = command.build_args().expect("build_args should succeed");
+
+            assert_eq!(args[..2], ["run", "--unsquash"], "{flags:?}");
+        }
+    }
+
+    /// Apptainer reads a path that is not absolute from the working
+    /// directory of the command.
+    #[test]
+    fn a_raw_flag_with_a_relative_path_is_read_in_the_working_directory_of_the_command() {
+        let host = FakeHost::without_overlayfs().with_overlayfs_at("/srv/instances/node_inst/data");
+        let facade = facade_on(host);
+
+        let command = facade
+            .run("/images/node.sif")
+            .working_dir(Path::new("/srv/instances/node_inst"))
+            .raw_flag("--bind")
+            .raw_flag("data:/data");
+
+        assert!(command.unpacks_its_image());
+    }
+
     #[test]
     fn a_run_with_a_volume_at_each_directory_mounts_the_image() {
         let host = FakeHost::docker_container().with_volumes(&["/tmp", "/var/tmp", HOME, "/srv"]);
         let facade = facade_on(host);
 
-        let args = facade
+        let command = facade
             .run("/images/node.sif")
             .working_dir(Path::new("/srv/instances/node_inst"))
-            .build_args()
-            .expect("build_args should succeed");
+            .raw_flag("--bind")
+            .raw_flag("/srv/data");
 
-        assert_eq!(args, ["run", "/images/node.sif"]);
+        assert!(!command.unpacks_its_image());
+        let args = command.build_args().expect("build_args should succeed");
+        assert_eq!(args, ["run", "--bind", "/srv/data", "/images/node.sif"]);
+    }
+
+    /// A caller reads whether a command unpacks its image, which takes the
+    /// time of the extraction before the container starts.
+    #[test]
+    fn a_command_tells_whether_it_unpacks_its_image() {
+        let facade = facade_on(FakeHost::docker_container());
+        let (output, def) = build_paths_under_home();
+
+        assert!(facade.run("/images/node.sif").unpacks_its_image());
+        assert!(
+            facade
+                .exec("/images/node.sif", &["echo", "hello"])
+                .unpacks_its_image()
+        );
+        assert!(!facade.build(&output, &def).unpacks_its_image());
+        assert!(!native_facade().run("/images/node.sif").unpacks_its_image());
     }
 
     /// A build unpacks no image: apptainer makes the image in a directory of
@@ -2067,7 +2150,8 @@ fn programs_without(missing: &[SystemProgram]) -> SystemPrograms {
 /// The fix script holds one step per failing prerequisite, in a fixed order,
 /// and no fix exists when every prerequisite passes. A profile that is
 /// missing or stale is written and loaded in one step, so a profile that only
-/// needs loading gets the load alone.
+/// needs loading gets the load alone. A profile that fails stops the daemon,
+/// and a missing `newuidmap` alone stops each container build.
 #[cfg(target_os = "linux")]
 #[test]
 fn setup_fix_holds_a_step_for_each_failing_check() {
@@ -2078,38 +2162,61 @@ fn setup_fix_holds_a_step_for_each_failing_check() {
     let all = programs_without(&[]);
     let no_newuidmap = programs_without(&[SystemProgram::Newuidmap]);
 
-    // (programs, apparmor_ok, apparmor_loaded, script)
+    // (programs, apparmor_ok, apparmor_loaded, script, severity)
+    let stops_the_daemon = FailureSeverity::StopsTheDaemon;
     let cases = [
-        (&all, true, true, None),
-        (&no_newuidmap, true, true, Some(INSTALL_UIDMAP.to_string())),
-        (&all, false, true, Some(WRITE_PROFILE_WITH_SUDO.to_string())),
+        (&all, true, true, None, stops_the_daemon),
+        (
+            &no_newuidmap,
+            true,
+            true,
+            Some(INSTALL_UIDMAP.to_string()),
+            FailureSeverity::StopsEachBuild,
+        ),
+        (
+            &all,
+            false,
+            true,
+            Some(WRITE_PROFILE_WITH_SUDO.to_string()),
+            stops_the_daemon,
+        ),
         (
             &all,
             false,
             false,
             Some(WRITE_PROFILE_WITH_SUDO.to_string()),
+            stops_the_daemon,
         ),
-        (&all, true, false, Some(LOAD_PROFILE_WITH_SUDO.to_string())),
+        (
+            &all,
+            true,
+            false,
+            Some(LOAD_PROFILE_WITH_SUDO.to_string()),
+            stops_the_daemon,
+        ),
         (
             &no_newuidmap,
             false,
             true,
             Some(uidmap_then(WRITE_PROFILE_WITH_SUDO)),
+            stops_the_daemon,
         ),
         (
             &no_newuidmap,
             false,
             false,
             Some(uidmap_then(WRITE_PROFILE_WITH_SUDO)),
+            stops_the_daemon,
         ),
         (
             &no_newuidmap,
             true,
             false,
             Some(uidmap_then(LOAD_PROFILE_WITH_SUDO)),
+            stops_the_daemon,
         ),
     ];
-    for (programs, apparmor_ok, apparmor_loaded, script) in cases {
+    for (programs, apparmor_ok, apparmor_loaded, script, severity) in cases {
         let fix = setup_fix(
             programs,
             apparmor_ok,
@@ -2122,7 +2229,7 @@ fn setup_fix_holds_a_step_for_each_failing_check() {
             fix,
             script.map(|script| SetupFix {
                 script,
-                severity: FailureSeverity::StopsTheDaemon,
+                severity,
                 uses_sudo: true,
             }),
             "programs={programs:?} apparmor_ok={apparmor_ok} apparmor_loaded={apparmor_loaded}"
@@ -2146,8 +2253,9 @@ fn setup_fix_of_root_has_no_sudo() {
         SetupFix {
             script: format!(
                 "apt-get -o DPkg::Lock::Timeout=300 update \\\n  \
-                 && apt-get -o DPkg::Lock::Timeout=300 install -y squashfs-tools fuse2fs \\\n  \
-                 && {}",
+                 && apt-get -o DPkg::Lock::Timeout=300 install -y squashfs-tools \\\n  \
+                 && {} \\\n  \
+                 && apt-get -o DPkg::Lock::Timeout=300 install -y fuse2fs",
                 WRITE_PROFILE_WITH_SUDO.replace("sudo ", "")
             ),
             severity: FailureSeverity::StopsTheDaemon,
@@ -2157,11 +2265,36 @@ fn setup_fix_of_root_has_no_sudo() {
     assert!(!fix.script.contains("sudo"), "{}", fix.script);
 }
 
-/// The daemon starts without `fuse2fs`, so a fix that installs it alone is a
-/// warning. Each other failure that the fix repairs stops the daemon.
+/// The package whose absence is a warning is the last step of the script,
+/// in an installation of its own: a distribution that does not have that
+/// package stops no fix that the daemon or a container build needs.
 #[cfg(target_os = "linux")]
 #[test]
-fn setup_fix_is_a_warning_when_fuse2fs_alone_is_missing() {
+fn setup_fix_installs_the_package_of_a_warning_after_each_other_fix() {
+    const APT_GET: &str = "sudo apt-get -o DPkg::Lock::Timeout=300";
+    let profile = fix_script_profile();
+    let no_program = SystemPrograms::parse(false, |_| false);
+
+    let fix = setup_fix(&no_program, true, false, &profile, Privilege::Sudo)
+        .expect("programs to install and a profile to load");
+
+    assert_eq!(
+        fix.script,
+        format!(
+            "{APT_GET} update \\\n  \
+             && {APT_GET} install -y uidmap squashfs-tools \\\n  \
+             && {LOAD_PROFILE_WITH_SUDO} \\\n  \
+             && {APT_GET} install -y fuse2fs"
+        )
+    );
+}
+
+/// The severity of a fix is the one of the most severe failure that it
+/// repairs: a warning for `fuse2fs` alone, a stop of each container build for
+/// a program that a build runs, and a stop of the daemon for the profile.
+#[cfg(target_os = "linux")]
+#[test]
+fn setup_fix_has_the_severity_of_its_most_severe_failure() {
     const INSTALL_FUSE2FS: &str = "sudo apt-get -o DPkg::Lock::Timeout=300 update \\\n  \
          && sudo apt-get -o DPkg::Lock::Timeout=300 install -y fuse2fs";
     let profile = fix_script_profile();
@@ -2184,14 +2317,17 @@ fn setup_fix_is_a_warning_when_fuse2fs_alone_is_missing() {
         Some(FailureSeverity::StopsTheDaemon),
         "a profile that is not loaded stops the daemon"
     );
-    assert_eq!(
-        severity_of(
-            &programs_without(&[SystemProgram::Mksquashfs, SystemProgram::Fuse2fs]),
-            true
-        ),
-        Some(FailureSeverity::StopsTheDaemon),
-        "a missing mksquashfs stops the daemon"
-    );
+    for build_program in [SystemProgram::Newuidmap, SystemProgram::Mksquashfs] {
+        assert_eq!(
+            severity_of(
+                &programs_without(&[build_program, SystemProgram::Fuse2fs]),
+                true
+            ),
+            Some(FailureSeverity::StopsEachBuild),
+            "a missing {} stops each container build",
+            build_program.name()
+        );
+    }
 }
 
 /// The profile names each program in quotes, with a backslash before each
@@ -2303,11 +2439,12 @@ fn the_verdict_of_a_setup_holds_its_fix_and_the_refusal_of_the_kernel() {
     }
 }
 
-/// The daemon stops until the setup makes a fix whose failures stop it, and
-/// starts with a fix that repairs a warning alone or with no fix to make.
+/// A fix repairs a failure when one of its checks stops the daemon or each
+/// container build. A fix of a warning alone, and no fix to make, repair
+/// none.
 #[cfg(target_os = "linux")]
 #[test]
-fn the_daemon_needs_the_fix_of_a_failure_that_stops_it() {
+fn a_fix_repairs_a_failure_unless_each_of_its_checks_is_a_warning() {
     let fix_of = |severity| SetupFix {
         script: "sudo apt-get install -y fuse2fs".to_string(),
         severity,
@@ -2315,7 +2452,7 @@ fn the_daemon_needs_the_fix_of_a_failure_that_stops_it() {
     };
     let refusal = || "The kernel refuses a user namespace.".to_string();
 
-    // (verdict, whether the daemon needs the fix)
+    // (verdict, whether its fix repairs a failure)
     let cases = [
         (SetupVerdict::Ready, false),
         (
@@ -2323,6 +2460,12 @@ fn the_daemon_needs_the_fix_of_a_failure_that_stops_it() {
                 fix: fix_of(FailureSeverity::Warning),
             },
             false,
+        ),
+        (
+            SetupVerdict::Fixable {
+                fix: fix_of(FailureSeverity::StopsEachBuild),
+            },
+            true,
         ),
         (
             SetupVerdict::Fixable {
@@ -2352,13 +2495,71 @@ fn the_daemon_needs_the_fix_of_a_failure_that_stops_it() {
             true,
         ),
     ];
-    for (verdict, is_required) in cases {
+    for (verdict, repairs_a_failure) in cases {
         assert_eq!(
-            verdict.fix_is_required_by_the_daemon(),
-            is_required,
+            verdict.fix_repairs_a_failure(),
+            repairs_a_failure,
             "{verdict:?}"
         );
     }
+}
+
+/// A build runs `newuidmap` and `mksquashfs`. On a machine without them it
+/// stops before apptainer starts, with the command that installs them. A
+/// `run` and an `exec` run none of them.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_build_is_refused_on_a_machine_without_its_programs() {
+    let facade = NativeFacadeFixture {
+        system_programs: no_system_program,
+        ..NativeFacadeFixture::default()
+    }
+    .build();
+    let (output, def) = build_paths_under_home();
+
+    let error = facade
+        .build(&output, &def)
+        .into_std_command()
+        .expect_err("a build without its programs should be refused");
+
+    let Error::ConfigurationError(refusal) = &error else {
+        panic!("expected a configuration error, got {error:?}");
+    };
+    assert_eq!(
+        Some(refusal),
+        facade.missing_build_programs().as_ref(),
+        "the error of a build is the refusal that the daemon writes at its start"
+    );
+    assert!(
+        refusal.starts_with("A container build runs programs that this machine does not have: "),
+        "{refusal}"
+    );
+    assert!(
+        refusal.ends_with("install -y fuse2fs"),
+        "the refusal should end with the command that installs the packages: {refusal}"
+    );
+    facade
+        .run("/images/node.sif")
+        .into_std_command()
+        .expect("a run needs no program of a build");
+    facade
+        .exec("/images/node.sif", &["echo", "hello"])
+        .into_std_command()
+        .expect("an exec needs no program of a build");
+}
+
+/// A machine that has each program of a build refuses none.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_build_is_not_refused_on_a_machine_with_its_programs() {
+    let facade = native_facade();
+    let (output, def) = build_paths_under_home();
+
+    assert_eq!(facade.missing_build_programs(), None);
+    facade
+        .build(&output, &def)
+        .into_std_command()
+        .expect("a build with its programs should assemble");
 }
 
 // ---------------------------------------------------------------------------

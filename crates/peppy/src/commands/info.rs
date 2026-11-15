@@ -28,15 +28,14 @@ fn print_container_setup_status() {
 /// The state of the container setup that `peppy info` shows: the command
 /// that makes the fixes when the setup has one to make, and the command that
 /// shows the cause of a failure that has none. A setup whose one failure is
-/// a warning is not incomplete: the daemon starts, and the nodes that peppy
-/// builds run.
+/// a warning is not incomplete: the nodes that peppy builds build and run.
 #[cfg(target_os = "linux")]
 fn container_setup_state(verdict: &containers::SetupVerdict) -> &'static str {
     use containers::SetupVerdict::{Fixable, Ready, Unfixable};
 
     match verdict {
         Ready => "OK",
-        Fixable { .. } | Unfixable { .. } if verdict.fix_is_required_by_the_daemon() => {
+        Fixable { .. } | Unfixable { .. } if verdict.fix_repairs_a_failure() => {
             "INCOMPLETE (run `peppy container setup`)"
         }
         Fixable { .. } => "OK, with a warning (run `peppy container setup`)",
@@ -109,21 +108,23 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    use containers::{FailureSeverity, SetupFix, SetupVerdict};
+    use crate::commands::container::test_fixtures::fix_of;
+    use containers::{FailureSeverity, SetupVerdict};
 
     #[test]
     fn the_container_setup_line_names_the_command_to_run_next() {
-        let fix_of = |severity| SetupFix {
-            script: "sudo apt-get install -y uidmap".to_string(),
-            severity,
-            uses_sudo: true,
-        };
         let refusal = || "The kernel refuses a user namespace.".to_string();
         let cases = [
             (SetupVerdict::Ready, "OK"),
             (
                 SetupVerdict::Fixable {
                     fix: fix_of(FailureSeverity::StopsTheDaemon),
+                },
+                "INCOMPLETE (run `peppy container setup`)",
+            ),
+            (
+                SetupVerdict::Fixable {
+                    fix: fix_of(FailureSeverity::StopsEachBuild),
                 },
                 "INCOMPLETE (run `peppy container setup`)",
             ),

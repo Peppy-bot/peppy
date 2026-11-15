@@ -5,8 +5,9 @@
 //! ends. A command that is killed leaves them, and among them can be the
 //! unpacked copy of an image, which `unsquashfs` writes with the mode that
 //! each directory has in the image. The owner of a directory without the
-//! write permission cannot remove an entry of it, so the removal first gives
-//! the owner each permission on each directory.
+//! write permission cannot remove an entry of it, so a removal that such a
+//! directory stops gives the owner each permission on each directory and
+//! removes the tree again.
 
 use std::fs::{self, Permissions};
 use std::io;
@@ -20,37 +21,65 @@ const OWNER_PERMISSIONS: u32 = 0o700;
 /// Removes the scratch directory `dir` of an apptainer command with all that
 /// the command left in it. A directory that is not there is no error.
 ///
+/// Most trees have no directory that its owner cannot write to, so the tree
+/// is removed as it is first, in one walk. Only a removal that fails walks
+/// the tree to open its directories, and then removes it again.
+///
 /// # Errors
 ///
-/// When an entry of the directory cannot be removed: an entry of another
-/// user, or a file system that refuses the change.
+/// When the directory is still there after the removal: it holds an entry
+/// of another user, or the file system refuses the change. The error is the
+/// one of the entry that stopped the removal.
 pub fn remove_scratch_dir(dir: &Path) -> io::Result<()> {
-    let removed = give_the_owner_each_directory(dir).and_then(|()| fs::remove_dir_all(dir));
-    match removed {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        other => other,
+    if remove_tree(dir).is_ok() {
+        return Ok(());
     }
+    give_the_owner_each_directory(dir);
+    remove_tree(dir)
+}
+
+/// Removes the tree at `dir`. The result tells whether the tree is gone: a
+/// tree that is not there is a success, and an entry that another process
+/// removes during the walk is a failure only when the tree stays.
+fn remove_tree(dir: &Path) -> io::Result<()> {
+    let Err(error) = fs::remove_dir_all(dir) else {
+        return Ok(());
+    };
+    let is_gone = matches!(
+        fs::symlink_metadata(dir),
+        Err(not_found) if not_found.kind() == io::ErrorKind::NotFound
+    );
+    if is_gone { Ok(()) } else { Err(error) }
 }
 
 /// Gives the owner each permission on `path` and on each directory below
 /// it. A symbolic link is not followed, and a file keeps its mode: the
 /// permissions of its directory decide who removes it.
-fn give_the_owner_each_directory(path: &Path) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
+///
+/// Best-effort: an entry that cannot be read or changed (an entry of another
+/// user, an entry that another process removes) does not stop the walk of
+/// the other entries. The removal that follows reports what stays.
+fn give_the_owner_each_directory(path: &Path) {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
     if !metadata.is_dir() {
-        return Ok(());
+        return;
     }
     let mode = metadata.permissions().mode();
     if mode & OWNER_PERMISSIONS != OWNER_PERMISSIONS {
-        fs::set_permissions(path, Permissions::from_mode(mode | OWNER_PERMISSIONS))?;
+        // A directory that stays closed keeps its entries from the walk
+        // below, which then reads nothing.
+        let _ = fs::set_permissions(path, Permissions::from_mode(mode | OWNER_PERMISSIONS));
     }
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            give_the_owner_each_directory(&entry.path())?;
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+            give_the_owner_each_directory(&entry.path());
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -114,5 +143,44 @@ mod tests {
         assert_eq!(mode & 0o777, 0o555);
         // The test directory removes its entries when it is dropped.
         set_mode(&outside, 0o755);
+    }
+
+    /// A tree that the first removal takes whole is not walked for its
+    /// modes: a file that is not a directory is removed as a tree is.
+    #[test]
+    fn removes_a_tree_whose_directories_are_open_to_their_owner() {
+        let parent = scratch_dir();
+        let scratch = parent.path().join("command");
+        fs::create_dir_all(scratch.join("rootfs/usr/lib")).expect("create the tree");
+        fs::write(scratch.join("rootfs/usr/lib/libc.so"), b"library").expect("write a file");
+
+        remove_scratch_dir(&scratch).expect("remove the scratch directory");
+
+        assert!(!scratch.exists());
+    }
+
+    /// The error of a removal is the one of the entry that stays. Root
+    /// removes an entry of each directory, so the test needs a user that is
+    /// not root, and it skips itself elsewhere.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_tree_that_stays_is_the_error_of_the_removal() {
+        if nix::unistd::geteuid().is_root() {
+            eprintln!("SKIPPING: root removes an entry of a directory that it cannot write to");
+            return;
+        }
+        let parent = scratch_dir();
+        let scratch = parent.path().join("command");
+        fs::create_dir_all(&scratch).expect("create the scratch directory");
+        fs::write(scratch.join("file"), b"content").expect("write a file");
+        // The parent of the scratch directory is not a part of the tree, so
+        // the removal does not open it: the scratch directory stays in it.
+        set_mode(parent.path(), 0o555);
+
+        let error = remove_scratch_dir(&scratch).expect_err("the scratch directory stays");
+
+        set_mode(parent.path(), 0o755);
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert!(scratch.exists());
     }
 }

@@ -1,6 +1,8 @@
 use super::super::error::{Error, Result};
 use super::absent_bind_paths::{AbsentBindPaths, NO_MOUNT_FLAG};
 #[cfg(target_os = "linux")]
+use super::flag_paths;
+#[cfg(target_os = "linux")]
 use super::image_files::{ImageFiles, UnpackedImages};
 use super::l4t_manifest::{self, L4T_MANIFEST_DIR, NVLIBLIST_PATH, NvliblistSync};
 use super::lima;
@@ -8,7 +10,7 @@ use super::registry_auth::{APPTAINER_AUTH_FILE_ENV, RegistryAuth};
 #[cfg(target_os = "linux")]
 use super::root_user_namespace::{ImageCommand, UserNamespace};
 #[cfg(target_os = "linux")]
-use super::system_programs::{AND_THEN, FailureSeverity, Privilege, SystemPrograms};
+use super::system_programs::{AND_THEN, FailureSeverity, InstallSteps, Privilege, SystemPrograms};
 #[cfg(target_os = "linux")]
 use super::unprivileged_user_namespace::{self, UnprivilegedUserNamespace};
 use core_node_api::encoding::ArtifactPlatform;
@@ -195,6 +197,14 @@ pub(crate) enum Backend {
         /// is on overlayfs.
         #[cfg(target_os = "linux")]
         unpacked_images: UnpackedImages,
+        /// Looks for the programs of the distribution that a container build
+        /// of the user of this daemon runs; see
+        /// [`system_programs`](super::system_programs). Each build calls it,
+        /// so a build finds a package that was installed after the start of
+        /// the daemon. The Lima backend has no counterpart: its builds run
+        /// the programs of the guest.
+        #[cfg(target_os = "linux")]
+        system_programs: fn() -> SystemPrograms,
         /// The destinations of the binds of apptainer that a `run` or an
         /// `exec` skips, because this host does not have their source; see
         /// [`absent_bind_paths`](super::absent_bind_paths). The Lima backend
@@ -367,12 +377,12 @@ impl SetupVerdict {
         }
     }
 
-    /// Whether the daemon stops at its start until `peppy container setup`
-    /// makes its fix.
+    /// Whether `peppy container setup` has a fix for a check that is a
+    /// failure, and not a warning alone: the daemon stops at its start, or
+    /// stops each container build, until the setup makes the fix.
     #[must_use]
-    pub fn fix_is_required_by_the_daemon(&self) -> bool {
-        self.fix()
-            .is_some_and(|fix| fix.severity == FailureSeverity::StopsTheDaemon)
+    pub fn fix_repairs_a_failure(&self) -> bool {
+        self.fix().is_some_and(|fix| fix.severity.is_a_failure())
     }
 }
 
@@ -617,9 +627,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
     );
     let user_namespace = UnprivilegedUserNamespace::for_build_user(apparmor_restricted);
     let verdict = SetupVerdict::of(fix, &user_namespace);
-    let image_files = ImageFiles::of_the_nodes_of_the_build_user(
-        daemon_config::consts::PeppyDirs::default().root(),
-    );
+    let image_files = ImageFiles::of_the_nodes_of_the_build_user();
 
     SetupStatus {
         programs,
@@ -640,6 +648,13 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
 #[must_use]
 pub fn check_system_programs() -> SystemPrograms {
     SystemPrograms::check(unprivileged_user_namespace::build_user_is_root())
+}
+
+/// The check of each program of the distribution that Apptainer runs, for
+/// the user of this process, which is the user of the builds of a daemon.
+#[cfg(target_os = "linux")]
+fn system_programs_of_this_daemon() -> SystemPrograms {
+    SystemPrograms::check(nix::unistd::geteuid().is_root())
 }
 
 /// Whether the profile file of `profile` exists and names the programs of
@@ -669,14 +684,19 @@ pub(crate) fn is_apparmor_profile_loaded(name: &str) -> bool {
 }
 
 /// The fix of the failing prerequisites, or `None` when every prerequisite
-/// passes. Its script holds one step per failure, joined with `&&`, for a
-/// user that has `privilege`: one step installs the package of each program
-/// that is missing. A profile that is missing or stale is written and loaded
-/// in one step, so the load alone is for a profile that is in place but not
-/// loaded.
+/// passes. Its script holds its steps joined with `&&`, for a user that has
+/// `privilege`, in this order:
 ///
-/// A profile that fails stops the daemon, as a missing program that the
-/// builds of the user run does.
+/// 1. The installation of the packages that a container build needs.
+/// 2. The AppArmor profile. A profile that is missing or stale is written
+///    and loaded in one step, so the load alone is for a profile that is in
+///    place but not loaded.
+/// 3. The installation of the packages whose absence is a warning. It is the
+///    last step, so a package that the distribution of the machine does not
+///    have stops no other fix.
+///
+/// A profile that fails stops the daemon. A missing program that the builds
+/// of the user run stops each container build.
 #[cfg(target_os = "linux")]
 pub(crate) fn setup_fix(
     programs: &SystemPrograms,
@@ -685,7 +705,10 @@ pub(crate) fn setup_fix(
     profile: &ApparmorProfileRef,
     privilege: Privilege,
 ) -> Option<SetupFix> {
-    let install_step = programs.install_step(privilege);
+    let InstallSteps {
+        of_failures,
+        of_warnings,
+    } = programs.install_steps(privilege);
     let profile_step = if !apparmor_ok {
         Some(profile.write_and_load_command(privilege))
     } else if !apparmor_loaded {
@@ -698,7 +721,11 @@ pub(crate) fn setup_fix(
         .map(|_| FailureSeverity::StopsTheDaemon);
     let severity = programs.severity().max(profile_severity)?;
 
-    let steps: Vec<String> = install_step.into_iter().chain(profile_step).collect();
+    let steps: Vec<String> = of_failures
+        .into_iter()
+        .chain(profile_step)
+        .chain(of_warnings)
+        .collect();
     Some(SetupFix {
         script: steps.join(AND_THEN),
         severity,
@@ -706,10 +733,13 @@ pub(crate) fn setup_fix(
     })
 }
 
-/// Check that the prerequisites of Apptainer that the daemon needs are met.
+/// Check that the prerequisites of Apptainer that the daemon needs to start
+/// are met.
 ///
-/// The check is for the user of this process, which runs `apptainer`. A
-/// failure that is a warning alone (see [`FailureSeverity`]) passes.
+/// The check is for the user of this process, which runs `apptainer`. Only a
+/// failure that stops the daemon (see [`FailureSeverity`]) fails it: a
+/// daemon without a program that only a container build runs starts, and
+/// each of its builds stops (see [`Apptainer::missing_build_programs`]).
 ///
 /// Makes no request to the kernel for a user namespace: each construction of
 /// an [`Apptainer`] runs this check, and a refusal of the kernel has no fix
@@ -792,6 +822,27 @@ impl Apptainer {
         }
     }
 
+    /// Why each container build of this daemon stops, when this machine
+    /// does not have a program of the distribution that a build runs, or
+    /// `None` when it has each of them. The text gives the command that
+    /// installs each missing package. The images that the daemon has and the
+    /// nodes that are not containers run without these programs.
+    ///
+    /// Each build makes this check before it starts apptainer (see
+    /// [`ApptainerCommand::spawn`]), so a build finds a package that was
+    /// installed after the start of the daemon.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn missing_build_programs(&self) -> Option<String> {
+        let Backend::Native {
+            system_programs, ..
+        } = &self.backend
+        else {
+            return None;
+        };
+        system_programs().build_refusal()
+    }
+
     /// The `Apptainer` that builds containers for `platform`.
     ///
     /// For the platform of this machine it is [`Apptainer::new`]. For the
@@ -869,6 +920,8 @@ impl Apptainer {
                 unpacked_images: UnpackedImages::for_this_daemon(
                     daemon_config::consts::PeppyDirs::default().root(),
                 ),
+                #[cfg(target_os = "linux")]
+                system_programs: system_programs_of_this_daemon,
                 absent_bind_paths: AbsentBindPaths::of_installation(&apptainer_dir),
             }
         };
@@ -1035,7 +1088,7 @@ impl Apptainer {
     }
 
     pub fn version(&self) -> Result<String> {
-        let mut cmd = self.command(&["--version"], &[], None, None, &[])?;
+        let mut cmd = self.command(&["--version"], &[], None, None, None, &[])?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let output = cmd.output().map_err(Error::from)?;
         if !output.status.success() {
@@ -1199,19 +1252,33 @@ impl Apptainer {
         else {
             return Ok(Vec::new());
         };
-        let image_command = ImageCommand {
-            image: Path::new(image),
-            apptainer_dir: &self.apptainer_dir,
-            working_dir: command.working_dir.as_deref(),
-            bind_sources: command
-                .bind_mounts
-                .iter()
-                .map(|bind| Path::new(&bind.src))
-                .collect(),
-        };
+        let flag_paths =
+            flag_paths::host_paths_of_flags(&command.flags, command.working_dir.as_deref());
+        let image_command = self.image_command(image, command, &flag_paths);
         let user_namespace_flag = user_namespace.flag_for(&image_command)?;
         let unpack_flag = unpacked_images.flag_for(&image_command);
         Ok(user_namespace_flag.into_iter().chain(unpack_flag).collect())
+    }
+
+    /// The paths of the host that `command`, which runs `image`, hands to
+    /// apptainer. `flag_paths` holds the paths that its raw flags name (see
+    /// [`flag_paths::host_paths_of_flags`]).
+    #[cfg(target_os = "linux")]
+    fn image_command<'a>(
+        &'a self,
+        image: &'a str,
+        command: &'a ApptainerCommand<'_>,
+        flag_paths: &'a [PathBuf],
+    ) -> ImageCommand<'a> {
+        let bind_sources = command.bind_mounts.iter().map(|bind| Path::new(&bind.src));
+        ImageCommand {
+            image: Path::new(image),
+            apptainer_dir: &self.apptainer_dir,
+            working_dir: command.working_dir.as_deref(),
+            bind_sources: bind_sources
+                .chain(flag_paths.iter().map(PathBuf::as_path))
+                .collect(),
+        }
     }
 
     /// No flag: only a Linux host needs one to give a container the files of
@@ -1412,8 +1479,9 @@ impl Apptainer {
     ///
     /// On Linux: runs `{apptainer_bin} <args...>` directly, with `working_dir`
     /// (when set) applied via [`Command::current_dir`] and `APPTAINER_TMPDIR`
-    /// pointed at the backend's scratch directory (see
-    /// [`apptainer_scratch_dir`]).
+    /// pointed at `scratch_dir`, the scratch directory of the command alone
+    /// (see [`ApptainerCommand::scratch_dir`]), or else at the scratch
+    /// directory of the backend (see [`apptainer_scratch_dir`]).
     /// On macOS: runs `{limactl} shell peppy -- {guest_apptainer_bin} <args...>` to
     /// execute inside the Lima VM using the synced guest-side binary. A
     /// `working_dir` is translated via [`translate_path`](Self::translate_path)
@@ -1443,6 +1511,7 @@ impl Apptainer {
         lima_shell_extra_args: &[String],
         guest_pgid_file: Option<&Path>,
         working_dir: Option<&Path>,
+        scratch_dir: Option<&Path>,
         apptainer_env: &[(String, String)],
     ) -> Result<Command> {
         match &self.backend {
@@ -1452,7 +1521,7 @@ impl Apptainer {
                 ..
             } => {
                 let mut cmd = Command::new(apptainer_bin);
-                cmd.env(APPTAINER_TMPDIR_ENV, tmp_dir);
+                cmd.env(APPTAINER_TMPDIR_ENV, scratch_dir.unwrap_or(tmp_dir));
                 for (key, value) in apptainer_env {
                     cmd.env(format!("APPTAINERENV_{key}"), value);
                 }
@@ -2333,7 +2402,12 @@ impl<'a> ApptainerCommand<'a> {
     /// A command that runs an image fails here when it needs a user
     /// namespace and root cannot reach one of its paths from that namespace
     /// (see the `root_user_namespace` module).
+    ///
+    /// A build fails here when the machine does not have a program of the
+    /// distribution that it runs (see [`Apptainer::missing_build_programs`]).
     fn assemble_command(&self) -> Result<Command> {
+        #[cfg(target_os = "linux")]
+        self.refuse_a_build_without_its_programs()?;
         if passes_nv(&self.flags) {
             self.facade.prepare_nv_library_list()?;
         }
@@ -2347,6 +2421,7 @@ impl<'a> ApptainerCommand<'a> {
             &self.lima_shell_extra_args,
             self.cancel_pgid_path.as_deref(),
             self.working_dir.as_deref(),
+            self.scratch_dir.as_deref(),
             &self.apptainer_env,
         )?;
         if self.kind.may_contact_registry()
@@ -2354,12 +2429,46 @@ impl<'a> ApptainerCommand<'a> {
         {
             cmd.env(APPTAINER_AUTH_FILE_ENV, auth_file);
         }
-        if let (Some(scratch_dir), Backend::Native { .. }) =
-            (&self.scratch_dir, &self.facade.backend)
-        {
-            cmd.env(APPTAINER_TMPDIR_ENV, scratch_dir);
-        }
         Ok(cmd)
+    }
+
+    /// Whether apptainer unpacks the image of this command and runs the
+    /// container from the copy (see the `image_files` module). The
+    /// extraction comes before the start of the container, so the command
+    /// then takes the time that `unsquashfs` needs for the image more than a
+    /// command that mounts it. `false` for a build, which runs no image, and
+    /// on a host that is not Linux.
+    #[must_use]
+    pub fn unpacks_its_image(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            if let (
+                Some(image),
+                Backend::Native {
+                    unpacked_images, ..
+                },
+            ) = (self.kind.image_to_run(), &self.facade.backend)
+            {
+                let flag_paths =
+                    flag_paths::host_paths_of_flags(&self.flags, self.working_dir.as_deref());
+                let image_command = self.facade.image_command(image, self, &flag_paths);
+                return unpacked_images.flag_for(&image_command).is_some();
+            }
+        }
+        false
+    }
+
+    /// Refuses a build on a machine without a program of the distribution
+    /// that the build runs. A `run` and an `exec` run none of them.
+    #[cfg(target_os = "linux")]
+    fn refuse_a_build_without_its_programs(&self) -> Result<()> {
+        if !matches!(self.kind, CommandKind::Build { .. }) {
+            return Ok(());
+        }
+        match self.facade.missing_build_programs() {
+            Some(refusal) => Err(Error::ConfigurationError(refusal)),
+            None => Ok(()),
+        }
     }
 
     /// Build the fully-configured [`Command`] without spawning it.

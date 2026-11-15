@@ -59,6 +59,7 @@ use crate::error::{Error, Result};
 use host::{DirectoryAccess, Host, ThisHost};
 use kernel_squashfs::KernelSquashfs;
 pub(crate) use squashfs_image::SquashfsCompression;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -159,8 +160,32 @@ pub(crate) struct ImageCommand<'a> {
     /// The directory that the apptainer process runs in, or `None` when it
     /// runs in the working directory of the daemon.
     pub(crate) working_dir: Option<&'a Path>,
-    /// The source of each bind mount.
+    /// Each path of the host that the command puts into the container: the
+    /// source of each bind mount, and each path that a raw flag of the
+    /// command names (see [`flag_paths`](super::flag_paths)).
     pub(crate) bind_sources: Vec<&'a Path>,
+}
+
+impl ImageCommand<'_> {
+    /// The directory that the apptainer process of the command runs in: the
+    /// one that the command names, or else the working directory of the
+    /// daemon, which `dir_of_the_daemon` reads. `None` when the command names
+    /// none and the one of the daemon cannot be read.
+    pub(crate) fn dir_of_the_process(
+        &self,
+        dir_of_the_daemon: impl FnOnce() -> Option<PathBuf>,
+    ) -> Option<Cow<'_, Path>> {
+        match self.working_dir {
+            Some(dir) => Some(Cow::Borrowed(dir)),
+            None => dir_of_the_daemon().map(Cow::Owned),
+        }
+    }
+}
+
+/// The working directory of this process, in which apptainer runs when its
+/// command names none.
+pub(crate) fn working_dir_of_this_process() -> Option<PathBuf> {
+    std::env::current_dir().ok()
 }
 
 /// A daemon that is the real root, on a kernel whose configuration tells
@@ -195,14 +220,10 @@ impl RootDaemon {
     /// namespace: the installation, then the working directory of the
     /// apptainer process, then each bind source.
     fn first_path_out_of_reach(&self, command: &ImageCommand<'_>) -> Option<PathOutOfReach> {
-        let dir_of_the_daemon = match command.working_dir {
-            Some(_) => None,
-            None => self.host.current_dir(),
-        };
+        let dir_of_the_process = command.dir_of_the_process(|| self.host.current_dir());
         let installation = [(HostPathRole::Installation, command.apptainer_dir)];
-        let working_dir = command
-            .working_dir
-            .or(dir_of_the_daemon.as_deref())
+        let working_dir = dir_of_the_process
+            .as_deref()
             .map(|dir| (HostPathRole::WorkingDirectory, dir));
         let bind_sources = command
             .bind_sources
