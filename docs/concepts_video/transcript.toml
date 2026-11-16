@@ -24,7 +24,7 @@ tail_seconds = 1.0
 "peppy.json5" = "peppy dot jason five"
 "ROS 2" = "ross two"
 "uv" = "you vee"
-"VLA" = "V L A"
+"VLA" = "vla"
 
 # The words of the frames of the cards, of the scenes and of the map.
 [labels]

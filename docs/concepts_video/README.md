@@ -126,9 +126,9 @@ The parts of `_parts.html.j2` give the header, the map of the acts, the problem 
 
 `RobotView` (`robot_view.js`) draws the 3D model of the OpenArm v2 in a canvas, on a turntable. The canvas shows the robot only, so the page shows through around it. A composition gives the canvas its size, and the view does the rest:
 
-- The robot is in the middle of its canvas at each angle of the turntable. The view reads the box of the robot on the picture from the vertices of the model, and it gives the robot the largest size at which it stays in the canvas at each angle of the view.
+- The turntable stays at one place in its canvas during the segment, so the robot turns on its base and the base does not move. The robot is in the middle of the canvas at the last angle of its turns, where the turntable stops. The view reads the box of the robot on the picture from the vertices of the model, and it gives the robot the largest size at which it stays in the canvas at each angle of its turns.
 - The light is a studio of wide soft lamps (`LAMPS`), with no lamp that makes a hard shadow, so the dark robot is clear on the dark page.
-- With `grid`, the robot is on a floor: a disc that shows the grid of a simulation, or is plain.
+- With `floor: true`, the robot is on a floor: a disc that shows the grid of a simulation.
 - `pointOnPage` gives the place on the page of a point of the robot, for a label or a wire.
 - The picture of a view has the pixels of the render, so the robot is as sharp as the page around it in the video and in a preview.
 
@@ -172,7 +172,7 @@ The command opens each composition, or the one that it names, in the pinned Chro
 - A part goes out of the box that it is in, or nearly touches one border of that box.
 - The content of a box is nearer to its right side than to its left side, or much nearer to its bottom than to its top.
 - Two parts overlap.
-- The drawing of a canvas is not in the middle of the canvas, or goes to one of its sides.
+- The drawing of a canvas goes to one of its sides. The check does not ask for the drawing in the middle of its canvas: the robot turns on a base that does not move, so it is in the middle only where the turntable stops, and `RobotView` puts it there.
 
 In a composition, `data-layout="free"` takes a part out of the check: a decoration, or a message that moves on a wire. `data-layout="over"` says that a part is over other parts on purpose: a tab on a border, a mark on an arrow, a label of a picture. Run the command after each change of a composition, then look at the pictures of the next section: the check reads no wire, and it reads the place of a drawing but not its look.
 
