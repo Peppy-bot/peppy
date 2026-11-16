@@ -430,9 +430,5 @@
   "summary/simple": {
     "seconds": 3.904,
     "spoken_sha256": "d417c705350d137e22e6d13a3408e6f564e408c4dca76fc4ffb90d2db22d4174"
-  },
-  "summary/next": {
-    "seconds": 4.9707,
-    "spoken_sha256": "5beaac5337c6f23ec71144ff1be9177a626dfb90b3a9a8e605a0f3fe096a0f21"
   }
 }

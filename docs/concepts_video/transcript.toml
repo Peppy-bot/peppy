@@ -1283,7 +1283,7 @@ equivalent = "An allowlist."
 
 [[segment]]
 id = "summary"
-chapter = "Summary and next step"
+chapter = "Summary"
 
 [[segment.source]]
 page = "quickstart.mdx"
@@ -1294,11 +1294,6 @@ sha256 = "87b82925179df3e73dee40c4d8580cf10cca287b1cf2ad5182bd4e2031668e91"
 page = "guides/installation.mdx"
 section = "Installation"
 sha256 = "7c3a1b3bdea37e0671d9aeec8708785a08e9d1afa3b00947bddf03392b2344af"
-
-[[segment.source]]
-page = "quickstart.mdx"
-section = "Step 3: Drive the arms"
-sha256 = "af7b1c6a29a317277c394bbaa7ba02244b02ad5b2f31df1ca7ae8967e34904e6"
 
 [[segment.voice]]
 id = "concepts"
@@ -1323,17 +1318,12 @@ text = "And an LLM reaches only what you open."
 [[segment.voice]]
 id = "simple"
 text = "One command installs Peppy, and one command starts a full stack."
-
-[[segment.voice]]
-id = "next"
-text = "To continue, do step three below this video: drive the arms from your browser."
 pause_after_seconds = 3.0
 
 [segment.screen]
 title = "The concepts of Peppy"
 simple = "One command installs Peppy, and one command starts a full stack."
 install_command = "`curl -fsSL https://peppy.bot/install.sh | sh`"
-next_step = "Next: step 3 below this video: drive the arms."
 
 # What the viewer gets from each segment of an act, by the id of the segment.
 [segment.screen.benefits]

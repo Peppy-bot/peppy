@@ -141,7 +141,7 @@ The video tells the viewer what it explains before it explains it, and it gives 
 - The first segment says why a robot needs a framework, then shows the map of the video: its three acts, the chapters of each act, and why the viewer needs them.
 - The first chapter of an act starts with the map again, with the card of the act in the colour of Peppy.
 - Each chapter of an act has the same order. First the problem that the concept solves, in large text. Then the concept, with its diagram. Last, what the viewer gets, with the comparison with ROS 2 when the chapter has one. `Motion.chapter` puts these parts on the timeline of a chapter.
-- The last segment shows the map again, with what the viewer gets from each chapter, then the next step.
+- The last segment shows the map again, with what the viewer gets from each chapter, then the command that installs Peppy.
 
 A chapter keeps its words in the rail, on the right of its diagram, in the same order: the problem, one chip for each term, then one slot that holds the card of the term of the moment and, at the end, what the viewer gets. Thus the viewer sees at each time which problem the diagram answers, and which terms the chapter gave. A segment keeps `problem`, `benefit` and, for the comparison with ROS 2, `ros2` in its `[segment.screen]`.
 

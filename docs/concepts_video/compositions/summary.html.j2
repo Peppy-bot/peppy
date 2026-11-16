@@ -1,6 +1,6 @@
 {# Segment 11. The map of the video again, with what the viewer gets from
-   each chapter, then the next step: step 3 of the quickstart, below the video. #}
-{% from "_parts.html.j2" import backdrop, header, act_map, command, icon %}
+   each chapter, then how simple the start is. #}
+{% from "_parts.html.j2" import backdrop, header, act_map, command %}
 {% set id = segment.id %}
 <template>
   <style>
@@ -21,46 +21,36 @@
       background: rgba(200, 245, 66, 0.16);
       color: var(--peppy);
     }
-    {# Below the map: how simple the start is, then the next step. #}
+    {# The cards have more space than in the other segments: with the start
+       below them, they fill the frame down to its bottom margin. #}
+    .{{ id }}-acts .map-act {
+      padding: 40px 38px 46px;
+    }
+    .{{ id }}-acts .map-chapters {
+      margin-top: 30px;
+      padding-top: 30px;
+      gap: 32px;
+    }
+    {# Below the map: how simple the start is. #}
     .{{ id }}-start {
       left: var(--frame-side);
-      top: 688px;
-      width: var(--full-width);
+      top: 770px;
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 40px;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 30px;
     }
     .{{ id }}-simple {
       padding-left: 30px;
       border-left: 8px solid var(--peppy);
-      font-size: 38px;
+      font-size: 46px;
       font-weight: 500;
-      line-height: 50px;
+      line-height: 60px;
     }
     .{{ id }}-start .command {
-      flex: none;
-    }
-    .{{ id }}-next {
-      left: var(--frame-side);
-      top: 876px;
-      width: var(--full-width);
-      height: 104px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 24px;
-      border-radius: 22px;
-      background: var(--peppy);
-      box-shadow: 0 0 60px rgba(200, 245, 66, 0.22);
-      font-size: 44px;
-      font-weight: 700;
-      color: var(--peppy-ink);
-    }
-    .{{ id }}-next .icon {
-      width: 52px;
-      height: 52px;
-      stroke-width: 2.6;
+      height: 108px;
+      padding: 0 40px;
+      font-size: 42px;
     }
   </style>
   <div id="root" data-composition-id="{{ id }}" data-width="1920" data-height="1080">
@@ -76,7 +66,6 @@
         <div id="{{ id }}-simple" class="{{ id }}-simple">{{ screen.simple }}</div>
         {{ command(id + "-install", screen.install_command) }}
       </div>
-      <div id="{{ id }}-next" class="placed {{ id }}-next"><span id="{{ id }}-next-arrow">{{ icon("down") }}</span><span>{{ screen.next_step }}</span></div>
       </div>
     </div>
   </div>
@@ -93,8 +82,8 @@
       Motion.endSegment(tl, ID + "-content", DURATION);
 
       // These are the concepts of Peppy: the three acts of the video, in the
-      // middle of the frame until the next step comes in below them.
-      const RECAP_SHIFT = 190;
+      // middle of the frame until the start comes in below them.
+      const RECAP_SHIFT = 160;
       gsap.set(ID + "-recap", { y: RECAP_SHIFT });
       tl.to(ID + "-recap", { y: 0, duration: 0.7, ease: "power2.inOut" }, at.simple.start - 0.5);
       Motion.show(tl, ID + "-title", 0.2, Motion.fromSide);
@@ -116,10 +105,6 @@
       // One command installs Peppy, and one command starts a full stack.
       Motion.show(tl, ID + "-simple", at.simple.start, Motion.fromSide);
       Motion.show(tl, ID + "-install", Motion.within(at.simple, 0.2), Motion.fromRight);
-
-      // The next step: step 3 of the quickstart, below the video.
-      Motion.show(tl, ID + "-next", at.next.start, { from: { opacity: 0, scale: 0.94, y: 0 } });
-      tl.fromTo(ID + "-next-arrow", { y: 0 }, { y: 10, duration: 0.45, ease: "sine.inOut", yoyo: true, repeat: 9, immediateRender: false }, at.next.start + 0.6);
 
       window.__timelines["{{ id }}"] = tl;
     })();
