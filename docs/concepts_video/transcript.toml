@@ -841,7 +841,7 @@ sha256 = "84c4016c28f5f2c1e1b7794ca2983054c50a9a2c835303bf53d7620143a2db73"
 [[segment.source]]
 page = "quickstart.mdx"
 section = "Quickstart"
-sha256 = "45b644d132519cc5dbc68b9eef006b3fb155d9fd80758d9714751e06b9ae1b94"
+sha256 = "87b82925179df3e73dee40c4d8580cf10cca287b1cf2ad5182bd4e2031668e91"
 
 [[segment.source]]
 page = "quickstart.mdx"
@@ -851,7 +851,7 @@ sha256 = "8df1056c30abe4248e727c5828dae796255ba7887a5f2162484ea8272f5d574a"
 [[segment.source]]
 page = "guides/installation.mdx"
 section = "Installation"
-sha256 = "f97fdb1d9e34932d5695b123d1f79118e6798fe69fc18746b627934e7b330cbf"
+sha256 = "7c3a1b3bdea37e0671d9aeec8708785a08e9d1afa3b00947bddf03392b2344af"
 
 [[segment.source]]
 page = "advanced_guides/repositories.mdx"
@@ -1288,12 +1288,17 @@ chapter = "Summary and next step"
 [[segment.source]]
 page = "quickstart.mdx"
 section = "Quickstart"
-sha256 = "45b644d132519cc5dbc68b9eef006b3fb155d9fd80758d9714751e06b9ae1b94"
+sha256 = "87b82925179df3e73dee40c4d8580cf10cca287b1cf2ad5182bd4e2031668e91"
 
 [[segment.source]]
 page = "guides/installation.mdx"
 section = "Installation"
-sha256 = "f97fdb1d9e34932d5695b123d1f79118e6798fe69fc18746b627934e7b330cbf"
+sha256 = "7c3a1b3bdea37e0671d9aeec8708785a08e9d1afa3b00947bddf03392b2344af"
+
+[[segment.source]]
+page = "quickstart.mdx"
+section = "Step 3: Drive the arms"
+sha256 = "af7b1c6a29a317277c394bbaa7ba02244b02ad5b2f31df1ca7ae8967e34904e6"
 
 [[segment.voice]]
 id = "concepts"
@@ -1321,14 +1326,14 @@ text = "One command installs Peppy, and one command starts a full stack."
 
 [[segment.voice]]
 id = "next"
-text = "To continue, do the quickstart below this video: it needs no robot."
+text = "To continue, do step three below this video: drive the arms from your browser."
 pause_after_seconds = 3.0
 
 [segment.screen]
 title = "The concepts of Peppy"
 simple = "One command installs Peppy, and one command starts a full stack."
 install_command = "`curl -fsSL https://peppy.bot/install.sh | sh`"
-next_step = "Next: the quickstart below this video. It needs no robot."
+next_step = "Next: step 3 below this video: drive the arms."
 
 # What the viewer gets from each segment of an act, by the id of the segment.
 [segment.screen.benefits]

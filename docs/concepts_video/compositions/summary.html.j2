@@ -1,5 +1,5 @@
 {# Segment 11. The map of the video again, with what the viewer gets from
-   each chapter, then the next step: the quickstart below the video. #}
+   each chapter, then the next step: step 3 of the quickstart, below the video. #}
 {% from "_parts.html.j2" import backdrop, header, act_map, command, icon %}
 {% set id = segment.id %}
 <template>
@@ -117,7 +117,7 @@
       Motion.show(tl, ID + "-simple", at.simple.start, Motion.fromSide);
       Motion.show(tl, ID + "-install", Motion.within(at.simple, 0.2), Motion.fromRight);
 
-      // The next step: the quickstart below the video.
+      // The next step: step 3 of the quickstart, below the video.
       Motion.show(tl, ID + "-next", at.next.start, { from: { opacity: 0, scale: 0.94, y: 0 } });
       tl.fromTo(ID + "-next-arrow", { y: 0 }, { y: 10, duration: 0.45, ease: "sine.inOut", yoyo: true, repeat: 9, immediateRender: false }, at.next.start + 0.6);
 
