@@ -1,6 +1,6 @@
-{# Segment 2. A robot is many small programs, and each one is a node. The
-   nodes exchange data in three ways, and a node has one type of interface
-   for each way. #}
+{# Segment 2. A robot is many small programs, and each one is a node, which
+   robots of different types can use. The nodes exchange data in three ways,
+   and a node has one type of interface for each way. #}
 {% from "_parts.html.j2" import backdrop, header, act_intro, problem_scene, rail, term_card, node, wire %}
 {% set id = segment.id %}
 {# The three interfaces: one row for each one, in the zone of the diagram.
@@ -25,7 +25,9 @@
       position: absolute;
       inset: 0;
     }
-    .{{ id }}-languages {
+    {# A row of chips below the large camera: its languages, then the robots
+       that use it. The two rows have the same place, and one shows at a time. #}
+    .{{ id }}-chips {
       left: 0;
       top: 470px;
       width: {{ zone_width }}px;
@@ -33,7 +35,7 @@
       justify-content: center;
       gap: 24px;
     }
-    .{{ id }}-language {
+    .{{ id }}-chip {
       padding: 6px 26px;
       border: 2px solid var(--line-strong);
       border-radius: 14px;
@@ -86,10 +88,15 @@
 
       <div id="{{ id }}-concept" class="scene">
         <div class="zone">
-          {# The languages of a node, below the large camera. #}
-          <div id="{{ id }}-languages" class="placed {{ id }}-languages">
+          {# The languages of a node, then the robots that use it, below the large camera. #}
+          <div id="{{ id }}-languages" class="placed {{ id }}-chips">
             {% for language in screen.languages %}
-            <span id="{{ id }}-language-{{ loop.index }}" class="{{ id }}-language">{{ language }}</span>
+            <span id="{{ id }}-language-{{ loop.index }}" class="{{ id }}-chip">{{ language }}</span>
+            {% endfor %}
+          </div>
+          <div id="{{ id }}-robots" class="placed {{ id }}-chips">
+            {% for robot in screen.robots %}
+            <span id="{{ id }}-robot-{{ loop.index }}" class="{{ id }}-chip">{{ robot }}</span>
             {% endfor %}
           </div>
           {% for row in rows %}
@@ -170,9 +177,15 @@
       tl.fromTo(camera, { opacity: 0, ...large, scale: large.scale * 0.86 }, { opacity: 1, ...large, duration: 0.5, ease: "power3.out" }, at.is_a_node.start);
       [0.5, 0.72].forEach((share, index) => Motion.show(tl, ID + "-language-" + (index + 1), Motion.within(at.one_function, share)));
 
+      // Robots of different types use the same camera node: the languages
+      // go out, and each robot comes in when the voice names it.
+      Motion.hide(tl, ID + "-languages", Motion.within(at.reuse, 0.3));
+      [0.4, 0.53, 0.66].forEach((share, index) => Motion.show(tl, ID + "-robot-" + (index + 1), Motion.within(at.reuse, share)));
+      Motion.pulse(tl, camera, Motion.within(at.reuse, 0.86));
+
       // The nodes exchange data in three ways. The camera goes to its place
       // in the first row, and the names of the three interfaces come in.
-      Motion.hide(tl, ID + "-languages", at.must_exchange.start + 0.7);
+      Motion.hide(tl, ID + "-robots", at.must_exchange.start + 0.7);
       tl.to(camera, { x: 0, y: 0, scale: 1, duration: 0.8, ease: "power2.inOut" }, at.must_exchange.start + 0.35);
       KINDS.forEach((kind, index) => Motion.show(tl, part(kind, "name"), Motion.within(at.must_exchange, 0.5) + index * 0.35, Motion.grows));
 

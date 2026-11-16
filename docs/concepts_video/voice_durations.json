@@ -79,6 +79,10 @@
     "seconds": 3.968,
     "spoken_sha256": "1315982cdfc196e30c45ed33923fb401329fbfac335222fb627bf00cb1609c0f"
   },
+  "node/reuse": {
+    "seconds": 7.8293,
+    "spoken_sha256": "c3716943b1d4ac28e28170d2002d2f267f2414a467a0d67c5ab9de49251a1a74"
+  },
   "node/must_exchange": {
     "seconds": 3.456,
     "spoken_sha256": "4f1543c63a0b37ad68eb8f592c604e10e68d3df7935283214d9af31bec1c29f0"
@@ -251,9 +255,25 @@
     "seconds": 4.6507,
     "spoken_sha256": "a84c402de090be39e7ca2e4dad1a315102e57e4bff619596b5fa39643f2b4926"
   },
+  "contracts/types": {
+    "seconds": 2.1547,
+    "spoken_sha256": "2a42e38a7dcf6e9c25b1f8db192d1148b5c153d1a6e435e23f6d1c625e18873d"
+  },
+  "contracts/vla": {
+    "seconds": 5.184,
+    "spoken_sha256": "dd98132b02cbf3b8484ff2c0feed084316d0415df1e3a31c13daffccbf689883"
+  },
+  "contracts/wam": {
+    "seconds": 4.864,
+    "spoken_sha256": "7c4d0f496728ed9152a1355c0da4c4e6e8b7f8c142eb1d8690eea6e81cc6be0c"
+  },
+  "contracts/vlm": {
+    "seconds": 6.976,
+    "spoken_sha256": "f29696af8dead5056348d9c67145f2a41c84f50694db5d6c15b46c8460ce4309"
+  },
   "contracts/same_contract": {
-    "seconds": 7.552,
-    "spoken_sha256": "2524b4a915e2ea6ff7098f4f2c53edca39f10332e44dbfb36a93dd12eb43709a"
+    "seconds": 5.0987,
+    "spoken_sha256": "79e444613496137b616188b2a3b416f68b84a9005a417b968957afe2fb3ad1b7"
   },
   "contracts/replace": {
     "seconds": 4.1173,

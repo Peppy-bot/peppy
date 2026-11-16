@@ -82,7 +82,7 @@ A text between two backticks is a technical name: a command, a flag, a file name
 - `voice_durations.json` does not agree with the sentences of the transcript.
 - `upload.json` does not hold the hash of the content of the transcript.
 - A composition shows a text that is not in the transcript, does not show a text of its segment or of the splash screen, or names a footage file that is not in `footage.json`.
-- The video is longer than 10 minutes and 5 seconds.
+- The video is longer than 10 minutes and 30 seconds.
 
 The test compares text, counts and hashes only. It calls no model, and it does not read the docs pages.
 
