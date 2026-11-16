@@ -1377,7 +1377,7 @@ mod tests {
         lines.iter().map(ToString::to_string).collect()
     }
 
-    /// The stderr shapes are those of uv 0.12.1 and apptainer 1.5.2.
+    /// The stderr shapes are those of uv 0.12.1 and apptainer 1.5.5.
     #[test]
     fn prune_outcome_follows_how_the_prune_ended() {
         let cases = [

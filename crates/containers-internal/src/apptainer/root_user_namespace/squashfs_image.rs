@@ -203,11 +203,11 @@ pub(crate) mod fixtures {
     use super::*;
 
     /// Where the fixtures put the descriptor table: the offset that
-    /// apptainer 1.5.2 writes.
+    /// apptainer 1.5.5 writes.
     const TABLE_OFFSET: usize = 4096;
 
     /// The count of descriptors in the table of the fixtures. Apptainer
-    /// 1.5.2 writes 48.
+    /// 1.5.5 writes 48.
     const DESCRIPTOR_COUNT: usize = 4;
 
     /// Where the fixtures put the squashfs: after the table.

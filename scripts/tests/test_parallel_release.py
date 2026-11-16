@@ -70,7 +70,7 @@ PLAN = ReleasePlan(tag="v0.3.0", release_commit=RELEASE_COMMIT, content=CONTENT)
 # What Claude drafts for the release of PLAN, after v0.2.0.
 DRAFT = DraftedRelease(version=ReleaseVersion(minor=3, patch=0), content=CONTENT)
 SLUG = RepoSlug(owner="test-owner", repo="test-repo")
-APPTAINER_CACHE = "apptainer-1.5.2-{arch}-nosuid"
+APPTAINER_CACHE = "apptainer-1.5.5-{arch}-nosuid"
 
 # No stage may ask anything: every prompt fails the test.
 pytestmark = pytest.mark.usefixtures("no_prompts")
@@ -96,7 +96,7 @@ def _fake_apptainer_cache(root: Path, arch: str) -> Path:
     binary = cache / "bin" / "apptainer"
     binary.write_bytes(f"apptainer for {arch}".encode())
     binary.chmod(0o755)
-    (cache / ".peppy-version-1.5.2-r3-sq0.6.1").write_text("built\n")
+    (cache / ".peppy-version-1.5.5-r4-sq0.6.2").write_text("built\n")
     return cache
 
 
