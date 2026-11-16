@@ -37,9 +37,9 @@ peppylib = { package = "peppylib-rs", path = "../peppylib-rs" }
 peppy-mcp-catalog = { path = "../peppy-mcp-catalog" }
 # `unaligned`: messages are decoded in place from the transport's buffer,
 # which carries no alignment guarantee.
-capnp = { version = "0.27", features = ["unaligned"] }
+capnp = { version = "0.28", features = ["unaligned"] }
 # Runs the Cap'n Proto compiler on the schema of a message format.
-capnpc = "0.27"
+capnpc = "0.28"
 indexmap = "2.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -58,7 +58,7 @@ dirs = "7"
 # fixture schemas under `tests/fixtures` into typed accessors for the typed
 # round-trip test.
 build-helpers = { path = "../build-helpers" }
-capnpc = "0.27"
+capnpc = "0.28"
 
 [dev-dependencies]
 # The JPEG encoder the frame benchmark measures the codec against: the

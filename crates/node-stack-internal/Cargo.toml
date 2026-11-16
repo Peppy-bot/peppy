@@ -41,7 +41,7 @@ serde_json5 = "0.2"
 process-wrap = { version = "10.0.0", features = ["tokio1", "process-group"] }
 # Safe wrapper for the process-group signals (`killpg`) the stack sends its
 # children, keeping the crate free of `unsafe`.
-nix = { version = "0.31", default-features = false, features = ["signal"] }
+nix = { version = "0.32", default-features = false, features = ["signal"] }
 # The PyPI mirror of Python builds: `toml_edit` rewrites the URLs of a
 # staged uv.lock and keeps the rest of the file as it is, `reqwest` asks the
 # mirror which locked files it has, and `futures` keeps a bounded number of
@@ -56,7 +56,7 @@ futures = "0.3"
 [dev-dependencies]
 serde_json5 = "0.2.1"
 # `mkfifo` and `geteuid` for the build artifact cache fingerprint tests.
-nix = { version = "0.31", default-features = false, features = ["fs", "user"] }
+nix = { version = "0.32", default-features = false, features = ["fs", "user"] }
 # `start_paused` virtual-clock tests for the build progress monitor, and the
 # loopback cargo registry of the cargo progress test.
 tokio = { version = "1", features = ["test-util", "net"] }

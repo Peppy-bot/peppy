@@ -390,6 +390,27 @@ mod tests {
         Ok(())
     }
 
+    /// The generated code builds and reads its messages with the capnp types
+    /// of peppylib. Two capnp releases in one node are two sets of types that
+    /// do not mix, so peppygen asks for the capnp that peppylib asks for.
+    #[test]
+    fn peppygen_requires_the_capnp_that_peppylib_requires() {
+        let peppygen: toml::Table = render_template(PeppyConfigTemplate::TEMPLATE_PATH, "peppylib")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let peppylib_manifest = EmbeddedPeppylib::get("Cargo.toml").unwrap();
+        let peppylib: toml::Table = std::str::from_utf8(&peppylib_manifest.data)
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        assert_eq!(
+            peppygen["dependencies"]["capnp"],
+            peppylib["dependencies"]["capnp"]
+        );
+    }
+
     #[test]
     fn populate_cache_dir_once_fills_the_cache_and_marks_it_complete() {
         let root = TempDir::new().unwrap();

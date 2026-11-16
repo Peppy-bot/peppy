@@ -1530,7 +1530,7 @@ impl PyNodeRunner {
 }
 
 /// Python wrapper for `StandaloneConfig`.
-#[pyclass(name = "StandaloneConfig", skip_from_py_object)]
+#[pyclass(name = "StandaloneConfig")]
 #[derive(Debug, Clone)]
 pub struct PyStandaloneConfig {
     inner: StandaloneConfig,

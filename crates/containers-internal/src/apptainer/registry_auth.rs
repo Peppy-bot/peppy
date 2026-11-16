@@ -55,7 +55,7 @@ const SANITIZED_FILE_MODE: u32 = 0o600;
 const SANITIZED_DIR_MODE: u32 = 0o700;
 
 /// The auth file apptainer reads when nothing points it elsewhere, located the
-/// way apptainer 1.5.2 locates it.
+/// way apptainer 1.5.5 locates it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RegistryAuthSource {
     /// `APPTAINER_AUTH_FILE` names the file.

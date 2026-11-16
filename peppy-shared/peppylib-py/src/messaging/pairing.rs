@@ -19,7 +19,7 @@ use tokio::sync::Mutex;
 /// tagged onto every message a `PeerSubscription` yields. `frozen, eq, hash`
 /// make it usable directly as a `dict` key, mirroring the Rust
 /// `HashMap<PeerInfo, _>` idiom.
-#[pyclass(name = "PeerInfo", frozen, eq, hash, skip_from_py_object)]
+#[pyclass(name = "PeerInfo", frozen, eq, hash)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PyPeerInfo {
     pub(crate) inner: PeerInfo,
@@ -63,7 +63,7 @@ impl From<PeerInfo> for PyPeerInfo {
 /// One pair a slot holds: the peer's identity and the copy the peer's
 /// instance belongs to (`None` for an instance run outside a copy). A node
 /// holding pairs from several copies groups them by `copy`.
-#[pyclass(name = "PeerMember", frozen, eq, hash, skip_from_py_object)]
+#[pyclass(name = "PeerMember", frozen, eq, hash)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PyPeerMember {
     pub(crate) inner: PeerMember,

@@ -36,7 +36,7 @@ export CARGO_HOME={GUEST_CARGO_HOME}"""
 # guest agent from another is a known way to land an instance in DEGRADED
 # state. Nothing enforces the sync, so it is prose across the Rust/Python
 # boundary, exactly like GO_VERSION below.
-LIMA_VERSION = "2.2.0"
+LIMA_VERSION = "2.3.0"
 
 # Pinned Go toolchain for the in-VM Linux target builds. The containers crate
 # builds apptainer from source, whose `mconfig` needs a Go newer than Ubuntu's
@@ -46,12 +46,12 @@ LIMA_VERSION = "2.2.0"
 # crates/containers-internal/build.rs; this duplication crosses the Rust/Python
 # boundary the same way RELEASE_PLATFORM_SO does.
 GUEST_GO_DIR = "/usr/local/go"
-GO_VERSION = "1.27.1"
+GO_VERSION = "1.27.4"
 GO_LINUX_AMD64_SHA256 = (
-    "63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445"
+    "7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840"
 )
 GO_LINUX_ARM64_SHA256 = (
-    "3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec"
+    "3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92"
 )
 
 # Every release platform's binding plus the build-state marker. The host build
