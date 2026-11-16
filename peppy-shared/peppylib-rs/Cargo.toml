@@ -34,12 +34,12 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json5 = "0.2"
 serde_json = "1.0"
 schemars = "1.2"
-jsonschema = "0.60"
+jsonschema = "0.61"
 tokio-util = "0.7"
 tempfile = { version = "3.10", optional = true }
 # `unaligned`: messages are decoded in place from the transport's buffer,
 # which carries no alignment guarantee.
-capnp = { version = "0.27", features = ["unaligned"] }
+capnp = { version = "0.28", features = ["unaligned"] }
 # `testing`-only: the fd-limit FFI in `src/testing.rs`. Never resolved by a
 # production build (see the `testing` feature note below).
 libc = { version = "0.2", optional = true }
@@ -49,7 +49,7 @@ flume = "0.12"
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers" }
-capnpc = "0.27"
+capnpc = "0.28"
 
 [dev-dependencies]
 # Cyclic self-dependency: the standard way to enable a crate's own feature for

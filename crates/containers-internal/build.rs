@@ -4,16 +4,16 @@ mod apptainer_build {
     use std::process::{Command, Stdio};
     use std::time::Duration;
 
-    const APPTAINER_VERSION: &str = "1.5.2";
+    const APPTAINER_VERSION: &str = "1.5.5";
     /// SHA-256 of `apptainer-{APPTAINER_VERSION}.tar.gz` from the GitHub release.
     /// Bump alongside `APPTAINER_VERSION`; the host build and the Lima guest
     /// build script both verify the source tarball against this constant.
     const APPTAINER_SHA256: &str =
-        "0dc689f4b1036941837f38376313082d953eec920520e295525d89e0f0e04f98";
+        "d61347c9e554954ae662f40077a163d2af6422e65bbd254797606a8a36cf31c6";
 
     /// Pinned Go toolchain used to compile apptainer from source. Apptainer's
     /// `mconfig` enforces a minimum Go version (`hstgo_version` in the release
-    /// tarball, currently 1.25.7). Ubuntu's `golang-go` is older than that, so
+    /// tarball, currently 1.26.10). Ubuntu's `golang-go` is older than that, so
     /// rather than lean on Go's `GOTOOLCHAIN=auto` to silently fetch a toolchain
     /// mid-build (needs network during `make`, and breaks if auto-download is
     /// ever disabled), we download and SHA-verify the official toolchain up
@@ -21,13 +21,13 @@ mod apptainer_build {
     /// apptainer `mconfig` requirement: bump it alongside `APPTAINER_VERSION`.
     /// Keep in sync with the same constants in `scripts/functions/lima.py`,
     /// which pins Go for the in-VM Linux target builds.
-    const GO_VERSION: &str = "1.27.1";
+    const GO_VERSION: &str = "1.27.4";
     /// SHA-256 of `go{GO_VERSION}.linux-amd64.tar.gz` from <https://go.dev/dl>.
     const GO_LINUX_AMD64_SHA256: &str =
-        "63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445";
+        "7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840";
     /// SHA-256 of `go{GO_VERSION}.linux-arm64.tar.gz` from <https://go.dev/dl>.
     const GO_LINUX_ARM64_SHA256: &str =
-        "3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec";
+        "3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92";
 
     /// Bumped whenever the apptainer build recipe (not its version) changes in
     /// a way that alters the produced tree (new link flags, newly bundled
@@ -130,9 +130,9 @@ mod apptainer_build {
     const SQUASHFUSE_SHA256: &str =
         "267f2852d6e20147eb1e21931f9d0fe7634a66612f1ede27e15fa60e56ce0eac";
 
-    const LIMA_VERSION: &str = "2.2.0";
+    const LIMA_VERSION: &str = "2.3.0";
     const LIMA_DARWIN_ARM64_ARCHIVE_SHA256: &str =
-        "bbdef91774885a0d05f7b048c4eb89ae2bcf3a0c252ae7ca7934e63df76d93c3";
+        "b7af444bd8f91d3c307477e562f2cf3bd7595d62b9429185e4fa841563578cfc";
     /// SHA-256 of `lima-additional-guestagents-{LIMA_VERSION}-Darwin-arm64.tar.gz`.
     /// This archive carries the cross-architecture (Linux-x86_64, ...) guest
     /// agents that the main Lima package omits. The guest agent MUST come from
@@ -140,19 +140,19 @@ mod apptainer_build {
     /// agent cannot speak to the host and leaves cross-arch VMs stuck in a
     /// DEGRADED state. Bump alongside `LIMA_VERSION`.
     const LIMA_ADDITIONAL_GUESTAGENTS_DARWIN_ARM64_SHA256: &str =
-        "3aff4453eb3c359eb4f3b458056db24f2c5c15019232531292f49e04050554ed";
+        "f43a1523a3a0a45692ca9cb3e5c61ae11b69ef04ca80081e8e05fe4df816a35a";
     /// SHA-256 of the Lima archives of the Linux hosts, which a Linux release
     /// ships for the builds of the other architecture in an emulated VM, and
     /// of their additional guest agents, which hold the agent of that other
     /// architecture. Bump alongside `LIMA_VERSION`.
     const LIMA_LINUX_X86_64_ARCHIVE_SHA256: &str =
-        "a0ea1ccf6b7335a900adb5f8d2b8384457965fecb1ba72f09b4e3e46d12f424a";
+        "cc8ba97f1c801b899f7c9eda9919dfc4ce4fa2c140c53e5add15aa2d0a1936f9";
     const LIMA_LINUX_AARCH64_ARCHIVE_SHA256: &str =
-        "7c6a09c6844f55f811e9b7b2b60a6070a512c696c8ec752dfdb3c8ed50ed0364";
+        "7e295d243d9b9439fa05628500daff4371a6861cc7e995ac4af4a0781f736cc6";
     const LIMA_ADDITIONAL_GUESTAGENTS_LINUX_X86_64_SHA256: &str =
-        "8d03b82a456e299813276c6ff532fce1848fee5e50527433fe3374cde9183175";
+        "28f1b8b2ac1f0facb98e947fbc9d5f9312017a905a09a3bdf1103d600315e844";
     const LIMA_ADDITIONAL_GUESTAGENTS_LINUX_AARCH64_SHA256: &str =
-        "e6dc519fce67d016a70fef652f75ace3f8e46f2e92210116c01c5bffdc055b04";
+        "4451a7c294350554041c4b3246496af790c3721e0f0842be00c84f2fce09ac3b";
     const LIMA_INSTANCE: &str = "peppy";
 
     /// Prebuilt amd64 Ubuntu base rootfs. On an Apple Silicon host the x86_64
@@ -462,9 +462,9 @@ mod apptainer_build {
         arch: &str,
     ) -> Option<&'static str> {
         match (version, os, arch) {
-            ("2.2.0", "Darwin", "arm64") => Some(LIMA_ADDITIONAL_GUESTAGENTS_DARWIN_ARM64_SHA256),
-            ("2.2.0", "Linux", "x86_64") => Some(LIMA_ADDITIONAL_GUESTAGENTS_LINUX_X86_64_SHA256),
-            ("2.2.0", "Linux", "aarch64") => Some(LIMA_ADDITIONAL_GUESTAGENTS_LINUX_AARCH64_SHA256),
+            ("2.3.0", "Darwin", "arm64") => Some(LIMA_ADDITIONAL_GUESTAGENTS_DARWIN_ARM64_SHA256),
+            ("2.3.0", "Linux", "x86_64") => Some(LIMA_ADDITIONAL_GUESTAGENTS_LINUX_X86_64_SHA256),
+            ("2.3.0", "Linux", "aarch64") => Some(LIMA_ADDITIONAL_GUESTAGENTS_LINUX_AARCH64_SHA256),
             _ => None,
         }
     }
@@ -480,9 +480,9 @@ mod apptainer_build {
 
     fn lima_archive_sha256(version: &str, os: &str, arch: &str) -> Option<&'static str> {
         match (version, os, arch) {
-            ("2.2.0", "Darwin", "arm64") => Some(LIMA_DARWIN_ARM64_ARCHIVE_SHA256),
-            ("2.2.0", "Linux", "x86_64") => Some(LIMA_LINUX_X86_64_ARCHIVE_SHA256),
-            ("2.2.0", "Linux", "aarch64") => Some(LIMA_LINUX_AARCH64_ARCHIVE_SHA256),
+            ("2.3.0", "Darwin", "arm64") => Some(LIMA_DARWIN_ARM64_ARCHIVE_SHA256),
+            ("2.3.0", "Linux", "x86_64") => Some(LIMA_LINUX_X86_64_ARCHIVE_SHA256),
+            ("2.3.0", "Linux", "aarch64") => Some(LIMA_LINUX_AARCH64_ARCHIVE_SHA256),
             _ => None,
         }
     }
