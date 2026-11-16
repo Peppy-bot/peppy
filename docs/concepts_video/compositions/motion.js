@@ -10,6 +10,21 @@ window.Motion = (function () {
   /* The length and the half width of the head of an arrow, in pixels. */
   const HEAD_LENGTH = 16;
   const HEAD_HALF_WIDTH = 10;
+  /* The length of the end of a line that the head of its arrow covers, in
+     pixels: the tip of the head is HEAD_LENGTH - HEAD_ON_LINE pixels in
+     front of the end of the line. */
+  const HEAD_ON_LINE = 2;
+  /* An arrow comes in with one step of its head for each frame of the
+     video, which has 60 frames in a second. */
+  const ARROW_STEPS_PER_SECOND = 60;
+  /* The time in which a line and the head of its arrow become fully visible. */
+  const ARROW_FADE_SECONDS = 0.1;
+  /* How fast a line grows: slowly at its start and at its end. */
+  const DRAW_EASE = "power2.inOut";
+  /* The offset of the dash of a line is a share of its `pathLength` of 1.
+     GSAP rounds a value in pixels to a full pixel unless `autoRound` is
+     false, which would show the line all at once at the half of its time. */
+  const LINE_LENGTH_SHARE = { autoRound: false };
   /* The direction that goes out of each side of a box. */
   const OUT_OF = { left: [-1, 0], right: [1, 0], top: [0, -1], bottom: [0, 1] };
 
@@ -43,11 +58,6 @@ window.Motion = (function () {
     timeline.fromTo(target, from, { opacity: 1, x: 0, y: 0, scale: 1, duration, stagger, ease: "power3.out" }, at);
   }
 
-  /* Bring in the head of an arrow, which does not move. */
-  function showHead(timeline, target, at) {
-    show(timeline, target, at, { from: { opacity: 0, y: 0 }, duration: 0.2 });
-  }
-
   /* Take a part out: it is not visible at `at`. */
   function hide(timeline, target, at) {
     timeline.to(target, { opacity: 0, duration: EXIT_SECONDS, ease: "power2.in" }, at - EXIT_SECONDS);
@@ -71,16 +81,66 @@ window.Motion = (function () {
     timeline.fromTo(
       target,
       { strokeDasharray: 1, strokeDashoffset: 1, opacity: 0 },
-      { strokeDashoffset: 0, opacity: 1, duration: duration || 0.7, ease: "power2.inOut" },
+      Object.assign({ strokeDashoffset: 0, opacity: 1, duration: duration || 0.7, ease: DRAW_EASE }, LINE_LENGTH_SHARE),
       at,
     );
   }
 
-  /* Draw a wire, then bring in its head: the polygon `<wire>-head`. */
+  /* Draw a wire from the part where it starts to the part where it ends.
+     The head of the arrow, the polygon `<wire>-head`, is at the front of the
+     line while the line grows, and points where the line goes. At the end,
+     the head is where `connect` put it. Each step of the animation is one
+     frame long: in a step, the line grows and the head moves in a straight
+     line, from one point of the wire to the next. */
   function drawArrow(timeline, wire, at, duration) {
     const seconds = duration || 0.5;
-    draw(timeline, wire, at, seconds);
-    showHead(timeline, wire + "-head", at + seconds - 0.1);
+    const path = document.querySelector(wire);
+    const head = document.querySelector(wire + "-head");
+    if (head === null) throw new Error(`${wire} has no head: an arrow needs the polygon ${wire}-head`);
+    const length = path.getTotalLength();
+    if (length === 0) throw new Error(`${wire} has no line: call Motion.connect before Motion.drawArrow`);
+
+    const ease = gsap.parseEase(DRAW_EASE);
+    const steps = Math.max(1, Math.round(seconds * ARROW_STEPS_PER_SECOND));
+    const stepSeconds = seconds / steps;
+    const shares = [];
+    for (let step = 0; step <= steps; step += 1) shares.push(ease(step / steps));
+    const heads = shares.map(function (share, step) {
+      if (step === steps) return head.getAttribute("points");
+      const distance = length * share;
+      return headPoints(path.getPointAtLength(distance), headingAt(path, length, distance));
+    });
+
+    gsap.set(path, { strokeDasharray: 1, strokeDashoffset: 1, opacity: 0 });
+    gsap.set(head, { opacity: 0 });
+    const fade = { opacity: 1, duration: ARROW_FADE_SECONDS, ease: "power1.out", immediateRender: false };
+    timeline.fromTo([path, head], { opacity: 0 }, fade, at);
+    for (let step = 0; step < steps; step += 1) {
+      const time = at + step * stepSeconds;
+      const linear = { duration: stepSeconds, ease: "none", immediateRender: false };
+      timeline.fromTo(path, { strokeDashoffset: 1 - shares[step] }, Object.assign({ strokeDashoffset: 1 - shares[step + 1] }, linear, LINE_LENGTH_SHARE), time);
+      timeline.fromTo(head, { attr: { points: heads[step] } }, Object.assign({ attr: { points: heads[step + 1] } }, linear), time);
+    }
+  }
+
+  /* The direction of an SVG path at a distance from its start, as a vector
+     of length 1. */
+  function headingAt(path, length, distance) {
+    const before = path.getPointAtLength(Math.max(0, distance - 1));
+    const after = path.getPointAtLength(Math.min(length, distance + 1));
+    const size = Math.hypot(after.x - before.x, after.y - before.y);
+    return [(after.x - before.x) / size, (after.y - before.y) / size];
+  }
+
+  /* The `points` of the head of an arrow whose line ends at `end` and goes
+     in the direction `heading`, a vector of length 1. */
+  function headPoints(end, heading) {
+    const reach = HEAD_LENGTH - HEAD_ON_LINE;
+    const tip = { x: end.x + heading[0] * reach, y: end.y + heading[1] * reach };
+    const base = { x: tip.x - heading[0] * HEAD_LENGTH, y: tip.y - heading[1] * HEAD_LENGTH };
+    const across = [-heading[1] * HEAD_HALF_WIDTH, heading[0] * HEAD_HALF_WIDTH];
+    const corners = [{ x: base.x - across[0], y: base.y - across[1] }, tip, { x: base.x + across[0], y: base.y + across[1] }];
+    return corners.map((corner) => `${corner.x.toFixed(2)},${corner.y.toFixed(2)}`).join(" ");
   }
 
   /* Change how much a part shows, for example to put it in the background. */
@@ -218,17 +278,10 @@ window.Motion = (function () {
     const start = { x: first.x + out[0] * settings.gap, y: first.y + out[1] * settings.gap };
     const tip = { x: last.x + into[0] * settings.endGap, y: last.y + into[1] * settings.endGap };
     const head = document.querySelector(wire + "-head");
-    const back = head === null ? 0 : HEAD_LENGTH - 2;
+    const back = head === null ? 0 : HEAD_LENGTH - HEAD_ON_LINE;
     const end = { x: tip.x + into[0] * back, y: tip.y + into[1] * back };
     document.querySelector(wire).setAttribute("d", lineBetween(start, out, end, into, settings));
-    if (head !== null) {
-      const base = { x: tip.x + into[0] * HEAD_LENGTH, y: tip.y + into[1] * HEAD_LENGTH };
-      const across = [into[1] * HEAD_HALF_WIDTH, into[0] * HEAD_HALF_WIDTH];
-      head.setAttribute(
-        "points",
-        `${base.x - across[0]},${base.y - across[1]} ${tip.x},${tip.y} ${base.x + across[0]},${base.y + across[1]}`,
-      );
-    }
+    if (head !== null) head.setAttribute("points", headPoints(end, [-into[0], -into[1]]));
     return { start, end: tip };
   }
 
@@ -356,7 +409,6 @@ window.Motion = (function () {
     lasts,
     within,
     show,
-    showHead,
     hide,
     showBetween,
     swap,

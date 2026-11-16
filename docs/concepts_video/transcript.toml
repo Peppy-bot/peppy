@@ -24,7 +24,6 @@ tail_seconds = 1.0
 "peppy.json5" = "peppy dot jason five"
 "ROS 2" = "ross two"
 "uv" = "you vee"
-"VLA" = "vla"
 
 # The words of the frames of the cards, of the scenes and of the map.
 [labels]
@@ -793,7 +792,7 @@ text = "There are different types of robot brain."
 
 [[segment.voice]]
 id = "vla"
-text = "A VLA, a vision-language-action model, takes pictures and words, and gives motions."
+text = "A VLA is a vision-language-action model: it takes pictures and words, and gives motions."
 
 [[segment.voice]]
 id = "wam"

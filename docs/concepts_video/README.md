@@ -159,6 +159,7 @@ A chapter keeps its words in the rail, on the right of its diagram, in the same 
 - A size is in pixels of the page, which has 1920 x 1080 pixels. The video has two pixels across each pixel of the page: a canvas draws with `window.devicePixelRatio` pixels across each pixel of the page, and a picture file has two pixels or more across each pixel of the size that the page shows it at.
 - A part that is in a box gets its place from the layout of CSS: a grid or a flex box with a padding. Thus the space on each side of the part comes from one value.
 - A wire gets its shape from `Motion.connect`, which reads the place of the two parts that it joins. Thus a wire always ends at its parts.
+- `Motion.drawArrow` draws a wire from the part where it starts to the part where it ends. The head of the arrow is at the front of the line while the line grows, and points where the line goes. It reads the shape of the wire, so call it after `Motion.connect`: for a wire to the robot, in the function that runs when the view of the robot is ready.
 
 ### The layout check
 

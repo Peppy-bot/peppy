@@ -318,7 +318,10 @@
       Motion.connect(ID + "-wire-to-brain", [node("camera_driver"), "bottom"], [node("brain"), "top"], { gap: 6 });
       Motion.connect(ID + "-wire-from-brain", [node("brain"), "bottom"], [node("motor_driver"), "top"], { gap: 6 });
 
-      // The robot turns to the viewer, then labels point to its parts.
+      // The robot turns to the viewer, then labels point to its parts. The
+      // wires between the robot and its drivers have their shape when the
+      // view of the robot is ready, so they come in from there.
+      const motorTime = Motion.within(at.drivers, 0.55);
       const robot = RobotView.mount({
         canvas: document.querySelector(ID + "-robot"),
         segmentStart: {{ start }},
@@ -336,6 +339,8 @@
         path(ID + "-leader-motor", `M ${motor.x - 12} ${motor.y - 154} L ${motor.x - 4} ${motor.y - 30}`);
         Motion.connect(ID + "-wire-camera", [{ x: camera.x + 16, y: camera.y }, "right"], [node("camera_driver"), "left"], { curve: true });
         Motion.connect(ID + "-wire-motor", [node("motor_driver"), "left"], [{ x: motor.x + 30, y: motor.y + 8 }, "right"], { gap: 6, endGap: 0, curve: true });
+        Motion.drawArrow(tl, ID + "-wire-camera", at.drivers.start + 0.2, 0.8);
+        Motion.drawArrow(tl, ID + "-wire-motor", motorTime + 0.3, 0.8);
       });
       [
         ["camera", at.many_programs.start + 0.3],
@@ -346,11 +351,8 @@
       });
 
       // Each part has a program.
-      Motion.drawArrow(tl, ID + "-wire-camera", at.drivers.start + 0.2, 0.8);
       Motion.show(tl, node("camera_driver"), at.drivers.start + 0.7);
-      const motorTime = Motion.within(at.drivers, 0.55);
       Motion.show(tl, node("motor_driver"), motorTime);
-      Motion.drawArrow(tl, ID + "-wire-motor", motorTime + 0.3, 0.8);
 
       // The brain is between the two drivers.
       Motion.show(tl, node("brain"), at.brain.start + 0.2);
