@@ -98,15 +98,12 @@ def test_a_drawing_in_the_middle_of_its_canvas_is_not_a_fault() -> None:
     assert frame_faults([robot, drawing]) == []
 
 
-def test_a_drawing_that_is_nearer_to_one_side_of_its_canvas_is_a_fault() -> None:
-    """The robot is at the left of its canvas, and a little too low in it."""
+def test_a_drawing_that_is_nearer_to_one_side_of_its_canvas_is_not_a_fault() -> None:
+    """The robot turns on a base that does not move: at most angles, it is not in the middle of its canvas."""
     robot = canvas("the robot", 200, 200, 400, 600, (0,))
     drawing = box("the robot", 220, 262, 270, 480, (0,))
 
-    assert frame_faults([robot, drawing]) == [
-        "the drawing of the robot is 20 px from the left side of its canvas and 110 px from its right side",
-        "the drawing of the robot is 62 px from the top side of its canvas and 58 px from its bottom side",
-    ]
+    assert frame_faults([robot, drawing]) == []
 
 
 def test_a_drawing_that_goes_to_a_side_of_its_canvas_is_a_fault() -> None:

@@ -15,8 +15,8 @@ from tools.project import recorded_timeline
 from tools.transcript import SPLASH_ID, Transcript, read_transcript
 from tools.voice_durations import out_of_date_problems, read_voice_durations
 
-# The video is 10 minutes and 5 seconds long at most.
-MAX_VIDEO_SECONDS = 10 * 60 + 5
+# The video is 10 minutes and 30 seconds long at most.
+MAX_VIDEO_SECONDS = 10 * 60 + 30
 
 
 @pytest.fixture(scope="module")

@@ -169,7 +169,7 @@
 <div id="{{ id }}" class="term-card">
   <div class="card-kind">{{ title }}</div>
   {% for card in cards %}
-  <div class="card-row{{ ' is-wide' if wide else '' }}">
+  <div id="{{ id }}-row-{{ loop.index }}" class="card-row{{ ' is-wide' if wide else '' }}">
     <span class="card-row-term">{{ card.term | rich }}</span>
     <span>{{ card.definition | rich }}</span>
   </div>

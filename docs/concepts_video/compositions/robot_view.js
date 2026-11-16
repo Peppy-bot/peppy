@@ -6,13 +6,15 @@
    composition gives the angle of the turntable at some times of its segment,
    and the view draws each frame of its segment from the time of the seek
    only. A view can show the robot on a floor: a disc around the turntable,
-   which shows the grid of a simulation or is plain.
+   which shows the grid of a simulation.
 
-   The view puts what it shows in the middle of its canvas at each angle: it
-   reads the box of the robot on the picture from the vertices of the model,
-   and it shows the part of the picture around that box. The robot has one
-   size during the segment: the largest size at which it stays in the canvas
-   at each angle of the view.
+   The turntable stays at one place in the canvas during the segment, so the
+   robot turns on its base and the base does not move. The robot is in the
+   middle of the canvas at the last angle of its turns, where the turntable
+   stops. The view reads the box of the robot on the picture from the
+   vertices of the model, and it gives the robot one size during the
+   segment: the largest size at which it stays in the canvas at each angle
+   of its turns.
 
    A page has one stage, which holds the one WebGL context of the page, and
    each view draws with it and copies the picture into its canvas. The
@@ -77,12 +79,10 @@ const EXPOSURE = 0.9;
 const FLOOR_RADIUS = 0.32;
 /* The points of the rim of the floor that the view keeps in its canvas. */
 const FLOOR_RIM_POINTS = 96;
-/* The floor in the video: the colour of the grid of a simulation is the
-   colour of data, and the colour of a plain floor is the colour of a line.
+/* The floor in the video: the grid of a simulation, in the colour of data.
    The grid has squares of `CELL` meters, and a width is in pixels of the page. */
 const FLOOR_LOOK = `
   const vec3 GRID_COLOUR = vec3(0.373, 0.831, 0.941);
-  const vec3 PLAIN_COLOUR = vec3(0.58, 0.667, 0.863);
   const float CELL = 0.07;
   const float LINE_WIDTH = 1.6;
   const float RIM_WIDTH = 3.0;
@@ -124,13 +124,12 @@ function makeStage(model) {
   return { renderer, scene, turntable, floor, points, floorPoints: rimOf(floor), reach: reachOf(points, height) };
 }
 
-/* The floor below the robot. `grid` says how much of the grid of a
-   simulation the floor shows: at 0, the floor is plain. */
+/* The floor below the robot, with the grid of a simulation. */
 function makeFloor(height) {
   const material = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
-    uniforms: { grid: { value: 0 }, density: { value: PIXEL_DENSITY } },
+    uniforms: { density: { value: PIXEL_DENSITY } },
     vertexShader: `
       varying vec2 place;
       void main() {
@@ -139,7 +138,6 @@ function makeFloor(height) {
       }
     `,
     fragmentShader: `
-      uniform float grid;
       uniform float density;
       varying vec2 place;
       ${FLOOR_LOOK}
@@ -149,10 +147,10 @@ function makeFloor(height) {
         vec2 toLine = abs(fract(cell - 0.5) - 0.5) / (fwidth(cell) * density);
         float fromCenter = length(place);
         float toRim = (${FLOOR_RADIUS.toFixed(3)} - fromCenter) / (fwidth(fromCenter) * density);
-        float line = (1.0 - smoothstep(0.0, LINE_WIDTH, min(toLine.x, toLine.y))) * 0.5 * grid;
-        float rim = (1.0 - smoothstep(0.0, RIM_WIDTH, toRim)) * mix(0.55, 0.9, grid);
-        float fill = mix(0.1, 0.07, grid);
-        gl_FragColor = vec4(mix(PLAIN_COLOUR, GRID_COLOUR, grid), max(fill, max(line, rim)));
+        float line = (1.0 - smoothstep(0.0, LINE_WIDTH, min(toLine.x, toLine.y))) * 0.5;
+        float rim = (1.0 - smoothstep(0.0, RIM_WIDTH, toRim)) * 0.9;
+        float fill = 0.07;
+        gl_FragColor = vec4(GRID_COLOUR, max(fill, max(line, rim)));
       }
     `,
   });
@@ -359,11 +357,10 @@ function cornerOnPage(element) {
    `options.segmentDuration` are the time of the start of the segment in the
    video and the duration of the segment, and `options.turns` gives the angle
    of the turntable as `[time in the segment, degrees]` pairs. With
-   `options.grid`, the view shows the robot on the floor: `options.grid`
-   gives how much of the grid of a simulation the floor shows, from 0 to 1,
-   as `[time in the segment, share]` pairs. The view draws at a time of its
-   segment only: at each other time, the video does not show its
-   composition. The result has `ready`, a promise of the mounted view, and
+   `options.floor` true, the view shows the robot on the floor. The view
+   draws at a time of its segment only: at each other time, the video does
+   not show its composition. The result has `ready`, a promise of the
+   mounted view, and
    `pointOnPage(name, angle)`, the place on the page of an anchor of the
    robot at an angle of the turntable, which is valid when `ready` is. */
 function mount(options) {
@@ -375,13 +372,11 @@ function mount(options) {
   canvas.height = Math.round(height * PIXEL_DENSITY);
   const picture = canvas.getContext("2d");
   const camera = new THREE.PerspectiveCamera(FIELD_OF_VIEW, width / height, 0.1, 50);
-  const hasFloor = options.grid !== undefined;
+  const hasFloor = options.floor === true;
   let stage = null;
-  /* The full picture of the camera, the box of the floor on it, and how
-     many times larger than on it the view shows the robot. */
+  /* The full picture of the camera and the box of the floor on it. */
   let fullPicture = null;
   let floorBox = null;
-  let zoom = 1;
   /* The time in the segment. A page starts at the time 0 of the video, and
      HyperFrames sends no seek event for a seek to the time that the page
      has. */
@@ -395,21 +390,27 @@ function mount(options) {
     return hasFloor ? boxAround(robotBox, floorBox) : robotBox;
   }
 
-  /* Show the part of the full picture that has the box in its middle. */
-  function aim(angle) {
-    const box = shownBox(angle);
-    const middle = { x: ((box.left + box.right) / 2 + 1) / 2, y: (1 - (box.bottom + box.top) / 2) / 2 };
+  /* Show the part of the full picture that has the box of the last angle of
+     the turns in its middle, as large as the canvas allows with the boxes of
+     all the angles in it. */
+  function aim() {
+    const boxes = anglesOf(options.turns).map(shownBox);
+    const last = boxes[boxes.length - 1];
+    const centre = { x: (last.left + last.right) / 2, y: (last.bottom + last.top) / 2 };
+    // The largest distance from the centre to a side of a box, across and in height.
+    const across = Math.max(...boxes.map((box) => Math.max(centre.x - box.left, box.right - centre.x)));
+    const upward = Math.max(...boxes.map((box) => Math.max(centre.y - box.bottom, box.top - centre.y)));
+    // Each side of the full picture is at -1 or 1, so the picture is 2 wide and 2 high.
+    const zoom = FILL / Math.max(across, upward);
+    const middle = { x: (centre.x + 1) / 2, y: (1 - centre.y) / 2 };
     const shown = { width: width / zoom, height: height / zoom };
     camera.setViewOffset(width, height, middle.x * width - shown.width / 2, middle.y * height - shown.height / 2, shown.width, shown.height);
   }
 
   function draw() {
     if (stage === null || time < 0 || time >= options.segmentDuration) return;
-    const angle = valueAt(options.turns, time);
-    stage.turntable.rotation.y = angle * DEGREES;
+    stage.turntable.rotation.y = valueAt(options.turns, time) * DEGREES;
     stage.floor.visible = hasFloor;
-    if (hasFloor) stage.floor.material.uniforms.grid.value = valueAt(options.grid, time);
-    aim(angle);
     resizeStage(stage, canvas.width, canvas.height);
     stage.renderer.render(stage.scene, camera);
     picture.clearRect(0, 0, canvas.width, canvas.height);
@@ -417,7 +418,6 @@ function mount(options) {
   }
 
   function pointOnPage(name, angle) {
-    aim(angle);
     const point = new THREE.Vector3(...ANCHORS[name]);
     point.applyAxisAngle(UP, angle * DEGREES).project(camera);
     const corner = cornerOnPage(canvas);
@@ -436,12 +436,7 @@ function mount(options) {
     placeCamera(camera, stage.reach);
     fullPicture = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     floorBox = boxOnPicture(stage.floorPoints, fullPicture);
-    const sizes = anglesOf(options.turns).map(function (angle) {
-      const box = shownBox(angle);
-      return Math.max(box.right - box.left, box.top - box.bottom);
-    });
-    // Each side of the full picture is at -1 or 1, so the picture is 2 wide and 2 high.
-    zoom = (FILL * 2) / Math.max(...sizes);
+    aim();
     draw();
     return { pointOnPage };
   });

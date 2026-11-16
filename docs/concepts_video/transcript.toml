@@ -24,7 +24,6 @@ tail_seconds = 1.0
 "peppy.json5" = "peppy dot jason five"
 "ROS 2" = "ross two"
 "uv" = "you vee"
-"VLA" = "V L A"
 
 # The words of the frames of the cards, of the scenes and of the map.
 [labels]
@@ -197,6 +196,11 @@ page = "reference/concepts.mdx"
 section = "Interfaces"
 sha256 = "ebc9026501d87010c99b732aef5cfa906138d2b1d1b21cb968509ad401333b06"
 
+[[segment.source]]
+page = "advanced_guides/node_or_library.mdx"
+section = "Make it a node"
+sha256 = "7837f84b9cb5619aac7f91f3e477ed9f1c44b8ce68407007596ed6ee0094735a"
+
 [[segment.voice]]
 id = "act"
 text = "Part one: one node."
@@ -213,6 +217,10 @@ text = "In Peppy, a robot is many small programs, and each one is a node."
 [[segment.voice]]
 id = "one_function"
 text = "A node has one function, and you write it in Rust or in Python."
+
+[[segment.voice]]
+id = "reuse"
+text = "A node is not for one robot only: a robot arm, a mobile robot, and a humanoid can use the same camera node."
 
 [[segment.voice]]
 id = "must_exchange"
@@ -251,6 +259,7 @@ pause_after_seconds = 2.0
 problem = "One large program for a full robot is hard to write, to test, and to change."
 benefit = "Small programs with clear interfaces: you change one node at a time."
 languages = ["Rust", "Python"]
+robots = ["robot arm", "mobile robot", "humanoid"]
 
 [segment.screen.nodes]
 camera = "camera"
@@ -277,7 +286,7 @@ to = "gives feedback"
 
 [segment.screen.cards.node]
 term = "Node"
-definition = "One program with one function, in Rust or Python."
+definition = "One program with one function, in Rust or Python. Robots of different types can use the same node."
 equivalent = "A small service of a backend."
 
 [segment.screen.cards.topic]
@@ -778,8 +787,24 @@ id = "binds"
 text = "At launch time, the launcher connects it to a node that implements the contract."
 
 [[segment.voice]]
+id = "types"
+text = "There are different types of robot brain."
+
+[[segment.voice]]
+id = "vla"
+text = "A VLA is a vision-language-action model: it takes pictures and words, and gives motions."
+
+[[segment.voice]]
+id = "wam"
+text = "A WAM, a world action model, predicts the next scene and the motions together."
+
+[[segment.voice]]
+id = "vlm"
+text = "A VLM, a vision-language model, gives words and not motions, so a brain uses it to make a plan."
+
+[[segment.voice]]
 id = "same_contract"
-text = "A VLA, a WAM, and a brain that uses a VLM are different types of brain, and all can implement the same contract."
+text = "These three types of brain are different, but all three can implement the same contract."
 pause_after_seconds = 2.5
 
 [[segment.voice]]
@@ -810,7 +835,7 @@ definition = "Vision-language-action model: pictures and words in, motions out."
 
 [segment.screen.cards.wam]
 term = "WAM"
-definition = "World action model: it predicts the scene and the motions."
+definition = "World action model: it predicts the next scene and the motions together."
 
 [segment.screen.cards.vlm]
 term = "VLM"
@@ -841,7 +866,7 @@ sha256 = "84c4016c28f5f2c1e1b7794ca2983054c50a9a2c835303bf53d7620143a2db73"
 [[segment.source]]
 page = "quickstart.mdx"
 section = "Quickstart"
-sha256 = "45b644d132519cc5dbc68b9eef006b3fb155d9fd80758d9714751e06b9ae1b94"
+sha256 = "87b82925179df3e73dee40c4d8580cf10cca287b1cf2ad5182bd4e2031668e91"
 
 [[segment.source]]
 page = "quickstart.mdx"
@@ -851,7 +876,7 @@ sha256 = "8df1056c30abe4248e727c5828dae796255ba7887a5f2162484ea8272f5d574a"
 [[segment.source]]
 page = "guides/installation.mdx"
 section = "Installation"
-sha256 = "f97fdb1d9e34932d5695b123d1f79118e6798fe69fc18746b627934e7b330cbf"
+sha256 = "7c3a1b3bdea37e0671d9aeec8708785a08e9d1afa3b00947bddf03392b2344af"
 
 [[segment.source]]
 page = "advanced_guides/repositories.mdx"
@@ -1283,17 +1308,17 @@ equivalent = "An allowlist."
 
 [[segment]]
 id = "summary"
-chapter = "Summary and next step"
+chapter = "Summary"
 
 [[segment.source]]
 page = "quickstart.mdx"
 section = "Quickstart"
-sha256 = "45b644d132519cc5dbc68b9eef006b3fb155d9fd80758d9714751e06b9ae1b94"
+sha256 = "87b82925179df3e73dee40c4d8580cf10cca287b1cf2ad5182bd4e2031668e91"
 
 [[segment.source]]
 page = "guides/installation.mdx"
 section = "Installation"
-sha256 = "f97fdb1d9e34932d5695b123d1f79118e6798fe69fc18746b627934e7b330cbf"
+sha256 = "7c3a1b3bdea37e0671d9aeec8708785a08e9d1afa3b00947bddf03392b2344af"
 
 [[segment.voice]]
 id = "concepts"
@@ -1318,24 +1343,19 @@ text = "And an LLM reaches only what you open."
 [[segment.voice]]
 id = "simple"
 text = "One command installs Peppy, and one command starts a full stack."
-
-[[segment.voice]]
-id = "next"
-text = "To continue, do the quickstart below this video: it needs no robot."
 pause_after_seconds = 3.0
 
 [segment.screen]
 title = "The concepts of Peppy"
 simple = "One command installs Peppy, and one command starts a full stack."
 install_command = "`curl -fsSL https://peppy.bot/install.sh | sh`"
-next_step = "Next: the quickstart below this video. It needs no robot."
 
 # What the viewer gets from each segment of an act, by the id of the segment.
 [segment.screen.benefits]
 node = "Small, clear programs"
 file = "One file, typed code"
 run_and_test = "Tests with mocks"
-stack = "Errors before the start"
+stack = "Reduce runtime errors"
 contracts = "One brain replaces another"
 launchers = "One launch command"
 simulation = "Simulation, then the robot"

@@ -82,7 +82,7 @@ A text between two backticks is a technical name: a command, a flag, a file name
 - `voice_durations.json` does not agree with the sentences of the transcript.
 - `upload.json` does not hold the hash of the content of the transcript.
 - A composition shows a text that is not in the transcript, does not show a text of its segment or of the splash screen, or names a footage file that is not in `footage.json`.
-- The video is longer than 10 minutes and 5 seconds.
+- The video is longer than 10 minutes and 30 seconds.
 
 The test compares text, counts and hashes only. It calls no model, and it does not read the docs pages.
 
@@ -126,9 +126,9 @@ The parts of `_parts.html.j2` give the header, the map of the acts, the problem 
 
 `RobotView` (`robot_view.js`) draws the 3D model of the OpenArm v2 in a canvas, on a turntable. The canvas shows the robot only, so the page shows through around it. A composition gives the canvas its size, and the view does the rest:
 
-- The robot is in the middle of its canvas at each angle of the turntable. The view reads the box of the robot on the picture from the vertices of the model, and it gives the robot the largest size at which it stays in the canvas at each angle of the view.
+- The turntable stays at one place in its canvas during the segment, so the robot turns on its base and the base does not move. The robot is in the middle of the canvas at the last angle of its turns, where the turntable stops. The view reads the box of the robot on the picture from the vertices of the model, and it gives the robot the largest size at which it stays in the canvas at each angle of its turns.
 - The light is a studio of wide soft lamps (`LAMPS`), with no lamp that makes a hard shadow, so the dark robot is clear on the dark page.
-- With `grid`, the robot is on a floor: a disc that shows the grid of a simulation, or is plain.
+- With `floor: true`, the robot is on a floor: a disc that shows the grid of a simulation.
 - `pointOnPage` gives the place on the page of a point of the robot, for a label or a wire.
 - The picture of a view has the pixels of the render, so the robot is as sharp as the page around it in the video and in a preview.
 
@@ -141,7 +141,7 @@ The video tells the viewer what it explains before it explains it, and it gives 
 - The first segment says why a robot needs a framework, then shows the map of the video: its three acts, the chapters of each act, and why the viewer needs them.
 - The first chapter of an act starts with the map again, with the card of the act in the colour of Peppy.
 - Each chapter of an act has the same order. First the problem that the concept solves, in large text. Then the concept, with its diagram. Last, what the viewer gets, with the comparison with ROS 2 when the chapter has one. `Motion.chapter` puts these parts on the timeline of a chapter.
-- The last segment shows the map again, with what the viewer gets from each chapter, then the next step.
+- The last segment shows the map again, with what the viewer gets from each chapter, then the command that installs Peppy.
 
 A chapter keeps its words in the rail, on the right of its diagram, in the same order: the problem, one chip for each term, then one slot that holds the card of the term of the moment and, at the end, what the viewer gets. Thus the viewer sees at each time which problem the diagram answers, and which terms the chapter gave. A segment keeps `problem`, `benefit` and, for the comparison with ROS 2, `ros2` in its `[segment.screen]`.
 
@@ -159,6 +159,7 @@ A chapter keeps its words in the rail, on the right of its diagram, in the same 
 - A size is in pixels of the page, which has 1920 x 1080 pixels. The video has two pixels across each pixel of the page: a canvas draws with `window.devicePixelRatio` pixels across each pixel of the page, and a picture file has two pixels or more across each pixel of the size that the page shows it at.
 - A part that is in a box gets its place from the layout of CSS: a grid or a flex box with a padding. Thus the space on each side of the part comes from one value.
 - A wire gets its shape from `Motion.connect`, which reads the place of the two parts that it joins. Thus a wire always ends at its parts.
+- `Motion.drawArrow` draws a wire from the part where it starts to the part where it ends. The head of the arrow is at the front of the line while the line grows, and points where the line goes. It reads the shape of the wire, so call it after `Motion.connect`: for a wire to the robot, in the function that runs when the view of the robot is ready.
 
 ### The layout check
 
@@ -172,7 +173,7 @@ The command opens each composition, or the one that it names, in the pinned Chro
 - A part goes out of the box that it is in, or nearly touches one border of that box.
 - The content of a box is nearer to its right side than to its left side, or much nearer to its bottom than to its top.
 - Two parts overlap.
-- The drawing of a canvas is not in the middle of the canvas, or goes to one of its sides.
+- The drawing of a canvas goes to one of its sides. The check does not ask for the drawing in the middle of its canvas: the robot turns on a base that does not move, so it is in the middle only where the turntable stops, and `RobotView` puts it there.
 
 In a composition, `data-layout="free"` takes a part out of the check: a decoration, or a message that moves on a wire. `data-layout="over"` says that a part is over other parts on purpose: a tab on a border, a mark on an arrow, a label of a picture. Run the command after each change of a composition, then look at the pictures of the next section: the check reads no wire, and it reads the place of a drawing but not its look.
 

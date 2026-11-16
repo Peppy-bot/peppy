@@ -8,10 +8,6 @@ import OpenArmStackGraph from '../../components/OpenArmStackGraph.astro';
 import YouTubeEmbed from '../../components/YouTubeEmbed.astro';
 import conceptsVideo from '../../../concepts_video/upload.json';
 
-New to peppy? This ten-minute video explains its concepts before you type anything: what a node is and how one file declares it, how nodes form a stack, what contracts and launchers are for, and how the same stack goes from a simulation to a real robot, on one machine or on several. [Concepts](/reference/concepts/) defines the same terms in writing. The quickstart starts right below the video.
-
-<YouTubeEmbed id={conceptsVideo.youtube_id} title="The concepts of Peppy" />
-
 Three steps take you from nothing installed to a bimanual [OpenArm](https://openarm.dev/) you can drive from your browser. There is no repository to clone and no robot hardware to plug in: the arms, the grippers, and the physics all run in a MuJoCo simulation on your machine.
 
 This page is a demo, not a tutorial. It exists so you can watch a peppy stack work end to end before you learn how one is put together. To learn how one is put together, start at [Installation](/guides/installation/) and work through the [guides](/guides/first_node/), which build a stack up node by node from an empty directory.
@@ -66,6 +62,12 @@ Every circle is one instance the launcher started, and every arrow a link betwee
 The first launch pulls the MuJoCo simulation image (a few hundred megabytes) and converts it into a local Apptainer image, so expect it to take a while; later launches reuse the cached image. Download, image-assembly and compilation progress counts as build output (bytes landing on disk, CPU time the build burns and cargo's download progress all reset the clock), so neither a slow connection nor a long compile trips the build idle timeout on its own. If a build of yours genuinely goes quiet for minutes (no output, no bytes written to disk *and* no CPU burned), raise the window with `--node-build-idle-timeout-secs`.
 :::
 
+## The concepts of Peppy
+
+This ten-minute video explains the stack you just launched: what a node is and how one file declares it, how nodes form a stack, what contracts and launchers are for, and how the same stack goes from a simulation to a real robot, on one machine or on several. If the first launch is still building, the video fills the wait. [Concepts](/reference/concepts/) defines the same terms in writing. Step 3 continues below the video.
+
+<YouTubeEmbed id={conceptsVideo.youtube_id} title="The concepts of Peppy" />
+
 ## Step 3: Drive the arms
 
 The launch ends with the pages the stack serves, under `Web pages:`, one URL per address of the machine:
@@ -89,7 +91,9 @@ Open both pages, each in a browser tab:
 
 Put them side by side. The panel opens in **Streaming** mode, with a card per arm: press **Enable** on one, drag any of its joint sliders or its gripper slider, and that side follows your input live in the viewer. The mode switch has three more modes to try once the arms move: **Actions** for one governed move to a target you compose, **Gestures** for a baked choreography, and **Motors** for a read-only view of every motor's health.
 
-![The MuJoCo viewer showing the simulated bimanual OpenArm, next to the web commander panel playing the wave gesture](../../assets/mujoco_sim1.png)
+A gesture needs no **Enable**: open **Gestures** and click **Wave**. The robot raises its right arm and waves, and the gesture library shows the progress of the gesture until it is idle again.
+
+![The MuJoCo viewer next to the web commander panel: a click on Wave in the Gestures tab makes the simulated OpenArm v2 raise its right arm and wave](../../assets/openarm_wave.webp)
 
 To shut things down, stop instances one at a time:
 

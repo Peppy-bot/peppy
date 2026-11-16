@@ -133,8 +133,8 @@
         duration: DURATION,
         problem: [0.3, at.contract.start - 0.2],
         terms: [
-          ["contract", at.contract.start + 0.4, at.same_contract.start - 0.1],
-          ["types", at.same_contract.start + 0.2, at.replace.start - 0.1],
+          ["contract", at.contract.start + 0.4, at.types.start - 0.1],
+          ["types", at.types.start + 0.2, at.replace.start - 0.1],
         ],
         benefit: at.replace.start,
         ros2: at.replace.start + 0.8,
@@ -160,10 +160,17 @@
       Motion.pulse(tl, ID + "-consumer", bound);
       Motion.pulse(tl, brain("vla"), bound + 0.2);
 
-      // The other types of brain implement the same contract.
-      [["wam", 0.12], ["vlm", 0.3]].forEach(function ([key, share]) {
-        Motion.show(tl, brain(key), Motion.within(at.same_contract, share));
-        Motion.drawArrow(tl, fits(key), Motion.within(at.same_contract, 0.72), 0.5);
+      // The types of robot brain: the voice says what each one takes and
+      // gives, and its row of the card comes in. The VLA is in the diagram
+      // already, and the WAM and the VLM come in with their sentences.
+      BRAINS.forEach(function (key, index) {
+        Motion.show(tl, ID + "-card-types-row-" + (index + 1), at[key].start + 0.1, Motion.fromSide);
+      });
+      Motion.pulse(tl, brain("vla"), at.vla.start + 0.2);
+      ["wam", "vlm"].forEach(function (key, index) {
+        Motion.show(tl, brain(key), at[key].start + 0.2);
+        // All the types of brain implement the same contract.
+        Motion.drawArrow(tl, fits(key), Motion.within(at.same_contract, 0.45) + index * 0.3, 0.5);
       });
 
       // One brain replaces another, and the node at the bottom does not change.
