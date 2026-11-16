@@ -24,7 +24,7 @@ use tokio::sync::Mutex;
 /// `HashMap<ObservedSource, _>` idiom. Purely local configuration state; there
 /// is no health-derived helper, because a third node's health is not knowable
 /// here.
-#[pyclass(name = "ObservedSource", frozen, eq, hash, skip_from_py_object)]
+#[pyclass(name = "ObservedSource", frozen, eq, hash)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PyObservedSource {
     pub(crate) inner: ObservedSource,

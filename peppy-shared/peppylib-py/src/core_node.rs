@@ -47,7 +47,7 @@ impl PyContainerInfo {
 ///
 /// Exposes the same fields as the Rust type plus `encode()` so tests can
 /// fabricate capnp wire bytes for stub listeners.
-#[pyclass(name = "InfoResponse", skip_from_py_object)]
+#[pyclass(name = "InfoResponse")]
 #[derive(Debug, Clone)]
 pub struct PyInfoResponse {
     inner: InfoResponse,
@@ -141,7 +141,7 @@ impl PyInfoResponse {
 
 /// Python wrapper for `core_node_api::encoding::StackListResponse`, used by
 /// test stubs to produce capnp wire bytes for the `STACK_LIST` service.
-#[pyclass(name = "StackListResponse", skip_from_py_object)]
+#[pyclass(name = "StackListResponse")]
 #[derive(Debug, Clone)]
 pub struct PyStackListResponse {
     inner: StackListResponse,

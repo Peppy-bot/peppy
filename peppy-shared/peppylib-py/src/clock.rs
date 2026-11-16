@@ -25,7 +25,7 @@ use crate::runtime::PyNodeRunner;
 /// Carries `client_send_time` (`t0`), the client's local clock just before
 /// the request goes on the wire. Encoders/decoders use the same capnp wire
 /// schema as the Rust [`ClockRequest`].
-#[pyclass(name = "ClockRequest", skip_from_py_object)]
+#[pyclass(name = "ClockRequest")]
 #[derive(Debug, Clone)]
 pub struct PyClockRequest {
     inner: ClockRequest,
@@ -68,7 +68,7 @@ impl PyClockRequest {
 /// Carries the echoed `client_send_time` (`t0`), `server_recv_time` (`t1`),
 /// and `server_send_time` (`t2`). `t3` is the client's local time on receive,
 /// which never goes on the wire.
-#[pyclass(name = "ClockResponse", skip_from_py_object)]
+#[pyclass(name = "ClockResponse")]
 #[derive(Debug, Clone)]
 pub struct PyClockResponse {
     inner: ClockResponse,
@@ -121,7 +121,7 @@ impl PyClockResponse {
 /// Use [`PyClockResponse`] (the request/response service via
 /// [`synchronize`]) when you need to bound staleness with an NTP-style
 /// round-trip exchange.
-#[pyclass(name = "ClockTick", skip_from_py_object)]
+#[pyclass(name = "ClockTick")]
 #[derive(Debug, Clone)]
 pub struct PyClockTick {
     inner: ClockTick,
@@ -163,7 +163,7 @@ impl PyClockTick {
 ///
 /// Mirrors [`peppylib::clock::ClockSync`]. `synchronize` does not
 /// adjust the local clock: it only measures.
-#[pyclass(name = "ClockSync", skip_from_py_object)]
+#[pyclass(name = "ClockSync")]
 #[derive(Debug, Clone)]
 pub struct PyClockSync {
     inner: ClockSync,
@@ -316,7 +316,7 @@ fn clock_for_node_py<'py>(
 /// Built by a test or a standalone run to stand in for what a deployment
 /// would have bound.
 // Taken only by reference from Python, so it needs no extraction impl.
-#[pyclass(name = "ClockBinding", skip_from_py_object)]
+#[pyclass(name = "ClockBinding")]
 #[derive(Debug, Clone)]
 pub struct PyClockBinding {
     pub(crate) inner: config::runtime::ClockBinding,

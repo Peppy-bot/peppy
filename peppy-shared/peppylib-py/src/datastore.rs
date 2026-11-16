@@ -23,7 +23,7 @@ use crate::runtime::PyNodeRunner;
 
 /// Python wrapper for `core_node_api::encoding::DatastoreStoreResponse`, an
 /// empty ack. Exposes `encode()` so test stubs can produce wire bytes.
-#[pyclass(name = "DatastoreStoreResponse", skip_from_py_object)]
+#[pyclass(name = "DatastoreStoreResponse")]
 #[derive(Debug, Clone)]
 pub struct PyDatastoreStoreResponse;
 
@@ -47,7 +47,7 @@ impl PyDatastoreStoreResponse {
 /// Python wrapper for `core_node_api::encoding::DatastoreStoreExclusiveResponse`,
 /// used by test stubs to produce capnp wire bytes for the
 /// `DATASTORE_STORE_EXCLUSIVE` service.
-#[pyclass(name = "DatastoreStoreExclusiveResponse", skip_from_py_object)]
+#[pyclass(name = "DatastoreStoreExclusiveResponse")]
 #[derive(Debug, Clone)]
 pub struct PyDatastoreStoreExclusiveResponse {
     inner: DatastoreStoreExclusiveResponse,
@@ -82,7 +82,7 @@ impl PyDatastoreStoreExclusiveResponse {
 
 /// Python wrapper for `core_node_api::encoding::DatastoreGetResponse`, used
 /// by test stubs to produce capnp wire bytes for the `DATASTORE_GET` service.
-#[pyclass(name = "DatastoreGetResponse", skip_from_py_object)]
+#[pyclass(name = "DatastoreGetResponse")]
 #[derive(Debug, Clone)]
 pub struct PyDatastoreGetResponse {
     inner: DatastoreGetResponse,
@@ -130,7 +130,7 @@ impl PyDatastoreGetResponse {
 /// Python wrapper for `core_node_api::encoding::DatastoreListResponse`, used by
 /// test stubs to produce capnp wire bytes for the `DATASTORE_LIST` service.
 /// Construct it from `(key, encoding, last_modified_by)` triples.
-#[pyclass(name = "DatastoreListResponse", skip_from_py_object)]
+#[pyclass(name = "DatastoreListResponse")]
 #[derive(Debug, Clone)]
 pub struct PyDatastoreListResponse {
     inner: DatastoreListResponse,
@@ -160,7 +160,7 @@ impl PyDatastoreListResponse {
 
 /// Python wrapper for `core_node_api::encoding::DatastoreRemoveResponse`, used
 /// by test stubs to produce capnp wire bytes for the `DATASTORE_REMOVE` service.
-#[pyclass(name = "DatastoreRemoveResponse", skip_from_py_object)]
+#[pyclass(name = "DatastoreRemoveResponse")]
 #[derive(Debug, Clone)]
 pub struct PyDatastoreRemoveResponse {
     inner: DatastoreRemoveResponse,
@@ -224,7 +224,7 @@ impl PyStoredValue {
 /// `store_exclusive`: `ExclusiveStore.Stored()` when the calling instance owns the key, or
 /// `ExclusiveStore.Refused(current)` with the key as its owner stored it, the
 /// owner's `instance_id` in `current.last_modified_by`.
-#[pyclass(name = "ExclusiveStore", eq, frozen, skip_from_py_object)]
+#[pyclass(name = "ExclusiveStore", eq, frozen)]
 #[derive(Clone, PartialEq)]
 pub(crate) enum PyExclusiveStore {
     #[expect(
@@ -252,7 +252,7 @@ impl From<ExclusiveStore> for PyExclusiveStore {
 /// one key as returned by [`peppylib::datastore::list`]: its key, the encoding
 /// tag of its value, and the `instance_id` of the node that last wrote it. The
 /// value bytes are not included; fetch them with [`peppylib::datastore::get`].
-#[pyclass(name = "DatastoreEntry", skip_from_py_object)]
+#[pyclass(name = "DatastoreEntry")]
 #[derive(Debug, Clone)]
 pub struct PyDatastoreEntry {
     inner: DatastoreEntry,

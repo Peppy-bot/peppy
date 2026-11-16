@@ -13,7 +13,7 @@ workspace = true
 config = { package = "peppy-config-model", path = "../peppy-config-model" }
 # `unaligned`: messages are decoded in place from the transport's buffer,
 # which carries no alignment guarantee.
-capnp = { version = "0.27", features = ["unaligned"] }
+capnp = { version = "0.28", features = ["unaligned"] }
 bytes = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json5 = "0.2"
@@ -27,7 +27,7 @@ libc = "0.2"
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers" }
-capnpc = "0.27"
+capnpc = "0.28"
 
 [dev-dependencies]
 tempfile = "3.10"

@@ -304,7 +304,7 @@ impl PyZenohdInstance {
 ///
 /// `MessengerHandle` already manages its own internal `Arc<Mutex<Messenger>>`,
 /// so no additional outer lock is needed here. Cloning is a cheap `Arc` bump.
-#[pyclass(name = "MessengerHandle", skip_from_py_object)]
+#[pyclass(name = "MessengerHandle")]
 #[derive(Debug, Clone)]
 pub struct PyMessengerHandle {
     pub(crate) inner: MessengerHandle,

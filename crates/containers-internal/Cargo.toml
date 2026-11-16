@@ -40,7 +40,7 @@ tracing = "0.1"
 # user. nix's safe wrappers keep the crate free of `unsafe`; `/proc` itself
 # exists only on Linux.
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["feature", "fs", "user"] }
+nix = { version = "0.32", default-features = false, features = ["feature", "fs", "user"] }
 # Reads `/proc/config.gz`, the configuration of the running kernel, which
 # tells the squashfs compressions that the kernel mounts.
 flate2 = "1"
