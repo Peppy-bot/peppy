@@ -62,12 +62,6 @@ Every circle is one instance the launcher started, and every arrow a link betwee
 The first launch pulls the MuJoCo simulation image (a few hundred megabytes) and converts it into a local Apptainer image, so expect it to take a while; later launches reuse the cached image. Download, image-assembly and compilation progress counts as build output (bytes landing on disk, CPU time the build burns and cargo's download progress all reset the clock), so neither a slow connection nor a long compile trips the build idle timeout on its own. If a build of yours genuinely goes quiet for minutes (no output, no bytes written to disk *and* no CPU burned), raise the window with `--node-build-idle-timeout-secs`.
 :::
 
-## The concepts of Peppy
-
-This ten-minute video explains the stack you just launched: what a node is and how one file declares it, how nodes form a stack, what contracts and launchers are for, and how the same stack goes from a simulation to a real robot, on one machine or on several. If the first launch is still building, the video fills the wait. [Concepts](/reference/concepts/) defines the same terms in writing. Step 3 continues below the video.
-
-<YouTubeEmbed id={conceptsVideo.youtube_id} title="The concepts of Peppy" />
-
 ## Step 3: Drive the arms
 
 The launch ends with the pages the stack serves, under `Web pages:`, one URL per address of the machine:
@@ -127,6 +121,12 @@ It prints the instance's state and health plus the path to its run log, which is
 **The launch fails with `Dependencies missing from nodes cache` or `nodes.json5 not found or empty`.** The local index is stale or was never populated. Run `peppy repo refresh` and launch again.
 
 </details>
+
+## The concepts of Peppy
+
+This ten-minute video explains the stack you just launched: what a node is and how one file declares it, how nodes form a stack, what contracts and launchers are for, and how the same stack goes from a simulation to a real robot, on one machine or on several. [Concepts](/reference/concepts/) defines the same terms in writing.
+
+<YouTubeEmbed id={conceptsVideo.youtube_id} title="The concepts of Peppy" />
 
 ## Where to go next
 

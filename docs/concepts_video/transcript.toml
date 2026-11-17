@@ -24,6 +24,7 @@ tail_seconds = 1.0
 "peppy.json5" = "peppy dot jason five"
 "ROS 2" = "ross two"
 "uv" = "you vee"
+"uses" = "yoozes"
 
 # The words of the frames of the cards, of the scenes and of the map.
 [labels]
@@ -760,31 +761,35 @@ sha256 = "42b71d58831cd89aff0b3836abc979f0e34ae6b5cd92382d5682b89049b22012"
 
 [[segment.voice]]
 id = "problem"
-text = "The models of robot brains change quickly."
+text = "The parts of a robot change quickly: the brain, the cameras, the arm."
 
 [[segment.voice]]
 id = "problem_cost"
-text = "If the other nodes depend on one specific brain, each new brain changes these nodes."
+text = "If the other nodes depend on one specific part, each new part changes these nodes."
 
 [[segment.voice]]
 id = "contract"
 text = "For this, a contract is a document that declares one job as topics, services, and actions."
 
 [[segment.voice]]
-id = "brains_job"
-text = "For example, the job of a robot brain: it takes the pictures of the cameras, and it gives motions."
+id = "brain_job"
+text = "For example, the brain contract takes a task and gives a result."
 
 [[segment.voice]]
 id = "implements"
 text = "A node that does the job declares that it implements the contract."
 
 [[segment.voice]]
-id = "depends"
-text = "A node that needs the job depends on the contract, and not on a specific node."
+id = "uses"
+text = "A brain uses the sensors, the 3D geometry, and the arm through their own contracts."
+
+[[segment.voice]]
+id = "nodes"
+text = "Different cameras, different robots, and a simulation implement these contracts."
 
 [[segment.voice]]
 id = "binds"
-text = "At launch time, the launcher connects it to a node that implements the contract."
+text = "At launch time, the launcher connects each contract to a node that implements it."
 
 [[segment.voice]]
 id = "types"
@@ -804,25 +809,41 @@ text = "A VLM, a vision-language model, gives words and not motions, so a brain 
 
 [[segment.voice]]
 id = "same_contract"
-text = "These three types of brain are different, but all three can implement the same contract."
-pause_after_seconds = 2.5
+text = "All three types of brain can implement the same contract."
 
 [[segment.voice]]
 id = "replace"
-text = "Thus you replace one brain with another, and the other nodes do not change."
+text = "Thus you replace a brain, a camera, or a robot, and the other nodes do not change."
 pause_after_seconds = 2.4
 
 [segment.screen]
-problem = "Robot brains change quickly. A new brain must not change the other nodes."
-benefit = "You replace one brain with another, and the other nodes do not change."
+problem = "The parts of a robot change quickly. A new part must not change the other nodes."
+benefit = "You replace a brain, a camera or a robot, and the other nodes do not change."
 ros2 = "Two nodes agree on a topic name in their code, and on a message type."
-contract = "contract"
 implements = "implements"
 depends_on = "depends on"
-consumer = "arm"
-input = "pictures"
-output = "motions"
 brain_types = "Types of robot brain"
+
+# The contract that each brain implements, and its job.
+[segment.screen.brain_contract]
+name = "brain contract"
+job = "task in, result out"
+
+# The contracts that a brain depends on, each with the names of the nodes
+# that implement it. In the composition, the launcher connects the first
+# node of a contract, and the second node, when the contract has one,
+# replaces it.
+[segment.screen.uses.sensors]
+name = "sensors"
+nodes = ["ZED", "RealSense", "sim"]
+
+[segment.screen.uses.geometry]
+name = "3D geometry"
+nodes = ["any camera"]
+
+[segment.screen.uses.arm]
+name = "arm"
+nodes = ["OpenArm", "SO-101", "sim"]
 
 [segment.screen.cards.contract]
 term = "Contract"
@@ -1356,7 +1377,7 @@ node = "Small, clear programs"
 file = "One file, typed code"
 run_and_test = "Tests with mocks"
 stack = "Reduce runtime errors"
-contracts = "One brain replaces another"
+contracts = "One part replaces another"
 launchers = "One launch command"
 simulation = "Simulation, then the robot"
 machines = "Several machines"
