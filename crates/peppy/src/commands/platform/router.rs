@@ -218,12 +218,12 @@ pub(crate) fn pending_change_lines(status: &RouterStatus) -> Vec<String> {
         .pending_change_entries
         .iter()
         .map(|change| {
-            let staged = date(&change.staged_at);
+            let staged = date(change.staged_at);
             match change.deadline {
                 Some(deadline) => format!(
                     "{} (staged {staged}, the platform restarts the router on {})",
                     change.description,
-                    date(&deadline)
+                    date(deadline)
                 ),
                 None => format!("{} (staged {staged})", change.description),
             }

@@ -26,6 +26,9 @@ rust-version = "1.100"
 
 [workspace.dependencies]
 parking_lot = "0.13"
+# The date and time library of peppy: the times of the logs, the dates the
+# platform commands print and the times the platform client reads.
+jiff = "1"
 # The regex engine `repo search` compiles its query patterns with.
 regex = "1"
 # Parameterized tests: messaging e2e suites run each body under both peer and

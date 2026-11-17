@@ -195,7 +195,7 @@ Send headers over `https`. When `otlp_endpoint` is plain `http` on another machi
 - **Discards.** A record that arrives while the queue is full is discarded. So are the records of a request the endpoint refuses for good: a `401` or `403` when the headers file has not changed or cannot be read again, and every other answer that is not a success, such as `400`, `404` or a redirect. When a request is next delivered or refused, the daemon writes one line to the stack log, and exports it:
 
   ```
-  [2026-10-02T14:03:11.209] Log export discarded 4096 records while the queue was full or the endpoint refused requests
+  [2026-10-02T14:03:11.209+00:00] Log export discarded 4096 records while the queue was full or the endpoint refused requests
   ```
 
   The daemon writes such a line at most once a minute, and once more when it stops, for every record discarded since the previous line; that last line reaches the stack log file alone. The line is a warning, and `otlp_min_severity` goes up to `"warn"`, so every setting exports it.

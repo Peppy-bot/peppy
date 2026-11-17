@@ -24,7 +24,6 @@ use super::{
 use crate::Result;
 use crate::services::raw_calls::RawCallGate;
 use crate::source_url::SourceUrl;
-use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::failure_kind::PeppyFailureKind;
 use config::node::{MissingDependencyPolicy, validate_dependency_specs};
@@ -36,6 +35,7 @@ use core_node_api::encoding::{
 };
 use daemon_config::consts::PeppyDirs;
 use futures::FutureExt;
+use node_stack::action_log::file_timestamp;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
 use node_stack::build_io::format_bytes;
 use node_stack::{ActionLog, Announcer, InstanceState, NodeStack, NodeStackError, WorkingDirGuard};
@@ -713,9 +713,11 @@ fn resolve_http_source_download_and_extract(
     std::fs::create_dir_all(&http_base_dir)
         .map_err(|e| format!("Failed to create HTTP download directory: {e}"))?;
 
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
-    let operation_dir =
-        http_base_dir.join(format!("node_add_{timestamp}_{}", generate_random_id()));
+    let operation_dir = http_base_dir.join(format!(
+        "node_add_{}_{}",
+        file_timestamp(),
+        generate_random_id()
+    ));
     std::fs::create_dir_all(&operation_dir)
         .map_err(|e| format!("Failed to create HTTP staging directory: {e}"))?;
 

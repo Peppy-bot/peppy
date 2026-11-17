@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use core_node_api::encoding::{RepoListNodeEntry, RepoListRepoEntry, RepoListRequest};
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::commands::colors::{ORANGE, RED, paint};
@@ -135,14 +137,19 @@ fn print_nodes(nodes: &[&RepoListNodeEntry], winner: &HashMap<(&str, &str), &str
 /// values render as the raw number rather than being dropped: a status
 /// file is a diagnostic, so showing something odd beats showing nothing.
 fn format_timestamp(unix_secs: u64) -> String {
+    format_timestamp_in(&TimeZone::system(), unix_secs)
+}
+
+/// [`format_timestamp`] in the time zone `zone`.
+fn format_timestamp_in(zone: &TimeZone, unix_secs: u64) -> String {
     i64::try_from(unix_secs)
         .ok()
-        .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
+        .and_then(|secs| Timestamp::from_second(secs).ok())
         .map_or_else(
             || format!("unix {unix_secs}"),
-            |dt| {
-                dt.with_timezone(&chrono::Local)
-                    .format("%Y-%m-%d %H:%M")
+            |time| {
+                time.to_zoned_datetime(zone.clone())
+                    .strftime("%Y-%m-%d %H:%M")
                     .to_string()
             },
         )
@@ -154,14 +161,12 @@ mod tests {
 
     #[test]
     fn timestamp_renders_to_the_minute() {
-        // Compare against the same conversion rather than a fixed string,
-        // so the test does not depend on the host's timezone.
-        let expected = chrono::DateTime::from_timestamp(1_753_900_000, 0)
-            .unwrap()
-            .with_timezone(&chrono::Local)
-            .format("%Y-%m-%d %H:%M")
-            .to_string();
-        assert_eq!(format_timestamp(1_753_900_000), expected);
+        // 2025-07-30T18:26:40Z, two hours east of UTC.
+        let zone = TimeZone::fixed(jiff::tz::offset(2));
+        assert_eq!(
+            format_timestamp_in(&zone, 1_753_900_000),
+            "2025-07-30 20:26"
+        );
     }
 
     #[test]

@@ -51,14 +51,14 @@ peppy node run uvc_camera:v1 device_path=/dev/video0 video.camera_encoding="mjpe
 
 and inspect its logs:
 ```
-$ tail /home/ubuntu/.peppy/logs/run/angry-ride-4256_20260125_163851_604.log
-[2026-01-25T16:38:51.860] [stdout] [uvc_camera] Video params: 1280x720 @ 25 fps, encoding: rgb8
-[2026-01-25T16:38:51.860] [stdout] [uvc_camera] Starting video loop...
-[2026-01-25T16:38:51.860] [stdout] [uvc_camera] Video file found: /home/ubuntu/.peppy/instances/angry-ride-4256/assets/robot.mp4
-[2026-01-25T16:38:51.860] [stdout] [uvc_camera] Opening video file for playback...
-[2026-01-25T16:38:54.892] [stdout] [uvc_camera] Emitted frame 65
-[2026-01-25T16:38:57.913] [stdout] [uvc_camera] Emitted frame 129
-[2026-01-25T16:39:00.926] [stdout] [uvc_camera] Emitted frame 194
+$ tail /home/ubuntu/.peppy/logs/run/angry-ride-4256_20260125_163851_604Z.log
+[2026-01-25T16:38:51.860+00:00] [stdout] [uvc_camera] Video params: 1280x720 @ 25 fps, encoding: rgb8
+[2026-01-25T16:38:51.860+00:00] [stdout] [uvc_camera] Starting video loop...
+[2026-01-25T16:38:51.860+00:00] [stdout] [uvc_camera] Video file found: /home/ubuntu/.peppy/instances/angry-ride-4256/assets/robot.mp4
+[2026-01-25T16:38:51.860+00:00] [stdout] [uvc_camera] Opening video file for playback...
+[2026-01-25T16:38:54.892+00:00] [stdout] [uvc_camera] Emitted frame 65
+[2026-01-25T16:38:57.913+00:00] [stdout] [uvc_camera] Emitted frame 129
+[2026-01-25T16:39:00.926+00:00] [stdout] [uvc_camera] Emitted frame 194
 ```
 
 We see that video frames are emitted from that node. We can pull a new node that depends on `uvc_camera` to read those frames and reconstruct a short video.
@@ -83,14 +83,14 @@ peppy node run fake_video_reconstruction:v1 video_duration_seconds=5
 
 If we look at the logs of the started `fake_video_reconstruction` node:
 ```text
-[2026-01-26T15:35:25.170] [stdout] Recording 250 frames (5 seconds at 50 fps)...
-[2026-01-26T15:35:27.408] [stdout] Recorded 50/250 frames (1 seconds)
-[2026-01-26T15:35:29.526] [stdout] Recorded 100/250 frames (2 seconds)
-[2026-01-26T15:35:31.811] [stdout] Recorded 150/250 frames (3 seconds)
-[2026-01-26T15:35:34.106] [stdout] Recorded 200/250 frames (4 seconds)
-[2026-01-26T15:35:36.423] [stdout] Recorded 250/250 frames (5 seconds)
-[2026-01-26T15:35:36.423] [stdout] Recording complete. Encoding video...
-[2026-01-26T15:35:37.222] [stdout] Video saved to: /tmp/.tmpCJoXVL/reconstructed_video.mp4
+[2026-01-26T15:35:25.170+00:00] [stdout] Recording 250 frames (5 seconds at 50 fps)...
+[2026-01-26T15:35:27.408+00:00] [stdout] Recorded 50/250 frames (1 seconds)
+[2026-01-26T15:35:29.526+00:00] [stdout] Recorded 100/250 frames (2 seconds)
+[2026-01-26T15:35:31.811+00:00] [stdout] Recorded 150/250 frames (3 seconds)
+[2026-01-26T15:35:34.106+00:00] [stdout] Recorded 200/250 frames (4 seconds)
+[2026-01-26T15:35:36.423+00:00] [stdout] Recorded 250/250 frames (5 seconds)
+[2026-01-26T15:35:36.423+00:00] [stdout] Recording complete. Encoding video...
+[2026-01-26T15:35:37.222+00:00] [stdout] Video saved to: /tmp/.tmpCJoXVL/reconstructed_video.mp4
 ```
 
 We can see the video has been saved to a temporary folder. Go ahead and open it; you'll find the reconstructed video of the robot.

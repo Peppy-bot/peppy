@@ -16,8 +16,8 @@
 
 use std::fmt;
 
-use chrono::{DateTime, Utc};
 use config::namespace::Namespace;
+use jiff::Timestamp;
 use pmi::RouterId;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -70,7 +70,7 @@ pub struct Project {
     pub workspace_id: String,
     pub name: String,
     #[serde(default)]
-    pub archived_at: Option<DateTime<Utc>>,
+    pub archived_at: Option<Timestamp>,
 }
 
 impl Project {
@@ -188,8 +188,8 @@ pub struct RouterPeer {
     #[serde(default)]
     pub certificate_cn: String,
     pub status: PeerStatus,
-    pub certificate_expires_at: DateTime<Utc>,
-    pub created_at: DateTime<Utc>,
+    pub certificate_expires_at: Timestamp,
+    pub created_at: Timestamp,
 }
 
 /// The answer to an enrollment and to each renewal: the signed material and
@@ -225,10 +225,10 @@ pub struct RouterPeerStatus {
 pub struct PendingChange {
     /// The platform's sentence for the person.
     pub description: String,
-    pub staged_at: DateTime<Utc>,
+    pub staged_at: Timestamp,
     /// When the platform restarts the router itself, if it set a date.
     #[serde(default)]
-    pub deadline: Option<DateTime<Utc>>,
+    pub deadline: Option<Timestamp>,
 }
 
 /// A project's cloud router (`GET .../router`, and the body of a staged peer

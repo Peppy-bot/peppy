@@ -7,9 +7,10 @@
 //! daemon reports to both.
 
 use crate::build_io::{FeedbackLine, FeedbackStream};
-use chrono::{DateTime, Local};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::Severity;
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 use log_export::{Iostream, LogExporter, LogIdentity, LogKind, StackAction};
 use parking_lot::Mutex;
 use std::fs::File;
@@ -19,10 +20,13 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 
-/// The format of the local time that starts every line of a log file.
-const LINE_TIMESTAMP_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.3f";
-/// The format of the local time in the name of a log file.
-const FILE_TIMESTAMP_FORMAT: &str = "%Y%m%d_%H%M%S_%3f";
+/// The format of the time that starts every line of a log file: the time in
+/// the time zone of the machine, to the millisecond, with its UTC offset, so
+/// that each line time is one instant.
+const LINE_TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.3f%:z";
+/// The format of the UTC time in the name of a log file. In UTC, the text
+/// order of the names is their time order.
+const FILE_TIME_FORMAT: &str = "%Y%m%d_%H%M%S_%3fZ";
 /// The marker of an error the daemon writes.
 const ERROR_MARKER: &str = "error";
 /// What separates an error from the last lines its command printed on stderr,
@@ -33,9 +37,16 @@ pub(crate) const STDERR_TAIL_HEADER: &str = "\n\n--- stderr (last lines) ---\n";
 const MAX_CLOCK_LEAD: Duration = Duration::from_secs(1);
 
 /// One line of a log file: `[time] [marker] text`, or `[time] text` for a
-/// line with no marker. `time` is shown as local time.
+/// line with no marker. `time` is shown in the time zone of the machine.
 pub fn log_line(time: SystemTime, marker: Option<&str>, text: &str) -> String {
-    let timestamp = DateTime::<Local>::from(time).format(LINE_TIMESTAMP_FORMAT);
+    log_line_in(&TimeZone::system(), time, marker, text)
+}
+
+/// [`log_line`] with `time` shown in `zone`.
+fn log_line_in(zone: &TimeZone, time: SystemTime, marker: Option<&str>, text: &str) -> String {
+    let timestamp = timestamp_of(time)
+        .to_zoned_datetime(zone.clone())
+        .strftime(LINE_TIME_FORMAT);
     match marker {
         Some(marker) => format!("[{timestamp}] [{marker}] {text}"),
         None => format!("[{timestamp}] {text}"),
@@ -394,9 +405,26 @@ fn free_names(dir: &Path, filename: &LogFileName) -> impl Iterator<Item = PathBu
         .chain((2u32..).map(move |n| dir.join(format!("{stem}-{n}.log"))))
 }
 
-/// The local time for the name of a log file created now.
-fn file_timestamp() -> String {
-    Local::now().format(FILE_TIMESTAMP_FORMAT).to_string()
+/// The UTC time for the name of a file or a directory created now.
+pub fn file_timestamp() -> String {
+    file_timestamp_at(Timestamp::now())
+}
+
+/// The UTC time `time` for the name of a file or a directory.
+fn file_timestamp_at(time: Timestamp) -> String {
+    time.strftime(FILE_TIME_FORMAT).to_string()
+}
+
+/// `time` as a jiff timestamp. A time out of the range of jiff (the years
+/// -9999 to 9999) takes the nearest end of that range.
+fn timestamp_of(time: SystemTime) -> Timestamp {
+    Timestamp::try_from(time).unwrap_or_else(|_| {
+        if time < SystemTime::UNIX_EPOCH {
+            Timestamp::MIN
+        } else {
+            Timestamp::MAX
+        }
+    })
 }
 
 /// The time of the line written at `now` after a line written at `last`:
@@ -491,6 +519,9 @@ pub fn restart_separator(attempt: u32) -> String {
 /// downstream crates.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
+    use jiff::Timestamp;
+    use jiff::fmt::strtime;
+    use jiff::tz::TimeZone;
     use std::path::{Path, PathBuf};
 
     /// A log that exports nothing, for a test that needs a place to write.
@@ -507,15 +538,32 @@ pub mod test_support {
         .expect("create the scratch log")
     }
 
+    /// The time of `line` and its text after its `[time] ` prefix, or `None`
+    /// for a line that continues an entry: a line that does not start with a
+    /// time in [`super::LINE_TIME_FORMAT`] in brackets.
+    fn split_time_prefix(line: &str) -> Option<(Timestamp, &str)> {
+        let (time, text) = line.strip_prefix('[')?.split_once("] ")?;
+        let time = strtime::parse(super::LINE_TIME_FORMAT, time)
+            .ok()?
+            .to_timestamp()
+            .ok()?;
+        Some((time, text))
+    }
+
     /// The text of `line` after its `[time] ` prefix, or `None` for a line
     /// that continues an entry.
     fn after_time_prefix(line: &str) -> Option<&str> {
-        let width = super::log_line(std::time::UNIX_EPOCH, None, "").len();
-        let prefix = line.get(..width)?;
-        let shaped = prefix.starts_with('[')
-            && prefix.ends_with("] ")
-            && prefix.as_bytes()[1..5].iter().all(u8::is_ascii_digit);
-        shaped.then(|| &line[width..])
+        split_time_prefix(line).map(|(_, text)| text)
+    }
+
+    /// The UTC time that the name of a log file gives, in
+    /// [`super::FILE_TIME_FORMAT`].
+    fn file_time(timestamp: &str) -> Option<Timestamp> {
+        let time = strtime::parse(super::FILE_TIME_FORMAT, timestamp)
+            .ok()?
+            .to_datetime()
+            .ok()?;
+        TimeZone::UTC.to_timestamp(time).ok()
     }
 
     /// The `n`th newest run log of `instance_id` under `dir`, by the
@@ -524,7 +572,7 @@ pub mod test_support {
     /// whose stem is no file timestamp is another instance's.
     pub fn nth_newest_run_log(dir: &Path, instance_id: &str, n: usize) -> Option<PathBuf> {
         let prefix = format!("{instance_id}_");
-        let mut logs: Vec<((String, u32), PathBuf)> = std::fs::read_dir(dir)
+        let mut logs: Vec<((Timestamp, u32), PathBuf)> = std::fs::read_dir(dir)
             .ok()?
             .filter_map(Result::ok)
             .filter_map(|entry| {
@@ -534,21 +582,18 @@ pub mod test_support {
                     Some((timestamp, n)) => (timestamp, n.parse().ok()?),
                     None => (stem, 0),
                 };
-                chrono::NaiveDateTime::parse_from_str(timestamp, super::FILE_TIMESTAMP_FORMAT)
-                    .ok()?;
-                Some(((timestamp.to_owned(), same_millisecond), entry.path()))
+                let created = file_time(timestamp)?;
+                Some(((created, same_millisecond), entry.path()))
             })
             .collect();
-        logs.sort_by(|a, b| b.0.cmp(&a.0));
+        logs.sort_by_key(|(created, _)| std::cmp::Reverse(*created));
         logs.into_iter().nth(n).map(|(_, path)| path)
     }
 
     /// When `line` was written, from its `[time] ` prefix, to the
     /// millisecond; `None` for a line that continues an entry.
-    pub fn time_of(line: &str) -> Option<chrono::NaiveDateTime> {
-        after_time_prefix(line)?;
-        let time = line.get(1..line.find(']')?)?;
-        chrono::NaiveDateTime::parse_from_str(time, super::LINE_TIMESTAMP_FORMAT).ok()
+    pub fn time_of(line: &str) -> Option<Timestamp> {
+        split_time_prefix(line).map(|(time, _)| time)
     }
 
     /// The lines of a log file's `content` after their `[time] ` prefix, each
@@ -749,7 +794,10 @@ mod tests {
         log.note("started");
 
         let path = log.path();
-        assert_eq!(file_name_pattern(&path), "arm_inst_########_######_###.log");
+        assert_eq!(
+            file_name_pattern(&path),
+            "arm_inst_########_######_###Z.log"
+        );
         let expected = LogIdentity::new(LogKind::Run, path)
             .with_node("openarm_arm", "v1")
             .with_instance("arm_inst")
@@ -809,28 +857,28 @@ mod tests {
     /// the `-N` of a same-millisecond file, and skips files under the prefix
     /// whose stem is no file timestamp: another instance's, here `arm_inst_2`.
     #[test]
-    fn the_newest_run_log_reader_orders_by_name_and_skips_other_instances() {
+    fn the_newest_run_log_reader_orders_by_the_time_in_the_name_and_skips_other_instances() {
         let dir = tempfile::tempdir().unwrap();
         for name in [
-            "arm_inst_20260101_000000_000.log",
-            "arm_inst_20260101_000000_000-2.log",
-            "arm_inst_20260101_000000_001.log",
-            "arm_inst_2_20260101_000000_002.log",
+            "arm_inst_20260101_000000_000Z.log",
+            "arm_inst_20260101_000000_000Z-2.log",
+            "arm_inst_20260101_000000_001Z.log",
+            "arm_inst_2_20260101_000000_002Z.log",
         ] {
             std::fs::write(dir.path().join(name), "").unwrap();
         }
         let nth = |n| test_support::nth_newest_run_log(dir.path(), "arm_inst", n);
         assert_eq!(
             nth(0),
-            Some(dir.path().join("arm_inst_20260101_000000_001.log"))
+            Some(dir.path().join("arm_inst_20260101_000000_001Z.log"))
         );
         assert_eq!(
             nth(1),
-            Some(dir.path().join("arm_inst_20260101_000000_000-2.log"))
+            Some(dir.path().join("arm_inst_20260101_000000_000Z-2.log"))
         );
         assert_eq!(
             nth(2),
-            Some(dir.path().join("arm_inst_20260101_000000_000.log"))
+            Some(dir.path().join("arm_inst_20260101_000000_000Z.log"))
         );
         assert_eq!(nth(3), None);
     }
@@ -863,7 +911,7 @@ mod tests {
         assert_eq!(build.path().parent(), Some(dirs.logs_dir_build().as_path()));
         assert_eq!(
             file_name_pattern(&build.path()),
-            "camera_v_########_######_###.log"
+            "camera_v_########_######_###Z.log"
         );
         assert_eq!(
             launch.path().parent(),
@@ -871,7 +919,7 @@ mod tests {
         );
         assert_eq!(
             file_name_pattern(&launch.path()),
-            "join_########_######_###.log"
+            "join_########_######_###Z.log"
         );
         let identities: Vec<LogIdentity> = records(&mut receiver)
             .into_iter()
@@ -903,7 +951,7 @@ mod tests {
         let created = log.path();
         assert_eq!(
             file_name_pattern(&created),
-            "source_########_######_###.log"
+            "source_########_######_###Z.log"
         );
         log.note("Cloning repository");
         log.name_node("camera", "v");
@@ -935,7 +983,7 @@ mod tests {
     fn two_logs_created_in_the_same_millisecond_sit_side_by_side() {
         let root = tempfile::tempdir().unwrap();
         let dirs = PeppyDirs::new(root.path());
-        let stamp = || "20260101_000000_000".to_owned();
+        let stamp = || "20260101_000000_000Z".to_owned();
         let exporter = LogExporter::disabled();
         let batch =
             ActionLog::for_add_at(&dirs, exporter.clone(), "source", None, None, &stamp()).unwrap();
@@ -946,10 +994,13 @@ mod tests {
         batch.note("Batch add complete");
 
         let add_dir = dirs.logs_dir_add();
-        assert_eq!(batch.path(), add_dir.join("source_20260101_000000_000.log"));
+        assert_eq!(
+            batch.path(),
+            add_dir.join("source_20260101_000000_000Z.log")
+        );
         assert_eq!(
             sub_add.path(),
-            add_dir.join("source_20260101_000000_000-2.log")
+            add_dir.join("source_20260101_000000_000Z-2.log")
         );
         assert_eq!(
             lines_without_time(&batch),
@@ -1015,6 +1066,102 @@ mod tests {
         assert_eq!(time_after(at(5_000), at(1_000)), at(1_000));
     }
 
+    /// New York time: UTC-5, and UTC-4 in daylight saving time, which ends on
+    /// the first Sunday of November at 02:00, when the clock goes back to
+    /// 01:00. The rule is in the test, so the zone of the host has no effect.
+    fn new_york() -> TimeZone {
+        TimeZone::posix("EST5EDT,M3.2.0,M11.1.0").expect("a valid POSIX time zone")
+    }
+
+    /// The time `millis` milliseconds after the Unix epoch.
+    fn at_millis(millis: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_millis(millis)
+    }
+
+    /// 2026-11-01T05:30:00.123Z and one hour later: the clock of New York
+    /// shows 01:30:00.123 at both instants.
+    #[test]
+    fn the_lines_of_the_hour_that_repeats_show_their_offset_and_read_back_as_their_instant() {
+        let daylight = at_millis(1_793_511_000_123);
+        let standard = at_millis(1_793_514_600_123);
+
+        let first = log_line_in(&new_york(), daylight, Some("stdout"), "a");
+        let second = log_line_in(&new_york(), standard, None, "b");
+
+        assert_eq!(first, "[2026-11-01T01:30:00.123-04:00] [stdout] a");
+        assert_eq!(second, "[2026-11-01T01:30:00.123-05:00] b");
+        assert_eq!(test_support::time_of(&first), Some(timestamp_of(daylight)));
+        assert_eq!(test_support::time_of(&second), Some(timestamp_of(standard)));
+        assert_eq!(
+            test_support::log_entries(&format!("{first}\n{second}")),
+            ["a", "b"]
+        );
+    }
+
+    /// The time of a line is to the millisecond: the rest of the second
+    /// stays out of the line.
+    #[test]
+    fn a_line_time_is_cut_to_the_millisecond() {
+        let time = at_millis(1_793_511_000_123) + Duration::from_micros(999);
+        let line = log_line_in(&TimeZone::UTC, time, None, "a");
+
+        assert_eq!(line, "[2026-11-01T05:30:00.123+00:00] a");
+        assert_eq!(
+            test_support::time_of(&line),
+            Some(timestamp_of(at_millis(1_793_511_000_123)))
+        );
+    }
+
+    /// 2026-11-01T05:50Z and 06:10Z: the clock of New York shows 01:50 and
+    /// then 01:10. The names give UTC, so the later file sorts after the
+    /// earlier one, as text and for the newest-run-log reader.
+    #[test]
+    fn the_names_of_log_files_sort_in_time_order_across_the_end_of_daylight_saving_time() {
+        let earlier = file_timestamp_at(timestamp_of(at_millis(1_793_512_200_000)));
+        let later = file_timestamp_at(timestamp_of(at_millis(1_793_513_400_000)));
+        assert_eq!(earlier, "20261101_055000_000Z");
+        assert_eq!(later, "20261101_061000_000Z");
+        assert!(earlier < later);
+
+        let dir = tempfile::tempdir().unwrap();
+        for stamp in [&later, &earlier] {
+            std::fs::write(dir.path().join(format!("arm_inst_{stamp}.log")), "").unwrap();
+        }
+        assert_eq!(
+            test_support::nth_newest_run_log(dir.path(), "arm_inst", 0),
+            Some(dir.path().join(format!("arm_inst_{later}.log")))
+        );
+    }
+
+    /// A file stem that is not a UTC file time is not a run log of the
+    /// instance: a time with no `Z`, or no time at all.
+    #[test]
+    fn the_newest_run_log_reader_skips_a_stem_that_is_no_utc_file_time() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "arm_inst_20260101_000000_000.log",
+            "arm_inst_latest.log",
+            "arm_inst_20260101_000000_000Z.log",
+        ] {
+            std::fs::write(dir.path().join(name), "").unwrap();
+        }
+        let nth = |n| test_support::nth_newest_run_log(dir.path(), "arm_inst", n);
+        assert_eq!(
+            nth(0),
+            Some(dir.path().join("arm_inst_20260101_000000_000Z.log"))
+        );
+        assert_eq!(nth(1), None);
+    }
+
+    /// jiff holds the years -9999 to 9999; a clock out of that range gives
+    /// the nearest end of it.
+    #[test]
+    fn a_time_out_of_the_range_of_jiff_takes_the_nearest_end_of_it() {
+        let far = Duration::from_secs(400_000_000_000);
+        assert_eq!(timestamp_of(SystemTime::UNIX_EPOCH + far), Timestamp::MAX);
+        assert_eq!(timestamp_of(SystemTime::UNIX_EPOCH - far), Timestamp::MIN);
+    }
+
     #[test]
     fn the_entries_of_a_log_file_join_the_lines_that_continue_an_entry() {
         let dir = tempfile::tempdir().unwrap();
@@ -1055,7 +1202,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         for name in [
             "foo.log",
-            "camera_0.1.0_20260101_000000_000.log",
+            "camera_0.1.0_20260101_000000_000Z.log",
             "a-b_c.log",
         ] {
             let log = ActionLog::create(dir.path(), name, LogKind::Add, LogExporter::disabled());

@@ -956,7 +956,7 @@ mod ctrl_c {
     };
 
     const CORE_NODE: &str = "cn-ctrl-c";
-    const LOG_PATH: &str = "/logs/add/source_20260101_000000_000.log";
+    const LOG_PATH: &str = "/logs/add/source_20260101_000000_000Z.log";
 
     /// A daemon that exposes `node_add` on a mock messenger, and the
     /// messenger a command uses to reach it.

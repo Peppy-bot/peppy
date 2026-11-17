@@ -113,7 +113,7 @@ fn list(session: &PlatformSession, workspace_flag: Option<&str>, json: bool) -> 
                     "id": p.id,
                     "workspace_id": p.workspace_id,
                     "name": p.name,
-                    "archived_at": p.archived_at.map(|t| t.to_rfc3339()),
+                    "archived_at": p.archived_at.map(|t| t.to_string()),
                     "selected": is_selected(&p.id),
                 })
             })

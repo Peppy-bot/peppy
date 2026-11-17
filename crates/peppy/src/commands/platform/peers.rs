@@ -53,8 +53,8 @@ impl Command for PeersCommand {
                     "name": p.name,
                     "certificate_cn": p.certificate_cn,
                     "status": p.status,
-                    "certificate_expires_at": p.certificate_expires_at.to_rfc3339(),
-                    "created_at": p.created_at.to_rfc3339(),
+                    "certificate_expires_at": p.certificate_expires_at.to_string(),
+                    "created_at": p.created_at.to_string(),
                 })).collect::<Vec<_>>(),
             });
             println!("{doc}");
@@ -94,7 +94,7 @@ pub(crate) fn render_human(
             [
                 p.name.clone(),
                 peer_status_label(&p.status).to_string(),
-                date(&p.certificate_expires_at),
+                date(p.certificate_expires_at),
                 p.id.clone(),
                 if Some(p.id.as_str()) == this_machine {
                     "(this machine)".to_string()

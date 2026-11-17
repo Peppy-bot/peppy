@@ -36,7 +36,6 @@ peppy-codec = { workspace = true }
 # its own daemon on.
 stack-goal = { workspace = true }
 bytes = "1.10"
-chrono = "0.4"
 hostname = "0.4"
 machine-uid = "0.6"
 futures = "0.3"

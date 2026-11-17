@@ -34,7 +34,7 @@ The output of this command provides some useful information:
 
 ```
 Adding node from /private/tmp/hello_world...
-Log file: ~/.peppy/logs/add/hello_world_v1_20260121_224824_699.log
+Log file: ~/.peppy/logs/add/hello_world_v1_20260121_224824_699Z.log
 Added node hello_world:v1 to the node stack
 ```
 The log file holds each step the daemon reported while adding the node, and its error in case the command fails.
@@ -77,7 +77,7 @@ The output looks like:
 
 ```
 Building node hello_world:v1...
-Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312.log
+Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312Z.log
 Built node hello_world:v1. Artifact: ~/.peppy/built_nodes/hello_world_v1/3f9a1c2e5d7b8a4f.tar.zst
 ```
 
@@ -123,12 +123,14 @@ Web pages:
 The `node run` command outputs the path to a log file where you can inspect the node's output.
 For example:
 ```sh
-cat /home/ubuntu/.peppy/logs/run/elegant-solomon-5423_20260217_101523_412.log
-[2026-02-17T10:15:23.599] Executing run_cmd: uv run hello_world (working_dir: /home/ubuntu/.peppy/instances/elegant-solomon-5423)
-[2026-02-17T10:15:23.837] [stdout] hello world count 1
-[2026-02-17T10:15:26.848] [stdout] hello world count 2
-[2026-02-17T10:15:29.852] [stdout] hello world count 3
+cat /home/ubuntu/.peppy/logs/run/elegant-solomon-5423_20260217_101523_412Z.log
+[2026-02-17T10:15:23.599+00:00] Executing run_cmd: uv run hello_world (working_dir: /home/ubuntu/.peppy/instances/elegant-solomon-5423)
+[2026-02-17T10:15:23.837+00:00] [stdout] hello world count 1
+[2026-02-17T10:15:26.848+00:00] [stdout] hello world count 2
+[2026-02-17T10:15:29.852+00:00] [stdout] hello world count 3
 ```
+
+Each line starts with the time of the machine, to the millisecond, with its UTC offset, so the lines of two machines in different time zones can be put in order. The name of a log file gives the UTC time at which the file was created (the `Z` suffix), so the names of the logs of an instance sort in time order.
 
 ### How an instance starts
 
@@ -188,7 +190,7 @@ Run-only options (trailing `key=value` arguments, `--instance-id`, `--link KEY@V
 
 ```
 Error: Node add refused (busy): action already in progress (times out in 590s), use `--force` to force adding the node
-Error: Node build failed (attempt_failed): build_cmd `uv sync` failed with status exit status: 2. Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312.log
+Error: Node build failed (attempt_failed): build_cmd `uv sync` failed with status exit status: 2. Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312Z.log
 ```
 
 The daemon refuses a goal with the kind `busy` while other work holds the stack: another add, build or run of the same command, a stack change, a `peppy stack reset`, or a launch that holds the machine. The same command can succeed once that work ends. `peppy node stop` and `peppy node remove` get the same refusal while a stack change, a reset or a launch that holds the machine runs.
@@ -197,7 +199,7 @@ The first Ctrl+C sends the daemon a cancel of the goal. The daemon stops the wor
 
 ```
 Cancelling the node build; press Ctrl-C again to stop waiting for its end
-Error: Node build was cancelled by its caller. Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312.log
+Error: Node build was cancelled by its caller. Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312Z.log
 ```
 
 A goal that ended before the cancel reached it keeps its end, and the command says so: `Node build completed before the cancel took effect.`, with the exit status 0. A goal that failed for a cause of its own, for example a build that failed before the cancel reached it, ends failed with its kind and the exit status 4. A second Ctrl+C stops the wait for the end: the command waits only until the cancel reaches the daemon, which goes on with it, and exits with code 130. A third Ctrl+C ends the command at once. A command whose process goes away, for example when its terminal closes, cancels its goal too: the daemon sees that the sender of the goal is gone, and cancels the goal one minute later, as for a [stack command](/guides/launch_files/#how-a-stack-command-ends).
@@ -359,10 +361,10 @@ Instances: 2 tracked
 Logs
 --------------------------------------------------
 hello_world:v1
-  Add log: /home/ubuntu/.peppy/logs/add/hello_world_v1_20260416_101124_613.log
+  Add log: /home/ubuntu/.peppy/logs/add/hello_world_v1_20260416_101124_613Z.log
   Run logs:
-    - suspicious-swanson-5880: /home/ubuntu/.peppy/logs/run/suspicious-swanson-5880_20260416_101131_207.log
-    - flamboyant-penrose-9622: /home/ubuntu/.peppy/logs/run/flamboyant-penrose-9622_20260416_101131_318.log
+    - suspicious-swanson-5880: /home/ubuntu/.peppy/logs/run/suspicious-swanson-5880_20260416_101131_207Z.log
+    - flamboyant-penrose-9622: /home/ubuntu/.peppy/logs/run/flamboyant-penrose-9622_20260416_101131_318Z.log
 
 Exposed Interfaces
 --------------------------------------------------

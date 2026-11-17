@@ -474,7 +474,7 @@ mod tests {
         );
     }
 
-    const LOG_PATH: &str = "/logs/launch/launch_20260101_000000_000.log";
+    const LOG_PATH: &str = "/logs/launch/launch_20260101_000000_000Z.log";
 
     fn end_of(outcome: StackGoalOutcome, cancel_sent: bool) -> Result<()> {
         report_end("Launch", Path::new(LOG_PATH), outcome, cancel_sent)
@@ -623,7 +623,7 @@ mod ctrl_c {
     use peppylib::types::Payload;
 
     const CORE_NODE: &str = "cn-stack-ctrl-c";
-    const LOG_PATH: &str = "/logs/stack/join_20260101_000000_000.log";
+    const LOG_PATH: &str = "/logs/stack/join_20260101_000000_000Z.log";
 
     /// Phase budgets of one second, so the silence window of the watchdog
     /// is 61 s.
