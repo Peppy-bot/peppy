@@ -25,6 +25,7 @@ tail_seconds = 1.0
 "ROS 2" = "ross two"
 "uv" = "you vee"
 "uses" = "yoozes"
+"axes" = "axees"
 
 # The words of the frames of the cards, of the scenes and of the map.
 [labels]
@@ -107,8 +108,8 @@ id = "many_programs"
 text = "It is many programs that run at the same time."
 
 [[segment.voice]]
-id = "drivers"
-text = "A driver reads each camera, and a driver moves each motor."
+id = "programs"
+text = "One program reads the camera, and another program moves the arm."
 
 [[segment.voice]]
 id = "brain"
@@ -164,12 +165,12 @@ method = ["a problem", "how Peppy solves it", "what you get"]
 
 [segment.screen.parts]
 camera = "camera"
-motor = "motor"
+arm = "arm"
 
 [segment.screen.programs]
-camera_driver = "camera driver"
-motor_driver = "motor driver"
+camera = "camera program"
 brain = "brain"
+arm = "arm program"
 
 [segment.screen.cards.robot_brain]
 term = "Robot brain"
@@ -253,7 +254,7 @@ text = "For this, an action runs a long task: it gives feedback during the task,
 
 [[segment.voice]]
 id = "benefit"
-text = "Thus each node says exactly what it gives and what it needs."
+text = "Each node says exactly what it gives and what it needs."
 pause_after_seconds = 2.0
 
 [segment.screen]
@@ -364,7 +365,7 @@ text = "The command `peppy node sync` reads the file and generates typed code fo
 
 [[segment.voice]]
 id = "agree"
-text = "Thus your code and the file always agree."
+text = "So your code and the file always agree."
 pause_after_seconds = 1.5
 
 [[segment.voice]]
@@ -805,7 +806,7 @@ text = "A WAM, a world action model, predicts the next scene and the motions tog
 
 [[segment.voice]]
 id = "vlm"
-text = "A VLM, a vision-language model, gives words and not motions, so a brain uses it to make a plan."
+text = "A VLM, a vision-language model, gives words and not motions: it makes a plan, and other nodes move the arm."
 
 [[segment.voice]]
 id = "same_contract"
@@ -941,7 +942,7 @@ text = "Peppy finds nodes, launchers, and contracts by name in repositories."
 
 [[segment.voice]]
 id = "nothing_to_clone"
-text = "Thus you have no repository to clone and no workspace to build."
+text = "You have no repository to clone and no workspace to build."
 pause_after_seconds = 2.8
 
 [[segment.voice]]
@@ -1026,7 +1027,7 @@ text = "You do not always have a robot, and an error on a real robot can cause d
 
 [[segment.voice]]
 id = "wish"
-text = "Thus you want to run the same stack in a simulation first."
+text = "You want to run the same stack in a simulation first."
 
 [[segment.voice]]
 id = "axes"
@@ -1046,7 +1047,7 @@ text = "One word in the launch command selects an option, and the launcher file 
 
 [[segment.voice]]
 id = "no_robot"
-text = "Thus you can start with no robot, in a simulation."
+text = "You can start with no robot, in a simulation."
 pause_after_seconds = 1.5
 
 [[segment.voice]]
@@ -1151,7 +1152,7 @@ text = "But a small, fast brain must stay on the board of the robot."
 
 [[segment.voice]]
 id = "wish"
-text = "Thus one stack must run on several machines."
+text = "So one stack must run on several machines."
 
 [[segment.voice]]
 id = "core_node"
