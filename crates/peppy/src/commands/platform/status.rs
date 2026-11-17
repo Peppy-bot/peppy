@@ -760,7 +760,7 @@ mod tests {
         )
         .expect("write a malformed selection");
         let enrollment = auth::test_support::enrollment();
-        let staged_at = chrono::DateTime::from_timestamp(ISSUED_AT, 0).expect("a time");
+        let staged_at = jiff::Timestamp::from_second(ISSUED_AT).expect("a time");
         let running = RouterStatus {
             address: Some(
                 auth::enrollment::RouterEndpoint::parse("rtr-p.example", 7447)

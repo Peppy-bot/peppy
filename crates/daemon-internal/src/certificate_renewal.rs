@@ -213,8 +213,7 @@ fn retry_delay(retry_after_secs: Option<u64>) -> Duration {
 /// Unix seconds as RFC 3339 for the log, or the number itself when it is not
 /// a date.
 pub(crate) fn rfc3339(unix: i64) -> String {
-    chrono::DateTime::from_timestamp(unix, 0)
-        .map_or_else(|| unix.to_string(), |time| time.to_rfc3339())
+    jiff::Timestamp::from_second(unix).map_or_else(|_| unix.to_string(), |time| time.to_string())
 }
 
 #[cfg(test)]
@@ -330,6 +329,12 @@ mod tests {
         fn renewals(&self) -> Vec<i64> {
             self.renewals.lock().unwrap().clone()
         }
+    }
+
+    #[test]
+    fn a_log_time_is_rfc3339_in_utc_or_the_number_out_of_range() {
+        assert_eq!(rfc3339(1_793_511_000), "2026-11-01T05:30:00Z");
+        assert_eq!(rfc3339(i64::MAX), i64::MAX.to_string());
     }
 
     #[tokio::test]

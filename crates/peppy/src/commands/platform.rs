@@ -563,15 +563,15 @@ fn report_unenroll(outcome: PokeOutcome) {
     }
 }
 
-/// A time as a calendar date for human output.
-pub(crate) fn date(time: &chrono::DateTime<chrono::Utc>) -> String {
-    time.format("%Y-%m-%d").to_string()
+/// A time as a calendar date in UTC for human output.
+pub(crate) fn date(time: jiff::Timestamp) -> String {
+    time.strftime("%Y-%m-%d").to_string()
 }
 
 /// A unix timestamp as a calendar date for human output, or the number itself
 /// when it is not a date.
 pub(crate) fn date_of(unix: i64) -> String {
-    chrono::DateTime::from_timestamp(unix, 0).map_or_else(|| unix.to_string(), |time| date(&time))
+    jiff::Timestamp::from_second(unix).map_or_else(|_| unix.to_string(), date)
 }
 
 #[derive(Debug, Subcommand)]
@@ -768,7 +768,7 @@ impl Command for PlatformCommand {
 #[cfg(test)]
 mod tests {
     use super::{
-        FederationPokeAction, await_restart, federation_is_managed, read_daemon_state,
+        FederationPokeAction, await_restart, date_of, federation_is_managed, read_daemon_state,
         report_enroll, report_unenroll, stack_has_user_nodes,
     };
     use core_node_api::{
@@ -783,6 +783,14 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use std::time::Duration;
+
+    /// The last second of 2026-11-01 in UTC: the date is the UTC one,
+    /// whatever the time zone of the host.
+    #[test]
+    fn a_date_is_the_utc_calendar_date_or_the_number_out_of_range() {
+        assert_eq!(date_of(1_793_577_599), "2026-11-01");
+        assert_eq!(date_of(i64::MAX), i64::MAX.to_string());
+    }
 
     fn managed_config() -> PeppyConfig {
         PeppyConfig {

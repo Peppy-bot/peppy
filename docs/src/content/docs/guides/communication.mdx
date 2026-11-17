@@ -218,7 +218,7 @@ $ peppy node run hello_world_param:v1 name=planet
 Running node hello_world_param:v1...
 Starting node hello_world_param:v1 with instance_id 'gifted-moser-9365' and 1 argument(s)...
 Calling node_run for hello_world_param:v1 (instance_id=gifted-moser-9365)...
-Log file: /home/ubuntu/.peppy/logs/run/gifted-moser-9365_20260124_100215_412.log
+Log file: /home/ubuntu/.peppy/logs/run/gifted-moser-9365_20260124_100215_412Z.log
 Started node instance 'gifted-moser-9365' (pid: 76981)
 ```
 
@@ -229,20 +229,20 @@ $ peppy node run hello_receiver:v1 --link hello_world_param@gifted-moser-9365
 Running node hello_receiver:v1...
 Starting node hello_receiver:v1 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
 Calling node_run for hello_receiver:v1 (instance_id=vigorous-buck-8117)...
-Log file: /home/ubuntu/.peppy/logs/run/vigorous-buck-8117_20260124_100243_907.log
+Log file: /home/ubuntu/.peppy/logs/run/vigorous-buck-8117_20260124_100243_907Z.log
 Started node instance 'vigorous-buck-8117' (pid: 77190)
 ```
 
 A producer slot left without a `--link` is an error: every declared producer slot must be bound (unless its cardinality is `zero_or_more`), and the run is rejected before the node spawns. A slot whose manifest declares `cardinality: "zero_or_one"` may instead be started unresolved with `--vacant-link 'SLOT=<why>'`, saying why it runs empty. (Pairing and observer slots follow the same shape: a `zero_or_one` participant or observer slot takes the same flag, and a `zero_or_more` slot of either kind needs no link at all.)
 
-When you start the node, you can see a path to the logs. In my case: `/home/ubuntu/.peppy/logs/run/vigorous-buck-8117_20260124_100243_907.log`. Each process of an instance writes its own file, named after the instance and the time it started.
+When you start the node, you can see a path to the logs. In my case: `/home/ubuntu/.peppy/logs/run/vigorous-buck-8117_20260124_100243_907Z.log`. Each process of an instance writes its own file, named after the instance and the UTC time it started.
 If we open it up:
 ```
-[2026-01-24T10:02:47.630] [stderr]     Finished `release` profile [optimized] target(s) in 0.21s
-[2026-01-24T10:02:47.635] [stderr]      Running `target/release/hello_receiver`
-[2026-01-24T10:02:51.243] [stdout] Received from gifted-moser-9365: hello planet count 7
-[2026-01-24T10:02:54.243] [stdout] Received from gifted-moser-9365: hello planet count 8
-[2026-01-24T10:02:57.244] [stdout] Received from gifted-moser-9365: hello planet count 9
+[2026-01-24T10:02:47.630+00:00] [stderr]     Finished `release` profile [optimized] target(s) in 0.21s
+[2026-01-24T10:02:47.635+00:00] [stderr]      Running `target/release/hello_receiver`
+[2026-01-24T10:02:51.243+00:00] [stdout] Received from gifted-moser-9365: hello planet count 7
+[2026-01-24T10:02:54.243+00:00] [stdout] Received from gifted-moser-9365: hello planet count 8
+[2026-01-24T10:02:57.244+00:00] [stdout] Received from gifted-moser-9365: hello planet count 9
 ```
 
 We can see the messages received from the `hello_world_param:v1` instance!
@@ -255,7 +255,7 @@ $ peppy node run hello_world_param:v1 name=you
 Running node hello_world_param:v1...
 Starting node hello_world_param:v1 with instance_id 'admiring-black-0614' and 1 argument(s)...
 Calling node_run for hello_world_param:v1 (instance_id=admiring-black-0614)...
-Log file: /home/ubuntu/.peppy/logs/run/admiring-black-0614_20260124_100412_118.log
+Log file: /home/ubuntu/.peppy/logs/run/admiring-black-0614_20260124_100412_118Z.log
 Started node instance 'admiring-black-0614' (pid: 78063)
 ```
 
@@ -269,11 +269,11 @@ Starting node hello_receiver:v1 with instance_id 'vigorous-buck-8117' and 0 argu
 ```
 And we check the new run's log:
 ```
-$ tail /home/ubuntu/.peppy/logs/run/vigorous-buck-8117_20260124_100441_052.log
-[2026-01-24T10:04:47.085] [stdout] Received from admiring-black-0614: hello you count 1
-[2026-01-24T10:04:50.085] [stdout] Received from admiring-black-0614: hello you count 2
-[2026-01-24T10:04:53.086] [stdout] Received from admiring-black-0614: hello you count 3
-[2026-01-24T10:04:56.085] [stdout] Received from admiring-black-0614: hello you count 4
+$ tail /home/ubuntu/.peppy/logs/run/vigorous-buck-8117_20260124_100441_052Z.log
+[2026-01-24T10:04:47.085+00:00] [stdout] Received from admiring-black-0614: hello you count 1
+[2026-01-24T10:04:50.085+00:00] [stdout] Received from admiring-black-0614: hello you count 2
+[2026-01-24T10:04:53.086+00:00] [stdout] Received from admiring-black-0614: hello you count 3
+[2026-01-24T10:04:56.085+00:00] [stdout] Received from admiring-black-0614: hello you count 4
 ```
 The receiver now follows `admiring-black-0614`, and only it. `gifted-moser-9365` keeps publishing, but no binding names it anymore, so its messages reach no slot. (To consume both producers at once, declare the slot with `one_or_more` cardinality and repeat `--link` with one producer per flag, or declare two `one` slots with one `link_id` per producer; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing).)
 

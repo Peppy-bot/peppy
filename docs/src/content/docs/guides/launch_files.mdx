@@ -494,9 +494,9 @@ peppy node run wrist_camera:v1 -i wrist_cam_inst --restart on_failure --max-rest
 A crash of that instance and its restart read in the stack log as:
 
 ```text
-[2026-10-07T14:02:11.204] Instance 'wrist_cam_inst' of node 'wrist_camera:v1' failed: signal 11 (SIGSEGV), core dumped
-[2026-10-07T14:02:11.209] Instance 'wrist_cam_inst' of node 'wrist_camera:v1' restarting in 1 s (attempt 1)
-[2026-10-07T14:02:13.487] Instance 'wrist_cam_inst' of node 'wrist_camera:v1' restarted (attempt 1)
+[2026-10-07T14:02:11.204+00:00] Instance 'wrist_cam_inst' of node 'wrist_camera:v1' failed: signal 11 (SIGSEGV), core dumped
+[2026-10-07T14:02:11.209+00:00] Instance 'wrist_cam_inst' of node 'wrist_camera:v1' restarting in 1 s (attempt 1)
+[2026-10-07T14:02:13.487+00:00] Instance 'wrist_cam_inst' of node 'wrist_camera:v1' restarted (attempt 1)
 ```
 
 `peppy node stop`, `peppy node remove`, `peppy node add` over its node, `peppy stack reset`, `peppy stack remove`, `peppy stack launch` of the stack again and a daemon shutdown end an instance for good and cancel a waiting restart; `peppy node stop` also clears a `finished`, `failed` or `restarting` instance, which frees its id, and ends the start of an instance its restart is starting again. While a restart holds its daemon, from its start through the pairs its new process asks for again, a `peppy stack launch`, build, join or removal on that daemon answers busy, naming the instance and the stop that ends its restart. A start waits ten minutes for a node that never signals ready before it fails, and each attempt holds the daemon for its own start, so an instance whose every start hangs keeps its daemon busy, between its waits, until that stop or its `max_restarts` ends the restarts. `peppy node remove` holds restarts off while it runs: an instance that exits on the removal's shutdown request ends there whatever its policy, and one whose restart falls due waits, so a removal that succeeds removes both. An instance starting when the removal reaches it, or running a process that reached `running` after the removal began, keeps its node; the removal's error names it, and `peppy node remove <name>:<tag> --stop-instances` run again once none is starting removes it. `peppy stack join` refuses a copy whose adjustment changes the policy of an instance the stack runs, and a join that grows a `restarting` instance's slot.
@@ -621,7 +621,7 @@ Error: Launch refused (busy): a stack launch, build, join, removal or reset, or 
 A goal that fails ends the command with its failure kind, the reason, and the launch log, after the log files of the nodes:
 
 ```text
-Error: Launch failed (attempt_failed): failed to build node arm:v1: build_cmd `cargo build --release` failed with status exit status: 101. Log file: /home/ubuntu/.peppy/logs/launch/launch_20261023_101500_123.log
+Error: Launch failed (attempt_failed): failed to build node arm:v1: build_cmd `cargo build --release` failed with status exit status: 101. Log file: /home/ubuntu/.peppy/logs/launch/launch_20261023_101500_123Z.log
 ```
 
 | Kind | What it says |
@@ -650,7 +650,7 @@ Cancelling the launch; press Ctrl-C again to stop waiting for its end
 The daemon stops the change at the step it reached, and ends it as a failure at that step ends it: a launch or a build clears the stack, a join is undone, and a removal keeps its copy, with the instances that it did not stop yet. A join or a removal reads the cancel before it changes a machine, so a cancel that comes early leaves every stack as it was. A step that runs on another machine gets the cancel too. The command follows the change to that end, prints how it ended, and exits with the status of that end, 5 for a cancel. The rollback can be silent for longer than the idle budgets, so after a Ctrl+C only `--max-timeout-secs` bounds the wait:
 
 ```text
-Error: Launch was cancelled by its caller. Log file: /home/ubuntu/.peppy/logs/launch/launch_20261023_101500_123.log
+Error: Launch was cancelled by its caller. Log file: /home/ubuntu/.peppy/logs/launch/launch_20261023_101500_123Z.log
 ```
 
 A change that ended before the cancel reached it keeps its end, and the command says so: `Launch completed before the cancel took effect.`, with the exit status 0. A change that failed for a cause of its own, for example a build that failed before the cancel reached it, ends failed with its kind and the exit status 4, also when the cancel arrives during its rollback. A second Ctrl+C stops the wait for the end: the command waits only until the cancel reaches the daemon, which goes on with it, and exits with code 130. A third Ctrl+C ends the command at once.

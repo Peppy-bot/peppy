@@ -6086,10 +6086,9 @@ async fn a_bound_consumer_receives_again_after_its_producer_respawns() {
     );
 }
 
-/// When the first line of `log` that holds `marker` was written. The image
-/// sets its clock to UTC, so the times of one machine's logs order as they
-/// were written.
-fn line_time(log: &str, marker: &str) -> chrono::NaiveDateTime {
+/// When the first line of `log` that holds `marker` was written: an instant,
+/// as each line time gives its UTC offset.
+fn line_time(log: &str, marker: &str) -> jiff::Timestamp {
     let line = log
         .lines()
         .find(|line| line.contains(marker))
