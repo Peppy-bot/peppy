@@ -216,8 +216,8 @@
     "spoken_sha256": "13d2ed3307477f7cf986116863d3b6b4ca6bc86f79b26722cf13c7f7c131124f"
   },
   "stack/check": {
-    "seconds": 6.5493,
-    "spoken_sha256": "720675776a91f61cdd8e846ca870e24443b52307ce71def58fe0c44443acdfa3"
+    "seconds": 6.6133,
+    "spoken_sha256": "241670fb1460a4c2d42f5c1199673b8da5343e04182fd05c8edea7b26eedfdd2"
   },
   "stack/early": {
     "seconds": 4.6507,
@@ -228,32 +228,36 @@
     "spoken_sha256": "ddc261fd257f36681a00677f2ad68cae4b16b589d5932e043472cc5e7beb273f"
   },
   "contracts/problem": {
-    "seconds": 2.6453,
-    "spoken_sha256": "91e6cef7365b8856b2b2ede3adc2bee5077bac93007f3af9c3bd66ccb7a8015f"
+    "seconds": 4.1173,
+    "spoken_sha256": "6455c44a6ce49f26f31c2e3f0d15e6caeeacd4a3bff2f6b3938d6fe92d08f9bf"
   },
   "contracts/problem_cost": {
-    "seconds": 5.3547,
-    "spoken_sha256": "073b1b49cc3dad47e773593a5285f7922d825f8129cea748665764c516ba6744"
+    "seconds": 5.2053,
+    "spoken_sha256": "fa68a869a97994bfdb729c48bb4de92109e63713565fd970ea1359a064cdf940"
   },
   "contracts/contract": {
     "seconds": 6.2507,
     "spoken_sha256": "f8c7608be613bc59ae2bb97ac212eb1fc365986bf2477039e2549fafde533575"
   },
-  "contracts/brains_job": {
-    "seconds": 6.3147,
-    "spoken_sha256": "d1e403761a47882a1b40c80188ebf90175ff74eb6ceabf292f8367a128ea84a1"
+  "contracts/brain_job": {
+    "seconds": 4.0747,
+    "spoken_sha256": "85b5d60c0b380af2fb94da839c2f43f13b85beb21eb869f44cade2f7528f2206"
   },
   "contracts/implements": {
     "seconds": 3.7973,
     "spoken_sha256": "49a54ba4e7e89b53ee9f754de77f8f596aa989e652c76963ca5f7d3b73525bfa"
   },
-  "contracts/depends": {
-    "seconds": 4.7147,
-    "spoken_sha256": "e546222d170baf3335cfd92023078bd8c69d50404af8543eb7778606fcd0017d"
+  "contracts/uses": {
+    "seconds": 5.5893,
+    "spoken_sha256": "2f36993772864d7f85b80e78651299540b59da23d8ac2891caa2722bb906735c"
+  },
+  "contracts/nodes": {
+    "seconds": 4.6933,
+    "spoken_sha256": "aa3d7d80998a908e92da396326957020c9c415721cd28bf18f680e91317b9258"
   },
   "contracts/binds": {
-    "seconds": 4.6507,
-    "spoken_sha256": "a84c402de090be39e7ca2e4dad1a315102e57e4bff619596b5fa39643f2b4926"
+    "seconds": 4.8213,
+    "spoken_sha256": "b07be1d8d3973160143d069e360976609f6435e1ec4af26aceffc0cd834d828e"
   },
   "contracts/types": {
     "seconds": 2.1547,
@@ -268,16 +272,16 @@
     "spoken_sha256": "7c4d0f496728ed9152a1355c0da4c4e6e8b7f8c142eb1d8690eea6e81cc6be0c"
   },
   "contracts/vlm": {
-    "seconds": 6.976,
-    "spoken_sha256": "f29696af8dead5056348d9c67145f2a41c84f50694db5d6c15b46c8460ce4309"
+    "seconds": 6.8907,
+    "spoken_sha256": "a080645696e3ffe8eee4f2b8d87ac4ad5eea08f46e4d1f714041d36c2c5e02e9"
   },
   "contracts/same_contract": {
-    "seconds": 5.0987,
-    "spoken_sha256": "79e444613496137b616188b2a3b416f68b84a9005a417b968957afe2fb3ad1b7"
+    "seconds": 3.4347,
+    "spoken_sha256": "56cd294f41abe5b8752514ad025d6ccb25d23aab6639df850935e813c22066e9"
   },
   "contracts/replace": {
-    "seconds": 4.1173,
-    "spoken_sha256": "3986ff3c89b82cbc27b6090c653094a1045bd17b735e020604bec9d4dc9d7d84"
+    "seconds": 5.2693,
+    "spoken_sha256": "e2fb7d5b6dc91d7f70123c18e9b8653dd57238868c623b555cb0662b518e8d4f"
   },
   "launchers/problem": {
     "seconds": 4.992,
