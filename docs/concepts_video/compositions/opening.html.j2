@@ -230,7 +230,7 @@
           <canvas id="{{ id }}-robot" class="robot-canvas {{ id }}-robot"></canvas>
           <div id="{{ id }}-programs" class="frame {{ id }}-programs">
             <span id="{{ id }}-framework" class="frame-name" data-layout="over">{{ screen.framework }}</span>
-            {% for key, icon_name in [("camera_driver", "camera"), ("brain", "brain"), ("motor_driver", "motor")] %}
+            {% for key, icon_name in [("camera", "camera"), ("brain", "brain"), ("arm", "arm")] %}
             <div id="{{ id }}-node-{{ key }}" class="node">
               {{ icon(icon_name) }}<span>{{ screen.programs[key] }}</span>
               <span class="status {{ id }}-status" data-layout="over"></span>
@@ -259,14 +259,14 @@
         </div>
         <svg class="wires" viewBox="0 0 1920 1080">
           <path id="{{ id }}-leader-camera" class="{{ id }}-leader" pathLength="1" />
-          <path id="{{ id }}-leader-motor" class="{{ id }}-leader" pathLength="1" />
+          <path id="{{ id }}-leader-arm" class="{{ id }}-leader" pathLength="1" />
           {{ wire(id + "-wire-camera") }}
           {{ wire(id + "-wire-to-brain") }}
           {{ wire(id + "-wire-from-brain") }}
-          {{ wire(id + "-wire-motor") }}
+          {{ wire(id + "-wire-arm") }}
         </svg>
         <div id="{{ id }}-label-camera" class="label is-tag placed" data-layout="over">{{ screen.parts.camera }}</div>
-        <div id="{{ id }}-label-motor" class="label is-tag placed" data-layout="over">{{ screen.parts.motor }}</div>
+        <div id="{{ id }}-label-arm" class="label is-tag placed" data-layout="over">{{ screen.parts.arm }}</div>
         <div id="{{ id }}-dot-to-brain" class="dot" data-layout="free"></div>
         <div id="{{ id }}-dot-from-brain" class="dot" data-layout="free"></div>
       </div>
@@ -315,13 +315,13 @@
       Motion.show(tl, ID + "-robot-scene", robotTime, Motion.appears);
 
       // The wires between the programs.
-      Motion.connect(ID + "-wire-to-brain", [node("camera_driver"), "bottom"], [node("brain"), "top"], { gap: 6 });
-      Motion.connect(ID + "-wire-from-brain", [node("brain"), "bottom"], [node("motor_driver"), "top"], { gap: 6 });
+      Motion.connect(ID + "-wire-to-brain", [node("camera"), "bottom"], [node("brain"), "top"], { gap: 6 });
+      Motion.connect(ID + "-wire-from-brain", [node("brain"), "bottom"], [node("arm"), "top"], { gap: 6 });
 
       // The robot turns to the viewer, then labels point to its parts. The
-      // wires between the robot and its drivers have their shape when the
+      // wires between the robot and its programs have their shape when the
       // view of the robot is ready, so they come in from there.
-      const motorTime = Motion.within(at.drivers, 0.55);
+      const armTime = Motion.within(at.programs, 0.55);
       const robot = RobotView.mount({
         canvas: document.querySelector(ID + "-robot"),
         segmentStart: {{ start }},
@@ -330,31 +330,31 @@
       });
       robot.ready.then(function (view) {
         const camera = view.pointOnPage("camera", 0);
-        const motor = view.pointOnPage("left_wrist", 0);
+        const arm = view.pointOnPage("left_wrist", 0);
         const place = (selector, x, y) => gsap.set(selector, { left: x, top: y });
         const path = (selector, d) => document.querySelector(selector).setAttribute("d", d);
         place(ID + "-label-camera", camera.x + 64, camera.y - 112);
         path(ID + "-leader-camera", `M ${camera.x + 84} ${camera.y - 62} L ${camera.x + 12} ${camera.y - 10}`);
-        place(ID + "-label-motor", motor.x - 70, motor.y - 204);
-        path(ID + "-leader-motor", `M ${motor.x - 12} ${motor.y - 154} L ${motor.x - 4} ${motor.y - 30}`);
-        Motion.connect(ID + "-wire-camera", [{ x: camera.x + 16, y: camera.y }, "right"], [node("camera_driver"), "left"], { curve: true });
-        Motion.connect(ID + "-wire-motor", [node("motor_driver"), "left"], [{ x: motor.x + 30, y: motor.y + 8 }, "right"], { gap: 6, endGap: 0, curve: true });
-        Motion.drawArrow(tl, ID + "-wire-camera", at.drivers.start + 0.2, 0.8);
-        Motion.drawArrow(tl, ID + "-wire-motor", motorTime + 0.3, 0.8);
+        place(ID + "-label-arm", arm.x - 70, arm.y - 204);
+        path(ID + "-leader-arm", `M ${arm.x - 12} ${arm.y - 154} L ${arm.x - 4} ${arm.y - 30}`);
+        Motion.connect(ID + "-wire-camera", [{ x: camera.x + 16, y: camera.y }, "right"], [node("camera"), "left"], { curve: true });
+        Motion.connect(ID + "-wire-arm", [node("arm"), "left"], [{ x: arm.x + 30, y: arm.y + 8 }, "right"], { gap: 6, endGap: 0, curve: true });
+        Motion.drawArrow(tl, ID + "-wire-camera", at.programs.start + 0.2, 0.8);
+        Motion.drawArrow(tl, ID + "-wire-arm", armTime + 0.3, 0.8);
       });
       [
         ["camera", at.many_programs.start + 0.3],
-        ["motor", at.many_programs.start + 1.1],
+        ["arm", at.many_programs.start + 1.1],
       ].forEach(function ([part, time]) {
         Motion.draw(tl, ID + "-leader-" + part, time, 0.4);
         Motion.show(tl, ID + "-label-" + part, time + 0.1);
       });
 
       // Each part has a program.
-      Motion.show(tl, node("camera_driver"), at.drivers.start + 0.7);
-      Motion.show(tl, node("motor_driver"), motorTime);
+      Motion.show(tl, node("camera"), at.programs.start + 0.7);
+      Motion.show(tl, node("arm"), armTime);
 
-      // The brain is between the two drivers.
+      // The brain is between the two programs.
       Motion.show(tl, node("brain"), at.brain.start + 0.2);
       Motion.drawArrow(tl, ID + "-wire-to-brain", at.brain.start + 0.6, 0.4);
       Motion.drawArrow(tl, ID + "-wire-from-brain", at.brain.start + 1.0, 0.4);
@@ -365,7 +365,7 @@
       needTimes.forEach((time, index) => Motion.show(tl, ID + "-need-" + (index + 1), time, Motion.fromSide));
       Motion.follow(tl, ID + "-dot-to-brain", ID + "-wire-to-brain", needTimes[1], 0.6, 4);
       Motion.follow(tl, ID + "-dot-from-brain", ID + "-wire-from-brain", needTimes[1] + 0.3, 0.6, 4);
-      ["camera_driver", "brain", "motor_driver"].forEach((key, index) => Motion.pulse(tl, node(key), needTimes[2] + index * 0.3));
+      ["camera", "brain", "arm"].forEach((key, index) => Motion.pulse(tl, node(key), needTimes[2] + index * 0.3));
       Motion.show(tl, "." + "{{ id }}-status", needTimes[3], { from: { opacity: 0, scale: 0.2 }, stagger: 0.15 });
 
       // A robotics framework does this work, and Peppy is one.

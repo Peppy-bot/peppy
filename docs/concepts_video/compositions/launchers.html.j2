@@ -231,10 +231,10 @@
       Motion.show(tl, ID + "-store .pill", Motion.within(at.by_name, 0.25), { from: { opacity: 0, scale: 0.6, y: 0 }, stagger: 0.45 });
       Motion.drawArrow(tl, ID + "-finds", Motion.within(at.by_name, 0.7), 0.5);
 
-      // Thus a developer has no repository to clone and no workspace to build:
+      // A developer has no repository to clone and no workspace to build:
       // one line comes in with each of the two, and a third line after them.
       // The three lines stay during the silence after the sentence.
-      [0.2, 0.58, 1.03].forEach((share, index) => Motion.show(tl, ID + "-free-" + (index + 1), Motion.within(at.nothing_to_clone, share), Motion.fromSide));
+      [0.13, 0.55, 1.03].forEach((share, index) => Motion.show(tl, ID + "-free-" + (index + 1), Motion.within(at.nothing_to_clone, share), Motion.fromSide));
 
       // The first run of a stack: the two steps of Peppy come in with the
       // voice, then the seven steps of ROS 2.
