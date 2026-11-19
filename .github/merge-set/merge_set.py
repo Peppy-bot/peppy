@@ -88,12 +88,24 @@ every finished hub run that is out of date, at once: a re-run whose peppy dev
 build is not uploaded yet waits for it in that first job.
 
 Claude can review a set and approve it, so that a developer does not wait for
-the review of a person. When each open pull request of a set was opened by a
-member of the team `peppy-devs`, the dashboard has the section "Review by
-Claude", with a box that asks for the review, and the bot writes that
-dashboard on a pull request that is alone too: a pull request that is alone is
-a set of one. The bot acts on the box for the same users as on its other
-boxes. It starts the workflow `Claude review` of the private repository
+the review of a person without end. When each open pull request of a set was
+opened by a member of the team `peppy-devs`, the dashboard has the section
+"Review by Claude", and the bot writes that dashboard on a pull request that
+is alone too: a pull request that is alone is a set of one. A person has 12
+hours to review the set first, from the time each of its open pull requests
+is ready for review. During that time the section shows the time left, and
+no box. A pull request that joins the set, or that leaves the draft state,
+starts the 12 hours again. When a person who did not open a pull request of
+the set and has write access to its repository reviews one of them before
+the 12 hours end, a person reviews the set and the section gets no box.
+Otherwise the section gets a box that asks for the review when the 12 hours
+end, and the bot tells the authors of the set in a comment, because an edit
+of the dashboard sends no notification. A review of a person after that does
+not remove the box. No event of GitHub comes when the time passes, so the
+workflow merge-set-wait.yml runs `wait-syncs` every 30 minutes: it starts the
+sync of each set that waits, until one hour after the end of its 12 hours.
+The bot acts on the box for the same users as on its other boxes. It starts
+the workflow `Claude review` of the private repository
 peppy-superproject (claude_review.py runs in it) when no pull request of the
 set has a conflict with its base and no review of the set is in progress, and
 answers with the cause in each other case. The reviewer, a GitHub App of its
@@ -147,9 +159,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 
@@ -378,11 +390,15 @@ class Event:
 
     @property
     def set_name(self) -> str | None:
-        """The set of the event: its branch, unless the branch is in a fork or
-        is an integration branch, which no set is named after."""
-        if self.from_fork or self.branch in resolve.BRANCHES_WITHOUT_SET_NAME:
-            return None
-        return self.branch
+        return set_name_of(self.branch, self.from_fork)
+
+
+def set_name_of(branch: str, from_fork: bool) -> str | None:
+    """The set of a branch: the branch, unless it is in a fork or is an
+    integration branch, which no set is named after."""
+    if from_fork or branch in resolve.BRANCHES_WITHOUT_SET_NAME:
+        return None
+    return branch
 
 
 def parse_pull_request_number(text: str) -> int | None:
@@ -1885,22 +1901,31 @@ class Review:
     id: int
     # None when GitHub names no user.
     author: str | None
+    # Whether a bot wrote it, such as a GitHub App.
+    by_bot: bool
     # APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED or PENDING.
     state: str
     # The head of the pull request that the review is of.
     commit: str | None
+    # None while its author did not submit it (PENDING).
+    submitted_at: datetime | None
 
 
 def parse_reviews(items: Sequence[Mapping]) -> list[Review]:
-    return [
-        Review(
-            id=item["id"],
-            author=(item.get("user") or {}).get("login"),
-            state=item["state"],
-            commit=item.get("commit_id"),
-        )
-        for item in items
-    ]
+    return [parse_review(item) for item in items]
+
+
+def parse_review(item: Mapping) -> Review:
+    user = item.get("user") or {}
+    submitted_at = item.get("submitted_at")
+    return Review(
+        id=item["id"],
+        author=user.get("login"),
+        by_bot=user.get("type") == "Bot",
+        state=item["state"],
+        commit=item.get("commit_id"),
+        submitted_at=None if submitted_at is None else parse_github_time(submitted_at),
+    )
 
 
 def reviewer_approvals(reviews: Sequence[Review]) -> list[Review]:
@@ -2127,10 +2152,207 @@ class PullRequestReview:
     decision: ReviewDecision | None
 
 
+# The wait for a person -------------------------------------------------------
+
+# A person has this long to review a set of developers, from the time each of
+# its open pull requests is ready for review, before Claude can review it.
+PERSON_REVIEW_WAIT = timedelta(hours=12)
+
+# The workflow of peppy that starts the sync of each set that waits for a
+# person, at this interval, so that the dashboard shows the time left and
+# shows the box of the review when the wait ends: no event of GitHub comes
+# when the time passes. It goes on for WAIT_SYNC_MARGIN after the end of the
+# wait, so that a scheduled run that GitHub delays or drops does not keep the
+# box hidden.
+WAIT_SYNC_WORKFLOW = "merge-set-wait.yml"
+WAIT_SYNC_INTERVAL = timedelta(minutes=30)
+WAIT_SYNC_MARGIN = 2 * WAIT_SYNC_INTERVAL
+
+# The mark of the dashboard that counts down the wait: the sync that finds
+# it and offers the review tells the authors of the set.
+WAIT_MARKER = "<!-- claude-review:wait -->"
+
+
+@dataclass(frozen=True)
+class PersonReview:
+    """A review that a person submitted on an open pull request of the set:
+    a user who is no bot, did not open a pull request of the set, and has
+    write access to the repository of the pull request."""
+
+    pull_request: PullRequest
+    author: str
+    submitted_at: datetime
+
+
+@dataclass(frozen=True)
+class DraftWait:
+    """A pull request of the set is a draft, so the wait has not started."""
+
+    drafts: tuple[PullRequest, ...]
+
+
+@dataclass(frozen=True)
+class PersonWait:
+    """A person can review the set until `ends_at`; Claude cannot yet."""
+
+    ends_at: datetime
+    left: timedelta
+
+
+@dataclass(frozen=True)
+class ReviewedByPerson:
+    """A person reviewed the set before the end of the wait, so a person
+    reviews it and Claude does not. `review` is the first such review."""
+
+    review: PersonReview
+
+
+@dataclass(frozen=True)
+class ClaudeOffered:
+    """No person reviewed the set before the end of the wait: Claude can
+    review it."""
+
+
+ReviewOffer = DraftWait | PersonWait | ReviewedByPerson | ClaudeOffered
+
+
+def opened_by_developers(
+    pull_requests: Sequence[PullRequest], is_developer: Callable[[str], bool]
+) -> bool:
+    """Whether a member of DEVELOPER_TEAM opened each of the pull requests,
+    so that their dashboard has the section of the Claude review. A pull
+    request from a fork is in no set."""
+    return bool(pull_requests) and all(
+        pull_request.author is not None and is_developer(pull_request.author)
+        for pull_request in pull_requests
+    )
+
+
+def wait_end(
+    pull_requests: Sequence[PullRequest],
+    ready_at: Callable[[PullRequest], datetime],
+) -> datetime | None:
+    """When the wait for a person ends: PERSON_REVIEW_WAIT after the last of
+    the pull requests became ready for review, so that a person has that time
+    for each one. None while one of them is a draft. `ready_at` gives when a
+    pull request that is not a draft became ready for review."""
+    if any(pull_request.draft for pull_request in pull_requests):
+        return None
+    return (
+        max(ready_at(pull_request) for pull_request in pull_requests)
+        + PERSON_REVIEW_WAIT
+    )
+
+
+def is_by_a_person(review: Review, authors: Collection[str | None]) -> bool:
+    """Whether a user who is no bot and is not one of `authors` submitted
+    the review."""
+    return (
+        review.author is not None
+        and not review.by_bot
+        and review.submitted_at is not None
+        and review.author not in authors
+    )
+
+
+def person_reviews(
+    pull_requests: Sequence[PullRequest],
+    reviews_of: Mapping[str, Sequence[Review]],
+    permission: Callable[[Repository, str], str],
+) -> list[PersonReview]:
+    """The reviews of persons on the pull requests, whose reviews are in
+    `reviews_of` by label. `permission` gives the permission of a user on a
+    repository."""
+    authors = {pull_request.author for pull_request in pull_requests}
+    return [
+        PersonReview(pull_request, review.author, review.submitted_at)
+        for pull_request in pull_requests
+        for review in reviews_of[pull_request.label]
+        if is_by_a_person(review, authors)
+        and permission(pull_request.repository, review.author) in WRITE_PERMISSIONS
+    ]
+
+
+def review_offer(
+    pull_requests: Sequence[PullRequest],
+    ends_at: datetime | None,
+    reviews: Sequence[PersonReview],
+    now: datetime,
+) -> ReviewOffer:
+    """Whether Claude can review the open pull requests of a set at `now`,
+    from the end of the wait for a person (None while one of them is a
+    draft) and the reviews of persons on them. A review after the end of the
+    wait does not take the offer back."""
+    in_time = [
+        review for review in reviews if ends_at is None or review.submitted_at < ends_at
+    ]
+    if in_time:
+        return ReviewedByPerson(min(in_time, key=lambda review: review.submitted_at))
+    if ends_at is None:
+        return DraftWait(
+            tuple(pull_request for pull_request in pull_requests if pull_request.draft)
+        )
+    if now < ends_at:
+        return PersonWait(ends_at, ends_at - now)
+    return ClaudeOffered()
+
+
+def hours_text(duration: timedelta) -> str:
+    return f"{int(duration.total_seconds() // 3600)} hours"
+
+
+def utc_text(time: datetime) -> str:
+    return time.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def duration_text(duration: timedelta) -> str:
+    """A duration in hours and whole minutes, as `11 h 5 min`."""
+    hours, minutes = divmod(int(duration.total_seconds() // 60), 60)
+    parts = [f"{hours} h"] if hours else []
+    if minutes:
+        parts.append(f"{minutes} min")
+    return " ".join(parts) or "less than 1 min"
+
+
+def section_subject(alone: bool) -> str:
+    """What the section of the Claude review calls the set."""
+    return "this pull request" if alone else "this set"
+
+
+def wait_rule_text(alone: bool) -> str:
+    subject = section_subject(alone)
+    ready = "it is" if alone else "each of its pull requests is"
+    return (
+        f"A person has {hours_text(PERSON_REVIEW_WAIT)} to review {subject} from "
+        f"the time {ready} ready for review. Claude can review {subject} only if "
+        "no person reviewed it in that time."
+    )
+
+
+def wait_state_text(
+    offer: DraftWait | PersonWait | ReviewedByPerson, alone: bool
+) -> str:
+    """Where the wait for a person is, for each offer but ClaudeOffered."""
+    match offer:
+        case DraftWait(drafts):
+            links = ", ".join(pull_request.link for pull_request in drafts)
+            verb = "is a draft" if len(drafts) == 1 else "are drafts"
+            return f"{links} {verb}, so that time has not started."
+        case PersonWait(ends_at, left):
+            return f"**{duration_text(left)} left**, until {utc_text(ends_at)}."
+        case ReviewedByPerson(review):
+            return (
+                f"`{review.author}` reviewed {review.pull_request.link}, so a "
+                f"person reviews {section_subject(alone)}, not Claude."
+            )
+
+
 @dataclass(frozen=True)
 class SetReview:
-    """The Claude review of a set whose dashboard offers it."""
+    """The Claude review of a set whose dashboard has its section."""
 
+    # Whether Claude can review the set.
+    offer: ReviewOffer
     # Ordered as the open pull requests of the set.
     pull_requests: tuple[PullRequestReview, ...]
     # The newest review run of the set; None when there is none.
@@ -2150,26 +2372,38 @@ class SetReview:
         return self.run is not None and not self.run.completed
 
 
-def is_review_offered(state: SetState, is_developer: Callable[[str], bool]) -> bool:
-    """Whether the dashboard offers the review: a member of DEVELOPER_TEAM
-    opened each open pull request of the set. A pull request from a fork is
-    in no set."""
-    pull_requests = state.open_pull_requests()
-    return bool(pull_requests) and all(
-        pull_request.author is not None and is_developer(pull_request.author)
-        for pull_request in pull_requests
-    )
-
-
 def counted(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
 def review_section(set_review: SetReview, alone: bool) -> list[str]:
-    """The section "Review by Claude" of a dashboard: the offer, its box, and
-    the state of the review."""
+    """The section "Review by Claude" of a dashboard: the wait for a person,
+    then the offer of Claude, its box, and the state of the review."""
+    lines = ["### Review by Claude", "", wait_rule_text(alone), ""]
+    offer = set_review.offer
+    if isinstance(offer, ClaudeOffered):
+        return [*lines, *offered_review_lines(set_review, alone)]
+    lines.append(wait_line(offer, alone))
+    if set_review.in_progress:
+        lines.extend(["", *review_state_lines(set_review)])
+    return lines
+
+
+def wait_line(offer: DraftWait | PersonWait | ReviewedByPerson, alone: bool) -> str:
+    """The state of the wait for a person, as the dashboard shows it. The
+    line that counts down the wait has WAIT_MARKER."""
+    text = wait_state_text(offer, alone)
+    if not isinstance(offer, PersonWait):
+        return text
+    minutes = int(WAIT_SYNC_INTERVAL.total_seconds() // 60)
+    return f"{WAIT_MARKER}{text} The bot updates this time every {minutes} minutes."
+
+
+def offered_review_lines(set_review: SetReview, alone: bool) -> list[str]:
+    """The offer of the review of Claude, its box, and the state of the
+    review."""
     pull_requests = counted(len(set_review.pull_requests), "pull request")
-    subject = "this pull request" if alone else "this set"
+    subject = section_subject(alone)
     posts_on = "this pull request" if alone else "each pull request of the set"
     approves = "this pull request" if alone else f"the {pull_requests}"
     box = (
@@ -2178,12 +2412,10 @@ def review_section(set_review: SetReview, alone: bool) -> list[str]:
         else f"Ask Claude to review the {pull_requests} of this set"
     )
     return [
-        "### Review by Claude",
-        "",
         (
-            f"Claude can review {subject} and approve it. You then do not have "
-            "to wait for the review of a person. This is your choice: a person "
-            f"can also review and approve {subject} as usual."
+            f"No person reviewed {subject} in that time, so Claude can review it "
+            "and approve it. This is your choice: a person can also review and "
+            f"approve {subject} as usual."
         ),
         "",
         (
@@ -2260,6 +2492,11 @@ def review_refusal_reasons(
             "Claude reviews only a set whose every open pull request a member of "
             f"`{DEVELOPER_TEAM}` opened."
         ]
+    if not isinstance(set_review.offer, ClaudeOffered):
+        return [
+            f"{wait_rule_text(state.is_alone)} "
+            f"{wait_state_text(set_review.offer, state.is_alone)}"
+        ]
     if set_review.in_progress:
         return [
             f"A review of this set is in progress in [this run]({set_review.run.url})."
@@ -2327,6 +2564,29 @@ def render_review_started(
         f"{mention(requesters)}, Claude reviews the set `{set_name}` in "
         f"[this run]({run.url}). It posts its findings on each pull request of "
         "the set, and the merge-set comment shows the state of the review.\n"
+    )
+
+
+def wait_ended(set_review: SetReview, dashboards: Mapping[str, Dashboard]) -> bool:
+    """Whether the wait for a person ended since the dashboards of the set
+    were written: one of them counts down the wait, and Claude can now
+    review the set."""
+    return isinstance(set_review.offer, ClaudeOffered) and any(
+        WAIT_MARKER in dashboard.body for dashboard in dashboards.values()
+    )
+
+
+def render_wait_ended(state: SetState) -> str:
+    authors = []
+    for pull_request in state.open_pull_requests():
+        if pull_request.author not in authors:
+            authors.append(pull_request.author)
+    subject = "this pull request" if state.is_alone else f"the set `{state.name}`"
+    return (
+        f"{mention(authors)}, no person reviewed {subject} in "
+        f"{hours_text(PERSON_REVIEW_WAIT)}, so Claude can review it now. To ask "
+        'for the review, tick the box in the section "Review by Claude" of the '
+        "merge-set comment.\n"
     )
 
 
@@ -2750,6 +3010,31 @@ def error_message(error: urllib.error.HTTPError) -> str:
     return message
 
 
+# The newest time the pull request left the draft state.
+READY_FOR_REVIEW_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      timelineItems(last: 1, itemTypes: [READY_FOR_REVIEW_EVENT]) {
+        nodes { ... on ReadyForReviewEvent { createdAt } }
+      }
+    }
+  }
+}
+"""
+
+
+def ready_for_review_time(
+    pull_request: PullRequest, events: Sequence[Mapping]
+) -> datetime:
+    """When the pull request, which is not a draft, became ready for review:
+    the time of the newest of `events`, the times it left the draft state,
+    or the time it opened when it was never a draft."""
+    if not events:
+        return pull_request.created_at
+    return parse_github_time(events[-1]["createdAt"])
+
+
 REVIEW_DECISION_QUERY = """
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
@@ -2828,6 +3113,26 @@ class GitHubGateway:
     def pull_request(self, repository: Repository, number: int) -> PullRequest:
         item = self.api.request("GET", pull_request_path(repository, number))
         return parse_pull_request(repository, item)
+
+    def open_pull_requests(self, repository: Repository) -> list[PullRequest]:
+        items = self.api.pages(
+            f"/repos/{repository.full_name}/pulls", {"state": "open"}
+        )
+        return [parse_pull_request(repository, item) for item in items]
+
+    def ready_at(self, pull_request: PullRequest) -> datetime:
+        """When the pull request, which is not a draft, became ready for
+        review."""
+        data = self.api.graphql(
+            READY_FOR_REVIEW_QUERY,
+            {
+                "owner": resolve.ORGANISATION,
+                "name": pull_request.repository.name,
+                "number": pull_request.number,
+            },
+        )
+        timeline = data["repository"]["pullRequest"]["timelineItems"]
+        return ready_for_review_time(pull_request, timeline["nodes"])
 
     def merge_state(self, pull_request: PullRequest) -> tuple[bool | None, str]:
         """Whether the pull request merges without conflicts (None while GitHub
@@ -3242,6 +3547,10 @@ class GitHubGateway:
         )
         run_id, url = dispatched_run(response, REVIEW_WORKFLOW)
         return ReviewRun(run_id, url, completed=False, conclusion=None)
+
+    @staticmethod
+    def now() -> datetime:
+        return datetime.now(UTC)
 
     @staticmethod
     def sleep(seconds: float) -> None:
@@ -3809,11 +4118,22 @@ def read_set_review(
     approvals of the reviewer that stand are read after the dismissal of the
     stale ones, so each one is of the head or of a commit that the head
     differs from by a clean merge of its base alone."""
-    if not is_review_offered(state, gateway.is_developer):
+    open_pull_requests = state.open_pull_requests()
+    if not opened_by_developers(open_pull_requests, gateway.is_developer):
         return None
+    reviews_of = {
+        pull_request.label: gateway.reviews(pull_request)
+        for pull_request in open_pull_requests
+    }
+    offer = review_offer(
+        open_pull_requests,
+        wait_end(open_pull_requests, gateway.ready_at),
+        person_reviews(open_pull_requests, reviews_of, gateway.permission),
+        gateway.now(),
+    )
     pull_requests = []
-    for pull_request in state.open_pull_requests():
-        reviews = gateway.reviews(pull_request)
+    for pull_request in open_pull_requests:
+        reviews = reviews_of[pull_request.label]
         approvals = reviewer_approvals(reviews)
         approved_at = approvals[-1].commit if approvals else None
         pull_requests.append(
@@ -3837,7 +4157,7 @@ def read_set_review(
         if run is not None and run.completed and not run.succeeded
         else None
     )
-    return SetReview(tuple(pull_requests), run, cause)
+    return SetReview(offer, tuple(pull_requests), run, cause)
 
 
 def dismiss_stale_approvals(gateway: GitHubGateway, state: SetState) -> None:
@@ -3866,8 +4186,10 @@ def publish(
     """Write the dashboard and the gate of each open pull request of the set,
     and the same dashboard on each merged pull request of the set that has
     one, so every dashboard of the set says the same. A pull request that is
-    alone gets a dashboard when it offers the Claude review, and keeps the
-    one it has otherwise."""
+    alone gets a dashboard when it has the section of the Claude review, and
+    keeps the one it has otherwise. When the wait for a person ended since
+    `dashboards` were written, tell the authors of the set that Claude can
+    review it: an edit of a comment sends no notification."""
     set_review = read_set_review(gateway, state, started_review)
     if state.is_alone:
         body = render_alone_dashboard(state, set_review)
@@ -3884,6 +4206,8 @@ def publish(
             )
             set_gate(gateway, pull_request, member_gate(state.name, url))
     write_merged_dashboards(gateway, state.merged_pull_requests(), dashboards, body)
+    if set_review is not None and wait_ended(set_review, dashboards):
+        gateway.create_comment(state.open_pull_requests()[0], render_wait_ended(state))
 
 
 def no_set_gate(pull_request: PullRequest) -> Gate:
@@ -4077,6 +4401,71 @@ def relay(
     )
 
 
+# The wait syncs --------------------------------------------------------------
+
+
+def open_sets(gateway: GitHubGateway) -> dict[str, list[PullRequest]]:
+    """The open pull requests of each set, by set name, in the order of
+    REPOSITORIES."""
+    sets: dict[str, list[PullRequest]] = {}
+    for repository in REPOSITORIES:
+        for pull_request in gateway.open_pull_requests(repository):
+            name = set_name_of(pull_request.head_branch, pull_request.from_fork)
+            if name is not None:
+                sets.setdefault(name, []).append(pull_request)
+    return sets
+
+
+def waiting_sets(gateway: GitHubGateway) -> list[PullRequest]:
+    """An open pull request of each set whose sync shows a new state of the
+    wait for a person: the wait goes on, or it ended less than
+    WAIT_SYNC_MARGIN ago and no person reviewed the set, so the sync shows the
+    box of the review and tells the authors. Every other change of the wait
+    is an event of GitHub that starts a sync: a pull request that opens, that
+    leaves the draft state or that closes, and a review."""
+    now = gateway.now()
+    waiting = []
+    for pull_requests in open_sets(gateway).values():
+        if not opened_by_developers(pull_requests, gateway.is_developer):
+            continue
+        ends_at = wait_end(pull_requests, gateway.ready_at)
+        if ends_at is None or now >= ends_at + WAIT_SYNC_MARGIN:
+            continue
+        reviews_of = {
+            pull_request.label: gateway.reviews(pull_request)
+            for pull_request in pull_requests
+        }
+        offer = review_offer(
+            pull_requests,
+            ends_at,
+            person_reviews(pull_requests, reviews_of, gateway.permission),
+            now,
+        )
+        if not isinstance(offer, ReviewedByPerson):
+            waiting.append(pull_requests[0])
+    return waiting
+
+
+def start_wait_syncs(gateway: GitHubGateway, dispatch_api: GitHubApi) -> list[str]:
+    """Start the sync of each set of `waiting_sets`, with the API of a token
+    that can start the workflows of peppy, and return the URLs of the
+    runs."""
+    return [
+        start_sync(
+            dispatch_api,
+            dispatch_inputs(
+                pull_request.repository,
+                RelaySubject(
+                    pull_request.number,
+                    pull_request.head_branch,
+                    pull_request.repository.full_name,
+                ),
+            ),
+        )
+        for pull_request in waiting_sets(gateway)
+    ]
+
+
 # The commands ----------------------------------------------------------------
 
 
@@ -4108,6 +4497,18 @@ def run_sync(environment: Mapping[str, str]) -> None:
     sync(gateway, event, run_url)
 
 
+def run_wait_syncs(environment: Mapping[str, str]) -> None:
+    token = required(environment, "MERGE_SET_TOKEN")
+    gateway = GitHubGateway(
+        GitHubApi(token),
+        required(environment, "MERGE_SET_BOT_LOGIN"),
+        GitMerges(token),
+    )
+    dispatch_api = GitHubApi(required(environment, "MERGE_SET_DISPATCH_TOKEN"))
+    for run_url in start_wait_syncs(gateway, dispatch_api):
+        print(f"Started the sync of a set that waits for a person: {run_url}")
+
+
 def run_repositories() -> None:
     resolve.append_to_runner_file(
         "GITHUB_OUTPUT", f"repositories={repository_list()}\n"
@@ -4129,6 +4530,10 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
         "sync",
         help="Read the set of the event, act on its ticked boxes, and publish it.",
     )
+    commands.add_parser(
+        "wait-syncs",
+        help="Start the sync of each set that waits for the review of a person.",
+    )
     return parser.parse_args(argv)
 
 
@@ -4140,6 +4545,8 @@ def main(argv: Sequence[str]) -> int:
                 run_repositories()
             case "sync":
                 run_sync(os.environ)
+            case "wait-syncs":
+                run_wait_syncs(os.environ)
     except (MergeSetError, resolve.ResolveError) as error:
         print(f"::error::{resolve.escape_workflow_command(str(error))}")
         return 1
