@@ -96,18 +96,18 @@ hours to review the set first, from the time each of its open pull requests
 is ready for review. During that time the section shows the time left, and
 no box. A pull request that joins the set (a reopened one too), or that
 leaves the draft state, starts the 12 hours again, unless Claude reviewed
-each open pull request of the set: its authors then chose Claude, and no
-wait applies. When a person who did not open a pull request of the set and
-has write access to its repository reviews one of them before the 12 hours
-end, a person reviews the set and the section gets no box. Otherwise the
-section gets a box that asks for the review when the 12 hours end, and the
-bot tells the authors of the set in a comment, because an edit of the
-dashboard sends no notification. A review of a person after that does not
-remove the box, until the 12 hours start again: each review of a person
-before their new end counts. No event of GitHub comes when the time passes,
-so the workflow merge-set-wait.yml runs `wait-syncs` every 30 minutes: it
-starts the sync of each set that waits, until one hour after the end of its
-12 hours.
+each open pull request of the set: its authors then chose Claude, no wait
+applies, and the section says so. When a person who did not open a pull
+request of the set and has write access to its repository reviews one of
+them before the 12 hours end, a person reviews the set and the section gets
+no box. Otherwise the section gets a box that asks for the review when the
+12 hours end, and the bot tells the authors of the set in a comment, because
+an edit of the dashboard sends no notification. A review of a person after
+that does not remove the box, until the 12 hours start again: each review
+of a person before their new end counts. No event of GitHub comes when the
+time passes, so the workflow merge-set-wait.yml runs `wait-syncs` every 30
+minutes: it starts the sync of each set that waits, until one hour after the
+end of its 12 hours.
 The bot acts on the box for the same users as on its other boxes. It starts
 the workflow `Claude review` of the private repository
 peppy-superproject (claude_review.py runs in it) when no pull request of the
@@ -2398,13 +2398,19 @@ def counted(count: int, noun: str) -> str:
 
 
 def review_section(set_review: SetReview, alone: bool) -> list[str]:
-    """The section "Review by Claude" of a dashboard: the wait for a person,
-    then the offer of Claude, its box, and the state of the review."""
-    lines = ["### Review by Claude", "", wait_rule_text(alone), ""]
+    """The section "Review by Claude" of a dashboard: the wait for a person
+    and where it is, or why Claude can review the set, then the box and the
+    state of the review."""
+    lines = ["### Review by Claude", ""]
     offer = set_review.offer
     if isinstance(offer, ClaudeOffered):
-        return [*lines, *offered_review_lines(set_review, alone)]
-    lines.append(wait_line(offer, alone))
+        return [
+            *lines,
+            *offer_reason_lines(offer, alone),
+            "",
+            *offered_review_lines(set_review, alone),
+        ]
+    lines.extend([wait_rule_text(alone), "", wait_line(offer, alone)])
     if set_review.in_progress:
         lines.extend(["", *review_state_lines(set_review)])
     return lines
@@ -2420,11 +2426,37 @@ def wait_line(offer: DraftWait | PersonWait | ReviewedByPerson, alone: bool) -> 
     return f"{text} The bot updates this time every {minutes} minutes. {WAIT_MARKER}"
 
 
-def offered_review_lines(set_review: SetReview, alone: bool) -> list[str]:
-    """The offer of the review of Claude, its box, and the state of the
-    review."""
-    pull_requests = counted(len(set_review.pull_requests), "pull request")
+def offer_reason_lines(offer: ClaudeOffered, alone: bool) -> list[str]:
+    """Why Claude can review the set: no person reviewed it before the end of
+    the wait, or Claude reviewed each of its open pull requests. In that
+    second case no wait applies, so the lines do not give the rule of the
+    wait."""
     subject = section_subject(alone)
+    choice = (
+        f"This is your choice: a person can also review and approve {subject} as usual."
+    )
+    if offer.wait_ended_at is None:
+        reviewed = "this pull request" if alone else "each pull request of this set"
+        return [
+            (
+                f"Claude reviewed {reviewed}, so no wait for a person applies: "
+                f"Claude can review {subject} again and approve it. {choice}"
+            )
+        ]
+    return [
+        wait_rule_text(alone),
+        "",
+        (
+            f"No person reviewed {subject} in that time, so Claude can review it "
+            f"and approve it. {choice}"
+        ),
+    ]
+
+
+def offered_review_lines(set_review: SetReview, alone: bool) -> list[str]:
+    """The box of the review of Claude, what a tick does, and the state of
+    the review."""
+    pull_requests = counted(len(set_review.pull_requests), "pull request")
     posts_on = "this pull request" if alone else "each pull request of the set"
     approves = "this pull request" if alone else f"the {pull_requests}"
     box = (
@@ -2433,12 +2465,6 @@ def offered_review_lines(set_review: SetReview, alone: bool) -> list[str]:
         else f"Ask Claude to review the {pull_requests} of this set"
     )
     return [
-        (
-            f"No person reviewed {subject} in that time, so Claude can review it "
-            "and approve it. This is your choice: a person can also review and "
-            f"approve {subject} as usual."
-        ),
-        "",
         (
             f"To choose Claude, tick the box below. Claude posts its findings on "
             f"{posts_on}. Correct each finding or answer in its thread, then "
@@ -4159,7 +4185,7 @@ def read_review_offer(
     whose reviews are in `reviews_of` by label. When Claude reviewed each of
     them, the authors of the set chose Claude, so no wait applies: a pull
     request that leaves the draft state then does not start the wait again.
-    A pull request that joins the set has no review of Claude, so it starts
+    A pull request that joins the set and that Claude did not review starts
     the wait again."""
     if all(
         is_reviewed_by_claude(reviews_of[pull_request.label])

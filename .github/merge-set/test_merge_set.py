@@ -2943,6 +2943,42 @@ class ReviewSection(unittest.TestCase):
             )
         )
 
+    def test_when_claude_reviewed_each_pull_request_the_section_gives_no_wait(self):
+        no_wait = merge_set.ClaudeOffered(None)
+        text = self.wait_section(no_wait)
+        self.assertTrue(
+            text.startswith(
+                "### Review by Claude\n\n"
+                "Claude reviewed each pull request of this set, so no wait for a "
+                "person applies: Claude can review this set again and approve it. "
+                "This is your choice: a person can also review and approve this "
+                "set as usual.\n\n"
+                "To choose Claude, tick the box below."
+            ),
+            text,
+        )
+        self.assertIn(
+            "- [ ] <!-- merge-set:review --> Ask Claude to review the 2 pull "
+            "requests of this set",
+            text,
+        )
+        alone = self.wait_section(no_wait, alone=True)
+        self.assertTrue(
+            alone.startswith(
+                "### Review by Claude\n\n"
+                "Claude reviewed this pull request, so no wait for a person "
+                "applies: Claude can review this pull request again and approve "
+                "it. This is your choice: a person can also review and approve "
+                "this pull request as usual.\n\n"
+                "To choose Claude, tick the box below."
+            ),
+            alone,
+        )
+        for section in (text, alone):
+            with self.subTest(section=section):
+                self.assertNotIn("12 hours", section)
+                self.assertNotIn("in that time", section)
+
     def test_a_review_in_progress_shows_in_the_wait(self):
         run = merge_set.parse_review_run(review_run_item(5, status="in_progress"))
         wait = merge_set.PersonWait(WAIT_ENDS_AT, timedelta(hours=1))
@@ -4857,6 +4893,12 @@ class SyncWait(unittest.TestCase):
         sync(self.github)
         dashboard = self.dashboard_of_nodes()
         self.assertNotIn(merge_set.WAIT_MARKER, dashboard.body)
+        self.assertIn(
+            "Claude reviewed each pull request of this set, so no wait for a "
+            "person applies",
+            dashboard.body,
+        )
+        self.assertNotIn("12 hours", dashboard.body)
         self.github.make_admin("mallory")
         self.github.tick(dashboard, Action.REVIEW, login="mallory")
         sync(self.github)
