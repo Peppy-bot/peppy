@@ -87,6 +87,25 @@ the peppy dev build of the set and installs nothing. Ticking "Re-run" re-runs
 every finished hub run that is out of date, at once: a re-run whose peppy dev
 build is not uploaded yet waits for it in that first job.
 
+Claude can review a set and approve it, so that a developer does not wait for
+the review of a person. When each open pull request of a set was opened by a
+member of the team `peppy-devs`, the dashboard has the section "Review by
+Claude", with a box that asks for the review, and the bot writes that
+dashboard on a pull request that is alone too: a pull request that is alone is
+a set of one. The bot acts on the box for the same users as on its other
+boxes. It starts the workflow `Claude review` of the private repository
+peppy-superproject (claude_review.py runs in it) when no pull request of the
+set has a conflict with its base and no review of the set is in progress, and
+answers with the cause in each other case. The reviewer, a GitHub App of its
+own, posts its findings as reviews of the type "comment" and approves each
+pull request of the set when no blocking finding is open. The section shows
+the state of the review: none asked, in progress, the open blocking findings,
+approved, or not completed with the cause. When the head of a pull request
+moves away from the commit that the reviewer approved, the bot dismisses that
+approval before it writes the `merge-set` status of the new head, unless the
+head differs from that commit by a clean merge of its base alone. The bot never
+dismisses the review of a person.
+
 GitHub sends every event of each repository of a set to the webhook of the
 merge-set App (webhook.py, in AWS Lambda), which hands it to the relay
 (`relay`). For an event that can change the set, the relay starts the Merge
@@ -94,15 +113,17 @@ set workflow of peppy (merge-set.yml) for the branch of the event. The start
 and the end of each CI run, a re-run included, are such events, so the
 dashboard follows the state of the CI. So is the end of each run of the PR
 title check (pr-title), so the dashboard follows that check when a title
-changes, and so are the reviews, so it follows the approvals. When the event
-is a box that a user ticked, the relay also
+changes, and so are the reviews, so it follows the approvals. So is the end of
+each review run of peppy-superproject, so the dashboard follows a review that
+did not complete. When the event is a box that a user ticked, the relay also
 answers at once on that pull request, with a link to the run it started. The
 Merge set workflow runs `sync`, one run at a time for each set. `sync` holds
 no state of its own: it reads the whole set from GitHub on every run (the
 branches, the pull requests, their checks, CI runs and reviews, the set
-records of the hub runs, the dashboards and the user who last edited each
-one), so a run that GitHub drops from its queue loses nothing: the next run of
-the set finds the same ticked box.
+records of the hub runs, the review comments and the review runs of the
+reviewer, the dashboards and the user who last edited each one), so a run that
+GitHub drops from its queue loses nothing: the next run of the set finds the
+same ticked box.
 
 The decisions are pure functions of their inputs, tested in test_merge_set.py.
 The I/O around them is kept thin, in GitHubGateway and GitMerges. Standard
@@ -228,9 +249,67 @@ def repository_of_full_name(full_name: str) -> Repository | None:
 
 
 def repository_list() -> str:
-    """Every repository of a set, comma-separated: the `repositories` of the
-    token that reaches all of them."""
-    return ",".join(repository.name for repository in REPOSITORIES)
+    """Every repository of a set and the repository of the Claude review,
+    comma-separated: the `repositories` of the token of the sync, which
+    reaches all of them."""
+    return ",".join(
+        [*(repository.name for repository in REPOSITORIES), REVIEW_REPOSITORY]
+    )
+
+
+# The Claude review, as the bot and the reviewer (claude_review.py) both name
+# it.
+
+# The private repository whose workflow `Claude review` reviews a set, the
+# file of that workflow, and the branch that it runs from: that branch alone
+# reaches the environment that holds the key of the reviewer App and the
+# Claude login.
+REVIEW_REPOSITORY = "peppy-superproject"
+REVIEW_WORKFLOW = "claude-review.yml"
+REVIEW_WORKFLOW_NAME = "Claude review"
+REVIEW_WORKFLOW_REF = "main"
+# The GitHub App that posts the findings and the approvals of the review.
+REVIEWER_LOGIN = "peppy-claude-review[bot]"
+# The team whose members get the offer of the review.
+DEVELOPER_TEAM = "peppy-devs"
+# The artifact of a review run that did not complete, which gives the cause,
+# and the JSON file that it holds: {"cause": "<text>"}.
+REVIEW_OUTCOME_ARTIFACT = "claude-review-outcome"
+REVIEW_OUTCOME_FILE = "outcome.json"
+# The name of each review run (the `run-name` of the workflow): the set, and
+# the pull request whose dashboard asked for the review. The relay reads the
+# set of the end of a run from it, and the bot finds the runs of a set by it.
+REVIEW_RUN_NAME = re.compile(
+    rf"\A{re.escape(REVIEW_WORKFLOW_NAME)} (?P<set>\S+) from "
+    r"(?P<repository>[A-Za-z0-9._-]+)#(?P<number>[0-9]+)\Z"
+)
+
+
+def review_run_name(set_name: str, repository: Repository, number: int) -> str:
+    return f"{REVIEW_WORKFLOW_NAME} {set_name} from {repository.name}#{number}"
+
+
+@dataclass(frozen=True)
+class ReviewRunName:
+    """What the name of a review run says."""
+
+    set_name: str
+    # The repository and the number of the pull request whose dashboard
+    # asked for the review.
+    repository: Repository
+    number: int
+
+
+def parse_review_run_name(title: str) -> ReviewRunName | None:
+    """The name of a review run; None for a name of another form, or one that
+    names a repository that no set spans."""
+    match = REVIEW_RUN_NAME.fullmatch(title)
+    if match is None:
+        return None
+    repository = REPOSITORIES_BY_NAME.get(match["repository"])
+    if repository is None:
+        return None
+    return ReviewRunName(match["set"], repository, int(match["number"]))
 
 
 # The gate --------------------------------------------------------------------
@@ -338,6 +417,10 @@ class RelaySubject:
     pull_request: int | None
     branch: str | None
     head_repository: str | None
+    # The repository of the set that the event is about, when it is not the
+    # repository of the event: the end of a review run of REVIEW_REPOSITORY
+    # is about the pull request whose dashboard asked for the review.
+    repository: Repository | None = None
 
 
 def relay_subject(
@@ -439,9 +522,13 @@ def dashboard_edit_subject(payload: Mapping, bot_login: str) -> RelaySubject | N
 
 
 def workflow_run_subject(payload: Mapping) -> RelaySubject | None:
-    """The start or the end of a CI run, or the end of a run of the PR title
-    check."""
+    """The start or the end of a CI run, the end of a run of the PR title
+    check, or the end of a review run."""
     workflow = payload["workflow"]["name"]
+    if is_review_repository(payload["repository"]["full_name"]):
+        if workflow != REVIEW_WORKFLOW_NAME:
+            return None
+        return review_run_subject(payload)
     if workflow == CI_WORKFLOW:
         return ci_run_subject(payload)
     if workflow == TITLE_CHECK_WORKFLOW:
@@ -470,6 +557,29 @@ def title_check_run_subject(payload: Mapping) -> RelaySubject | None:
     if payload["action"] != "completed" or run["event"] != "pull_request_target":
         return None
     return subject_of_run(run)
+
+
+def is_review_repository(full_name: str) -> bool:
+    return (
+        full_name.casefold() == f"{resolve.ORGANISATION}/{REVIEW_REPOSITORY}".casefold()
+    )
+
+
+def review_run_subject(payload: Mapping) -> RelaySubject | None:
+    """The end of a review run: the set and the pull request whose dashboard
+    asked for the review, as the name of the run gives them. The start of a
+    review adds nothing: the sync that starts the run shows it in progress."""
+    if payload["action"] != "completed":
+        return None
+    named = parse_review_run_name(payload["workflow_run"]["display_title"])
+    if named is None:
+        return None
+    return RelaySubject(
+        pull_request=named.number,
+        branch=named.set_name,
+        head_repository=named.repository.full_name,
+        repository=named.repository,
+    )
 
 
 def subject_of_run(run: Mapping) -> RelaySubject:
@@ -1101,15 +1211,21 @@ def parse_artifacts(items: Sequence[Mapping]) -> list[Artifact]:
     ]
 
 
+def file_of_bundle(bundle: bytes, name: str, artifact: str) -> str:
+    """The file `name` in the zip GitHub serves an artifact as. `artifact`
+    names the artifact for the error."""
+    with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+        if name not in archive.namelist():
+            raise MergeSetError(
+                f"the {artifact} artifact holds {', '.join(archive.namelist())}, "
+                f"not {name}"
+            )
+        return archive.read(name).decode()
+
+
 def set_record_of_bundle(bundle: bytes) -> str:
     """The set record in the zip GitHub serves an artifact as."""
-    with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
-        if resolve.SET_RECORD_FILE not in archive.namelist():
-            raise MergeSetError(
-                f"the set record artifact holds {', '.join(archive.namelist())}, "
-                f"not {resolve.SET_RECORD_FILE}"
-            )
-        return archive.read(resolve.SET_RECORD_FILE).decode()
+    return file_of_bundle(bundle, resolve.SET_RECORD_FILE, "set record")
 
 
 @dataclass(frozen=True)
@@ -1421,13 +1537,9 @@ def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
         )
     if pull_request.draft:
         block(f"{label} is a draft: mark it ready for review.")
-    if report.mergeable is False:
-        block(f"{label} has conflicts with `{pull_request.base_branch}`: resolve them.")
-    if report.mergeable is None:
-        block(
-            f"GitHub has not yet computed whether {label} merges cleanly into "
-            f"`{pull_request.base_branch}`."
-        )
+    merge_text = merge_state_text(pull_request, report.mergeable)
+    if merge_text is not None:
+        block(merge_text)
     if report.behind:
         block(
             f"{label} is behind `{pull_request.base_branch}`, and the ruleset of "
@@ -1450,30 +1562,49 @@ def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
     return blockers
 
 
-def member_blockers(
-    set_name: str, member: Member, reports: Mapping[str, PullRequestReport]
-) -> list[Blocker]:
+def merge_state_text(pull_request: PullRequest, mergeable: bool | None) -> str | None:
+    """What keeps a pull request from merging into its base, as GitHub
+    computed it; None when it merges without conflicts."""
+    if mergeable is False:
+        return (
+            f"{pull_request.label} has conflicts with `{pull_request.base_branch}`: "
+            "resolve them."
+        )
+    if mergeable is None:
+        return (
+            f"GitHub has not yet computed whether {pull_request.label} merges "
+            f"cleanly into `{pull_request.base_branch}`."
+        )
+    return None
+
+
+def pull_request_count_text(set_name: str, member: Member) -> str | None:
+    """What is wrong with the open pull requests of a member from the branch
+    of the set; None when it has one."""
     repository = member.repository
     if not member.open_pull_requests:
-        return [
-            Blocker(
-                repository,
-                f"{repository.name} has a change on the branch `{set_name}` "
-                f"(`{short(member.head)}`) but no open pull request from it: "
-                "open one, or delete the branch.",
-            )
-        ]
+        return (
+            f"{repository.name} has a change on the branch `{set_name}` "
+            f"(`{short(member.head)}`) but no open pull request from it: "
+            "open one, or delete the branch."
+        )
     if member.pull_request is None:
         labels = ", ".join(
             pull_request.label for pull_request in member.open_pull_requests
         )
-        return [
-            Blocker(
-                repository,
-                f"{repository.name} has more than one open pull request from "
-                f"`{set_name}` ({labels}): close all of them but one.",
-            )
-        ]
+        return (
+            f"{repository.name} has more than one open pull request from "
+            f"`{set_name}` ({labels}): close all of them but one."
+        )
+    return None
+
+
+def member_blockers(
+    set_name: str, member: Member, reports: Mapping[str, PullRequestReport]
+) -> list[Blocker]:
+    count_text = pull_request_count_text(set_name, member)
+    if count_text is not None:
+        return [Blocker(member.repository, count_text)]
     return pull_request_blockers(reports[member.pull_request.label])
 
 
@@ -1515,6 +1646,7 @@ DASHBOARD_MARKER = "<!-- peppy-merge-set -->"
 class Action(Enum):
     MERGE = "merge"
     RERUN = "rerun"
+    REVIEW = "review"
 
 
 def box_line(action: Action, text: str) -> str:
@@ -1565,9 +1697,12 @@ def ci_cell(member: Member, reports: Mapping[str, PullRequestReport]) -> str:
 
 
 def render_set_dashboard(
-    state: SetState, reports: Mapping[str, PullRequestReport]
+    state: SetState,
+    reports: Mapping[str, PullRequestReport],
+    set_review: SetReview | None,
 ) -> str:
-    """The dashboard of a set. Reports are keyed by pull request label."""
+    """The dashboard of a set. Reports are keyed by pull request label. It
+    offers the Claude review when `set_review` is not None."""
     blockers = set_blockers(state, reports)
     stale_run_count = len(stale_runs(reports))
     lines = [
@@ -1611,6 +1746,8 @@ def render_set_dashboard(
         lines.append(
             box_line(Action.RERUN, f"Re-run the out-of-date CI of this set ({runs})")
         )
+    if set_review is not None:
+        lines.extend(["", *review_section(set_review, alone=False)])
     return "\n".join(lines) + "\n"
 
 
@@ -1708,21 +1845,488 @@ def merged_links(state: SetState) -> str:
     return ", ".join(pull_request.link for pull_request in state.merged_pull_requests())
 
 
-def render_alone_dashboard(state: SetState) -> str:
+def render_alone_dashboard(state: SetState, set_review: SetReview | None) -> str:
     """The dashboard of a set that is alone. The bot writes it on the merged
     pull requests of the set too, so with merged members it names the pull
-    request that is alone and the ones that merged."""
-    header = f"{DASHBOARD_MARKER}\n### Set `{state.name}`\n\n"
+    request that is alone and the ones that merged. It offers the Claude
+    review when `set_review` is not None."""
+    lines = [DASHBOARD_MARKER, f"### Set `{state.name}`", ""]
     if not state.merged:
-        return header + (
+        lines.append(
             f"No other repository has a change on the branch `{state.name}`, so "
-            "this pull request is alone: its own merge button merges it.\n"
+            "this pull request is alone: its own merge button merges it."
         )
-    alone = ", ".join(pull_request.link for pull_request in state.open_pull_requests())
-    return header + (
-        f"No other repository has a change on the branch `{state.name}` left to "
-        f"merge, so {alone} is alone: its own merge button merges it.\n\n"
-        f"Merged from the set: {merged_links(state)}.\n"
+    else:
+        alone = ", ".join(
+            pull_request.link for pull_request in state.open_pull_requests()
+        )
+        lines.extend(
+            [
+                f"No other repository has a change on the branch `{state.name}` "
+                f"left to merge, so {alone} is alone: its own merge button "
+                "merges it.",
+                "",
+                f"Merged from the set: {merged_links(state)}.",
+            ]
+        )
+    if set_review is not None:
+        lines.extend(["", *review_section(set_review, alone=True)])
+    return "\n".join(lines) + "\n"
+
+
+# The Claude review -----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Review:
+    """A review of a pull request, as `GET /repos/{repo}/pulls/{n}/reviews`
+    lists it, oldest first."""
+
+    id: int
+    # None when GitHub names no user.
+    author: str | None
+    # APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED or PENDING.
+    state: str
+    # The head of the pull request that the review is of.
+    commit: str | None
+
+
+def parse_reviews(items: Sequence[Mapping]) -> list[Review]:
+    return [
+        Review(
+            id=item["id"],
+            author=(item.get("user") or {}).get("login"),
+            state=item["state"],
+            commit=item.get("commit_id"),
+        )
+        for item in items
+    ]
+
+
+def reviewer_approvals(reviews: Sequence[Review]) -> list[Review]:
+    """The approvals of the reviewer that stand, oldest first: GitHub counts
+    each one until it is dismissed."""
+    return [
+        review
+        for review in reviews
+        if review.author == REVIEWER_LOGIN and review.state == "APPROVED"
+    ]
+
+
+# Whether the head of a repository differs from a commit by a clean merge of
+# its base alone: (repository, commit, head).
+CleanBaseMerge = Callable[[Repository, str, str], bool]
+
+
+def stale_reviewer_approvals(
+    pull_request: PullRequest,
+    reviews: Sequence[Review],
+    differs_by_clean_base_merge: CleanBaseMerge,
+) -> list[Review]:
+    """The approvals of the reviewer at a commit that is not the head of the
+    pull request, and from which the head differs by more than a clean merge
+    of its base: the reviewer did not read the change."""
+    head = pull_request.head_commit
+    return [
+        approval
+        for approval in reviewer_approvals(reviews)
+        if approval.commit != head
+        and (
+            approval.commit is None
+            or not differs_by_clean_base_merge(
+                pull_request.repository, approval.commit, head
+            )
+        )
+    ]
+
+
+def dismissal_message(pull_request: PullRequest) -> str:
+    return (
+        f"The head of {pull_request.label} moved to "
+        f"`{short(pull_request.head_commit)}`, which Claude did not read. Tick "
+        "the review box of the merge-set comment to have Claude review the new "
+        "commits."
+    )
+
+
+@dataclass(frozen=True)
+class ReviewComment:
+    """A comment of a review thread, as `GET /repos/{repo}/pulls/{n}/comments`
+    lists it, oldest first."""
+
+    id: int
+    # None when GitHub names no user.
+    author: str | None
+    body: str
+    # The first comment of the thread; None for the first comment itself.
+    in_reply_to: int | None
+    path: str
+    # The line of the comment in the file at the head; None for a comment on
+    # a line that the head no longer has.
+    line: int | None
+    url: str
+
+
+def parse_review_comments(items: Sequence[Mapping]) -> list[ReviewComment]:
+    return [
+        ReviewComment(
+            id=item["id"],
+            author=(item.get("user") or {}).get("login"),
+            body=item.get("body") or "",
+            in_reply_to=item.get("in_reply_to_id"),
+            path=item["path"],
+            line=item.get("line"),
+            url=item["html_url"],
+        )
+        for item in items
+    ]
+
+
+class FindingLevel(Enum):
+    # Holds the approval of the set while it is open.
+    BLOCKING = "blocking"
+    # Holds nothing.
+    NOTE = "note"
+
+
+@dataclass(frozen=True)
+class FindingRecord:
+    """The record that the reviewer puts at the start of the first comment of
+    the thread of each of its findings, and edits when a later round closes
+    the finding."""
+
+    id: str
+    level: FindingLevel
+    open: bool
+
+
+FINDING_MARKER = re.compile(r"\A<!-- claude-review:finding (?P<record>\{[^\n]*?\}) -->")
+FINDING_ID = re.compile(r"[0-9a-f]{12}")
+
+
+def finding_marker(record: FindingRecord) -> str:
+    document = {"id": record.id, "level": record.level.value, "open": record.open}
+    return f"<!-- claude-review:finding {json.dumps(document, sort_keys=True)} -->"
+
+
+def parse_finding_record(body: str) -> FindingRecord | None:
+    """The record at the start of a comment; None for a comment without one,
+    or with one of another form."""
+    match = FINDING_MARKER.match(body)
+    if match is None:
+        return None
+    try:
+        document = json.loads(match["record"])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(document, Mapping):
+        return None
+    finding_id, level, is_open = (
+        document.get("id"),
+        document.get("level"),
+        document.get("open"),
+    )
+    if (
+        not isinstance(finding_id, str)
+        or not FINDING_ID.fullmatch(finding_id)
+        or not isinstance(is_open, bool)
+        or level not in {member.value for member in FindingLevel}
+    ):
+        return None
+    return FindingRecord(finding_id, FindingLevel(level), is_open)
+
+
+def findings_of(
+    comments: Sequence[ReviewComment],
+) -> list[tuple[ReviewComment, FindingRecord]]:
+    """The first comment of the thread of each finding of the reviewer, with
+    its record, oldest first. Anyone can write a record; only the reviewer
+    writes as the reviewer."""
+    found = []
+    for comment in comments:
+        if comment.author != REVIEWER_LOGIN or comment.in_reply_to is not None:
+            continue
+        record = parse_finding_record(comment.body)
+        if record is not None:
+            found.append((comment, record))
+    return found
+
+
+def open_blocking_count(comments: Sequence[ReviewComment]) -> int:
+    return sum(
+        1
+        for _, record in findings_of(comments)
+        if record.open and record.level is FindingLevel.BLOCKING
+    )
+
+
+@dataclass(frozen=True)
+class ReviewRun:
+    """A run of the workflow of the Claude review."""
+
+    id: int
+    url: str
+    completed: bool
+    # None while it runs.
+    conclusion: str | None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.completed and self.conclusion == "success"
+
+
+def parse_review_run(run: Mapping) -> ReviewRun:
+    return ReviewRun(
+        id=run["id"],
+        url=run["html_url"],
+        completed=run["status"] == "completed",
+        conclusion=run.get("conclusion"),
+    )
+
+
+def latest_review_run(runs: Sequence[Mapping], set_name: str) -> ReviewRun | None:
+    """The newest run of the review workflow for the set, among the runs as
+    `GET /repos/{repo}/actions/workflows/{file}/runs` lists them; None when
+    there is none. A re-run keeps its run id."""
+    of_the_set = [
+        run
+        for run in runs
+        if (named := parse_review_run_name(run.get("display_title") or "")) is not None
+        and named.set_name == set_name
+    ]
+    if not of_the_set:
+        return None
+    return parse_review_run(max(of_the_set, key=lambda run: run["id"]))
+
+
+def parse_review_outcome(text: str) -> str:
+    """The cause in the outcome file of a review run that did not complete."""
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise MergeSetError(f"the review outcome is not JSON: {error}") from error
+    if not isinstance(document, Mapping) or not isinstance(document.get("cause"), str):
+        raise MergeSetError(f'the review outcome is not {{"cause": "<text>"}}: {text}')
+    return document["cause"]
+
+
+@dataclass(frozen=True)
+class PullRequestReview:
+    """The Claude review of one open pull request of the set."""
+
+    pull_request: PullRequest
+    # The commit of the approval of the reviewer that stands; None without
+    # one.
+    approved_at: str | None
+    open_blocking: int
+    # Whether the reviewer posted a review on it, at any commit.
+    reviewed: bool
+    # The review decision of GitHub, read when the reviewer approved it: a
+    # pull request that changes a file with a code owner still needs the
+    # approval of that owner. None without an approval of the reviewer.
+    decision: ReviewDecision | None
+
+
+@dataclass(frozen=True)
+class SetReview:
+    """The Claude review of a set whose dashboard offers it."""
+
+    # Ordered as the open pull requests of the set.
+    pull_requests: tuple[PullRequestReview, ...]
+    # The newest review run of the set; None when there is none.
+    run: ReviewRun | None
+    # What a run that did not complete gives as its cause; None when it gave
+    # none, or when the run completed.
+    cause: str | None
+
+    @property
+    def approved(self) -> bool:
+        return bool(self.pull_requests) and all(
+            review.approved_at is not None for review in self.pull_requests
+        )
+
+    @property
+    def in_progress(self) -> bool:
+        return self.run is not None and not self.run.completed
+
+
+def is_review_offered(state: SetState, is_developer: Callable[[str], bool]) -> bool:
+    """Whether the dashboard offers the review: a member of DEVELOPER_TEAM
+    opened each open pull request of the set. A pull request from a fork is
+    in no set."""
+    pull_requests = state.open_pull_requests()
+    return bool(pull_requests) and all(
+        pull_request.author is not None and is_developer(pull_request.author)
+        for pull_request in pull_requests
+    )
+
+
+def counted(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def review_section(set_review: SetReview, alone: bool) -> list[str]:
+    """The section "Review by Claude" of a dashboard: the offer, its box, and
+    the state of the review."""
+    pull_requests = counted(len(set_review.pull_requests), "pull request")
+    subject = "this pull request" if alone else "this set"
+    posts_on = "this pull request" if alone else "each pull request of the set"
+    approves = "this pull request" if alone else f"the {pull_requests}"
+    box = (
+        "Ask Claude to review this pull request"
+        if alone
+        else f"Ask Claude to review the {pull_requests} of this set"
+    )
+    return [
+        "### Review by Claude",
+        "",
+        (
+            f"Claude can review {subject} and approve it. You then do not have "
+            "to wait for the review of a person. This is your choice: a person "
+            f"can also review and approve {subject} as usual."
+        ),
+        "",
+        (
+            f"To choose Claude, tick the box below. Claude posts its findings on "
+            f"{posts_on}. Correct each finding or answer in its thread, then "
+            "tick the box again. When no blocking finding is open, Claude "
+            f"approves {approves}."
+        ),
+        "",
+        box_line(Action.REVIEW, box),
+        "",
+        *review_state_lines(set_review),
+    ]
+
+
+def review_state_lines(set_review: SetReview) -> list[str]:
+    run = set_review.run
+    if set_review.in_progress:
+        return [f"**Review in progress** in [this run]({run.url})."]
+    if run is not None and not run.succeeded:
+        cause = set_review.cause or (
+            f"The run ended as `{run.conclusion}` before it gave a cause."
+        )
+        return [
+            f"**Review not completed.** {cause} See [the run]({run.url}), and "
+            "tick the box to ask again."
+        ]
+    reviews = set_review.pull_requests
+    if set_review.approved:
+        approvals = ", ".join(
+            f"{review.pull_request.link} at `{short(review.approved_at)}`"
+            for review in reviews
+        )
+        lines = [f"**Approved by Claude**, at the commits that it read: {approvals}."]
+        lines.extend(
+            f"- {review.pull_request.label} changes a file with a code owner, so "
+            "it also needs the approval of that owner."
+            for review in reviews
+            if review.decision is ReviewDecision.REVIEW_REQUIRED
+        )
+        return lines
+    with_findings = [review for review in reviews if review.open_blocking]
+    if with_findings:
+        total = sum(review.open_blocking for review in with_findings)
+        where = ", ".join(
+            f"{review.pull_request.link}: {review.open_blocking}"
+            for review in with_findings
+        )
+        return [
+            f"**{counted(total, 'open blocking finding')}** ({where}). Correct "
+            "each finding or answer in its thread, then tick the box again."
+        ]
+    if any(review.reviewed for review in reviews):
+        unapproved = ", ".join(
+            review.pull_request.link for review in reviews if review.approved_at is None
+        )
+        return [
+            "**Not approved.** No blocking finding is open, but Claude did not "
+            f"read the head of {unapproved}: tick the box to ask for a new review."
+        ]
+    return ["**No review asked.**"]
+
+
+def review_refusal_reasons(
+    state: SetState,
+    set_review: SetReview | None,
+    mergeable: Mapping[str, bool | None],
+) -> list[str]:
+    """Why the bot does not start a review of the set; none when it starts
+    one. `mergeable` tells, for each open pull request by label, whether it
+    merges into its base without conflicts (None while GitHub computes it)."""
+    if set_review is None:
+        return [
+            "Claude reviews only a set whose every open pull request a member of "
+            f"`{DEVELOPER_TEAM}` opened."
+        ]
+    if set_review.in_progress:
+        return [
+            f"A review of this set is in progress in [this run]({set_review.run.url})."
+        ]
+    reasons = [
+        text
+        for member in state.members
+        if (text := pull_request_count_text(state.name, member)) is not None
+    ]
+    reasons.extend(
+        text
+        for pull_request in state.open_pull_requests()
+        if (text := merge_state_text(pull_request, mergeable[pull_request.label]))
+        is not None
+    )
+    if not reasons and set_review.approved:
+        reasons.append(
+            "Claude already approved each pull request of this set at its head."
+        )
+    return reasons
+
+
+def review_inputs(state: SetState, request: Request) -> dict[str, str]:
+    """The inputs of the review workflow: the set, the dashboard that asked
+    for the review and its user, and the head of each open pull request that
+    the review is of, which the reviewer checks before it reads them and
+    again before it posts."""
+    asked_on = request.dashboard.pull_request
+    heads = {
+        pull_request.repository.name: pull_request.head_commit
+        for pull_request in state.open_pull_requests()
+    }
+    return {
+        "set": state.name,
+        "repository": asked_on.repository.name,
+        "pull-request": str(asked_on.number),
+        "requester": request.requester,
+        "heads": json.dumps(heads, sort_keys=True),
+    }
+
+
+# The answer of the bot when the review workflow is not on its branch.
+REVIEW_WORKFLOW_MISSING = (
+    f"The workflow `{REVIEW_WORKFLOW_NAME}` is not on `{REVIEW_WORKFLOW_REF}` of "
+    f"{REVIEW_REPOSITORY} yet, so no review can start."
+)
+
+
+def render_review_refusal(
+    requesters: Sequence[str], set_name: str, reasons: Sequence[str]
+) -> str:
+    lines = [
+        f"{mention(requesters)}, Claude did not start a review of the set "
+        f"`{set_name}`, because:",
+        "",
+        *(f"- {reason}" for reason in reasons),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def render_review_started(
+    requesters: Sequence[str], set_name: str, run: ReviewRun
+) -> str:
+    return (
+        f"{mention(requesters)}, Claude reviews the set `{set_name}` in "
+        f"[this run]({run.url}). It posts its findings on each pull request of "
+        "the set, and the merge-set comment shows the state of the review.\n"
     )
 
 
@@ -1997,8 +2601,16 @@ def access_refusal_reasons(refusal: AccessRefusal) -> str:
     return ", and ".join(reasons)
 
 
+# What the bot does for each box, as its refusals word it.
+ACTION_TEXTS = {
+    Action.MERGE: "merge the set",
+    Action.RERUN: "re-run the CI of the set",
+    Action.REVIEW: "start a Claude review of the set",
+}
+
+
 def render_access_refusal(action: Action, refusals: Mapping[str, AccessRefusal]) -> str:
-    what = "merge the set" if action is Action.MERGE else "re-run the CI of the set"
+    what = ACTION_TEXTS[action]
     lines = [
         f"@{login}, the bot did not {what} for you: "
         f"{access_refusal_reasons(refusal)}. It does that only for {WHO_MAY_ASK}."
@@ -2186,6 +2798,7 @@ class GitHubGateway:
         self.bypasses: dict[tuple[str, int], RulesetBypass] = {}
         self.permissions: dict[tuple[str, str], str] = {}
         self.ci_workflows: dict[str, frozenset[int]] = {}
+        self.developers: dict[str, bool] = {}
 
     # Reading the set.
 
@@ -2309,20 +2922,32 @@ class GitHubGateway:
 
     def is_clean_base_merge(self, mismatch: Mismatch) -> bool:
         """Whether the head of the branch differs from the commit the job ran
-        with by a clean merge of its base alone. Each mismatch is checked
-        once a sync: the jobs of a run share the commits they ran with."""
-        key = (mismatch.repository.name, mismatch.tested.commit, mismatch.current)
+        with by a clean merge of its base alone."""
+        return self.differs_by_clean_base_merge(
+            mismatch.repository, mismatch.tested.commit, mismatch.current
+        )
+
+    def differs_by_clean_base_merge(
+        self, repository: Repository, tested: str, head: str
+    ) -> bool:
+        """Whether `head` differs from the commit `tested` by a clean merge of
+        the base of the repository alone. Each pair is checked once a sync:
+        the jobs of a run share the commits they ran with."""
+        key = (repository.name, tested, head)
         if key not in self.clean_base_merges:
-            self.clean_base_merges[key] = self.check_clean_base_merge(mismatch)
+            self.clean_base_merges[key] = self.check_clean_base_merge(
+                repository, tested, head
+            )
         return self.clean_base_merges[key]
 
-    def check_clean_base_merge(self, mismatch: Mismatch) -> bool:
-        """Whether git merges the commit the job ran with and the newest
-        commit of the base that the head holds, without a conflict, into the
-        tree of the head. A merge that the bot cannot check counts as no
-        clean merge, so the job stays out of date."""
-        repository = mismatch.repository
-        tested, head = mismatch.tested.commit, mismatch.current
+    def check_clean_base_merge(
+        self, repository: Repository, tested: str, head: str
+    ) -> bool:
+        """Whether git merges the commit `tested` and the newest commit of
+        the base that the head holds, without a conflict, into the tree of
+        the head. A merge that the bot cannot check counts as no clean merge:
+        a job that ran `tested` stays out of date, and an approval of
+        `tested` is dismissed."""
         try:
             base = self.compare(repository, repository.integration_branch, head)
             merge_base = self.compare(repository, base.merge_base, tested)
@@ -2337,9 +2962,9 @@ class GitHubGateway:
             )
         except GitError as error:
             warn(
-                f"The bot counts the jobs that ran {repository.name} at "
-                f"{short(tested)} as out of date: it did not check whether "
-                f"{short(head)} differs from it by a clean merge of "
+                f"The bot counts {repository.name} at {short(tested)} and at "
+                f"{short(head)} as different: it did not check whether "
+                f"{short(head)} differs from {short(tested)} by a clean merge of "
                 f"`{repository.integration_branch}` alone. {error}"
             )
             return False
@@ -2511,6 +3136,112 @@ class GitHubGateway:
         self.api.request(
             "POST", f"/repos/{run.repository.full_name}/actions/runs/{run.id}/rerun"
         )
+
+    # The Claude review.
+
+    def reviews(self, pull_request: PullRequest) -> list[Review]:
+        path = pull_request_path(pull_request.repository, pull_request.number)
+        return parse_reviews(self.api.pages(f"{path}/reviews"))
+
+    def review_comments(self, pull_request: PullRequest) -> list[ReviewComment]:
+        path = pull_request_path(pull_request.repository, pull_request.number)
+        return parse_review_comments(self.api.pages(f"{path}/comments"))
+
+    def dismiss_review(
+        self, pull_request: PullRequest, review: Review, message: str
+    ) -> None:
+        path = pull_request_path(pull_request.repository, pull_request.number)
+        self.api.request(
+            "PUT",
+            f"{path}/reviews/{review.id}/dismissals",
+            body={"message": message, "event": "DISMISS"},
+        )
+
+    def is_developer(self, login: str) -> bool:
+        """Whether the user is an active member of DEVELOPER_TEAM."""
+        if login not in self.developers:
+            self.developers[login] = self.read_team_membership(login)
+        return self.developers[login]
+
+    def read_team_membership(self, login: str) -> bool:
+        try:
+            membership = self.api.request(
+                "GET",
+                f"/orgs/{resolve.ORGANISATION}/teams/{DEVELOPER_TEAM}/memberships/"
+                f"{urllib.parse.quote(login, safe='')}",
+            )
+        except ApiError as error:
+            if error.status == 404:
+                return False
+            raise
+        return membership.get("state") == "active"
+
+    def review_runs(self) -> list[Mapping]:
+        """The newest page of runs of the review workflow, newest first. A
+        review run of a set further back is old: the reviews and the review
+        comments on its pull requests tell what it gave. No run while the
+        workflow is not on the review repository."""
+        path = (
+            f"/repos/{resolve.ORGANISATION}/{REVIEW_REPOSITORY}/actions/workflows/"
+            f"{REVIEW_WORKFLOW}/runs"
+        )
+        try:
+            response = self.api.request(
+                "GET",
+                path,
+                {"event": "workflow_dispatch", "per_page": GitHubApi.PAGE_SIZE},
+            )
+        except ApiError as error:
+            if error.status == 404:
+                return []
+            raise
+        return response["workflow_runs"]
+
+    def review_cause(self, run: ReviewRun) -> str | None:
+        """The cause that a review run that did not complete gives in its
+        outcome artifact; None when it uploaded none, when the artifact
+        expired, or when the bot cannot read it."""
+        path = (
+            f"/repos/{resolve.ORGANISATION}/{REVIEW_REPOSITORY}/actions/runs/"
+            f"{run.id}/artifacts"
+        )
+        artifacts = parse_artifacts(self.api.pages(path, key="artifacts"))
+        artifact = next(
+            (
+                artifact
+                for artifact in artifacts
+                if artifact.name == REVIEW_OUTCOME_ARTIFACT and not artifact.expired
+            ),
+            None,
+        )
+        if artifact is None:
+            return None
+        try:
+            return parse_review_outcome(
+                file_of_bundle(
+                    self.api.download(artifact.download_url),
+                    REVIEW_OUTCOME_FILE,
+                    REVIEW_OUTCOME_ARTIFACT,
+                )
+            )
+        except (MergeSetError, zipfile.BadZipFile) as error:
+            warn(f"The bot did not read the cause of the review run {run.url}: {error}")
+            return None
+
+    def start_review(self, inputs: Mapping[str, str]) -> ReviewRun:
+        """Start the review workflow, and return its run."""
+        response = self.api.request(
+            "POST",
+            f"/repos/{resolve.ORGANISATION}/{REVIEW_REPOSITORY}/actions/workflows/"
+            f"{REVIEW_WORKFLOW}/dispatches",
+            body={
+                "ref": REVIEW_WORKFLOW_REF,
+                "inputs": inputs,
+                "return_run_details": True,
+            },
+        )
+        run_id, url = dispatched_run(response, REVIEW_WORKFLOW)
+        return ReviewRun(run_id, url, completed=False, conclusion=None)
 
     @staticmethod
     def sleep(seconds: float) -> None:
@@ -2967,23 +3698,67 @@ def rerun_out_of_date(
     )
 
 
+def start_review(
+    gateway: GitHubGateway,
+    state: SetState,
+    request: Request,
+    requesters: Sequence[str],
+) -> ReviewRun | None:
+    """Start the Claude review of the set, or answer why not; the run it
+    started, if any."""
+    asked_on = request.dashboard.pull_request
+    mergeable = {
+        pull_request.label: computed_merge_state(
+            gateway, pull_request, {MERGE_STATE_UNKNOWN}
+        )[0]
+        for pull_request in state.open_pull_requests()
+    }
+    reasons = review_refusal_reasons(
+        state, read_set_review(gateway, state, started=None), mergeable
+    )
+    if not reasons:
+        try:
+            run = gateway.start_review(review_inputs(state, request))
+        except ApiError as error:
+            if error.status != 404:
+                raise
+            reasons = [REVIEW_WORKFLOW_MISSING]
+        else:
+            gateway.create_comment(
+                asked_on, render_review_started(requesters, state.name, run)
+            )
+            return run
+    gateway.create_comment(
+        asked_on, render_review_refusal(requesters, state.name, reasons)
+    )
+    return None
+
+
 def handle_requests(
     gateway: GitHubGateway,
     state: SetState,
     dashboards: Mapping[str, Dashboard],
     requests: Sequence[Request],
     run_url: str,
-) -> None:
+) -> ReviewRun | None:
     """Act on each action once, for the first user who asked for it and whom
     the bot acts for: an admin of every repository of the set, or the user
     who opened every pull request of the set and has write access to every
     repository of it. Every other user who asked for it gets the reason the
     bot does not act for them, and the reports name the users it acts for
-    alone. The re-run goes first. Both actions read the reports from before
-    the re-run, so a merge asked for at the same time stops on the CI that
-    the re-run finds out of date."""
-    reports = read_reports(gateway, state)
-    for action in (Action.RERUN, Action.MERGE):
+    alone. The re-run goes first. Both read the reports from before the
+    re-run, so a merge asked for at the same time stops on the CI that the
+    re-run finds out of date. The review goes last, and a set that is alone
+    has the review box alone. Returns the review run that it started, if
+    any."""
+    actions = (
+        (Action.REVIEW,)
+        if state.is_alone
+        else (Action.RERUN, Action.MERGE, Action.REVIEW)
+    )
+    reports = None if state.is_alone else read_reports(gateway, state)
+    started = None
+    for action in actions:
         asked = [request for request in requests if request.action is action]
         if not asked:
             continue
@@ -2999,12 +3774,16 @@ def handle_requests(
         if not allowed:
             continue
         requesters = requesters_of(allowed)
-        if action is Action.RERUN:
-            rerun_out_of_date(gateway, state, reports, allowed[0], requesters)
-        else:
-            merge_the_set(
-                gateway, state, reports, dashboards, allowed[0], requesters, run_url
-            )
+        match action:
+            case Action.RERUN:
+                rerun_out_of_date(gateway, state, reports, allowed[0], requesters)
+            case Action.MERGE:
+                merge_the_set(
+                    gateway, state, reports, dashboards, allowed[0], requesters, run_url
+                )
+            case Action.REVIEW:
+                started = start_review(gateway, state, allowed[0], requesters)
+    return started
 
 
 def write_merged_dashboards(
@@ -3021,21 +3800,84 @@ def write_merged_dashboards(
             write_dashboard(gateway, pull_request, dashboard, body)
 
 
+def read_set_review(
+    gateway: GitHubGateway, state: SetState, started: ReviewRun | None
+) -> SetReview | None:
+    """The Claude review of the set; None when its dashboard does not offer
+    it. `started` is the review run that this sync started, if any: GitHub
+    can list the runs of a workflow without the newest one for a while. The
+    approvals of the reviewer that stand are read after the dismissal of the
+    stale ones, so each one is of the head or of a commit that the head
+    differs from by a clean merge of its base alone."""
+    if not is_review_offered(state, gateway.is_developer):
+        return None
+    pull_requests = []
+    for pull_request in state.open_pull_requests():
+        reviews = gateway.reviews(pull_request)
+        approvals = reviewer_approvals(reviews)
+        approved_at = approvals[-1].commit if approvals else None
+        pull_requests.append(
+            PullRequestReview(
+                pull_request=pull_request,
+                approved_at=approved_at,
+                open_blocking=open_blocking_count(
+                    gateway.review_comments(pull_request)
+                ),
+                reviewed=any(review.author == REVIEWER_LOGIN for review in reviews),
+                decision=(
+                    gateway.review_decision(pull_request)
+                    if approved_at is not None
+                    else None
+                ),
+            )
+        )
+    run = started or latest_review_run(gateway.review_runs(), state.name)
+    cause = (
+        gateway.review_cause(run)
+        if run is not None and run.completed and not run.succeeded
+        else None
+    )
+    return SetReview(tuple(pull_requests), run, cause)
+
+
+def dismiss_stale_approvals(gateway: GitHubGateway, state: SetState) -> None:
+    """Dismiss each approval of the reviewer of a commit that the head of its
+    pull request moved away from by more than a clean merge of its base. The
+    sync does it first, before it writes any gate: a new head has no
+    `merge-set` status until then, so no pull request merges with a commit
+    that the reviewer did not read. The reviews of persons stay."""
+    for pull_request in state.open_pull_requests():
+        for approval in stale_reviewer_approvals(
+            pull_request,
+            gateway.reviews(pull_request),
+            gateway.differs_by_clean_base_merge,
+        ):
+            gateway.dismiss_review(
+                pull_request, approval, dismissal_message(pull_request)
+            )
+
+
 def publish(
-    gateway: GitHubGateway, state: SetState, dashboards: Mapping[str, Dashboard]
+    gateway: GitHubGateway,
+    state: SetState,
+    dashboards: Mapping[str, Dashboard],
+    started_review: ReviewRun | None = None,
 ) -> None:
     """Write the dashboard and the gate of each open pull request of the set,
     and the same dashboard on each merged pull request of the set that has
-    one, so every dashboard of the set says the same."""
+    one, so every dashboard of the set says the same. A pull request that is
+    alone gets a dashboard when it offers the Claude review, and keeps the
+    one it has otherwise."""
+    set_review = read_set_review(gateway, state, started_review)
     if state.is_alone:
-        body = render_alone_dashboard(state)
+        body = render_alone_dashboard(state, set_review)
         for pull_request in state.open_pull_requests():
             set_gate(gateway, pull_request, alone_gate(state.name))
             dashboard = dashboards.get(pull_request.label)
-            if dashboard is not None:
+            if dashboard is not None or set_review is not None:
                 write_dashboard(gateway, pull_request, dashboard, body)
     else:
-        body = render_set_dashboard(state, read_reports(gateway, state))
+        body = render_set_dashboard(state, read_reports(gateway, state), set_review)
         for pull_request in state.open_pull_requests():
             url = write_dashboard(
                 gateway, pull_request, dashboards.get(pull_request.label), body
@@ -3064,14 +3906,16 @@ def sync(gateway: GitHubGateway, event: Event, run_url: str) -> None:
             set_gate(gateway, pull_request, no_set_gate(pull_request))
         return
     state = read_set(gateway, set_name)
+    dismiss_stale_approvals(gateway, state)
     # The bodies as this run first read them: a dashboard someone edits
     # during the run is left for the sync that edit starts.
     dashboards = read_dashboards(gateway, state)
-    requests = read_requests(gateway, dashboards) if not state.is_alone else []
+    requests = read_requests(gateway, dashboards)
+    started_review = None
     if requests:
-        handle_requests(gateway, state, dashboards, requests, run_url)
+        started_review = handle_requests(gateway, state, dashboards, requests, run_url)
         state = read_set(gateway, set_name)
-    publish(gateway, state, dashboards)
+    publish(gateway, state, dashboards, started_review)
 
 
 # The relay -------------------------------------------------------------------
@@ -3134,6 +3978,8 @@ def request_text(action: Action, set_name: str) -> str:
             return f"merge the set `{set_name}`"
         case Action.RERUN:
             return f"re-run the out-of-date CI of the set `{set_name}`"
+        case Action.REVIEW:
+            return f"have Claude review the set `{set_name}`"
 
 
 def render_request_received(ticked: TickedBoxes, set_name: str, run_url: str) -> str:
@@ -3146,14 +3992,16 @@ def render_request_received(ticked: TickedBoxes, set_name: str, run_url: str) ->
     )
 
 
-def dispatched_run_url(response: object) -> str:
-    """The URL of the run that a dispatch with `return_run_details` started."""
+def dispatched_run(response: object, workflow: str) -> tuple[int, str]:
+    """The id and the URL of the run that a dispatch of `workflow` with
+    `return_run_details` started."""
+    run_id = response.get("workflow_run_id") if isinstance(response, Mapping) else None
     url = response.get("html_url") if isinstance(response, Mapping) else None
-    if not isinstance(url, str):
+    if not isinstance(run_id, int) or not isinstance(url, str):
         raise MergeSetError(
-            f"the dispatch of {SYNC_WORKFLOW} names no run: {json.dumps(response)}"
+            f"the dispatch of {workflow} names no run: {json.dumps(response)}"
         )
-    return url
+    return run_id, url
 
 
 def start_sync(api: GitHubApi, inputs: Mapping[str, str]) -> str:
@@ -3163,7 +4011,7 @@ def start_sync(api: GitHubApi, inputs: Mapping[str, str]) -> str:
         f"/repos/{resolve.PEPPY_REPOSITORY}/actions/workflows/{SYNC_WORKFLOW}/dispatches",
         body={"ref": SYNC_WORKFLOW_REF, "inputs": inputs, "return_run_details": True},
     )
-    return dispatched_run_url(response)
+    return dispatched_run(response, SYNC_WORKFLOW)[1]
 
 
 @dataclass(frozen=True)
@@ -3201,7 +4049,7 @@ def relay(
     if subject is None:
         return f"The `{event_name}` event cannot change a set."
     full_name = (payload.get("repository") or {}).get("full_name", "")
-    repository = repository_of_full_name(full_name)
+    repository = subject.repository or repository_of_full_name(full_name)
     if repository is None:
         return f"No set spans the repository `{full_name}`."
     if subject.branch is None:

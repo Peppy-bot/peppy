@@ -341,7 +341,10 @@ class Handling(unittest.TestCase):
             function_url_request("pull_request", pull_request_event("synchronize")),
             {
                 ("POST", TOKENS_PATH): token_answer("sync-token"),
-                ("POST", DISPATCH_PATH): {"html_url": RELAY_RUN_URL},
+                ("POST", DISPATCH_PATH): {
+                    "workflow_run_id": 99,
+                    "html_url": RELAY_RUN_URL,
+                },
             },
         )
         self.assertEqual(result["statusCode"], 200)

@@ -36,6 +36,8 @@ from merge_set import (
     CheckRun,
     CheckState,
     CommitStatus,
+    FindingLevel,
+    FindingRecord,
     Gate,
     HubRun,
     JobRecord,
@@ -61,7 +63,9 @@ PRIVATE_NODES_HUB = merge_set.REPOSITORIES_BY_NAME["private-nodes-hub"]
 
 SET_NAME = "feat/gripper-force"
 BOT = "peppy-merge-set[bot]"
+REVIEWER = merge_set.REVIEWER_LOGIN
 RUN_URL = "https://github.com/Peppy-bot/peppy/actions/runs/99"
+REVIEW_RUN_URL = "https://github.com/Peppy-bot/peppy-superproject/actions/runs/701"
 TEST_CHECK = RequiredCheck("test", 15368)
 # The ruleset of the integration branches that requires an approval.
 APPROVAL_RULESET = 20864833
@@ -175,6 +179,69 @@ def blocker_texts(state, reports):
     return [blocker.text for blocker in merge_set.set_blockers(state, reports)]
 
 
+def review(review_id, commit_id, author=REVIEWER, state="APPROVED"):
+    return merge_set.Review(review_id, author, state, commit_id)
+
+
+FINDING_ID = "0123456789ab"
+
+
+def finding_comment(
+    comment_id,
+    level=FindingLevel.BLOCKING,
+    is_open=True,
+    author=REVIEWER,
+    in_reply_to=None,
+    finding_id=FINDING_ID,
+):
+    """A comment of a review thread; the first one of the thread of a finding
+    of the reviewer unless `author` or `in_reply_to` says otherwise."""
+    record = FindingRecord(finding_id, level, is_open)
+    return merge_set.ReviewComment(
+        id=comment_id,
+        author=author,
+        body=f"{merge_set.finding_marker(record)}\nThe check is missing.",
+        in_reply_to=in_reply_to,
+        path="src/lib.rs",
+        line=10,
+        url=f"https://github.com/Peppy-bot/nodes-hub/pull/88#discussion_r{comment_id}",
+    )
+
+
+def review_run_item(
+    run_id,
+    status="completed",
+    conclusion="success",
+    set_name=SET_NAME,
+    title=None,
+):
+    """A run of the review workflow as GitHub lists it, asked for from the
+    dashboard of nodes-hub#88."""
+    return {
+        "id": run_id,
+        "html_url": f"https://github.com/Peppy-bot/peppy-superproject/actions/runs/{run_id}",
+        "status": status,
+        "conclusion": None if status != "completed" else conclusion,
+        "display_title": title or f"Claude review {set_name} from nodes-hub#88",
+    }
+
+
+def pull_request_review(
+    pr, approved_at=None, open_blocking=0, reviewed=None, decision=None
+):
+    return merge_set.PullRequestReview(
+        pull_request=pr,
+        approved_at=approved_at,
+        open_blocking=open_blocking,
+        reviewed=bool(approved_at or open_blocking) if reviewed is None else reviewed,
+        decision=decision,
+    )
+
+
+def set_review(*pull_requests, run=None, cause=None):
+    return merge_set.SetReview(tuple(pull_requests), run, cause)
+
+
 def record_bundle(text, name=resolve.SET_RECORD_FILE):
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -244,11 +311,11 @@ class Repositories(unittest.TestCase):
     def test_peppy_is_the_repository_resolve_names(self):
         self.assertEqual(PEPPY.full_name, resolve.PEPPY_REPOSITORY)
 
-    def test_the_token_reaches_every_repository_of_a_set(self):
+    def test_the_token_reaches_every_repository_of_a_set_and_of_the_review(self):
         self.assertEqual(
             merge_set.repository_list(),
             "peppy,public-peppy-libs,nodes-hub,launchers-hub,contracts-hub,"
-            "mcp-hub,pairings-hub,private-nodes-hub,platform",
+            "mcp-hub,pairings-hub,private-nodes-hub,platform,peppy-superproject",
         )
 
     def test_a_repository_outside_every_set_is_refused(self):
@@ -578,14 +645,67 @@ class Relay(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertEqual(text, "No set spans the repository `Peppy-bot/landing-page`.")
 
+    def test_the_end_of_a_review_run_is_about_the_dashboard_that_asked_for_it(self):
+        self.assertEqual(
+            merge_set.relay_subject("workflow_run", review_run_event(), BOT),
+            merge_set.RelaySubject(88, SET_NAME, "Peppy-bot/nodes-hub", NODES_HUB),
+        )
+
+    def test_the_relay_starts_the_sync_of_the_set_at_the_end_of_a_review_run(self):
+        token, method, path, body = self.DISPATCH
+        text, calls = self.relay("workflow_run", review_run_event())
+        inputs = {**body["inputs"], "pull-request": "88"}
+        self.assertEqual(calls, [(token, method, path, {**body, "inputs": inputs})])
+        self.assertIn(RELAY_RUN_URL, text)
+
+    def test_every_other_run_of_the_review_repository_is_dropped(self):
+        for payload in (
+            review_run_event(action="requested"),
+            review_run_event(action="in_progress"),
+            review_run_event(workflow="verify-lockfile"),
+            review_run_event(workflow=merge_set.CI_WORKFLOW),
+            review_run_event(title="Claude review"),
+            review_run_event(title=f"Claude review {SET_NAME} from landing-page#3"),
+        ):
+            with self.subTest(payload=payload):
+                self.assertIsNone(merge_set.relay_subject("workflow_run", payload, BOT))
+                self.assertEqual(self.relay("workflow_run", payload)[1], [])
+
+    def test_a_run_named_as_a_review_in_a_repository_of_a_set_is_no_review(self):
+        payload = review_run_event()
+        payload["repository"]["full_name"] = "Peppy-bot/nodes-hub"
+        self.assertIsNone(merge_set.relay_subject("workflow_run", payload, BOT))
+
+    def test_a_ticked_review_box_is_answered_with_the_request(self):
+        edit = comment_edit(
+            before=dashboard_text(), after=dashboard_text(Action.REVIEW), login="bob"
+        )
+        text, calls = self.relay("issue_comment", edit)
+        self.assertEqual(
+            calls[-1][3],
+            {
+                "body": "@bob, the merge-set bot got your request to have Claude "
+                f"review the set `{SET_NAME}`. [This run]({RELAY_RUN_URL}) acts on "
+                "it, and the bot reports the result here.\n"
+            },
+        )
+
     def test_a_dispatch_that_names_no_run_is_refused(self):
         self.assertEqual(
-            merge_set.dispatched_run_url({"html_url": RELAY_RUN_URL}), RELAY_RUN_URL
+            merge_set.dispatched_run(
+                {"workflow_run_id": 99, "html_url": RELAY_RUN_URL}, "merge-set.yml"
+            ),
+            (99, RELAY_RUN_URL),
         )
-        for response in (None, {}, {"html_url": None}):
+        for response in (
+            None,
+            {},
+            {"html_url": RELAY_RUN_URL},
+            {"workflow_run_id": 99, "html_url": None},
+        ):
             with self.subTest(response=response):
                 with self.assertRaises(MergeSetError) as refused:
-                    merge_set.dispatched_run_url(response)
+                    merge_set.dispatched_run(response, "merge-set.yml")
                 self.assertIn("merge-set.yml names no run", str(refused.exception))
 
 
@@ -649,6 +769,27 @@ def ci_run_event(
             "head_branch": SET_NAME,
             "head_repository": {"full_name": head_repository},
             "pull_requests": [{"number": 7}],
+        },
+    )
+
+
+def review_run_event(action="completed", workflow="Claude review", title=None):
+    """A `workflow_run` event of a review run of peppy-superproject, asked for
+    from the dashboard of nodes-hub#88."""
+    return webhook_event(
+        action=action,
+        repository={
+            "full_name": "Peppy-bot/peppy-superproject",
+            "default_branch": "main",
+        },
+        workflow={"name": workflow},
+        workflow_run={
+            "event": "workflow_dispatch",
+            "run_attempt": 1,
+            "head_branch": "main",
+            "head_repository": {"full_name": "Peppy-bot/peppy-superproject"},
+            "pull_requests": [],
+            "display_title": title or f"Claude review {SET_NAME} from nodes-hub#88",
         },
     )
 
@@ -1939,7 +2080,7 @@ class Dashboards(unittest.TestCase):
         peppy, nodes = pull_request(PEPPY, 512), pull_request(NODES_HUB, 88)
         state = set_state(member(PEPPY, peppy), member(NODES_HUB, nodes))
         body = merge_set.render_set_dashboard(
-            state, reports_by_label(report(peppy), report(nodes))
+            state, reports_by_label(report(peppy), report(nodes)), None
         )
         self.assertTrue(body.startswith(merge_set.DASHBOARD_MARKER))
         self.assertIn("| Repository | Pull request | Head | CI | State |", body)
@@ -1980,6 +2121,7 @@ class Dashboards(unittest.TestCase):
                 report(nodes, ci=running),
                 report(contracts, ci=failed),
             ),
+            None,
         )
         self.assertIn(f"| `{commit(PEPPY)[:7]}` | not started |", body)
         self.assertIn(f"| `{commit(NODES_HUB)[:7]}` | [running]({running.url}) |", body)
@@ -2005,7 +2147,7 @@ class Dashboards(unittest.TestCase):
             hub_run(NODES_HUB), "check-index", (), (), record_expired=True
         )
         body = merge_set.render_set_dashboard(
-            state, reports_by_label(report(peppy), report(nodes, stale=(stale,)))
+            state, reports_by_label(report(peppy), report(nodes, stale=(stale,))), None
         )
         self.assertIn(
             f"| `{commit(NODES_HUB)[:7]}` | [passed]({run_url(NODES_HUB, 10)}) "
@@ -2034,6 +2176,7 @@ class Dashboards(unittest.TestCase):
                 report(peppy),
                 report(nodes, review=ReviewDecision.REVIEW_REQUIRED),
             ),
+            None,
         )
         self.assertIn("**Ready to merge for an admin.**", body)
         self.assertIn(merge_set.ADMIN_WAIVER, body)
@@ -2052,6 +2195,7 @@ class Dashboards(unittest.TestCase):
                 report(peppy),
                 report(nodes, review=ReviewDecision.REVIEW_REQUIRED),
             ),
+            None,
         )
         self.assertIn(
             "**What blocks the merge**\n\n- peppy#512 is a draft: mark it ready for review.\n\n"
@@ -2146,7 +2290,9 @@ class MergedDashboards(unittest.TestCase):
         self,
     ):
         body = merge_set.render_set_dashboard(
-            self.state, reports_by_label(report(self.peppy), report(self.contracts))
+            self.state,
+            reports_by_label(report(self.peppy), report(self.contracts)),
+            None,
         )
         rows = [
             line.split(" | ")[0]
@@ -2174,7 +2320,7 @@ class MergedDashboards(unittest.TestCase):
             self.state, merged=(merged_member(LAUNCHERS_HUB, self.launchers, later),)
         )
         body = merge_set.render_set_dashboard(
-            state, reports_by_label(report(self.peppy), report(self.contracts))
+            state, reports_by_label(report(self.peppy), report(self.contracts)), None
         )
         self.assertIn(
             f"| launchers-hub | [#132]({self.launchers.url}), [#140]({later.url}) |",
@@ -2243,6 +2389,472 @@ class MergeMessages(unittest.TestCase):
         self.assertEqual(outcome.unmerged, (nodes, contracts))
 
 
+class ReviewRecords(unittest.TestCase):
+    def test_the_approvals_of_the_reviewer_that_stand_are_kept_in_order(self):
+        reviews = merge_set.parse_reviews(
+            [
+                {
+                    "id": 1,
+                    "user": {"login": REVIEWER},
+                    "state": "COMMENTED",
+                    "commit_id": "a",
+                },
+                {
+                    "id": 2,
+                    "user": {"login": REVIEWER},
+                    "state": "APPROVED",
+                    "commit_id": "b",
+                },
+                {
+                    "id": 3,
+                    "user": {"login": "bob"},
+                    "state": "APPROVED",
+                    "commit_id": "b",
+                },
+                {
+                    "id": 4,
+                    "user": {"login": REVIEWER},
+                    "state": "DISMISSED",
+                    "commit_id": "c",
+                },
+                {"id": 5, "user": None, "state": "APPROVED", "commit_id": "d"},
+                {
+                    "id": 6,
+                    "user": {"login": REVIEWER},
+                    "state": "APPROVED",
+                    "commit_id": "e",
+                },
+            ]
+        )
+        self.assertEqual(
+            [approval.id for approval in merge_set.reviewer_approvals(reviews)], [2, 6]
+        )
+
+    def test_an_approval_of_another_commit_than_the_head_is_stale(self):
+        pr = pull_request(NODES_HUB, 88)
+        old = commit(NODES_HUB, "old")
+        reviews = [review(1, pr.head_commit), review(2, old), review(3, None)]
+        stale = merge_set.stale_reviewer_approvals(pr, reviews, lambda *_: False)
+        self.assertEqual([approval.id for approval in stale], [2, 3])
+
+    def test_a_head_that_merged_its_base_alone_keeps_the_approval(self):
+        pr = pull_request(NODES_HUB, 88)
+        old = commit(NODES_HUB, "old")
+        asked = []
+
+        def clean(repository, tested, head):
+            asked.append((repository, tested, head))
+            return True
+
+        self.assertEqual(
+            merge_set.stale_reviewer_approvals(pr, [review(1, old)], clean), []
+        )
+        self.assertEqual(asked, [(NODES_HUB, old, pr.head_commit)])
+
+    def test_the_review_of_a_person_is_never_stale(self):
+        pr = pull_request(NODES_HUB, 88)
+        person = review(1, commit(NODES_HUB, "old"), author="bob")
+        self.assertEqual(
+            merge_set.stale_reviewer_approvals(pr, [person], lambda *_: False), []
+        )
+
+    def test_a_finding_record_reads_back_as_it_was_written(self):
+        for level in FindingLevel:
+            for is_open in (True, False):
+                record = FindingRecord(FINDING_ID, level, is_open)
+                with self.subTest(level=level, is_open=is_open):
+                    body = merge_set.finding_marker(record) + "\n**Problem.** text"
+                    self.assertEqual(merge_set.parse_finding_record(body), record)
+
+    def test_a_comment_without_a_record_of_its_form_has_none(self):
+        valid = merge_set.finding_marker(
+            FindingRecord(FINDING_ID, FindingLevel.NOTE, True)
+        )
+        for body in (
+            "",
+            "A reply.",
+            "Text first\n" + valid,
+            '<!-- claude-review:finding {"id": "0123456789ab", "level": "note"} -->',
+            '<!-- claude-review:finding {"id": "short", "level": "note", "open": true} -->',
+            '<!-- claude-review:finding {"id": "0123456789ab", "level": "big", "open": true} -->',
+            '<!-- claude-review:finding {"id": "0123456789ab", "level": "note", "open": 1} -->',
+            "<!-- claude-review:finding {not json} -->",
+            "<!-- claude-review:finding [] -->",
+        ):
+            with self.subTest(body=body):
+                self.assertIsNone(merge_set.parse_finding_record(body))
+
+    def test_only_the_first_comments_of_the_reviewer_hold_its_findings(self):
+        comments = [
+            finding_comment(1),
+            finding_comment(2, in_reply_to=1),
+            finding_comment(3, author="bob"),
+            finding_comment(4, level=FindingLevel.NOTE),
+            finding_comment(5, is_open=False),
+            merge_set.ReviewComment(6, REVIEWER, "No record.", None, "a", 1, "u"),
+        ]
+        self.assertEqual(
+            [comment.id for comment, _ in merge_set.findings_of(comments)], [1, 4, 5]
+        )
+        self.assertEqual(merge_set.open_blocking_count(comments), 1)
+
+    def test_the_review_comments_of_github_are_parsed(self):
+        (comment,) = merge_set.parse_review_comments(
+            [
+                {
+                    "id": 7,
+                    "user": {"login": "bob"},
+                    "body": "Fixed.",
+                    "in_reply_to_id": 5,
+                    "path": "src/lib.rs",
+                    "line": None,
+                    "html_url": "u",
+                }
+            ]
+        )
+        self.assertEqual(
+            comment,
+            merge_set.ReviewComment(7, "bob", "Fixed.", 5, "src/lib.rs", None, "u"),
+        )
+
+    def test_the_name_of_a_review_run_reads_back_as_it_was_written(self):
+        name = merge_set.review_run_name(SET_NAME, NODES_HUB, 88)
+        self.assertEqual(name, f"Claude review {SET_NAME} from nodes-hub#88")
+        self.assertEqual(
+            merge_set.parse_review_run_name(name),
+            merge_set.ReviewRunName(SET_NAME, NODES_HUB, 88),
+        )
+
+    def test_a_run_name_of_another_form_or_repository_names_no_review(self):
+        for title in (
+            "Claude review",
+            f"Claude review {SET_NAME}",
+            f"Claude review {SET_NAME} from landing-page#3",
+            f"Claude review {SET_NAME} from nodes-hub#x",
+            f"Merge set {SET_NAME} from nodes-hub#88",
+            f"Claude review {SET_NAME} from nodes-hub#88 again",
+        ):
+            with self.subTest(title=title):
+                self.assertIsNone(merge_set.parse_review_run_name(title))
+
+    def test_the_newest_review_run_of_the_set_counts(self):
+        runs = [
+            review_run_item(30, set_name="feat/other"),
+            review_run_item(20, status="in_progress"),
+            review_run_item(10, conclusion="failure"),
+            {**review_run_item(40), "display_title": "something else"},
+        ]
+        self.assertEqual(
+            merge_set.latest_review_run(runs, SET_NAME),
+            merge_set.ReviewRun(20, review_run_item(20)["html_url"], False, None),
+        )
+        self.assertIsNone(merge_set.latest_review_run(runs, "feat/none"))
+
+    def test_only_a_run_that_completed_with_success_succeeded(self):
+        for status, conclusion, succeeded in (
+            ("completed", "success", True),
+            ("completed", "failure", False),
+            ("completed", "cancelled", False),
+            ("in_progress", None, False),
+        ):
+            with self.subTest(status=status, conclusion=conclusion):
+                run = merge_set.parse_review_run(review_run_item(1, status, conclusion))
+                self.assertEqual(run.succeeded, succeeded)
+
+    def test_the_outcome_of_a_review_run_gives_its_cause(self):
+        self.assertEqual(
+            merge_set.parse_review_outcome('{"cause": "It moved."}'), "It moved."
+        )
+        for text in ("", "[]", "{}", '{"cause": 3}'):
+            with self.subTest(text=text), self.assertRaises(MergeSetError):
+                merge_set.parse_review_outcome(text)
+
+
+class ReviewOffer(unittest.TestCase):
+    def test_the_review_is_offered_when_a_developer_opened_each_pull_request(self):
+        peppy, nodes = (
+            pull_request(PEPPY, 512),
+            pull_request(NODES_HUB, 88, author="bob"),
+        )
+        state = set_state(member(PEPPY, peppy), member(NODES_HUB, nodes))
+        self.assertTrue(
+            merge_set.is_review_offered(state, {"alice", "bob"}.__contains__)
+        )
+        self.assertFalse(merge_set.is_review_offered(state, {"alice"}.__contains__))
+
+    def test_a_pull_request_of_no_user_or_a_set_without_one_gets_no_offer(self):
+        nameless = pull_request(NODES_HUB, 88, author=None)
+        for state in (
+            set_state(member(NODES_HUB, nameless)),
+            set_state(member(NODES_HUB)),
+        ):
+            with self.subTest(state=state):
+                self.assertFalse(merge_set.is_review_offered(state, lambda login: True))
+
+
+class ReviewSection(unittest.TestCase):
+    def setUp(self):
+        self.peppy, self.nodes = pull_request(PEPPY, 512), pull_request(NODES_HUB, 88)
+
+    def section(self, review_of_set, alone=False):
+        return "\n".join(merge_set.review_section(review_of_set, alone))
+
+    def test_the_section_offers_the_review_of_the_set_with_its_box(self):
+        text = self.section(
+            set_review(pull_request_review(self.peppy), pull_request_review(self.nodes))
+        )
+        self.assertEqual(
+            text,
+            "### Review by Claude\n\n"
+            "Claude can review this set and approve it. You then do not have to "
+            "wait for the review of a person. This is your choice: a person can "
+            "also review and approve this set as usual.\n\n"
+            "To choose Claude, tick the box below. Claude posts its findings on "
+            "each pull request of the set. Correct each finding or answer in its "
+            "thread, then tick the box again. When no blocking finding is open, "
+            "Claude approves the 2 pull requests.\n\n"
+            "- [ ] <!-- merge-set:review --> Ask Claude to review the 2 pull "
+            "requests of this set\n\n"
+            "**No review asked.**",
+        )
+
+    def test_a_pull_request_that_is_alone_is_offered_the_review_as_this_pull_request(
+        self,
+    ):
+        text = self.section(set_review(pull_request_review(self.nodes)), alone=True)
+        self.assertIn(
+            "Claude can review this pull request and approve it. You then do not "
+            "have to wait for the review of a person. This is your choice: a "
+            "person can also review and approve this pull request as usual.",
+            text,
+        )
+        self.assertIn(
+            "Claude posts its findings on this pull request. Correct each finding "
+            "or answer in its thread, then tick the box again. When no blocking "
+            "finding is open, Claude approves this pull request.",
+            text,
+        )
+        self.assertIn(
+            "- [ ] <!-- merge-set:review --> Ask Claude to review this pull request",
+            text,
+        )
+
+    def test_a_review_in_progress_links_its_run(self):
+        run = merge_set.parse_review_run(review_run_item(5, status="in_progress"))
+        text = self.section(set_review(pull_request_review(self.nodes), run=run))
+        self.assertTrue(
+            text.endswith(f"**Review in progress** in [this run]({run.url}).")
+        )
+
+    def test_a_review_that_did_not_complete_gives_its_cause(self):
+        run = merge_set.parse_review_run(review_run_item(5, conclusion="failure"))
+        cases = (
+            (
+                "The Claude login is at its usage limit.",
+                "The Claude login is at its usage limit.",
+            ),
+            (None, "The run ended as `failure` before it gave a cause."),
+        )
+        for cause, said in cases:
+            with self.subTest(cause=cause):
+                text = self.section(
+                    set_review(pull_request_review(self.nodes), run=run, cause=cause)
+                )
+                self.assertTrue(
+                    text.endswith(
+                        f"**Review not completed.** {said} See [the run]({run.url}), "
+                        "and tick the box to ask again."
+                    )
+                )
+
+    def test_an_approval_names_the_commits_that_claude_read(self):
+        text = self.section(
+            set_review(
+                pull_request_review(self.peppy, approved_at=commit(PEPPY)),
+                pull_request_review(
+                    self.nodes,
+                    approved_at=commit(NODES_HUB, "old"),
+                    decision=ReviewDecision.APPROVED,
+                ),
+            )
+        )
+        self.assertTrue(
+            text.endswith(
+                f"**Approved by Claude**, at the commits that it read: {self.peppy.link} "
+                f"at `{commit(PEPPY)[:7]}`, {self.nodes.link} at "
+                f"`{commit(NODES_HUB, 'old')[:7]}`."
+            )
+        )
+
+    def test_an_approval_that_github_does_not_count_names_the_code_owner(self):
+        text = self.section(
+            set_review(
+                pull_request_review(
+                    self.peppy,
+                    approved_at=commit(PEPPY),
+                    decision=ReviewDecision.REVIEW_REQUIRED,
+                ),
+                pull_request_review(
+                    self.nodes,
+                    approved_at=commit(NODES_HUB),
+                    decision=ReviewDecision.APPROVED,
+                ),
+            )
+        )
+        self.assertIn(
+            "- peppy#512 changes a file with a code owner, so it also needs the "
+            "approval of that owner.",
+            text,
+        )
+        self.assertNotIn("- nodes-hub#88 changes", text)
+
+    def test_the_open_blocking_findings_are_counted_by_pull_request(self):
+        text = self.section(
+            set_review(
+                pull_request_review(self.peppy, open_blocking=2),
+                pull_request_review(self.nodes, reviewed=True),
+            )
+        )
+        self.assertTrue(
+            text.endswith(
+                f"**2 open blocking findings** ({self.peppy.link}: 2). Correct each "
+                "finding or answer in its thread, then tick the box again."
+            )
+        )
+        one = self.section(set_review(pull_request_review(self.nodes, open_blocking=1)))
+        self.assertIn("**1 open blocking finding** (", one)
+
+    def test_an_approval_that_was_dismissed_asks_for_a_review_of_the_new_commits(self):
+        text = self.section(
+            set_review(
+                pull_request_review(self.peppy, approved_at=commit(PEPPY)),
+                pull_request_review(self.nodes, reviewed=True),
+            )
+        )
+        self.assertTrue(
+            text.endswith(
+                "**Not approved.** No blocking finding is open, but Claude did not "
+                f"read the head of {self.nodes.link}: tick the box to ask for a new "
+                "review."
+            )
+        )
+
+    def test_the_set_dashboard_ends_with_the_section_when_it_offers_the_review(self):
+        state = set_state(member(PEPPY, self.peppy), member(NODES_HUB, self.nodes))
+        reports = reports_by_label(report(self.peppy), report(self.nodes))
+        offered = set_review(
+            pull_request_review(self.peppy), pull_request_review(self.nodes)
+        )
+        body = merge_set.render_set_dashboard(state, reports, offered)
+        self.assertTrue(
+            body.endswith("\n".join(merge_set.review_section(offered, False)) + "\n")
+        )
+        self.assertNotIn(
+            "Review by Claude", merge_set.render_set_dashboard(state, reports, None)
+        )
+
+    def test_the_dashboard_of_a_pull_request_alone_holds_the_section(self):
+        state = set_state(member(NODES_HUB, self.nodes))
+        offered = set_review(pull_request_review(self.nodes))
+        body = merge_set.render_alone_dashboard(state, offered)
+        self.assertTrue(
+            body.startswith(
+                f"{merge_set.DASHBOARD_MARKER}\n### Set `{SET_NAME}`\n\nNo other "
+                f"repository has a change on the branch `{SET_NAME}`, so this pull "
+                "request is alone: its own merge button merges it.\n\n"
+                "### Review by Claude\n"
+            )
+        )
+        self.assertIn("Ask Claude to review this pull request", body)
+
+
+class ReviewRefusals(unittest.TestCase):
+    def setUp(self):
+        self.peppy, self.nodes = pull_request(PEPPY, 512), pull_request(NODES_HUB, 88)
+        self.state = set_state(member(PEPPY, self.peppy), member(NODES_HUB, self.nodes))
+        self.mergeable = {self.peppy.label: True, self.nodes.label: True}
+        self.review = set_review(
+            pull_request_review(self.peppy), pull_request_review(self.nodes)
+        )
+
+    def test_a_set_that_merges_cleanly_and_has_no_review_in_progress_starts_one(self):
+        self.assertEqual(
+            merge_set.review_refusal_reasons(self.state, self.review, self.mergeable),
+            [],
+        )
+
+    def test_a_set_that_does_not_offer_the_review_starts_none(self):
+        self.assertEqual(
+            merge_set.review_refusal_reasons(self.state, None, self.mergeable),
+            [
+                "Claude reviews only a set whose every open pull request a member "
+                "of `peppy-devs` opened."
+            ],
+        )
+
+    def test_a_review_in_progress_starts_no_other(self):
+        run = merge_set.parse_review_run(review_run_item(5, status="queued"))
+        self.assertEqual(
+            merge_set.review_refusal_reasons(
+                self.state, replace(self.review, run=run), self.mergeable
+            ),
+            [f"A review of this set is in progress in [this run]({run.url})."],
+        )
+
+    def test_a_conflict_or_a_merge_state_github_has_not_computed_starts_none(self):
+        mergeable = {self.peppy.label: False, self.nodes.label: None}
+        self.assertEqual(
+            merge_set.review_refusal_reasons(self.state, self.review, mergeable),
+            [
+                "peppy#512 has conflicts with `dev`: resolve them.",
+                "GitHub has not yet computed whether nodes-hub#88 merges cleanly "
+                "into `main`.",
+            ],
+        )
+
+    def test_a_member_without_one_open_pull_request_starts_none(self):
+        state = set_state(member(PEPPY, self.peppy), member(NODES_HUB))
+        self.assertEqual(
+            merge_set.review_refusal_reasons(
+                state,
+                set_review(pull_request_review(self.peppy)),
+                {self.peppy.label: True},
+            ),
+            [
+                f"nodes-hub has a change on the branch `{SET_NAME}` "
+                f"(`{commit(NODES_HUB)[:7]}`) but no open pull request from it: open "
+                "one, or delete the branch."
+            ],
+        )
+
+    def test_a_set_that_claude_approved_at_its_heads_starts_no_review(self):
+        approved = set_review(
+            pull_request_review(self.peppy, approved_at=commit(PEPPY)),
+            pull_request_review(self.nodes, approved_at=commit(NODES_HUB)),
+        )
+        self.assertEqual(
+            merge_set.review_refusal_reasons(self.state, approved, self.mergeable),
+            ["Claude already approved each pull request of this set at its head."],
+        )
+
+    def test_the_inputs_of_the_review_name_the_set_its_dashboard_and_its_heads(self):
+        dashboard = merge_set.Dashboard(self.nodes, 1, "n", "u", "b")
+        request = merge_set.Request(Action.REVIEW, "alice", dashboard)
+        self.assertEqual(
+            merge_set.review_inputs(self.state, request),
+            {
+                "set": SET_NAME,
+                "repository": "nodes-hub",
+                "pull-request": "88",
+                "requester": "alice",
+                "heads": json.dumps(
+                    {"nodes-hub": commit(NODES_HUB), "peppy": commit(PEPPY)},
+                    sort_keys=True,
+                ),
+            },
+        )
+
+
 class FakeComment:
     def __init__(self, comment_id, pull_request, author, body):
         self.id = comment_id
@@ -2278,7 +2890,7 @@ class FakeGitHub:
         # The CI run of each pull request, by label; None before it starts.
         self.ci_runs = {}
         self.statuses_of = {}
-        self.reviews = {}
+        self.decisions = {}
         # The answers of merge_state for a pull request, in order; the last
         # one repeats.
         self.merge_states = {}
@@ -2302,6 +2914,21 @@ class FakeGitHub:
         self.merged = []
         self.reruns = []
         self.sleeps = []
+        # The members of the team of the developers, who get the offer of
+        # the Claude review.
+        self.developers = set()
+        # The reviews and the review comments of each pull request, by label.
+        self.reviews_of = {}
+        self.review_comments_of = {}
+        # (label, review id, message) of each dismissal.
+        self.dismissals = []
+        # The runs of the review workflow, newest first, as GitHub lists them,
+        # and the cause that each one gives, by run id.
+        self.review_runs_listed = []
+        self.review_causes = {}
+        # The inputs of each review the bot started.
+        self.started_reviews = []
+        self.review_workflow_missing = False
 
     # Setting up.
 
@@ -2423,7 +3050,7 @@ class FakeGitHub:
         return self.ci_runs.get(pr.label)
 
     def review_decision(self, pr):
-        return self.reviews.get(pr.label, ReviewDecision.APPROVED)
+        return self.decisions.get(pr.label, ReviewDecision.APPROVED)
 
     def is_behind(self, pr):
         return pr.label in self.behind
@@ -2499,6 +3126,40 @@ class FakeGitHub:
     def sleep(self, seconds):
         self.sleeps.append(seconds)
 
+    def differs_by_clean_base_merge(self, repository, commit, head):
+        return (repository.name, commit) in self.clean_base_merges
+
+    def reviews(self, pr):
+        return list(self.reviews_of.get(pr.label, []))
+
+    def review_comments(self, pr):
+        return list(self.review_comments_of.get(pr.label, []))
+
+    def dismiss_review(self, pr, review, message):
+        self.dismissals.append((pr.label, review.id, message))
+        self.reviews_of[pr.label] = [
+            replace(known, state="DISMISSED") if known.id == review.id else known
+            for known in self.reviews_of[pr.label]
+        ]
+
+    def is_developer(self, login):
+        return login in self.developers
+
+    def review_runs(self):
+        return list(self.review_runs_listed)
+
+    def review_cause(self, run):
+        return self.review_causes.get(run.id)
+
+    def start_review(self, inputs):
+        if self.review_workflow_missing:
+            raise ApiError("POST dispatches", 404, "Not Found")
+        self.started_reviews.append(inputs)
+        run = merge_set.ReviewRun(
+            700 + len(self.started_reviews), REVIEW_RUN_URL, False, None
+        )
+        return run
+
 
 def sync(
     github, repository=NODES_HUB, branch=SET_NAME, head_repository=None, pull_request=""
@@ -2534,7 +3195,7 @@ class SyncAlone(unittest.TestCase):
         sync(github)
         self.assertEqual(
             old.body,
-            merge_set.render_alone_dashboard(set_state(member(NODES_HUB, nodes))),
+            merge_set.render_alone_dashboard(set_state(member(NODES_HUB, nodes)), None),
         )
         self.assertEqual(github.gates(nodes)[-1], merge_set.alone_gate(SET_NAME))
 
@@ -2551,7 +3212,7 @@ class SyncAlone(unittest.TestCase):
         self.assertEqual(github.merged, [])
         self.assertEqual(
             old.body,
-            merge_set.render_alone_dashboard(set_state(member(NODES_HUB, nodes))),
+            merge_set.render_alone_dashboard(set_state(member(NODES_HUB, nodes)), None),
         )
 
     def test_the_last_pull_request_left_by_a_merge_on_its_own_is_alone(self):
@@ -2634,13 +3295,13 @@ class SyncSet(unittest.TestCase):
         self.assertEqual(self.github.gates(self.nodes)[-1].state, "pending")
 
     def test_the_dashboard_follows_what_blocks_the_set(self):
-        self.github.reviews[self.nodes.label] = ReviewDecision.REVIEW_REQUIRED
+        self.github.decisions[self.nodes.label] = ReviewDecision.REVIEW_REQUIRED
         sync(self.github)
         self.assertIn(
             "nodes-hub#88 needs an approving review.",
             self.github.dashboard_body(self.peppy),
         )
-        del self.github.reviews[self.nodes.label]
+        del self.github.decisions[self.nodes.label]
         sync(self.github)
         self.assertIn("**Ready to merge.**", self.github.dashboard_body(self.peppy))
 
@@ -2699,7 +3360,7 @@ class SyncSet(unittest.TestCase):
 
     def test_a_dashboard_edited_during_the_run_is_left_for_the_next_sync(self):
         sync(self.github)
-        self.github.reviews[self.nodes.label] = ReviewDecision.REVIEW_REQUIRED
+        self.github.decisions[self.nodes.label] = ReviewDecision.REVIEW_REQUIRED
         (comment,) = self.github.comments_on(self.peppy)
         ticked = comment.body.replace("- [ ]", "- [x]")
         self.github.edits_during_the_run[comment.id] = ticked
@@ -3003,7 +3664,7 @@ class SyncMerge(unittest.TestCase):
     def leave_unapproved(self, *pull_requests):
         # GitHub reports a pull request that lacks an approval as blocked.
         for pr in pull_requests:
-            self.github.reviews[pr.label] = ReviewDecision.REVIEW_REQUIRED
+            self.github.decisions[pr.label] = ReviewDecision.REVIEW_REQUIRED
             self.github.merge_states[pr.label] = [(True, "blocked")]
 
     def test_an_admin_merges_a_set_another_user_opened_that_lacks_approvals(self):
@@ -3077,7 +3738,7 @@ class SyncMerge(unittest.TestCase):
             self.assertEqual(self.github.gates(pr)[-1].state, "pending")
 
     def test_a_review_that_requests_changes_blocks_an_admin(self):
-        self.github.reviews[self.nodes.label] = ReviewDecision.CHANGES_REQUESTED
+        self.github.decisions[self.nodes.label] = ReviewDecision.CHANGES_REQUESTED
         self.github.make_admin("alice")
         self.tick_merge()
         self.assertEqual(self.github.merged, [])
@@ -3437,6 +4098,307 @@ class SyncDepartedBranch(unittest.TestCase):
         self.assertNotIn("merge-set:rerun", body)
 
 
+class SyncReview(unittest.TestCase):
+    def setUp(self):
+        self.github = FakeGitHub(self)
+        self.github.developers.add("alice")
+        self.peppy = self.github.open_pull_request(PEPPY, 512)
+        self.nodes = self.github.open_pull_request(NODES_HUB, 88)
+
+    def dashboard_of(self, pr):
+        (comment,) = [
+            comment
+            for comment in self.github.comments_on(pr)
+            if comment.body.startswith(merge_set.DASHBOARD_MARKER)
+        ]
+        return comment
+
+    def tick_review(self, pr=None, login="alice"):
+        sync(self.github)
+        self.github.tick(self.dashboard_of(pr or self.nodes), Action.REVIEW, login)
+        sync(self.github)
+
+    def approve_both_at_their_heads(self):
+        self.github.reviews_of[self.peppy.label] = [review(1, self.peppy.head_commit)]
+        self.github.reviews_of[self.nodes.label] = [review(2, self.nodes.head_commit)]
+
+    def test_the_dashboard_of_a_set_of_developers_offers_the_review(self):
+        sync(self.github)
+        body = self.github.dashboard_body(self.peppy)
+        self.assertIn(
+            "- [ ] <!-- merge-set:review --> Ask Claude to review the 2 pull "
+            "requests of this set",
+            body,
+        )
+        self.assertTrue(body.endswith("**No review asked.**\n"))
+        self.assertEqual(self.github.started_reviews, [])
+
+    def test_a_set_with_a_pull_request_of_another_author_has_no_offer(self):
+        self.github.set_author(self.nodes, "carol")
+        sync(self.github)
+        self.assertNotIn("Review by Claude", self.github.dashboard_body(self.peppy))
+
+    def test_a_tick_starts_the_review_and_the_dashboard_shows_it_in_progress(self):
+        self.tick_review()
+        self.assertEqual(
+            self.github.started_reviews,
+            [
+                {
+                    "set": SET_NAME,
+                    "repository": "nodes-hub",
+                    "pull-request": "88",
+                    "requester": "alice",
+                    "heads": json.dumps(
+                        {
+                            "nodes-hub": self.nodes.head_commit,
+                            "peppy": self.peppy.head_commit,
+                        },
+                        sort_keys=True,
+                    ),
+                }
+            ],
+        )
+        self.assertEqual(
+            self.github.reports_on(self.nodes),
+            [
+                f"@alice, Claude reviews the set `{SET_NAME}` in [this "
+                f"run]({REVIEW_RUN_URL}). It posts its findings on each pull request "
+                "of the set, and the merge-set comment shows the state of the "
+                "review.\n"
+            ],
+        )
+        body = self.github.dashboard_body(self.nodes)
+        self.assertIn("- [ ] <!-- merge-set:review -->", body)
+        self.assertTrue(
+            body.endswith(f"**Review in progress** in [this run]({REVIEW_RUN_URL}).\n")
+        )
+
+    def test_the_tick_of_a_user_the_bot_does_not_act_for_starts_nothing(self):
+        self.tick_review(login="mallory")
+        self.assertEqual(self.github.started_reviews, [])
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertTrue(
+            refusal.startswith(
+                "@mallory, the bot did not start a Claude review of the set for you: "
+                "you did not open peppy#512, nodes-hub#88."
+            )
+        )
+
+    def test_a_conflict_holds_the_start_of_the_review(self):
+        self.github.merge_states[self.nodes.label] = [(False, "dirty")]
+        self.tick_review()
+        self.assertEqual(self.github.started_reviews, [])
+        self.assertEqual(
+            self.github.reports_on(self.nodes),
+            [
+                f"@alice, Claude did not start a review of the set `{SET_NAME}`, "
+                "because:\n\n- nodes-hub#88 has conflicts with `main`: resolve them.\n"
+            ],
+        )
+
+    def test_a_review_in_progress_holds_another(self):
+        self.github.review_runs_listed = [review_run_item(5, status="in_progress")]
+        self.tick_review()
+        self.assertEqual(self.github.started_reviews, [])
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertIn("A review of this set is in progress in [this run](", refusal)
+
+    def test_the_bot_answers_while_the_review_workflow_is_not_on_its_branch(self):
+        self.github.review_workflow_missing = True
+        self.tick_review()
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertIn(f"- {merge_set.REVIEW_WORKFLOW_MISSING}\n", refusal)
+        self.assertTrue(
+            self.github.dashboard_body(self.nodes).endswith("**No review asked.**\n")
+        )
+
+    def test_a_ticked_review_box_of_a_set_with_no_offer_is_answered(self):
+        sync(self.github)
+        self.github.developers.clear()
+        self.github.tick(self.dashboard_of(self.nodes), Action.REVIEW)
+        sync(self.github)
+        self.assertEqual(self.github.started_reviews, [])
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertIn(
+            "Claude reviews only a set whose every open pull request", refusal
+        )
+        self.assertNotIn("Review by Claude", self.github.dashboard_body(self.nodes))
+
+    def test_the_open_blocking_findings_show_on_each_dashboard(self):
+        self.github.reviews_of[self.nodes.label] = [
+            review(1, self.nodes.head_commit, state="COMMENTED")
+        ]
+        self.github.review_comments_of[self.nodes.label] = [
+            finding_comment(1),
+            finding_comment(2, level=FindingLevel.NOTE),
+            finding_comment(3, author="alice", in_reply_to=1),
+        ]
+        sync(self.github)
+        for pr in (self.peppy, self.nodes):
+            with self.subTest(pr=pr.label):
+                self.assertIn(
+                    f"**1 open blocking finding** ([nodes-hub#88]({self.nodes.url}): 1).",
+                    self.github.dashboard_body(pr),
+                )
+
+    def test_the_approvals_of_claude_make_the_set_ready_with_no_person(self):
+        self.approve_both_at_their_heads()
+        sync(self.github)
+        body = self.github.dashboard_body(self.nodes)
+        self.assertIn("**Ready to merge.**", body)
+        self.assertIn("**Approved by Claude**, at the commits that it read:", body)
+        (comment,) = self.github.comments_on(self.nodes)
+        self.github.tick(comment, Action.MERGE)
+        sync(self.github)
+        self.assertEqual(
+            [label for label, _ in self.github.merged], ["peppy#512", "nodes-hub#88"]
+        )
+
+    def test_an_approval_github_does_not_count_names_the_code_owner(self):
+        self.approve_both_at_their_heads()
+        self.github.decisions[self.peppy.label] = ReviewDecision.REVIEW_REQUIRED
+        sync(self.github)
+        body = self.github.dashboard_body(self.nodes)
+        self.assertIn(
+            "- peppy#512 changes a file with a code owner, so it also needs the "
+            "approval of that owner.",
+            body,
+        )
+        self.assertIn("peppy#512 needs an approving review.", body)
+
+    def test_claude_starts_no_review_of_a_set_that_it_approved_at_its_heads(self):
+        self.approve_both_at_their_heads()
+        self.tick_review()
+        self.assertEqual(self.github.started_reviews, [])
+        (refusal,) = self.github.reports_on(self.nodes)
+        self.assertIn("Claude already approved each pull request of this set", refusal)
+
+    def test_a_new_head_dismisses_the_approval_of_claude_before_its_gate(self):
+        old = commit(NODES_HUB, "old")
+        self.github.reviews_of[self.nodes.label] = [review(2, old)]
+        writes = []
+        post_gate, dismiss_review = self.github.post_gate, self.github.dismiss_review
+
+        def record_gate(pr, gate):
+            writes.append(("gate", pr.label))
+            post_gate(pr, gate)
+
+        def record_dismissal(pr, review_of_pr, message):
+            writes.append(("dismissal", pr.label))
+            dismiss_review(pr, review_of_pr, message)
+
+        self.github.post_gate = record_gate
+        self.github.dismiss_review = record_dismissal
+        sync(self.github)
+        self.assertEqual(writes[0], ("dismissal", "nodes-hub#88"))
+        self.assertEqual(
+            self.github.dismissals,
+            [
+                (
+                    "nodes-hub#88",
+                    2,
+                    f"The head of nodes-hub#88 moved to `{self.nodes.head_commit[:7]}`, "
+                    "which Claude did not read. Tick the review box of the merge-set "
+                    "comment to have Claude review the new commits.",
+                )
+            ],
+        )
+        self.assertIn(
+            "**Not approved.** No blocking finding is open, but Claude did not read "
+            f"the head of {self.peppy.link}, {self.nodes.link}: tick the box to ask "
+            "for a new review.",
+            self.github.dashboard_body(self.nodes),
+        )
+
+    def test_a_head_that_merged_its_base_alone_keeps_the_approval(self):
+        old = commit(NODES_HUB, "old")
+        self.approve_both_at_their_heads()
+        self.github.reviews_of[self.nodes.label] = [review(2, old)]
+        self.github.clean_base_merges.add(("nodes-hub", old))
+        sync(self.github)
+        self.assertEqual(self.github.dismissals, [])
+        self.assertIn(
+            f"[nodes-hub#88]({self.nodes.url}) at `{old[:7]}`",
+            self.github.dashboard_body(self.nodes),
+        )
+
+    def test_the_approval_of_a_person_is_never_dismissed(self):
+        self.github.reviews_of[self.nodes.label] = [
+            review(2, commit(NODES_HUB, "old"), author="bob")
+        ]
+        sync(self.github)
+        self.assertEqual(self.github.dismissals, [])
+
+    def test_a_review_that_did_not_complete_gives_its_cause(self):
+        self.github.review_runs_listed = [review_run_item(5, conclusion="failure")]
+        self.github.review_causes[5] = "The Claude login is at its usage limit."
+        sync(self.github)
+        self.assertIn(
+            "**Review not completed.** The Claude login is at its usage limit. See "
+            f"[the run]({review_run_item(5)['html_url']}), and tick the box to ask "
+            "again.",
+            self.github.dashboard_body(self.nodes),
+        )
+
+
+class SyncReviewAlone(unittest.TestCase):
+    def setUp(self):
+        self.github = FakeGitHub(self)
+        self.github.developers.add("alice")
+        self.nodes = self.github.open_pull_request(NODES_HUB, 88)
+
+    def test_a_pull_request_alone_of_a_developer_gets_a_dashboard_with_the_offer(self):
+        sync(self.github)
+        body = self.github.dashboard_body(self.nodes)
+        self.assertIn(
+            "this pull request is alone: its own merge button merges it.", body
+        )
+        self.assertIn("Ask Claude to review this pull request", body)
+        self.assertEqual(
+            self.github.gates(self.nodes), [merge_set.alone_gate(SET_NAME)]
+        )
+
+    def test_a_tick_starts_the_review_of_the_pull_request_alone(self):
+        sync(self.github)
+        (comment,) = self.github.comments_on(self.nodes)
+        self.github.tick(comment, Action.REVIEW)
+        sync(self.github)
+        (started,) = self.github.started_reviews
+        self.assertEqual(
+            json.loads(started["heads"]), {"nodes-hub": self.nodes.head_commit}
+        )
+        self.assertTrue(
+            self.github.dashboard_body(self.nodes).endswith(
+                f"**Review in progress** in [this run]({REVIEW_RUN_URL}).\n"
+            )
+        )
+
+    def test_the_approval_of_a_moved_head_is_dismissed_before_its_green_gate(self):
+        self.github.reviews_of[self.nodes.label] = [review(2, commit(NODES_HUB, "old"))]
+        gates_at_dismissal = []
+        dismiss_review = self.github.dismiss_review
+
+        def record_dismissal(pr, review_of_pr, message):
+            gates_at_dismissal.append(self.github.gates(pr))
+            dismiss_review(pr, review_of_pr, message)
+
+        self.github.dismiss_review = record_dismissal
+        sync(self.github)
+        self.assertEqual(gates_at_dismissal, [[]])
+        self.assertEqual(
+            self.github.gates(self.nodes), [merge_set.alone_gate(SET_NAME)]
+        )
+
+    def test_a_ticked_merge_box_of_a_pull_request_alone_merges_nothing(self):
+        sync(self.github)
+        (comment,) = self.github.comments_on(self.nodes)
+        comment.body += merge_set.box_line(Action.MERGE, "Merge") + "\n"
+        self.github.tick(comment, Action.MERGE)
+        sync(self.github)
+        self.assertEqual(self.github.merged, [])
+        self.assertEqual(self.github.started_reviews, [])
+
+
 class FakeApi:
     """GitHubApi with the answer of each call from a table: (method, path) to
     a response, or to an ApiError to raise."""
@@ -3760,7 +4722,7 @@ class Gateway(unittest.TestCase):
         with patch("sys.stdout", io.StringIO()) as log:
             self.assertFalse(gateway.is_clean_base_merge(self.mismatch))
         self.assertTrue(log.getvalue().startswith("::warning::"))
-        self.assertIn(f"ran nodes-hub at {self.tested[:7]}", log.getvalue())
+        self.assertIn(f"nodes-hub at {self.tested[:7]}", log.getvalue())
         self.assertIn("not our ref", log.getvalue())
 
     def test_a_commit_holds_an_ancestor_of_which_it_lacks_no_commit(self):
@@ -3943,6 +4905,179 @@ class Gateway(unittest.TestCase):
                     merge_set.GitHubApi("token").request("PUT", "/x")
                 self.assertIsNone(failed.exception.status)
                 self.assertEqual(failed.exception.message, str(failure))
+
+
+def outcome_bundle(text, name=merge_set.REVIEW_OUTCOME_FILE):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(name, text)
+    return buffer.getvalue()
+
+
+REVIEW_RUNS_PATH = (
+    "/repos/Peppy-bot/peppy-superproject/actions/workflows/claude-review.yml/runs"
+)
+
+
+class ReviewGateway(unittest.TestCase):
+    def setUp(self):
+        self.pr = pull_request(NODES_HUB, 88)
+        self.path = "/repos/Peppy-bot/nodes-hub/pulls/88"
+
+    def test_the_reviews_and_the_review_comments_of_a_pull_request_are_read(self):
+        api = FakeApi(
+            {
+                ("GET", f"{self.path}/reviews"): [
+                    {
+                        "id": 1,
+                        "user": {"login": REVIEWER},
+                        "state": "APPROVED",
+                        "commit_id": "c",
+                    }
+                ],
+                ("GET", f"{self.path}/comments"): [
+                    {
+                        "id": 2,
+                        "user": {"login": REVIEWER},
+                        "body": "b",
+                        "path": "a.rs",
+                        "line": 3,
+                        "html_url": "u",
+                    }
+                ],
+            }
+        )
+        gateway = gateway_of(api)
+        self.assertEqual(gateway.reviews(self.pr), [review(1, "c")])
+        self.assertEqual(
+            gateway.review_comments(self.pr),
+            [merge_set.ReviewComment(2, REVIEWER, "b", None, "a.rs", 3, "u")],
+        )
+
+    def test_a_dismissal_names_the_review_and_gives_the_message(self):
+        api = FakeApi({("PUT", f"{self.path}/reviews/5/dismissals"): {}})
+        gateway_of(api).dismiss_review(self.pr, review(5, "c"), "Moved.")
+        self.assertEqual(
+            api.calls,
+            [
+                (
+                    "PUT",
+                    f"{self.path}/reviews/5/dismissals",
+                    None,
+                    {"message": "Moved.", "event": "DISMISS"},
+                )
+            ],
+        )
+
+    def test_a_developer_is_an_active_member_of_the_team(self):
+        path = "/orgs/Peppy-bot/teams/peppy-devs/memberships/"
+        api = FakeApi(
+            {
+                ("GET", f"{path}alice"): {"state": "active"},
+                ("GET", f"{path}bob"): {"state": "pending"},
+                ("GET", f"{path}carol"): not_found(f"{path}carol"),
+            }
+        )
+        gateway = gateway_of(api)
+        self.assertTrue(gateway.is_developer("alice"))
+        self.assertFalse(gateway.is_developer("bob"))
+        self.assertFalse(gateway.is_developer("carol"))
+        # Each user is read once a sync.
+        self.assertTrue(gateway.is_developer("alice"))
+        self.assertEqual(len(api.calls), 3)
+
+    def test_another_failure_of_the_team_read_stops_the_sync(self):
+        path = "/orgs/Peppy-bot/teams/peppy-devs/memberships/alice"
+        api = FakeApi({("GET", path): ApiError("GET", 502, "Bad Gateway")})
+        with self.assertRaises(ApiError):
+            gateway_of(api).is_developer("alice")
+
+    def test_the_newest_page_of_review_runs_is_read(self):
+        runs = [review_run_item(5)]
+        api = FakeApi({("GET", REVIEW_RUNS_PATH): {"workflow_runs": runs}})
+        self.assertEqual(gateway_of(api).review_runs(), runs)
+        self.assertEqual(
+            api.calls[0][2], {"event": "workflow_dispatch", "per_page": 100}
+        )
+
+    def test_a_review_workflow_that_is_not_there_has_no_runs(self):
+        api = FakeApi({("GET", REVIEW_RUNS_PATH): not_found(REVIEW_RUNS_PATH)})
+        self.assertEqual(gateway_of(api).review_runs(), [])
+
+    def cause_case(self, artifacts, bundle=None):
+        run = merge_set.parse_review_run(review_run_item(5, conclusion="failure"))
+        path = "/repos/Peppy-bot/peppy-superproject/actions/runs/5/artifacts"
+        api = FakeApi(
+            {("GET", path): {"artifacts": artifacts}},
+            downloads={"zip-url": bundle} if bundle is not None else {},
+        )
+        return gateway_of(api).review_cause(run)
+
+    def artifact(self, name=merge_set.REVIEW_OUTCOME_ARTIFACT, expired=False):
+        return {"name": name, "expired": expired, "archive_download_url": "zip-url"}
+
+    def test_the_cause_of_a_review_that_did_not_complete_is_in_its_outcome(self):
+        self.assertEqual(
+            self.cause_case(
+                [self.artifact()], outcome_bundle('{"cause": "It moved."}')
+            ),
+            "It moved.",
+        )
+
+    def test_a_run_without_its_outcome_gives_no_cause(self):
+        for artifacts in ([], [self.artifact(expired=True)], [self.artifact("other")]):
+            with self.subTest(artifacts=artifacts):
+                self.assertIsNone(self.cause_case(artifacts))
+
+    def test_an_outcome_the_bot_cannot_read_gives_no_cause_and_warns(self):
+        for bundle in (
+            outcome_bundle("not json"),
+            outcome_bundle("{}", name="other.json"),
+            b"not a zip",
+        ):
+            with self.subTest(bundle=bundle), patch("sys.stdout", io.StringIO()) as log:
+                self.assertIsNone(self.cause_case([self.artifact()], bundle))
+                self.assertTrue(log.getvalue().startswith("::warning::"))
+
+    def test_the_review_starts_on_the_branch_of_its_environment(self):
+        path = (
+            "/repos/Peppy-bot/peppy-superproject/actions/workflows/claude-review.yml/"
+            "dispatches"
+        )
+        api = FakeApi(
+            {("POST", path): {"workflow_run_id": 701, "html_url": REVIEW_RUN_URL}}
+        )
+        run = gateway_of(api).start_review({"set": SET_NAME})
+        self.assertEqual(run, merge_set.ReviewRun(701, REVIEW_RUN_URL, False, None))
+        self.assertEqual(
+            api.calls,
+            [
+                (
+                    "POST",
+                    path,
+                    None,
+                    {
+                        "ref": "main",
+                        "inputs": {"set": SET_NAME},
+                        "return_run_details": True,
+                    },
+                )
+            ],
+        )
+
+    def test_a_clean_base_merge_of_an_approval_is_checked_once_a_sync(self):
+        api = FakeApi({})
+        gateway = gateway_of(api)
+        calls = []
+
+        def check(repository, tested, head):
+            calls.append((repository, tested, head))
+            return True
+
+        gateway.check_clean_base_merge = check
+        self.assertTrue(gateway.differs_by_clean_base_merge(NODES_HUB, "a", "b"))
+        self.assertTrue(gateway.differs_by_clean_base_merge(NODES_HUB, "a", "b"))
+        self.assertEqual(calls, [(NODES_HUB, "a", "b")])
 
 
 class GitFixture:
@@ -4217,6 +5352,11 @@ class RepositoryFacts(unittest.TestCase):
         ):
             with self.subTest(line=line):
                 self.assertIn(line, lines)
+
+    def test_the_token_of_the_sync_reads_the_team_that_gets_the_review(self):
+        self.assertIn(
+            "permission-members: read", workflow_lines(merge_set.SYNC_WORKFLOW)
+        )
 
     def test_one_sync_runs_at_a_time_for_each_set_and_none_is_cancelled(self):
         lines = workflow_lines(merge_set.SYNC_WORKFLOW)
