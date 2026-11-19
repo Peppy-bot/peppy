@@ -260,8 +260,24 @@ def set_review(*pull_requests, run=None, cause=None, offer=None):
     """The review of a set that Claude can review, unless `offer` says
     otherwise."""
     return merge_set.SetReview(
-        offer or merge_set.ClaudeOffered(), tuple(pull_requests), run, cause
+        offer or merge_set.ClaudeOffered(WAIT_ENDS_AT),
+        tuple(pull_requests),
+        run,
+        cause,
     )
+
+
+def raw_text_lines(markdown):
+    """The lines of `markdown` that GitHub shows as raw text: a line that
+    starts with an HTML comment starts an HTML block, which ends with the
+    line that closes the comment, so the rest of that line is no Markdown.
+    A comment alone on its line hides nothing."""
+    return [
+        line
+        for line in markdown.splitlines()
+        if line.startswith("<!--")
+        and not (line.endswith("-->") and line.count("<!--") == 1)
+    ]
 
 
 def record_bundle(text, name=resolve.SET_RECORD_FILE):
@@ -2710,7 +2726,9 @@ class WaitForAPerson(unittest.TestCase):
     def test_claude_can_review_from_the_end_of_the_wait(self):
         for now in (WAIT_ENDS_AT, NOW):
             with self.subTest(now=now):
-                self.assertEqual(self.offer(now=now), merge_set.ClaudeOffered())
+                self.assertEqual(
+                    self.offer(now=now), merge_set.ClaudeOffered(WAIT_ENDS_AT)
+                )
 
     def test_the_first_review_of_a_person_in_the_wait_keeps_claude_out(self):
         early = merge_set.PersonReview(
@@ -2726,7 +2744,7 @@ class WaitForAPerson(unittest.TestCase):
 
     def test_a_review_of_a_person_after_the_wait_does_not_take_the_offer_back(self):
         late = merge_set.PersonReview(self.nodes, "bob", WAIT_ENDS_AT)
-        self.assertEqual(self.offer([late]), merge_set.ClaudeOffered())
+        self.assertEqual(self.offer([late]), merge_set.ClaudeOffered(WAIT_ENDS_AT))
 
     def test_a_set_with_a_draft_waits_for_it_unless_a_person_reviewed_it(self):
         draft = replace(self.nodes, draft=True)
@@ -2741,6 +2759,10 @@ class WaitForAPerson(unittest.TestCase):
             merge_set.ReviewedByPerson(reviewed),
         )
 
+    def test_an_offer_of_claude_has_no_state_of_the_wait(self):
+        with self.assertRaises(ValueError):
+            merge_set.wait_state_text(merge_set.ClaudeOffered(WAIT_ENDS_AT), False)
+
     def test_the_time_left_is_in_hours_and_whole_minutes(self):
         for left, text in (
             (timedelta(hours=11, minutes=30, seconds=59), "11 h 30 min"),
@@ -2750,6 +2772,64 @@ class WaitForAPerson(unittest.TestCase):
         ):
             with self.subTest(text=text):
                 self.assertEqual(merge_set.duration_text(left), text)
+
+
+class UniqueLogins(unittest.TestCase):
+    def test_each_login_comes_once_in_the_order_it_first_comes(self):
+        self.assertEqual(
+            merge_set.unique_logins(["bob", "alice", "bob", "carol", "alice"]),
+            ["bob", "alice", "carol"],
+        )
+
+
+class ReviewOfferAfterClaude(unittest.TestCase):
+    def setUp(self):
+        self.github = FakeGitHub(self)
+        self.peppy = self.github.open_pull_request(PEPPY, 512)
+        self.nodes = self.github.open_pull_request(NODES_HUB, 88)
+        # The newest pull request left the draft state an hour ago.
+        self.github.ready_times[self.nodes.label] = NOW - timedelta(hours=1)
+
+    def claude_reviewed(self, *pull_requests):
+        for pr in pull_requests:
+            self.github.reviews_of[pr.label] = [
+                review(1, pr.head_commit, state="COMMENTED", submitted_at=OPENED_AT)
+            ]
+
+    def offer(self, *pull_requests):
+        reviews_of = merge_set.read_reviews(self.github, pull_requests)
+        return merge_set.read_review_offer(self.github, pull_requests, reviews_of, NOW)
+
+    def test_no_wait_applies_when_claude_reviewed_each_pull_request(self):
+        self.claude_reviewed(self.peppy, self.nodes)
+        draft = replace(self.nodes, draft=True)
+        for pull_requests in ((self.peppy, self.nodes), (self.peppy, draft)):
+            with self.subTest(pull_requests=pull_requests):
+                self.assertEqual(
+                    self.offer(*pull_requests), merge_set.ClaudeOffered(None)
+                )
+
+    def test_a_review_of_a_person_after_a_round_of_claude_keeps_the_offer(self):
+        self.claude_reviewed(self.peppy, self.nodes)
+        self.github.reviews_of[self.nodes.label].append(
+            review(
+                2,
+                self.nodes.head_commit,
+                author="carol",
+                state="COMMENTED",
+                submitted_at=NOW - timedelta(minutes=30),
+            )
+        )
+        self.assertEqual(
+            self.offer(self.peppy, self.nodes), merge_set.ClaudeOffered(None)
+        )
+
+    def test_a_pull_request_that_joins_after_a_round_of_claude_starts_the_wait(self):
+        self.claude_reviewed(self.peppy)
+        self.assertEqual(
+            self.offer(self.peppy, self.nodes),
+            merge_set.PersonWait(NOW + timedelta(hours=11), timedelta(hours=11)),
+        )
 
 
 class ReviewSection(unittest.TestCase):
@@ -2824,8 +2904,8 @@ class ReviewSection(unittest.TestCase):
             "A person has 12 hours to review this set from the time each of its "
             "pull requests is ready for review. Claude can review this set only if "
             "no person reviewed it in that time.\n\n"
-            "<!-- claude-review:wait -->**11 h 5 min left**, until 2026-10-27 08:32 "
-            "UTC. The bot updates this time every 30 minutes.",
+            "**11 h 5 min left**, until 2026-10-27 08:32 UTC. The bot updates "
+            "this time every 30 minutes. <!-- claude-review:wait -->",
         )
 
     def test_a_draft_holds_the_start_of_the_wait(self):
@@ -2868,8 +2948,8 @@ class ReviewSection(unittest.TestCase):
         wait = merge_set.PersonWait(WAIT_ENDS_AT, timedelta(hours=1))
         self.assertTrue(
             self.wait_section(wait, run=run).endswith(
-                "The bot updates this time every 30 minutes.\n\n"
-                f"**Review in progress** in [this run]({run.url})."
+                f"The bot updates this time every 30 minutes. {merge_set.WAIT_MARKER}"
+                f"\n\n**Review in progress** in [this run]({run.url})."
             )
         )
 
@@ -3177,8 +3257,8 @@ class FakeGitHub:
         # The inputs of each review the bot started.
         self.started_reviews = []
         self.review_workflow_missing = False
-        # The time each pull request left the draft state, by label; a pull
-        # request that was never a draft has none.
+        # The time each pull request left the draft state or was reopened,
+        # by label; a pull request with no such event has none.
         self.ready_times = {}
         self.clock = NOW
 
@@ -4685,8 +4765,10 @@ class SyncWait(unittest.TestCase):
         for pr in (self.peppy, self.nodes):
             with self.subTest(pr=pr.label):
                 body = self.github.dashboard_body(pr)
+                self.assertEqual(raw_text_lines(body), [])
                 self.assertIn(
-                    f"{merge_set.WAIT_MARKER}**2 h left**, until 2026-10-27 08:32 UTC.",
+                    "\n**2 h left**, until 2026-10-27 08:32 UTC. The bot updates "
+                    f"this time every 30 minutes. {merge_set.WAIT_MARKER}\n",
                     body,
                 )
                 self.assertNotIn("merge-set:review", body)
@@ -4755,6 +4837,58 @@ class SyncWait(unittest.TestCase):
         sync(self.github)
         self.assertIn(merge_set.WAIT_MARKER, self.github.dashboard_body(self.nodes))
 
+    def claude_reviewed_both(self):
+        for pr in (self.peppy, self.nodes):
+            self.github.reviews_of[pr.label] = [
+                review(1, pr.head_commit, state="COMMENTED", submitted_at=OPENED_AT)
+            ]
+
+    def dashboard_of_nodes(self):
+        return next(
+            comment
+            for comment in self.github.comments_on(self.nodes)
+            if comment.body.startswith(merge_set.DASHBOARD_MARKER)
+        )
+
+    def test_after_a_round_of_claude_a_draft_made_ready_keeps_the_box(self):
+        self.claude_reviewed_both()
+        self.github.ready_times[self.nodes.label] = NOW - timedelta(hours=1)
+        self.github.clock = NOW
+        sync(self.github)
+        dashboard = self.dashboard_of_nodes()
+        self.assertNotIn(merge_set.WAIT_MARKER, dashboard.body)
+        self.github.make_admin("mallory")
+        self.github.tick(dashboard, Action.REVIEW, login="mallory")
+        sync(self.github)
+        self.assertEqual(len(self.github.started_reviews), 1)
+
+    def test_a_pull_request_that_joins_after_a_round_of_claude_starts_the_wait(self):
+        self.claude_reviewed_both()
+        self.github.open_pull_request(
+            LAUNCHERS_HUB, 9, author="bob", created_at=NOW - timedelta(hours=1)
+        )
+        self.github.clock = NOW
+        sync(self.github)
+        body = self.github.dashboard_body(self.nodes)
+        self.assertIn("**11 h left**, until 2026-10-28 20:00 UTC.", body)
+        self.assertNotIn("merge-set:review", body)
+
+    def test_the_close_of_the_pull_request_that_joined_gives_the_box_and_no_notice(
+        self,
+    ):
+        self.claude_reviewed_both()
+        launchers = self.github.open_pull_request(
+            LAUNCHERS_HUB, 9, author="bob", created_at=NOW - timedelta(hours=1)
+        )
+        self.github.clock = NOW
+        sync(self.github)
+        self.github.close_and_delete_the_branch(launchers)
+        sync(self.github)
+        self.assertIn("merge-set:review", self.dashboard_of_nodes().body)
+        for pr in (self.peppy, self.nodes, launchers):
+            with self.subTest(pr=pr.label):
+                self.assertEqual(self.github.reports_on(pr), [])
+
     def test_a_tick_after_the_wait_started_again_is_answered_with_the_time_left(self):
         self.github.clock = NOW
         sync(self.github)
@@ -4798,6 +4932,7 @@ class SyncWaitAlone(unittest.TestCase):
             body,
         )
         self.assertIn("**30 min left**", body)
+        self.assertEqual(raw_text_lines(body), [])
         github.clock = WAIT_ENDS_AT + timedelta(minutes=5)
         sync(github)
         self.assertIn(
@@ -4845,13 +4980,29 @@ class WaitSyncs(unittest.TestCase):
     def test_a_set_that_a_person_reviewed_in_its_wait_gets_no_sync(self):
         nodes = self.github.open_pull_request(NODES_HUB, 88)
         self.github.reviews_of[nodes.label] = [
-            review(1, nodes.head_commit, submitted_at=OPENED_AT)
+            review(
+                1,
+                nodes.head_commit,
+                author="github-code-quality[bot]",
+                state="COMMENTED",
+                submitted_at=OPENED_AT,
+            )
         ]
         self.assertEqual(self.waiting(), ["nodes-hub#88"])
         self.github.reviews_of[nodes.label].append(
             review(2, nodes.head_commit, author="bob", submitted_at=OPENED_AT)
         )
         self.assertEqual(self.waiting(), [])
+
+    def test_a_set_that_claude_reviewed_gets_no_sync(self):
+        nodes = self.github.open_pull_request(NODES_HUB, 88)
+        self.github.reviews_of[nodes.label] = [
+            review(1, nodes.head_commit, state="COMMENTED")
+        ]
+        for clock in (WAIT_ENDS_AT - timedelta(hours=1), WAIT_ENDS_AT):
+            with self.subTest(clock=clock):
+                self.github.clock = clock
+                self.assertEqual(self.waiting(), [])
 
     def test_a_set_with_a_draft_or_of_another_author_gets_no_sync(self):
         self.github.open_pull_request(NODES_HUB, 88, draft=True)
@@ -5461,6 +5612,16 @@ class ReviewGateway(unittest.TestCase):
             gateway.review_comments(self.pr),
             [merge_set.ReviewComment(2, REVIEWER, "b", None, "a.rs", 3, "u")],
         )
+
+    def test_a_reopened_pull_request_is_ready_from_when_it_reopened(self):
+        query = merge_set.READY_FOR_REVIEW_QUERY
+        self.assertIn(
+            "timelineItems(last: 1, itemTypes: [READY_FOR_REVIEW_EVENT, "
+            "REOPENED_EVENT])",
+            query,
+        )
+        self.assertIn("... on ReadyForReviewEvent { createdAt }", query)
+        self.assertIn("... on ReopenedEvent { createdAt }", query)
 
     def test_the_time_a_pull_request_became_ready_is_read_from_its_timeline(self):
         variables = {"owner": "Peppy-bot", "name": "nodes-hub", "number": 88}
