@@ -902,6 +902,15 @@ class WorkflowContract(unittest.TestCase):
             [f"the line `{line}`", "the variable `REVIEW_PEPPY` of the review step"],
         )
 
+    def test_a_review_token_that_can_push_is_a_problem(self):
+        text = self.workflow().replace(
+            "permission-contents: read", "permission-contents: write"
+        )
+        self.assertEqual(
+            claude_review.workflow_problems(text),
+            ["the line `permission-contents: read`"],
+        )
+
     def test_the_run_name_is_the_name_that_the_bot_reads(self):
         (run_name,) = [
             line

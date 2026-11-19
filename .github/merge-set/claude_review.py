@@ -1757,6 +1757,10 @@ WORKFLOW_LINES = (
         for name, variable in INPUT_VARIABLES.items()
     ),
     "REVIEW_TOKEN: ${{ steps.token.outputs.token }}",
+    # The reviewer App can push, because GitHub counts only the approval of
+    # an account that can push: the token of the job reads the code alone.
+    "permission-contents: read",
+    "permission-pull-requests: write",
     "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
     "repositories: ${{ steps.repositories.outputs.repositories }}",
     "run: python3 peppy/.github/merge-set/claude_review.py repositories",
