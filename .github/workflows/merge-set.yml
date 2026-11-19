@@ -69,13 +69,16 @@ jobs:
         id: repositories
         run: python3 .github/merge-set/merge_set.py repositories
 
-      # Everything the bot reads and writes, in every repository of a set:
-      # contents to merge, and to fetch the commits of a branch that merged
-      # its base in, whose merge git checks; pull requests for the merge-set
-      # comments and the reviews, statuses for the gate, checks for the
-      # required checks, actions for the set records and the re-runs, and
-      # workflows because GitHub refuses an App the merge of a pull request
-      # that changes .github/workflows/ without it.
+      # Everything the bot reads and writes, in every repository of a set and
+      # in the repository of the Claude review: contents to merge, and to
+      # fetch the commits of a branch that merged its base in, whose merge
+      # git checks; pull requests for the merge-set comments, the reviews and
+      # the dismissal of a stale approval of the reviewer, statuses for the
+      # gate, checks for the required checks, actions for the set records,
+      # the re-runs and the review runs, workflows because GitHub refuses an
+      # App the merge of a pull request that changes .github/workflows/
+      # without it, and members to read who is in the team that gets the
+      # offer of the review.
       - name: Make the merge-set token
         id: token
         uses: actions/create-github-app-token@v3.3.0
@@ -87,6 +90,7 @@ jobs:
           permission-actions: write
           permission-checks: read
           permission-contents: write
+          permission-members: read
           permission-pull-requests: write
           permission-statuses: write
           permission-workflows: write

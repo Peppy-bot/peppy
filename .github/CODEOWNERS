@@ -1,4 +1,8 @@
 # A change to CI (the workflows, their actions, the runner settings and this
-# file) needs the review of an owner.
+# file), to the agent files, or to the rules of AGENTS.md needs the review of
+# an owner. The Claude review applies these rules, so only a person approves a
+# change of them: the approval of the reviewer App does not count for a file
+# with an owner.
 /.github/ @Peppy-bot/peppy-super-admin
 /.claude/ @Peppy-bot/peppy-super-admin
+/AGENTS.md @Peppy-bot/peppy-super-admin
