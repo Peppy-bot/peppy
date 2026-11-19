@@ -36,8 +36,8 @@ const GOLDEN: GoldenDocument = GoldenDocument {
 /// scalar whose name needs normalizing, a string named by a Rust keyword,
 /// bytes, time, an optional primitive, a nested object holding an object, an
 /// optional object, fixed and dynamic `u8` and scalar arrays, text and data
-/// lists, an optional array, and a dynamic array of objects. Only top-level
-/// fields can be optional, and a fixed array holds scalars only.
+/// lists, an optional array, and a dynamic array of objects holding an
+/// optional string. A fixed array holds scalars only.
 const RICH_FORMAT: &str = r#"
 {
   "max-speed": "f32",
@@ -60,7 +60,12 @@ const RICH_FORMAT: &str = r#"
   limits: { $type: "array", $items: "f64", $optional: true },
   points: {
     $type: "array",
-    $items: { $type: "object", x: "f32", tag: "string" }
+    $items: {
+      $type: "object",
+      x: "f32",
+      tag: "string",
+      note: { $type: "string", $optional: true }
+    }
   }
 }
 "#;

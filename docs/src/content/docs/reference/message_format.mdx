@@ -64,12 +64,29 @@ note: {
 | `$type`     | Yes      | `string`, `bytes`, or `time` (arrays and objects take `$optional` in their own structured forms) |
 | `$optional` | No       | When `true`, the field may be absent. Defaults to `false` |
 
-Scalar-copy types (`bool`, the integer types, `f32`, `f64`) carry no presence bit, so an absent value is indistinguishable from a zero one: `$optional` on them is rejected when the config is parsed. Model an optional scalar as an optional `bytes`/`string` or restructure the message.
+Scalar-copy types (`bool`, the integer types, `f32`, `f64`) carry no presence bit, so an absent value is indistinguishable from a zero one: `$optional` on them is rejected when the config is parsed. Leave out `$optional`, or hold the value in an optional object, which is absent as a whole:
+
+```json5
+max_speed: { $type: "object", $optional: true, value: "f64" }
+```
+
+`$optional` applies at any depth: to a field of the `message_format`, to a field of a nested object, and to a field of the objects an array holds. Each object holds the presence of its own fields, so each item of this array gives its `orientation` or leaves it out:
+
+```json5
+waypoints: {
+  $type: "array",
+  $items: {
+    $type: "object",
+    position: { $type: "array", $items: "f64", $length: 3 },
+    orientation: { $type: "array", $items: "f64", $length: 4, $optional: true }
+  }
+}
+```
+
+The field is an `Option<T>` in the Rust struct of its object and an `Optional[T]` in its Python dataclass. The items of an array take no `$optional`: each item of an array is present, and an optional array is absent as a whole.
 
 :::note
-`$optional` can only be used on **root-level fields** of a `message_format`: direct children, not fields nested inside objects or array items. If a parent structure is present, all its fields must be present too.
-
-In practice, this is used on **service and action response fields** where a value may or may not be present depending on the outcome; for example, a `note` that a response carries only for some requests. A message format never reports a failure: a refused or failed goal and the error reply of a service carry a [failure kind](/advanced_guides/actions/#how-a-goal-ends) and a message outside the message, so a response or a result is always a success.
+In practice, a command leaves out what it does not set, such as an optional `timestamp` of the target of a request, and a response leaves out a value it does not hold, such as a `note` that it carries for some requests only. A message format never reports a failure: a refused or failed goal and the error reply of a service carry a [failure kind](/advanced_guides/actions/#how-a-goal-ends) and a message outside the message, so a response or a result is always a success.
 :::
 
 :::caution

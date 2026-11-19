@@ -11,9 +11,8 @@
 //! * `u64` and `i64` become canonical decimal strings, because JSON numbers
 //!   lose precision above 2^53. The pattern pins the canonical form (no
 //!   leading zeros, no `-0`); range is enforced when the value is parsed.
-//! * `$optional` maps to an omitted `required` entry. `$optional` is legal
-//!   only on root-level fields, so nested objects always require all of
-//!   their properties.
+//! * `$optional` maps to an omitted `required` entry of the object that
+//!   holds the field, at any depth.
 //!
 //! The `$description` of a field becomes the `description` of its schema:
 //! an annotation for the caller, which no value is checked against.
@@ -27,6 +26,7 @@
 //! checks the same number a catalog records.
 
 use crate::bundle::{I64_DECIMAL_PATTERN, U64_DECIMAL_PATTERN};
+use indexmap::IndexMap;
 use peppy_config_model::node::{
     ArraySchema, FormatRuleViolation, MessageFormat, SchemaType, TypeToken,
 };
@@ -38,16 +38,21 @@ use serde_json::{Map, Value, json};
 pub fn message_format_to_json_schema(format: &MessageFormat) -> Result<Value, FormatRuleViolation> {
     format.check_reserved_field_names()?;
     format.check_fixed_length_array_items()?;
+    Ok(fields_json(&format.0))
+}
 
+/// The schema of an object with `fields`: each field a property, required
+/// unless it is `$optional`.
+fn fields_json(fields: &IndexMap<String, SchemaType>) -> Value {
     let mut properties = Map::new();
     let mut required = Vec::new();
-    for (field_name, schema) in &format.0 {
+    for (field_name, schema) in fields {
         properties.insert(field_name.clone(), schema_type_to_json(schema));
         if !schema.is_optional() {
             required.push(Value::String(field_name.clone()));
         }
     }
-    Ok(object_schema(properties, required))
+    object_schema(properties, required)
 }
 
 /// The schema of a member with no declared payload: an object with no
@@ -105,15 +110,7 @@ fn schema_shape_to_json(schema: &SchemaType) -> Value {
         SchemaType::Type(token) => primitive_json(token),
         SchemaType::Primitive(primitive) => primitive_json(&primitive.kind),
         SchemaType::Array(array) => array_json(array),
-        SchemaType::Object(object) => {
-            let mut properties = Map::new();
-            let mut required = Vec::new();
-            for (field_name, nested) in &object.fields {
-                properties.insert(field_name.clone(), schema_type_to_json(nested));
-                required.push(Value::String(field_name.clone()));
-            }
-            object_schema(properties, required)
-        }
+        SchemaType::Object(object) => fields_json(&object.fields),
     }
 }
 

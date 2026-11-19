@@ -26,7 +26,12 @@
   "weights": [0.25, -0.5],
   "tags": ["a", "", "ccc"],
   "chunks": ["AQ==", ""],
-  "pose": { "x_m": 1.25, "y_m": -3.5, "frame": "base_link" },
+  "pose": {
+    "x_m": 1.25,
+    "y_m": -3.5,
+    "frame": "base_link",
+    "orientation": [0.0, 0.0, 0.5, -0.75]
+  },
   "profile": { "gamma": 2.2, "white_balance": { "red": 0.75, "blue": 1.25 } },
   "samples": [
     {
@@ -34,14 +39,16 @@
       "value": 0.125,
       "label": "first",
       "taken_at": "2020-02-29T00:00:00.000000000Z",
-      "history": [1, 2, 3]
+      "history": [1, 2, 3],
+      "checked_at": "2020-02-29T00:00:01.500000000Z"
     },
     {
       "offset": 32767,
       "value": 0.0,
       "label": "",
       "taken_at": "2023-11-14T22:13:20.000000001Z",
-      "history": []
+      "history": [],
+      "checked_at": "1970-01-01T00:00:00.000000000Z"
     }
   ],
   "maybe_pose": { "x_m": 0.0 },

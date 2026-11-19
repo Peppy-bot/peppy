@@ -1,7 +1,7 @@
 //! Rules a message format satisfies beyond what parsing establishes.
 //!
 //! Parsing pins the DSL's shape: no empty format, `$optional` only on
-//! pointer-backed root fields, no nested arrays. Two further rules come from
+//! pointer-backed fields, no nested arrays. Two further rules come from
 //! what the wire encoding and the generated code can carry, and every
 //! consumer that derives something from a format (the code generators, the
 //! public MCP schema mapping) applies them through the methods here, so a

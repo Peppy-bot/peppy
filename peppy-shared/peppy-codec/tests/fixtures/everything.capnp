@@ -1,4 +1,4 @@
-@0x945b5ced7b501213;
+@0xa1238ce7a0ffb0a1;
 
 struct Message {
   flag @0 :Bool;
@@ -38,6 +38,7 @@ struct Message {
     xM @0 :Float64;
     yM @1 :Float64;
     frame @2 :Text;
+    orientation @3 :List(Float64);
   }
   struct Profile {
     gamma @0 :Float64;
@@ -54,6 +55,7 @@ struct Message {
     label @2 :Text;
     takenAt @3 :Timestamp;
     history @4 :List(UInt32);
+    checkedAt @5 :Timestamp;
   }
   struct Maybepose {
     xM @0 :Float64;

@@ -168,6 +168,7 @@ fn echo(data: echo_everything::RequestData) -> echo_everything::Response {
             x_m: data.pose.x_m,
             y_m: data.pose.y_m,
             frame: data.pose.frame,
+            orientation: data.pose.orientation,
         },
         profile: ResponseProfile {
             gamma: data.profile.gamma,
@@ -185,6 +186,7 @@ fn echo(data: echo_everything::RequestData) -> echo_everything::Response {
                 label: sample.label,
                 taken_at: sample.taken_at,
                 history: sample.history,
+                checked_at: sample.checked_at,
             })
             .collect(),
         maybe_pose: data.maybe_pose.map(|pose| ResponseMaybePose { x_m: pose.x_m }),

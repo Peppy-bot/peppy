@@ -223,6 +223,12 @@ def test_the_codec_round_trips_the_canonical_values(arm):
         response.encode({"count": "1"})
     with pytest.raises(ValueError, match="not a message format"):
         MessageCodec("broken", {"a": "f65"})
+    with pytest.raises(
+        ValueError,
+        match=r"not a message format: pose: field `seq`: `\$optional` is not supported "
+        r"on a field of type `u32`",
+    ):
+        MessageCodec("nested", {"pose": {"seq": {"$type": "u32", "$optional": True}}})
 
 
 def test_a_client_of_a_member_that_the_contract_does_not_declare_is_refused(arm):

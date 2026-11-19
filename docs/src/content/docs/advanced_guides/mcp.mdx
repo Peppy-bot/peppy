@@ -426,8 +426,8 @@ Most types map directly to JSON. These are the important mapping rules, includin
 | `time` | `string`, `format: "date-time"` | RFC 3339, fractional seconds carrying full nanosecond precision |
 | `bytes`, array of `u8` | `string`, `contentEncoding: "base64"` | Identical on the wire, so they share one rendering. A fixed byte length pins the exact base64 length |
 | Other arrays | `array` with `items`; fixed length pins `minItems`/`maxItems` | Direct |
-| Nested objects | `object` with every property required | `$optional` is legal only at the top level |
-| `$optional` top-level field | Omitted from `required` | Direct |
+| Nested objects | `object` with a property for each field | Direct |
+| `$optional` field, at any depth | Omitted from the `required` of its object | Direct |
 | [`$description`](/reference/message_format/#description-modifier) of a field | `description` of its property | Direct |
 
 The input and output schemas of each tool, resource and task carry the `$description` of each field, and a [scope](#scopes) that narrows a property keeps its description. The description of a tool, a resource or a task is the one that the exposure gives it.

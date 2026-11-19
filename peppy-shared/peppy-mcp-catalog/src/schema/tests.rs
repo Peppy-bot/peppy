@@ -157,17 +157,32 @@ fn golden_schemas_judge_canonical_instances() {
             "optional_label": "y",
             "optional_blob": "aGVsbG8=",
             "optional_stamp": "2026-08-11T00:00:00Z",
-            "optional_extent": {"width": 640, "height": 480},
-            "optional_samples": [1.0, 2.0],
+            "optional_extent": {"width": 640, "height": 480, "optional_unit": "px"},
+            "optional_samples": [{"value": 1.0, "optional_stamp": "2026-08-11T00:00:00Z"}],
         })),
         "optional fields may all be present"
+    );
+    assert!(
+        optionals.is_valid(&json!({
+            "required_label": "x",
+            "optional_extent": {"width": 640, "height": 480},
+            "optional_samples": [{"value": 1.0}],
+        })),
+        "optional fields of a nested object and of array items may be omitted"
     );
     assert!(
         !optionals.is_valid(&json!({
             "required_label": "x",
             "optional_extent": {"width": 640},
         })),
-        "nested objects require all of their properties"
+        "nested objects require their fields that are not optional"
+    );
+    assert!(
+        !optionals.is_valid(&json!({
+            "required_label": "x",
+            "optional_samples": [{"optional_stamp": "2026-08-11T00:00:00Z"}],
+        })),
+        "array items require their fields that are not optional"
     );
     assert!(
         !optionals.is_valid(&json!({})),
