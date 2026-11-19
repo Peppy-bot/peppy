@@ -4,6 +4,7 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 # Export of the daemon's log lines as OpenTelemetry log records: the record
 # model, the handle log writers hand their lines to, the queue behind it, and

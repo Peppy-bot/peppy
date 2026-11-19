@@ -3,9 +3,9 @@ name = "peppylib-rs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 homepage = "https://dev.peppy.bot"
 description = "The Peppy control library"
-license = "MIT OR Apache-2.0"
 readme = "Readme.md"
 
 [lints]

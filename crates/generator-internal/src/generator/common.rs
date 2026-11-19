@@ -366,6 +366,7 @@ pub(crate) struct WorkspacePackageMetadata {
     pub version: &'static str,
     pub edition: &'static str,
     pub rust_version: &'static str,
+    pub license: &'static str,
 }
 
 impl WorkspacePackageMetadata {
@@ -374,6 +375,7 @@ impl WorkspacePackageMetadata {
             version: env!("CARGO_PKG_VERSION"),
             edition: "2024",
             rust_version: env!("CARGO_PKG_RUST_VERSION"),
+            license: env!("CARGO_PKG_LICENSE"),
         }
     }
 }

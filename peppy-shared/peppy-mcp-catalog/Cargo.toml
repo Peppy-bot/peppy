@@ -9,6 +9,7 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 description = "The mcp_exposure/v1 document model, its validation against pinned contracts, and the exposure catalog it derives"
 
 [lints]
