@@ -163,6 +163,10 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
             package.insert("rust-version", value(metadata.rust_version));
         }
 
+        if inherits_from_workspace(package, "license") {
+            package.insert("license", value(metadata.license));
+        }
+
         if inherits_from_workspace(package, "authors") {
             package.remove("authors");
         }
@@ -837,6 +841,7 @@ mod tests {
         version: "1.2.3",
         edition: "2024",
         rust_version: "1.90",
+        license: "Apache-2.0",
     };
 
     /// Writes `manifest` to a temporary `Cargo.toml`, localizes it with
@@ -865,12 +870,14 @@ mod tests {
              version.workspace = true\n\
              authors.workspace = true\n\
              edition.workspace = true\n\
-             rust-version.workspace = true\n",
+             rust-version.workspace = true\n\
+             license.workspace = true\n",
         );
 
         assert_eq!(package["version"].as_str(), Some("1.2.3"));
         assert_eq!(package["edition"].as_str(), Some("2024"));
         assert_eq!(package["rust-version"].as_str(), Some("1.90"));
+        assert_eq!(package["license"].as_str(), Some("Apache-2.0"));
         assert!(package.get("authors").is_none());
     }
 
@@ -882,12 +889,14 @@ mod tests {
              version = { workspace = true }\n\
              authors = { workspace = true }\n\
              edition = { workspace = true }\n\
-             rust-version = { workspace = true }\n",
+             rust-version = { workspace = true }\n\
+             license = { workspace = true }\n",
         );
 
         assert_eq!(package["version"].as_str(), Some("1.2.3"));
         assert_eq!(package["edition"].as_str(), Some("2024"));
         assert_eq!(package["rust-version"].as_str(), Some("1.90"));
+        assert_eq!(package["license"].as_str(), Some("Apache-2.0"));
         assert!(package.get("authors").is_none());
     }
 
@@ -899,18 +908,84 @@ mod tests {
              version = \"0.1.0\"\n\
              authors = [\"Peppy\"]\n\
              edition = \"2021\"\n\
-             rust-version = \"1.85\"\n",
+             rust-version = \"1.85\"\n\
+             license = \"MIT\"\n",
         );
 
         assert_eq!(package["version"].as_str(), Some("0.1.0"));
         assert_eq!(package["edition"].as_str(), Some("2021"));
         assert_eq!(package["rust-version"].as_str(), Some("1.85"));
+        assert_eq!(package["license"].as_str(), Some("MIT"));
         assert_eq!(
             package["authors"]
                 .as_array()
                 .and_then(|authors| authors.get(0)?.as_str()),
             Some("Peppy")
         );
+    }
+
+    /// Adds to `taken` the dotted trail of every table of `value` that takes
+    /// its content from a workspace (`workspace = true`). `trail` is the trail
+    /// of `value` itself.
+    fn collect_tables_taken_from_a_workspace(
+        value: &toml::Value,
+        trail: &mut Vec<String>,
+        taken: &mut Vec<String>,
+    ) {
+        match value {
+            toml::Value::Table(table) => {
+                if table.get("workspace").and_then(toml::Value::as_bool) == Some(true) {
+                    taken.push(trail.join("."));
+                }
+                for (key, nested) in table {
+                    trail.push(key.clone());
+                    collect_tables_taken_from_a_workspace(nested, trail, taken);
+                    trail.pop();
+                }
+            }
+            toml::Value::Array(entries) => {
+                for entry in entries {
+                    collect_tables_taken_from_a_workspace(entry, trail, taken);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A vendored crate is a dependency of a node and has no workspace above
+    /// it, and cargo refuses a manifest that takes a value from a workspace
+    /// it cannot find. So the manifest of each vendored crate takes none.
+    #[test]
+    fn no_vendored_manifest_takes_a_value_from_a_workspace() {
+        let root = tempfile::TempDir::new().unwrap();
+        let peppy_dirs = daemon_config::consts::PeppyDirs::new(root.path().join("peppy"));
+        let node_libs_dir = root.path().join("node").join("libs");
+        fs::create_dir_all(&node_libs_dir).unwrap();
+
+        deploy_rust_crates_to_shared_cache(
+            &node_libs_dir,
+            &peppy_dirs,
+            CrateDeployMode::Copy,
+            CodecApi::Asked,
+        )
+        .unwrap();
+
+        for vendored in &VENDORED_CRATES {
+            let manifest_path = node_libs_dir.join(vendored.dir_name).join("Cargo.toml");
+            let manifest: toml::Table =
+                fs::read_to_string(&manifest_path).unwrap().parse().unwrap();
+            let mut taken = Vec::new();
+            collect_tables_taken_from_a_workspace(
+                &toml::Value::Table(manifest),
+                &mut Vec::new(),
+                &mut taken,
+            );
+            assert!(
+                taken.is_empty(),
+                "{} takes {taken:?} from a workspace",
+                manifest_path.display()
+            );
+        }
     }
 
     #[test]
@@ -992,13 +1067,14 @@ mod tests {
             .collect()
     }
 
-    /// A vendored crate takes its `rust-version` from this workspace, and the
-    /// sealed `peppy-shared` workspace cannot inherit a table of this one, so
-    /// the two manifests repeat the compiler they need and the lints they
-    /// hold their members to. The clippy configuration of the two is the same
-    /// file twice, for the same reason.
+    /// A vendored crate takes its `rust-version` and its `license` from this
+    /// workspace, and the sealed `peppy-shared` workspace cannot inherit a
+    /// table of this one, so the two manifests repeat the compiler they need,
+    /// the license they are under and the lints they hold their members to.
+    /// The clippy configuration of the two is the same file twice, for the
+    /// same reason.
     #[test]
-    fn the_sealed_workspace_declares_the_rust_version_and_the_lints_of_this_one() {
+    fn the_sealed_workspace_declares_the_rust_version_the_license_and_the_lints_of_this_one() {
         let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let own = repository.join("Cargo.toml");
         let sealed = repository.join("peppy-shared/Cargo.toml");
@@ -1008,10 +1084,13 @@ mod tests {
         );
 
         let sealed_manifest: DocumentMut = fs::read_to_string(&sealed).unwrap().parse().unwrap();
+        let sealed_package = &sealed_manifest["workspace"]["package"];
+        let embedded = WorkspacePackageMetadata::embedded();
         assert_eq!(
-            sealed_manifest["workspace"]["package"]["rust-version"].as_str(),
-            Some(WorkspacePackageMetadata::embedded().rust_version)
+            sealed_package["rust-version"].as_str(),
+            Some(embedded.rust_version)
         );
+        assert_eq!(sealed_package["license"].as_str(), Some(embedded.license));
         for tool in ["rust", "clippy"] {
             assert_eq!(
                 workspace_lints(&sealed, tool),

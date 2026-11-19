@@ -4,6 +4,7 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 # Pure, std-only leaf crate: percentile/summary math, duration/table formatting,
 # the machine-id-keyed baseline file, and CPU-turbo environment detection.
