@@ -23,6 +23,8 @@ edition = "2024"
 # The oldest compiler that builds the workspace. The code uses the language
 # and the standard library of this release.
 rust-version = "1.100"
+# The license of the repository, whose text is in `LICENSE`.
+license = "Apache-2.0"
 
 [workspace.dependencies]
 parking_lot = "0.13"

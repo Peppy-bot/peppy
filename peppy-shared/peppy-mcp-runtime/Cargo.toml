@@ -4,6 +4,7 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 description = "The shared MCP server runtime that generated Peppy MCP server nodes compose"
 
 [lints]

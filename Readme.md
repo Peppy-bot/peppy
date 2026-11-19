@@ -145,6 +145,4 @@ CI runs all of these, plus the feature-gated container and multi-daemon end-to-e
 
 ## 📄 License
 
-Peppy is licensed under the [Business Source License 1.1](LICENSE). You may make production use of it, provided that use does not include offering a product or service to third parties whose value derives primarily from Peppy. On 2031-01-01 the license converts to Apache License, Version 2.0.
-
-The [`peppy-shared/`](peppy-shared/) directory is licensed separately, under the [Apache License, Version 2.0](peppy-shared/LICENSE).
+Peppy is open source, licensed under the [Apache License, Version 2.0](LICENSE), the same license as ROS 2.
