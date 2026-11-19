@@ -42,7 +42,7 @@ from merge_set import (
     FindingRecord,
     ReviewComment,
 )
-from test_merge_set import SET_NAME, commit, member, pull_request, set_state
+from test_merge_set import SET_NAME, commit, member, pull_request, review, set_state
 
 NODES_HUB = merge_set.REPOSITORIES_BY_NAME["nodes-hub"]
 PRIVATE_NODES_HUB = merge_set.REPOSITORIES_BY_NAME["private-nodes-hub"]
@@ -164,10 +164,10 @@ class Histories(unittest.TestCase):
         self,
     ):
         reviews = [
-            merge_set.Review(1, REVIEWER, "COMMENTED", "a"),
-            merge_set.Review(2, REVIEWER, "DISMISSED", "b"),
-            merge_set.Review(3, "bob", "APPROVED", "c"),
-            merge_set.Review(4, REVIEWER, "PENDING", "d"),
+            review(1, "a", state="COMMENTED"),
+            review(2, "b", state="DISMISSED"),
+            review(3, "c", author="bob"),
+            review(4, "d", state="PENDING", submitted_at=None),
         ]
         history = claude_review.history_of(self.pr, reviews, [])
         self.assertEqual(history.previous_head, "b")
@@ -1272,7 +1272,7 @@ class WholeRound(unittest.TestCase):
         self.reader = FakeReader([self.nodes])
         self.request = ReviewRequest(SET_NAME, "alice", {"nodes-hub": second})
         self.gateway.reviews_of[self.nodes.label] = [
-            merge_set.Review(1, REVIEWER, "COMMENTED", previous)
+            review(1, previous, state="COMMENTED")
         ]
         self.gateway.comments_of[self.nodes.label] = [
             finding_comment(10),
@@ -1296,7 +1296,7 @@ class WholeRound(unittest.TestCase):
 
     def test_a_round_before_whose_head_github_lost_gets_the_whole_change(self):
         self.gateway.reviews_of[self.nodes.label] = [
-            merge_set.Review(1, REVIEWER, "COMMENTED", "f" * 40)
+            review(1, "f" * 40, state="COMMENTED")
         ]
         claude = FakeClaude(answer())
         self.review(claude)

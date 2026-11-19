@@ -12,6 +12,9 @@ workflows:
     '.github/workflows/latency.yml':
         - 'actions/checkout@v7.0.1'
     '.github/workflows/main-merge-source.yml': []
+    '.github/workflows/merge-set-wait.yml':
+        - 'actions/checkout@v7.0.1'
+        - 'actions/create-github-app-token@v3.3.0'
     '.github/workflows/merge-set-webhook.yml':
         - 'actions/checkout@v7.0.1'
         - 'aws-actions/configure-aws-credentials@v6.3.0'

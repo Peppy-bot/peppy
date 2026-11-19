@@ -1,0 +1,73 @@
+name: Merge set wait
+
+# A person has 12 hours to review a set of developers before Claude can review
+# it (see .github/merge-set/merge_set.py). No event of GitHub comes when that
+# time passes, so this schedule starts the sync of each set that waits for a
+# person (merge-set.yml): the sync shows the time left in the merge-set
+# comment, and when the time ends, the box that asks for the Claude review.
+# The cron gives WAIT_SYNC_INTERVAL of merge_set.py.
+#
+# The key of the merge-set App is a secret of the `merge-set` environment,
+# which only runs from `dev` reach. A schedule runs from the default branch,
+# `dev`.
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+
+# One run at a time. A run that waits is cancelled by the next one: each run
+# reads every set again.
+concurrency:
+  group: merge-set-wait
+  cancel-in-progress: false
+
+jobs:
+  start-syncs:
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    environment:
+      name: merge-set
+      deployment: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - name: Name the repositories of a set
+        id: repositories
+        run: python3 .github/merge-set/merge_set.py repositories
+
+      # Reads the open pull requests of each set, their reviews and the
+      # permissions of their reviewers, and who is in the team that gets the
+      # offer of the review.
+      - name: Make the reading token
+        id: read-token
+        uses: actions/create-github-app-token@v3.3.0
+        with:
+          client-id: ${{ secrets.MERGE_SET_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MERGE_SET_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repositories.outputs.repositories }}
+          permission-members: read
+          permission-pull-requests: read
+
+      # Starts the Merge set workflow of peppy, and does nothing else.
+      - name: Make the dispatch token
+        id: dispatch-token
+        uses: actions/create-github-app-token@v3.3.0
+        with:
+          client-id: ${{ secrets.MERGE_SET_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MERGE_SET_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: peppy
+          permission-actions: write
+
+      - name: Start the sync of each set that waits for a person
+        env:
+          MERGE_SET_TOKEN: ${{ steps.read-token.outputs.token }}
+          MERGE_SET_DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+          MERGE_SET_BOT_LOGIN: ${{ steps.read-token.outputs.app-slug }}[bot]
+        run: python3 .github/merge-set/merge_set.py wait-syncs
