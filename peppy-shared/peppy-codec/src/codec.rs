@@ -779,11 +779,19 @@ mod tests {
             },
             "`ratio` is outside the range of a 32-bit float",
         );
+        let not_a_time = "`stamp` is not an RFC 3339 UTC time: write it as a string such as \
+                          \"2026-10-25T10:00:00Z\", with up to nine digits of a second after a `.`";
         refused(
             |v| {
                 v.insert("stamp".into(), json!("2023-11-14T22:13:20+00:00"));
             },
-            "`stamp` is not an RFC 3339 UTC timestamp (`...Z`)",
+            not_a_time,
+        );
+        refused(
+            |v| {
+                v.insert("stamp".into(), json!(1_700_000_000));
+            },
+            not_a_time,
         );
         refused(
             |v| {

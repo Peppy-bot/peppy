@@ -162,11 +162,12 @@ pub fn time_to_rfc3339(time: SystemTime) -> String {
 /// Parses the canonical time rendering: `YYYY-MM-DDThh:mm:ss[.fraction]Z`.
 /// Only UTC is accepted; offsets other than `Z` are refused.
 pub fn value_time(value: &Value, name: &str) -> Result<SystemTime, String> {
-    let text = value
-        .as_str()
-        .ok_or_else(|| format!("`{name}` is not an RFC 3339 string"))?;
-    parse_rfc3339_utc(text)
-        .ok_or_else(|| format!("`{name}` is not an RFC 3339 UTC timestamp (`...Z`)"))
+    value.as_str().and_then(parse_rfc3339_utc).ok_or_else(|| {
+        format!(
+            "`{name}` is not an RFC 3339 UTC time: write it as a string such as \
+                 \"2026-10-25T10:00:00Z\", with up to nine digits of a second after a `.`"
+        )
+    })
 }
 
 fn parse_rfc3339_utc(text: &str) -> Option<SystemTime> {
