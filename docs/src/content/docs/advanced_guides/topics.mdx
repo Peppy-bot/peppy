@@ -41,18 +41,19 @@ Each topic defines a `name`, a [`description`](/reference/concepts/#descriptions
           emits: [
             {
               name: "video_stream",
-              description: "Each frame of the camera, with its size and its encoding.",
+              description: "Each picture of the camera, with its size and its encoding.",
               qos_profile: "sensor_data",
               message_format: {
                 header: {
                   $type: "object",
-                  stamp: "time",
-                  frame_id: "u32"
+                  frame: "string",
+                  timestamp: "time",
+                  capture_index: "u32"
                 },
                 encoding: "string",
                 width: "u32",
                 height: "u32",
-                frame: {
+                data: {
                   $type: "array",
                   $items: "u8"
                 }
@@ -83,18 +84,19 @@ Each topic defines a `name`, a [`description`](/reference/concepts/#descriptions
           emits: [
             {
               name: "video_stream",
-              description: "Each frame of the camera, with its size and its encoding.",
+              description: "Each picture of the camera, with its size and its encoding.",
               qos_profile: "sensor_data",
               message_format: {
                 header: {
                   $type: "object",
-                  stamp: "time",
-                  frame_id: "u32"
+                  frame: "string",
+                  timestamp: "time",
+                  capture_index: "u32"
                 },
                 encoding: "string",
                 width: "u32",
                 height: "u32",
-                frame: {
+                data: {
                   $type: "array",
                   $items: "u8"
                 }
@@ -206,17 +208,19 @@ from peppygen.emitted_topics import video_stream
 async def emit_frames(node_runner: NodeRunner):
     # Declare the publisher once; every publish below then reuses it.
     publisher = await video_stream.declare_publisher(node_runner)
-    frame_id = 0
+    capture_index = 0
     while True:
         payload = video_stream.build_message(
-            video_stream.MessageHeader(stamp=time.time(), frame_id=frame_id),
+            video_stream.MessageHeader(
+                frame="camera_link", timestamp=time.time(), capture_index=capture_index
+            ),
             "rgb8",
             640,
             480,
             bytes([1, 2, 3]),
         )
         await publisher.publish(payload)
-        frame_id = (frame_id + 1) % (2**32)
+        capture_index = (capture_index + 1) % (2**32)
         await asyncio.sleep(0.1)
 
 
@@ -246,12 +250,13 @@ fn main() -> Result<()> {
             let publisher = video_stream::declare_publisher(&node_runner_clone)
                 .await
                 .expect("failed to declare video_stream publisher");
-            let mut frame_id = 0u32;
+            let mut capture_index = 0u32;
             loop {
                 if let Ok(payload) = video_stream::build_message(
                     video_stream::MessageHeader {
-                        stamp: std::time::SystemTime::now(),
-                        frame_id,
+                        frame: "camera_link".to_owned(),
+                        timestamp: std::time::SystemTime::now(),
+                        capture_index,
                     },
                     "rgb8".to_owned(),
                     640,
@@ -261,7 +266,7 @@ fn main() -> Result<()> {
                     let _ = publisher.publish(payload).await;
                 }
 
-                frame_id = frame_id.wrapping_add(1);
+                capture_index = capture_index.wrapping_add(1);
                 tokio::time::sleep(Duration::from_secs_f64(0.1)).await;
             }
         });
@@ -871,13 +876,14 @@ Fields can also use complex types:
   ```json5
   header: {
     $type: "object",
-    stamp: "time",
-    frame_id: "u32"
+    frame: "string",
+    timestamp: "time",
+    capture_index: "u32"
   }
   ```
 - **Array**: a variable-length list (`Vec<T>` in Rust, `list[T]` in Python; an array of `u8` maps to `Vec<u8>` / `bytes`):
   ```json5
-  frame: {
+  data: {
     $type: "array",
     $items: "u8"
   }

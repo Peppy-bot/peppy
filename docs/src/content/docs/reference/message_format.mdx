@@ -171,8 +171,9 @@ An object groups related fields into a nested structure. It generates a nested s
 
 ```json5
 header: {
-  stamp: "time",
-  frame_id: "u32"
+  frame: "string",
+  timestamp: "time",
+  capture_index: "u32"
 }
 ```
 
@@ -189,8 +190,9 @@ sensor_reading: {
   $type: "object",
   header: {
     $type: "object",
-    stamp: "time",
-    frame_id: "u32"
+    frame: "string",
+    timestamp: "time",
+    capture_index: "u32"
   },
   samples: {
     $type: "array",
@@ -251,20 +253,20 @@ This maps to `Vec<u8>` in Rust and `bytes` in Python (for `u8` items) or `list[T
 `$items` can be an object, allowing arrays of structured records:
 
 ```json5
-frames: {
+transforms: {
   $type: "array",
   $items: {
     $type: "object",
-    name: "string",
-    parent: "string",
+    frame: "string",
+    child_frame: "string",
     position: {
       $type: "array",
-      $items: "i32",
+      $items: "f64",
       $length: 3
     },
     orientation: {
       $type: "array",
-      $items: "i32",
+      $items: "f64",
       $length: 4
     }
   }
@@ -275,9 +277,9 @@ This accepts messages like:
 
 ```json
 {
-  "frames": [
-    { "name": "link1", "parent": "world", "position": [0, 0, 1], "orientation": [1, 0, 0, 0] },
-    { "name": "link2", "parent": "link1", "position": [0, 1, 0], "orientation": [1, 0, 0, 0] }
+  "transforms": [
+    { "frame": "base_link", "child_frame": "link1", "position": [0.0, 0.0, 1.0], "orientation": [0.0, 0.0, 0.0, 1.0] },
+    { "frame": "link1", "child_frame": "link2", "position": [0.0, 1.0, 0.0], "orientation": [0.0, 0.0, 0.0, 1.0] }
   ]
 }
 ```
@@ -296,15 +298,14 @@ This enables complex hierarchical message structures. For example, a robotics tr
 ```json5
 message_format: {
   timestamp: "time",
-  root_frame: "string",
   transforms: {
     $type: "array",
     $items: {
       $type: "object",
-      name: "string",
-      parent: "string",
-      translation: { $type: "array", $items: "f64", $length: 3 },
-      rotation: { $type: "array", $items: "f64", $length: 4 }
+      frame: "string",
+      child_frame: "string",
+      position: { $type: "array", $items: "f64", $length: 3 },
+      orientation: { $type: "array", $items: "f64", $length: 4 }
     }
   }
 }

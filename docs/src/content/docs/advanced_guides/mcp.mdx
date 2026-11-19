@@ -11,7 +11,7 @@ import mcpLauncher from '../guides/snippets/launchers/mcp_camera_and_recording.j
 import frameworkControlsExposure from '../guides/snippets/exposures/framework_controls.json5?raw';
 import frameworkControlsLauncher from '../guides/snippets/launchers/mcp_framework_controls.json5?raw';
 
-An **MCP exposure** makes selected parts of a running Peppy stack available to [Model Context Protocol](https://modelcontextprotocol.io) clients. A client can read camera frames, look through a camera, call services, and run long-running actions through one HTTP endpoint. The client does not need a Peppy session, access to the messaging layer, or knowledge that the system uses Peppy.
+An **MCP exposure** makes selected parts of a running Peppy stack available to [Model Context Protocol](https://modelcontextprotocol.io) clients. A client can read camera pictures, look through a camera, call services, and run long-running actions through one HTTP endpoint. The client does not need a Peppy session, access to the messaging layer, or knowledge that the system uses Peppy.
 
 An exposure is an allowlist. In one document, you choose the contract members to publish and give each one a stable public name, a description, and operational policies. A launcher names the exposures to serve, and the daemon runs the MCP server that is built into the `peppy` binary for them: one process, one loopback port, one endpoint per exposure. Nothing is generated or built. **Anything you do not name is not reachable through the endpoint.** This remains true even if a client guesses a name or knows the internal one. A client sees only the selected members, even when the underlying stack contains more.
 
@@ -24,8 +24,8 @@ An exposure draws from [contracts](/advanced_guides/contract_implementation/), w
 | Contract member | Published as | What a client can do |
 | --- | --- | --- |
 | [Topic](/advanced_guides/topics/) | **Resource** | Read the latest policy-approved snapshot and subscribe to updates |
-| [Topic](/advanced_guides/topics/) with a [`picture`](#picture-tools) | **Picture tool**, beside the resource | Call it and get the latest frame as an image, with the rest of the message |
-| [Service](/advanced_guides/services/) | **Tool** | Call it and get the answer in the same request; under a [`representation`](#service-policies), the answer's frame as an image |
+| [Topic](/advanced_guides/topics/) with a [`picture`](#picture-tools) | **Picture tool**, beside the resource | Call it and get the latest picture as an image, with the rest of the message |
+| [Service](/advanced_guides/services/) | **Tool** | Call it and get the answer in the same request; under a [`representation`](#service-policies), the answer's picture as an image |
 | [Action](/advanced_guides/actions/) | **Action-backed tool** | Run the goal inside the call, or as an MCP task: get a task handle, watch progress, confirm, cancel, and reconnect |
 
 An exposure that declares a [`call_record`](#the-call-record) also publishes one tool of its own: the last calls of every tool that is not read-only, with the client that made each and how it ended.
@@ -36,7 +36,7 @@ The server supports MCP revision `2026-07-28` over Streamable HTTP. It includes 
 
 An exposure is a standalone JSON5 document with `peppy_schema: "mcp_exposure/v1"`. Its filename does not matter. The `name:tag` in its manifest identifies it, [`peppy repo index`](/advanced_guides/repositories/#index-a-repository) discovers it by its content, and a launcher lists it by that `name:tag`. The manifest may also carry `labels`, a list of free-form strings for whoever browses the repository.
 
-Here is a complete example with two targets. The camera provides an image resource, the picture tool that shows its frame, and two tools. The recorder provides a `record_episode` tool that creates a task and requires confirmation.
+Here is a complete example with two targets. The camera provides an image resource, the picture tool that shows its picture, and two tools. The recorder provides a `record_episode` tool that creates a task and requires confirmation.
 
 <Code code={cameraAndRecordingExposure} lang="json5" title="exposures/camera_and_recording.json5" />
 
@@ -49,16 +49,16 @@ It selects from these two contracts:
   manifest: {
     name: "rgb_camera",
     tag: "v1",
-    description: ["A color camera: its frames, the settings of its stream and its brightness."],
+    description: ["A color camera: its pictures, the settings of its stream and its brightness."],
   },
   interfaces: {
     topics: [
       {
         name: "video_stream",
-        description: "Each frame of the camera, with its size and its encoding.",
+        description: "Each picture of the camera, with its size and its encoding.",
         qos_profile: "sensor_data",
         message_format: {
-          frame: { $type: "array", $items: "u8", $description: "The pixels of the frame, in its encoding." },
+          data: { $type: "array", $items: "u8", $description: "The pixels of the picture, in its encoding." },
           encoding: "string",
           width: "u32",
           height: "u32",
@@ -242,40 +242,40 @@ Policies limit how each published member can be used. You declare them for each 
 | --- | --- | --- |
 | `freshness.max_age_ms` | yes | Treat a snapshot older than this as stale instead of returning it as current |
 | `update.max_hz` | yes | Limit how often the snapshot refreshes and notifies subscribers. Faster messages are dropped **before** decoding or transcoding |
-| `representation` | no | Interpret the message as an image and publish its frame in a codec, as a blob apart from the rest of the message (see below) |
+| `representation` | no | Interpret the message as an image and publish its picture in a codec, as a blob apart from the rest of the message (see below) |
 | `max_result_bytes` | conditional | Cap on the snapshot content after representation runs: the serialized document plus, under a representation, the base64 text of the blob |
 | `on_oversize` | conditional | What to do when the content exceeds that cap: `downscale` (re-encode small enough to fit) or `reject` (report the read as failed) |
-| `picture` | no | Publish the frame through a [picture tool](#picture-tools) as well. Requires a `jpeg` representation |
+| `picture` | no | Publish the picture through a [picture tool](#picture-tools) as well. Requires a `jpeg` representation |
 
 The message format determines whether the size policy is required:
 
 - A payload with a **static maximum size** contains only fixed-size scalars, fixed-length arrays, or nested objects made from those types. `max_result_bytes` is optional. If you set it, it must be at least the maximum possible size. Do not set `on_oversize`, because the payload cannot exceed that limit.
-- A payload with **no static maximum size** contains a `string`, `bytes`, or a variable-length array, such as a camera frame. You must set both `max_result_bytes` and `on_oversize` to limit what a read can return.
+- A payload with **no static maximum size** contains a `string`, `bytes`, or a variable-length array, such as a camera picture. You must set both `max_result_bytes` and `on_oversize` to limit what a read can return.
 
 An image `representation` names members of the topic's own message format by role:
 
 ```json5
 representation: {
-  image: "jpeg",     // `png16` for a 16-bit single-channel frame, or `raw`, which passes the frame bytes through untouched
+  image: "jpeg",     // `png16` for a 16-bit single-channel picture, or `raw`, which passes the picture bytes through untouched
   quality: 80,       // `jpeg` only; `png16` is lossless and `raw` has no encode step
   fields: {
-    data: "frame",       // `bytes` or an array of `u8`
+    data: "data",         // `bytes` or an array of `u8`
     encoding: "encoding", // `string`
     width: "width",       // `u8`, `u16`, or `u32`
     height: "height",     // `u8`, `u16`, or `u32`
   },
-  depth_range: { near: 100, far: 10000 },  // `jpeg` only; how a `z16` depth frame renders
+  depth_range: { near: 100, far: 10000 },  // `jpeg` only; how a `z16` depth picture renders
 }
 ```
 
-All four fields must refer to required, non-`$optional` top-level members of the correct type. The runtime needs all four values to interpret a frame. `jpeg` transcodes `rgb8` and `bgr8` frames, and `z16` depth frames under a `depth_range`; `png16` transcodes frames of one unsigned 16-bit little-endian sample per pixel, labeled `z16`, `mono16` or `16UC1`, such as a depth map, and writes the frame as a 16-bit PNG under the encoding `png`. A frame already labeled `jpeg` or `mjpeg` under `jpeg` passes through untouched; a `png` frame under `png16` passes through once it decodes as 16-bit single-channel, and any other PNG is refused. A 16-bit frame keeps one source sample per output pixel.
+All four fields must refer to required, non-`$optional` top-level members of the correct type. The runtime needs all four values to interpret a picture. `jpeg` transcodes `rgb8` and `bgr8` pictures, and `z16` depth pictures under a `depth_range`; `png16` transcodes pictures of one unsigned 16-bit little-endian sample per pixel, labeled `z16`, `mono16` or `16UC1`, such as a depth map, and writes the picture as a 16-bit PNG under the encoding `png`. A picture already labeled `jpeg` or `mjpeg` under `jpeg` passes through untouched; a `png` picture under `png16` passes through once it decodes as 16-bit single-channel, and any other PNG is refused. A 16-bit picture keeps one source sample per output pixel.
 
-A `jpeg` representation renders `rgb8` and `bgr8` frames in color, and 16-bit depth frames, labelled `z16`, `mono16` or `16UC1` (one little-endian `u16` reading per pixel, 0 for a pixel with no reading) as a grayscale picture. `depth_range` sets the readings that picture spans, in the frame's own counts, so one shade means one distance on every frame a client reads: a reading at `near` or nearer renders white, one at `far` or farther black, readings between them in linear proportion, and 0 black. `near` must be above 0 and below `far`. A `z16` frame that arrives on a representation without a `depth_range` is refused, and a `depth_range` on a `raw` representation is a parse error.
+A `jpeg` representation renders `rgb8` and `bgr8` pictures in color, and 16-bit depth pictures, labelled `z16`, `mono16` or `16UC1` (one little-endian `u16` reading per pixel, 0 for a pixel with no reading) as a grayscale picture. `depth_range` sets the readings that picture spans, in the depth picture's own counts, so one shade means one distance on every picture a client reads: a reading at `near` or nearer renders white, one at `far` or farther black, readings between them in linear proportion, and 0 black. `near` must be above 0 and below `far`. A `z16` picture that arrives on a representation without a `depth_range` is refused, and a `depth_range` on a `raw` representation is a parse error.
 
 A snapshot under a representation has two parts, and a read serves each as a content of its own:
 
-- The **document** is the message as JSON, without the member `fields.data` names. After a transcode it carries the encoding label and the dimensions of the published frame.
-- The **blob** is the frame in the codec of the representation, under the MIME type of that codec:
+- The **document** is the message as JSON, without the member `fields.data` names. After a transcode it carries the encoding label and the dimensions of the published picture.
+- The **blob** is the picture in the codec of the representation, under the MIME type of that codec:
 
 | `representation.image` | Blob MIME type |
 | --- | --- |
@@ -285,20 +285,20 @@ A snapshot under a representation has two parts, and a read serves each as a con
 
 A snapshot of a topic with no representation is a document alone: the whole message as JSON.
 
-A target may select one topic member more than once, each entry with its own `resource` name, representation and policies, and each keeping its own snapshot: a depth frame reads as a `jpeg` picture a model judges distance from and as a lossless `png16` frame a program decodes.
+A target may select one topic member more than once, each entry with its own `resource` name, representation and policies, and each keeping its own snapshot: a depth picture reads as a `jpeg` picture a model judges distance from and as a lossless `png16` picture a program decodes.
 
 #### Picture tools
 
-`picture` publishes the frame of a topic through a tool, beside the resource, for a model that looks on its own: the image of a tool result is the form in which a client hands a picture to the model.
+`picture` publishes the picture of a topic through a tool, beside the resource, for a model that looks on its own: the image of a tool result is the form in which a client hands a picture to the model.
 
 ```json5
 picture: {
   tool: "front_camera.look",  // a public name, in the one namespace of the exposure
-  description: "Look through the front-facing camera: the latest frame as a picture.",
+  description: "Look through the front-facing camera: its latest picture.",
 }
 ```
 
-The topic must carry `representation.image: "jpeg"`: a `png16` or a `raw` frame is data for a program, not a picture for a model. The tool answers inside the call, from the snapshot a read of the topic's resource serves, under the same freshness policy. It sends nothing to the Peppy graph. On a fixed surface it takes no argument, and on a [per-robot surface](#per-robot-surfaces) it takes the routing arguments of its target.
+The topic must carry `representation.image: "jpeg"`: a `png16` or a `raw` picture is data for a program, not an image for a model. The tool answers inside the call, from the snapshot a read of the topic's resource serves, under the same freshness policy. It sends nothing to the Peppy graph. On a fixed surface it takes no argument, and on a [per-robot surface](#per-robot-surfaces) it takes the routing arguments of its target.
 
 ### Service policies
 
@@ -307,11 +307,11 @@ The topic must carry `representation.image: "jpeg"`: a `png16` or a `raw` frame 
 | `operation` | yes | `read_only` or `mutating`, advertised to the client. Long-running work is an action, so there is no third value |
 | `deadline_ms` | yes | How long the call waits before it comes back as a tool error |
 | `restrict` | no | Inclusive `min`/`max` bounds narrowing numeric request fields |
-| `representation` | no | Interpret the response as an image and answer its frame as a picture, apart from the rest of the response (see below) |
-| `max_result_bytes` | no | Cap on the serialized tool result: the serialized document plus, under a representation, the base64 text of the frame. A larger response is a tool error |
-| `on_oversize` | no | What to do when the result exceeds that cap: `downscale` (re-encode the frame small enough to fit; needs a `jpeg` or `png16` representation) or `reject` (a tool error). Needs `max_result_bytes` |
+| `representation` | no | Interpret the response as an image and answer its picture as an image, apart from the rest of the response (see below) |
+| `max_result_bytes` | no | Cap on the serialized tool result: the serialized document plus, under a representation, the base64 text of the picture. A larger response is a tool error |
+| `on_oversize` | no | What to do when the result exceeds that cap: `downscale` (re-encode the picture small enough to fit; needs a `jpeg` or `png16` representation) or `reject` (a tool error). Needs `max_result_bytes` |
 
-A service `representation` is the [topic `representation`](#topic-policies), on the members of the service's response: `fields.data` names the response member that carries the frame, and the other three its encoding label and dimensions, all of the same types a topic needs. The tool answers with the frame first and the rest of the response as the text and the structured content. A `jpeg` or a `png16` frame is an image block in the codec of the representation, as a [picture tool](#picture-tools) answers. A `raw` frame is data for a program, not a picture, so it is an embedded resource of type `application/octet-stream` at `peppy://tool/<tool>/frame`, which a client does not hand to its model as a picture. Its published output schema is the schema of that document: the response without the member the frame is taken from. A response whose frame is empty carries no picture and is answered as the document alone. A service that cannot answer gives an error reply, which reaches the client as the tool error of a [failed call](#refused-and-failed-calls). A frame that does not decode is a tool error.
+A service `representation` is the [topic `representation`](#topic-policies), on the members of the service's response: `fields.data` names the response member that carries the picture, and the other three its encoding label and dimensions, all of the same types a topic needs. The tool answers with the picture first and the rest of the response as the text and the structured content. A `jpeg` or a `png16` picture is an image block in the codec of the representation, as a [picture tool](#picture-tools) answers. A `raw` picture is data for a program, not an image for a model, so it is an embedded resource of type `application/octet-stream` at `peppy://tool/<tool>/frame`, which a client does not hand to its model as an image. Its published output schema is the schema of that document: the response without the member the picture is taken from. A response whose picture is empty is answered as the document alone. A service that cannot answer gives an error reply, which reaches the client as the tool error of a [failed call](#refused-and-failed-calls). A picture that does not decode is a tool error.
 
 ```json5
 {
@@ -323,7 +323,7 @@ A service `representation` is the [topic `representation`](#topic-policies), on 
   representation: {
     image: "jpeg",
     quality: 80,
-    fields: { data: "frame", encoding: "encoding", width: "width", height: "height" },
+    fields: { data: "data", encoding: "encoding", width: "width", height: "height" },
   },
   max_result_bytes: 524288,
   on_oversize: "downscale",
@@ -548,7 +548,7 @@ An exposure that declares `robots` is a **per-robot surface**: one endpoint for 
       contract: { name: "rgb_camera", tag: "v1" },
       argument: "camera",
       topics: [
-        { member: "video_stream", resource: "camera.latest_frame", description: "The camera's latest frame, JPEG encoded.", freshness: { max_age_ms: 2000 }, update: { max_hz: 2 }, representation: { image: "jpeg", fields: { data: "frame", encoding: "encoding", width: "width", height: "height" } }, max_result_bytes: 524288, on_oversize: "downscale", picture: { tool: "camera.look", description: "Look through one of the robot's cameras." } },
+        { member: "video_stream", resource: "camera.latest_frame", description: "The camera's latest picture, JPEG encoded.", freshness: { max_age_ms: 2000 }, update: { max_hz: 2 }, representation: { image: "jpeg", fields: { data: "data", encoding: "encoding", width: "width", height: "height" } }, max_result_bytes: 524288, on_oversize: "downscale", picture: { tool: "camera.look", description: "Look through one of the robot's cameras." } },
       ],
     },
   },
@@ -656,9 +656,9 @@ An exposure deployment is placed like any other: `core_node` on the instance nam
 
 A read answers with the first message the endpoint receives after the read arrived, whatever `update.max_hz` admits: a client that changes something and reads at once sees a message from after its change, not the snapshot the last gate interval stored. The wait is bounded by `freshness.max_age_ms` of wall time; a topic that stays silent that long answers with the stored snapshot when it is still fresh, and with the stale refusal when it is not. Readers that wait together get the same message, so the cost is at most one decode per message. Subscribers keep their rate: a message admitted for a waiting reader alone sends no `notifications/resources/updated`, and every message the interval admits does.
 
-The guarantee is about when the endpoint received the message, not about when the source captured it. A message carries the source's stamp, on the source's clock (in a simulation, simulated time), and a frame that the source captured before a change and delivered after the read arrived still shows the old state. A client that needs the picture after a change reads the stamp.
+The guarantee is about when the endpoint received the message, not about when the source captured it. A message carries the source's stamp, on the source's clock (in a simulation, simulated time), and a picture that the source captured before a change and delivered after the read arrived still shows the old state. A client that needs the picture after a change reads the stamp.
 
-**Tools.** The endpoint checks input against the published schema, including `restrict` bounds, before sending anything to the Peppy graph. It rejects invalid input and unknown tool names. If a service does not respond within `deadline_ms`, the client receives a readable tool error. A service that gives an error reply ends the call with the tool error of a [failed call](#refused-and-failed-calls). A service with a [`representation`](#service-policies) answers with its frame, as an image block or, for a `raw` frame, as an embedded resource, then the rest of the response as the text and the structured content, and the document alone when the response carries no frame.
+**Tools.** The endpoint checks input against the published schema, including `restrict` bounds, before sending anything to the Peppy graph. It rejects invalid input and unknown tool names. If a service does not respond within `deadline_ms`, the client receives a readable tool error. A service that gives an error reply ends the call with the tool error of a [failed call](#refused-and-failed-calls). A service with a [`representation`](#service-policies) answers with its picture, as an image block or, for a `raw` picture, as an embedded resource, then the rest of the response as the text and the structured content, and the document alone when the response carries no picture.
 
 **Picture tools.** A picture tool is listed read-only (`readOnlyHint: true`, `destructiveHint: false`) and answers inside the call for every client: it is never a task. Its result carries the snapshot a read of its resource serves at that moment:
 

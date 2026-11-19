@@ -187,7 +187,7 @@ from peppygen.consumed_topics.camera import video_stream
 assert await h.mocks.deps.camera.video_stream.wait_for_subscriber(10.0)
 
 await h.mocks.deps.camera.video_stream.publish(
-    video_stream.Message(width=640, frame=b"\x01\x02")
+    video_stream.Message(width=640, data=b"\x01\x02")
 )
 ```
   </TabItem>
@@ -211,7 +211,7 @@ mocks
     .deps
     .camera
     .video_stream
-    .publish(&video_stream::Message { width: 640, frame: vec![1, 2] })
+    .publish(&video_stream::Message { width: 640, data: vec![1, 2] })
     .await?;
 ```
   </TabItem>
