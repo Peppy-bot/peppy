@@ -61,7 +61,7 @@ QUICKSTART_SIMULATION_NODE = "sim_mujoco:v1"
 # The two pages that the quickstart opens once the launch is complete (step
 # 3), each with the name the quickstart gives it.
 QUICKSTART_PAGES = {
-    "the MuJoCo viewer": "http://localhost:8080",
+    "the MuJoCo viewer": "http://localhost:23818",
     "the control panel": "http://localhost:8765",
 }
 
