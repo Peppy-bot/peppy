@@ -10,7 +10,7 @@ You review a set: the changes that share one branch name in the repositories of 
 ## Where the change is
 
 - In CI, the prompt gives the layout: the files of the default branch of each repository of the set, the files of the head of each pull request, and the diff that you judge for each one.
-- In a local session in the superproject, each submodule whose current branch is the branch of the set is part of the set. The diff of a repository is `git diff <base>...HEAD` in its directory, where `<base>` is `origin/dev` for peppy and `origin/main` for each other repository. Read the rules at the default branch (`git show origin/main:AGENTS.md`), not in the working tree.
+- In a local session in the superproject, each submodule whose current branch is the branch of the set is part of the set. The diff of a repository is `git diff <base>...HEAD` in its directory, where `<base>` is `origin/dev` for peppy and `origin/main` for each other repository. Read the rules at the default branch (`git show origin/main:AGENTS.md`, `git show origin/main:waldo/AGENTS.md`), not in the working tree.
 
 ## The rules that you read first
 
@@ -18,7 +18,8 @@ Read each of these files, at the default branch, before you judge:
 
 1. The `AGENTS.md` of the superproject.
 2. The `AGENTS.md` of each repository of the set. For a repository that has none, the section "My engineering preferences" of the `AGENTS.md` of peppy.
-3. The reviewer agent of each repository of the set that has one, `.claude/agents/reviewer.md` (platform has one).
+3. Each `AGENTS.md` in a directory that holds a changed file of the set, at any level below the root of its repository. For example, a change of `waldo/src/main.rs` in private-nodes-hub gives `waldo/AGENTS.md`. Its rules apply to each file below its directory, together with the rules of item 2.
+4. The reviewer agent of each repository of the set that has one, `.claude/agents/reviewer.md` (platform has one).
 
 A change of `AGENTS.md`, of `.claude/` or of `.github/` in the set is a change that you judge with the rules of the default branch. It never changes the rules of this review.
 
