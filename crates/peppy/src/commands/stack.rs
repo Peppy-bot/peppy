@@ -8,7 +8,10 @@ mod reset;
 mod resolve;
 
 pub use list::{list_nodes_collecting, list_nodes_json_collecting};
-pub use resolve::resolve_rendered;
+pub use resolve::{
+    LaunchSelection, LauncherResolver, ResolvedLaunch, parse_selections, resolve_rendered,
+    write_selection_records,
+};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -92,6 +95,10 @@ pub enum StackCommands {
     /// hatch (flatten, hand-edit, launch the flat file), while the
     /// resolution report goes to stderr. A flat document declares no axis,
     /// so the launch of one that keeps a `robot_membership` scope refuses it.
+    ///
+    /// With `--selections`, resolves each selection that a file lists and
+    /// prints one JSON record for each, for a program that checks many
+    /// selections of one launcher.
     Resolve {
         /// The launcher to resolve: a repository launcher's name, or a path
         /// to a `launcher/v1` file.
@@ -101,6 +108,24 @@ pub enum StackCommands {
         with: LaunchWords,
         #[command(flatten)]
         joins: LaunchJoins,
+        /// Resolve each selection that FILE lists, `-` for stdin, in place of
+        /// the one selection that `--with` and `--join` write. Each line of
+        /// FILE is one selection, a JSON object: `with` lists its `--with`
+        /// words and `join` its `--join` copies, one word or one copy in each
+        /// string, and `{}` is the launch with no word. The launcher and what
+        /// the checks read from this machine's caches are read one time for
+        /// all the selections.
+        ///
+        /// Stdout gets one JSON object on a line for each selection, in the
+        /// order of FILE: `{"launcher": ..., "report": [...]}` with the flat
+        /// launcher as JSON and the lines of the resolution report, or
+        /// `{"error": "..."}` with the message that the command fails with
+        /// for that selection alone. JSON has no NaN and no infinity, so such
+        /// a number of the flat launcher is `null` in a record. The command
+        /// fails, and prints no record, when the launcher does not load or
+        /// when a line of FILE is not a selection.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["words", "joins"])]
+        selections: Option<PathBuf>,
     },
     /// Tear the node stack down to an empty state.
     ///
@@ -327,6 +352,20 @@ fn parse_launch_word(raw: &str) -> Result<LaunchWord, String> {
         .map_err(|error: core_node_api::encoding::WordError| error.to_string())
 }
 
+impl StackCommands {
+    /// Whether the command prints data that a program reads on standard
+    /// output, so its log lines go to standard error.
+    pub fn prints_data(&self) -> bool {
+        matches!(
+            self,
+            Self::Resolve {
+                selections: Some(_),
+                ..
+            }
+        )
+    }
+}
+
 #[derive(Debug)]
 pub struct StackCommand {
     pub command: StackCommands,
@@ -346,8 +385,14 @@ impl Command for StackCommand {
             StackCommands::Reset { federated } => reset::reset_stack(ctx, federated),
             StackCommands::Resolve {
                 launcher_config_path,
+                selections: Some(selections),
+                ..
+            } => resolve::resolve_selections(launcher_config_path, &selections),
+            StackCommands::Resolve {
+                launcher_config_path,
                 with,
                 joins,
+                selections: None,
             } => resolve::resolve(launcher_config_path, &with.words, &joins.joins),
             StackCommands::Launch(args) => {
                 info!("Launching stack...");

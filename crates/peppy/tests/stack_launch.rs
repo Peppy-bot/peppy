@@ -4210,6 +4210,363 @@ fn stack_resolve_reports_the_check_skipped_when_a_git_checkout_is_missing() {
     );
 }
 
+/// A launcher over the pairing root: the cached viewer, a recorder that a
+/// word turns on, and a robot that runs as copies. No cache holds the
+/// recorder or the arm.
+const VIEWER_FLEET_LAUNCHER: &str = r#"{
+    peppy_schema: "launcher/v1",
+    description: ["A test launcher."],
+    components: [
+        { name: "recorder", cardinality: "zero_or_one", options: { on: {
+            deployments: [
+                { source: { name: "recorder", tag: "v1" },
+                  instances: [{ instance_id: "recorder_inst" }] },
+            ],
+        } } },
+        { name: "robot", cardinality: "zero_or_more", options: { real: {
+            deployments: [
+                { source: { name: "arm", tag: "v1" },
+                  instances: [{ instance_id: "arm_inst" }] },
+            ],
+        } } },
+    ],
+    deployments: [
+        { source: { name: "viewer", tag: "v1" },
+          instances: [{ instance_id: "viewer_inst",
+                        links: { camera: { vacant: "no camera in this test" } } }] },
+    ],
+}"#;
+
+/// The record `stack resolve --selections` owes one selection: what `stack
+/// resolve` gives for that selection alone, the flat launcher read back as
+/// JSON.
+fn record_of_a_lone_resolve(
+    dirs: &daemon_config::consts::PeppyDirs,
+    launcher: &Path,
+    selection: &peppy::commands::stack::LaunchSelection,
+) -> serde_json::Value {
+    match peppy::commands::stack::resolve_rendered(
+        dirs,
+        launcher.to_path_buf(),
+        &selection.words,
+        &selection.joins,
+    ) {
+        Ok((document, report)) => {
+            let flat: serde_json::Value =
+                serde_json5::from_str(&document).expect("the flat launcher parses");
+            serde_json::json!({ "launcher": flat, "report": report })
+        }
+        Err(error) => serde_json::json!({ "error": error.to_string() }),
+    }
+}
+
+/// The records `write_selection_records` writes for `selections`, one parsed
+/// line each.
+fn selection_records(
+    dirs: &daemon_config::consts::PeppyDirs,
+    launcher: &Path,
+    selections: &[peppy::commands::stack::LaunchSelection],
+) -> Vec<serde_json::Value> {
+    let mut written = Vec::new();
+    peppy::commands::stack::write_selection_records(
+        dirs,
+        launcher.to_path_buf(),
+        selections,
+        &mut written,
+    )
+    .expect("the launcher loads");
+    String::from_utf8(written)
+        .expect("the records are UTF-8")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is one JSON record"))
+        .collect()
+}
+
+/// Each record of `stack resolve --selections` is the verdict `stack
+/// resolve` gives for that selection alone, in the order of the input: the
+/// flat launcher and the report, or the failure. A selection that fails
+/// fails its own record, and the selections after it still resolve.
+#[test]
+fn stack_resolve_selections_answers_each_selection_as_a_lone_resolve_does() {
+    let (dirs, root) = peppy_root_with_pairing_node();
+    let launcher = root.path().join("fleet.json5");
+    fs::write(&launcher, VIEWER_FLEET_LAUNCHER).expect("launcher");
+    let selections = peppy::commands::stack::parse_selections(
+        r#"{}
+{"with": ["recorder=on"]}
+{"with": ["real"]}
+{"with": ["on"], "join": ["real:alpha"]}
+{"join": ["real:alpha", "real:bravo"], "with": ["bravo.missing=option"]}
+{"join": ["real:alpha", "real:bravo"]}
+"#,
+    )
+    .expect("the selections parse");
+
+    let records = selection_records(&dirs, &launcher, &selections);
+
+    let expected: Vec<serde_json::Value> = selections
+        .iter()
+        .map(|selection| record_of_a_lone_resolve(&dirs, &launcher, selection))
+        .collect();
+    assert_eq!(records, expected);
+    let failed: Vec<bool> = records
+        .iter()
+        .map(|record| record.get("error").is_some())
+        .collect();
+    assert_eq!(
+        failed,
+        [false, false, true, false, true, false],
+        "the two selections the launcher refuses fail alone: {records:#?}"
+    );
+    assert_eq!(
+        records[5]["launcher"]["core_nodes"],
+        serde_json::json!(["alpha", "bravo"]),
+        "a record carries the flat launcher of its own selection"
+    );
+}
+
+/// The launcher, the nodes cache and each node manifest are read one time
+/// for all the selections of a resolver: a selection resolved after the
+/// files are gone is still held to the link rules, which a resolve that
+/// starts then cannot check.
+#[test]
+fn a_launcher_resolver_reads_the_launcher_and_the_caches_one_time() {
+    let (dirs, root) = peppy_root_with_pairing_node();
+    let launcher = root.path().join("fleet.json5");
+    fs::write(&launcher, VIEWER_FLEET_LAUNCHER).expect("launcher");
+    let resolver = peppy::commands::stack::LauncherResolver::load(&dirs, launcher.clone())
+        .expect("the launcher loads");
+    let checked = "checked over 1 node manifest(s)";
+    let unchecked = "link rules not checked";
+
+    // The recorder and the arm are in no cache, so only a plan of the viewer
+    // alone is held to the link rules.
+    let first = resolver
+        .resolve(&[], &[])
+        .expect("the bare launch resolves");
+    assert!(
+        first.report.iter().any(|line| line.contains(checked)),
+        "{:?}",
+        first.report
+    );
+
+    fs::remove_file(&launcher).expect("removing the launcher");
+    fs::remove_dir_all(root.path().join("nodes")).expect("removing the node manifest");
+    fs::remove_dir_all(root.path().join("cache")).expect("removing the nodes cache");
+
+    let again = resolver
+        .resolve(&[], &[])
+        .expect("the bare launch resolves");
+    assert_eq!(again.report, first.report);
+    let with_recorder = resolver
+        .resolve(&["recorder=on".parse().unwrap()], &[])
+        .expect("the recorder selection resolves");
+    assert!(
+        with_recorder.report.iter().any(|line| {
+            line.contains(unchecked) && line.contains("recorder:v1 (not in the nodes cache)")
+        }) && !with_recorder
+            .report
+            .iter()
+            .any(|line| line.contains("viewer:v1")),
+        "the viewer's manifest is the one read before; the recorder's was never cached: {:?}",
+        with_recorder.report
+    );
+
+    // A resolve that starts now reads the emptied root.
+    fs::write(&launcher, VIEWER_FLEET_LAUNCHER).expect("launcher");
+    let (_document, report) =
+        peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[]).expect("resolves");
+    assert!(
+        report.iter().any(|line| line.contains(unchecked)),
+        "{report:?}"
+    );
+}
+
+/// A line of the `--selections` input that is not a selection fails the whole
+/// input, named by its number and by what is wrong with it.
+#[test]
+fn parse_selections_names_the_line_that_is_not_a_selection() {
+    let cases = [
+        ("{\"with\": [\"on\"]}\nnot json", "selections line 2: "),
+        (
+            "{\"words\": [\"on\"]}",
+            "selections line 1: unknown field `words`",
+        ),
+        (
+            "{}\n\n{}",
+            "selections line 2: the line is empty; write `{}` for the launch with no word",
+        ),
+        (
+            "{}\n{\"with\": [\"on\", \"\"]}",
+            "selections line 2: `with` word ``: ",
+        ),
+        (
+            "{\"join\": [\"real\"]}",
+            "selections line 1: `join` copy `real`: ",
+        ),
+        (
+            "{\"with\": \"on\"}",
+            "selections line 1: invalid type: string \"on\", expected a sequence",
+        ),
+    ];
+    for (input, expected) in cases {
+        let message = peppy::commands::stack::parse_selections(input)
+            .expect_err("the input is refused")
+            .to_string();
+        assert!(message.starts_with(expected), "{input:?} gives {message:?}");
+    }
+}
+
+/// One line is one selection: a word is one string of `with`, a copy one
+/// string of `join`, and each member is optional.
+#[test]
+fn parse_selections_reads_the_words_and_the_copies_of_each_line() {
+    let selections = peppy::commands::stack::parse_selections(
+        "{}\n{\"with\": [\"recorder=on\", \"alpha.model=v2@cn-gpu-box\"], \"join\": [\"real:alpha@cn-desk\"]}\n",
+    )
+    .expect("the selections parse");
+
+    let written: Vec<(Vec<String>, Vec<String>)> = selections
+        .iter()
+        .map(|selection| {
+            (
+                selection.words.iter().map(ToString::to_string).collect(),
+                selection.joins.iter().map(ToString::to_string).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        written,
+        [
+            (vec![], vec![]),
+            (
+                vec![
+                    "recorder=on".to_owned(),
+                    "alpha.model=v2@cn-gpu-box".to_owned()
+                ],
+                vec!["real:alpha@cn-desk".to_owned()]
+            ),
+        ]
+    );
+    assert!(
+        peppy::commands::stack::parse_selections("")
+            .expect("an empty input lists no selection")
+            .is_empty()
+    );
+}
+
+/// A launcher that does not load fails the command with the failure of a
+/// lone resolve, and writes no record.
+#[test]
+fn stack_resolve_selections_writes_no_record_for_a_launcher_that_does_not_load() {
+    let (dirs, root) = empty_peppy_root();
+    let launcher = root.path().join("broken.json5");
+    fs::write(&launcher, r#"{ peppy_schema: "mcp_exposure/v1" }"#).expect("launcher");
+    let selections = peppy::commands::stack::parse_selections("{}\n{}\n").expect("selections");
+
+    let mut written = Vec::new();
+    let error = peppy::commands::stack::write_selection_records(
+        &dirs,
+        launcher.clone(),
+        &selections,
+        &mut written,
+    )
+    .expect_err("an exposure is not a launcher")
+    .to_string();
+
+    let lone = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
+        .expect_err("an exposure is not a launcher")
+        .to_string();
+    assert_eq!(error, lone);
+    assert!(written.is_empty(), "{}", String::from_utf8_lossy(&written));
+}
+
+/// The command itself: the selections arrive on stdin with `--selections -`,
+/// each record is one line of stdout, and nothing else is printed there.
+/// Drives the binary because stdin and stdout are per process.
+#[test]
+fn stack_resolve_selections_reads_stdin_and_prints_one_record_on_each_line() {
+    use std::io::Write as _;
+
+    let (dirs, root) = peppy_root_with_pairing_node();
+    let launcher = root.path().join("fleet.json5");
+    fs::write(&launcher, VIEWER_FLEET_LAUNCHER).expect("launcher");
+    let input = "{}\n{\"with\": [\"real\"]}\n{\"with\": [\"on\"], \"join\": [\"real:alpha\"]}\n";
+    let selections = peppy::commands::stack::parse_selections(input).expect("selections");
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_peppy"))
+        .args(["stack", "resolve"])
+        .arg(&launcher)
+        .args(["--selections", "-"])
+        .env(config::consts::PEPPY_HOME_ENV, root.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to run peppy");
+    child
+        .stdin
+        .take()
+        .expect("a piped stdin")
+        .write_all(input.as_bytes())
+        .expect("writing the selections");
+    let output = child.wait_with_output().expect("peppy ends");
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    assert!(
+        output.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let records: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line of stdout is one JSON record"))
+        .collect();
+    let expected: Vec<serde_json::Value> = selections
+        .iter()
+        .map(|selection| record_of_a_lone_resolve(&dirs, &launcher, selection))
+        .collect();
+    assert_eq!(records, expected);
+}
+
+/// A selections file that is not there, or a line of it that is not a
+/// selection, fails the command before it prints a record.
+#[test]
+fn stack_resolve_selections_fails_on_a_selections_file_it_cannot_take() {
+    let (_dirs, root) = peppy_root_with_pairing_node();
+    let launcher = root.path().join("fleet.json5");
+    fs::write(&launcher, VIEWER_FLEET_LAUNCHER).expect("launcher");
+    let unparsable = root.path().join("selections.jsonl");
+    fs::write(&unparsable, "{}\n{\"with\": [\"\"]}\n").expect("selections");
+    let cases = [
+        (
+            root.path().join("absent.jsonl"),
+            "cannot read the selections file",
+        ),
+        (unparsable, "selections line 2: `with` word ``"),
+    ];
+
+    for (selections, expected) in cases {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_peppy"))
+            .args(["stack", "resolve"])
+            .arg(&launcher)
+            .arg("--selections")
+            .arg(&selections)
+            .env(config::consts::PEPPY_HOME_ENV, root.path())
+            .output()
+            .expect("failed to run peppy");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(
+            output.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
+
 /// A bare name is a repository launcher whatever the current directory
 /// holds: `peppy stack resolve openarm_v2` run next to a valid
 /// `openarm_v2.json5` still goes to the repository cache, and is refused

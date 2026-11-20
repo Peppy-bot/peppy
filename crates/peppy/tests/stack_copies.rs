@@ -244,6 +244,52 @@ fn stack_join_rejects_nonfinite_overrides() {
     }
 }
 
+/// `--selections FILE` lists the selections in place of `--with` and
+/// `--join`, so the command line takes it without them only.
+#[test]
+fn stack_resolve_cli_takes_selections_in_place_of_with_and_join() {
+    let cli =
+        StackCli::try_parse_from(["stack", "resolve", "fleet.json5", "--selections", "-"]).unwrap();
+    let StackCommands::Resolve {
+        selections,
+        with,
+        joins,
+        ..
+    } = cli.command
+    else {
+        panic!("expected the resolve command");
+    };
+    assert_eq!(selections, Some(std::path::PathBuf::from("-")));
+    assert!(with.words.is_empty() && joins.joins.is_empty());
+    // The records go to a program on stdout, so the log lines go to stderr.
+    for (arguments, prints_data) in [
+        (
+            &["stack", "resolve", "fleet.json5", "--selections", "-"][..],
+            true,
+        ),
+        (&["stack", "resolve", "fleet.json5"][..], false),
+        (&["stack", "list", "--json"][..], false),
+    ] {
+        let cli = StackCli::try_parse_from(arguments).unwrap();
+        assert_eq!(cli.command.prints_data(), prints_data, "{arguments:?}");
+    }
+
+    for words in [["--with", "sim"], ["--join", "real:alpha"]] {
+        let error = StackCli::try_parse_from(
+            ["stack", "resolve", "fleet.json5", "--selections", "-"]
+                .into_iter()
+                .chain(words),
+        )
+        .err()
+        .expect("a selection on the command line beside --selections is refused");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::ArgumentConflict,
+            "{error}"
+        );
+    }
+}
+
 /// A launch word scoped to a file copy, `NAME.axis=option`, fills that
 /// copy's own axis through the CLI's resolve path.
 #[test]
