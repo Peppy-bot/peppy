@@ -15,7 +15,7 @@ use std::fmt;
 /// exposures that live outside a configured repository are made resolvable
 /// by registering their directory in `repositories.json5`
 /// (`peppy repo add <path>`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(untagged)]
 pub enum DeploymentSource {
     Node { name: String, tag: String },

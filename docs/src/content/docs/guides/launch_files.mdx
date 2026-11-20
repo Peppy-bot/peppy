@@ -1113,7 +1113,7 @@ Composition changes instances from a distance, so it ships with an audit command
 peppy stack resolve physical --join so101:alpha --with xr_commander,alpha.robot_commander=none,alpha.lerobot_recorder
 ```
 
-`stack resolve` needs no running stack. It prints the flattened `launcher/v1` document to stdout and a resolution report to stderr. An excerpt:
+`stack resolve` needs no running stack. It prints the flattened `launcher/v1` document to stdout, and a resolution report and its log lines to stderr. An excerpt:
 
 ```
 components: robot_control=(off)  teleop=xr_commander
@@ -1139,3 +1139,23 @@ The report then holds the flat plan to the [checks of `daemon_scopes`](#daemon_s
 The report then names the [launch variables](#env_from_launch-optional) of the plan. A `launch variables: the launch needs` line names each variable that the launch needs from the shell that launches, with each instance that takes it and what can start that instance: the launch, or a `stack.join` through a scope of the launch, with the instance whose scope offers the option. A line follows for each instance with launch variables that the launch places off the coordinator, which it refuses: an instance on a core node link that is not a copy's, unless `--place LINK@self` or `--local` puts that link on the coordinator, and an instance of a copy or of a part that a word places on a named machine, unless that machine is the coordinator. `stack resolve` reads no daemon and no `--place`, so a copy that `--place` puts on a peer at launch is refused then, and not named here.
 
 The report ends by holding the flat plan to the launch-time link rules that need no daemon. `stack resolve` reads this machine's nodes cache at `~/.peppy/cache/nodes.json5`, loads each deployed node's manifest, and checks slot-key legality, vacancies, and pairing coverage across them; the `link rules hold` line names how many manifests it checked. A node published by a git repository is read out of the checkout the caches already hold, `peppy repo refresh` handing every clone it makes to the checkout cache, so the nodes and launchers a hub publishes are checked against each other without the command ever reaching the network. The contract-binding rules stay launch-only, because satisfying them can involve the root node that only a running daemon knows. When the plan breaks a rule a launch would reject, say a `zero_or_one` pairing slot left neither paired nor vacant, `stack resolve` fails with that launch's own error instead of surfacing it minutes later at launch. When a manifest cannot be read locally the check is skipped rather than run on a partial picture: the report says `link rules not checked`, names the missing manifest, and advises `peppy repo refresh`, which is what fills both the nodes cache and the checkouts the git-backed manifests are read from.
+
+### Many selections of one launcher
+
+A program that checks many selections of one launcher gives them to one command, with `--selections FILE` in place of `--with` and `--join`:
+
+```sh
+peppy stack resolve physical --selections selections.jsonl
+```
+
+Each line of the file is one selection, a JSON object. `with` lists the `--with` words and `join` lists the `--join` copies, one word or one copy in each string. Each member is optional, so `{}` is the launch with no word. `-` as the file reads the selections from stdin.
+
+```json
+{}
+{"with": ["xr_commander"]}
+{"with": ["xr_commander", "alpha.robot_commander=none"], "join": ["so101:alpha"]}
+```
+
+Stdout gets one JSON object on a line for each selection, in the order of the file. A selection that resolves gives `{"launcher": …, "report": […]}`: the flat launcher as JSON and the lines of the resolution report. A selection that does not resolve gives `{"error": "…"}`, with the message that `stack resolve` fails with for that selection alone, and the selections after it still resolve. JSON has no NaN and no infinity, so such a number of the flat launcher is `null` in a record. The log lines go to stderr. The exit status does not tell whether the selections resolve: a selection that fails gives an `error` record, and the command still exits with 0.
+
+Each record is the verdict that `stack resolve` gives for that selection alone. The command reads the launcher, its fragments and the nodes cache one time. It reads the manifest and the targets of each deployment at the first selection that deploys it, and keeps them for the selections after it, so it costs much less than one command for each selection. The command fails, and prints no record, when the launcher does not load, when the file cannot be read, or when a line of the file is not a selection; the message names the line by its number.

@@ -3,8 +3,9 @@
 //! exposure documents alone, so a machine that holds no node, and no
 //! contract, still refuses every scope a launch would refuse.
 
+use crate::common::{record_of_a_lone_resolve, selection_records};
 use daemon_config::consts::PeppyDirs;
-use peppy::commands::stack::resolve_rendered;
+use peppy::commands::stack::{LauncherResolver, parse_selections, resolve_rendered};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -143,6 +144,17 @@ fn scoped(scope: &str) -> String {
     format!(
         r#"{{ target: "framework_controls_inst", set_daemon_scopes: {{ stack: {scope}, fleet: {FLEET_SCOPE} }} }}"#
     )
+}
+
+/// [`launcher`] of the scoped endpoint, with the endpoint deployed from the
+/// exposure `exposure` in place of `framework_controls:v1`.
+fn launcher_of_exposure(root: &Path, exposure: &str) -> PathBuf {
+    let path = launcher(root, ENDPOINT, &scoped(SCOPE));
+    let text = fs::read_to_string(&path)
+        .expect("launcher")
+        .replace("framework_controls:v1", exposure);
+    fs::write(&path, text).expect("launcher");
+    path
 }
 
 fn refusal(dirs: &PeppyDirs, launcher: PathBuf) -> String {
@@ -337,12 +349,10 @@ fn a_scope_written_through_a_joined_copy_is_refused() {
 #[test]
 fn a_daemon_interface_this_peppy_does_not_serve_is_refused_by_resolve() {
     let (dirs, root) = cold_home();
-    let path = launcher(root.path(), ENDPOINT, &scoped(SCOPE));
-    let text = fs::read_to_string(&path)
-        .expect("launcher")
-        .replace("framework_controls:v1", "unserved_controls:v1");
-    fs::write(&path, text).expect("launcher");
-    let error = refusal(&dirs, path);
+    let error = refusal(
+        &dirs,
+        launcher_of_exposure(root.path(), "unserved_controls:v1"),
+    );
     assert!(
         error.contains("would be refused at launch")
             && error.contains(
@@ -409,12 +419,10 @@ fn an_exposure_not_in_the_caches_skips_its_own_checks_and_no_other() {
 #[test]
 fn an_exposure_document_that_does_not_parse_fails_resolve() {
     let (dirs, root) = cold_home();
-    let path = launcher(root.path(), ENDPOINT, &scoped(SCOPE));
-    let text = fs::read_to_string(&path)
-        .expect("launcher")
-        .replace("framework_controls:v1", "pinned_controls:v1");
-    fs::write(&path, text).expect("launcher");
-    let error = refusal(&dirs, path);
+    let error = refusal(
+        &dirs,
+        launcher_of_exposure(root.path(), "pinned_controls:v1"),
+    );
     assert!(
         error.contains("deployment exposures [pinned_controls:v1] would be refused at launch")
             && error.contains("exposure `pinned_controls:v1` does not parse")
@@ -549,6 +557,20 @@ fn cache_director(root: &Path) {
     crate::common::register_repo_caches(root, &[("director", "v1", dir.as_path())]);
 }
 
+/// [`launcher_with`] of the scoped endpoint and of `director:v1` with the
+/// scope of its daemon target, so the scopes of both deployments hold.
+fn scoped_director_launcher(root: &Path) -> PathBuf {
+    launcher_with(
+        root,
+        ENDPOINT,
+        &format!(
+            r#"{}, {{ target: "director_inst", set_daemon_scopes: {{ fleet: {{ members: ["lease"] }} }} }}"#,
+            scoped(SCOPE)
+        ),
+        DIRECTOR_DEPLOYMENT,
+    )
+}
+
 /// The daemon target of a node is held to the launch checks once its
 /// manifest is in the nodes cache; while it is not, the report names the
 /// deployment whose checks did not run.
@@ -583,21 +605,9 @@ fn the_daemon_target_of_a_cached_node_is_checked_and_an_uncached_one_is_reported
         "{error}"
     );
 
-    let (_document, report) = resolve_rendered(
-        &dirs,
-        launcher_with(
-            root.path(),
-            ENDPOINT,
-            &format!(
-                r#"{}, {{ target: "director_inst", set_daemon_scopes: {{ fleet: {{ members: ["lease"] }} }} }}"#,
-                scoped(SCOPE)
-            ),
-            DIRECTOR_DEPLOYMENT,
-        ),
-        &[],
-        &[],
-    )
-    .expect("both scopes hold");
+    let (_document, report) =
+        resolve_rendered(&dirs, scoped_director_launcher(root.path()), &[], &[])
+            .expect("both scopes hold");
     let report = report.join("\n");
     assert!(
         report.contains(
@@ -665,4 +675,130 @@ fn resolve_reports_the_launch_variables_and_where_their_instances_run() {
     for runs_on_the_coordinator in ["`planner_inst` takes `", "`bravo_arm_inst` takes `"] {
         assert!(!report.contains(runs_on_the_coordinator), "{report}");
     }
+}
+
+/// The selections of [`scoped_director_launcher`] that the batch tests
+/// resolve: the launch alone, one copy and two copies, each with the
+/// endpoint of `framework_controls:v1`.
+const ENDPOINT_SELECTIONS: &str = r#"{}
+{"join": ["openarm_sim:alpha"]}
+{"join": ["so101_sim:alpha", "openarm_sim:bravo"]}
+"#;
+
+/// Each record of `stack resolve --selections` over a launcher that deploys
+/// exposures is the verdict that `stack resolve` gives for that selection
+/// alone. The nodes cache holds `director:v1`, so each selection reads the
+/// targets and the manifest of the exposures deployment.
+#[test]
+fn stack_resolve_selections_answers_each_selection_of_an_exposures_deployment_as_a_lone_resolve_does()
+ {
+    let (dirs, root) = cold_home();
+    cache_director(root.path());
+    let path = scoped_director_launcher(root.path());
+    let selections = parse_selections(ENDPOINT_SELECTIONS).expect("the selections parse");
+
+    let records = selection_records(&dirs, &path, &selections);
+
+    let expected: Vec<serde_json::Value> = selections
+        .iter()
+        .map(|selection| record_of_a_lone_resolve(&dirs, &path, selection))
+        .collect();
+    assert_eq!(records, expected);
+    for record in &records {
+        let report = record["report"].to_string();
+        assert!(
+            report.contains("daemon scopes hold: 3 daemon target(s)")
+                && !report.contains("exposure deployment(s) this machine's caches do not hold"),
+            "each selection checks the scopes of the exposures deployment: {record:#}"
+        );
+    }
+}
+
+/// A resolver reads the exposure documents of a deployment at the first
+/// selection that deploys it and keeps what they gave: a selection resolved
+/// after the documents are gone is still held to the checks of daemon
+/// scopes, which a resolve that starts then cannot run.
+#[test]
+fn a_launcher_resolver_keeps_what_the_exposure_documents_gave() {
+    let (dirs, root) = cold_home();
+    cache_director(root.path());
+    let path = scoped_director_launcher(root.path());
+    let resolver = LauncherResolver::load(&dirs, path.clone()).expect("the launcher loads");
+    let alpha = ["openarm_sim:alpha".parse().expect("a copy")];
+    let first = resolver.resolve(&[], &[]).expect("the launch resolves");
+    let first_with_alpha = resolver
+        .resolve(&[], &alpha)
+        .expect("the launch with a copy resolves");
+
+    fs::remove_dir_all(root.path().join("exposures")).expect("removing the exposure documents");
+
+    let again = resolver.resolve(&[], &[]).expect("the launch resolves");
+    assert_eq!(again.report, first.report);
+    let again_with_alpha = resolver
+        .resolve(&[], &alpha)
+        .expect("the launch with a copy resolves");
+    assert_eq!(again_with_alpha.report, first_with_alpha.report);
+
+    // A resolve that starts now reads the caches without the documents.
+    let (_document, report) =
+        resolve_rendered(&dirs, path, &[], &[]).expect("the scopes of the node hold");
+    assert!(
+        report.join("\n").contains(
+            "daemon scopes not checked for 1 exposure deployment(s) this machine's caches do not \
+             hold: exposures [framework_controls:v1]"
+        ),
+        "{report:#?}"
+    );
+}
+
+/// An exposure document that the launch refuses fails each selection that
+/// deploys it, with the refusal of a lone resolve. The resolver keeps the
+/// refusal: a selection resolved after the document is gone fails with it
+/// still.
+#[test]
+fn a_refused_exposure_document_fails_each_selection_that_deploys_it() {
+    let (dirs, root) = cold_home();
+    let path = launcher_of_exposure(root.path(), "pinned_controls:v1");
+    let selections = parse_selections(ENDPOINT_SELECTIONS).expect("the selections parse");
+    let refusal = "deployment exposures [pinned_controls:v1] would be refused at launch";
+
+    let records = selection_records(&dirs, &path, &selections);
+
+    let expected: Vec<serde_json::Value> = selections
+        .iter()
+        .map(|selection| record_of_a_lone_resolve(&dirs, &path, selection))
+        .collect();
+    assert_eq!(records, expected);
+    for record in &records {
+        assert!(
+            record["error"]
+                .as_str()
+                .is_some_and(|error| error.contains(refusal)),
+            "{record:#}"
+        );
+    }
+
+    let resolver = LauncherResolver::load(&dirs, path.clone()).expect("the launcher loads");
+    let first = resolver
+        .resolve(&[], &[])
+        .expect_err("the document is refused")
+        .to_string();
+    assert!(first.contains(refusal), "{first}");
+    fs::remove_dir_all(root.path().join("exposures")).expect("removing the exposure documents");
+    let alpha = ["openarm_sim:alpha".parse().expect("a copy")];
+    let kept = resolver
+        .resolve(&[], &alpha)
+        .expect_err("the kept refusal fails the selection")
+        .to_string();
+    assert!(kept.contains(refusal), "{kept}");
+
+    // A resolve that starts now finds no document, so it skips the checks.
+    let (_document, report) = resolve_rendered(&dirs, path, &[], &[]).expect("no document is read");
+    assert!(
+        report.join("\n").contains(
+            "daemon scopes not checked for 1 exposure deployment(s) this machine's caches do not \
+             hold: exposures [pinned_controls:v1]"
+        ),
+        "{report:#?}"
+    );
 }
