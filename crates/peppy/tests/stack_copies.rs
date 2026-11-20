@@ -261,18 +261,6 @@ fn stack_resolve_cli_takes_selections_in_place_of_with_and_join() {
     };
     assert_eq!(selections, Some(std::path::PathBuf::from("-")));
     assert!(with.words.is_empty() && joins.joins.is_empty());
-    // The records go to a program on stdout, so the log lines go to stderr.
-    for (arguments, prints_data) in [
-        (
-            &["stack", "resolve", "fleet.json5", "--selections", "-"][..],
-            true,
-        ),
-        (&["stack", "resolve", "fleet.json5"][..], false),
-        (&["stack", "list", "--json"][..], false),
-    ] {
-        let cli = StackCli::try_parse_from(arguments).unwrap();
-        assert_eq!(cli.command.prints_data(), prints_data, "{arguments:?}");
-    }
 
     for words in [["--with", "sim"], ["--join", "real:alpha"]] {
         let error = StackCli::try_parse_from(
@@ -287,6 +275,30 @@ fn stack_resolve_cli_takes_selections_in_place_of_with_and_join() {
             clap::error::ErrorKind::ArgumentConflict,
             "{error}"
         );
+    }
+}
+
+/// A program reads the stdout of `resolve` and of `list --json`, so the log
+/// lines of these commands go to stderr. The table of `list` is for a
+/// person, and its log lines stay on stdout.
+#[test]
+fn stack_commands_that_print_data_send_their_log_lines_to_stderr() {
+    for (arguments, prints_data) in [
+        (
+            &["stack", "resolve", "fleet.json5", "--selections", "-"][..],
+            true,
+        ),
+        (&["stack", "resolve", "fleet.json5"][..], true),
+        (
+            &["stack", "resolve", "fleet.json5", "--with", "sim"][..],
+            true,
+        ),
+        (&["stack", "list", "--json"][..], true),
+        (&["stack", "list"][..], false),
+        (&["stack", "reset"][..], false),
+    ] {
+        let cli = StackCli::try_parse_from(arguments).unwrap();
+        assert_eq!(cli.command.prints_data(), prints_data, "{arguments:?}");
     }
 }
 

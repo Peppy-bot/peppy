@@ -83,7 +83,8 @@ pub enum StackCommands {
     },
     /// List the nodes in the current node stack
     List {
-        /// Emit machine-readable JSON.
+        /// Emit machine-readable JSON on stdout, with the log lines on
+        /// stderr.
         #[arg(long)]
         json: bool,
     },
@@ -93,8 +94,9 @@ pub enum StackCommands {
     /// Needs no running stack and touches nothing: the flattened
     /// `launcher/v1` document goes to stdout, so it doubles as the escape
     /// hatch (flatten, hand-edit, launch the flat file), while the
-    /// resolution report goes to stderr. A flat document declares no axis,
-    /// so the launch of one that keeps a `robot_membership` scope refuses it.
+    /// resolution report and the log lines go to stderr. A flat document
+    /// declares no axis, so the launch of one that keeps a
+    /// `robot_membership` scope refuses it.
     ///
     /// With `--selections`, resolves each selection that a file lists and
     /// prints one JSON record for each, for a program that checks many
@@ -112,18 +114,21 @@ pub enum StackCommands {
         /// the one selection that `--with` and `--join` write. Each line of
         /// FILE is one selection, a JSON object: `with` lists its `--with`
         /// words and `join` its `--join` copies, one word or one copy in each
-        /// string, and `{}` is the launch with no word. The launcher and what
-        /// the checks read from this machine's caches are read one time for
-        /// all the selections.
+        /// string, and `{}` is the launch with no word. The launcher is read
+        /// one time for all the selections. What the checks read from this
+        /// machine's caches for a deployment is read at the first selection
+        /// that deploys it, and is kept for the selections after it.
         ///
         /// Stdout gets one JSON object on a line for each selection, in the
         /// order of FILE: `{"launcher": ..., "report": [...]}` with the flat
         /// launcher as JSON and the lines of the resolution report, or
         /// `{"error": "..."}` with the message that the command fails with
         /// for that selection alone. JSON has no NaN and no infinity, so such
-        /// a number of the flat launcher is `null` in a record. The command
-        /// fails, and prints no record, when the launcher does not load or
-        /// when a line of FILE is not a selection.
+        /// a number of the flat launcher is `null` in a record. A selection
+        /// that fails gives an `error` record and does not change the exit
+        /// status. The command fails, and prints no record, when the launcher
+        /// does not load, when FILE cannot be read or when a line of FILE is
+        /// not a selection.
         #[arg(long, value_name = "FILE", conflicts_with_all = ["words", "joins"])]
         selections: Option<PathBuf>,
     },
@@ -354,15 +359,10 @@ fn parse_launch_word(raw: &str) -> Result<LaunchWord, String> {
 
 impl StackCommands {
     /// Whether the command prints data that a program reads on standard
-    /// output, so its log lines go to standard error.
+    /// output, so its log lines go to standard error: the flat launcher or
+    /// the records of `resolve`, and the document of `list --json`.
     pub fn prints_data(&self) -> bool {
-        matches!(
-            self,
-            Self::Resolve {
-                selections: Some(_),
-                ..
-            }
-        )
+        matches!(self, Self::Resolve { .. } | Self::List { json: true })
     }
 }
 
@@ -385,15 +385,13 @@ impl Command for StackCommand {
             StackCommands::Reset { federated } => reset::reset_stack(ctx, federated),
             StackCommands::Resolve {
                 launcher_config_path,
-                selections: Some(selections),
-                ..
-            } => resolve::resolve_selections(launcher_config_path, &selections),
-            StackCommands::Resolve {
-                launcher_config_path,
                 with,
                 joins,
-                selections: None,
-            } => resolve::resolve(launcher_config_path, &with.words, &joins.joins),
+                selections,
+            } => {
+                let input = resolve::ResolveInput::parse(with.words, joins.joins, selections)?;
+                resolve::resolve(launcher_config_path, input)
+            }
             StackCommands::Launch(args) => {
                 info!("Launching stack...");
                 launch::launch::<LaunchGoal>(ctx, args, None)

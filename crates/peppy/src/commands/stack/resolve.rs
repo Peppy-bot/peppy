@@ -33,6 +33,46 @@ use crate::error::{Error, Result};
 /// an operator there.
 const PREVIEW_CORE_NODE: &str = "cn-preview";
 
+/// What one `peppy stack resolve` resolves: the one selection that
+/// `--with` and `--join` write, or each selection that a `--selections`
+/// file lists.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ResolveInput {
+    One(LaunchSelection),
+    /// The path of the selections file, or `-` for stdin.
+    Many(PathBuf),
+}
+
+impl ResolveInput {
+    /// The input that the command line gives. `--selections` takes the place
+    /// of `--with` and `--join`, so a word or a copy next to it is refused.
+    pub(super) fn parse(
+        words: Vec<LaunchWord>,
+        joins: Vec<CopyReference>,
+        selections: Option<PathBuf>,
+    ) -> Result<Self> {
+        let Some(selections) = selections else {
+            return Ok(Self::One(LaunchSelection { words, joins }));
+        };
+        if !words.is_empty() || !joins.is_empty() {
+            return Err(Error::ExecutionFailed(
+                "`--selections` takes the place of `--with` and `--join`, so give it without them"
+                    .to_owned(),
+            ));
+        }
+        Ok(Self::Many(selections))
+    }
+}
+
+/// `peppy stack resolve`: resolve the one selection of `input`, or each
+/// selection that its file lists.
+pub(super) fn resolve(launcher_config_path: PathBuf, input: ResolveInput) -> Result<()> {
+    match input {
+        ResolveInput::One(selection) => resolve_one(launcher_config_path, &selection),
+        ResolveInput::Many(selections) => resolve_selections(launcher_config_path, &selections),
+    }
+}
+
 /// `peppy stack resolve <name|path> [--with ...]`: print the flat launcher
 /// a composed launch would run, and the report of what the selection did.
 ///
@@ -64,13 +104,13 @@ const PREVIEW_CORE_NODE: &str = "cn-preview";
 /// of the checkout the caches materialized for it; when one is not readable
 /// locally the check is skipped and says so, because a partial item list
 /// would misreport rules that need both endpoints.
-pub(super) fn resolve(
-    launcher_config_path: PathBuf,
-    words: &[LaunchWord],
-    joins: &[CopyReference],
-) -> Result<()> {
-    let (document, report) =
-        resolve_rendered(&PeppyDirs::default(), launcher_config_path, words, joins)?;
+fn resolve_one(launcher_config_path: PathBuf, selection: &LaunchSelection) -> Result<()> {
+    let (document, report) = resolve_rendered(
+        &PeppyDirs::default(),
+        launcher_config_path,
+        &selection.words,
+        &selection.joins,
+    )?;
     for line in report {
         eprintln!("{line}");
     }
@@ -90,25 +130,31 @@ pub fn resolve_rendered(
     joins: &[CopyReference],
 ) -> Result<(String, Vec<String>)> {
     let resolved = LauncherResolver::load(dirs, launcher_config_path)?.resolve(words, joins)?;
-    let document = json5_pretty::to_string_pretty(&resolved.launcher)
-        .map_err(|e| Error::ExecutionFailed(format!("cannot serialize the flat launcher: {e}")))?;
+    let document =
+        json5_pretty::to_string_pretty(&resolved.launcher).map_err(flat_launcher_not_serialized)?;
     Ok((document, resolved.report))
+}
+
+/// The failure of a selection whose flat launcher does not serialize.
+fn flat_launcher_not_serialized(reason: impl std::fmt::Display) -> Error {
+    Error::ExecutionFailed(format!("cannot serialize the flat launcher: {reason}"))
 }
 
 /// `peppy stack resolve <name|path> --selections <file>`: resolve every
 /// selection that the file lists, and print one JSON record on a line of
 /// stdout for each, in the order of the file.
 ///
-/// The launcher and its fragments are read one time, and each node manifest
-/// and each set of exposure documents is read one time, at the first
-/// selection that deploys it. So the records are the verdicts that `peppy
-/// stack resolve` gives for each selection alone, at a fraction of the cost
-/// of one command for each selection.
+/// The launcher and its fragments are read one time, and the nodes cache is
+/// read one time. The manifest and the targets of each deployment source are
+/// read at the first selection that deploys it and kept for the selections
+/// after it (see [`PlanSources`]). So the records are the verdicts that
+/// `peppy stack resolve` gives for each selection alone, at a fraction of
+/// the cost of one command for each selection.
 ///
 /// `selections` is the path of the file, or `-` for stdin. See
 /// [`parse_selections`] for a line of it and [`SelectionRecord`] for a
 /// record.
-pub(super) fn resolve_selections(launcher_config_path: PathBuf, selections: &Path) -> Result<()> {
+fn resolve_selections(launcher_config_path: PathBuf, selections: &Path) -> Result<()> {
     let selections = parse_selections(&read_selections(selections)?)?;
     let mut records = std::io::BufWriter::new(std::io::stdout().lock());
     write_selection_records(
@@ -124,7 +170,12 @@ pub(super) fn resolve_selections(launcher_config_path: PathBuf, selections: &Pat
 fn read_selections(path: &Path) -> Result<String> {
     if path == Path::new("-") {
         let mut text = String::new();
-        std::io::stdin().lock().read_to_string(&mut text)?;
+        std::io::stdin()
+            .lock()
+            .read_to_string(&mut text)
+            .map_err(|e| {
+                Error::ExecutionFailed(format!("cannot read the selections from stdin: {e}"))
+            })?;
         return Ok(text);
     }
     std::fs::read_to_string(path).map_err(|e| {
@@ -198,16 +249,35 @@ fn parse_selection(line: &str) -> std::result::Result<LaunchSelection, String> {
 /// What `peppy stack resolve --selections` prints for one selection: the
 /// flat launcher as JSON with the lines of the resolution report, or the
 /// message that `peppy stack resolve` fails with for that selection.
+///
+/// `L` is the flat launcher, a [`PeppyLauncher`] in each record that the
+/// command writes.
 #[derive(Serialize)]
 #[serde(untagged)]
-enum SelectionRecord<'a> {
+enum SelectionRecord<'a, L> {
     Resolved {
-        launcher: &'a PeppyLauncher,
+        launcher: &'a L,
         report: &'a [String],
     },
     Failed {
         error: String,
     },
+}
+
+impl<L: Serialize> SelectionRecord<'_, L> {
+    /// The record as one line of JSON, with its newline. A flat launcher
+    /// that does not serialize as JSON gives the `error` record of its
+    /// selection, so each line holds one whole record.
+    fn to_line(&self) -> Vec<u8> {
+        let mut line = serde_json::to_vec(self).unwrap_or_else(|e| {
+            let failed = SelectionRecord::<L>::Failed {
+                error: flat_launcher_not_serialized(e).to_string(),
+            };
+            serde_json::to_vec(&failed).expect("a record of one message serializes")
+        });
+        line.push(b'\n');
+        line
+    }
 }
 
 /// Resolve each of `selections` over the launcher and write its
@@ -235,10 +305,7 @@ pub fn write_selection_records(
                 error: error.to_string(),
             },
         };
-        serde_json::to_writer(&mut *records, &record).map_err(|e| {
-            Error::ExecutionFailed(format!("cannot write the record of a selection: {e}"))
-        })?;
-        records.write_all(b"\n")?;
+        records.write_all(&record.to_line())?;
     }
     records.flush()?;
     Ok(())
@@ -254,7 +321,7 @@ pub struct ResolvedLaunch {
 
 /// One launcher held ready to resolve any number of selections: its file and
 /// its fragments read one time, and what the checks read from this machine's
-/// caches read one time.
+/// caches for a deployment kept from the first selection that deploys it.
 #[derive(Debug)]
 pub struct LauncherResolver<'a> {
     prepared: PreparedLauncher,
@@ -312,9 +379,8 @@ impl<'a> LauncherResolver<'a> {
 /// `Err` with why this machine did not give it.
 type SourceRead<T, E> = std::result::Result<Rc<T>, E>;
 
-/// Each deployment source that was read, with what the read gave. A flat plan
-/// deploys a few tens of sources, so a list is searched.
-type ReadSources<T, E> = RefCell<Vec<(DeploymentSource, SourceRead<T, E>)>>;
+/// Each deployment source that was read, with what the read gave.
+type ReadSources<T, E> = RefCell<HashMap<DeploymentSource, SourceRead<T, E>>>;
 
 /// What `read` gives for `source`, read at the first request for the source
 /// and kept in `known` for each later one.
@@ -323,18 +389,23 @@ fn read_once<T, E: Clone>(
     source: &DeploymentSource,
     read: impl FnOnce() -> std::result::Result<T, E>,
 ) -> SourceRead<T, E> {
-    if let Some((_, kept)) = known.borrow().iter().find(|(read, _)| read == source) {
+    if let Some(kept) = known.borrow().get(source) {
         return kept.clone();
     }
     let fresh = read().map(Rc::new);
-    known.borrow_mut().push((source.clone(), fresh.clone()));
+    known.borrow_mut().insert(source.clone(), fresh.clone());
     fresh
 }
 
 /// Where the checks of a flat plan read what this machine's caches hold of
 /// each deployment: the nodes cache, the node manifests and the exposure
-/// documents. Each is read one time, at the first plan that needs it, so
-/// every selection of a launcher is held to one reading of the caches.
+/// documents. The nodes cache is read one time. The manifest and the targets
+/// of a deployment source are each read at the first plan that needs them
+/// and kept for each later plan, so every selection of a launcher is held to
+/// the same reading of the caches. The targets and the manifest of an
+/// exposures deployment are two reads of its documents: the targets come
+/// from the documents alone, and the manifest is derived from the documents
+/// and their contracts.
 #[derive(Debug)]
 struct PlanSources<'a> {
     dirs: &'a PeppyDirs,
@@ -866,5 +937,86 @@ fn report_clocks_and_restarts(
                 None => format!("{id}: {clock}, restart not resolved (manifest unavailable)"),
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--selections` takes the place of `--with` and `--join`: the input is
+    /// one selection or the file, never both.
+    #[test]
+    fn the_input_is_the_selection_of_the_words_or_the_selections_file() {
+        let word: LaunchWord = "sim".parse().expect("a word");
+        let copy: CopyReference = "real:alpha".parse().expect("a copy");
+        let file = PathBuf::from("-");
+
+        assert_eq!(
+            ResolveInput::parse(vec![word.clone()], vec![copy.clone()], None).expect("one"),
+            ResolveInput::One(LaunchSelection {
+                words: vec![word.clone()],
+                joins: vec![copy.clone()],
+            })
+        );
+        assert_eq!(
+            ResolveInput::parse(vec![], vec![], Some(file.clone())).expect("the file"),
+            ResolveInput::Many(file.clone())
+        );
+        for (words, joins) in [(vec![word], vec![]), (vec![], vec![copy])] {
+            let error = ResolveInput::parse(words, joins, Some(file.clone()))
+                .expect_err("a selection next to the file is refused")
+                .to_string();
+            assert!(
+                error.contains("`--selections` takes the place of `--with` and `--join`"),
+                "{error}"
+            );
+        }
+    }
+
+    /// A value whose serialization always fails.
+    struct NotSerializable;
+
+    impl Serialize for NotSerializable {
+        fn serialize<S: serde::Serializer>(&self, _: S) -> std::result::Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("no JSON form"))
+        }
+    }
+
+    /// A flat launcher that does not serialize gives one whole `error` line,
+    /// with the message of a lone resolve, and no part of the record.
+    #[test]
+    fn a_flat_launcher_that_does_not_serialize_gives_a_whole_error_line() {
+        let report = ["a line of the report".to_owned()];
+        let line = SelectionRecord::Resolved {
+            launcher: &NotSerializable,
+            report: &report,
+        }
+        .to_line();
+
+        let expected = serde_json::json!({
+            "error": flat_launcher_not_serialized("no JSON form").to_string(),
+        });
+        assert_eq!(
+            String::from_utf8(line).expect("the line is UTF-8"),
+            format!("{expected}\n")
+        );
+    }
+
+    /// A record that serializes is one line of JSON that ends with its
+    /// newline.
+    #[test]
+    fn a_record_is_one_line_of_json() {
+        let report = ["first".to_owned(), "second".to_owned()];
+        let line = SelectionRecord::Resolved {
+            launcher: &serde_json::json!({ "deployments": [] }),
+            report: &report,
+        }
+        .to_line();
+
+        assert_eq!(
+            String::from_utf8(line).expect("the line is UTF-8"),
+            "{\"launcher\":{\"deployments\":[]},\"report\":[\"first\",\"second\"]}\n"
+        );
     }
 }

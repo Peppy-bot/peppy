@@ -1113,7 +1113,7 @@ Composition changes instances from a distance, so it ships with an audit command
 peppy stack resolve physical --join so101:alpha --with xr_commander,alpha.robot_commander=none,alpha.lerobot_recorder
 ```
 
-`stack resolve` needs no running stack. It prints the flattened `launcher/v1` document to stdout and a resolution report to stderr. An excerpt:
+`stack resolve` needs no running stack. It prints the flattened `launcher/v1` document to stdout, and a resolution report and its log lines to stderr. An excerpt:
 
 ```
 components: robot_control=(off)  teleop=xr_commander
@@ -1156,6 +1156,6 @@ Each line of the file is one selection, a JSON object. `with` lists the `--with`
 {"with": ["xr_commander", "alpha.robot_commander=none"], "join": ["so101:alpha"]}
 ```
 
-Stdout gets one JSON object on a line for each selection, in the order of the file. A selection that resolves gives `{"launcher": …, "report": […]}`: the flat launcher as JSON and the lines of the resolution report. A selection that does not resolve gives `{"error": "…"}`, with the message that `stack resolve` fails with for that selection alone, and the selections after it still resolve. JSON has no NaN and no infinity, so such a number of the flat launcher is `null` in a record. The log lines go to stderr.
+Stdout gets one JSON object on a line for each selection, in the order of the file. A selection that resolves gives `{"launcher": …, "report": […]}`: the flat launcher as JSON and the lines of the resolution report. A selection that does not resolve gives `{"error": "…"}`, with the message that `stack resolve` fails with for that selection alone, and the selections after it still resolve. JSON has no NaN and no infinity, so such a number of the flat launcher is `null` in a record. The log lines go to stderr. The exit status does not tell whether the selections resolve: a selection that fails gives an `error` record, and the command still exits with 0.
 
-Each record is the verdict that `stack resolve` gives for that selection alone. The command reads the launcher and its fragments one time, and each node manifest and each set of exposure documents one time, at the first selection that deploys it, so it costs much less than one command for each selection. The command fails, and prints no record, when the launcher does not load, when the file cannot be read, or when a line of the file is not a selection; the message names the line by its number.
+Each record is the verdict that `stack resolve` gives for that selection alone. The command reads the launcher, its fragments and the nodes cache one time. It reads the manifest and the targets of each deployment at the first selection that deploys it, and keeps them for the selections after it, so it costs much less than one command for each selection. The command fails, and prints no record, when the launcher does not load, when the file cannot be read, or when a line of the file is not a selection; the message names the line by its number.
