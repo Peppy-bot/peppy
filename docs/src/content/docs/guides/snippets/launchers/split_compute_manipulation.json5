@@ -29,6 +29,7 @@
           // Places this instance on the daemon wired to `robot_onboard`.
           // OPTIONAL: an instance that omits it runs on the coordinator.
           core_node: "robot_onboard",
+          links: { sensor_mounts: { vacant: "no node of this stack serves sensor_mounts: each picture names the camera's instance id as its frame" } },
           arguments: {
             device_path: "/dev/video0",
             video: {

@@ -626,6 +626,48 @@ mod tests {
         );
     }
 
+    /// An optional field of a nested object or of the object items of an
+    /// array is present or absent in each struct on its own, through the
+    /// pointer it has in that struct; an absent fixed-length array is never
+    /// read for its length.
+    #[test]
+    fn nested_optional_fields_are_present_or_absent_in_each_struct() {
+        let codec = codec(
+            r#"{
+                pose: {
+                    $type: "object",
+                    timestamp: { $type: "time", $optional: true },
+                    orientation: { $type: "array", $items: "f64", $length: 4, $optional: true },
+                },
+                samples: {
+                    $type: "array",
+                    $items: { $type: "object", value: "f64", note: { $type: "string", $optional: true } },
+                },
+            }"#,
+        );
+        let present = round_trip(
+            &codec,
+            json!({
+                "pose": {
+                    "timestamp": "2026-10-25T10:00:00.000000000Z",
+                    "orientation": [0.0, 0.0, 0.0, 1.0],
+                },
+                "samples": [{ "value": 1.0, "note": "first" }, { "value": 2.0 }],
+            }),
+        );
+        let absent = round_trip(
+            &codec,
+            json!({
+                "pose": {},
+                "samples": [{ "value": 1.0 }, { "value": 2.0 }],
+            }),
+        );
+        assert!(
+            absent.len() < present.len(),
+            "absent nested optionals leave their pointers null and allocate nothing"
+        );
+    }
+
     #[test]
     fn nested_objects_lists_and_fixed_arrays_round_trip() {
         let codec = codec(
@@ -737,11 +779,19 @@ mod tests {
             },
             "`ratio` is outside the range of a 32-bit float",
         );
+        let not_a_time = "`stamp` is not an RFC 3339 UTC time: write it as a string such as \
+                          \"2026-10-25T10:00:00Z\", with up to nine digits of a second after a `.`";
         refused(
             |v| {
                 v.insert("stamp".into(), json!("2023-11-14T22:13:20+00:00"));
             },
-            "`stamp` is not an RFC 3339 UTC timestamp (`...Z`)",
+            not_a_time,
+        );
+        refused(
+            |v| {
+                v.insert("stamp".into(), json!(1_700_000_000));
+            },
+            not_a_time,
         );
         refused(
             |v| {

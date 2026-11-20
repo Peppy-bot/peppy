@@ -12,6 +12,7 @@
       instances: [
         {
           instance_id: "front_cam_inst",
+          links: { sensor_mounts: { vacant: "no node of this stack serves sensor_mounts: each picture names the camera's instance id as its frame" } },
           framework: { restart: { policy: "on_failure", max_restarts: 5 } },
           arguments: {
             device_path: "/dev/video0",
@@ -25,6 +26,7 @@
         },
         {
           instance_id: "rear_cam_inst",
+          links: { sensor_mounts: { vacant: "no node of this stack serves sensor_mounts: each picture names the camera's instance id as its frame" } },
           arguments: {
             device_path: "/dev/video2",
             video: {

@@ -558,6 +558,37 @@ mod tests {
         assert_matches!(parse_error(json5), ParsingError::CannotParseConfig(_));
     }
 
+    /// The refusal of `$optional` on a scalar below the root names where the
+    /// field sits: the path to the root field of the format, then the field
+    /// inside it.
+    #[test]
+    fn an_optional_scalar_in_a_nested_object_is_refused_with_its_path() {
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "pose_node", tag: "v1", description: ["A test node."] },
+            interfaces: {
+                topics: {
+                    emits: [{
+                        name: "pose",
+                        description: "A test member.",
+                        message_format: {
+                            pose: { $type: "object", capture_index: { $type: "u32", $optional: true } },
+                        },
+                    }],
+                },
+            },
+            execution: { language: "rust", run_cmd: ["./pose_node"] },
+        }"#;
+        let error = parse_error(json5).to_string();
+        assert!(
+            error.contains(
+                "interfaces.topics.emits[0].message_format.pose: field `capture_index`: \
+                 `$optional` is not supported on a field of type `u32`"
+            ),
+            "got: {error}"
+        );
+    }
+
     #[test]
     fn test_parse_container_config() {
         let json5 = r#"{

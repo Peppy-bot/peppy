@@ -30,14 +30,14 @@ A contract lives in its own file under a repository Peppy scans (see [Repositori
     topics: [
       {
         name: "video_stream",
-        description: "Each frame of the camera, with its size and its encoding.",
+        description: "Each picture of the camera, with its size and its encoding.",
         qos_profile: "sensor_data",
         message_format: {
-          header: { $type: "object", stamp: "time", frame_id: "u32" },
+          header: { $type: "object", frame: "string", timestamp: "time", capture_index: "u32" },
           encoding: "string",
           width: "u32",
           height: "u32",
-          frame: { $type: "array", $items: "u8", $description: "The pixels of the frame, row by row, in its encoding." },
+          data: { $type: "array", $items: "u8", $description: "The pixels of the picture, row by row, in its encoding." },
         },
       },
     ],
@@ -118,7 +118,7 @@ A mark name follows the rule of a failure kind name: words of lowercase ASCII le
 
 #### Descriptions
 
-A contract describes itself and each of its members as data. `manifest.description` gives the paragraphs of the contract, the first one its summary. Each topic, service and action gives a `description` after its `name`, and a field can give a [`$description`](/reference/message_format/#description-modifier), as `video_stream` and its `frame` field do above. The rules are in [Descriptions](/reference/concepts/#descriptions).
+A contract describes itself and each of its members as data. `manifest.description` gives the paragraphs of the contract, the first one its summary. Each topic, service and action gives a `description` after its `name`, and a field can give a [`$description`](/reference/message_format/#description-modifier), as `video_stream` and its `data` field do above. The rules are in [Descriptions](/reference/concepts/#descriptions).
 
 The [codec API](/advanced_guides/codec_api/#parse-a-contract) gives these descriptions with the document, `peppy repo show` and [`peppy node describe`](/advanced_guides/calling_instances/#peppy-node-describe) print them, and the [MCP server](/advanced_guides/mcp/#the-published-schemas) publishes the description of each field. The comments of a contract are notes for its maintainers, and no reader shows them.
 
@@ -253,8 +253,8 @@ The block mirrors the member's structure down to the array and carries `{ $lengt
 ```json5
 refine: {
   message_format: {
-    header: { frame: { $length: 4 } },
-    transforms: { $items: { translation: { $length: 3 } } },
+    arm: { joint_positions: { $length: 7 } },
+    fingers: { $items: { joint_positions: { $length: 3 } } },
   },
 },
 ```

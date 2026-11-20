@@ -12,6 +12,7 @@
       instances: [
         {
           instance_id: "cam_inst",
+          links: { sensor_mounts: { vacant: "no node of this stack serves sensor_mounts: each picture names the camera's instance id as its frame" } },
           arguments: {
             resolution: "hd720",
             frame_rate: 30,

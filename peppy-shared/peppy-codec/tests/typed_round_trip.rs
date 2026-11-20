@@ -180,6 +180,12 @@ fn typed_everything(value: &Value) -> Vec<u8> {
             builder.set_x_m(pose["x_m"].as_f64().unwrap());
             builder.set_y_m(pose["y_m"].as_f64().unwrap());
             builder.set_frame(pose["frame"].as_str().unwrap());
+            if let Some(orientation) = pose.get("orientation") {
+                let mut list = builder.reborrow().init_orientation(4);
+                for (index, component) in (0_u32..).zip(orientation.as_array().unwrap().iter()) {
+                    list.set(index, component.as_f64().unwrap());
+                }
+            }
         }
         {
             let profile = field("profile");
@@ -205,6 +211,9 @@ fn typed_everything(value: &Value) -> Vec<u8> {
                 let mut history_list = element.reborrow().init_history(history.len() as u32);
                 for (index, entry) in (0_u32..).zip(history.iter()) {
                     history_list.set(index, entry.as_u64().unwrap() as u32);
+                }
+                if let Some(checked_at) = sample.get("checked_at") {
+                    set_timestamp(element.reborrow().init_checked_at(), stamp(checked_at));
                 }
             }
         }
@@ -262,6 +271,10 @@ fn assert_everything_round_trips(value: &Value) {
     assert_eq!(root.has_seen_at(), value.get("seen_at").is_some());
     assert_eq!(root.has_maybe_pose(), value.get("maybe_pose").is_some());
     assert_eq!(root.has_maybe_tags(), value.get("maybe_tags").is_some());
+    assert_eq!(
+        root.get_pose().unwrap().has_orientation(),
+        value["pose"].get("orientation").is_some()
+    );
     let samples = root.get_samples().unwrap();
     assert_eq!(
         samples.len() as usize,
@@ -283,6 +296,7 @@ fn assert_everything_round_trips(value: &Value) {
             (taken_at.get_sec(), taken_at.get_nsec()),
             (expected.sec, expected.nsec)
         );
+        assert_eq!(element.has_checked_at(), sample.get("checked_at").is_some());
     }
 }
 
@@ -292,8 +306,10 @@ fn everything_with_every_optional_present_matches_the_typed_builder() {
     assert_everything_round_trips(&value);
 }
 
+/// Every optional field is absent: at the root, in the nested objects and in
+/// the one item of `samples`. Every other list is empty.
 #[test]
-fn everything_with_every_optional_absent_and_lists_empty_matches_the_typed_builder() {
+fn everything_with_every_optional_absent_matches_the_typed_builder() {
     let value: Value = serde_json::from_str(&fixture("everything.minimal.json")).expect("json");
     assert_everything_round_trips(&value);
 }
