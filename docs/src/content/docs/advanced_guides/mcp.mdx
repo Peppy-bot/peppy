@@ -503,6 +503,8 @@ The scope reaches the server with the runtime configuration of its instance, and
 
 `port` is a preference. A server that finds the port free takes it. A server that finds it held by another process takes a port the operating system picks on the same loopback address, says so in its run log with a warning naming both ports, and announces the port it holds. Only a held port falls back: any other bind failure stops the process, its run log says `cannot bind 127.0.0.1:<port>`, and the launch fails naming that instance. The URL the server ended up on is never a guess: the launch or the join that started it prints it under `MCP endpoints:`, and [`peppy stack list`](#seeing-what-is-served) shows it for as long as the instance runs.
 
+The server answers the clients that run on its machine and are not web pages. It refuses a request whose `Host` header is not a loopback name or address, and a request that carries an `Origin` header, which a browser adds to the requests of a page: a page of another site that the user opens cannot call an endpoint (DNS rebinding included).
+
 The derived manifest declares one entry under `execution.endpoints` per exposure, labelled `<name>_<tag>` (the tag spelled as generated code spells it, `-` becoming `_`), of kind `mcp`, described by the exposure's title. The server announces each one when it binds, and the daemon reports the URL under that label. The launch ends with them under `MCP endpoints:`; the server binds loopback only, so each exposure has exactly one URL:
 
 ```text
