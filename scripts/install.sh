@@ -499,11 +499,28 @@ EOF
         elif command -v sudo >/dev/null 2>&1; then
             sudo sh -c "$1"
         else
-            echo "" >&2
-            echo "error: sudo is required to apply system changes (not running as root)." >&2
-            echo "       Either run this script as root or install sudo." >&2
-            exit 1
+            sudo_required
         fi
+    }
+
+    # run_privileged_command: run one command, given as its arguments, as
+    # root. No shell reads the arguments, so a value in them stays one
+    # argument.
+    run_privileged_command() {
+        if [ "$(id -u)" -eq 0 ]; then
+            "$@"
+        elif command -v sudo >/dev/null 2>&1; then
+            sudo -- "$@"
+        else
+            sudo_required
+        fi
+    }
+
+    sudo_required() {
+        echo "" >&2
+        echo "error: sudo is required to apply system changes (not running as root)." >&2
+        echo "       Either run this script as root or install sudo." >&2
+        exit 1
     }
 
     # apply_sudo_fixes: execute a package fix command as root. Consent must
@@ -533,7 +550,7 @@ EOF
 
         cache_sudo_credentials
         while :; do
-            if run_privileged "loginctl enable-linger ${_LINGER_USER}"; then
+            if run_privileged_command loginctl enable-linger -- "$_LINGER_USER"; then
                 echo "Enabled systemd linger for ${_LINGER_USER}."
                 return 0
             fi
@@ -682,6 +699,60 @@ EOF
         exit 1
     fi
 
+    # curl_download: download $1 to $2 with curl and print the HTTP status.
+    # An https URL is read over TLS 1.2 or newer, and a redirect to another
+    # protocol (plain HTTP) is refused, so the archive that runs
+    # `peppy container setup` under sudo cannot come from a network in the
+    # middle. The credentials come from $NETRC, else from ~/.netrc.
+    curl_download() {
+        _URL="$1"
+        _OUTPUT="$2"
+        set -- -sS -L
+        case "$_URL" in
+        https://*) set -- "$@" --proto "=https" --tlsv1.2 ;;
+        esac
+        if [ -n "${NETRC:-}" ]; then
+            set -- "$@" --netrc-file "$NETRC"
+        elif [ -f "$HOME/.netrc" ]; then
+            set -- "$@" --netrc
+        fi
+        curl "$@" --output "$_OUTPUT" --write-out "%{http_code}" -- "$_URL"
+    }
+
+    # wget_download: download $1 to $2 with wget. An https URL is read over
+    # TLS 1.2 or newer. wget follows a redirect to plain HTTP, so the
+    # download fails when the server sent one, and the archive is not
+    # installed.
+    wget_download() {
+        _URL="$1"
+        _OUTPUT="$2"
+        _WGET_LOG="$(mktemp "${TMPDIR:-/tmp}/.peppy_install_wget.XXXXXXXX")"
+        set -- --no-verbose --server-response
+        case "$_URL" in
+        https://*) set -- "$@" --secure-protocol=TLSv1_2 ;;
+        esac
+        if [ -n "${NETRC:-}" ]; then
+            set -- "$@" "--netrc-file=$NETRC"
+        elif [ -f "$HOME/.netrc" ]; then
+            set -- "$@" --netrc
+        fi
+        _WGET_STATUS=0
+        wget "$@" --output-document="$_OUTPUT" -- "$_URL" 2>"$_WGET_LOG" || _WGET_STATUS=$?
+        _DOWNGRADED=false
+        case "$_URL" in
+        https://*) grep -qi '^ *Location: *http://' "$_WGET_LOG" && _DOWNGRADED=true ;;
+        esac
+        # The headers of --server-response are not for the user: show the
+        # rest, such as an error of wget.
+        grep -v -e '^ *[A-Za-z-]*: ' -e '^ *HTTP/' "$_WGET_LOG" >&2 || true
+        rm -f "$_WGET_LOG"
+        if $_DOWNGRADED; then
+            echo "error: '$(mask_credentials "$_URL")' redirects to plain HTTP; the archive is not installed" >&2
+            return 1
+        fi
+        return "$_WGET_STATUS"
+    }
+
     BINARY="peppy-${ARCH}-${PLATFORM}"
     EXTENSION=".tgz"
 
@@ -742,21 +813,9 @@ EOF
             exit 1
         fi
 
-        CURL_OPTIONS="-sS"
-        WGET_OPTIONS="--no-verbose"
-
-        if [ -n "${NETRC:-}" ]; then
-            CURL_OPTIONS="$CURL_OPTIONS --netrc-file $NETRC"
-            WGET_OPTIONS="$WGET_OPTIONS --netrc-file=$NETRC"
-        elif [ -f "$HOME/.netrc" ]; then
-            CURL_OPTIONS="$CURL_OPTIONS --netrc"
-            WGET_OPTIONS="$WGET_OPTIONS --netrc"
-        fi
-
         if $HAVE_CURL; then
             CURL_ERR=0
-            # shellcheck disable=SC2086
-            HTTP_CODE="$(curl -L $CURL_OPTIONS "$DOWNLOAD_URL" --output "$TEMP_FILE" --write-out "%{http_code}")" || CURL_ERR=$?
+            HTTP_CODE="$(curl_download "$DOWNLOAD_URL" "$TEMP_FILE")" || CURL_ERR=$?
             case "$CURL_ERR" in
             35 | 53 | 54 | 59 | 66 | 77)
                 if ! $HAVE_WGET; then
@@ -782,8 +841,7 @@ EOF
             esac
         fi
 
-        # shellcheck disable=SC2086
-        if $HAVE_WGET && ! wget $WGET_OPTIONS --output-document="$TEMP_FILE" "$DOWNLOAD_URL"; then
+        if $HAVE_WGET && ! wget_download "$DOWNLOAD_URL" "$TEMP_FILE"; then
             echo "error: '$(mask_credentials "$DOWNLOAD_URL")' is not available" >&2
             exit 1
         fi
