@@ -620,9 +620,13 @@ async fn a_client_without_the_tasks_capability_runs_an_action_inside_the_call() 
             .expect("the action answers inside the call");
         assert_eq!(result.is_error, Some(false));
         assert_eq!(result.structured_content, Some(json!({ "frames": 120 })));
-        let notification = progress
-            .try_recv()
-            .expect("the feedback was relayed before the result");
+        // The server sends the notification before the result, and the
+        // client hands it to its handler on a task of its own, which can
+        // run after the call returned.
+        let notification = tokio::time::timeout(GUARD, progress.recv())
+            .await
+            .expect("the feedback was relayed")
+            .expect("the client holds the sender");
         assert_eq!(notification.message.as_deref(), Some("replaying `demo`"));
         assert_eq!(notification.progress, 1.0);
         assert_eq!(notification.total, None);

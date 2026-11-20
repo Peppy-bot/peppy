@@ -258,13 +258,20 @@ pub(crate) struct Streaming {
 }
 
 impl Streaming {
+    /// Starts the stream. The first message is published before this
+    /// returns, so a read that the test sends next finds it: a read of a
+    /// resource that nothing was published to fails at once.
     pub(crate) fn of(ingest: ResourceIngest, value: Value) -> Self {
+        let publish = move |ingest: &ResourceIngest| {
+            if let Some(token) = ingest.admit() {
+                ingest.publish(token, value.clone()).expect("publishes");
+            }
+        };
+        publish(&ingest);
         let publisher = tokio::spawn(async move {
             loop {
-                if let Some(token) = ingest.admit() {
-                    ingest.publish(token, value.clone()).expect("publishes");
-                }
                 tokio::time::sleep(Duration::from_millis(10)).await;
+                publish(&ingest);
             }
         });
         Self { publisher }
