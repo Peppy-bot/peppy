@@ -80,25 +80,45 @@ pub(super) fn archive_dir_to_storage(
 /// Moves the `.sif` container image [`build_container_image`] wrote at
 /// `sif_source` to `destination`, the artifact slot the build resolved (see
 /// [`super::build_artifact_cache`]). Missing parent directories are created.
+///
+/// The image moves with one rename when the two paths are on one file
+/// system: an image of some gigabytes is not copied, and the disk never
+/// holds it twice. When they are not (`EXDEV`), it is copied and published
+/// atomically. Either way the data is on the disk before the name appears.
 pub(super) fn move_sif_to_storage(
     sif_source: &Path,
     destination: &Path,
 ) -> std::io::Result<PathBuf> {
-    // Copy + rename (not rename alone) because the working dir may be on a
-    // different filesystem than storage.
+    let missing_image = |e: std::io::Error| {
+        std::io::Error::new(
+            e.kind(),
+            format!(
+                "Expected container image at {}: {}",
+                sif_source.display(),
+                e
+            ),
+        )
+    };
+    let parent = destination.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("final path has no parent: {}", destination.display()),
+        )
+    })?;
+    std::fs::create_dir_all(parent)?;
+    // Flush the data before the name becomes visible (see `publish_atomic`).
+    File::open(sif_source)
+        .and_then(|image| image.sync_all())
+        .map_err(missing_image)?;
+    match std::fs::rename(sif_source, destination) {
+        Ok(()) => return Ok(destination.to_path_buf()),
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {}
+        Err(e) => return Err(e),
+    }
     config::atomic_write::publish_atomic(destination, |tmp_path| {
         std::fs::copy(sif_source, tmp_path)
             .map(|_| ())
-            .map_err(|e| {
-                std::io::Error::new(
-                    e.kind(),
-                    format!(
-                        "Expected container image at {}: {}",
-                        sif_source.display(),
-                        e
-                    ),
-                )
-            })
+            .map_err(missing_image)
     })
 }
 
@@ -1566,6 +1586,27 @@ mod tests {
 
         assert_eq!(published, destination);
         assert_eq!(std::fs::read(&published).expect("read"), b"SIF");
+    }
+
+    /// On one file system the image moves with a rename: the file of the
+    /// build becomes the stored image, with no copy.
+    #[test]
+    fn move_sif_to_storage_renames_an_image_on_the_same_file_system() {
+        use std::os::unix::fs::MetadataExt;
+        let root = tempfile::tempdir().expect("tempdir");
+        let source = root.path().join("work").join("sensor_v1.sif");
+        std::fs::create_dir_all(source.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&source, b"SIF").expect("write");
+        let inode = std::fs::metadata(&source).expect("metadata").ino();
+        let destination = root.path().join("built_nodes").join("0123456789abcdef.sif");
+
+        move_sif_to_storage(&source, &destination).expect("image should publish");
+
+        assert!(!source.exists(), "the image of the build moved");
+        assert_eq!(
+            std::fs::metadata(&destination).expect("metadata").ino(),
+            inode
+        );
     }
 
     #[test]

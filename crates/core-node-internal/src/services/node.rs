@@ -83,8 +83,8 @@ pub(crate) use sync::resolve_contract_doc;
 // module root so sibling command files can reach them via `super::X`.
 // Private on purpose: nothing outside this module needs these paths.
 use archive::{
-    extract_tar_zst, is_supported_fs_archive, is_supported_http_archive, locate_node_root_dir,
-    resolve_local_archive_source,
+    extract_node_source_archive, is_supported_fs_archive, is_supported_http_archive,
+    locate_node_root_dir, node_named_in_archive, resolve_local_archive_source,
 };
 use common::{
     encode_hex, encode_response_or_err, generate_random_id, panic_message, parse_node_config_file,

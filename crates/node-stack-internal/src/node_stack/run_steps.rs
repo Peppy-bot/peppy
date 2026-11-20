@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use crate::action_log::{ActionLog, Announcer, STDERR_TAIL_HEADER};
-use crate::archive::extract_tar_zst;
+use crate::archive::{ArchiveOrigin, extract_tar_zst};
 use crate::build_io::StderrTail;
 use crate::node_stack::container_scratch::ContainerScratch;
 use crate::process_group::ProcessGroup;
@@ -114,7 +114,7 @@ pub(super) fn extract_node_archive(
     peppy_dirs: &PeppyDirs,
 ) -> Result<PathBuf, String> {
     let instance_dir = create_instance_dir(instance_id, peppy_dirs)?;
-    if let Err(e) = extract_tar_zst(archive_path, &instance_dir) {
+    if let Err(e) = extract_tar_zst(archive_path, &instance_dir, ArchiveOrigin::BuiltHere) {
         // Best-effort cleanup of the partially-extracted instance dir so a
         // failed extraction doesn't leave orphaned data on disk.
         let _ = std::fs::remove_dir_all(&instance_dir);

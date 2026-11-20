@@ -64,7 +64,7 @@ mod virtual_deptree;
 pub use error::Error as NodeStackError;
 
 pub use action_log::{ActionLog, Announcer};
-pub use archive::extract_tar_zst;
+pub use archive::{ArchiveOrigin, MAX_NODE_SOURCE_UNPACKED_BYTES, extract_tar_zst};
 pub use build_io::{FeedbackLine, FeedbackOwner, FeedbackStream, OutputReaderHooks};
 pub use core_node_api::InstanceState;
 pub use instance_tasks::InstanceTasks;
