@@ -4,8 +4,6 @@ pub(crate) mod atomic_file;
 pub(crate) mod command_scratch;
 pub(crate) mod facade;
 #[cfg(target_os = "linux")]
-pub(crate) mod flag_paths;
-#[cfg(target_os = "linux")]
 pub(crate) mod image_files;
 pub(crate) mod l4t_manifest;
 pub(crate) mod lima;

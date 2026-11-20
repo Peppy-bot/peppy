@@ -1406,6 +1406,33 @@ mod tests {
         assert_eq!(c.lima_shell_extra_args.as_deref(), Some([].as_slice()));
     }
 
+    /// A container node gets the paths of the host through `mount_paths`
+    /// alone, which keep the data root of peppy out of the container.
+    #[test]
+    fn a_run_flag_that_binds_a_path_of_the_host_does_not_parse() {
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "container_node",
+                tag: "v1",
+                description: ["A test node."],
+            },
+            execution: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                    apptainer_run_extra_args: ["--nv", "--bind", "~/.peppy:/mnt/stolen"],
+                },
+            },
+        }"#;
+        let error = parse_error(json5).to_string();
+        assert!(
+            error.contains("`apptainer_run_extra_args` cannot hold `--bind`"),
+            "{error}"
+        );
+        assert!(error.contains("mount_paths"), "{error}");
+    }
+
     /// A manifest with the given `execution.endpoints` body, the rest minimal.
     fn config_with_endpoints(endpoints: &str) -> String {
         format!(

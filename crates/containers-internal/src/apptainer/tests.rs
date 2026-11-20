@@ -559,51 +559,6 @@ mod of_a_daemon_that_is_not_root_beside_overlayfs {
         );
     }
 
-    /// A node gives raw flags in `apptainer_run_extra_args`. A path of the
-    /// host that such a flag names is in the container as a bind source is.
-    #[test]
-    fn a_run_whose_raw_flag_names_a_path_on_overlayfs_unpacks_the_image() {
-        for flags in [
-            &["--bind", "/data/recordings:/recordings"][..],
-            &["-B=/data/recordings"][..],
-            &[
-                "--mount",
-                "type=bind,source=/data/recordings,destination=/recordings",
-            ][..],
-            &["--home", "/data/home"][..],
-            &["--workdir", "/data/work"][..],
-            &["--overlay", "/data/overlay"][..],
-        ] {
-            let facade = facade_on(FakeHost::without_overlayfs().with_overlayfs_at("/data"));
-            let mut command = facade
-                .run("/images/node.sif")
-                .working_dir(Path::new("/srv/instances/node_inst"));
-            for flag in flags {
-                command = command.raw_flag(flag);
-            }
-
-            let args = command.build_args().expect("build_args should succeed");
-
-            assert_eq!(args[..2], ["run", "--unsquash"], "{flags:?}");
-        }
-    }
-
-    /// Apptainer reads a path that is not absolute from the working
-    /// directory of the command.
-    #[test]
-    fn a_raw_flag_with_a_relative_path_is_read_in_the_working_directory_of_the_command() {
-        let host = FakeHost::without_overlayfs().with_overlayfs_at("/srv/instances/node_inst/data");
-        let facade = facade_on(host);
-
-        let command = facade
-            .run("/images/node.sif")
-            .working_dir(Path::new("/srv/instances/node_inst"))
-            .raw_flag("--bind")
-            .raw_flag("data:/data");
-
-        assert!(command.unpacks_its_image());
-    }
-
     #[test]
     fn a_run_with_a_volume_at_each_directory_mounts_the_image() {
         let host = FakeHost::docker_container().with_volumes(&["/tmp", "/var/tmp", HOME, "/srv"]);
@@ -612,8 +567,7 @@ mod of_a_daemon_that_is_not_root_beside_overlayfs {
         let command = facade
             .run("/images/node.sif")
             .working_dir(Path::new("/srv/instances/node_inst"))
-            .raw_flag("--bind")
-            .raw_flag("/srv/data");
+            .bind("/srv/data", None, None);
 
         assert!(!command.unpacks_its_image());
         let args = command.build_args().expect("build_args should succeed");
