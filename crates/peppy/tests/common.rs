@@ -1,4 +1,6 @@
-use peppy::commands::stack::{LauncherArgs, StackTimeouts};
+use peppy::commands::stack::{
+    LaunchSelection, LauncherArgs, StackTimeouts, resolve_rendered, write_selection_records,
+};
 use peppy::context::AppContext;
 use peppy::test_support::{InstanceLifetime, ServeCommandEmulation};
 use peppylib::MessengerHandle;
@@ -626,6 +628,46 @@ pub(crate) fn register_repo_caches(
         serde_json::to_string_pretty(&node_entries).expect("serialize nodes cache"),
     )
     .expect("failed to write nodes.json5");
+}
+
+/// The record `stack resolve --selections` owes one selection: what `stack
+/// resolve` gives for that selection alone, the flat launcher read back as
+/// JSON.
+pub(crate) fn record_of_a_lone_resolve(
+    dirs: &daemon_config::consts::PeppyDirs,
+    launcher: &std::path::Path,
+    selection: &LaunchSelection,
+) -> serde_json::Value {
+    match resolve_rendered(
+        dirs,
+        launcher.to_path_buf(),
+        &selection.words,
+        &selection.joins,
+    ) {
+        Ok((document, report)) => {
+            let flat: serde_json::Value =
+                serde_json5::from_str(&document).expect("the flat launcher parses");
+            serde_json::json!({ "launcher": flat, "report": report })
+        }
+        Err(error) => serde_json::json!({ "error": error.to_string() }),
+    }
+}
+
+/// The records `write_selection_records` writes for `selections`, one parsed
+/// line each.
+pub(crate) fn selection_records(
+    dirs: &daemon_config::consts::PeppyDirs,
+    launcher: &std::path::Path,
+    selections: &[LaunchSelection],
+) -> Vec<serde_json::Value> {
+    let mut written = Vec::new();
+    write_selection_records(dirs, launcher.to_path_buf(), selections, &mut written)
+        .expect("the launcher loads");
+    String::from_utf8(written)
+        .expect("the records are UTF-8")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is one JSON record"))
+        .collect()
 }
 
 /// A `build_cmd` that appends one line to `counter` per run. The counter

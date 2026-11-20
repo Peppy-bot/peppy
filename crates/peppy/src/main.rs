@@ -123,6 +123,7 @@ fn main() {
     };
     let log_sink = match &cli.command {
         Commands::Node { command } if command.prints_data() => LogSink::Stderr,
+        Commands::Stack { command } if command.prints_data() => LogSink::Stderr,
         _ => LogSink::Stdout,
     };
     init_tracing(log_style, log_sink);
