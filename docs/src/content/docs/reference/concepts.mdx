@@ -38,49 +38,55 @@ The execution section defines how to prepare and launch the node:
 
 | Field | Description |
 |-------|-------------|
-| `language` | The programming language of the node (`rust`, `python`) |
-| `parameters` | Optional parameter schema for runtime configuration |
-| `build_cmd` | Command to run during the node build phase |
-| `run_cmd` | Command to launch the node |
-| `container` | Optional container configuration. Exactly one of `run_cmd` or `container` must be present; a container node's build goes through the container image, so `build_cmd` is not used |
-| `endpoints` | Optional map of the sockets the node binds during setup, keyed by label (lowercase letters, digits and underscores, starting with a letter). Each entry declares a `kind`, `page` for a URL opened in a browser or `mcp` for one an MCP client attaches to, and a non-empty `description`. The node announces the socket it bound under each label, and the daemon reports the URLs; a declared label that setup never announces fails the start |
-| `setup_timeout_secs` | Optional setup budget of the node: how long the daemon waits for its setup to end once the node answers ready, a whole number of seconds from 1 to 540. Without it, the default setup budget of 15 seconds applies. The node reads its budget at run time; see [How an instance starts](/guides/node_stack/#how-an-instance-starts) |
+| `language` | Programming language of the node (`rust` or `python`). |
+| `parameters` | Optional parameter schema for runtime configuration. |
+| `build_cmd` | Command run during the node build phase. |
+| `run_cmd` | Command used to start a process node. |
+| `container` | Optional container configuration. Provide either `run_cmd` or `container`, never both. Container nodes build through their container image, so `build_cmd` is not used. |
+| `endpoints` | Optional map of network sockets the node binds during setup, keyed by label (lowercase letters, digits, and underscores, starting with a letter). Each entry sets `kind` (`page` for a browser URL or `mcp` for an MCP endpoint) and a non-empty `description`. The node announces each bound socket during setup so the daemon can report its URLs; failing to announce a declared label fails startup. |
+| `setup_timeout_secs` | Optional time limit (1 to 540 seconds; default 15) the daemon waits for `setup` to return after the node signals ready. See [How an instance starts](/guides/node_stack/#how-an-instance-starts). |
 
 ### Framework
 
-The `framework` block holds framework knobs peppy reads the same way for every node; a launcher writes `restart` under the same key.
+The `framework` block holds runtime settings that Peppy handles uniformly for every node. Launchers use the same `framework` key.
 
 | Field | Description |
 |-------|-------------|
-| `restart` | Optional: what the daemon does when the instance's process exits on its own or stops answering health checks, `never`, `on_failure` or `always`, or `{ policy, max_restarts }`, where `max_restarts` caps the restart attempts in a row, failed starts included, and the next exit or failed start past them leaves the instance `failed`. Under `on_failure` or `always` the daemon also kills an instance that stops answering health checks and treats that exit as a failure (the rule and its outage guard are in [Instance health and lifecycle](/guides/node_stack/#instance-health-and-lifecycle)). A launcher's instance entry, an adjustment or `--restart` on `peppy node run` or `peppy node add --run` wins over this value, which wins over the launcher root's; with none declared the policy is `on_failure`. See [Restart policy](/guides/launch_files/#restart-policy) |
+| `restart` | Optional restart policy when the process exits or stops answering health checks: `"never"`, `"on_failure"` (default), `"always"`, or `{ policy, max_restarts }`. `max_restarts` limits consecutive restart attempts (including failed starts), after which the instance stays `failed`. Under `on_failure` or `always`, an unresponsive instance is killed and restarted (see [Instance health and lifecycle](/guides/node_stack/#instance-health-and-lifecycle)). Precedence: instance entry / CLI `--restart` > node `peppy.json5` > launcher root > default (`on_failure`). See [Restart policy](/guides/launch_files/#restart-policy). |
 
 ### Interfaces
 
-Nodes communicate through three types of interfaces:
+Nodes communicate through three interface types:
 
 | Type | Description |
 |------|-------------|
-| **Topic** | Publish/subscribe messaging for streaming data |
+| **Topic** | Publish/subscribe messaging for continuous data streams |
 | **Service** | Request/response communication for synchronous calls |
-| **Action** | Long-running tasks with feedback and cancellation support |
+| **Action** | Long-running tasks with progress feedback and cancellation |
 
 A node can **expose** interfaces (make them available to others) and **consume** interfaces from other nodes.
 
-Three higher-level constructs build on these: [contract implementation](/advanced_guides/contract_implementation/), where the contract lives in a standalone document and any implementing producer can fill the consumer's slot; [pairing](/advanced_guides/pairing/), an exclusive 1:1 bidirectional topic exchange between two instances; and [observer slots](/advanced_guides/pairing/#observers-watching-a-pairing-without-joining-it), read-only taps on one role of an existing pairing. See [Choosing a communication pattern](/advanced_guides/communication_patterns/) for how to pick between all of them.
+Three higher-level patterns build on these:
+
+- [**Contract implementation**](/advanced_guides/contract_implementation/): a standalone contract defines the interfaces, and any implementing node can fill a consumer's slot.
+- [**Pairing**](/advanced_guides/pairing/): an exclusive 1:1 bidirectional topic connection between two specific instances.
+- [**Observer slots**](/advanced_guides/pairing/#observers-watching-a-pairing-without-joining-it): read-only taps on one side of an existing pairing.
+
+See [Choosing a communication pattern](/advanced_guides/communication_patterns/) for a side-by-side comparison.
 
 ## Descriptions
 
-A contract, a pairing, a node and a launcher give their meaning as data, in their **descriptions**. The people who choose a document read them, and so do the programs and the models that call its members.
+Contracts, pairings, nodes, and launchers store human- and machine-readable **descriptions** directly in their JSON5 files. CLI search tools, inspection commands, and AI models all read these fields.
 
-| Part | Key | Rule |
+| Document or element | Key | Rule |
 | --- | --- | --- |
-| A contract, a pairing or a node | `manifest.description` | Required. A list of paragraphs, at least one. Each paragraph is a string that is not blank |
-| A launcher | `description`, at the root of the document, because a launcher has no manifest | Required. The same form as `manifest.description` |
-| A topic, a service or an action of a contract, and a topic of a pairing | `description`, after `name` | Required. One string that is not blank |
-| A member that a node declares itself: a native entry of `emits` or `exposes`, with no `link_id` | `description`, after `name` | Required. One string that is not blank |
-| A field of a message format | [`$description`](/reference/message_format/#description-modifier), beside `$type` | Optional. One string that is not blank |
+| Contract, pairing, or node | `manifest.description` | Required. List of one or more non-blank paragraphs. |
+| Launcher | `description` (at root, since launchers have no manifest) | Required. Same list of paragraphs. |
+| Topic, service, or action in a contract, or topic in a pairing | `description` (after `name`) | Required. Single non-blank string. |
+| Native member declared directly by a node (`emits` or `exposes` with no `link_id`) | `description` (after `name`) | Required. Single non-blank string. |
+| Message format field | [`$description`](/reference/message_format/#description-modifier) (beside `$type`) | Optional. Single non-blank string. |
 
-The first paragraph of a document is its summary: `peppy repo search` prints it. The summary of a node or a launcher also says what it needs to run, such as a GPU, a device or a simulation. The description of an action tells its goal, its feedback and its result.
+The first paragraph of a document is its **summary**, printed by `peppy repo search`. For a node or launcher, include what hardware or runtime it needs (such as a GPU, USB device, or simulator). For an action, describe its goal, feedback, and result.
 
 ```json5
 // gripper/peppy.json5
@@ -118,90 +124,97 @@ The first paragraph of a document is its summary: `peppy repo search` prints it.
 }
 ```
 
-The parser refuses a document whose description is missing or blank, and the error names the part by its path, for example `manifest.description[1]: the description is blank; write what it describes`, or ``Native entry `beat` in `topics.emits` has no `description` ``. Other rules:
+Validation rules:
 
-- An entry with a `link_id`, document-backed or consumed, takes no `description`, and the parser refuses the key on it. The contract, the pairing or the producer node that declares the member describes it.
-- A launcher fragment, an MCP exposure and a `peppy_repository.json5` have no description. The text of an exposure is already data.
-- The comments of a document are notes for its maintainers. No reader shows them.
-- Peppy reads no rule from a description. The rules stay in the data that the checkers read: [enums](/reference/message_format/#enum-modifier), [marks](/advanced_guides/contract_implementation/#marks) and [failure kinds](/advanced_guides/contract_implementation/#failure-kinds).
+- Missing or blank required descriptions fail parsing with the exact field path (for example, `manifest.description[1]: the description is blank; write what it describes` or ``Native entry `beat` in `topics.emits` has no `description` ``).
+- Entries with a `link_id` (implementing or consuming a contract, pairing, or producer node) must **not** set `description`; the defining document owns the description.
+- Launcher fragments, MCP exposures, and `peppy_repository.json5` files have no document description (MCP exposures already carry their own tool and resource descriptions).
+- JSON5 comments are for maintainers only and are never surfaced by Peppy tools.
+- Peppy never parses behavioral rules from description text. Use structured fields instead: [enums](/reference/message_format/#enum-modifier), [marks](/advanced_guides/contract_implementation/#marks), and [failure kinds](/advanced_guides/contract_implementation/#failure-kinds).
 
-These readers show the descriptions:
+Where descriptions appear:
 
-| Reader | What it shows |
+| Tool or API | What it displays |
 | --- | --- |
-| [`peppy repo search`](/advanced_guides/repositories/#search-the-repositories) | The summary of each match. With `--text`, the query also finds a document by the words of its descriptions |
-| [`peppy repo show`](/advanced_guides/repositories/#show-what-a-query-matches) | Each paragraph, and each member of a contract or topic of a pairing with its description |
-| [`peppy node info`](/guides/node_stack/#inspecting-a-node-with-peppy-node-info) | Each paragraph of the description of the node |
-| [`peppy node describe`](/advanced_guides/calling_instances/#peppy-node-describe) | The description of the node, of each contract and pairing, of each member and of each field |
-| [The codec API](/advanced_guides/codec_api/#parse-a-contract) | The description of a contract, of each member and of each field |
-| [The MCP server](/advanced_guides/mcp/#the-published-schemas) | The `$description` of each field, as the `description` of its property in the published schemas |
-| [The fleet listing](/advanced_guides/fleet/#the-fleet-listing) | The pinned document of each contract of a robot, with its descriptions |
+| [`peppy repo search`](/advanced_guides/repositories/#search-the-repositories) | Document summary. With `--text`, searches inside descriptions as well. |
+| [`peppy repo show`](/advanced_guides/repositories/#show-what-a-query-matches) | All paragraphs, plus every contract member or pairing topic description. |
+| [`peppy node info`](/guides/node_stack/#inspecting-a-node-with-peppy-node-info) | All paragraphs of the node description. |
+| [`peppy node describe`](/advanced_guides/calling_instances/#peppy-node-describe) | Descriptions of the node, its contracts and pairings, every member, and every field. |
+| [Codec API](/advanced_guides/codec_api/#parse-a-contract) | Descriptions of a contract, its members, and its fields. |
+| [MCP server](/advanced_guides/mcp/#the-published-schemas) | Field `$description` values exported as JSON Schema property descriptions. |
+| [Fleet listing](/advanced_guides/fleet/#the-fleet-listing) | Pinned contract documents for each robot, including their descriptions. |
 
 ## Node Instance
 
-A **Node Instance** is one deployment of a node under an id; a restart starts a new process under the same id. Each instance has:
+A **Node Instance** is a single running deployment of a node with a unique ID. If the instance restarts, Peppy launches a new OS process under the same instance ID.
 
-- **Instance ID**: The instance's unique identifier, kept across its restarts
-- **State**: Its runtime lifecycle state: `starting` while it comes up (until its ready signal, then until its setup ends, within its setup budget), `running` once started, then the terminal `finished` (clean exit) or `failed` (crash) if its process exits on its own, or `restarting` while the daemon waits to start it again under its restart policy
-- **Health**: Whether a running instance answers the core node's health checks, `healthy` or `unhealthy`; it turns `unhealthy` only after three consecutive missed health checks (not applicable while the instance is `restarting` or terminal)
+Each instance tracks:
 
-A node can have multiple instances running simultaneously. For example, you might run multiple instances of a camera node, each connected to separate physical devices.
+- **Instance ID**: Unique identifier preserved across restarts.
+- **State**: Lifecycle state:
+  - `starting`: process is booting, signalling ready, and running `setup` within its setup timeout.
+  - `running`: setup succeeded and the instance is active.
+  - `restarting`: process exited and the daemon is waiting to restart it under its restart policy.
+  - `finished` / `failed`: terminal states after a clean exit (`finished`) or crash/exhausted restarts (`failed`).
+- **Health**: Whether a `running` instance responds to core node health checks (`healthy` or `unhealthy`). Three consecutive missed checks mark it `unhealthy`. Not applicable while `restarting`, `finished`, or `failed`.
+
+You can run multiple instances of the same node at once (for example, two camera node instances connected to different USB devices).
 
 ## Node Stack
 
-The **Node Stack** is the central data structure that manages all active nodes in the system. It maintains a directed acyclic graph (DAG) where:
+The **Node Stack** is the directed acyclic graph (DAG) that tracks all registered nodes and their dependencies on a daemon:
 
-- **Vertices** are node entities
-- **Edges** represent dependency relationships, pointing from a dependent node to its dependency. Edges come from each node's `depends_on.nodes` declarations; contract, pairing, and observer slots do not add DAG edges. The declared interfaces are then validated against those edges.
+- **Vertices** are registered nodes.
+- **Edges** point from a dependent node to its direct dependencies declared in `depends_on.nodes`. (Contract, pairing, and observer slots are bound per instance and do not add static DAG edges.)
 
 ### Key responsibilities
 
-1. **Dependency Management**: Tracks which nodes depend on which other nodes
-2. **Interface Validation**: Ensures nodes expose the interfaces their dependents require
-3. **Instance Lifecycle**: Manages the creation, health tracking, and removal of node instances. Running instances are continuously health-checked; a sustained run of missed health checks flags an instance `unhealthy`, and under `on_failure` or `always` an instance that stops answering is killed and its exit treated as a failure, by the rule in [Instance health and lifecycle](/guides/node_stack/#instance-health-and-lifecycle). The monitor never removes an instance, so an instance leaves the stack only when it is explicitly stopped or removed. See [Instance health and lifecycle](/guides/node_stack/#instance-health-and-lifecycle) for details.
-4. **Root Node**: Always contains a root node (the core node) that cannot be removed
+1. **Dependency Management**: Tracks direct node dependencies and validates that required nodes exist.
+2. **Interface Validation**: Verifies that dependencies expose every topic, service, and action their dependents consume.
+3. **Instance Lifecycle**: Starts instances, monitors health, restarts crashed or unresponsive instances according to their restart policy, and stops them cleanly. Instances stay listed until explicitly stopped, removed, or replaced by a new launch. See [Instance health and lifecycle](/guides/node_stack/#instance-health-and-lifecycle).
+4. **Root Node**: Always contains the core node as an irremovable root.
 
 ### How dependencies work
 
-When a node is added, the stack:
+When you add a node, the stack:
 
-1. Validates that all required dependencies exist
-2. Checks that dependencies expose the required interfaces
-3. Tracks pending requirements when dependencies are not yet available
-4. Resolves pending requirements when dependencies are added
+1. Verifies that all required dependencies exist.
+2. Checks that each dependency exposes the consumed interfaces.
+3. Tracks pending requirements if dependencies are not yet available.
+4. Resolves pending requirements once those dependencies are added.
 
 ### Stack inspection
 
-The stack-list API exposes the nodes and dependency edges as a serialized JSON graph for programmatic access. The `peppy stack list` command renders that graph as operator-friendly tables inside a separate outer panel for each live core node.
+The stack-list API returns nodes and dependency edges as JSON for programmatic use. `peppy stack list` renders the same graph as readable tables, grouped in one panel per live core node.
 
 ## The Core Node
 
-The **Core Node** is a special node that serves as the root of the node stack and is always present. It is the daemon (`peppy service serve`) that the `peppy` CLI talks to. It is responsible for:
+The **Core Node** is the local Peppy daemon (`peppy service serve`) and the permanent root of the node stack. Every `peppy` CLI command talks to it. It handles:
 
-- **Dependency Attachment**: When a node declares a dependency in `depends_on.nodes`, the core node attaches the edge and validates that the dependency exposes the interfaces the dependent consumes
-- **Stack Management**: Managing the lifecycle of all other nodes in the system: spawning them, probing their health, and tearing them down so none is left orphaned when the daemon stops or dies
-- **System Coordination**: Acting as the central coordinator for the local Peppy runtime
+- **Dependency Attachment**: Adds dependency edges from `depends_on.nodes` and validates interface compatibility.
+- **Stack Management**: Builds, spawns, health-checks, restarts, and stops node instances without leaving orphan processes behind.
+- **System Coordination**: Serves local runtime services (datastore, system clock, stack inspection, and fleet coordination).
 
-When the core node shuts down cleanly it stops every spawned node (cooperatively, then force-killing any straggler's process group); if it dies unexpectedly, each node's watchdog notices the missing heartbeat and shuts the node down after a grace period, or at once when a new daemon of the same core node sends its first heartbeat. See [Daemon shutdown and orphan prevention](/guides/node_stack/#daemon-shutdown-and-orphan-prevention) for details.
+On clean shutdown, the core node asks every spawned instance to stop cooperatively and force-kills any process group that misses the grace window. If the core node crashes, each node's watchdog shuts the node down after a grace period, or immediately when a replacement daemon starts on the same core node. See [Daemon shutdown and orphan prevention](/guides/node_stack/#daemon-shutdown-and-orphan-prevention).
 
-Each Peppy runtime has exactly one core node that manages its local DAG of nodes. 
-In a distributed deployment, multiple runtimes (each with their own core node) can run on separate machines, and nodes communicate across runtimes through the shared messaging layer. 
-Each core node owns only its local stack. A federated launch is driven by a coordinator: the daemon that received the launch resolves every deployment once and drives the participating core nodes, which run exactly what it resolved (see [Federation](/advanced_guides/federation/)).
+Key deployment rules:
 
-Each machine runs at most one daemon per Peppy data root. `peppy service serve` takes an exclusive lock at startup, and a second invocation refuses to boot while the first runs.
-
-Because core nodes are addressed by name over the messaging layer, every core node reachable over the same router or federation must have a **unique name**. Each daemon derives a stable, machine-specific name by default, or you can pin one with [`core_node_name`](/advanced_guides/daemon_config/#core_node_name-the-daemons-core-node-name); a daemon whose name is already taken refuses to boot.
+- **One daemon per data root**: `peppy service serve` holds an exclusive lock on its Peppy data root; a second daemon refuses to start while the first is running.
+- **Unique name across the network**: Every core node sharing a Zenoh router or federation needs a unique name. By default each daemon derives a stable machine-specific name (`cn-...`), or you can set [`core_node_name`](/advanced_guides/daemon_config/#core_node_name-the-daemons-core-node-name). A daemon refuses to boot if its name is already live.
+- **Distributed stacks**: In a multi-machine [federation](/advanced_guides/federation/), each machine runs its own core node and owns its local stack. The daemon that receives a `peppy stack launch` acts as the coordinator, resolving all deployments once and instructing each participating core node what to run.
 
 ## The fleet
 
-The **fleet** of a stack is the robots of the launch that the core node coordinates: each [copy](/guides/launch_files/#copies) of the launch is a robot, a device that a client changes included. The core node serves the fleet in the daemon interface `robot_leases:v1` (see [Robot leases and the halt](/advanced_guides/fleet/)):
+The **fleet** is the set of robots running in a stack, coordinated by the launch's core node. Each [copy](/guides/launch_files/#copies) in the launch counts as one robot (including controllable devices such as a smart appliance or fixture).
 
-- A **lease** gives one client the right to move one robot. Only a node whose launcher scopes it to hold leases takes one.
-- A **mark** on a contract member, such as `moves_robot`, says what the member does. Each MCP server of peppy, `peppy node call` and each lease holder ask the core node before they call a member with the mark `moves_robot`.
-- The **halt** ends every lease and stops each client that asks before it moves a robot, until a person or a program clears it. It stays after a restart of the core node.
-- The **robot commander** of a robot is the option of its copy on the axis that the launcher marks with `role: "robot_commander"`: a node that drives its own robot outside the leases and the halt, such as a leader arm or the browser panel.
+The core node exposes fleet coordination through the `robot_leases:v1` daemon interface (see [Robot leases and the halt](/advanced_guides/fleet/)):
 
-The leases and the halt prevent conflicts between clients. They are not a safety function.
+- **Lease**: Grants one client exclusive permission to move a specific robot. Only nodes given a `robot_leases` scope by the launcher can hold leases.
+- **Mark**: A metadata tag on a contract member. Members tagged `moves_robot` require a check with the core node before any Peppy MCP server, `peppy node call`, or lease holder invokes them.
+- **Halt**: Immediately revokes all leases and blocks all `moves_robot` calls across the stack until explicitly cleared. Persists across core node restarts.
+- **Robot commander**: The local manual controller for a robot (such as a leader arm or browser panel), identified by the launcher axis marked `role: "robot_commander"`. A robot commander drives its own robot directly, outside leases and the halt.
+
+Leases and the halt prevent software clients from fighting over the same robot. They are **not** a safety system; hardware e-stops and certified safety layers remain responsible for physical safety.
 
 ## Summary
 

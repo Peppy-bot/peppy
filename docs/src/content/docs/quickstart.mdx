@@ -42,24 +42,35 @@ Peppy runs on Ubuntu 24.04 or later and the Linux distributions built on it, on 
 
 ## Step 2: Launch the simulated robot
 
-A launcher is one file listing the nodes that make up a robot, with the parts that vary (which simulation runs it, which control surface drives it) selected at launch time with `--with`. The launchers-hub launchers ship with peppy and the installer indexed them, so you can start [`openarm_simulation`](https://github.com/Peppy-bot/launchers-hub/blob/main/openarm/openarm_simulation.json5) by name, swapping its simulation for MuJoCo; the file deploys one simulated OpenArm v2 named `alpha`, and the browser control panel is what the robot runs unless told otherwise:
+A launcher is a single file that lists every node in a robot stack. Parts that vary (such as the simulator or control interface) are selected at launch time with `--with`.
+
+The installer indexes the default `launchers-hub` repository, so you can launch [`openarm_simulation`](https://github.com/Peppy-bot/launchers-hub/blob/main/openarm/openarm_simulation.json5) by name and select MuJoCo as its simulator. By default, this launcher deploys one simulated OpenArm v2 named `alpha` with the browser control panel:
 
 ```sh
 peppy stack launch openarm_simulation --with mujoco
 ```
 
-That single command adds, builds, and starts every [node](/reference/concepts/#node) in the selection, in dependency order: four instances across four node types. The cast is the MuJoCo simulation; the robot's initializer, which joins the robot into it as an OpenArm v2 and reports it ready once the simulation stands every limb; the backbone, which coordinates both arms and pairs each arm and gripper with the simulation; and the browser control panel. It prints `Launch complete` when the stack is up. `alpha` names this robot and prefixes its instance IDs, for example `alpha_backbone_inst`. Launch replaces the current stack; later joins add [copies](/guides/launch_files/#copies) to it.
+This single command adds, builds, and starts four node instances in dependency order:
 
-The command then returns; it is not a foreground supervisor. The nodes keep running under the peppy background service, so you can close that terminal without stopping them.
+- **MuJoCo simulation**: runs the physics and renders the simulated world.
+- **Robot initializer**: spawns the OpenArm v2 model in the simulation and signals ready once all limbs are loaded.
+- **Backbone**: coordinates both arms and pairs each arm and gripper with the simulation.
+- **Browser control panel**: serves the web UI to drive the robot.
+
+`alpha` is the name of this robot copy and prefixes its instance IDs (for example, `alpha_backbone_inst`). When the stack is ready, the command prints `Launch complete` and returns. Replacing the stack is the default behavior of `launch`; use `peppy stack join` later to add more [copies](/guides/launch_files/#copies) to the running stack.
+
+The nodes keep running under the Peppy background service, so you can close this terminal without stopping them.
 
 :::note[This is the node stack you just launched]
-Every circle is one instance the launcher started, and every arrow a link between two of them. Together they are the [node stack](/reference/concepts/#node-stack): the set of nodes the background service is running for you. `peppy stack list` prints the same set as a table.
+Each circle is a running instance and each arrow is a connection between two instances. Together they form the [node stack](/reference/concepts/#node-stack): the set of nodes managed by the background service. Run `peppy stack list` to see the same graph as tables.
 
 <OpenArmStackGraph />
 :::
 
 :::note
-The first launch pulls the MuJoCo simulation image (a few hundred megabytes) and converts it into a local Apptainer image, so expect it to take a while; later launches reuse the cached image. Download, image-assembly and compilation progress counts as build output (bytes landing on disk, CPU time the build burns and cargo's download progress all reset the clock), so neither a slow connection nor a long compile trips the build idle timeout on its own. If a build of yours genuinely goes quiet for minutes (no output, no bytes written to disk *and* no CPU burned), raise the window with `--node-build-idle-timeout-secs`.
+The first launch downloads the MuJoCo container image (a few hundred megabytes) and converts it into a local Apptainer image, so it takes a few minutes. Later launches reuse the cached image.
+
+Download progress, disk writes, CPU usage, and Cargo progress all reset the build idle timer, so a slow network or long compile will not time out on its own. If a custom build legitimately goes quiet for several minutes (no output, no disk writes, and no CPU usage), raise the limit with `--node-build-idle-timeout-secs`.
 :::
 
 ## Step 3: Drive the arms

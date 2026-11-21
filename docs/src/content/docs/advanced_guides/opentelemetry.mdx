@@ -89,26 +89,26 @@ A collector is also the place to drop or sample records, to add attributes such 
 
 ## What is exported
 
-One entry of a log file is one record. An entry is one line, except for an error the daemon writes after a command failed: that entry quotes the last lines the command printed on stderr, under a `--- stderr (last lines) ---` heading, and its record holds the error without the quoted lines, since each of them is already a record of the log that captured it.
+Each log file entry becomes one OpenTelemetry log record. Normally an entry is a single line. When a command fails, the file entry also quotes trailing stderr lines under `--- stderr (last lines) ---`; the exported record omits those quoted lines because they are already exported individually from the command's own log.
 
 | Log | File | What its records hold |
 |---|---|---|
-| Launch | `~/.peppy/logs/launch/` | The steps, warnings and errors of a `peppy stack launch`, `build`, `join` or `remove` |
-| Add | `~/.peppy/logs/add/` | Each step `peppy node add` prints, and its error when it fails |
-| Build | `~/.peppy/logs/build/` | The build commands and their output |
-| Run | `~/.peppy/logs/run/` | The run command and the output of the instance |
-| Stack | `~/.peppy/stack_log.log` | Each exit of an instance's process, as a `finished` or `failed` line whether or not a restart follows (an exit that `peppy node stop`, `peppy node add` over its node, a stack launch, removal or reset, or a daemon shutdown caused is not logged, nor one `peppy node remove` caused once it claimed the instance; one on the removal's shutdown request before its claim is); each change between `healthy` and `unhealthy`; each health kill and each kill held for a messaging outage; each restart scheduled, completed, failed to start, refused or capped by `max_restarts`; and each report of records the export discarded |
+| Launch | `~/.peppy/logs/launch/` | Steps, warnings, and errors of `peppy stack launch`, `build`, `join`, and `remove` |
+| Add | `~/.peppy/logs/add/` | Steps printed by `peppy node add`, plus any failure error |
+| Build | `~/.peppy/logs/build/` | Build commands and their output |
+| Run | `~/.peppy/logs/run/` | Run commands and instance output |
+| Stack | `~/.peppy/stack_log.log` | Instance lifecycle events: unexpected exits (`finished` or `failed`), `healthy`/`unhealthy` transitions, health kills (and kills held for a messaging outage), restart events (scheduled, completed, failed to start, refused, or `max_restarts` reached), and export discard reports |
 
-The log files keep their paths and their line format, and they hold every line whether the export is on or off. A few lines stay in the files only:
+Intentional exits caused by `peppy node stop`, overwriting via `peppy node add`, stack launch/removal/reset, daemon shutdown, or `peppy node remove` (after it claims the instance) are not written to the stack log. An exit occurring during `peppy node remove`'s shutdown request before it claims the instance is still logged.
 
-- **A line a launch log repeats from a node's log.** A launch log holds the add, build and run output of the nodes it starts. Each such line is exported once, as the record of the node's own log.
-- **A line relayed from another machine.** In a [federated launch](/advanced_guides/federation/) the launch log of the coordinator holds lines of the other daemons. Each daemon exports the log files it writes, so those lines are exported by the daemon that wrote them, when its own `otlp_endpoint` is set.
-- **Repaints and empty lines.** The fragments a progress bar repaints, and lines of node or build output that hold only white space once their terminal escape sequences are removed.
-- **A line below `otlp_min_severity`**, when that setting holds a severity.
+Local log files keep their paths, format, and full content regardless of export settings. The following lines stay in local files only and are **not** exported:
 
-Progress samples that repeat while a transfer or a build goes on, such as `received 120/480 objects` and `Build progress: 463.6 MB written`, reach the terminal only. They are in no log file and in no record.
+- **Node lines repeated in a launch log:** A launch log embeds add/build/run lines from the nodes it starts. Those lines are exported once from each node's own log.
+- **Lines relayed from other machines:** In a [federated launch](/advanced_guides/federation/), the coordinator's launch log includes remote daemon lines. Each daemon exports its own local logs if its own `otlp_endpoint` is set.
+- **Progress repaints and blank lines:** Overwritten progress-bar fragments and lines containing only whitespace after stripping terminal escape sequences.
+- **Lines below `otlp_min_severity`:** Filtered out when `otlp_min_severity` is configured.
 
-The diagnostic output of the daemon process itself, which `peppy service serve` prints, and the log of the zenoh router are not exported.
+Repeated transfer/build progress samples (such as `received 120/480 objects` and `Build progress: 463.6 MB written`) appear only in the terminal and are neither written to log files nor exported. Daemon stdout (`peppy service serve`) and the Zenoh router log are also not exported.
 
 ## The fields of a record
 
@@ -145,9 +145,13 @@ A line belongs to a node when its log does: every line of a build log and of a r
 
 ### Severity
 
-A line the daemon writes itself has a fixed severity: an error, a `failed` line, and a `start failed`, `restart refused` or `` `max_restarts` reached `` line are `ERROR`; a warning, an `unhealthy` instance, a `restarting` line, a health kill and a kill held for an outage are `WARN`; and every other such line is `INFO`.
+Lines written by the daemon itself have fixed severities:
 
-For node and build output, the daemon reads the level the line prints. The level is the first word of the line, after an optional timestamp:
+- **`ERROR`**: errors, `failed` exits, `start failed`, `restart refused`, and `` `max_restarts` reached ``.
+- **`WARN`**: warnings, `unhealthy` instances, `restarting` events, health kills, and outage-held kills.
+- **`INFO`**: all other daemon-written lines.
+
+For node and build output, the daemon parses the first word after any optional timestamp:
 
 | Line | Severity |
 |---|---|
@@ -158,7 +162,7 @@ For node and build output, the daemon reads the level the line prints. The level
 | `FATAL:   could not open image` (Apptainer) | `FATAL` |
 | `hello world count 3` | none |
 
-A word that ends at `:` or `[` is read in any letter case. A word that ends at a space or at `]` is read in uppercase only, so a sentence that starts with a level word, such as `Error handling is on`, has no severity. `WARNING` is `WARN` and `CRITICAL` is `FATAL`. The severity text of the record is the word as printed. A line that prints no level has no severity: the record leaves the severity number unset.
+Words followed by `:` or `[` match case-insensitively; words followed by a space or `]` must be uppercase so normal sentences like `Error handling is on` are not misclassified. `WARNING` maps to `WARN` and `CRITICAL` maps to `FATAL`. The original printed word is kept as `severity_text`; lines with no recognized level leave the severity number unset.
 
 ## `otlp_min_severity`: the lowest severity exported
 

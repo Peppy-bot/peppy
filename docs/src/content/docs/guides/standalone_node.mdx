@@ -121,18 +121,16 @@ Note that the standalone config is completely ignored when a node is run with `p
 
 ## Seeding slots
 
-Parameters are not the only thing a launch resolves. A node that declares [pairings](/advanced_guides/pairing/), [producer-binding slots](/advanced_guides/topics/#bindings-and-routing), or [observer slots](/advanced_guides/pairing/#observing-several-pairings-through-one-slot) reads those from the boot config the daemon hands it, and standalone mode has no daemon to write one. The standalone config carries one builder per slot kind so the node still starts:
+When a node runs under a daemon, the daemon injects the resolved bindings for its [pairings](/advanced_guides/pairing/), [producer slots](/advanced_guides/topics/#bindings-and-routing), and [observer slots](/advanced_guides/pairing/#observing-several-pairings-through-one-slot). In standalone mode there is no daemon, so you supply those bindings on `StandaloneConfig`:
 
-| Builder | Stands in for |
+| Builder | Equivalent launcher / CLI wiring |
 |---|---|
-| `with_peer_pin` | the pin the daemon delivers to a `depends_on.pairings` slot, for a pair a `--link` or a launch made |
-| `with_peer_pin_in_copy` | the same pair, for a peer whose instance belongs to a copy: it takes the copy's name last, and the member the node reads carries it |
-| `with_bound_producer` | one `--link` occurrence, or one launcher `links:` entry, for a `depends_on.nodes` / `depends_on.contracts` slot |
-| `with_bound_producer_in_copy` | the same binding, for a producer whose instance belongs to a copy: it takes the copy's name and the id the copy's fragment wrote, runs the producer under the `NAME_<id>` a launch mints from them, and the member the node reads carries both |
-| `with_vacant_producer_slot` | a launcher writing a producer-binding slot `{ vacant: "<why>" }` |
-| `with_observed_source` | one member of the set the daemon stamps into an observer slot at spawn |
-
-Every builder takes the local slot's `link_id` first. The three that name a remote instance follow it with that instance's `(core_node, instance_id)` address, `with_bound_producer_in_copy` naming the instance as its copy and the id inside it, and the two that also name a slot on the other side (a pairing's peer and an observed pairing's source) take that slot's `link_id` last. `with_vacant_producer_slot` names only the local slot, because there is no instance to point at:
+| `with_peer_pin(slot, core_node, peer_id, peer_slot)` | Pairs a `depends_on.pairings` slot with a peer instance. |
+| `with_peer_pin_in_copy(slot, core_node, peer_id, peer_slot, copy_name)` | Same as `with_peer_pin`, tagging the peer as belonging to a launcher copy. |
+| `with_bound_producer(slot, core_node, producer_id)` | Binds a `depends_on.nodes` or `depends_on.contracts` slot to a producer instance. |
+| `with_bound_producer_in_copy(slot, core_node, copy_name, fragment_id)` | Same as `with_bound_producer` for a producer inside a copy (resolved as `<copy_name>_<fragment_id>` with copy metadata). |
+| `with_vacant_producer_slot(slot)` | Marks a `zero_or_one` producer slot intentionally vacant (`{ vacant: "..." }`). |
+| `with_observed_source(slot, core_node, source_id, source_slot)` | Adds a source to a `depends_on.pairing_observers` slot. |
 
 <Tabs>
   <TabItem label="Python">
@@ -159,23 +157,21 @@ let standalone_config = StandaloneConfig::new()
   </TabItem>
 </Tabs>
 
-Repeat calls for the same `link_id` accumulate in call order, exactly as repeated `--link` flags do, so the Nth call is the Nth member the node reads back.
+Slot rules in standalone mode match launch validation:
 
-Each slot's seeded set has to satisfy the slot's declared [cardinality](/advanced_guides/topics/#dependency-cardinality) at startup, which is the rule launch validation applies at plan time: exactly one for `one`, at most one for `zero_or_one`, at least one for `one_or_more`, any number for `zero_or_more`. So a slot whose cardinality has a floor of one must be seeded, and the node refuses to start otherwise rather than running a slot its own manifest says cannot be empty. The two zero-floor cardinalities may be left out entirely: an unseeded observer slot observes nothing, and an unseeded `zero_or_more` producer-binding slot binds nothing. A `zero_or_one` producer-binding slot is the one case that needs a word either way, because omitting it is how you forget it: `with_vacant_producer_slot` is the standalone spelling of a deployment writing the slot vacant.
-
-Naming a `link_id` the manifest does not declare is a typo rather than a shape error, so it warns and is ignored instead of failing the run.
+- **Repeated calls accumulate in order** for multi-cardinality slots (matching repeated `--link` flags).
+- **Cardinality is enforced at startup**: `one` needs exactly 1 entry, `one_or_more` needs at least 1, `zero_or_more` may be omitted, and `zero_or_one` needs either 1 entry or `with_vacant_producer_slot(...)`.
+- **Unknown `link_id`s** log a warning and are ignored rather than crashing startup.
 
 ## Choosing the clock
 
-A launch also decides which [clock](/advanced_guides/system_clock/#clock-domains) an instance reads. `with_clock` is the standalone spelling of a launcher's `framework: { clock: "<domain>" }` and of the publisher a domain declaration names. It takes a `ClockBinding`, one of three:
+Use `with_clock(ClockBinding)` to select the node's [clock domain](/advanced_guides/system_clock/#clock-domains) in standalone mode:
 
-| Binding | Stands in for |
+| Binding | Role |
 |---|---|
-| `wall` | an instance whose deployment names no domain, which is also the default |
-| `consumer` | an instance bound to a simulated domain, naming the domain and the instance supplying it |
-| `publisher` | the instance a domain declaration names, which supplies the domain itself |
-
-A domain is named by three values, the same three that identify it anywhere: its name, the machine hosting it, and the incarnation standing for one lifetime of that name. A consumer follows them with the `(core_node, instance_id)` address of the instance publishing the domain, so it reads that one stream:
+| `ClockBinding.wall()` | Default OS wall clock. |
+| `ClockBinding.consumer(domain, domain_core, incarnation, pub_core, pub_id)` | Reads a simulated clock domain published by another instance. |
+| `ClockBinding.publisher(domain, domain_core, incarnation)` | Publishes a simulated clock domain (enables `ClockPublisher.for_node`). |
 
 ```python
 from peppylib.clock import ClockBinding
@@ -188,6 +184,4 @@ standalone_config = (
     )
 )
 ```
-
-`ClockBinding.publisher("simulation", "core_x", 1)` starts the node as that domain's source instead, which is what `peppylib.clock.ClockPublisher.for_node` then hands it a publisher for.
 
