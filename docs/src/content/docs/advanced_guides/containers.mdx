@@ -20,65 +20,53 @@ On macOS, Apptainer runs transparently inside a [Lima](https://lima-vm.io/) virt
 
 ## Setup (Linux)
 
-On Linux, container nodes need three packages of the distribution, and Apptainer uses unprivileged user namespaces which may require a one-time system configuration. The installer handles this automatically, on a host and in a Docker or Podman container, but if you skipped it or installed Peppy manually you can run:
+On Linux, container nodes require three distribution packages and unprivileged user namespaces (which may need an AppArmor profile). The Peppy installer configures this automatically on hosts and inside Docker/Podman containers. If you skipped it or installed manually, run:
 
 ```sh
 peppy container setup
 ```
 
-This configures the following (through `sudo` for a user that is not root, and with no `sudo` for root):
+Running setup (via `sudo` for non-root users, or directly as root) performs two tasks:
 
-1. **Packages**: installs the package of each program of the table below that is missing. It reads the package lists first (`apt-get update`), so it also works in a container of a bare image, which has none.
-2. **AppArmor profile** (on systems that restrict unprivileged user namespaces via AppArmor): installs a profile for the `apptainer` and `starter` programs of the installation, which allows them to create user namespaces, and loads it into the kernel. When the profile already exists but is not loaded, it is reloaded without being rewritten.
+1. **System packages:** Refreshes package lists (`apt-get update`, so it works even in bare container images) and installs any missing packages from the table below. `fuse2fs` is installed last in its own step; if the distro lacks it, setup logs a warning, completes the other fixes, and exits `0`.
+2. **AppArmor profile** (on systems restricting unprivileged user namespaces): Installs and loads a profile allowing Peppy's bundled `apptainer` and `starter` binaries to create user namespaces (or reloads an existing unloaded profile).
 
-The setup installs `fuse2fs` last, in an installation of its own. When that installation fails (the distribution of the machine does not have the package, for example), each other fix is made: the setup writes a warning and exits with `0`.
+In an interactive terminal, setup prompts before making changes. Answering `n` prints the commands instead and exits `1` if required fixes remain (or `0` if only `fuse2fs` is missing).
 
-In a terminal, the setup asks before it makes its fixes. When you answer `n`, it prints the commands and makes no change. It then exits with `1` when a container build or the daemon needs one of the fixes, and with `0` when the only fix is the installation of `fuse2fs`.
+Peppy bundles Apptainer itself, which calls these three host tools:
 
-Peppy bundles Apptainer, and Apptainer runs three programs that come from the distribution:
+| Program | Package | What uses it | Impact if missing |
+|---------|---------|--------------|-------------------|
+| `newuidmap` | `uidmap` | Non-root fakeroot builds | Non-root container builds fail (not required when running as root). |
+| `mksquashfs` | `squashfs-tools` | Packing container images | All container builds fail. |
+| `fuse2fs` | `fuse2fs` | Mounting EXT3 images | Prints a harmless warning at container start (`fuse2fs not found, will not be able to mount EXT3 filesystems`). Peppy builds squashfs images, so everything still works. |
 
-| Program | Package | What uses it | Without it |
-|---------|---------|--------------|------------|
-| `newuidmap` | `uidmap` | The fakeroot build of a user that is not root. | Each container build of a user that is not root stops. Root builds with no fakeroot, so the checks do not ask root for `newuidmap`. |
-| `mksquashfs` | `squashfs-tools` | Each node build: it packs the image. | Each container build stops. |
-| `fuse2fs` | `fuse2fs` | The mount of an EXT3 image. | Each container start writes `fuse2fs not found, will not be able to mount EXT3 filesystems`. The images that Peppy builds are squashfs images, which build and run without it. |
+A bare `ubuntu:24.04` or `debian:trixie` image includes none of these three packages.
 
-A bare `ubuntu:24.04` or `debian:trixie` image has none of the three packages.
-
-To check the current state without making any changes:
+To check prerequisites without modifying the system:
 
 ```sh
 peppy container status
 ```
 
-This prints a pass/fail summary of each prerequisite and exits with code `0` (all pass) or `1` (something needs fixing). A missing `fuse2fs` is a warning: its line shows `WARNING`, and the status exits with `0`. For root, the line of `newuidmap` shows `not required`.
+`status` exits `0` when all required checks pass (missing `fuse2fs` prints `WARNING` and still exits `0`; `newuidmap` shows `not required` for root) and `1` if a required prerequisite fails. Pass `--packages` (`peppy container status --packages`) to check only the distribution packages and print the install command for missing ones.
 
-The daemon makes the same checks at its start:
+**Daemon startup checks:**
 
-- Without the AppArmor profile, on a system that needs one, the daemon stops. Its error gives the commands that repair each failing check.
-- Without `newuidmap` or `mksquashfs`, the daemon starts and writes a warning. Only a container build runs these two programs, so the images that the daemon has and the nodes that are not containers run. Each container build stops before it starts Apptainer, with an error that gives the command that installs each missing package. A build finds a package that you install while the daemon runs.
-- Without `fuse2fs`, the daemon starts.
+- **Missing AppArmor profile** (where required): The daemon refuses to start and prints the exact repair commands.
+- **Missing `newuidmap` or `mksquashfs`**: The daemon starts with a warning so process nodes and already-built images still run. Container builds fail before launching Apptainer with the install command, and pick up newly installed packages without restarting the daemon.
+- **Missing `fuse2fs`**: The daemon starts normally.
 
-The status also asks the kernel for a user namespace, as Apptainer does before each container build: it runs `unshare --user /bin/true` as the user of the builds, which is the caller of `sudo` when `sudo` runs the command. The `User namespace` line shows the answer:
+**User namespace check:** `status` tests `unshare --user /bin/true` as the build user (the `sudo` caller if invoked via `sudo`) and reports:
 
-| Line | Meaning |
-|------|---------|
-| `OK` | The kernel gives the namespace. |
-| `FAILED (<message of unshare>)` | The kernel refuses the namespace, for example because a sysctl turns user namespaces off or because of the seccomp profile of a Docker container. |
-| `not required` | The user of the builds is root, which builds with no user namespace. |
-| `not tested (<reason>)` | The request gives no answer for Apptainer. `unshare` did not run, or AppArmor refuses `unshare` on a system whose kernel does not have the profile `unprivileged_userns` (`apparmor.service` is stopped). Apptainer does not need that profile: it has the profile of its installation. |
+| Output | Meaning |
+|--------|---------|
+| `OK` | Kernel allows unprivileged user namespaces. |
+| `FAILED (<unshare error>)` | Kernel blocks user namespaces (e.g., via sysctl or Docker seccomp profile). `setup` cannot fix this; `status` exits `1`, while `setup` fixes other items, warns, and exits `0`. |
+| `not required` | Build user is root (no user namespace needed for builds). |
+| `not tested (<reason>)` | Could not test via `unshare` (e.g., `unshare` unavailable or AppArmor blocks `unshare` when `apparmor.service` is stopped; Apptainer uses its own installed profile instead). |
 
-The setup has no fix for a namespace that the kernel refuses. `peppy container status` then exits with `1`. `peppy container setup` makes the fixes of the other prerequisites, writes a warning with the message of `unshare`, and exits with `0`. The daemon writes the same warning at its start: the nodes that are not containers run, and each container build fails.
-
-The `Node images` line tells how each node gets the files of its image: `mounted`, or `unpacked at each start` for a user that is not root where a node can write to a directory on overlayfs, as in a Docker container (see [Node images on overlayfs](#node-images-on-overlayfs)). An unpacked image is not a failure, and the status exits with `0`.
-
-To check the packages alone, add `--packages`:
-
-```sh
-peppy container status --packages
-```
-
-It exits with `1` when a container build stops without a package that is missing, and gives the command that installs each missing package.
+`status` also prints a `Node images` line showing `mounted` or `unpacked at each start` (not a failure; see [Node images on overlayfs](#node-images-on-overlayfs)).
 
 :::note
 On macOS, no setup is needed; containers run inside a Lima VM which handles permissions transparently.
@@ -86,55 +74,34 @@ On macOS, no setup is needed; containers run inside a Lima VM which handles perm
 
 ### Host files in a container
 
-Apptainer binds `/etc/localtime` and `/etc/hosts` of the host into each container, so a node has the time zone and the host names of the host. They are the `bind path` entries of the `apptainer.conf` that Peppy installs. When the host does not have the source of a `bind path` entry, Peppy skips that bind, and the node has what its image has at that path. A minimal host can be without `/etc/localtime`: the `ubuntu` Docker image has none until it gets the `tzdata` package.
+Peppy's `apptainer.conf` binds `/etc/localtime` and `/etc/hosts` from the host so containers share the host's timezone and hostnames. If a host lacks one of those files (for example, a minimal Ubuntu Docker image without `tzdata`), Peppy skips that bind and falls back to whatever is inside the container image.
 
 ### Node images on overlayfs
 
-Apptainer gives a node the files of its image in one of two ways: it mounts the image, or it unpacks the image and starts the node from the copy. Peppy asks for the copy (`--unsquash`) when these two conditions apply together:
+Normally Apptainer mounts a container's `.sif` image directly via FUSE. However, when **both** of the following are true, Peppy automatically passes `--unsquash` to unpack the image to disk before starting the node:
 
-- The daemon is not root.
-- A directory that the node can write to is on overlayfs: `/tmp`, `/var/tmp`, the home directory of the user of the daemon, the working directory of the node (which is in the data root), or the source of one of its mounts.
+1. The daemon runs as a **non-root user**.
+2. Any writable directory visible to the node sits on **overlayfs** (`/tmp`, `/var/tmp`, `$HOME`, the data root, or a `mount_paths` source). This is the default inside Docker or Podman containers.
 
-The root file system of a Docker or Podman container is on overlayfs. So a daemon of a user that is not root starts each node from a copy of its image there, unless a volume or a tmpfs holds each of these directories.
+**Why:** A non-root FUSE mount runs inside a single-user namespace, while overlayfs performs file operations with the mounting user's credentials; copying data from the FUSE image onto overlayfs triggers `Bad address (os error 14)`. Unpacking the image avoids FUSE entirely.
 
-The cause is in the kernel. For a user that is not root, the mounted image is a FUSE file system in the user namespace of the node, and that namespace maps this user only. Overlayfs reads and writes a file with the credentials of the user that mounted it, and FUSE refuses a request of a user that the namespace does not map. A node that writes data of its mounted image to a file on overlayfs, for example a file that is compiled into its program, stops with `Bad address (os error 14)`. The copy is made of files of the disk, so a node that starts from it has no such fault.
+**Tradeoffs of unpacking:**
+- Startup takes slightly longer (~1 s for a 400 MB image via `unsquashfs`).
+- Temporarily uses disk space under `<data_root>/tmp/container_scratch` equal to the uncompressed image size (cleaned up on node exit, before restarts, and on daemon startup).
 
-The copy has a cost:
-
-- Each start of a node unpacks its image with `unsquashfs`, which comes with the `squashfs-tools` package. A 400 MB image takes about one second on a fast disk.
-- The copy uses disk space while the node runs: as much as the files of the image, which can be some gigabytes for one node. It is in the data root, in `tmp/container_scratch`. Apptainer removes it when the node ends. Peppy removes what a node that was killed left, when the process of the node is over and before a restart of the node starts, and removes at the start of the daemon each copy that an earlier daemon left.
-
-The `Node images` line of `peppy container status` shows which of the two ways applies:
-
-| Line | Meaning |
-|------|---------|
-| `mounted` | Apptainer mounts the image of each node. |
-| `unpacked at each start (<directories> are on overlayfs)` | Each node starts from a copy of its image. The line names each directory on overlayfs among `/tmp`, `/var/tmp`, the home directory and the data root. It does not name a directory that is below another one of the list, such as a data root in the home directory. |
-
-The line is for the directories that each node has. A node with a mount whose source is on overlayfs starts from a copy also when the line shows `mounted`. The daemon writes the same information in its log.
-
-The status reads the data root as the command resolves it: `PEPPY_HOME` when the command has that variable, or else the default data root in the home directory of the user of the builds. `sudo` does not give the `PEPPY_HOME` of its caller to the command, so for a daemon with a data root that `PEPPY_HOME` names, give the variable to the command also (`sudo PEPPY_HOME=<data root> peppy container status`).
-
-To get mounted images in a container, do one of these:
-
-- Put a volume or a tmpfs at each directory that the line names. For `/tmp` and `/var/tmp` of a Docker container, add `--tmpfs /tmp:exec --tmpfs /var/tmp:exec` to `docker run`, and put a volume at the home directory.
-- Run the daemon as root (see [Running the daemon as root](#running-the-daemon-as-root)).
+`peppy container status` reports `Node images: mounted` or `unpacked at each start (<directories> are on overlayfs)` (pass `sudo PEPPY_HOME=<dir> peppy container status` when using a custom `PEPPY_HOME` under `sudo`). To enable direct mounts inside Docker, mount volumes or tmpfs over those paths (for example, `--tmpfs /tmp:exec --tmpfs /var/tmp:exec` plus a home volume) or run the daemon as root.
 
 ### Running the daemon as root
 
-Apptainer mounts the image of a container in one of two ways. For a daemon that is not root, it runs the container in a user namespace and mounts the image with its bundled `squashfuse_ll`. For a daemon that runs as root, the kernel mounts the image. Root inside a rootless container is not this root: Apptainer uses a user namespace and `squashfuse_ll` there too.
+A real root daemon (not root inside a rootless container) lets the Linux kernel mount `.sif` images directly without a user namespace, provided the kernel supports the image's compression.
 
-A kernel mounts an image only when it is built with the compression of that image. Peppy packs each image with zstd, and some kernels cannot mount a zstd squashfs. The WSL2 kernel, which Docker Desktop on Windows also runs on, and the kernel of the NVIDIA Jetson are two of them. So a daemon that runs as root reads the compression of each image that it runs. For an image that its kernel cannot mount, Peppy passes `--userns` to Apptainer, and the container runs in a user namespace as it does for every other user. Peppy reads the kernel configuration from `/proc/config.gz`, then from `/boot/config-<kernel release>`, and looks for the line of the compression: `CONFIG_SQUASHFS_ZSTD=y` for zstd.
+Peppy compresses `.sif` images with **zstd**, which some kernels (including WSL2 / Docker Desktop and NVIDIA Jetson) cannot mount directly. Before starting a container as root, Peppy inspects `/proc/config.gz` or `/boot/config-<release>` for `CONFIG_SQUASHFS_ZSTD=y`:
 
-In that user namespace:
-
-- A node has none of the capabilities of the real root. It cannot, for example, take a real-time priority.
-- Root has its rights on the files of root only. The Peppy installation, the working directory of the node and the source of each mount of the node must be in directories that root owns, that a group of the daemon can enter, or that every user can enter, and not below the private home directory of another user. When the installation is not, the daemon starts and writes a warning in its log. A container with one of these paths out of reach stops at its start with an error that names the directory and how to open it. A process node does not use the user namespace, so it works. A build works too: only the prune of the uv cache after the build of a Python node runs the image, and with a path out of reach the build output says that the cache is not pruned.
-
-A container whose image the kernel mounts runs without a user namespace, with the capabilities of the real root. On a kernel that mounts zstd squashfs, this is each container of a root daemon. On a kernel that does not, a node that needs these capabilities packs its image with a compression that the kernel mounts, with `apptainer_build_extra_args: ["--mksquashfs-args", "-comp gzip"]` (see [Extra runtime arguments](#extra-runtime-arguments)).
+- **Supported**: Runs without a user namespace (retaining full root capabilities such as real-time priority).
+- **Unsupported**: Peppy automatically passes `--userns` to fall back to user-namespace FUSE mounting. In this fallback, the node loses real root capabilities, and the Peppy install, node working directory, and mount sources must be traversable by root inside the namespace (not hidden under another user's private home directory). To retain real root capabilities on those kernels, build with gzip instead via `apptainer_build_extra_args: ["--mksquashfs-args", "-comp gzip"]` ([Extra runtime arguments](#extra-runtime-arguments)).
 
 :::note
-When Peppy can read no kernel configuration, it passes no flag. If a node of a root daemon then stops with `kernel reported a bad superblock for squashfs image partition`, set `APPTAINER_USERNS=1` in the environment of the daemon.
+If kernel config is unreadable and a root daemon fails with `kernel reported a bad superblock for squashfs image partition`, set `APPTAINER_USERNS=1` in the daemon environment.
 :::
 
 ## Initializing a container node
@@ -806,13 +773,13 @@ You can pass additional command-line arguments directly to Apptainer or Lima usi
 
 All fields are optional and default to an empty list when omitted.
 
-Peppy packs every image it builds with zstd at level 3 (`--mksquashfs-args "-comp zstd -Xcompression-level 3"`), which packs a node image about ten times faster than Apptainer's default gzip, at the same size. The extra build arguments come after that flag, and Apptainer reads the last `--mksquashfs-args`, so `apptainer_build_extra_args: ["--mksquashfs-args", "-comp xz"]` packs the image with xz.
+Peppy compresses built images with zstd level 3 (`--mksquashfs-args "-comp zstd -Xcompression-level 3"`), which is roughly 10x faster than gzip at similar size. Because `apptainer_build_extra_args` are appended after that flag and Apptainer uses the last `--mksquashfs-args`, you can override compression (for example, `["--mksquashfs-args", "-comp xz"]`).
 
-A node that renders or computes on the host's NVIDIA GPU passes `apptainer_run_extra_args: ["--nv"]`: Apptainer then binds the host's driver libraries (CUDA, EGL, GLX, NVML) into the container at start. Apptainer's own list of these libraries covers NVIDIA's desktop driver. The L4T driver of a Jetson board loads more libraries, and the set changes from one L4T release to the next. Each L4T release lists them in its container manifest, the `*.csv` files in `/etc/nvidia-container-runtime/host-files-for-container.d`. Before it starts a `--nv` node, peppy adds every shared library of that manifest to the list of the bundled Apptainer. So the same node configuration renders and computes through the GPU on a desktop and on a Jetson.
+**NVIDIA GPUs (`--nv`):** Pass `apptainer_run_extra_args: ["--nv"]` to bind the host's GPU driver libraries (CUDA, EGL, GLX, NVML) into the container. On NVIDIA Jetson boards (L4T), Peppy automatically merges the extra shared libraries listed in `/etc/nvidia-container-runtime/host-files-for-container.d/*.csv` into Apptainer's library list before starting the node, so the same manifest works on both desktop GPUs and Jetson.
 
-`apptainer_run_extra_args` cannot hold a flag that gives the container a path of the host or changes its mounts: `--bind` (`-B`), `--mount`, `--home` (`-H`), `--workdir` (`-W`), `--overlay` (`-o`), `--fusemount`, `--env-file` and `--no-mount`. A manifest that holds one of them does not parse, also when the flag is in a group of one-letter flags (`-cB/data`). A container node gets the paths of the host through `mount_paths` alone, whose sources the daemon checks: a container node does not see the data root of Peppy, which holds the keys of the clients of the daemon and the certificate of the machine. Give the value of another flag after an equals sign when it starts with a dash (`--hostname=-robot`): an argument that starts with a dash is read as a flag.
+**Disallowed mount flags:** `apptainer_run_extra_args` rejects flags that expose host paths or alter mounts: `--bind` (`-B`), `--mount`, `--home` (`-H`), `--workdir` (`-W`), `--overlay` (`-o`), `--fusemount`, `--env-file`, and `--no-mount` (including inside grouped short flags like `-cB/data`). Container nodes must expose host paths exclusively through `mount_paths`, which the daemon validates so containers cannot mount Peppy's data root (where client keys and machine certificates live). If a flag's value starts with `-`, attach it with `=` (e.g., `--hostname=-robot`).
 
-Peppy passes the other arguments as they are. An incorrect flag makes Apptainer or Lima fail at build or start time.
+All other flags are passed verbatim; invalid flags fail Apptainer or Lima at build or start time.
 
 ## macOS support
 
@@ -837,28 +804,28 @@ Add packages to the `%post` section:
 
 #### The Ubuntu snapshot of the peppy base images
 
-In the peppy base images (`peppybot/python-uv-base`, `peppybot/rust-cargo-base`), `apt` reads the Ubuntu packages from one dated snapshot of the Ubuntu archive, which the [Ubuntu snapshot service](https://snapshot.ubuntu.com) serves. The snapshot is the archive as it was one hour before the build of the base image started, and its package index and package files do not change. While the snapshot service answers, a node build on a peppy base image gets this from it:
+In Peppy's official base images (`peppybot/python-uv-base`, `peppybot/rust-cargo-base`), `apt` installs Ubuntu packages from a fixed dated snapshot on the [Ubuntu snapshot service](https://snapshot.ubuntu.com) (captured one hour before the base image was built). While the snapshot service is reachable:
 
-- Two builds of the node on the same base image install the same versions of the Ubuntu packages.
-- The build upgrades no package of the base image: each package of the image is at its version in the snapshot.
-- The node has the Ubuntu security updates up to the date of the snapshot, not up to the day of its build. A newer base image reads a newer snapshot. Pass `--rebuild` to build a node on it (see [Build artifact cache](#build-artifact-cache)).
+- Repeated builds on the same base image install identical Ubuntu package versions.
+- Base image packages are never unexpectedly upgraded during `apt-get install`.
+- Security updates match the snapshot date; pull a newer base image and pass `--rebuild` to advance the snapshot (see [Build artifact cache](#build-artifact-cache)).
 
-For a file that the snapshot service does not serve (it does not answer, or it answers with an error), `apt` asks the regular Ubuntu mirror: `archive.ubuntu.com` on `linux/amd64`, `ports.ubuntu.com` on `linux/arm64`. A build that the snapshot service does not answer at all reads the current state of the archive, as a build on another Ubuntu image does: it is slower, by about 30 seconds for each `apt-get` command when the service does not answer, and it can install newer versions than the snapshot and upgrade packages of the base image.
+If the snapshot service is unreachable or returns an error for a file, `apt` automatically falls back to the regular Ubuntu mirror (`archive.ubuntu.com` on `linux/amd64`, `ports.ubuntu.com` on `linux/arm64`), adding ~30 seconds per `apt-get` call on full outage and reading live archive versions.
 
-The date of the snapshot is a UTC time in the form `YYYYMMDDTHHMMSSZ`. The image holds it in its `bot.peppy.apt-snapshot` label:
+Inspect the snapshot timestamp (`YYYYMMDDTHHMMSSZ` UTC) via the image's `bot.peppy.apt-snapshot` label:
 
 ```sh
 docker pull peppybot/python-uv-base:latest
 docker inspect --format '{{ index .Config.Labels "bot.peppy.apt-snapshot" }}' peppybot/python-uv-base:latest
 ```
 
-Inside a build, `/etc/apt/peppy-ubuntu-mirrors.txt` lists the snapshot first and the regular mirror second, and each line that `apt` prints for a package names the source it downloads the package from:
+Inside a build, `/etc/apt/peppy-ubuntu-mirrors.txt` lists the snapshot before the regular mirror, and `apt` prints which source served each package:
 
 ```text
 Get:1 https://snapshot.ubuntu.com/ubuntu/20261110T073833Z noble/main amd64 libudev-dev amd64 255.4-1ubuntu8 [22.0 kB]
 ```
 
-`apt` reads a repository that the definition file adds itself (a PPA, the repository of a vendor) as the definition file names it: the packages of that repository do not come from the snapshot. A definition file with another base image reads the sources of that image.
+Third-party repositories added in `apptainer.def` (such as PPAs or vendor repos) and non-Peppy base images use their own configured mirrors rather than the Ubuntu snapshot.
 
 ### Changing the base image
 

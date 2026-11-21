@@ -274,13 +274,18 @@ A value that must not be in a launcher file, such as the API key of a hosted mod
 
 ### `env_from_launch` (optional)
 
-The variables this instance takes from the environment of the launch, by name. Use it for a value that no launcher file holds: a secret, such as the API key of a hosted model, or a value that each user sets in their own shell. Use `env_vars` for a value that the launcher file can hold, such as a device path or a log level.
+Lists environment variable names that this instance inherits from the launching shell. Use `env_from_launch` for secrets or user-specific values that should never be committed to a launcher file (such as an API key for a hosted model). Use `env_vars` for non-secret values like device paths or log levels.
 
 <Code code={hostedBrainLauncher} lang="json5" title="hosted_brain_arm.json5" />
 
-The launch gives the instance the value of each variable from the environment that `peppy stack launch` forwards. A launch variable is each name that an `env_from_launch` or a `set_env_from_launch` of the launcher or of the fragments of its options holds. Its value reaches the run of each instance that names it, and nothing else: no other instance, and no add or build step, gets it, also on the coordinator. An empty value counts as no value, as when a shell sources a `.env` template that leaves the key unset. The daemon keeps, in memory only, the value of each launch variable that the forwarded environment of the launch holds. A later join gives each instance that it starts the kept value of each variable that the instance names. So a robot that a client adds through `stack.join` gets the key of its brain, and no file holds the key. The values belong to the stack: `peppy stack reset` and a stop of the daemon drop them. A launch that replaces the running stack drops the values of that stack and keeps the values of its own forwarded environment.
+How launch variables work:
 
-A launcher that deploys an instance from a shared fragment names its variables with a [`set_env_from_launch`](#adjustments) adjustment, for example beside the models that it sets:
+- **Isolated to named instances**: Any variable listed in `env_from_launch` (or added via [`set_env_from_launch`](#adjustments)) is delivered *only* to the runtime process of instances that request it. Other instances and add/build steps never receive it, even on the coordinator.
+- **Kept in daemon memory for later joins**: The daemon holds the launch variables in memory for the lifetime of the stack so later joins (including `stack.join` from MCP or an external client) can pass the same keys to newly joined instances without writing secrets to disk. `peppy stack reset`, a new launch, or a daemon stop clears them.
+- **Coordinator only**: Launch variables never leave the machine where you ran `peppy stack launch`. Placing an instance with `env_from_launch` on a remote peer is refused.
+- **Never logged**: Values never appear in logs, feedback lines, errors, `peppy stack list`, fleet listings, MCP responses, data root files, or process command lines (on macOS, container env vars are passed over stdin to Apptainer inside Lima).
+
+To add launch variables to an instance defined in a shared fragment, use a [`set_env_from_launch`](#adjustments) adjustment:
 
 ```json5
 { target: "brain_inst", when: { brain: "vlm_router_brain" },
@@ -291,61 +296,56 @@ A launcher that deploys an instance from a shared fragment names its variables w
   set_env_from_launch: ["GEMINI_API_KEY"] },
 ```
 
-A node that changes the service that it calls while it runs, for example a brain that switches its model, needs the key of each service that it can switch to: the launcher names them all. A switch to a model whose key the instance does not have fails in the node, with the node's message.
+If a node can switch between multiple hosted models at runtime, list the API keys for all of them; switching to a model whose key was not provided fails inside the node.
 
-The environment of an instance in each case:
+Effective environment per start mode:
 
-| The instance starts | Its environment |
+| How the instance starts | Environment it receives |
 |---|---|
-| In the launch, on the coordinator | The forwarded environment of the launch without its launch variables, then the value of each variable of its `env_from_launch`, then its `env_vars`. The launch environment holds each variable of its `env_from_launch`, or the launch does not start. |
-| In `peppy stack join`, on the coordinator | The forwarded environment of the join without its launch variables, then the value of each variable of its `env_from_launch`: the one that the join forwards, else the kept one, then its `env_vars`. |
-| In a join through `robot_membership:v1`, from the framework's endpoint or from the applier of worlds | The kept value of each variable of its `env_from_launch`, then its `env_vars`. Such a join forwards no environment, so a variable of the launch environment that the instance does not name does not reach it. |
-| On a peer | Its `env_vars` only. An instance with `env_from_launch` does not run on a peer. |
+| `peppy stack launch` (coordinator) | Forwarded shell env (minus all launch variables) + requested `env_from_launch` values + `env_vars`. Missing any requested variable aborts the launch. |
+| `peppy stack join` (coordinator) | Forwarded join shell env (minus launch variables) + requested `env_from_launch` values (join shell overrides kept launch values) + `env_vars`. |
+| Join via `robot_membership:v1` (MCP / API) | Kept launch values for requested `env_from_launch` + `env_vars` (no shell env is forwarded). |
+| Any remote peer | `env_vars` only (instances with `env_from_launch` cannot run on peers). |
 
-Launch variables reach the run of an instance only. The add and build steps of a join through `robot_membership:v1` get no environment, and the add and build steps of a launch and of `peppy stack join` get the forwarded environment of that command without its launch variables.
+Validation rules:
 
-A name follows the name rules of `env_vars` and is none of the names that the CLI never forwards: `PWD`, `OLDPWD`, `TMPDIR`, `TEMP`, `TMP`, `PYTHONPATH` and `PYTHONHOME`. A list names each variable once, and an empty list is the same as no list. A list is a set: its order does not matter, `peppy stack resolve` writes it in name order, and two lists of the same names in another order are the same list, so a copy that writes them on a running instance changes nothing. Each refusal names the launcher file, the instance or the adjustment, and the variable. A name that is in the `env_vars` and in the `env_from_launch` of the same instance after the adjustments is refused, because the variable would get two values: the launch checks it on the stack and on each trial copy of its scopes, each join on the copy that it composes, and [`peppy stack resolve`](#auditing-a-composed-launch) on the file that it prints. One refusal names every such instance and variable. `peppy stack resolve` prints the `env_from_launch` of each instance after the adjustments, names only, so the flat file launches the same.
-
-The launch is refused when an instance that it starts, or that a join through a `robot_membership` scope of the launch can start, takes a variable that its forwarded environment does not hold. The instances that a join can start are those of the trial copies of the scope, each option with its launcher entry and with each set of its features (see [Building the nodes a join brings](#building-the-nodes-a-join-brings)), also with `--no-prebuild`. So a `set_env_from_launch` under the `when` of a feature counts. The refusal comes before the launch stops the running stack, builds or starts anything: the running stack and its kept values stay as they are. One message names each missing variable, each instance that needs it, and the option or the feature that can start that instance, with each instance whose scope offers it. Without `GEMINI_API_KEY`, the launch of the example above stops with:
+- **Allowed names**: Must follow `env_vars` naming rules and cannot be stripped shell vars (`PWD`, `OLDPWD`, `TMPDIR`, `TEMP`, `TMP`, `PYTHONPATH`, `PYTHONHOME`). Names form an unordered set (duplicates are refused; empty list equals omitted; `peppy stack resolve` sorts names).
+- **No overlap with `env_vars`**: Declaring the same variable in both `env_vars` and `env_from_launch` on one instance (after adjustments) is refused.
+- **Checked before touching the running stack**: `peppy stack launch` verifies that every variable needed by its instances *and* by any copy a `robot_membership` scope can join (across all feature combinations, even with `--no-prebuild`) is present, non-empty, and free of forbidden characters. If any is missing, the existing stack stays untouched:
 
 ```
 the launch needs `GEMINI_API_KEY`, and the launch environment does not hold it, or holds it empty or with characters that a node cannot receive: `brain_inst` of option `demo_arm` takes it from the launch, and stack.join through `framework_controls_inst` can add a copy of `demo_arm`. Export `GEMINI_API_KEY` in the shell that launches. A value must not be empty, and must hold letters, digits and `_ - . / : , = @ + %` only
 ```
 
-The CLI does not forward a value with characters that a node cannot receive (see [`env_vars`](#env_vars-optional)), and the daemon counts an empty value as no value, so the message names these causes too. [`peppy stack resolve`](#auditing-a-composed-launch) names each variable that a launch needs before you launch. With `robot_control=none`, no `stack.join` can add an arm, so the same launch needs no key.
-
-An instance that only a word of the CLI selects, such as an option of an own axis that no feature of a scope offers, does not make each launch need its variables. A `peppy stack join` that starts it is refused, with the same message, when neither the forwarded environment of the join nor the kept values hold one of them. `peppy stack build` starts nothing, so it checks no variable and keeps no value.
-
-An instance with launch variables runs on the coordinator's machine only: a value of the launching shell stays on the machine where you typed it. A launch or a join that places such an instance on a peer is refused, naming the instance and the peer.
-
-No value of a launch variable appears in a log line, a feedback line, an error, the output of `peppy stack list`, the fleet listing, an MCP answer, a file of the data root or a command line: logs and errors name the variables only. On macOS, the environment of a container node reaches apptainer in the Lima VM on the standard input of the command, not on a command line that the process list shows.
+Instances reachable only via manual CLI flags (not offered by any `robot_membership` scope) are checked when `peppy stack join` runs instead of at launch. `peppy stack build` starts no instances, so it neither checks nor stores launch variables. Use [`peppy stack resolve`](#auditing-a-composed-launch) to see which variables a launch requires before running it.
 
 ### `framework` (optional)
 
-Framework knobs peppy reads the same way for every node. The block holds two knobs:
+Framework-level settings applied uniformly to every node:
 
-- `clock`: the timeline this instance reads, naming `wall` or a domain the launcher declares under [`framework.clocks`](#clock-domains). An instance that omits it reads wall time. An instance a declaration names as a domain's publisher carries no `clock` of its own, since that declaration already assigns it one. See [System clock](/advanced_guides/system_clock/#clock-domains).
-- `restart`: what the daemon does when this instance's process exits on its own or stops answering health checks, `never`, `on_failure` or `always`, or `{ policy, max_restarts }`. It wins over the node's own `framework.restart` and the launcher root's. See [Restart policy](#restart-policy).
+- `clock`: Timeline this instance reads (`wall` or a domain declared under [`framework.clocks`](#clock-domains)). Defaults to `wall`. Omit on an instance already declared as a domain's publisher. See [System clock](/advanced_guides/system_clock/#clock-domains).
+- `restart`: What the daemon does when the instance exits or stops answering health checks (`"never"`, `"on_failure"`, `"always"`, or `{ policy, max_restarts }`). Overrides the node's `framework.restart` and the launcher root's. See [Restart policy](#restart-policy).
 
-An unknown key inside `framework` fails the launch, so a typo surfaces where it is written.
+Unknown keys inside `framework` fail validation immediately.
 
 ### `core_node` (optional)
 
-The machine this instance runs on, named by one of the placeholders the launcher declares under `core_nodes`. An instance that omits it runs on the daemon you launched from. See [Running one launcher across several machines](#running-one-launcher-across-several-machines).
+Places the instance on one of the logical machine links declared under `core_nodes`. If omitted, the instance runs on the coordinating daemon. See [Running one launcher across several machines](#running-one-launcher-across-several-machines).
 
 ### `links` (optional)
 
-One map filling every kind of `depends_on` slot the node declares, keyed by the slot's `link_id`. A value is interpreted against the slot it names:
+Wires every `depends_on` slot declared by the node, keyed by `link_id`:
 
-- a producer slot (`depends_on.nodes` / `depends_on.contracts`) takes the producer instance to bind: a scalar for a `one` or `zero_or_one` slot, an array for a multi-cardinality slot;
-- a [pairing](/advanced_guides/pairing/) participant slot takes the peer instance(s) to pair with, each `"<peer>"` or `"<peer>/<peer_link_id>"` to disambiguate which of the peer's slots to use: a scalar for a `one` or `zero_or_one` slot, an array for a [multi-cardinality slot](/advanced_guides/pairing/#pairing-with-several-peers-through-one-slot), one pair per entry;
-- an [observer](/advanced_guides/pairing/#observing-several-pairings-through-one-slot) slot takes the source instance(s) to observe, each `"<source>"` or `"<source>/<source_link_id>"`: a scalar for a `one` slot, an array for a multi-cardinality slot, in the order the node reads them back.
+- **Producer slots** (`depends_on.nodes` / `depends_on.contracts`): target producer instance ID (scalar for `one` / `zero_or_one`, array for `one_or_more` / `zero_or_more`).
+- **Pairing participant slots** (`depends_on.pairings`): peer instance ID as `"<peer>"` or `"<peer>/<peer_link_id>"` when the peer has multiple matching slots (scalar or array matching cardinality).
+- **Observer slots** (`depends_on.pairing_observers`): source instance ID as `"<source>"` or `"<source>/<source_link_id>"` (scalar or array matching cardinality, preserving order).
 
-A slot that starts unresolved on purpose says so here too, as `{ vacant: "<why>" }`. That value binds nothing and covers the slot, so the fate of every declared slot is one entry in this one map and a slot you forgot is an absence rather than a value. The reason is required, is trimmed, and travels with the instance, so `peppy stack launch` reports it back when the node starts.
+**Intentional vacancy:** To leave a slot empty on purpose, write `{ vacant: "<reason>" }`. Vacancy requires both sides to agree:
 
-Vacancy is a two-sided contract, and the node owns one side of it. A slot is vacatable only where the node's own manifest declares it emptiable, with `cardinality: "zero_or_one"` on the `depends_on.pairings`, `depends_on.pairing_observers`, `depends_on.nodes` or `depends_on.contracts` entry. On a slot the manifest declares required, a vacancy is rejected and the error names the manifest key that would lift the bar. Every other slot is rejected with the spelling it does have: a `zero_or_more` slot, producer or observer, writes its empty set as `[]` (or omits the key), and a `one_or_more` slot of either kind has no empty state at all. The manifest says "may be empty", the launcher says "is empty here, because", and forgetting the slot entirely stays an error whichever the manifest says.
+1. The node manifest must declare `cardinality: "zero_or_one"` on that slot.
+2. The launcher must explicitly write `{ vacant: "<non-empty reason>" }` (reported when the node starts).
 
-One instance filling all three kinds, plus a slot left deliberately empty:
+Leaving a `zero_or_one` slot out of `links` is still an error, so an accidental omission is never mistaken for an intentional vacancy. (`zero_or_more` slots use `[]` or omission for empty; `one` and `one_or_more` slots can never be empty.)
 
 ```json5
 {
@@ -357,15 +357,11 @@ One instance filling all three kinds, plus a slot left deliberately empty:
         // Producer slots: `storage` is `one`, `cameras` is multi-cardinality.
         storage: "disk_1",
         cameras: ["cam_left", "cam_right"],
-        // A participant slot names the peer to pair with, with
-        // `/<peer_link_id>` when the peer declares more than one slot.
+        // Participant slot: `/<peer_link_id>` disambiguates when the peer has several slots.
         arm: "arm_1/limb",
-        // A scalar observer slot names a single source instance to observe.
-        // The multi cardinalities take these same values in an array.
+        // Observer slot: scalar or array matching cardinality.
         watch: "ctrl_1",
-        // A slot this deployment leaves empty on purpose, and why. The
-        // manifest declares `gripper` `cardinality: "zero_or_one"`, which is
-        // what makes this legal.
+        // Deliberately empty `zero_or_one` slot with reason.
         gripper: { vacant: "bench rig: no gripper on this frame" },
       },
     },
@@ -373,9 +369,7 @@ One instance filling all three kinds, plus a slot left deliberately empty:
 }
 ```
 
-Every target must name an `instance_id` declared somewhere in the same launcher.
-
-Two instances of the same node can choose different fates for the same slot, which is why the decision is written per instance rather than in the node's manifest (whose `cardinality: "zero_or_one"` on this slot only says that some deployment may make it):
+Every target `instance_id` must be declared in the same launcher. Different instances of the same node can bind or vacate the same slot independently:
 
 ```json5
 instances: [
@@ -392,33 +386,26 @@ instances: [
 
 ### `daemon_scopes` (optional)
 
-The scope of each daemon target of the instance, keyed by the target's name: what a client of the target may do through the daemon interface it names. An instance has the daemon targets of its deployment: those of the exposures of an [exposure deployment](#serving-mcp-exposures) (see [daemon targets of an exposure](/advanced_guides/mcp/#daemon-targets)), or those that the manifest of a node lists in `depends_on.daemon`, each named by its `link_id` (see [daemon targets of a node](/advanced_guides/core_node_functions/#daemon-targets)). Only an instance with a daemon target takes `daemon_scopes`. A daemon target takes a scope and no link.
+Grants scoped permissions for each daemon target on an instance, keyed by target name (`link_id` for a node's [`depends_on.daemon`](/advanced_guides/core_node_functions/#daemon-targets), or target name for an [MCP exposure deployment](#serving-mcp-exposures)). Daemon targets take `daemon_scopes`, never `links`.
 
 <Code code={frameworkControlsLauncher} lang="json5" title="mcp_framework_controls.json5" />
 
-`{ vacant: "<why>" }` leaves a daemon target unserved: the server of an exposure serves none of its entries, and the daemon refuses each call of a node through it. The reason is required. For example, a launcher whose robots no client may add or remove leaves the `stack` target of its framework endpoint vacant.
+Write `{ vacant: "<reason>" }` to leave a daemon target disabled (an MCP server skips those tools; the daemon refuses node calls to that target). When the instance lives in a shared fragment, supply scopes from the launcher with a top-level [`set_daemon_scopes`](#adjustments) adjustment. Copies never set daemon scopes.
 
-When the launcher is read, a scope is a free value, because only the resolution of the deployments knows which targets are daemon targets. A launcher that writes its options in its own file and its endpoint in a fragment gives the scope with a top-level [`set_daemon_scopes`](#adjustments) adjustment instead. A scope belongs to the stack: a [copy](#copies) writes none.
+**Validation** runs before anything starts (during `launch`, `join`, and [`peppy stack resolve`](#auditing-a-composed-launch)):
 
-The launch, each join and [`peppy stack resolve`](#auditing-a-composed-launch) parse every scope into the type of its interface before anything starts. These checks read the launcher, the exposure documents and the node manifests only, so `peppy stack resolve` runs those of the exposure deployments also when the nodes cache is empty. It reads the manifest of a node from the nodes cache, and its report names each node deployment whose manifest this machine's caches do not hold, whose checks did not run. A launch refuses a node whose daemon target names an interface, or a tag of it, that this peppy does not serve. The checks refuse:
+1. **Instance & shape rules** (checked by `launch`, `join`, and `resolve`):
+   - Every daemon target must have a valid scope matching its interface schema (for example, `robot_membership` requires non-empty `options` with `model`, `max_copies >= 1`, no empty `features: []`, and no duplicate axes; `robot_leases` requires non-empty unique `members`).
+   - Unknown keys, `daemon_scopes` on an instance with no daemon target, or putting a daemon target in `links` are refused.
+   - An instance with daemon targets must run on the coordinator (no `core_node`, and not inside a copy) and cannot have two targets for the same daemon interface.
+2. **Launcher & selection rules** (checked by `launch` and `resolve` once step 1 passes; see [Scopes](/advanced_guides/mcp/#scopes)):
+   - Every `robot_membership` option must belong to a copy axis (`zero_or_more` or `one_or_more`).
+   - Every feature must name a valid own axis and non-empty option on that robot option.
+   - Every combination of features for each option must compose cleanly as a join over the bare stack, and the no-feature copy must not already include any of those features.
 
-- `daemon_scopes` on an instance that has no daemon target;
-- a scope key that is not a daemon target of the instance; the refusal says so when the key is a target or a slot that takes `links`;
-- a daemon target with no scope;
-- a scope that does not parse into the type of its interface, for example a [`robot_membership` scope](/advanced_guides/mcp/#scopes) with no option, with an option that names no `model`, with `max_copies` 0, with `features: []`, or with two features of one option on the same axis, or a [`robot_leases` scope](/advanced_guides/core_node_functions/#scoping-a-daemon-target) with no member or with a member named twice;
-- an instance with a daemon target that does not run on the coordinator: one that declares `core_node`, or one of a copy;
-- a `links` key that names a daemon target: the refusal says that the target takes a scope;
-- an instance with two daemon targets of one interface: a call names no target, so a call of an interface goes with the one scope of that interface that the instance has.
+All violations across all instances are reported together. Note that `peppy stack resolve` validates exposure deployments even with an empty nodes cache, and reports any uncached node manifests whose daemon targets could not be checked.
 
-The launch and `peppy stack resolve` also hold each scope against the launcher and the stack selection, and refuse:
-
-- a `robot_membership` scope that names an option that is not an option of an axis that runs as copies, with the menu of the options a join can add; in a launcher that declares no such axis, a flat launcher included, every `robot_membership` scope;
-- a feature of a `robot_membership` scope that selects an axis that is not an own axis of its option, an option that its axis does not have, or an option that brings no instance;
-- an option of a `robot_membership` scope whose copy does not compose as a join over the bare stack with one of its feature sets (no feature, each feature, each combination), or whose copy with no feature already holds one of its features. The refusal names the option and the features of the set.
-
-Each of these three checks runs only when the ones before it hold (see [the scope checks](/advanced_guides/mcp/#scopes)). A join holds each scope to the first list only: the launcher and the stack selection of a launch do not change, so a join cannot change the verdict of the second. The refusals of every instance are reported at once.
-
-An instance reads its scopes from its runtime configuration. A node with a daemon target that starts without these checks, for example with `peppy node run`, has no scope. The server reads its scopes from the runtime configuration of its instance when it starts. A server that starts without these checks, for example with `peppy node run` of its node, and finds a daemon target with no scope or a scope that does not parse, serves nothing and stops, and its run log says which target lacks a scope and how to give one (see [Deploy it](/advanced_guides/mcp/#deploy-it)).
+If an instance with a daemon target is started outside a launcher (such as via `peppy node run`), it receives no scopes; the built-in MCP server refuses to serve and logs which target is missing a scope.
 
 ## Clock domains
 
@@ -460,38 +447,46 @@ The launcher's `framework` also takes `restart`, the policy of every instance wh
 
 ## Restart policy
 
-When a node process exits on its own, the daemon records the exit in the stack log and moves the instance by its restart policy: under `never` to `finished` (exit code 0) or `failed` (any other code, or a signal), where it stays; under `on_failure` to `restarting` after a failed exit (any code but 0, a signal, or the health kill below); under `always` to `restarting` after any exit, a clean one included. Under `on_failure` or `always` the daemon also kills an instance that stops answering health checks, and its policy treats that exit as a failure; the rule and its outage guard are in [Instance health and lifecycle](/guides/node_stack/#instance-health-and-lifecycle). The most specific level wins:
+A restart policy controls what the daemon does when a `running` instance exits on its own or stops answering health checks:
 
-1. the instance: `framework.restart` on its launcher entry, `set_framework.restart` in an adjustment, or `--restart` on `peppy node run` or `peppy node add --run` (with `--max-restarts` for a cap);
-2. the node: `framework.restart` in its `peppy.json5`;
-3. the launcher root: `framework.restart` at the root of the launcher;
-4. the default: `on_failure`.
+| Policy | On clean exit (code 0) | On crash / non-zero exit / health kill |
+|---|---|---|
+| `"never"` | Moves to `finished` | Moves to `failed` (unhealthy instances are never killed) |
+| `"on_failure"` *(default)* | Moves to `finished` | Restarts (also kills unresponsive instances after 60 s; see [Health monitoring](/guides/node_stack/#instance-health-and-lifecycle)) |
+| `"always"` | Restarts | Restarts (also kills unresponsive instances after 60 s) |
 
-A node declares its own policy in `peppy.json5`, under the same `framework` key the launcher uses:
+To cap consecutive restart attempts (including failed restarts), pass an object: `{ policy: "on_failure", max_restarts: 5 }`. Exceeding `max_restarts` leaves the instance `failed`. (`max_restarts` is invalid with `"never"`.)
+
+**Precedence (most specific wins; each level replaces the whole value without merging):**
+
+1. **Instance**: `framework.restart` on the launcher instance entry, `set_framework.restart` in an adjustment, or `--restart` / `--max-restarts` on `peppy node run` / `peppy node add --run`.
+2. **Node**: `framework.restart` in `peppy.json5`.
+3. **Launcher root**: `framework.restart` at the launcher root (fragments cannot set a root restart policy).
+4. **Default**: `"on_failure"`.
+
+A node declares its own policy in `peppy.json5`:
 
 <Code code={wristCameraNode} lang="json5" title="peppy.json5" />
 
-A launcher declares a policy at its root and an instance entry its own. An adjustment under an option writes the same key on its target with `set_framework: { restart: "never" }`, as the [adjustments](#adjustments) table shows. In the launcher below, the root's `always` covers the rear camera, the front camera's entry writes its own, and the wrist camera takes the `on_failure` of the node above:
+In the launcher below, the rear camera inherits the root's `always`, the front camera overrides it on its instance entry, and the wrist camera uses its own manifest's `on_failure`:
 
 <Code code={camerasLauncher} lang="json5" title="cameras.json5" />
 
-The value is a string, `restart: "on_failure"`, or an object, `restart: { policy: "on_failure", max_restarts: 5 }`, where `max_restarts` caps the restart attempts in a row, failed starts included, and the next exit or failed start past them leaves the instance `failed`; a level writes the value whole, so a cap written at one level never combines with a policy from another. `max_restarts` needs a policy that restarts, `on_failure` or `always`; with `never` it is refused.
-
-The policy applies once an instance has been `running`: a first start that fails still fails the launch or the `peppy node run`. A restart is a new process under the same id, with the arguments, environment, clock, core node and slots the instance had. It pairs and observes again, and the consumers bound to it receive from it again with no further action. When the previous process crashed, its shutdown hooks did not run, so write the node's setup to bring its hardware to a known state before it enables anything.
-
-The daemon waits between the exit and the next start. The first wait is one second; each further exit or failed start doubles it, up to one minute, and from then on every attempt waits a minute. The new process clears the same startup health gate as a first start. An exit after a run of two minutes or more starts the backoff over: its wait is one second and its attempt is 1 again. A run the health monitor ended counts only up to the last health check the process answered, so a node that hangs again after each start keeps backing off and reaches its `max_restarts`. The exit or failed start past `max_restarts` attempts in a row leaves the instance `failed`, and the stack log says `` `max_restarts` reached ``.
-
-An instance that publishes a clock domain takes its policy like any other and keeps its domain when it restarts; [System clock](/advanced_guides/system_clock/#lifetime-replacement-and-removal) says what the instances reading it see. A fragment or option body that writes `framework.restart` at its root is refused when a selection composes it, naming the launcher root.
-
-While the daemon waits, the instance shows `restarting` in `peppy stack list`, whose `RESTARTS` column counts the times a restarted process reached `running`; `peppy node info` adds the attempt, the last exit and the next start. The stack log records a `restarting` line with the attempt and the wait, a `restarted` line once the new process is `running`, a `start failed` line when the new process did not reach `running` (the run log holds the whole failure), a `restart refused` line when the daemon refused to start the process again (for example a clock domain whose publisher, on the same machine, has ended), and the `` `max_restarts` reached `` line. Once this machine's nodes cache is filled (`peppy repo refresh`), `peppy stack resolve` prints each instance's policy with its origin on its clock line. Each process writes its own run log, `<instance_id>_<timestamp>.log`, as add and build logs are named: a crash's output stays in its file, a restart's file opens with a line naming the attempt and the previous file, and `peppy node info` lists the latest one.
-
-For a single instance, `--restart` and `--max-restarts` on `peppy node run` set the policy:
+For a single node on the CLI:
 
 ```bash
 peppy node run wrist_camera:v1 -i wrist_cam_inst --restart on_failure --max-restarts 5
 ```
 
-A crash of that instance and its restart read in the stack log as:
+**How restarts behave:**
+
+- **Only after first `running`**: A failed initial start still fails `peppy stack launch` or `peppy node run`.
+- **Same identity & wiring**: Each restart launches a new process under the same `instance_id` with the same arguments, environment, clock, core node, slots, pairings, and observations. Consumers receive from it again automatically. Because shutdown hooks do not run on a crash, write `setup` to reset hardware to a safe state before enabling it.
+- **Exponential backoff**: Wait starts at **1 second**, doubling on each consecutive exit or failed start up to **60 seconds**. Running cleanly for **2 minutes or more** resets the backoff to 1 second and attempt count to 1. (For health kills, uptime counts only up to the last answered health check, so repeatedly hanging nodes still hit `max_restarts`.)
+- **Logs and inspection**: Each process gets its own run log (`<instance_id>_<timestamp>.log`); restarted logs note the attempt number and previous log path. `peppy stack list` shows `restarting` and `RESTARTS` count; `peppy node info` shows attempt count, last exit, and next start time; `peppy stack resolve` prints each instance's effective policy and origin.
+- **Interaction with other commands**: Explicit stop/replace commands (`peppy node stop`, `node remove`, `node add`, `stack reset`, `stack remove`, `stack launch`, daemon shutdown) cancel any pending restart. While a restart is actively starting up (up to 10 min ready timeout), stack commands on that daemon return `busy` naming the restarting instance and how to stop it. `peppy node remove` pauses pending restarts while stopping instances; if an instance is mid-start, re-run `peppy node remove <name>:<tag> --stop-instances` once it finishes. `peppy stack join` refuses to modify a running instance's restart policy or add members to a `restarting` instance's slot.
+
+Example crash and restart in `~/.peppy/stack_log.log`:
 
 ```text
 [2026-10-07T14:02:11.204+00:00] Instance 'wrist_cam_inst' of node 'wrist_camera:v1' failed: signal 11 (SIGSEGV), core dumped
@@ -499,165 +494,112 @@ A crash of that instance and its restart read in the stack log as:
 [2026-10-07T14:02:13.487+00:00] Instance 'wrist_cam_inst' of node 'wrist_camera:v1' restarted (attempt 1)
 ```
 
-`peppy node stop`, `peppy node remove`, `peppy node add` over its node, `peppy stack reset`, `peppy stack remove`, `peppy stack launch` of the stack again and a daemon shutdown end an instance for good and cancel a waiting restart; `peppy node stop` also clears a `finished`, `failed` or `restarting` instance, which frees its id, and ends the start of an instance its restart is starting again. While a restart holds its daemon, from its start through the pairs its new process asks for again, a `peppy stack launch`, build, join or removal on that daemon answers busy, naming the instance and the stop that ends its restart. A start waits ten minutes for a node that never signals ready before it fails, and each attempt holds the daemon for its own start, so an instance whose every start hangs keeps its daemon busy, between its waits, until that stop or its `max_restarts` ends the restarts. `peppy node remove` holds restarts off while it runs: an instance that exits on the removal's shutdown request ends there whatever its policy, and one whose restart falls due waits, so a removal that succeeds removes both. An instance starting when the removal reaches it, or running a process that reached `running` after the removal began, keeps its node; the removal's error names it, and `peppy node remove <name>:<tag> --stop-instances` run again once none is starting removes it. `peppy stack join` refuses a copy whose adjustment changes the policy of an instance the stack runs, and a join that grows a `restarting` instance's slot.
-
 ### Starting a failed instance again
 
-An instance whose restarts ended, with a `restart refused` or `` `max_restarts` reached `` line in the stack log, stays `failed`, as does one that failed under `never`, and one that finished stays `finished`. Either starts again by how it was started: an instance `peppy stack resolve` of the launcher lists, with the launch's `--with` words, was started by the launch, and a launch also starts each member on the `Instances:` line under a `Copy` line of `peppy stack list` that a `Launch copy` line repeats, with the same text after its keyword: the same name, option, machine and selection. Compare the whole line, since a join can add a copy under the name of a launch copy that a removal took off, with another option, machine or selection. A member under any other `Copy` line belongs to a copy `peppy stack join` added; any other instance was started by `peppy node run` or `peppy node add --run`.
+An instance in a terminal `failed` or `finished` state stays listed until you clear or relaunch it. How you restart it depends on how it was originally started:
 
-- `peppy node run` or `peppy node add --run`: `peppy node stop <instance-id>` clears it and frees its id; then start it with `peppy node run <name>:<tag>` and the same arguments, links and flags (a `peppy node add` of its node again stops and clears every other instance of the node, and one from git or a URL does so without asking). The stop makes the instances paired with it forget those pairs. A pair the instance made itself, by its own `--link`, is already among those flags. A peer that made a pair with it by `--link`, or asked for one again at its own restart, names the pair in its run log under `~/.peppy/logs/run/` as `paired: CORE/PEER_INSTANCE:PEER_LINK ⇌ CORE/INSTANCE:LINK_ID`, and `grep -l '⇌ [^ ]*/<instance-id>:' ~/.peppy/logs/run/*.log` lists those logs; for each pair they name that the new run's `--link` flags do not already cover, add `--link LINK_ID@PEER_INSTANCE[/PEER_LINK]` (see [Pairing](/advanced_guides/pairing/)), in place of a `--vacant-link` on the same slot.
-- A launch: `peppy stack launch` on the coordinator, with the launcher, placement, `--with` words and `--join` copies it was launched with. A launch replaces the whole stack, which ends the copies `peppy stack join` added and the instances `peppy node run` started: note first the `Copy` lines of `peppy stack list` that no `Launch copy` line repeats, and join each again after the launch.
-- A member of a copy `peppy stack join` added: read the copy's `Copy` line in `peppy stack list` first, since the removal drops it. Then, on the coordinator or with `--core-node <coordinator>`, run `peppy stack remove NAME`, which clears the copy's instances, and `peppy stack join OPTION:NAME@CORE_NODE` with the line's option and machine, its `axis=option` words as `--with`, and the `--set-arguments` it was joined with. Where the removal is refused, as for the last copy of a `one_or_more` axis, launch the stack again.
+1. **Started via `peppy node run` or `peppy node add --run`**:
+   Clear the old instance with `peppy node stop <instance-id>`, then run `peppy node run <name>:<tag>` with the original flags and links. (If another running peer had paired into this instance via its own `--link`, find the pair in `~/.peppy/logs/run/*.log` using `grep -l '⇌ [^ ]*/<instance-id>:' ~/.peppy/logs/run/*.log` and re-establish it with `--link LINK_ID@PEER_INSTANCE[/PEER_LINK]`.)
+   ```sh
+   peppy node stop arm_1
+   peppy node run --instance-id arm_1 robot_arm:v1 --link controller@ctrl_1
+   ```
+2. **Started as part of a joined copy** (listed under a `Copy` line in `peppy stack list` that is *not* repeated verbatim under `Launch copies`):
+   Note its `Copy` line first, then remove and re-join the copy on the coordinator (or with `--core-node <coordinator>`):
+   ```sh
+   peppy stack remove bravo
+   peppy stack join openarm:bravo@jetson-2 --with model=openarm_v1,robot_commander=ker_commander
+   ```
+   *(If removal is refused, such as the last copy of a `one_or_more` axis, relaunch the stack instead.)*
+3. **Started by `peppy stack launch`** (a base stack instance, or a copy whose full `Copy` line matches an entry under `Launch copies`):
+   Re-run `peppy stack launch` on the coordinator with the original launcher, `--place`, `--with`, and `--join` arguments. Because `launch` replaces the entire stack, note any extra joined copies first and re-join them afterward.
 
-For `arm_1` of the [Pairing](/advanced_guides/pairing/) example, which `ctrl_1` paired with `--link arm@arm_1`, `ctrl_1`'s run log holds `paired: cn-adoring-zebra/ctrl_1:arm ⇌ cn-adoring-zebra/arm_1:controller`, and these commands start `arm_1` again with that pair:
-
-```sh
-peppy node stop arm_1
-peppy node run --instance-id arm_1 robot_arm:v1 --link controller@ctrl_1
-```
-
-For the copy `bravo`, whose backbone reached its `max_restarts`, `peppy stack list` on the coordinator shows its `Copy` line beside the line of `alpha`, which the launch started. No `Launch copy` line repeats the line of `bravo`, so a join added it:
-
-```
-Copy alpha of openarm on jetson-1: model=openarm_v2
-  Instances: alpha_backbone_inst, alpha_camera_inst
-Copy bravo of openarm on jetson-2: model=openarm_v1,robot_commander=ker_commander
-  Instances: bravo_backbone_inst, bravo_camera_inst
-Launch copies
-  Launch copy alpha of openarm on jetson-1: model=openarm_v2
-```
-
-and these commands start it again as it was joined:
-
-```sh
-peppy stack remove bravo
-peppy stack join openarm:bravo@jetson-2 --with model=openarm_v1,robot_commander=ker_commander
-```
-
-A `restart refused` line names its cause. When the cause is a clock domain whose publisher ended, the line also says what publishes the name now. For a reader a launch or `peppy stack join` started, a launch of the stack starts the reader and its publisher again; join again, after the launch, each copy `peppy stack join` added. For one `peppy node run` started, stop it and run it again with its `--clock`, after starting a publisher with `--publish-clock` when nothing publishes the name.
+If a restart was refused because its [clock domain](/advanced_guides/system_clock/#lifetime-replacement-and-removal) publisher ended, the stack log names the cause: relaunch the stack (for launcher/join instances) or restart the clock publisher with `--publish-clock` before re-running the reader with `--clock` (for `peppy node run`).
 
 ## Reusing built nodes across launches
 
-Every node build a launch performs goes through the [build artifact cache](/advanced_guides/containers/#build-caching): when a deployment's staged sources match an earlier build byte for byte, and that build ran with the same peppy version, OS, architecture and artifact kind, the launch reuses its artifact. Launching the same launcher again, after a daemon restart or on another machine booted from the same disk, therefore spends seconds on the build phase instead of rebuilding every node. Each reuse is reported in the launch output and in that node's build log:
+Every node build goes through the [build artifact cache](/advanced_guides/containers/#build-caching). If staged sources match an earlier build byte for byte (same Peppy version, OS, architecture, and artifact kind), the launch reuses the cached artifact in seconds:
 
 ```
 Reusing cached build of waldo:v1 (fingerprint 3f9a1c2e5d7b8a4f) at ~/.peppy/built_nodes/waldo_v1/3f9a1c2e5d7b8a4f.linux-amd64.sif
 ```
 
-`peppy stack launch --rebuild` and `peppy stack build --rebuild` build every node of the launch from its staged sources even when a matching artifact exists, on the coordinator and on every peer; use it when something the fingerprint does not cover changed, such as the image behind a floating base image tag.
+Pass `--rebuild` to `peppy stack launch` or `peppy stack build` to force a fresh build on all machines (for example, after a floating Docker base image tag updates).
 
 ### Building without starting
 
-`peppy stack build` runs a launch up to its builds. It replaces the node stack as a launch does, then adds and builds each node the launch would run on the machine the launch places it on, and each [joinable node](#building-the-nodes-a-join-brings) on this machine, and starts no instance. It takes every argument `peppy stack launch` takes, so a later `peppy stack launch` with the same launcher, placement, `--with` words and `--join` copies starts from these builds, and so do the joins of its scoped options.
+`peppy stack build` accepts the same flags as `peppy stack launch` and runs everything through the build phase (replacing the stack, adding and building all nodes on their target machines plus [joinable nodes](#building-the-nodes-a-join-brings) on the coordinator) without starting any instances.
 
-Build a launcher on a disk, save the disk as an image, and every machine booted from that image launches without building:
+This is ideal for baking machine disk images so robots boot ready to launch immediately:
 
 ```sh
 peppy stack build openarm_simulation --with mujoco
-# Save the disk as an image and boot each machine from it, then on each one:
+# Save the disk image and boot each machine from it, then run:
 peppy stack launch openarm_simulation --with mujoco
 ```
 
-On Linux the daemon derives its default core node name from the machine id the disk stores, read from `/var/lib/dbus/machine-id`, else `/etc/machine-id`. Machines booted from one image therefore derive the same name, and a daemon whose name is already live on its router or federation refuses to start. Give each machine its own [`core_node_name`](/advanced_guides/daemon_config/#core_node_name-the-daemons-core-node-name); a name set on the imaged disk is shared the same way.
+:::caution
+On Linux, the default core node name is derived from `/var/lib/dbus/machine-id` (or `/etc/machine-id`). Machines cloned from the same disk image will collide unless each gets a unique [`core_node_name`](/advanced_guides/daemon_config/#core_node_name-the-daemons-core-node-name).
+:::
 
-After a build, `peppy stack list` shows each node at stage `Ready` with `0` instances, under a `Slice of launch <id>` line naming the build that replaced this machine's stack. A build records no launcher, so `peppy stack join` is refused until `peppy stack launch` starts the stack. A machine booted from the image starts with an empty stack: its builds wait under `~/.peppy/built_nodes/`, and its launch names each one it reuses with a `Reusing cached build of` line.
-
-`peppy stack build --publish` also pushes the image of each container node that each machine builds to an OCI registry, from which other machines pull the node instead of building it. See [Publish the nodes of a stack](/advanced_guides/publishing/#publish-the-nodes-of-a-stack).
+After `peppy stack build`, nodes sit at `Ready` with `0` instances. Because no launcher is active, `peppy stack join` requires `peppy stack launch` first. Pass `peppy stack build --publish` to also push built container images to an OCI registry ([Publish the nodes of a stack](/advanced_guides/publishing/#publish-the-nodes-of-a-stack)).
 
 ### Building the nodes a join brings
 
-A launcher whose MCP endpoint serves a [`robot_membership` daemon target](/advanced_guides/mcp/#daemon-targets) lets a client add robots after the launch. The launch builds their nodes first, so that a join on the coordinator adds and starts nodes and builds none.
+When a launcher includes an MCP endpoint with a [`robot_membership` daemon target](/advanced_guides/mcp/#daemon-targets), clients can dynamically add robots after launch. To keep those joins fast, `peppy stack launch` pre-builds every **joinable node** on the coordinator up front:
 
-The launch checks of a `robot_membership` scope compose one trial copy of each feature set of each scoped option: no feature, each feature, and each combination (see [Scopes](/advanced_guides/mcp/#scopes)). The nodes of these copies are the **joinable nodes** of the launch: every node that a join of a scoped option can bring. With two scopes, the joinable nodes are those of both. The built-in MCP server of a copy builds nothing, so it is no joinable node.
-
-The launch resolves the joinable nodes with its own deployments and pins their contract and pairing documents with its own, all before it changes a machine. In its add-and-build phase, it adds and builds each joinable node on the coordinator, after its own nodes there and in the same build slots, so with a long build of the launch, the builds of the joinable nodes run beside it. A node that the launch adds on the coordinator anyway is added and built once. A node that the launch places only on another machine is added and built on the coordinator too, because a join can run it there. `--place` and `--local` move no joinable node: a joinable node is for the coordinator, where the endpoint that adds the robots runs. The launch starts no instance of a joinable node, and it starts its own instances only once every build has ended. `peppy stack list` then shows each joinable node at stage `Ready` with `0` instances. The add line of a joinable node names the scoped options that bring it:
-
-```
-Adding so101_backbone:v1 on `cn-desk` for stack joins of `so101_sim`
-```
-
-A later join of a scoped option on the coordinator, through the MCP `join` tool or with `peppy stack join` and the words of its features, finds each node it brings built: it adds the node again, and the build reuses the artifact in a few seconds. A join runs the resolution that the launch recorded for each joinable node, so it stages the trees that the launch built, also after a `peppy repo refresh`; launch again to run newer node content. A part that a join places on another machine builds on that machine when the join runs, and so does a node that a `--with` word selects and that no feature of the scope selects. `--set-arguments` selects no node, so it never causes a build.
-
-A joinable node that does not resolve refuses the launch before any machine changes, so the stack that runs keeps running. A joinable node that does not build fails the launch, which clears the stack, as the failure of any node of the launch does. Each refusal names the node, the scoped options that bring it, and `--no-prebuild`. A trial copy that does not compose refuses the launch, as the launch checks of the scope do.
-
-`--no-prebuild` on `peppy stack launch` and `peppy stack build` makes the launch resolve and build only the nodes it runs. A join then resolves the nodes of its robot against the repositories as they are when it runs, and builds them on each of their machines, so you change a robot's node, run `peppy repo refresh` and join it again with no new launch. `--rebuild` builds the joinable nodes again too. A launcher with no `robot_membership` scope has no joinable node, and neither has a selection that deploys no instance with such a scope.
+- **What gets pre-built**: Every node across all feature combinations allowed by the `robot_membership` scope(s) (built-in MCP servers need no build). Nodes already deployed on the coordinator are built only once; nodes placed elsewhere by the launch are also built on the coordinator so local joins have them ready.
+- **How joins use them**: Later joins on the coordinator (`stack.join` or `peppy stack join`) reuse those pinned sources and cached artifacts in seconds, even after `peppy repo refresh`. Joins placed on a remote machine or using un-scoped `--with` options still build on demand.
+- **Failure handling**: An unresolvable joinable node or invalid trial composition refuses the launch before touching the running stack; a build failure fails and clears the launch.
+- **Opting out**: Pass `--no-prebuild` to `peppy stack launch` or `peppy stack build` to build only the nodes currently launched; joins will resolve against current repositories and build on demand (useful when iterating on a robot node without relaunching the stack). `--rebuild` forces joinable nodes to rebuild too.
 
 ## Launch timeouts
 
-A launch adds, builds and starts its nodes one phase at a time, and each phase runs under an idle budget: the clock resets whenever the phase produces output (a git or http download's progress, a `build_cmd`'s lines, a starting node's lines, the ready signal of a starting instance), and the phase fails when it goes quiet for longer than its budget. The budgets are per phase and per node:
+Each launch phase (`add`, `build`, `run`) has a per-node **idle timeout** that resets whenever the node produces progress (download bytes, build output, disk writes, CPU usage, startup output, or the ready signal):
 
 | Flag | Phase | Default |
 | --- | --- | --- |
-| `--node-add-idle-timeout-secs` | fetching a node's source and generating its bindings | 600 |
-| `--node-build-idle-timeout-secs` | running its `build_cmd`, or downloading and assembling its image; bytes landing on disk and CPU time the build burns count as output too | 180 |
-| `--node-run-idle-timeout-secs` | starting an instance, until its setup ends and the daemon records it as running | 600 |
+| `--node-add-idle-timeout-secs` | Fetching source and generating bindings | 600 s |
+| `--node-build-idle-timeout-secs` | Running `build_cmd` or building container image (disk writes and CPU usage count as output) | 180 s |
+| `--node-run-idle-timeout-secs` | Starting an instance until setup returns and it is `running` | 600 s |
 
-These defaults are the only ones: the daemon has no budgets of its own, and every launch, build and join carries the budgets of its caller. When no output arrives, the command waits for the largest of the three budgets plus 60 s before it stops, so the daemon's error for the silent phase comes first. A command that stops waiting sends no cancel, but it exits with code 1 and its process ends: the daemon then sees that the sender of the goal is gone and cancels the change, as for [a command whose process goes away](#stopping-a-stack-command-with-ctrlc).
+Additional timeout details:
 
-A join over MCP, through the `join` tool of a [`robot_membership` daemon target](/advanced_guides/mcp/#what-the-tools-of-robot_membership-do), sends these same defaults, with no overall budget. Give such a tool a progress window of the largest of the three budgets plus the same 60 s, 660 s for the defaults, so that the daemon's error for a silent phase comes first.
-
-Every build runs with `CARGO_TERM_PROGRESS_WHEN=always` and `CARGO_TERM_PROGRESS_WIDTH=80`, in a `build_cmd` and in a container def's `%post` alike. Without them, cargo prints a line only when a crate download completes when its output is not a terminal, and until then the download writes nothing to disk and burns no CPU, so a large crate on a slow connection reads as an idle build. With these settings cargo reprints its progress line each time the bytes left to download change, and each reprint counts as output. A download that receives nothing changes nothing, so it still runs out the budget. If you set either variable yourself, a `build_cmd` gets your value; a def sets its own by exporting it in `%post`.
-
-`--max-timeout-secs` adds a budget for the whole launch on top of the idle ones; without it, only the idle budgets apply.
-
-When a budget runs out the launch fails, names the phase and, for an idle budget, the flag that raises it, and clears the stack as any failed launch does. What the interrupted phase leaves behind depends on the phase:
-
-- An interrupted **add** never publishes its node. The daemon generates a node's bindings into the node's staged copy on a worker thread of its own, so a generation that is already running when the add's budget runs out finishes on that thread, and the staged copy is removed once it does; a queued generation whose add is gone is skipped. Either way the node never enters the stack and nothing of it is built.
-- An interrupted **build** has its `build_cmd` or image build killed.
-- An interrupted **run** has its half-started instance torn down before the failure is reported. An instance that has not answered ready has its process group killed at once; an instance that answered ready gets the shutdown request and the grace first, so its shutdown hooks run (see [How an instance starts](/guides/node_stack/#how-an-instance-starts)).
-
-`peppy stack build` takes the same flags and ends after the build phase, so `--node-run-idle-timeout-secs` bounds nothing in a build. `peppy stack join` takes the same flags and runs its copy's nodes through the same phases, `--max-timeout-secs` bounding the whole join. A join whose budget runs out fails as any [failed join](#copies) does: it stops what it started and removes the nodes it added, leaving the stack it joined running.
-
-Only the node's own output and, in the run phase, the ready signal of the instance reset a phase's clock; the launcher's progress lines do not. Inside the run phase, the daemon also waits for each setup for the [setup budget](/guides/node_stack/#how-an-instance-starts) of its node, at most 540 seconds, which is less than the default run idle budget.
+- **Overall budget**: Add `--max-timeout-secs` to cap the total duration of the launch or join.
+- **Client watchdog**: The CLI waits up to `max(idle budgets) + 60 s` without daemon output before exiting with code `1` (which triggers daemon-side cancellation). For MCP `robot_membership` `join` tools, set `progress_timeout_ms` to at least `660000` (660 s) so daemon timeouts surface first.
+- **Cargo progress**: Builds automatically set `CARGO_TERM_PROGRESS_WHEN=always` and `CARGO_TERM_PROGRESS_WIDTH=80` (unless overridden) so slow crate downloads keep resetting the idle clock.
+- **Setup timeout**: Within the run phase, each node's [`setup_timeout_secs`](/guides/node_stack/#how-an-instance-starts) (max 540 s) still applies independently.
+- **Cleanup on timeout**: An interrupted `add` never publishes the node (in-flight codegen finishes on its worker thread and deletes the temp dir); an interrupted `build` kills the build process; an interrupted `run` tears down the half-started instance (gracefully if it already signalled ready, force-killed if not). A timed-out `launch` clears the stack; a timed-out `join` rolls back its copy and leaves the existing stack running.
 
 ## How a stack command ends
 
-`peppy stack launch`, `build`, `join` and `remove` each send the daemon one goal and follow it to its end. The daemon refuses a goal that it cannot start, for example while another stack change runs, and the command prints the refusal with its failure kind:
+`peppy stack launch`, `build`, `join`, and `remove` each run as a goal on the daemon. If refused (exit code `3`) or failed (exit code `4`), the CLI prints the **failure kind**, reason, and (on failure) the launch log path:
 
 ```text
 Error: Launch refused (busy): a stack launch, build, join, removal or reset, or a coordinator's change to this daemon's slice, is in progress on this daemon; run this again once it ends
-```
-
-A goal that fails ends the command with its failure kind, the reason, and the launch log, after the log files of the nodes:
-
-```text
 Error: Launch failed (attempt_failed): failed to build node arm:v1: build_cmd `cargo build --release` failed with status exit status: 101. Log file: /home/ubuntu/.peppy/logs/launch/launch_20261023_101500_123Z.log
 ```
 
-| Kind | What it says |
+| Kind | Meaning |
 | --- | --- |
-| `rejected` | The launcher, a word of the command or a value in it is not valid, or it names something that is not there |
-| `busy` | Other work holds the stack of a machine: another stack change runs, a node command or a restart runs, a `peppy stack reset` runs, or another launch holds the machine. The same command can succeed once that work ends |
-| `precondition_failed` | The stack or a machine does not allow the change: an instance or a copy is in the way, or the stack has no launcher |
-| `resource_unavailable` | A machine of the change is not live, or did not answer |
-| `timeout` | A budget ran out |
-| `attempt_failed` | A step failed, for example a build or the start of an instance |
+| `rejected` | Invalid launcher, CLI argument, or reference to a missing item. |
+| `busy` | Another stack operation, node command, restart, reset, or launch reservation holds a target machine. Retry once it finishes. |
+| `precondition_failed` | Current stack state disallows the operation (such as a name collision or no active launcher). |
+| `resource_unavailable` | A target machine is offline or unreachable. |
+| `timeout` | An idle or max timeout expired. |
+| `attempt_failed` | A build, start, or execution step failed. |
 
-`busy` is the kind of the daemon itself. The other kinds are kinds of peppy (see [How a goal ends](/advanced_guides/actions/#how-a-goal-ends)). A federated launch fails with `busy` when each machine that refused it is busy.
-
-The command exits with code 3 when the goal is refused, and 4 when it fails. Each end of a goal has an exit status of its own (see [Exit statuses of the other commands](/advanced_guides/calling_instances/#exit-statuses-of-the-other-commands)).
-
-The command keeps up to 65536 lines of the change's output that it did not show yet. A command that falls further behind, for example on a terminal that shows lines slower than a build prints them, cancels the change, says `The command fell behind the output of the launch by more than 65536 unread messages and cancelled it.`, and exits with code 1.
+See [Exit statuses of the other commands](/advanced_guides/calling_instances/#exit-statuses-of-the-other-commands) for all exit codes. If the CLI falls behind by more than 65,536 unread output lines, it cancels the goal and exits with code `1`.
 
 ### Stopping a stack command with Ctrl+C
 
-The first Ctrl+C sends the daemon a cancel of the goal, and the command says so:
-
-```text
-Cancelling the launch; press Ctrl-C again to stop waiting for its end
-```
-
-The daemon stops the change at the step it reached, and ends it as a failure at that step ends it: a launch or a build clears the stack, a join is undone, and a removal keeps its copy, with the instances that it did not stop yet. A join or a removal reads the cancel before it changes a machine, so a cancel that comes early leaves every stack as it was. A step that runs on another machine gets the cancel too. The command follows the change to that end, prints how it ended, and exits with the status of that end, 5 for a cancel. The rollback can be silent for longer than the idle budgets, so after a Ctrl+C only `--max-timeout-secs` bounds the wait:
-
-```text
-Error: Launch was cancelled by its caller. Log file: /home/ubuntu/.peppy/logs/launch/launch_20261023_101500_123Z.log
-```
-
-A change that ended before the cancel reached it keeps its end, and the command says so: `Launch completed before the cancel took effect.`, with the exit status 0. A change that failed for a cause of its own, for example a build that failed before the cancel reached it, ends failed with its kind and the exit status 4, also when the cancel arrives during its rollback. A second Ctrl+C stops the wait for the end: the command waits only until the cancel reaches the daemon, which goes on with it, and exits with code 130. A third Ctrl+C ends the command at once.
-
-A command whose process goes away, for example when its terminal closes or the process is killed, cancels its goal too: the daemon sees that the sender of the goal is gone, and cancels the goal one minute later. The launch log then ends with `cancelled: its sender is gone`. The minute outlasts a restart of the messaging router by its watchdog, during which the daemon cannot see the commands that still run, so a change goes on through a router restart or a short loss of the link between two machines. Each `peppy` process is a sender of its own, so the goals of other `peppy` processes go on.
-
-A `peppy stack reset` cancels the change that runs: the change ends, `Launch was cancelled by a stack reset.`, and the command exits with code 5, as for any cancel.
+| Event | What happens | Exit code |
+| --- | --- | --- |
+| **1st Ctrl+C** | Sends a cancel to the daemon (forwarded to remote peers). The daemon stops at the current step and cleans up: a cancelled `launch`/`build` clears the stack, a cancelled `join` rolls back its copy, and a cancelled `remove` stops remaining stops while keeping unstopped instances. The CLI waits for cleanup (bounded only by `--max-timeout-secs`). | `5` (cancelled), `0` (already completed), or `4` (already failed) |
+| **2nd Ctrl+C** | Stops waiting once the cancel reaches the daemon (cleanup continues in the background). | `130` |
+| **3rd Ctrl+C** | Exits immediately. | `130` |
+| **CLI killed / terminal closed** | Daemon detects the missing caller and cancels the goal after 1 minute (long enough to survive a router restart). Launch log ends with `cancelled: its sender is gone`. | - |
+| **`peppy stack reset`** | Cancels the in-flight operation and clears the stack. | `5` |
 
 ## Running one launcher across several machines
 
@@ -767,44 +709,37 @@ The launcher's own top-level `adjustments` list takes the same entries, guarded 
 | `set_daemon_scopes` | Replaces the [scope](#daemon_scopes-optional) of each named daemon target, creating it when absent. No operation removes a scope. Refused in the composition of a copy, because a scope belongs to the stack: write it at the top level, under an option of an axis that does not run as copies, or in the instance's own `daemon_scopes`. |
 | `set_env_from_launch` | Replaces the target's [`env_from_launch`](#env_from_launch-optional) with the list, so a launcher names exactly the keys of the models that its instances can use. An empty list is an operation: the target then takes no variable from the launch, for example an instance of a shared fragment whose model calls no service. |
 
-A fragment's own entries run first, in the order its files are read, then the launcher's: the options' entries in the order `components` declares their axes, then the top-level list. The order is what decides a field two entries both write, the later one winning, so a launcher's entry overrides the fragment's and its top-level list overrides its options'.
+A fragment's adjustments run first (in file order), then option adjustments (in `components` axis order), and finally top-level launcher adjustments. Later writes win on the same field.
 
-Three kinds of entry run in [copies](#copies), their target resolved inside each copy:
+**How adjustments target instances in [copies](#copies):**
 
-- an entry under an option of an axis that runs as copies runs in every copy of that option;
-- an entry under an option of an axis that fills once, a `one` or a `zero_or_one`, or at the top level, guarded on an axis that runs as copies, runs in every copy of the options its guard names;
-- an entry whose target only the options of axes that run as copies define runs in every copy of every such axis.
+An adjustment resolves its `target` inside each matching copy when any of the following holds:
 
-One routing is ambiguous, and it is refused when the launcher is read: an entry that names no axis that runs as copies, neither through the option it sits under nor in its guard, whose target an option of such an axis defines as well as an option that fills once on an axis other than the entry's own, when the entry's own option does not define the target: an entry writing an instance its own option defines is that option's write. The refusal names both, because either reading is a legal launcher: write the entry under the option that fills once to write that option's instance, or guard it on the axis that runs as copies to write each copy's.
+1. It lives under an option of a copy axis (`zero_or_more` / `one_or_more`).
+2. It lives at the top level or under a single-fill option (`one` / `zero_or_one`) and has a `when` guard naming a copy axis.
+3. Its `target` is defined *only* by options on copy axes (runs in every copy of those axes).
 
-An adjustment's `target` names one instance, or a list of instances that each take the same changes, such as one scope that two instances share:
+If an unguarded adjustment targets an instance ID defined by *both* a copy axis and another single-fill axis (not its own option), composition refuses it as ambiguous: either move it under that single-fill option or guard it on the copy axis.
 
-```json5
-{ target: ["framework_controls_inst", "applier_inst"],
-  set_daemon_scopes: { stack: { max_copies: 4, options: [ /* ... */ ] } } }
-```
+**Target rules and guards:**
 
-A list reads as one adjustment per instance, in its order, so every rule below holds for each instance on its own. A list names at least one instance, and each one once.
+- `target` accepts either a single instance ID or a non-empty list of unique instance IDs (applied in order to each):
+  ```json5
+  { target: ["framework_controls_inst", "applier_inst"],
+    set_daemon_scopes: { stack: { max_copies: 4, options: [ /* ... */ ] } } }
+  ```
+- If the current selection does not deploy a target, the adjustment is **skipped** (not an error). However, targeting an instance ID that *no* reachable option defines fails at load time as a dead reference.
+- An option's adjustments automatically run only when that option is selected. Add `when` only for extra cross-axis conditions: top-level guards name launcher axes; option guards name other launcher axes plus [the option's own axes](#an-options-own-axes). Each axis takes one option or a non-empty list (OR within a list, AND across axes):
+  ```json5
+  when: { simulation: ["mujoco", "isaac_sim"] }
+  ```
+  An adjustment reaching copies from the top level or a single-fill option may guard on at most one copy axis (never on a copy's own axes) and target only that copy's or stack instances.
 
-An adjustment whose target the current selection does not define is **skipped**, not refused: a top-level write to `recorder_inst` does not run when the recorder axis is off, and a list skips each instance the selection does not define. A target nothing in the entry's reach defines is a dead reference and fails when the launcher is read. From the top level, or under an option that fills once, an entry reaches the launcher's deployments, its own option and every option of the other axes, those that run as copies included; under an option that runs as copies it reaches that option's instances and the stack's, never another copy's.
-
-An option's adjustments run when that option is selected, so the option is their guard. `when` is for conditions existence cannot express, mostly shape: two leaders may both provide `commander_inst`, but only the browser panel has motor health and alert slots to bind. A top-level guard names the launcher's axes; an option's names the launcher's other axes and [the option's own](#an-options-own-axes). Each axis accepts an option name or a nonempty list of option names: lists match **any** listed option (OR), and **every** named axis must match (AND).
-
-A copy's selection holds the launcher's axes and the copied option's own. So an entry that reaches the copies from an option that fills once, or from the top level, is guarded on the launcher's axes alone, and one guarded on that option's own axis is refused when the launcher is read. An entry names one axis that runs as copies, through the option it sits under or its guard, and targets an instance those copies or the stack define; naming two, or targeting anything else, is refused when the launcher is read.
-
-For example, a guard on the two simulations that model no camera response:
-
-```json5
-when: { simulation: ["mujoco", "isaac_sim"] }
-```
-
-This guard matches either, and Waldo does not match. The same scalar-or-list syntax applies inside constraint `when`, `requires`, and `forbids` conditions.
-
-The ownership rule of thumb: if a value is something the operator genuinely decides, make it another option on the axis, visible in the command line. If it is a *consequence* of a choice already made, write the adjustment under that option, where it needs no guard: it runs exactly when the option is selected and skips when its target is absent.
+**Rule of thumb:** If an operator should choose a variation on the CLI, make it an option on an axis. If a change is just a consequence of another choice, write it as an adjustment under that option.
 
 ## Constraints
 
-Adjustments change what a selection builds; a **constraint** refuses selections nobody should run. Some members of a family are stacks no operator should be able to name: the ZED camera that films only the physical rig must not launch against the simulator. Those members flatten cleanly, so neither `provides` (which only promises ids exist) nor an adjustment's `when` guard (which only decides whether one adjustment applies inside a legal selection) can say it. A constraint can, and it only ever refuses: a violating selection is rejected before anything is pinned or started. It never picks an option to satisfy itself.
+Adjustments tweak valid stacks; **constraints** forbid invalid combinations (for example, launching a physical-only stereo camera against a simulator). Constraints only reject invalid selections before anything starts; they never auto-select options.
 
 ```json5
 constraints: [
@@ -820,42 +755,27 @@ constraints: [
 
 | Field | Meaning |
 |---|---|
-| `when` | The guard: the selections this constraint speaks about, in the same `axis: options` grammar as an adjustment's `when`: every named axis holds one of its listed options (an AND across axes, an OR within one). Omit it to speak about every selection. |
-| `requires` | What the guarded selections must also contain: a list of alternatives, at least one of which must match wholly. Each alternative is an `axis: options` map where every axis must match (an AND); listing several alternatives is an OR. |
-| `forbids` | What the guarded selections must not contain: a list of `axis: options` maps, and matching any one of them (each an AND of its axes) refuses the selection outright. |
-| `reason` | Why the refused selections must not run. Required, and quoted verbatim in the refusal: peppy can render what was required or forbidden, but only the author knows what the dead combination would have done. |
+| `when` | Optional guard (`axis: option` or `axis: [opt1, opt2]`, AND across axes, OR within a list). Omit to apply to all selections. |
+| `requires` | List of alternatives (OR across entries; AND within each map). At least one alternative must match. |
+| `forbids` | List of forbidden combinations (OR across entries; AND within each map). Matching any entry rejects the selection. |
+| `reason` | Required explanation quoted verbatim when rejected. |
 
-A constraint states at least one of `requires` and `forbids`; with neither it refuses nothing, and the document is refused when it is read. The rest of the shape is held to the same standard: `when` and every entry name at least one axis, an entry may not repeat an axis the guard already fixes (under the guard that axis is decided before anything is selected), the same map may not be listed twice in one list, and one map may not appear in both lists.
+Key rules:
 
-Matching treats an unfilled axis as matching no entry, on either side: a guard on `camera: "zed"` stays quiet when the camera axis is off, and a `requires` alternative naming that option is satisfied only by selecting it, never by leaving the axis unfilled. That asymmetry is the tool for optional features: `requires` is how an option demands company, while `forbids` is the only way to say an optional option never launches with another one (nothing requirable means "that axis stays off"). Where the axis is required, prefer `requires` of the wanted option instead: `requires` fails closed for options added later, while a `forbids` list names today's options and stays silent about tomorrow's.
-
-The refusal happens at selection time and names the document that declared the constraint, the full resolution (with its `(from file)` markers showing the axes the operator never named), what was required or forbidden, and the author's `reason`. When several constraints overlap, the first declared one refuses, so the author controls which reason the operator reads.
-
-A launcher's constraints speak in the launcher's axis and option names; a fragment's speak in [its own axes](#an-options-own-axes) and the launcher's, which is where a rule about an option's own axes belongs. `peppy repo index --check` holds them to leaving a usable family behind: a constraint that refuses no selection, an option no legal selection can pick, a bare launch that violates a constraint, and a file's copy whose own `constraints` refuse it under every admitted selection (so what the file deploys can never start: loosen a constraint or change the copy's `with`) are each reported when the launcher is indexed. A file copy is held only to the stacks its constraints admit: a selection those `constraints` refuse by design, as a join of it would be, is not flagged.
+- Every constraint must include at least one of `requires` or `forbids`, cannot repeat an axis already fixed by `when`, and cannot duplicate maps.
+- An unselected (`zero_or_one`) axis never matches a `when` or `requires` entry. Use `forbids` to block an optional axis from pairing with another option; prefer `requires` on required axes so future options fail closed.
+- The first violated constraint in declaration order wins and prints the full resolved selection, rule, and `reason`.
+- Launcher constraints use launcher axes; fragment constraints use the fragment's own axes and launcher axes. `peppy repo index --check` rejects dead constraints, unreachable options, and invalid default/file-deployed stacks.
 
 ## Fragments: splitting a launcher across files
 
-An option's body can live in its own file, called a **fragment**. This is an organizational choice, never a requirement: a launcher whose options are all inline is self-contained. Extract a fragment once a second launcher wants the same body, so the body is stated once.
-
-A fragment file carries the `launcher_fragment/v1` tag:
+Extract an option body into a separate **fragment** file (`peppy_schema: "launcher_fragment/v1"`) once multiple launchers share it. Inline options stay self-contained when reuse is not needed.
 
 <Code code={zedCameraFragment} lang="json5" title="fragments/zed_camera.json5" />
 
-The launcher references it by path, and the option value becomes that path string:
+Reference a fragment by relative path or combine multiple fragments in order with `fragments: [...]`:
 
 ```json5
-options: {
-  uvc: { deployments: [ /* inline, as above */ ] },
-  zed: "fragments/zed_camera.json5",
-}
-```
-
-Fragment paths are relative to the declaring document's directory: the launcher's for its options, the fragment file's for the options of its own axes. Inside a Peppy repository, the nearest ancestor containing a valid `peppy_repository.json5` sets the boundary: `so101/fragments/so101.json5` can include `../../common/fragments/none.json5`. Parent segments and resolved symlinks must stay within that repository. Standalone launchers use their own directory as the boundary. Absolute paths are rejected. Repository names and filesystem paths use the same resolution rules.
-
-The object form of an option names its files under `fragments`, read in order, and may carry a body of its own beside them; two options share one body by naming the same file:
-
-```json5
-// In the launcher, whose `adjustments` under an option are its own writes.
 options: {
   mujoco: { fragments: ["fragments/relays.json5", "fragments/mujoco.json5"] },
   isaac_sim: { fragments: ["fragments/relays.json5", "fragments/isaac_sim.json5"],
@@ -865,15 +785,18 @@ options: {
 }
 ```
 
-An option declared inside a fragment, or inside an option body, carries no `adjustments` of its own: the writes a fragment makes are its top-level `adjustments`, which name the instances it deploys, those of an option whose body is written inside it included, and everything else is the launcher's, under the option that selects the fragment. A fragment's `framework` declares clocks only.
+Fragment rules:
 
-The parts of one option declare its axes between them, each axis once, and deploy each of those axes once. Besides `deployments`, `components`, `constraints`, `adjustments` and `framework`, a fragment may declare `core_nodes`: additional placement placeholders its instances need, unioned with the launcher's own, so selecting the option makes the matching `--place` bindings required exactly as if the launcher declared them. An entry in a fragment's `adjustments` naming an instance the fragment does not deploy is refused when the fragment is read, naming what it does deploy. The connections between fragments are the launcher's, written under the option, as above.
-
-A fragment is not a stack. The repository indexer never lists a fragment as a launchable launcher, it needs no entry in `peppy_repository.json5`, and it cannot collide with a launcher name. `peppy repo index --check` validates every fragment a launcher references and flattens every legal selection of its axes, so a broken combination is refused on the branch that introduced it.
+- **Path boundaries**: Paths resolve relative to the declaring document and must stay within the repository root (nearest ancestor with `peppy_repository.json5`, or the launcher's directory for standalone files). Absolute paths and escaping symlinks are rejected.
+- **Ownership**: A fragment's `adjustments` can only modify instances deployed by that fragment itself; cross-fragment wiring belongs in the launcher's option `adjustments`. A fragment's `framework` block may only declare `clocks` (never root `restart`). Fragments may declare `core_nodes` (merged into the launcher's placeholders when selected).
+- **Not launchable standalone**: Fragments are never indexed as launchers by `peppy repo index`, cannot collide with launcher names, and are validated across every legal axis combination by `peppy repo index --check`.
 
 ## An option's own axes
 
-An option's fragment can declare `components` of its own: the axes that belong to that option. An OpenArm robot fragment declares its robot commander and its recorder, and deploys the browser panel unless told otherwise:
+An option fragment can declare its own nested `components` (cardinality `one` or `zero_or_one` only; nesting stops at two levels). For example, an OpenArm robot fragment can own its `model`, `robot_commander`, `recorder`, `camera_rig`, and `brain` axes:
+
+<details>
+<summary>Example fragment with its own axes (`fragments/openarm_sim.json5`)</summary>
 
 ```json5
 // fragments/openarm_sim.json5
@@ -886,8 +809,6 @@ An option's fragment can declare `components` of its own: the axes that belong t
     { camera_rig: "none" },
   ],
   components: [
-    // The model the simulation stands: each option deploys the
-    // initializer that names its model, inline.
     { name: "model", provides: ["init_inst"],
       options: {
         openarm_v1: { deployments: [{ source: { name: "robot_initializer", tag: "v1" },
@@ -897,8 +818,6 @@ An option's fragment can declare `components` of its own: the axes that belong t
                                       instances: [{ instance_id: "init_inst", framework: { clock: "simulation" },
                                                     arguments: { model: "openarm_v2" }, links: { simulation: "simulation_inst" } }] }] },
       } },
-    // The robot commander of the robot: a node that drives it outside the
-    // leases and the halt.
     { name: "robot_commander", role: "robot_commander",
       options: { web_commander: "web_commander.json5", none: "../../common/fragments/none.json5",
                  ker_commander: "ker_commander.json5" } },
@@ -912,15 +831,21 @@ An option's fragment can declare `components` of its own: the axes that belong t
 }
 ```
 
-`role: "robot_commander"` marks the **robot commander axis** of the option: the option of a copy on that axis is the robot commander of the robot, a node that drives its own robot outside the [leases and the halt](/advanced_guides/fleet/), such as a leader arm, the KER or the browser panel. The fleet listing gives it as the `robot_commander` of the robot, and the option `none`, or an option that marks no axis, gives none. An option marks one axis at most, and an axis that runs as copies takes no role.
+</details>
 
-A fragment's axes are `one` or `zero_or_one`; how many robots run is the launcher's `robot` axis. They are in reach whenever the fragment runs once: on a launcher whose `robot` axis is `one`, `--with ker_commander` reaches into the robot's fragment, and `--with robot_commander=ker_commander` says so explicitly. A fragment's `adjustments` and `constraints` speak in its own axis names and the launcher's, so the "cameras need a consumer" rule and the recorder's trigger rule live in the robot fragment beside the axes they speak about, and the camera rule and the recorder rule name the launcher's `headset` axis among the consumers that satisfy them. A launcher's own `adjustments` and `constraints` speak in the launcher's axis names. A fragment two levels below the launcher declares no axes: an option of a fragment's axis is a plain fragment.
+- **`role: "robot_commander"`** (at most one per option, never on a copy axis): marks which own axis supplies the robot's local manual controller (such as a leader arm or browser panel) that drives the robot outside [leases and the halt](/advanced_guides/fleet/). Reported in the fleet listing (`none` means no commander).
+- **Scoping**: A fragment's `adjustments` and `constraints` can reference both its own axes and the launcher's top-level axes. On a single-robot (`one`) axis, `--with ker_commander` or `--with robot_commander=ker_commander` reaches directly into the fragment's axes. On a multi-robot copy axis, prefix with the copy name (`--with alpha.ker_commander`).
 
 ## Copies
 
-An axis with cardinality `zero_or_more` or `one_or_more` runs as **copies**: named instances of one of its options, exactly as a node runs as named instances. The launcher's `deployments` list the copies a launch starts, `peppy stack join` adds one to a running stack, and `peppy stack remove` takes one out. Every instance a copy's fragments define is minted as `NAME_<id>`, so any number of copies run side by side under one launcher. The `<id>` a fragment writes is the instance's name inside the copy, and a [per-robot MCP surface](/advanced_guides/mcp/#per-robot-surfaces) publishes it: it is the value a client passes to pick which of a robot's cameras or limbs a call addresses, so renaming an instance in a fragment renames it for every client of that surface.
+An axis with `cardinality: "zero_or_more"` or `"one_or_more"` runs as **copies**: named deployments of an option (such as multiple robots sharing one simulation or fleet stack).
 
-The `openarm_simulation` launcher holds the simulation as a `one` axis, and the robot as copies:
+- Every instance defined in the copy's fragment is automatically prefixed with `<copy_name>_` (for example, `backbone_inst` inside copy `alpha` becomes `alpha_backbone_inst`). Links between the copy's own instances follow the prefix; links to shared stack instances (like `simulation_inst`) keep their unprefixed IDs.
+- The unprefixed fragment ID is also the public member name on a [per-robot MCP surface](/advanced_guides/mcp/#per-robot-surfaces) (so renaming it in a fragment changes the name MCP clients pass).
+- **`zero_or_more`**: launches with 0 or more copies; you can add copies at launch (`--join`) or live (`peppy stack join`) and remove any copy (`peppy stack remove`).
+- **`one_or_more`**: requires at least 1 copy at launch (listed in `deployments` or passed via `--join`) and refuses removing the last copy.
+
+### Declaring copies in a launcher
 
 ```json5
 components: [
@@ -931,140 +856,71 @@ components: [
 ],
 deployments: [
   { simulation: "waldo" },
-  { robot: "openarm_sim", instances: [
+  { robot: "openarm_sim", with: { robot_commander: "web_commander" }, instances: [
       { instance_id: "alpha", arguments: { commander_inst: { http_port: 8765 } } },
+      { instance_id: "bravo", with: { model: "openarm_v1" }, arguments: { commander_inst: { http_port: 8766 } } },
   ] },
 ],
 ```
 
-The same axis written `cardinality: "one_or_more"` is the same copies with a floor under them: a launch starts at least one, and `stack remove` refuses the last one, so every stack of the launcher runs a robot. The copy can come from `deployments`, as the entry above does, or from `--join OPTION:NAME` on the launch, so a launcher that deploys none makes the choice of robot part of the command line. A launch that would start none is refused, naming the axis and both ways to fill it.
+Each copy entry accepts `instance_id` (name), `with` (own-axis selections), `arguments` (keyed by unprefixed fragment ID, then parameter name), and `adjustments` (same verbs as launcher adjustments, excluding `set_daemon_scopes`). The parent option entry can also declare shared `with`, `arguments`, and `adjustments` inherited by every copy (listed or joined), and may omit `instances` to configure defaults for future joins without starting any copy at launch. Each option can appear in at most one `deployments` entry.
 
-```json5
-{ name: "robot", cardinality: "one_or_more",
-  options: { openarm_sim: "...", so101_sim: "..." } },
-```
+Precedence for a copy's configuration (weakest to strongest):
+1. Option fragment defaults
+2. Option entry `with` / `arguments` / `adjustments` in `deployments`
+3. Per-copy `with` / `arguments` / `adjustments` (or CLI `--with` / `--set-arguments` for joins)
 
-```sh
-peppy stack launch openarm_simulation                               # the copy the file deploys
-peppy stack launch openarm_simulation --join openarm_sim:alpha      # when the file deploys none
-```
-
-A copy entry has four fields: `instance_id`, the copy's name; `with`, the selection of the option's own axes, an axis left out taking what the fragment deploys; `arguments`, overrides of the copy's instances' arguments, keyed by the id written in the fragment and then by argument; and `adjustments`, the fragment verbs over the copy's instances. The option entry itself takes `with` and `arguments` too, shared by every copy of the option, listed or joined, and a copy's own values win per axis and per argument:
-
-```json5
-{ robot: "openarm_sim", with: { robot_commander: "web_commander" }, instances: [
-    { instance_id: "alpha" },
-    { instance_id: "bravo", with: { model: "openarm_v1" }, arguments: { commander_inst: { http_port: 8766 } } },
-] },
-```
-
-An entry and a copy also take `adjustments`, the same verbs the launcher's adjustments use (`set_arguments`, `set_framework`, `set_links`, `add_links`, `unset_links`) with an optional `when` over the launcher's axes that fill once and the copy's own, targeting the copy's instances by the ids written in the fragment. They run after the launcher's adjustments, the entry's before the copy's, and the copy's `arguments` last. On `stack launch` and `stack build`, a `--with` word `NAME.axis=option` or `NAME.option` selects one copy's own axis for that launch, over the file's `with`, whether the file lists that copy or `--join` names it:
+### Launching, joining, and removing copies
 
 ```sh
-peppy stack launch openarm_simulation --with mujoco,alpha.ker_commander
-```
-
-An entry may list no copy. It then says how every copy of the option is set up, and a launch starts none of them; `--join OPTION:NAME` on `stack launch`, once per copy and comma-separated as `--with` is, starts a copy with the launch: a copy of the entry under that name, composed, validated and started with the launch, and failing with it. The words that address a listed copy address it too, `--with NAME.option`, and it runs where its `--join OPTION:NAME@CORE_NODE` names:
-
-```json5
-deployments: [
-  { simulation: "waldo" },
-  { robot: "so101_sim", with: { robot_commander: "none", camera_rig: "cameras_sim" } },
-],
-```
-
-```sh
-peppy stack launch simulation_mcp                                                    # the simulation and the copies the file lists
-peppy stack launch simulation_mcp --join so101_sim:charlie                           # one more, as the entry sets it up
-peppy stack launch simulation_mcp --join so101_sim:charlie,so101_sim:delta --with delta.so101_leader
-```
-
-A copy named on the command line is composed as a join. `--join` lays it over the configuration the file states and over the copies named before it, as `stack join` lays a copy over the running stack, so what a launch accepts a later `stack join` accepts too, and a robot you can name at launch is a robot you can also join later. A name the launch already starts, listed or joined, is refused.
-
-One robot, two robots, many:
-
-```sh
-# The simulation and the copies the file deploys.
+# Launch default copies from the file
 peppy stack launch openarm_simulation
 
-# The same copies in MuJoCo, with the stack's headset.
-peppy stack launch openarm_simulation --with mujoco,xr_commander
+# Override a listed copy's own axis at launch
+peppy stack launch openarm_simulation --with mujoco,alpha.ker_commander
 
-# Another robot in place of the first, on another machine, led by the headset, then its removal.
-peppy stack remove alpha
-peppy stack join openarm_sim:bravo@jetson-2 --with robot_commander=none
-peppy stack list
-peppy stack remove bravo
+# Add copies at launch time (comma-separated or repeated --join)
+peppy stack launch physical \
+  --join openarm:alpha@jetson-1 \
+  --join openarm:bravo@jetson-2 \
+  --with xr_commander,bravo.model=openarm_v1,bravo.robot_commander=none
 
-# A stack with no robot yet, then robots as they arrive.
-peppy stack launch physical --with xr_commander
-peppy stack join openarm:alpha@jetson-1 --with openarm_v2
-peppy stack join openarm:bravo@jetson-2 --with openarm_v1,robot_commander=none
-
-# The same two robots, a v2 and a v1, named at launch.
-peppy stack launch physical --join openarm:alpha@jetson-1 --join openarm:bravo@jetson-2 --with xr_commander,bravo.model=openarm_v1,bravo.robot_commander=none
-```
-
-`stack join OPTION:NAME` names the option to copy and the copy's name, the one spelling `--join` takes too. Its `--with` words select the copied option's own axes. Every instance the copy's fragments define receives the name as a prefix: `alpha_left_arm_inst`, `alpha_backbone_inst`, `alpha_commander_inst`. Every link naming one of them follows it under the prefix, including array links and pairing targets such as `alpha_backbone_inst/leader_left_arm`; links to stack instances such as `simulation_inst` keep their IDs. The name is also the copy's core node link.
-
-A copy runs where it is named: `OPTION:NAME@CORE_NODE` on `stack join` and on `--join` at launch, and `--place NAME@CORE_NODE` for a copy the launcher file lists. With no machine, the copy runs on the coordinator. The copy's machine runs its base, the instances of the copied option's own fragments. The instances that an own axis of the copy brings, those of the option the copy selects on that axis, are a **part** of the copy, and a part runs where the word that selects it says: a selection word takes a machine after `@`, `option@CORE_NODE` or `axis=option@CORE_NODE`, and at launch `NAME.option@CORE_NODE` or `NAME.axis=option@CORE_NODE`. `self` names the coordinator, after the `@` of a copy as of a word. A word with no machine, and an own axis that no word names, run with the base. To place a part that the launcher entry or the fragment selects, write its option again with a machine: `--with cameras_sim@cn-gpu-box`. When every instance of a copy comes from parts that run elsewhere, the copy's machine runs nothing, and `stack list` still shows it as the copy's machine. Links, pairings and observations between the base and a part, and between two parts, cross machines as they do between any two instances of a [federated launch](/advanced_guides/federation/).
-
-```sh
-# An OpenArm on jetson-1, its brain on a machine with a GPU.
-peppy stack join openarm_sim:delta@jetson-1 --with ai_brain_vla@cn-gpu-box
-
-# The same robot named at launch, and a listed copy's camera rig on the GPU machine.
-peppy stack launch openarm_simulation --join openarm_sim:delta@jetson-1 --with delta.ai_brain_vla@cn-gpu-box,alpha.cameras_sim@cn-gpu-box
-```
-
-A launcher file names no machine for a copy or its parts: the `with` of an entry or a copy takes option names, which hold no `@`; a copy entry or an instance of a copy's fragments that declares `core_node`, and a copy's fragment that declares `core_nodes`, are refused.
-
-These words are refused, each with a text that says what to write instead:
-
-- a placed word whose option brings no instance, such as `--with robot_commander=none@cn-gpu-box`: drop the `@`;
-- two words on one own axis whose machines differ as written: `ai_brain_vla` and `ai_brain_vla@cn-gpu-box` differ, and so do `@self` and `@` with the coordinator's name, because `peppy stack resolve` has no coordinator to compare with. The same word written twice is one word;
-- a bare option that two own axes have, with a machine or without one: `axis=option@CORE_NODE` names the axis;
-- at launch, a machine on a word of a stack axis, such as `--with mujoco@cn-gpu-box`: a stack instance runs where its `core_node` link says, `--place LINK@CORE_NODE`;
-- at launch, `--place NAME@CORE_NODE` where `NAME` is a copy that `--join` adds: place a joined copy where you join it, `--join OPTION:NAME@CORE_NODE`;
-- under `--local`, a `--with` word that names a machine, `@self` included, and a `--join` copy that names a machine other than `self`: `--local` runs the whole launch on this machine;
-- on `stack join`, a word `NAME.option`, which selects an own axis of a copy on `stack launch` only.
-
-A joined copy starts from the same settings as a copy the file lists. Weakest first: what the option's fragment deploys, then the `with`, `arguments` and `adjustments` of the launcher's entry for that option, then the join's `--with` words and `--set-arguments`. A word wins on its own axis and the entry's other axes stay selected, so the option's constraints judge the two together, as they do for a launch word `NAME.option`. Under the `web_commander` entry above, a plain `peppy stack join openarm_sim:charlie` is another robot under its own browser panel, and `peppy stack remove alpha` followed by `peppy stack join openarm_sim:alpha` brings back the copy the file deployed. One entry speaks for every copy of its option, so a launcher deploys each option of an axis that runs as copies in one entry, and a second entry naming the same option is refused.
-
-`--set-arguments INSTANCE.ARGUMENT=JSON5` on `stack join` overrides one argument of one of the copy's instances, named as the fragment writes it, the way a copy entry's `arguments` does in the file. It applies after every adjustment, over the option entry's `arguments`, once per argument on the command line. Numbers must be finite; quote string values:
-
-```sh
-peppy stack join openarm:charlie --with web_commander \
+# Add and remove copies dynamically on a running stack
+peppy stack join openarm_sim:charlie --with web_commander \
   --set-arguments backbone_inst.max_stream_ee_velocity_m_s=0.2 \
   --set-arguments commander_inst.http_port=8766
+peppy stack remove charlie
 ```
 
-A launch snapshots its launcher and fragment files, and every join composes against that snapshot; launch again to load edits. A join runs each node source that the launch or an earlier join resolved with the pins resolved then, however many joins and removals came between, and resolves only the sources that are new to the stack. Where the join places a node, it reuses the node when that node already runs instances there, and adds and builds it otherwise. A launch with a `robot_membership` scope resolves and builds the nodes of the robots that its scope offers before any join (see [Building the nodes a join brings](#building-the-nodes-a-join-brings)). Constraints judge the stack's selection and the copy's together: on an `openarm_simulation` stack launched without `robot_control` or the headset, a copy that selects `cameras_sim` but no recorder or brain is refused with the rig's reason. The launcher's adjustments under a copy's option may write to a stack instance, and each field they write is what the copy needs of it: the copies the file lists must agree on every field they both write, and a joined copy, whether `--join` names it at launch or `stack join` adds it later, may write to a stack instance only what already runs there, with two exceptions: its own instances may pair into the slots the instance declares vacant (the pairing instance's `links` name the slot, and the launcher's adjustments under the copied option release the vacancy with `unset_links` on the instance), and they may join the `one_or_more` or `zero_or_more` sets it declares, below. A join that would change a running instance any other way is refused, naming the instance and each field that differs. That is why the rendered camera rig, which turns the simulation's rendering on, is selected in the file at launch.
+- `--join OPTION:NAME[@CORE_NODE]` at launch composes identically to `peppy stack join` after launch, so any copy you can pass at launch can also be joined live.
+- `--set-arguments INSTANCE.ARG=JSON5` overrides arguments on `peppy stack join` (quote strings; numbers must be finite).
+- Run `join` and `remove` on the coordinator (or pass `--core-node <coordinator>`). Both serialize with other stack operations and reserve only the machines they touch.
 
-A copy's composition writes no [daemon scope](#daemon_scopes-optional), on its own instances or on a stack instance: a scope written through a copy would exist only while that copy runs. A `set_daemon_scopes` that the composition of a copy applies (an adjustment under the copied option, a top-level adjustment guarded on the copy's axis, or the copy's own `adjustments`) is refused at launch, at join and by `peppy repo index --check`, naming the copy, its option, the instance and the target. A copy entry that declares `daemon_scopes` is refused when the launcher is read.
+### Placing a copy and its parts across machines
 
-A stack instance that watches or consumes every robot declares the slot as a set, and the launcher adds each robot under its option. The stack runs the monitor:
+A copy runs on the coordinator by default, or on the machine named after `@`:
 
-```json5
-deployments: [
-  { source: { name: "fleet_monitor", tag: "v1" },
-    instances: [{ instance_id: "monitor_inst" }] },
-],
+- **Base copy**: `OPTION:NAME@CORE_NODE` (on `stack join` or `--join`), or `--place NAME@CORE_NODE` (for a copy listed in the launcher file).
+- **Individual parts** (an own axis of the copy, such as an AI brain on a GPU host): attach `@CORE_NODE` to its `--with` word (`--with ai_brain_vla@cn-gpu-box` on `stack join`, or `--with delta.ai_brain_vla@cn-gpu-box` on `stack launch`). Use `@self` for the coordinator.
+
+```sh
+# OpenArm on jetson-1, AI brain on a GPU machine
+peppy stack join openarm_sim:delta@jetson-1 --with ai_brain_vla@cn-gpu-box
 ```
 
-where the monitor's own manifest declares the slot as a set:
+Launcher files never hardcode machines for copies (`core_node` and `core_nodes` are forbidden in copy entries and copy fragments). Invalid placements are rejected before anything starts (for example: placing an empty `none` option, conflicting machines on one axis, putting `@machine` on a stack-level `--with` axis instead of `--place`, or placing remote machines under `--local`).
+
+### Wiring copies into running stack instances
+
+A stack-level instance (such as a fleet monitor or per-robot MCP server) can dynamically accept new copies by declaring a `one_or_more` or `zero_or_more` producer or observer slot, and having the copy option append its instances via `add_links`:
 
 ```json5
+// In the monitor's peppy.json5
 depends_on: {
-  nodes: [
-    { name: "openarm_backbone", tag: "v1", link_id: "robots", cardinality: "zero_or_more" },
-  ],
-},
-```
+  nodes: [{ name: "openarm_backbone", tag: "v1", link_id: "robots", cardinality: "zero_or_more" }],
+}
 
-and the launcher adds each copy's backbone to that `robots` slot under the robot option:
-
-```json5
+// In the launcher under the robot option
 options: {
   openarm: {
     fragments: ["openarm/fragments/openarm.json5"],
@@ -1072,48 +928,37 @@ options: {
       { target: "monitor_inst", add_links: { robots: ["backbone_inst"] } },
     ],
   },
-},
+}
 ```
 
 ```sh
-peppy stack launch monitored          # monitor_inst reads robots as []
+peppy stack launch monitored          # monitor_inst sees []
 peppy stack join openarm:alpha        # [alpha_backbone_inst]
 peppy stack join openarm:bravo        # [alpha_backbone_inst, bravo_backbone_inst]
 peppy stack remove alpha              # [bravo_backbone_inst]
 ```
 
-The members follow the order the copies joined, and a copy that rejoins under the same name is a member once, at the end. A member a join adds behaves like one the launch writes: it is subscribed like any other, keeps its position, and an observed member reads as not live while its source is down. A join adds only the copy's own instances, and only to a `one_or_more` or `zero_or_more` producer or observer slot of the instance's manifest; naming an instance the stack runs, a `one` or `zero_or_one` slot, or a pairing slot is refused at join, naming the slot and the fix. A join reserves the machine of every instance whose set it grows, wherever that instance runs, and is refused when that machine is not live on the federation or no longer runs the instance, naming the slot, the machine and the fix. A copy the launcher file deploys at launch may add a stack instance to a set, beside or in place of its own; removing that copy takes the member out again, and rejoining it by name is refused, so such a copy is launched with the stack.
+Rules for how joined copies interact with existing stack instances:
 
-One simulation per stack, and each simulated robot joins it as a copy that brings its own model: the `openarm_simulation` launcher ships one copy, an OpenArm v2, `--join OPTION:NAME` names another at launch and `stack join` adds more, of any model the simulation's catalog carries, as many as the machine can run. A physical robot reads wall time and a simulated one the simulation's clock, so the physical robots have a launcher of their own, `physical`.
+- **What a join may change on a running stack instance**: Only (1) appending its own instances to a `one_or_more` / `zero_or_more` producer or observer slot, or (2) pairing into a `zero_or_one` pairing slot declared vacant (releasing the vacancy with `unset_links`; `stack remove` restores the vacancy). Any other modification to a running stack instance (such as changing an argument or restart policy) is refused.
+- **No daemon scopes in copies**: Copy entries and copy adjustments cannot declare or modify `daemon_scopes`.
+- **Snapshot and pins**: A launch snapshots its launcher/fragment files and resolved node pins. Later joins compose against that snapshot, reusing existing nodes on machines where they already run. (Relaunch to pick up edits to launcher files; a restarted coordinator requires a fresh launch before accepting joins.)
 
-`stack remove NAME` stops the copy's instances in reverse dependency order, takes the members it added out of the running sets, and takes the copy out of the stack; every instance whose set shrank returns the smaller set at its accessor's next call. It stops them one at a time across all the machines of the copy, the last started first. Before it stops an instance, it prints a line that names the instance, such as ``Stopping instance `alpha_backbone_inst` of copy `alpha` ``, so a removal of many instances shows each step; an instance on another machine stops through one request of its own, after a line that names its machine: ``Stopping instance `alpha_brain_inst` of copy `alpha` on `cn-gpu-box` ``. Each machine of the copy is in one of three states:
+### How `stack remove` and `stack list` work with copies
 
-- live and holding the slice of this launch: the copy's instances there stop;
-- live but holding no slice of this launch, because someone reset it: nothing stops there, and a line says so: `` `cn-gpu-box` holds no instance of this launch, so nothing stops there ``;
-- not live on the federation: nothing stops there, and a warning names the copy's instances that stay there until a `peppy stack reset` on that machine clears them once it returns, and every other instance of this launch that this reset also stops there, the parts of other copies and the stack's own instances.
-
-A source on a machine that is not live, whose watchers the removal changes, does not hold the removal: it keeps its watchers until that machine is reset. A stop that fails skips the later stops on its machine while the other machines still stop, and the removal then fails with every error and keeps the copy in `stack list`, so `stack remove` can run again. A set on a machine that is not live keeps the members it holds, and the removal says so; when the machine returns with the instance still running, the next join or removal changing that slot delivers it whole, and when it returns without it, launch again. Two floors refuse a removal: one that would leave a `one_or_more` slot with no member is refused, naming the slot, and one that would take the last copy of a `one_or_more` axis is refused, naming the copy and the axis. A copy another copy links to is refused until that copy goes first, and a copy a stack instance links to any other way stays until the next launch. Removal leaves the stack's own instances running: removing a simulated robot takes it out of the simulation, which stays up for the next join, and `stack reset` stops everything. A copy that released a stack instance's vacancy to pair into that slot restores the vacancy when it goes, so the slot stands vacant again as the launch declared it, the mirror of pairing into a vacancy above. A failed join stops what it started on the live machines, with the same line for each instance it stops, removes the nodes it added, and reports the failure; when that cleanup itself fails the copy stays in `stack list` and the message says to retry `stack remove`.
-
-`stack list` names each copy on one line with the option it copies, its machine and its selection: `Copy delta of openarm_sim on jetson-1: model=openarm_v2,robot_commander=none,camera_rig=cameras_sim,brain=ai_brain_vla@cn-gpu-box`. The selection is each filled own axis, in the order the option declares them, as the word `axis=option` that selects it, with `@machine` after a part that runs on another machine than the copy's, joined by `,`. A listed copy is its own recipe: `peppy stack join openarm_sim:delta@jetson-1 --with` followed by the text after the colon adds the same copy on the same machines. A join ends with the same line, ``Copy `delta` of `openarm_sim` joined on `jetson-1`: model=openarm_v2,…``. Under its line, `stack list` names the copy's instances and the set members it added, one row per slot under `Set members:` (`monitor_inst.links.robots → alpha_backbone_inst`, the target by the id the stack runs it under; the bindings table adds its machine), and its bindings table names the copy beside each member a copy brought (`robots → alpha_backbone_inst@cn-robot [copy alpha]`). A join writes its copy into the stack only when it ends, so while a join or a removal runs, the coordinator's panel names it on a line of its own: `Copy bravo of so101_sim joins the stack now`, or `leaves the stack now` for a removal. After the copies, under `Launch copies`, the coordinator's panel names each copy the launch started, the file's copies and the `--join` ones, in name order, as the launch started it: `Launch copy alpha of openarm_sim on jetson-1: model=openarm_v2,robot_commander=none`. The daemon keeps the launch copies from the launch until `stack reset`, the next launch or the end of its process, and a join or a removal leaves them as they are, so a copy a removal took off the stack stays under `Launch copies`. A `Launch copy` line prints the copy as its `Copy` line did when the launch started it, so a `Copy` line that no `Launch copy` line repeats, with the same text after its keyword, is one `stack join` added. Compare the whole line: a join can add a copy under the name of a launch copy that a removal took off, with another option, machine or selection. `stack list --json` carries the same under `copies`, each selection as `{ "axis", "option" }` with a `core_node` key on a part that runs on another machine than the copy's, and `copy_change` (`{ "action": "join", "name": "bravo", "option": "so101_sim" }`, or `null`), the launch copies under `launch_copies` in the form of `copies`, the members under `set_members`, and each member of a slot's `slot_bindings` under `producer`, with a `copy` key on a member a copy brought, naming the copy and the id its fragment wrote for the instance. The node holding the set reads the same fact through its [`bound_members()`](/advanced_guides/topics/#receiving-messages) accessor. Preview a launch and the copies it starts without starting anything, which composes it and runs the link rules a launch runs, leaving what only a running stack can answer (whether the instance whose set grows is running, and whether its machine is live) to the join itself:
-
-```sh
-peppy stack resolve openarm_simulation --with mujoco
-peppy stack resolve physical --join openarm:alpha --join openarm:bravo --with xr_commander,bravo.model=openarm_v1,bravo.robot_commander=none
-```
-
-Join and remove run on the coordinator (`--core-node NAME` reaches it from another machine), serialize with launches and with each other, and reserve only the machines they touch: an unrelated host that is offline blocks neither. A reset cancels the operation in flight, waits for its cleanup, and empties the stack. A restarted coordinator has no launcher to compose against; launch again before joining.
-
-`peppy repo index --check` composes every legal selection the way a launch does: the stack under every selection of its axes, then every copy an axis that runs as copies can add, as a launch beside the stack and as a join onto it; an entry listing no copy is composed once under the option's own name. An axis the file leaves for the command line, a `one` axis for `--with` or a `one_or_more` axis for `--join`, has no bare launch, and the check is silent about it.
+- **`peppy stack remove NAME`** stops the copy's instances one by one in reverse start order across all its machines (printing each stop line), removes its members from dynamic sets, and restores any vacated pairing slots it took.
+  - **Refused** if removing the copy would empty a `one_or_more` slot, remove the last copy of a `one_or_more` axis, or break another copy's link to it.
+  - **Offline or reset machines**: If a machine was already reset, nothing stops there; if a machine is offline, removal skips it and warns which instances remain until `peppy stack reset` clears that machine upon return. If a stop fails, the copy stays listed so you can retry `peppy stack remove`.
+  - **Failed join**: Stops everything it started, removes added nodes, and leaves the rest of the stack running.
+- **`peppy stack list`** prints one recipe line per active copy (paste the part after `:` straight into `--with` on `peppy stack join`), its instances, and its `Set members:`. It also lists `Launch copies` (all copies started by the original launch, unchanged by later joins/removals) and `copy_change` while a join or removal is in progress. Pass `--json` for structured `copies`, `launch_copies`, `copy_change`, and `set_members`.
 
 ## Auditing a composed launch
 
-Composition changes instances from a distance, so it ships with an audit command:
+`peppy stack resolve` flattens any composed launcher without a running daemon, writing the resulting plain `launcher/v1` file to **stdout** and a diagnostic report to **stderr**:
 
 ```sh
 peppy stack resolve physical --join so101:alpha --with xr_commander,alpha.robot_commander=none,alpha.lerobot_recorder
 ```
-
-`stack resolve` needs no running stack. It prints the flattened `launcher/v1` document to stdout, and a resolution report and its log lines to stderr. An excerpt:
 
 ```
 components: robot_control=(off)  teleop=xr_commander
@@ -1132,23 +977,23 @@ alpha_recorder_inst: clock `wall`, restart on_failure (default)
 link rules hold: slot keys, vacancies, pairing coverage, observation sources and clock agreement checked over 5 node manifest(s)
 ```
 
-Every applied adjustment is listed with the value it replaced and where it was written, the fragment's own entries under the fragment's path and the launcher's under the option that carries them, and every skip says why. Because stdout is a plain launcher, it doubles as the escape hatch: flatten, hand-edit, launch the flat file. The one exception is a launcher with a [`robot_membership` scope](/advanced_guides/mcp/#scopes): the flat file keeps the scope and declares no axis, so no option of the scope runs as copies in it, and its launch refuses the scope and says why. Launch such a launcher itself, or take the instance that serves the target out of the flat file before you launch it. A launcher that deploys copies resolves with them, one `copy NAME:` line each, and `--join OPTION:NAME` resolves one more, repeatable and comma-separated, each joined onto the plan the ones before it left, exactly as `stack launch` composes them. A copy `--join` names takes its own axes from `--with NAME.option`. A `copy NAME:` line writes `@machine` after each part that a word places, as the word wrote it: `brain=ai_brain_vla@cn-gpu-box`. `stack resolve` reads no daemon, so it prints `@self` as written, and its lines name no machine for a copy, which `--join OPTION:NAME@CORE_NODE` or `--place NAME@CORE_NODE` gives at launch. The words that a launch refuses, a part placed twice or a placed part that brings nothing, fail `stack resolve` too. The resulting flat launcher declares each copy's name in `core_nodes` and places each copy whole on its name's link, so a part that a word places runs with its copy when you launch the flat file; launch that file with `--place NAME@CORE_NODE` or `--local`.
+What the report checks (offline, using `~/.peppy/cache/`):
 
-The report then holds the flat plan to the [checks of `daemon_scopes`](#daemon_scopes-optional). They read the exposure documents and the node manifests alone, so those of the exposure deployments run whatever the nodes and contracts caches hold, and a plan that breaks one fails with the launch's own refusal. The `daemon scopes hold` line says how many daemon targets were scoped. When this machine's caches do not hold an exposure document, or the manifest of a node, the report says `daemon scopes not checked` and names the deployment, whose checks it skips; the checks of every other deployment still run. A document or a manifest in the caches that a launch refuses, for example one that does not parse or that names an interface this peppy does not serve, fails `stack resolve` with that refusal.
+1. **Selections and adjustments**: Every selected axis, copy, applied adjustment (old value -> new value and source file), and skipped adjustment (with unmet guard).
+2. **Clocks and restart policies**: Effective clock domain and restart policy (with origin) per instance.
+3. **Daemon scopes**: Validates exposure and cached node [`daemon_scopes`](#daemon_scopes-optional) (noting any uncached node manifests skipped).
+4. **Launch variables**: Lists every required [`env_from_launch`](#env_from_launch-optional) variable and flags any instance using launch variables placed off the coordinator.
+5. **Link rules**: Reads cached node manifests to validate slot keys, vacancies, pairing coverage, observation sources, and clock agreement (skipping with a notice if a manifest is missing from the cache; run `peppy repo refresh` to populate it). Contract-implementation matching stays launch-only.
 
-The report then names the [launch variables](#env_from_launch-optional) of the plan. A `launch variables: the launch needs` line names each variable that the launch needs from the shell that launches, with each instance that takes it and what can start that instance: the launch, or a `stack.join` through a scope of the launch, with the instance whose scope offers the option. A line follows for each instance with launch variables that the launch places off the coordinator, which it refuses: an instance on a core node link that is not a copy's, unless `--place LINK@self` or `--local` puts that link on the coordinator, and an instance of a copy or of a part that a word places on a named machine, unless that machine is the coordinator. `stack resolve` reads no daemon and no `--place`, so a copy that `--place` puts on a peer at launch is refused then, and not named here.
-
-The report ends by holding the flat plan to the launch-time link rules that need no daemon. `stack resolve` reads this machine's nodes cache at `~/.peppy/cache/nodes.json5`, loads each deployed node's manifest, and checks slot-key legality, vacancies, and pairing coverage across them; the `link rules hold` line names how many manifests it checked. A node published by a git repository is read out of the checkout the caches already hold, `peppy repo refresh` handing every clone it makes to the checkout cache, so the nodes and launchers a hub publishes are checked against each other without the command ever reaching the network. The contract-binding rules stay launch-only, because satisfying them can involve the root node that only a running daemon knows. When the plan breaks a rule a launch would reject, say a `zero_or_one` pairing slot left neither paired nor vacant, `stack resolve` fails with that launch's own error instead of surfacing it minutes later at launch. When a manifest cannot be read locally the check is skipped rather than run on a partial picture: the report says `link rules not checked`, names the missing manifest, and advises `peppy repo refresh`, which is what fills both the nodes cache and the checkouts the git-backed manifests are read from.
+Because stdout is a valid flat `launcher/v1` file, you can redirect it, edit it by hand, and launch it directly (except launchers containing a `robot_membership` scope, which require dynamic copy axes and cannot run flat unless you remove that instance). Copy parts placed with `@machine` flatten onto their copy's `core_nodes` link in the flat file.
 
 ### Many selections of one launcher
 
-A program that checks many selections of one launcher gives them to one command, with `--selections FILE` in place of `--with` and `--join`:
+To validate many combinations in a single fast pass (loading the launcher, fragments, and caches once), pass a JSONL file (or `-` for stdin) to `--selections`:
 
 ```sh
 peppy stack resolve physical --selections selections.jsonl
 ```
-
-Each line of the file is one selection, a JSON object. `with` lists the `--with` words and `join` lists the `--join` copies, one word or one copy in each string. Each member is optional, so `{}` is the launch with no word. `-` as the file reads the selections from stdin.
 
 ```json
 {}
@@ -1156,6 +1001,6 @@ Each line of the file is one selection, a JSON object. `with` lists the `--with`
 {"with": ["xr_commander", "alpha.robot_commander=none"], "join": ["so101:alpha"]}
 ```
 
-Stdout gets one JSON object on a line for each selection, in the order of the file. A selection that resolves gives `{"launcher": …, "report": […]}`: the flat launcher as JSON and the lines of the resolution report. A selection that does not resolve gives `{"error": "…"}`, with the message that `stack resolve` fails with for that selection alone, and the selections after it still resolve. JSON has no NaN and no infinity, so such a number of the flat launcher is `null` in a record. The log lines go to stderr. The exit status does not tell whether the selections resolve: a selection that fails gives an `error` record, and the command still exits with 0.
-
-Each record is the verdict that `stack resolve` gives for that selection alone. The command reads the launcher, its fragments and the nodes cache one time. It reads the manifest and the targets of each deployment at the first selection that deploys it, and keeps them for the selections after it, so it costs much less than one command for each selection. The command fails, and prints no record, when the launcher does not load, when the file cannot be read, or when a line of the file is not a selection; the message names the line by its number.
+- Each input line is a JSON object with optional `with` and `join` string arrays (`{}` tests the default selection).
+- Stdout emits one JSON line per selection in input order: either `{"launcher": ..., "report": [...]}` on success (non-finite numbers become `null`), or `{"error": "..."}` on failure.
+- Exit code is `0` as long as the launcher and input file themselves are valid; per-selection failures appear as `"error"` records in stdout. Logs go to stderr.

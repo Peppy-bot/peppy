@@ -5,55 +5,58 @@ sidebar:
   order: 24
 ---
 
-A daemon reads the sender of each call to its raw services, its raw actions and its daemon interfaces (`robot_leases:v1` and `robot_membership:v1`). It checks the [scopes](/advanced_guides/fleet/#scopes-and-raw-calls) of the daemon targets, the raw-call rules and the rights of the command line against the sender that the call proves, not against the instance id and the machine that the call gives. A node cannot call a daemon under the id of another client, such as `peppy-cli` or a lease holder.
+Every call to a Peppy daemon (raw services, raw actions, and daemon interfaces like `robot_leases:v1` and `robot_membership:v1`) is cryptographically signed. The daemon enforces [daemon scopes](/advanced_guides/fleet/#scopes-and-raw-calls), raw-call restrictions, and CLI privileges against the **verified signature**, never trusting an unverified sender ID. A node cannot impersonate `peppy-cli` or another lease holder.
 
 ## Keys
 
-Each client of a daemon signs each of its calls to a daemon with an Ed25519 key:
+Each caller signs daemon requests with an Ed25519 key pair:
 
-| Client | Key |
+| Caller | Key lifecycle |
 | --- | --- |
-| An instance | A key pair for each start of the instance. The daemon writes it to a key file of that start and names the file in the runtime configuration of the instance. The file goes when the process of that start ends, and a restart gets a new key. |
-| The command line | The key pair in `credentials/command_line.key` of the data root, which the daemon makes at its first boot and keeps. The daemon state names the file. |
-| A daemon | A key pair for each boot, which the daemon keeps in memory. |
+| **Node instance** | Fresh ephemeral key pair per start, written to a per-start key file named in the instance's runtime config and deleted when that process exits (restarts get a new key). |
+| **CLI (`peppy`)** | Persistent key pair at `<data_root>/credentials/command_line.key`, created on first daemon boot. |
+| **Daemon** | Fresh in-memory key pair per daemon boot. |
 
-Only the user of the daemon reads the `credentials` directory of the data root and each file in it (modes 0700 and 0600).
+`credentials/` and its key files are owner-only (`0700` / `0600`).
 
-The generated code, `peppylib` for Rust and Python, the codec API and the MCP server of peppy sign through the session that the runtime configuration of the instance opens. The `peppy` commands sign with the key of the command line. Topics, the calls between nodes and the calls of a daemon to a node carry no signature.
+Signing happens automatically inside `peppylib` (Rust and Python), generated code, the codec API, built-in MCP servers, and the `peppy` CLI. Topics, node-to-node calls, and daemon-to-node calls are **not** signed.
 
-A signature covers the namespace of the session, the key expression of the call (which holds its sender and its receiver), the kind of the call, its payload, a timestamp and a nonce. It rides on the attachment of the query, so a node that calls a daemon needs nothing more than its session.
+Each signature rides in the Zenoh query attachment and covers: session namespace, key expression (sender + receiver), call kind, payload, timestamp, and a one-time nonce.
 
 ## What the daemon refuses
 
-The daemon verifies each call before it reads the sender, and refuses with the failure kind `rejected`:
+The daemon verifies the signature before handling any call (except service liveness probes) and returns `rejected` if:
 
-- A call with no signature. A node that an earlier peppy built does not sign its calls: build it again with this peppy.
-- A signature that does not verify with the key of the sender that the call gives, such as a node that calls under the id of `peppy-cli` or of another instance.
-- A sender with no key on the daemon, such as an instance whose process does not run.
-- A timestamp more than 30 seconds away from the clock of the daemon.
-- A nonce that a call of the last 30 seconds carried: a replayed call.
-- A call of another machine with no machine proof, or with one that does not verify (see [Machines of a federation](#machines-of-a-federation)).
+- The call is unsigned (for example, a node built with an older Peppy version: rebuild it).
+- The signature does not match the claimed sender's key (spoofing `peppy-cli` or another instance).
+- The claimed sender has no active key registered on the daemon (stopped process).
+- The timestamp differs from the daemon's wall clock by more than **30 seconds**.
+- The nonce was already seen within the last 30 seconds (replay).
+- A cross-machine call lacks a valid machine certificate chain (see [Machines of a federation](#machines-of-a-federation)).
 
-The message of the refusal says which check failed. A probe of a service, which tells a client that the service is there, needs no signature.
-
-A daemon takes the cancel of a goal only from the sender of the goal. A goal id travels on the wire, so without this check any client with a key could end the goals of another client, such as the `lease` goal of a lease holder.
+For action goals on the daemon, only the **original goal sender** may cancel a goal, preventing another process that observes a `goal_id` on the wire from cancelling someone else's `lease` goal.
 
 ## Limits
 
-- A process that can read the key file of another client can act as that client. A native node runs as the same Unix user as the daemon and the command line, so it can read their key files and act as any client of its machine. A container node does not see the data root (see [What a container node sees of the data root](/advanced_guides/containers/#what-a-container-node-sees-of-the-data-root)), and reads its own key file alone.
-- The replies of a daemon carry no signature: a program on the network can give a false reply to a client.
-- The leases and the halt stay cooperative: a robot node does not check a lease, and the signatures do not change who may send a command to a node.
+- **Same-user process nodes**: Native (non-container) nodes run as the same Unix user as the daemon and CLI, so OS permissions alone do not stop a native node from reading other local key files. [Container nodes](/advanced_guides/containers/#what-a-container-node-sees-of-the-data-root) cannot see the Peppy data root and only see their own key file.
+- **Replies are unsigned**: Daemon responses are not signed; an attacker on the network could spoof replies.
+- **Leases stay cooperative**: Robot driver nodes do not verify leases themselves; signatures enforce who may talk to the daemon, not who may talk directly to a robot node.
 
 ## Machines of a federation
 
-A machine proves its calls to the daemons of the other machines of a [federation](/advanced_guides/federation/) with its machine certificate: a certificate of a CA and the private key of that certificate.
+Across machines in a [federation](/advanced_guides/federation/), each daemon proves its identity with an X.509 **machine certificate**:
 
-- An enrolled machine uses its platform certificate (`conf/peer/peer.crt` with the issuer chain `chain.crt` and the key `peer.key`), and checks the other machines against the CA of its project (`ca.crt`).
-- A machine of a federation that the operator forms, through an operator-run router or a router configuration that the operator pins, uses the certificate that the operator gives in [`machine_certificate`](/advanced_guides/daemon_config/#machine_certificate-the-certificate-of-the-machine). Its common name is the core node of the machine.
+- **Platform-enrolled machines**: automatically use `conf/peer/peer.crt` + `chain.crt` + `peer.key`, verified against the project CA (`ca.crt`).
+- **Self-managed federations** (operator-run router): configure [`machine_certificate`](/advanced_guides/daemon_config/#machine_certificate-the-certificate-of-the-machine) with a certificate whose Common Name matches the core node name.
 
-At each boot, the daemon signs a boot statement with the key of its machine certificate: the namespace, the core node, the instance id of the boot and the public key of the boot. With the key of its boot, it endorses the key of the command line and the key of each instance that it starts. A call to the daemon of another machine carries the boot statement, the certificate chain and the endorsement. The daemon that receives it checks the chain against its own CA, the boot statement and the endorsement, and that they name its namespace and the core node and the instance id that the call gives.
+**How the trust chain works:**
 
-- A daemon with no machine certificate takes no call of another machine, and the daemons of the other machines refuse its calls.
-- The coordinator of a launch takes a call of an instance of another machine as that instance only when the launch places the instance on that machine.
-- A platform certificate names a peer of the project, not a core node, so a machine of the project can give the core node name of another machine of the project. A peer that the platform removes keeps the trust of the other daemons until its certificate expires.
-- The machines of a federation keep their wall clocks within 30 seconds of each other.
+1. At boot, each daemon signs a **boot statement** (namespace, core node, boot ID, ephemeral boot public key) using its machine certificate key.
+2. Using that boot key, the daemon signs an **endorsement** for its CLI key and for every instance key it starts.
+3. Cross-machine calls attach the certificate chain, boot statement, and endorsement. The receiving daemon validates the chain against its CA and checks that the namespace, core node, and instance ID match the call.
+
+Important rules:
+- Daemons without a machine certificate reject all cross-machine calls (and their calls are rejected by peers).
+- A launch coordinator only accepts a remote instance's call as that instance if the launch actually placed it on that machine.
+- Platform certificates identify a project peer rather than a specific core node name, and removed peers stay trusted until their certificate expires.
+- Federated machines must keep their wall clocks synchronized within **30 seconds**.

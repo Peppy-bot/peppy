@@ -47,31 +47,53 @@ Alongside the open code, the [Peppy platform](/advanced_guides/platform/) lets y
 <details>
 <summary>My launch failed with an error that looks unrelated to what I changed. Where do I start?</summary>
 
-Check `peppy repo list` on the machine you submitted the launch to, before reading the error too literally.
+Run `peppy repo list` on the machine where you submitted the launch first.
 
-Peppy's default repositories read the hub content released with your Peppy version, so it changes only when you install another version. A repository whose `ref` names a branch moves with that branch at each `peppy repo refresh`, so a change merged there reaches your machine without a Peppy release. `peppy repo list` shows what each repository reads. Only the submitting machine's repositories decide what a launch runs: it resolves every deployment once and every other machine in the launch runs those exact bytes, so a stale or differently-configured cache on another machine is never the cause. A repository cannot declare the same `name:tag` twice: `peppy repo index` refuses to generate an index for it and names both manifests, so the duplicate is caught when the repository is published rather than at your launch. See [When a repository fails](/advanced_guides/repositories/#when-a-repository-fails).
+- **Default repositories** are pinned to your installed Peppy release (`peppy-release/<version>`), so their content only changes when you upgrade or downgrade Peppy.
+- **Branch-tracked repositories** move whenever you run `peppy repo refresh`, so upstream merges can change your launch without a Peppy upgrade.
+- **Federated launches** always resolve from the submitting machine's caches and push pinned bytes to the other machines. Stale or different caches on remote machines never affect what runs.
+- **Duplicate identities** inside one repository are caught at publish time: `peppy repo index` rejects duplicate `name:tag` entries and names both manifests.
+
+See [When a repository fails](/advanced_guides/repositories/#when-a-repository-fails) for details.
 
 </details>
 
 <details>
 <summary>Why is <code>peppy repo refresh</code> reporting repositories it could not update, and can I still work?</summary>
 
-Yes, you can almost certainly still work. A refresh failure is scoped to the repository that caused it: every other repository is indexed as usual, and the failing one **keeps the entries it last published**, so everything that launched before still launches. The run itself succeeds, names every repository that failed in one message so you know which parts of the state are not current, and asks you to run `peppy repo refresh` again.
+Yes, in most cases you can keep working. Refresh failures are isolated to the failing repository:
 
-Read the read failure of the repository. `unreachable` means the repository could not be read at all: network, a bad ref, an unmounted path, or a root with no committed `peppy_repository.json5` (the fix for that last one is authoring, not waiting: run `peppy repo index` in the repository and commit the result). `conflict` means the repository was read fine but its committed index contradicts itself or the tree, and the message names what to fix.
+- All other repositories refresh normally.
+- The failing repository **keeps its last valid entries**, so existing launches continue to work.
+- The command still succeeds, lists every failing repository in one summary, and prompts you to retry `peppy repo refresh`.
 
-`peppy repo list` marks a failing repository's entries `[retained, last read <date>]`. Watch that date: retention is deliberate so that identities do not vanish out from under your launchers, but a repository failing for weeks is still serving weeks-old entries.
+Check the failure reason in the output:
 
-The one case with no local workaround is a machine that has never read that repository successfully: it has nothing to fall back to. Excluding the repository is the only lever, and it removes every identity that repository provides, not just the broken one.
+- **`unreachable`**: Peppy could not read the repository (network outage, invalid ref, unmounted path, or missing committed `peppy_repository.json5`). For a missing index, run `peppy repo index` in that repository and commit the file.
+- **`conflict`**: Peppy read the repository, but its committed index is invalid or contradicts the files in the tree. The error message names the files to fix.
+
+`peppy repo list` marks retained entries with `[retained, last read <date>]`. Keep an eye on that date so you do not silently run weeks-old content.
+
+If a machine has never read that repository successfully, there are no cached entries to fall back to. Excluding the repository removes all items it provides until the repository is fixed.
 
 </details>
 
 <details>
 <summary>What does Ctrl+C do while a <code>peppy</code> command waits for the daemon?</summary>
 
-`peppy stack launch`, `build`, `join`, `remove` and `benchmark`, `peppy node add`, `build` and `run`, and `peppy repo refresh` each follow one goal on the daemon. The first Ctrl+C sends the daemon a cancel. The daemon stops the work at the step it reached and ends it as a failure there ends it, for example a cancelled launch clears the stack and a cancelled join is undone. The command waits for that end, under its max budget alone, prints how the goal ended, and exits with the status of that end: 5 for a cancel, 0 for a goal that completed before the cancel reached it, 4 for a failure (see [Exit statuses of the other commands](/advanced_guides/calling_instances/#exit-statuses-of-the-other-commands)). A command that sends another goal after this one, such as `peppy node add --run`, exits with code 130 also when the goal completed before the cancel reached it, and sends no further goal. A second Ctrl+C stops the wait for the end: the command waits only until the cancel reaches the daemon, which goes on with it, and exits with code 130. A third Ctrl+C ends the command at once. A command whose process goes away, for example when its terminal closes, cancels its goal the same way. See [Stopping a stack command with Ctrl+C](/guides/launch_files/#stopping-a-stack-command-with-ctrlc) and [When a node command ends early](/guides/node_stack/#when-a-node-command-ends-early).
+Long-running CLI commands (`peppy stack launch`, `build`, `join`, `remove`, `benchmark`; `peppy node add`, `build`, `run`; `peppy repo refresh`) each track a goal on the daemon.
 
-The watchdog of a command bounds its wait: a command that hears nothing from the daemon for longer than its budgets allow stops waiting and exits with code 1. It sends no cancel, but its process ends, so the daemon cancels the goal, as for a command whose process goes away. The budgets that a stack command sends with its goal, `--node-add-idle-timeout-secs` and the others of [Launch timeouts](/guides/launch_files/#launch-timeouts), are the daemon's: a change that outlasts one fails with the kind `timeout`.
+| Press | What happens | Exit code |
+| --- | --- | --- |
+| **1st Ctrl+C** | Sends a cancel request to the daemon. The daemon stops at the current step and cleans up (a cancelled launch clears the stack; a cancelled join rolls back). The CLI waits for cleanup to finish (bounded only by its max timeout) and reports the outcome. | `5` (cancelled), `0` (already completed), or `4` (failed). Chained commands like `peppy node add --run` always exit `130` and skip remaining steps. |
+| **2nd Ctrl+C** | Stops waiting for cleanup once the cancel reaches the daemon (cleanup continues in the background). | `130` |
+| **3rd Ctrl+C** | Terminates the CLI immediately. | `130` |
+
+Closing the terminal or killing the CLI process also triggers daemon-side cancellation.
+
+**Timeouts:** Each command runs a client-side watchdog. If the daemon sends no output past the watchdog window, the CLI exits with code `1`, which causes the daemon to cancel the goal. Stack commands also pass per-phase idle budgets to the daemon (such as `--node-add-idle-timeout-secs`); exceeding one fails the goal with failure kind `timeout`.
+
+See [Stopping a stack command with Ctrl+C](/guides/launch_files/#stopping-a-stack-command-with-ctrlc), [When a node command ends early](/guides/node_stack/#when-a-node-command-ends-early), and [Exit statuses of the other commands](/advanced_guides/calling_instances/#exit-statuses-of-the-other-commands).
 
 </details>
 

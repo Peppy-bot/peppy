@@ -7,19 +7,19 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-A node calls the members of the contracts that its manifest names through its generated code. The codec API serves the calls to any other contract, such as a contract that a document names, from the contract document alone. Example: a workflow director runs a workflow that names a new skill contract, and calls the members of that contract with no new build of the director.
+Normally, a node calls contracts declared in its `peppy.json5` through compile-time generated `peppygen` bindings. The **codec API** lets a node dynamically parse and call *any* contract at runtime from its JSON5 document alone, without rebuilding the node (for example, a workflow director invoking newly loaded robot skill contracts).
 
-The codec API has three parts:
+It has three components:
 
-- **The parser of contracts.** It reads a contract document and gives the [description](/reference/concepts/#descriptions) of the contract, the description and the message formats of each member, the [enums](/reference/message_format/#enum-modifier), the [marks](/reference/message_format/#marks-modifier) and the [descriptions](/reference/message_format/#description-modifier) of their fields, and the [marks](/advanced_guides/contract_implementation/#marks) and the [failure kinds](/advanced_guides/contract_implementation/#failure-kinds) of its members.
-- **The codec.** It converts a message of any format between its canonical JSON values and the bytes on the wire. The bytes are the bytes that a generated node writes for the same values.
-- **The clients.** They call a service, send the goal of an action and follow it, and read a topic of a contract, on one producer.
+- **Contract parser**: Reads a `contract/v1` document and exposes its [descriptions](/reference/concepts/#descriptions), member schemas, field [enums](/reference/message_format/#enum-modifier), [marks](/reference/message_format/#marks-modifier), and [failure kinds](/advanced_guides/contract_implementation/#failure-kinds).
+- **Message codec**: Converts between canonical JSON values and the exact Cap'n Proto wire bytes generated nodes use.
+- **Dynamic clients**: Calls services, drives actions, and subscribes to topics on any producer instance.
 
-The [MCP server](/advanced_guides/mcp/) of peppy and the commands that [call a running instance](/advanced_guides/calling_instances/) use the same codec.
+Peppy's built-in [MCP server](/advanced_guides/mcp/) and [`peppy node call`/`echo`](/advanced_guides/calling_instances/) use this same codec.
 
 ## Ask for the codec API
 
-A node asks for the codec API in the `execution` block of its manifest:
+Opt in by setting `execution.codec_api: true` in `peppy.json5` (default `false`; build-time setting, not overridable by launchers):
 
 ```json5
 {
@@ -37,25 +37,20 @@ A node asks for the codec API in the `execution` block of its manifest:
 }
 ```
 
-`codec_api` is `false` when you leave it out. It is a choice of the build of the node, so a launcher cannot change it. `peppy node sync` and `peppy node add` give the codec API to a node that asks, and only to it:
+`peppy node sync` and `peppy node add` provision the API only when enabled (and remove it on the next sync if turned off):
 
-| Language | What the node gets |
+| Language | Provided API |
 | --- | --- |
-| Rust | A path dependency on the crate `peppy-codec` in the `Cargo.toml` of the node, and the crates `peppy-codec` and `peppy-mcp-catalog` in `.peppy/libs`, beside `peppylib` |
-| Python | The module `peppylib.codec` in the `peppylib` of the node |
-
-A node that stops asking loses the dependency and the crates, or the module, at its next generation.
+| Rust | Adds path dependency `peppy-codec` to `Cargo.toml` and places `peppy-codec` and `peppy-mcp-catalog` in `.peppy/libs`. |
+| Python | Exposes `peppylib.codec` inside the node's vendored `peppylib`. |
 
 ### The Cap'n Proto compiler
 
-The codec lays out each message format with the Cap'n Proto compiler, at run time. So a node that asks for the codec API carries the compiler:
+Because message layouts are compiled dynamically at runtime, nodes with `codec_api: true` bundle the Cap'n Proto compiler (`capnp`):
 
-- The crate `peppy-codec` embeds the compiler of the build target of the node.
-- The `peppylib` of a Python node gets the compiler of the platform of the node as the file `peppylib/capnp_compiler`. A node that runs in a container gets the Linux compiler of the architecture of the host.
-
-At its first layout, the codec writes the compiler into the `bin` directory of the peppy data root: `$PEPPY_HOME/bin`, else `~/.peppy/bin`. The name of the file holds the digest of its bytes, so nodes built by different releases of peppy share the directory with no conflict. When `CAPNP_BINARY_PATH` is set, the codec runs the compiler that it names instead. Peppy never runs a `capnp` from `PATH`.
-
-A layout runs the compiler once for each format. Build the codecs and the clients of a node at its start, not at each call.
+- Rust embeds it in `peppy-codec`; Python bundles it as `peppylib/capnp_compiler` (Linux binary matching host arch for containers).
+- On first schema layout, the codec extracts the compiler to `$PEPPY_HOME/bin` (default `~/.peppy/bin`) under a content-hashed filename so different Peppy versions never clash. Set `CAPNP_BINARY_PATH` to override it (Peppy never falls back to `capnp` on `PATH`).
+- **Build codecs and clients once at startup**, not per request, because each layout invokes the compiler once.
 
 ## Parse a contract
 

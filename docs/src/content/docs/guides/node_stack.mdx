@@ -11,7 +11,7 @@ The **node stack** is the central registry that manages all your nodes and their
 - **Nodes** are registered configurations that can have multiple running instances
 - **Edges** represent explicit dependencies declared via `depends_on` in the node manifest
 
-When you add a node to the stack, Peppy validates that its dependencies are satisfied: any topics, services, or actions your node relies on must be provided by other nodes already in the stack. The exception is a dependency whose slot admits an empty bound set (`cardinality: "zero_or_one"` or `"zero_or_more"`): it may be absent from the stack, its interfaces resolve through the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) so code generation still completes, and a dependency missing from both sources refuses the add; at launch, `zero_or_one` requires an explicit vacant binding, while `zero_or_more` may be omitted. This dependency validation prevents runtime errors and helps you understand how your nodes interconnect.
+When you add a node to the stack, Peppy verifies that its required dependencies are already in the stack and expose every topic, service, and action it consumes. Slots that allow zero bindings (`cardinality: "zero_or_one"` or `"zero_or_more"`) are the exception: if absent from the stack, Peppy resolves their interfaces from the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) so code generation still succeeds (failing only if missing from both). At launch time, `zero_or_one` slots require an explicit vacant binding, while `zero_or_more` slots may be omitted. Validating dependencies up front catches wiring errors before any instance starts.
 
 The stack always contains a **core node** and an instance of it at its root, which coordinates the lifecycle of all other nodes. You can query the stack to see which nodes depend on each other and manage node instances.
 The **node stack** is started as a daemon on your system and the `peppy` binary communicates with it to execute user actions.
@@ -37,10 +37,15 @@ Adding node from /private/tmp/hello_world...
 Log file: ~/.peppy/logs/add/hello_world_v1_20260121_224824_699Z.log
 Added node hello_world:v1 to the node stack
 ```
-The log file holds each step the daemon reported while adding the node, and its error in case the command fails.
-When a node is added to the node stack, a copy of the source is staged in a working directory under `~/.peppy/tmp/` to "snapshot" the node, and the node's bindings are generated into that copy, never into the source directory. The add reports success once generation has finished and the node is in the stack; the artifact that `peppy node build` produces later lands under `~/.peppy/built_nodes/<name>_<tag>/`, named after a fingerprint of the staged sources. The staged copy is removed together with the node, so a failed add or a `peppy node remove` leaves nothing behind under `~/.peppy/tmp/`.
-No two copies of the same node with the same name + tag can exist at the same time in the node stack.
-Re-adding a node with the same name and tag overrides the one that was previously in the node stack. The overwrite is refused when the re-add changes the node's interfaces while other nodes depend on it. If an instance of the node has a process or awaits a restart, `peppy node add` of a local directory or a `name:tag` asks for confirmation, naming each such instance with its state; the add stops and clears every tracked instance before overwriting, an exited one without asking; an add from git or a URL stops and clears them without asking. While one of them is starting, the add is refused and stops nothing.
+The log file records every step reported by the daemon and any failure details.
+
+What happens during `peppy node add`:
+
+- **Staging**: Peppy copies the source directory into a temporary snapshot under `~/.peppy/tmp/` and generates bindings there (never modifying your source tree). The temporary copy is cleaned up automatically if the add fails or when you run `peppy node remove`. Later, `peppy node build` saves the runnable artifact under `~/.peppy/built_nodes/<name>_<tag>/`, named by the snapshot's content fingerprint.
+- **Replacing an existing `name:tag`**: Only one entry per `name:tag` can exist in the stack. Re-adding the same `name:tag` replaces it, with three safety rules:
+  1. If other nodes depend on it and the new version changes its interfaces, the overwrite is refused.
+  2. If any instance is currently `starting`, the overwrite is refused without stopping anything.
+  3. If instances are running or waiting to restart, `peppy node add` prompts for confirmation for local directories or `name:tag` sources (git/URL adds proceed without prompting), then stops and clears all tracked instances (exited ones are cleared silently) before replacing the node.
 
 ## Building `hello_world`
 
@@ -134,11 +139,11 @@ Each line starts with the time of the machine, to the millisecond, with its UTC 
 
 ### How an instance starts
 
-The daemon starts an instance in three steps. `peppy node run`, `peppy stack launch` and `peppy stack join` use the same steps.
+`peppy node run`, `peppy stack launch`, and `peppy stack join` all start an instance in three phases:
 
-1. **Ready.** The daemon runs the `run_cmd` (or the container) as the leader of a new process group, and waits up to 600 seconds for the ready signal of the instance. The node runtime (peppylib) answers ready when it is connected to messaging and listens for the shutdown request, before your `setup` function runs.
-2. **Setup.** The daemon then waits for your `setup` function to return, for the **setup budget** of the node. A node declares its setup budget in its manifest as `execution.setup_timeout_secs`, a whole number of seconds from 1 to 540. A node that declares none gets the **default setup budget**, 15 seconds. When the setup does not return within the budget, the start fails. The message gives the budget and its source: the `execution.setup_timeout_secs` of the node, or the default setup budget, with the instruction to declare the key.
-3. **Endpoints.** A node that declares [`execution.endpoints`](/guides/first_node/#serving-a-page-or-an-mcp-endpoint) then reports the sockets it bound. The daemon waits 15 seconds for them.
+1. **Ready (up to 600 s):** The daemon starts `run_cmd` (or the container) as the leader of a new process group and waits for `peppylib` to signal ready. `peppylib` signals ready as soon as it connects to messaging and starts listening for shutdown requests, *before* your `setup` function runs.
+2. **Setup (`setup_timeout_secs`, default 15 s):** The daemon waits for your `setup` function to return. Nodes that wait for external hardware, simulators, or remote services can raise this in `peppy.json5` with `execution.setup_timeout_secs` (1 to 540 seconds). Keep the value tight so a hung setup fails promptly. If it times out, the error names the timeout and whether it came from the manifest or the default.
+3. **Endpoints (up to 15 s):** If the manifest declares [`execution.endpoints`](/guides/first_node/#serving-a-page-or-an-mcp-endpoint), the daemon waits for the node to announce every declared socket.
 
 ```json5 title="peppy.json5"
 {
@@ -152,18 +157,16 @@ The daemon starts an instance in three steps. `peppy node run`, `peppy stack lau
 }
 ```
 
-Declare a setup budget when your setup waits for something outside the node, such as a device, a simulation or a remote service. Keep the budget as small as the work permits: the daemon finds a setup that hangs only at the end of its budget.
+Nodes can read their effective setup timeout at runtime (`node_runner.setup_timeout()` in Rust as a `Duration`, `node_runner.setup_timeout_secs()` in Python as an `int`) to report a clearer error before the daemon times them out. Standalone nodes and the [test harness](/advanced_guides/testing/) read the same value from the manifest.
 
-A node reads its setup budget with `node_runner.setup_timeout()` in Rust (a `Duration`) and `node_runner.setup_timeout_secs()` in Python (an `int`). The daemon writes the budget it applies into the runtime configuration of the instance. A node that runs standalone, or in its [test harness](/advanced_guides/testing/), reads the budget of its manifest. A setup that waits for something can use the budget to stop with its own reason before the daemon stops the instance.
+When the instance signals ready, the daemon emits a progress line that resets the launch's run idle timer ([Launch timeouts](/guides/launch_files/#launch-timeouts)). Because the maximum setup budget (540 s) is shorter than the default run idle timeout (600 s), a silent hung setup always reports the clearer setup timeout error rather than a generic idle timeout.
 
-When the instance answers ready, the daemon sends a progress line. This line restarts the run idle budget of a launch (see [Launch timeouts](/guides/launch_files/#launch-timeouts)). The largest setup budget (540 seconds) is less than the default run idle budget (600 seconds), thus a setup that prints nothing gets the setup error, not the idle error.
+**If startup is aborted** (setup timeout, failed endpoint announcement, launch timeout, `peppy stack reset`, or CLI Ctrl+C):
 
-When the daemon stops a start before it ends, the step of the start decides how:
+- **Before the ready signal**: the node cannot receive shutdown requests yet, so the daemon immediately kills its entire process group.
+- **After the ready signal**: the daemon runs the normal graceful-then-forced stop sequence ([`peppy node stop`](#stopping-your-node)), sending a shutdown request, waiting for the shutdown grace and runtime teardown, and then killing the process group. Registered [shutdown hooks](/guides/first_node/#graceful-shutdown) run so half-initialized locks or simulation state are released cleanly. `peppy stack reset` waits for this stop to finish before clearing the stack.
 
-- **Before the ready signal**, the node does not listen for the shutdown request. The daemon kills the whole process group of the instance at once: the node and every process that it started in its group.
-- **After the ready signal**, the daemon stops the instance as [`peppy node stop`](#stopping-your-node) stops a running instance. It sends the shutdown request, waits for the shutdown grace and the runtime teardown, and then kills the process group. The node runs its [shutdown hooks](/guides/first_node/#graceful-shutdown), so a setup that holds a resource (a lock, a robot in a simulation) releases it. This applies when the setup outlasts its budget, when the endpoints step fails, when the run budget of a launch or a join runs out (`--node-run-idle-timeout-secs`, `--max-timeout-secs`), when `peppy stack reset` cancels the start, and when the command that started it cancels it (see [When a node command ends early](#when-a-node-command-ends-early)). A stack reset waits for this stop to end before it clears the stack.
-
-A synchronous Python `setup` cannot see the shutdown request before it returns. When it does not return within the grace and the runtime teardown, the kill ends it. An `async` setup stops at its next `await`. The [shutdown lifecycle guide](/advanced_guides/shutdown/) gives the full sequence.
+In Python, an `async def setup` cancels at its next `await`, whereas a synchronous `setup` blocks shutdown handling until it returns (or is force-killed at the deadline). See the [shutdown lifecycle guide](/advanced_guides/shutdown/).
 
 ### Chaining add, build, and run
 
@@ -186,31 +189,31 @@ Run-only options (trailing `key=value` arguments, `--instance-id`, `--link KEY@V
 
 ### When a node command ends early
 
-`peppy node add`, `build` and `run` each send the daemon one goal and follow it to its end. The daemon refuses a goal that it cannot start, and a goal can fail. Either way the command prints the [failure kind](/guides/launch_files/#how-a-stack-command-ends) and the reason, a failure also the log file, and exits with code 3 for a refusal and 4 for a failure (see [Exit statuses of the other commands](/advanced_guides/calling_instances/#exit-statuses-of-the-other-commands)):
+`peppy node add`, `build`, and `run` each submit a goal to the daemon and track it to completion. If the daemon refuses or fails the goal, the CLI prints the [failure kind](/guides/launch_files/#how-a-stack-command-ends), the reason, and (on failure) the log path, then exits with code `3` (refused) or `4` (failed). See [Exit statuses of the other commands](/advanced_guides/calling_instances/#exit-statuses-of-the-other-commands).
 
 ```
 Error: Node add refused (busy): action already in progress (times out in 590s), use `--force` to force adding the node
 Error: Node build failed (attempt_failed): build_cmd `uv sync` failed with status exit status: 2. Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312Z.log
 ```
 
-The daemon refuses a goal with the kind `busy` while other work holds the stack: another add, build or run of the same command, a stack change, a `peppy stack reset`, or a launch that holds the machine. The same command can succeed once that work ends. `peppy node stop` and `peppy node remove` get the same refusal while a stack change, a reset or a launch that holds the machine runs.
+**Busy refusals:** The daemon refuses `add`, `build`, `run`, `stop`, and `remove` with kind `busy` while another conflicting operation holds the stack (a stack change, `peppy stack reset`, a remote launch reservation, or a concurrent add/build/run of the same node). Retry once that work finishes, or pass `--force` on `peppy node add` / `peppy node build` to cancel and supersede an in-flight add or build of that node (the superseded command exits with code `5`).
 
-The first Ctrl+C sends the daemon a cancel of the goal. The daemon stops the work at its next step: an add publishes no node, a build kills its `build_cmd` and leaves the node `Added`, and a start stops its instance as [How an instance starts](#how-an-instance-starts) describes. The command follows the goal to that end under `--max-timeout` alone, prints how it ended, and exits with the status of that end, 5 for a cancel:
+**Ctrl+C and disconnection:**
+
+- **1st Ctrl+C**: Sends a cancel request to the daemon. The daemon aborts at the current step (a cancelled add publishes nothing; a cancelled build kills `build_cmd` and leaves the node `Added`; a cancelled run stops the starting instance). The CLI waits for cleanup under `--max-timeout` alone and exits with the goal's outcome (`5` cancelled, `0` if already completed, `4` if already failed). For chained commands (`peppy node add --run`, `--build`, or `peppy node run` triggering a build), Ctrl+C exits with `130` and skips all later steps even if the active step finished first.
+- **2nd Ctrl+C**: Stops waiting for cleanup once the cancel reaches the daemon (cleanup continues in the background) and exits `130`.
+- **3rd Ctrl+C**: Exits immediately.
+- **Process/terminal closed**: If the CLI disappears without sending a cancel, the daemon detects the missing caller and cancels the goal 1 minute later (matching [stack commands](/guides/launch_files/#how-a-stack-command-ends)).
 
 ```
 Cancelling the node build; press Ctrl-C again to stop waiting for its end
 Error: Node build was cancelled by its caller. Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312Z.log
 ```
 
-A goal that ended before the cancel reached it keeps its end, and the command says so: `Node build completed before the cancel took effect.`, with the exit status 0. A goal that failed for a cause of its own, for example a build that failed before the cancel reached it, ends failed with its kind and the exit status 4. A second Ctrl+C stops the wait for the end: the command waits only until the cancel reaches the daemon, which goes on with it, and exits with code 130. A third Ctrl+C ends the command at once. A command whose process goes away, for example when its terminal closes, cancels its goal too: the daemon sees that the sender of the goal is gone, and cancels the goal one minute later, as for a [stack command](/guides/launch_files/#how-a-stack-command-ends).
+**Timeouts and output lag:**
 
-`peppy node add --run` follows three goals, one after the other: the add, the build and the start. Between two of them, a Ctrl+C ends the command at once with code 130. A Ctrl+C during one of them stops the command when that goal ends: a goal that completes before the cancel takes effect also ends the command with code 130, and the goals after it do not start. The same applies to `peppy node add --build`, and to `peppy node run` when it builds the node before the start.
-
-`--force` on `peppy node add` or `peppy node build` cancels the add or the build of the node that runs. That goal ends `Node add was superseded by a forced node add.` or `Node build was superseded by a forced node build.`, its command exits with code 5, and the forced one starts once it ended.
-
-`--idle-timeout` and `--max-timeout` bound the wait of the command. A command whose budget runs out stops waiting and exits with code 1. It sends no cancel, but its process ends, so the daemon cancels the goal, as for any command whose process goes away.
-
-The command keeps up to 65536 lines of the goal's output that it did not show yet. A command that falls further behind cancels the goal, says `The command fell behind the output of the node build by more than 65536 unread messages and cancelled it.`, and exits with code 1.
+- `--idle-timeout` and `--max-timeout` limit how long the CLI waits. When exceeded, the CLI exits with code `1`, causing the daemon to cancel the goal.
+- The CLI buffers up to 65,536 unread output lines. If output falls further behind, the CLI cancels the goal, reports the lag, and exits with code `1`.
 
 ## Checking node status
 
@@ -251,61 +254,76 @@ $ peppy stack list
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-With no arguments, `stack list` discovers every live core node in the same messaging namespace and prints one outer panel per distinct core-node name: the local name first, then the others by name. The panel header identifies the core node and its hostname, while the enclosing border groups its node stack, instance bindings, and dependencies, plus, when present, an `Instance endpoints` table (one row per HTTP endpoint an instance serves, such as an [MCP exposure](/advanced_guides/mcp/)), an `Instance pairings` table, and launch-ownership lines (`Slice of launch ...`, and `Reserved for launch ...` naming the reset command that clears it). If multiple live daemons collide on one name, discovery deduplicates them into a single warning-bearing panel. Use `peppy stack list --core-node <name>` to filter the output to that one name. If a core node disappears between discovery and the stack query, the other panels still render, the failed panel contains an error line, and the command exits non-zero. The panels and their tables fit the terminal: the widest columns give way first, never below a header's width, and over-long cells or lines wrap inside the borders; piped output is never wrapped. `--json` prints the same discovery as one JSON document instead: one entry per core node with its identity, `launch` and `reservation`, its [`copies`, `copy_change` and `launch_copies`](/guides/launch_files/#copies), and either the `stack` graph (`nodes` and `edges`) or the query `error`.
+By default, `peppy stack list` discovers every live core node in the same messaging namespace and prints one panel per core node (local first, then alphabetical):
 
-The `STAGE` column reports each node's **stage**, its artifact-level lifecycle:
+- **Filter to one machine**: `peppy stack list --core-node <name>`.
+- **Machine-readable output**: `peppy stack list --json` prints one JSON document with each core node's identity, `launch`, `reservation`, [`copies`, `copy_change`, `launch_copies`](/guides/launch_files/#copies), and either its `stack` graph (`nodes`, `edges`) or `error`.
+- **Extra panels shown when present**: `Instance endpoints` (web pages and MCP URLs), `Instance pairings`, and launch ownership lines (`Slice of launch ...`, or `Reserved for launch ...` with the reset command that clears it).
+- **Edge cases**: If two live daemons collide on the same name, they are grouped into one warning panel. If a core node disappears mid-query, other panels still print, the missing one shows an error, and the command exits non-zero. Tables wrap automatically to fit a terminal and never wrap when piped.
 
-- **`Added`**: the node is registered and a snapshot of the source has been taken, but `build_cmd` has not been run yet, so there is no runnable artifact.
-- **`Building`**: a build is in progress. A second concurrent `node build` on the same entity is rejected until this one finishes, unless it passes `--force`, which cancels and supersedes the in-progress build. A build whose staged sources match a cached artifact passes through this stage without running `build_cmd`; `--rebuild` makes it build anyway.
-- **`Ready`**: the build artifact is on disk. The node can be run; it may currently have zero, one, or several instances.
-- **`Root`**: the synthetic core-node entity. Always present, and always reports exactly one running instance (the daemon itself).
+The `STAGE` column shows each node's build lifecycle:
 
-The `INSTANCES` column aggregates per-instance state (`starting`, `running`, `restarting`, and the terminal `finished` / `failed`) for the node, independently of its stage. To see individual instance IDs, use [`peppy node info`](#inspecting-a-node-with-peppy-node-info).
+- **`Added`**: Registered and staged, but not yet built.
+- **`Building`**: Build in progress. A concurrent `peppy node build` is refused unless `--force` is passed to cancel and replace it. Matching cached artifacts skip `build_cmd` unless `--rebuild` is passed.
+- **`Ready`**: Built artifact is on disk and ready to run (zero or more instances).
+- **`Root`**: The built-in core node (always 1 running instance).
 
-Below the node table, the **`Instance bindings`** table expands the stack one level further: one row per instance, grouped by node, alongside the slot **bindings** that instance holds: what it resolved when it started, as joins and removals have since grown or shrunk them. A binding ties one of the consumer's `depends_on` slots (identified by its `link_id`) to the producer instance(s) that feed it, rendered as `link_id → producer` (a multi-cardinality slot lists every bound member in plan order; an empty slot, whether a `zero_or_more` slot bound to nothing or a `zero_or_one` slot declared vacant, shows `(empty set)`). A [daemon target](/advanced_guides/core_node_functions/#daemon-targets) takes no `links` entry: it shows the daemon that runs the instance, under its per-boot instance id. Every other declared producer slot is either bound or, where its manifest declares `cardinality: "zero_or_one"`, declared vacant; only a `zero_or_more` slot may be left out of the launcher entirely, and launch rejects any other unfulfilled producer slot. `(none)` means the instance has no producer bindings: a node whose only slots are pairings or observations also shows `(none)` here, with its pairing slots rendered in the separate `Instance pairings` table. Only nodes that currently have at least one instance appear in this table. See [Bindings and routing](/advanced_guides/topics/#bindings-and-routing) for how slots are declared and how `--link` pins them. In the listing above neither node declares a dependency, so every binding cell is `(none)`.
+The `INSTANCES` column summarizes per-instance states (`starting`, `running`, `restarting`, `finished`, `failed`). Use [`peppy node info`](#inspecting-a-node-with-peppy-node-info) to see individual instance IDs and logs.
+
+The **`Instance bindings`** table lists one row per instance (for nodes with at least one instance) and shows its resolved `depends_on` bindings:
+
+- **Producer slots** (`depends_on.nodes` / `depends_on.contracts`): shown as `link_id → producer` (multi-cardinality slots list all members in plan order; empty `zero_or_more` or vacant `zero_or_one` slots show `(empty set)`).
+- **Daemon targets** ([`depends_on.daemon`](/advanced_guides/core_node_functions/#daemon-targets)): bound automatically to the hosting daemon under its per-boot instance ID.
+- **`(none)`**: the instance has no producer bindings (pairing and observer slots appear in the separate `Instance pairings` table).
+
+See [Bindings and routing](/advanced_guides/topics/#bindings-and-routing) for slot rules and `--link`.
 
 ### Instance health and lifecycle
 
-Beyond the bindings, the `Instance bindings` table reports four per-instance columns that follow an instance through its runtime lifecycle:
+The `Instance bindings` table tracks four runtime columns for every instance:
 
-- **`STATUS`** is the instance's lifecycle state. A freshly launched instance is `starting` while its process comes up and clears its startup health gate, then becomes `running` once it has started successfully. If its process later exits on its own, it moves to `restarting` when its [restart policy](/guides/launch_files/#restart-policy) starts it again, and is `starting` and `running` once more after the wait; a start that fails returns it to `restarting`, and the attempt past `max_restarts`, or a restart the daemon refuses, leaves it `failed`. Otherwise it moves to a **terminal** state: `finished` when it exited cleanly (a one-shot node that completed its work and shut itself down, see the [shutdown lifecycle guide](/advanced_guides/shutdown/)), or `failed` when it exited with an error code or was killed. A terminal instance has stopped for good. These are the same states [`peppy node info`](#inspecting-a-node-with-peppy-node-info) prints as `[starting]` / `[running]` / `[restarting]` / `[finished]` / `[failed]`.
-- **`HEALTH`** is whether a `running` instance answers the core node's health checks: `healthy` or `unhealthy`. Every instance starts out `healthy`. An instance without a process (`restarting`, `finished` or `failed`) has no live health to report and shows `-`.
-- **`RESTARTS`** counts the times a restarted process of the instance reached `running`.
-- **`CLOCK`** is the clock the instance reads: `wall`, or a simulated domain as `name@core_node` (see the [system clock guide](/advanced_guides/system_clock/)).
+- **`STATUS`**:
+  - `starting`: process is booting and clearing its startup health gate.
+  - `running`: started and active.
+  - `restarting`: exited and waiting for its [restart policy](/guides/launch_files/#restart-policy) backoff timer. A failed restart returns to `restarting` until `max_restarts` is reached (or the daemon refuses the restart), leaving the instance `failed`.
+  - `finished` / `failed`: terminal states after a clean exit (`finished`) or crash/kill (`failed`).
+- **`HEALTH`**: `healthy` or `unhealthy` for `running` instances; `-` when no process is running (`restarting`, `finished`, `failed`).
+- **`RESTARTS`**: number of times a restarted process reached `running`.
+- **`CLOCK`**: `wall`, or a simulated domain (`name@core_node`). See [System clock](/advanced_guides/system_clock/).
 
-Once an instance is `running`, the daemon keeps probing its health in the background (every 5 seconds, allowing 3 seconds per health check) and updates the `HEALTH` flag from the run of results:
+#### Health monitoring
 
-- Three consecutive missed health checks mark the instance `unhealthy`. This is for a process that is **alive but not answering**: a wedged or deadlocked node, or one that has lost its messaging session. The process is still up; it just is not responding, and has not been for about twenty seconds.
-- A single missed health check leaves the instance `healthy`. A node, its container, or the host stalling for a few seconds (a swapped-out VM, a saturated CPU) misses a check or two and then answers again; that is a blip, not a health change, and the daemon only records it at debug level.
-- One successful health check marks an `unhealthy` instance `healthy` again.
-- Under `on_failure` or `always`, an instance that has answered no health check for a minute is killed at its next missed check: SIGTERM, then SIGKILL of its process group once the shutdown grace and the runtime's teardown have had their time (12 seconds at the default grace). The exit counts as a failure, so the policy restarts the instance unless `max_restarts` is reached, and the run counts only up to the last health check the process answered. A node that goes silent is killed 60 to 68 seconds after the last check it answered: the minute, then the check in flight, which takes up to 8 seconds (the 5-second wait and its own 3-second timeout); the node went quiet up to 8 seconds after that answer, while the next check was in flight, so the kill comes 52 to 68 seconds after it stopped answering. The minute runs from the last answered check whether later checks time out or fail at once, and it outlasts the 45.5 seconds a peppy-managed router listening on TCP or TLS takes at most to come back after one restart by its watchdog, plus the checks in flight when it dies and when it comes back (up to 11 seconds), so a router the watchdog heals never costs a node its process. While two or more instances other than the core node's own run on this daemon and none of them is healthy, the daemon reads a messaging outage and holds the kill until one of them answers again; a lone silent instance is killed. The stack log records the kill, or the outage. Under `never` an unhealthy instance stays `running`.
+While an instance is `running`, the daemon probes it every **5 seconds** (3-second timeout per check):
 
-A process that has actually **exited** is a case of its own, apart from an `unhealthy` one. The daemon watches each running node's process directly, so when a node exits on its own (a one-shot node finishing, or a crash) the instance moves to `restarting`, `finished` or `failed` by its restart policy as soon as its process group is killed, and gets no health check in between. For a container on macOS that kill reaches into the Lima VM and takes up to 30 seconds.
+- **1 to 2 missed checks**: stays `healthy` (brief host/VM stalls are logged at debug level only).
+- **3 consecutive missed checks (~20 s)**: marked `unhealthy`. The process is still alive, just unresponsive (deadlocked or disconnected from messaging).
+- **1 successful check**: returns to `healthy`.
+- **60 seconds with no answered check (under `on_failure` or `always`)**: the daemon kills the unresponsive process (`SIGTERM`, then `SIGKILL` of its process group after shutdown grace + runtime teardown, 12 s by default) and treats the exit as a failure for restart policy purposes.
+  - The kill occurs 52 to 68 seconds after the node goes silent (60 s from the last answered check plus the in-flight check window), intentionally outlasting a managed Zenoh router watchdog restart (up to 45.5 s plus in-flight checks) so router recovery never kills healthy nodes.
+  - **Outage guard**: if two or more non-core instances are running on the daemon and *none* of them is healthy, the daemon assumes a local messaging outage and holds off killing instances until at least one responds again. A lone silent instance is still killed.
+  - Under `never`, an `unhealthy` instance is never killed.
 
-Neither an `unhealthy` nor a terminal instance is automatically removed from the stack. Under `never`, an `unhealthy` `running` instance stays listed until it recovers on its own, so an outage (a lost messaging session that takes a while to come back) surfaces as an `unhealthy` window and the stack keeps every instance; under `on_failure` or `always` it is killed after a minute without an answered health check, outside a messaging outage, and its policy treats that exit as a failure. A `finished` or `failed` instance likewise stays listed, so you can see that it completed or died. Either is cleared when you stop it with [`peppy node stop`](#stopping-your-node) (one instance) or [`peppy node remove`](#removing-your-node) (the whole node), or when the stack is relaunched. `peppy node stop` also clears a `restarting` instance and cancels its restart. [Starting a failed instance again](/guides/launch_files/#starting-a-failed-instance-again) says how to start a `failed` or `finished` instance again.
+#### Exited processes and cleanup
 
-Each lifecycle transition (a `running` instance going `unhealthy` or recovering, a process exiting on its own, as a `finished` or `failed` line whether or not a restart follows, an exit on `peppy node remove`'s shutdown request that lands before the removal claims the instance included, a health kill or the outage that holds it, and a restart scheduled, completed, failed to start, refused or capped by `max_restarts`) is appended to the daemon's stack log at `~/.peppy/stack_log.log`, giving you a timestamped record of when an instance failed, finished, or came back. With the [OpenTelemetry log export](/advanced_guides/opentelemetry/) on, the daemon also sends each line of this log, and of the launch, add, build and run logs, to the endpoint you configured.
+When a process exits on its own, the daemon detects the exit directly (no health check in between), kills any leftover children in its process group (up to 30 s for macOS Lima containers), and moves it to `restarting`, `finished`, or `failed` according to its restart policy.
+
+Instances are **never auto-removed** from the stack when `unhealthy`, `finished`, or `failed`, so you can inspect what happened. Clear them with [`peppy node stop`](#stopping-your-node) (also cancels a `restarting` instance), [`peppy node remove`](#removing-your-node), or a new launch. See [Starting a failed instance again](/guides/launch_files/#starting-a-failed-instance-again) for recovery steps.
+
+Every lifecycle event (health changes, exits, health kills, outage holds, and restarts) is recorded in `~/.peppy/stack_log.log` and exported when [OpenTelemetry log export](/advanced_guides/opentelemetry/) is enabled.
 
 ### Daemon shutdown and orphan prevention
 
-Spawned nodes are child processes of the daemon, so Peppy takes care to ensure that no node (or any process a node itself spawned) is ever left running after the daemon goes away.
+Peppy ensures that no node (or subprocess it spawned) outlives the daemon:
 
-**A node that exits on its own.** Whatever a node forked into its process group is killed with the group the moment the node's own process exits, whether the exit is a clean one, a crash, or the kill the health monitor sends, and so is the group of a start that fails. A child that moves itself to another process group or session is outside it.
+- **Process group cleanup on exit**: Whenever a node exits (cleanly, by crash, or via health kill) or fails to start, Peppy kills its entire process group. (Subprocesses that explicitly detach into a new process group or session are outside this group.)
+- **Clean daemon shutdown (`Ctrl+C`, `systemctl stop`, `SIGTERM`)**: The daemon sends a cooperative shutdown request to every spawned node (firing cancellation tokens and [shutdown hooks](/advanced_guides/shutdown/)), waits for `shutdown_grace_secs` (default **5 s**) plus brief runtime teardown, then force-kills any remaining process groups. It does **not** wait for `daemon_grace_secs`.
+- **Unclean daemon death (crash, OOM, `SIGKILL`)**:
+  - **Router behavior**: On Linux, the kernel stops `zenohd` when the daemon dies. On macOS, a terminal-launched daemon may leave `zenohd` behind (stop it with `pkill -f zenohd_config_<port>.json5` if the next start reports port in use); under the installed macOS `launchd` service, `launchd` cleans up the daemon's process group and restarts it. Under Linux `systemd`, `systemd` kills all unit processes (including nodes) and restarts the daemon.
+  - **Node watchdog**: Each spawned node tracks the unique boot ID of the daemon that started it and shuts itself down if either:
+    1. Its own daemon's heartbeat is silent for `daemon_grace_secs` (default **180 s**, minimum 30 s). The generous window prevents false shutdowns during brief stalls or managed router restarts (which keep the same daemon boot ID).
+    2. A *new* daemon for the same core node sends a heartbeat after the old daemon's presence disappears. Because a new daemon starts with an empty stack, orphaned nodes shut down immediately instead of waiting 3 minutes. (Daemons on other core nodes, other ports, or name-colliding daemons never stop your nodes.)
 
-**Clean shutdown (`Ctrl+C`, `systemctl stop`, `SIGTERM`).** Before it exits, the daemon tears down every spawned node: it asks each node to shut down cooperatively (in the node, this fires the cancellation token and runs its shutdown hooks; see the [shutdown lifecycle guide](/advanced_guides/shutdown/)), waits for each to exit cooperatively (the shared **shutdown grace period** for cleanup, `shutdown_grace_secs`, **5 seconds** by default, plus the brief runtime teardown that follows), then force-kills the process group of anything still alive. This is immediate: it does **not** wait the daemon-liveness grace period described below, so stopping the daemon feels instant while still guaranteeing nothing is orphaned. It's the same graceful-then-forced sequence [`peppy node stop`](#stopping-your-node) runs for a single instance, which uses the same `shutdown_grace_secs` window.
-
-**Unclean daemon death (crash, OOM, `SIGKILL`).** When the daemon dies without the chance to run that cleanup, it can't tear its nodes down. On Linux the kernel ends the daemon's `zenohd` the moment the daemon process dies, so until a daemon starts again the nodes have no router: in the router topology every message relays through it, and in the peer topology it carries cross-machine traffic and seeds discovery for new peers (see [local messaging topology](/advanced_guides/daemon_config/#zenohmanagedlocal_nodes_topology-local-messaging-topology)). On macOS a daemon run in a terminal leaves its `zenohd` running, and the next daemon start is refused with "Zenoh router port already in use" until that `zenohd` is stopped (`pkill -f zenohd_config_<port>.json5`, with the port from the message); under the installed `peppy` service, launchd (with `AbandonProcessGroup` unset) ends the processes in the daemon's process group, `zenohd` included, and restarts the daemon.
-
-The nodes themselves keep running. Each runs a watchdog that listens for the periodic heartbeat of the daemon that started it. Each daemon process draws an instance id when it starts, sends its heartbeat and holds a presence token under that id, and writes the id into the runtime config of every node it starts. The node shuts itself down when:
-
-- it sees no heartbeat of its own daemon for the **daemon grace period**, `daemon_grace_secs` (**180 seconds / 3 minutes** by default). The heartbeats of other daemons do not count;
-- another daemon of its core node sends a heartbeat, and its own daemon no longer holds its presence token: a new daemon runs. A new daemon starts with an empty stack, so no stack holds the node any more, and your next launch starts the nodes again.
-
-So a restart of the daemon stops every node that outlived the old daemon as soon as the new daemon sends its first heartbeat, also when the old daemon died before the node received anything from it. This applies to a daemon run in a terminal, and to the installed `peppy` service on macOS, where launchd ends only the processes in the daemon's process group. Under the installed `peppy` service on Linux, systemd ends every process of the unit when the daemon exits, nodes included, and then restarts the daemon on its own.
-
-The grace period is deliberately generous so a brief daemon stall or a restart of the daemon's messaging router does not tear your nodes down: the router restarts inside the same daemon process, which keeps its instance id and its presence token. A daemon of another core node, or a daemon on another messaging port, never stops your nodes. Neither does a second daemon that claims the same core node name while the daemon of your nodes runs: each daemon reports that name collision, and the nodes keep running.
-
-Both grace periods are configured in `~/.peppy/conf/peppy_config.json5` (see [Daemon configuration](/advanced_guides/daemon_config/) for the full file reference) and take effect after a daemon restart:
+Configure both windows in `~/.peppy/conf/peppy_config.json5` ([Daemon configuration](/advanced_guides/daemon_config/)); restart the daemon to apply changes:
 
 ```json5
 // peppy_config.json5
@@ -324,7 +342,7 @@ Both grace periods are configured in `~/.peppy/conf/peppy_config.json5` (see [Da
 ```
 
 :::caution
-`daemon_grace_secs` must be at least 30 seconds (a smaller value is rejected when the config is loaded): it has to comfortably exceed the heartbeat interval and a router restart, or a momentary daemon hiccup would trip every node's watchdog. `shutdown_grace_secs` must be at least 1 second.
+`daemon_grace_secs` must be at least 30 seconds so brief stalls or router restarts do not trip node watchdogs. `shutdown_grace_secs` must be at least 1 second.
 :::
 
 ## Inspecting a node with `peppy node info`
@@ -442,7 +460,12 @@ To remove the node from the node stack, run:
 peppy node remove hello_world:v1
 ```
 
-A node that tracks instances is removed with `--stop-instances` (without it the command asks first). The removal asks each running instance to shut down and, once every request succeeds, waits for each process to exit until the force-kill deadline, the grace period plus the runtime's teardown (12 seconds at the default grace); it force-kills the whole process group of one that has not exited, and returns once every process is gone, warning for each it force-killed. An instance whose shutdown service is unreachable gets no request (a container gets a SIGTERM) and is force-killed at the same deadline. A shutdown request that fails fails the removal, which then stops nothing: an instance that answered its request ends if it exits within the force-kill deadline, and [`peppy node stop`](#stopping-your-node) ends the one that failed it. An instance starting when the removal reaches it, or running a process that reached `running` after the removal began, keeps the node, and the removal's error names it.
+If the node still has tracked instances, pass `--stop-instances` (otherwise the command asks for confirmation). When stopping instances:
+
+- The daemon sends a cooperative shutdown request to each running instance (or `SIGTERM` for containers whose shutdown service is unreachable) and waits until the force-kill deadline (`shutdown_grace_secs` plus runtime teardown, 12 seconds by default).
+- Any instance still alive at the deadline has its entire process group force-killed, with a warning printed for each.
+- If a shutdown request itself fails, the removal aborts without force-killing remaining instances; stop the failing instance manually with [`peppy node stop`](#stopping-your-node).
+- If any instance is currently `starting` (or transitions to `running` after removal began), removal fails and names that instance; re-run `peppy node remove <name>:<tag> --stop-instances` once startup finishes.
 
 If you run `peppy stack list` again, you'll see that only the core node remains:
 ```

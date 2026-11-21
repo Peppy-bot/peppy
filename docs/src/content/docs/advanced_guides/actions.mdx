@@ -38,33 +38,31 @@ Client                              Server
 
 ### How a goal ends
 
-The server answers each goal with its acceptance or its refusal. An accepted goal then ends with one terminal status:
+First, the server either **accepts** or **refuses** the goal. Every accepted goal then finishes in one terminal state:
 
-| Status | What ends the goal | What the client gets |
+| Status | Trigger | What the client receives |
 | --- | --- | --- |
-| `completed` | The worker calls `complete` | The result. The goal is a success. |
-| `failed` | The worker calls `fail` | A failure kind and a message, and no result |
-| `cancelled` | The worker calls `complete_cancelled` | The reason of the cancel and a result |
-| `abandoned` | The worker drops the goal without an end, or the producer is gone | Nothing |
-| `expired` | The goal ended, and the producer no longer keeps its result | Nothing |
+| `completed` | Worker calls `complete(...)` | Result payload (success). |
+| `failed` | Worker calls `fail(kind, message)` | Typed `Failure` (`kind` + `message`), no result payload. |
+| `cancelled` | Worker calls `complete_cancelled(reason, ...)` | Cancel reason + result payload. |
+| `abandoned` | Worker drops the goal without finishing, or producer dies | Nothing. |
+| `expired` | Goal finished, but its result aged out of the retention window | Nothing. |
 
-A refusal and a failed goal give a **failure kind** and a message for a person. The kind says why, so that the client can try again, plan again or call a person. A member gives a kind from a closed set: the kinds of peppy, and the kinds of its contract that the member lists (see [failure kinds](/advanced_guides/contract_implementation/#failure-kinds)). A native action, which no contract declares, gives the kinds of peppy only:
+Refusals and failed goals carry a structured **failure kind** and a message so callers can programmatically retry, replan, or escalate without parsing free text. Allowed kinds are Peppy's built-in set plus any custom kinds declared on the action's [contract](/advanced_guides/contract_implementation/#failure-kinds):
 
 | `failure_kind` | Meaning |
 | --- | --- |
-| `attempt_failed` | The attempt gave no result |
-| `timeout` | The bound of the provider passed |
-| `precondition_failed` | A precondition failed |
-| `resource_unavailable` | A robot, limb or host is gone |
-| `rejected` | The provider refused the goal, and no other kind says why |
+| `attempt_failed` | Execution failed to achieve the goal. |
+| `timeout` | Provider's internal deadline elapsed. |
+| `precondition_failed` | Required system state or precondition was not met. |
+| `resource_unavailable` | Target robot, limb, or host is offline or missing. |
+| `rejected` | Goal refused for another reason. |
 
-The peppy daemon gives one kind of its own beside these, as a contract does: `busy`, other work runs on the daemon (a stack change, a node goal, a repository refresh or a benchmark), and the same request can succeed once that work ends (see [How a stack command ends](/guides/launch_files/#how-a-stack-command-ends)).
+The Peppy daemon also declares `busy` on its own interfaces (another stack/node/repo operation is already running; retry when it finishes; see [How a stack command ends](/guides/launch_files/#how-a-stack-command-ends)).
 
-The generated code of each action declares these kinds as a `FailureKind` enum and a `Failure` type (`kind`, `message`). The generated provider can give no other kind: in Rust a kind that the member does not declare is not a variant of the enum, so the node does not compile; in Python `Failure` raises `ValueError` for it before anything reaches the wire. The generated client parses each failure from the wire into the same type: a kind that the member does not declare is an error, never a failure of an unknown kind. The error of an undeclared kind keeps the message of the failure in its text. In Python, `Failure` also raises `TypeError` for a message that is not a `str`: give the text of an exception `error` with `Failure(kind, str(error))`.
+Code generation emits a typed `FailureKind` enum and `Failure(kind, message)` type for every action: providers cannot send undeclared kinds (compile error in Rust, `ValueError` in Python; `TypeError` in Python if `message` is not a `str`), and clients reject any undeclared kind received over the wire as an error. Because failures travel outside the result payload, never add `success: false` fields to action results.
 
-So no result reports a refusal or a failure in a field of its own, such as `success: false` and an error text. A field that gives the answer of a check, such as whether a pose is reachable, is data and stays in the result.
-
-`peppy node call` sends a goal to any action of a running instance from the command line and gives each of these ends an exit status of its own (see [Calling a running instance](/advanced_guides/calling_instances/)).
+Use [`peppy node call`](/advanced_guides/calling_instances/) to invoke any action from the CLI with a distinct exit status per terminal state.
 
 ## Exposing an action
 
@@ -484,9 +482,9 @@ A member that ends the goals of other clients, such as a `stop` that ends every 
 
 ### Goals that end with their sender
 
-A goal ends when the process that sent it is gone, so no robot goes on for a client that is gone. Each client process advertises its presence, and each goal carries the presence of its sender. The action watches the sender of each goal. When the sender is gone and the **sender grace** of the action passed, each goal of that sender that did not end receives its cancel signal, with the cause `SenderGone` (`"sender_gone"` in Python). The worker then ends the goal with `complete_cancelled`, as for any other cancel.
+If the client process that fired a goal dies or disconnects, Peppy automatically cancels its active goals so robots do not keep moving for a vanished caller. Each client advertises a presence token; when that presence disappears (confirmed by two probes) and the action's **sender grace** elapses, the server delivers a cancel signal with cause `SenderGone` (`"sender_gone"` in Python) to every active goal from that sender.
 
-The sender grace is zero unless the provider sets it. Set it when a client that stops and starts again within some time must find its goals still running, such as a robot initializer that attaches a robot to a simulation:
+Sender grace defaults to `0` (cancel immediately). Raise it only when a client is expected to restart briefly and resume tracking its goals (such as a robot initializer):
 
 <Tabs>
   <TabItem label="Python">
@@ -503,7 +501,7 @@ action.set_sender_grace(std::time::Duration::from_secs(5));
   </TabItem>
 </Tabs>
 
-The sender grace applies to each sender that is found gone after the call. A sender is found gone when its presence disappears and two probes confirm it.
+The new grace period applies to senders detected as gone after the call.
 
 ## Consuming an action
 

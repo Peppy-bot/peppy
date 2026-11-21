@@ -206,11 +206,15 @@ These sizes do not apply to [action feedback](/advanced_guides/actions/#receivin
 
 These are local Peppy queue capacities, not Zenoh router buffers, and they apply under both managed local topologies. They matter most in the peer topology: with nodes peering directly there is no router relay between a publisher and a subscriber, so the local queue is all that absorbs a burst.
 
-When a topic subscriber falls behind and its local queue fills up, its session stops taking messages from the connection the topic arrives on until the subscriber takes one. This holds up every message on that connection, not only the topic's: in the router topology that is all of the node's traffic; in the peer topology it is the traffic from the publishing peer, or from the router for a publisher on another machine. Once the network buffers of that connection are full, the stall reaches the sending side: messages published with the `standard` or `sensor_data` profile are dropped there, and messages published with the `reliable` or `critical` profile wait for room. When one of them waits five seconds, Zenoh closes the connection to the slow session. An action goal's feedback buffer never makes its session wait: when the caller falls behind by more unread messages than its bound, the buffer drops the unread messages, a caller that reads the feedback cancels the goal, and its next read gives the loss as an error. The subscriptions of the [test harness](/advanced_guides/testing/#emitted-topics) to a node's emitted topics, and those of its pairing mocks, do the same. Raise a capacity to absorb longer bursts at the cost of memory and worst-case latency; lower it to surface backpressure, or message loss, sooner. The defaults match Peppy's built-in behavior, so you only need to touch this block to tune backpressure.
+**What happens when a subscriber falls behind:**
 
-A subscription to a topic that [retains](/advanced_guides/topics/#retaining-the-latest-value) holds at least as many messages as the topic retains, whatever these capacities say.
+1. When the local queue fills, the node's session stops reading from that connection until the subscriber catches up.
+2. This pauses all traffic arriving on that same connection (all traffic in `router` mode; that peer's or router's traffic in `peer` mode).
+3. Once OS network buffers fill, backpressure reaches the publisher: `standard` and `sensor_data` messages drop at the sender, while `reliable` and `critical` publishers block waiting for space (Zenoh closes the connection if a reliable publish stalls for 5 seconds).
 
-Both values must be greater than `0`; the daemon rejects a zero buffer size at startup.
+**Exceptions:** [Action feedback](/advanced_guides/actions/#receiving-feedback) never stalls the session; exceeding `feedback_bound` drops unread messages and cancels the goal if the caller is reading feedback. [Test harness](/advanced_guides/testing/#emitted-topics) subscriptions use keep-latest buffers and never stall either. [Retaining topics](/advanced_guides/topics/#retaining-the-latest-value) always allocate at least their retention depth.
+
+Raise buffer sizes to absorb larger bursts (at the cost of memory and worst-case latency); lower them to surface backpressure sooner. Both values must be `> 0`.
 
 ## `zenoh.external`: use an operator-run router
 
@@ -240,7 +244,7 @@ At startup, Peppy requires a responsive Zenoh router at the configured endpoint.
 
 ## `machine_certificate`: the certificate of the machine
 
-The daemons of a federation prove their calls to each other with the certificates of their machines (see [Machines of a federation](/advanced_guides/call_senders/#machines-of-a-federation)). An enrolled machine uses the certificate of its enrollment and needs nothing here. A federation that the operator forms, through an operator-run router (`zenoh.external`) or through a router configuration that the operator pins, uses a CA of the operator: give the daemon of each machine its certificate.
+Federated daemons authenticate calls to one another using machine certificates (see [Machines of a federation](/advanced_guides/call_senders/#machines-of-a-federation)). Platform-enrolled machines use their enrollment certificate automatically (`null`). For self-managed federations (via `zenoh.external` or a pinned router config), configure your own CA and machine certificate on each daemon:
 
 ```json5
 machine_certificate: {
@@ -250,7 +254,12 @@ machine_certificate: {
 },
 ```
 
-Each path is absolute. `trust_anchor` is the CA, in PEM: the daemon checks the certificates of the other machines against it. `certificate` is the certificate of this machine, in PEM, then the certificates above it; its common name is the core node of this machine, and it allows client authentication when it names the extended key usages. `private_key` is its PKCS#8 private key, in PEM: ECDSA P-256, ECDSA P-384, Ed25519 or RSA. Keep the key where the container nodes do not mount it. A certificate that does not read stops the start of the daemon. `null` uses the platform certificate of an enrolled machine; a daemon with no certificate takes no call of another machine.
+All paths must be absolute:
+- **`trust_anchor`**: PEM CA certificate used to verify peer daemons.
+- **`certificate`**: PEM certificate chain for this machine (leaf first). Its Common Name (`CN`) must match this daemon's core node name, and if it includes Extended Key Usage, it must allow client authentication.
+- **`private_key`**: PKCS#8 PEM private key (ECDSA P-256, ECDSA P-384, Ed25519, or RSA). Store it outside paths mounted into container nodes.
+
+Unreadable or invalid certificates prevent the daemon from starting. Leaving `machine_certificate` as `null` uses the platform enrollment certificate (an unenrolled daemon with `null` refuses all remote daemon calls).
 
 ## `lifecycle`: grace periods
 
@@ -261,41 +270,41 @@ The `lifecycle` block tunes the two windows Peppy uses to guarantee that no node
 
 ## `pypi_mirror`: PyPI mirror for Python builds
 
-`pypi_mirror` names a PyPI mirror that Python node builds download the PyPI files that their `uv.lock` pins from. Leave it `null` (the default) to download them from PyPI; set the packages base URL of a mirror to use it:
+Optional PyPI packages mirror for Python node builds (defaults to `null`, downloading directly from PyPI):
 
 ```json5
 pypi_mirror: "https://pypi.tuna.tsinghua.edu.cn/packages/",
 ```
 
-With a mirror set, each Python build that does not reuse a cached artifact asks the mirror for the files that its `uv.lock` pins from PyPI, and downloads each file the mirror has from the mirror. A file the mirror does not have still comes from PyPI, and uv checks every file against the sha256 in the lock, so a mirror cannot change what a build installs. See [PyPI mirror for Python builds](/advanced_guides/containers/#pypi-mirror-for-python-builds) for what the daemon changes, the line each build shows, and a list of mirrors.
+When set, uncached Python builds fetch `uv.lock`-pinned PyPI files from the mirror first and fall back to PyPI for missing files. `uv` still verifies every file's SHA-256 against `uv.lock`, so a mirror cannot alter installed packages. See [PyPI mirror for Python builds](/advanced_guides/containers/#pypi-mirror-for-python-builds) for details and known mirrors.
 
-The value must be the **packages base URL** of the mirror: an `https` URL under which the mirror keeps the files of PyPI with the path layout of `https://files.pythonhosted.org/packages/`, so its path ends with `packages/`. The index URL of a mirror (ending with `/simple/`) is not a packages base URL. The URL must not hold credentials, a query, or a fragment. Any other value stops the daemon at startup with an error that names `pypi_mirror`.
+The value must be an `https` **packages base URL** ending with `packages/` (mirroring `https://files.pythonhosted.org/packages/`, **not** a `/simple/` index URL), with no credentials, query, or fragment. Any invalid value prevents the daemon from starting.
 
 ## `publish_repository`: where nodes are published
 
-`publish_repository` names the OCI repository that [`peppy node publish`](/advanced_guides/publishing/#publish-a-node) and [`peppy stack build --publish`](/advanced_guides/publishing/#publish-the-nodes-of-a-stack) push the `.sif` of container nodes to. Leave it `null` (the default) and both commands refuse to publish, with an error that names this setting; set the URL of a repository to publish to it:
+Optional OCI repository URL used by [`peppy node publish`](/advanced_guides/publishing/#publish-a-node) and [`peppy stack build --publish`](/advanced_guides/publishing/#publish-the-nodes-of-a-stack) (defaults to `null`, which disables publishing):
 
 ```json5
 publish_repository: "oci://ghcr.io/acme/peppy-nodes",
 ```
 
-The value has the form `oci://<registry host>/<repository path>`, as the `url` of an [`oci` repository](/advanced_guides/repositories/#oci-repositories). The URL must not hold credentials, a query, or a fragment: the daemon reads the credentials of the registry from the auth file of Apptainer (see [Registry credentials](/advanced_guides/publishing/#registry-credentials)). Any other value stops the daemon at startup with an error that names `publish_repository`. In a `peppy stack build --publish`, each machine of the stack pushes to the `publish_repository` of the daemon that runs the command, and the setting of the other machines has no effect.
+Must use the `oci://<registry host>/<repository path>` format with no credentials, query, or fragment (credentials come from Apptainer's auth file; see [Registry credentials](/advanced_guides/publishing/#registry-credentials)). Invalid values prevent the daemon from starting. During `peppy stack build --publish`, all participating machines push to the invoking daemon's `publish_repository`.
 
-The setting does not make this machine read the repository. To pull the nodes of the repository, add it with [`peppy repo add`](/advanced_guides/repositories/#add-a-repository).
+Setting `publish_repository` does not automatically pull from that repository; add it with [`peppy repo add`](/advanced_guides/repositories/#add-a-repository) to pull published images.
 
 ## `otlp_endpoint`: export the log files
 
-`otlp_endpoint` names the OTLP/HTTP endpoint the daemon exports its launch, add, build, run and stack logs to, as OpenTelemetry log records. Leave it `null` (the default) and the daemon exports nothing; set the URL of an OpenTelemetry collector or of an intake to turn the export on:
+Optional OTLP/HTTP endpoint URL for exporting launch, add, build, run, and stack logs as OpenTelemetry log records (defaults to `null`, export off):
 
 ```json5
 otlp_endpoint: "http://localhost:4318",
 ```
 
-The value is the base URL of the collector or intake, and the daemon posts to `<otlp_endpoint>/v1/logs`; a URL whose path already ends with `/v1/logs` is the URL the daemon posts to. It must be an `http` or `https` URL with no credentials, query, or fragment. Any other value stops the daemon at startup with an error that names `otlp_endpoint`. Request headers, such as an API key, go in `~/.peppy/conf/otlp_headers.json5`, never in the URL. See [OpenTelemetry log export](/advanced_guides/opentelemetry/) for what is exported, the fields of a record, the headers file, and what happens while the endpoint is unreachable.
+Peppy posts to `<otlp_endpoint>/v1/logs` (or to the URL directly if its path already ends with `/v1/logs`). Must be an `http` or `https` URL with no credentials, query, or fragment (invalid values prevent daemon startup). Put API keys or auth headers in `~/.peppy/conf/otlp_headers.json5`. See [OpenTelemetry log export](/advanced_guides/opentelemetry/).
 
 ## `otlp_min_severity`: lowest exported severity
 
-`otlp_min_severity` holds the lowest severity the daemon exports: one of `"trace"`, `"debug"`, `"info"`, `"warn"`. Leave it `null` (the default) to export every line. A line below it stays in its log file only, and a line that prints no level is always exported. The setting goes up to `"warn"`: the stack log line that reports records the export discarded is a warning, and every setting exports it. The setting has no effect while `otlp_endpoint` is `null`. Any other value stops the daemon at startup with an error that names `otlp_min_severity` and lists the four names. See [Severity](/advanced_guides/opentelemetry/#severity) for how the daemon reads the severity of a line.
+Lowest log severity exported when `otlp_endpoint` is set: `"trace"`, `"debug"`, `"info"`, `"warn"`, or `null` (default, export everything). Lines below this threshold stay in local log files only, while lines with no detected severity level are always exported. Because `"warn"` is the highest allowed threshold, export-discard warnings are always exported. Ignored when `otlp_endpoint` is `null`; invalid values prevent daemon startup. See [Severity](/advanced_guides/opentelemetry/#severity).
 
 ## `resource_servers`: backend URL
 

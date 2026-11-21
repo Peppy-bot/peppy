@@ -103,10 +103,16 @@ The second argument is a timeout. Rust accepts anything that converts to `Option
 - `instance_id`: the serving daemon's own generation instance id.
 - `host_name`: the hostname of the daemon that served this stack snapshot.
 
-Each node entry carries its required `core_node` owner plus its `name`, `tag`, `config_path`, optional `artifact_path`, `stage` (`Added`, `Building`, `Ready`, or `Root`), and its `instances`.
-Each instance has an `instance_id`, a `state` (`starting`, `running`, `restarting` while the daemon waits to start it again, or the terminal `finished` / `failed`), a `healthy` flag, its `slot_bindings`, and its `pairing_slots`. A router or load-balancer keeps only the `running` ones, which excludes both still-warming and already-exited instances.
-Its [restart policy](/guides/launch_files/#restart-policy) comes with it: `restart`, the policy as a launcher writes it (`"on_failure"`, or `{ policy, max_restarts }` with a cap); `restart_origin`, the level that set it (`instance`, `flag`, `node`, `launcher_root` or `default`); `restart_count`, the times a restarted process reached `running`; `attempt`, the count of restart attempts in a row that `max_restarts` caps (0 before the first exit the policy restarts; each such exit or failed start takes the next, and one after a run of two minutes or more takes attempt 1 again, where a run the health monitor ended counts only up to its last answered health check; at the cap it names the attempt refused; an exit `peppy node remove` asked for sets 0, and any other exit the policy does not restart leaves it as it was); `last_exit`, how the last start ended, a process's exit or a start failure (`{ code }`, `{ signal: { number, name, core_dumped } }`, `{ health_kill: { unanswered_secs } }` or `{ message }`, null before any exit); and `running_since_ms` and `next_start_ms`, milliseconds since the Unix epoch, null when there is none.
-The graph's `edges` list the dependency relationships, with each edge pointing from one node entry to another. The list covers both direct `depends_on.nodes` dependencies and those resolved through [contract implementation](/advanced_guides/contract_implementation/): a contract edge carries a `via_contract` of `name:tag` (the contract it was resolved through), while a direct edge has none.
+Each node entry includes `core_node`, `name`, `tag`, `config_path`, optional `artifact_path`, `stage` (`Added`, `Building`, `Ready`, or `Root`), and `instances`.
+
+Each instance includes `instance_id`, `state` (`starting`, `running`, `restarting`, `finished`, `failed`), `healthy`, `slot_bindings`, `pairing_slots`, and its [restart status](/guides/launch_files/#restart-policy):
+- `restart` / `restart_origin`: effective policy (`"on_failure"` or `{ policy, max_restarts }`) and where it came from (`instance`, `flag`, `node`, `launcher_root`, or `default`).
+- `restart_count`: number of times a restarted process reached `running`.
+- `attempt`: current consecutive restart attempt counter capped by `max_restarts` (resets to 1 after 2+ minutes of healthy uptime; resets to 0 on `peppy node remove`).
+- `last_exit`: reason the previous process ended (`{ code }`, `{ signal: { number, name, core_dumped } }`, `{ health_kill: { unanswered_secs } }`, `{ message }`, or `null`).
+- `running_since_ms` / `next_start_ms`: Unix epoch timestamps in milliseconds (`null` when not applicable).
+
+Each edge in `graph.edges` connects a dependent node to its dependency (carrying `via_contract: "<name>:<tag>"` for [contract](/advanced_guides/contract_implementation/) edges, or `null` for direct `depends_on.nodes` edges).
 
 Rust and Python expose the graph differently:
 
@@ -286,12 +292,12 @@ A node calls a **daemon interface**, an interface that the peppy daemon serves a
   </TabItem>
 </Tabs>
 
-- **Never pinned.** An entry takes no `sha256`. The document of the interface ships with the peppy release that serves its tag, and peppy serves one tag of each interface.
-- **One producer.** An entry takes no `cardinality`. The daemon that serves the interface is the one producer of the slot: the daemon of the coordinator of the launch that started the instance, or the daemon that runs an instance of no launch. The daemon binds the slot each time the instance starts, by a launch, a join, `peppy node run` or a restart, under the core node name and the per-boot instance id of that daemon. A launcher writes no `links` entry for a daemon target, and a launch refuses one.
-- **One target of each interface.** A node names each interface once. A call names no target, so a call of an interface goes with the one scope of that interface that the instance has.
-- **One link_id namespace.** The `link_id` of a daemon target shares one namespace with the other slots of `depends_on` and with `implements`.
+- **Never pinned:** Omit `sha256`. Daemon interface schemas are compiled directly into `peppy`, and each release serves one tag per interface.
+- **Single built-in producer:** Omit `cardinality` and do not add `links` entries for daemon targets in a launcher (a launch refuses them). The daemon automatically binds the slot on every start (`launch`, `join`, `peppy node run`, or restart) to the stack's coordinator daemon (or local daemon outside a launch) using its core node name and per-boot instance ID.
+- **At most once per interface:** A node can declare each daemon interface only once, because calls use that single scope.
+- **Shared `link_id` namespace:** Daemon target `link_id` values share the same namespace as `depends_on` slots and `implements`.
 
-The add and the sync of the node read the members of the interface from the document compiled into `peppy`, never from the contract cache. They refuse an entry that names an interface or a tag that this peppy does not serve, with the interfaces and the tags that it serves, and a consumed entry that names no member of the interface. The `instance_documents` service, which `peppy node describe` reads, gives the document of each daemon target of an instance after its pinned contract documents.
+`peppy node add` and `peppy node sync` read daemon interface schemas directly from `peppy` (never from the contract cache). They fail with the list of supported interfaces/tags if the manifest requests an unsupported interface, tag, or member name. `peppy node describe` (via `instance_documents`) includes daemon target schemas after pinned contract schemas.
 
 ### The client of a daemon target
 
@@ -370,7 +376,7 @@ A long goal of an interface, such as `changes` and `lease` of `robot_leases:v1`,
 
 ### Scoping a daemon target
 
-The launcher gives each daemon target of an instance a scope in the [`daemon_scopes`](/guides/launch_files/#daemon_scopes-optional) of the instance, keyed by the `link_id` of the target, or with a `set_daemon_scopes` adjustment on the instance. `{ vacant: "<why>" }` leaves the target unserved. A `robot_leases` scope names the members of `robot_leases:v1` that the client may call: `members` names at least one of `list`, `contract`, `changes`, `lease`, `check_move`, `halt` and `clear_halt`, each once, and `lease` brings `take`, `release`, `offer`, `open` and `close`.
+A launcher grants each daemon target its permissions via [`daemon_scopes`](/guides/launch_files/#daemon_scopes-optional) (keyed by `link_id`) or a `set_daemon_scopes` adjustment. Pass `{ vacant: "<reason>" }` to leave the target unserved. For `robot_leases:v1`, `members` lists one or more unique values from `list`, `contract`, `changes`, `lease`, `check_move`, `halt`, and `clear_halt` (`lease` automatically includes `take`, `release`, `offer`, `open`, and `close`):
 
 ```json5 title="peppy_launcher.json5"
 {
@@ -390,4 +396,4 @@ The launcher gives each daemon target of an instance a scope in the [`daemon_sco
 }
 ```
 
-The launch, each join and `peppy stack resolve` hold each daemon target of a node to [the checks of daemon scopes](/guides/launch_files/#daemon_scopes-optional) before anything starts. The instance runs on the coordinator, the machine of the daemon that runs the stack, outside every [copy](/guides/launch_files/#copies), so it declares no `core_node`, and the option of an axis that runs as copies does not deploy it. `peppy node run` of the node starts its instance with no scope: only a launcher gives scopes.
+`launch`, `join`, and `peppy stack resolve` validate every daemon target against [daemon scope rules](/guides/launch_files/#daemon_scopes-optional) before starting anything. Instances with daemon targets always run on the coordinator outside [copies](/guides/launch_files/#copies) (they cannot set `core_node` or be deployed by copy axes). Starting a node directly with `peppy node run` grants no daemon scope.

@@ -86,18 +86,18 @@ waypoints: {
 The field is an `Option<T>` in the Rust struct of its object and an `Optional[T]` in its Python dataclass. The items of an array take no `$optional`: each item of an array is present, and an optional array is absent as a whole.
 
 :::note
-In practice, a command leaves out what it does not set, such as an optional `timestamp` of the target of a request, and a response leaves out a value it does not hold, such as a `note` that it carries for some requests only. A message format never reports a failure: a refused or failed goal and the error reply of a service carry a [failure kind](/advanced_guides/actions/#how-a-goal-ends) and a message outside the message, so a response or a result is always a success.
+Use `$optional` for genuinely optional fields (such as an optional request timestamp or an extra note in a response). Never use optional fields to report failures: service errors and failed or refused action goals already carry a structured [failure kind](/advanced_guides/actions/#how-a-goal-ends) and message outside the payload, so a returned response or result always represents success.
 :::
 
 :::caution
-`$optional` belongs to message formats only. Node parameters use [`$default`](/reference/parameters/#default-values) instead, which is a separate concept: a default value to fall back on when the runtime doesn't supply one.
+`$optional` belongs to message formats only. Node parameters use [`$default`](/reference/parameters/#default-values) instead, which supplies a fallback value when a launcher omits the parameter.
 :::
 
 ---
 
 ## Enum modifier
 
-A `string` field can declare the closed set of strings that it holds, with `$enum`:
+Use `$enum` on a `string` field to document the closed set of allowed string values:
 
 ```json5
 mode: {
@@ -108,17 +108,17 @@ mode: {
 
 | Field       | Required | Description |
 |-------------|----------|-------------|
-| `$type`     | Yes      | `string`. The parser refuses `$enum` on a field of another type |
-| `$enum`     | Yes      | The strings of the set: at least one, each a non-empty string, each once, in the order you write them |
-| `$optional` | No       | As on any `string` field |
+| `$type`     | Yes      | Must be `"string"`. Rejected on any other type. |
+| `$enum`     | Yes      | Non-empty list of unique, non-empty strings, preserved in declared order. |
+| `$optional` | No       | Same as on any `string` field. |
 
-An enum changes nothing on the wire and in the generated code: the field is a `string`. Peppy carries the set and acts on none of its values. A client that checks the values of a field, such as a checker of documents, reads the set through the [codec API](/advanced_guides/codec_api/).
+`$enum` is metadata only: it does not change the wire encoding or generated Rust/Python types (the field remains a plain string), and Peppy does not enforce it at runtime. Tools and external validators read the allowed values through the [codec API](/advanced_guides/codec_api/).
 
 ---
 
 ## Marks modifier
 
-A field can carry marks, names that the document gives to the field, with `$marks` in the structured form of the field. A mark tells a client what the field holds, for example the id of an item:
+Use `$marks` in a field's structured form to attach semantic tags (such as identifying an item ID or pose) for external tools and clients:
 
 ```json5
 target: {
@@ -130,15 +130,20 @@ target: {
 
 | Field    | Required | Description |
 |----------|----------|-------------|
-| `$marks` | No       | The marks of the field: at least one, each once. Leave the key out for a field with no mark. A primitive, an array and an object take it in their structured forms |
+| `$marks` | No       | Non-empty list of unique mark names. Omit when the field has no marks. Supported on primitives, arrays, and objects in structured form. |
 
-A mark name is 1 to 64 lowercase ASCII letters, digits and `_`: words that each start with a letter, joined by one `_`, such as `item_id` or `pose2d`. Marks change nothing on the wire and in the generated code. Peppy keeps each mark of a field as written and acts on none: each client defines the marks that it reads, and reads them through the [codec API](/advanced_guides/codec_api/). A member of a contract carries [marks](/advanced_guides/contract_implementation/#marks) too.
+Mark names must be 1 to 64 characters in `snake_case` (lowercase ASCII letters and digits, each word starting with a letter, separated by single `_`, such as `item_id` or `pose2d`).
+
+`$marks` is metadata only: it does not change the wire format or generated code, and Peppy does not act on field marks. Clients define and inspect them through the [codec API](/advanced_guides/codec_api/). Contract members can also carry [member marks](/advanced_guides/contract_implementation/#marks).
 
 ---
 
 ## Description modifier
 
-A field can say what it holds with `$description` in the structured form of the field. A primitive, an array and an object take it. On an array it sits beside `$items`, and on an object beside the keys of the fields. The items of an array take none: an array and its items are one field, so the `$description` of the array says what its items hold, and each field of an object item takes its own:
+Use `$description` in a field's structured form to explain what the field holds. Primitives, arrays, and objects all accept it.
+
+- On an **array**, place `$description` beside `$items`. Array items themselves do not take `$description` (use the array's `$description` for the collection, and per-field `$description` inside object items).
+- On an **object**, place `$description` beside the field keys.
 
 ```json5
 message_format: {
@@ -159,9 +164,9 @@ message_format: {
 
 | Field          | Required | Description |
 |----------------|----------|-------------|
-| `$description` | No       | What the field holds: one string that is not blank. Leave the key out for a field with no description |
+| `$description` | No       | Non-blank string describing the field. Omit if unused. |
 
-A description changes nothing on the wire and in the generated code, and peppy reads no rule from it. The [codec API](/advanced_guides/codec_api/) gives it, [`peppy node describe`](/advanced_guides/calling_instances/#peppy-node-describe) prints it in each message format, and the [MCP server](/advanced_guides/mcp/#the-published-schemas) publishes it as the `description` of the property. A document and its members have descriptions of their own, which are required (see [Descriptions](/reference/concepts/#descriptions)).
+`$description` does not change the wire format or generated code, and Peppy reads no rules from it. It is surfaced by the [codec API](/advanced_guides/codec_api/), [`peppy node describe`](/advanced_guides/calling_instances/#peppy-node-describe), and the [MCP server](/advanced_guides/mcp/#the-published-schemas) (as JSON Schema property `description`). Document-level and member-level descriptions are required; see [Descriptions](/reference/concepts/#descriptions).
 
 ---
 
