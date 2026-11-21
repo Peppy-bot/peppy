@@ -4,7 +4,7 @@
 use crate::client::RegistryClient;
 use crate::error::{RegistryError, Result};
 use crate::{Access, CredentialStore};
-use core_node_api::encoding::{ArtifactPlatform, OciRepository};
+use core_node_api::encoding::{ArtifactPlatform, OciDigest, OciRepository};
 
 /// The registry of an image reference that names none.
 const DOCKER_HUB: &str = "docker.io";
@@ -102,7 +102,24 @@ impl ImageReference {
             None => (text, None),
         };
         let (name, tag) = split_tag(name_and_tag);
-        let reference = digest.or(tag).unwrap_or(DEFAULT_TAG).to_owned();
+        // The reference goes into the path of the requests
+        // (`/v2/<path>/manifests/<reference>`), so a `/`, a `?` or a `..` in it
+        // would name another resource of the registry.
+        let reference = match (digest, tag) {
+            (Some(digest), _) => OciDigest::parse(digest)
+                .map_err(|e| invalid(e.to_string()))?
+                .to_string(),
+            (None, Some(tag)) => {
+                if !is_oci_tag(tag) {
+                    return Err(invalid(format!(
+                        "the tag `{tag}` is not an OCI tag: up to 128 letters, digits, `_`, \
+                         `.` and `-`, the first a letter, a digit or `_`"
+                    )));
+                }
+                tag.to_owned()
+            }
+            (None, None) => DEFAULT_TAG.to_owned(),
+        };
         let (registry, path) = match name.split_once('/') {
             Some((first, rest))
                 if first.contains('.') || first.contains(':') || first == "localhost" =>
@@ -118,14 +135,23 @@ impl ImageReference {
         };
         let repository = OciRepository::parse(&format!("oci://{registry}/{path}"))
             .map_err(|e| invalid(e.to_string()))?;
-        if reference.is_empty() {
-            return Err(invalid("it names an empty tag or digest".to_owned()));
-        }
         Ok(Self {
             repository,
             reference,
         })
     }
+}
+
+/// Whether `tag` follows the tag grammar of the OCI distribution
+/// specification: `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`.
+fn is_oci_tag(tag: &str) -> bool {
+    let mut characters = tag.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    tag.len() <= 128
+        && (first.is_ascii_alphanumeric() || first == '_')
+        && characters.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
 /// Splits `name[:tag]` at the `:` of its last path component. A `:` before
@@ -314,5 +340,41 @@ mod tests {
         ImageReference::parse("Upper/Case").unwrap_err();
         ImageReference::parse("ubuntu:").unwrap_err();
         ImageReference::parse("ubuntu@").unwrap_err();
+    }
+
+    /// The reference goes into the path of the requests, so it cannot name
+    /// another resource of the registry.
+    #[test]
+    fn a_reference_that_is_no_tag_nor_digest_is_refused() {
+        for raw in [
+            "ubuntu:..",
+            "ubuntu:.hidden",
+            "ubuntu:-x",
+            "ubuntu:a?x=1",
+            "ubuntu:a#b",
+            "ubuntu@sha256:../../blobs/uploads",
+            "ubuntu@sha256:abc",
+            "ubuntu@md5:0123",
+        ] {
+            let error = ImageReference::parse(raw).expect_err(raw);
+            assert!(error.to_string().contains(raw), "{raw}: {error}");
+        }
+        let long_tag = format!("ubuntu:{}", "a".repeat(129));
+        ImageReference::parse(&long_tag).expect_err("a tag of 129 characters");
+    }
+
+    #[test]
+    fn a_tag_or_a_digest_of_the_grammar_is_read() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        for (raw, reference) in [
+            ("ubuntu:24.04", "24.04"),
+            ("ubuntu:_x-1.2", "_x-1.2"),
+            (&format!("ubuntu:{}", "a".repeat(128)), &"a".repeat(128)[..]),
+            (&format!("ubuntu@{digest}"), &digest[..]),
+            (&format!("ubuntu:1@{digest}"), &digest[..]),
+        ] {
+            let image = ImageReference::parse(raw).expect(raw);
+            assert_eq!(image.reference, reference, "{raw}");
+        }
     }
 }
