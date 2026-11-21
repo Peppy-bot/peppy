@@ -907,7 +907,7 @@ impl ZenohResponseToken {
         let attachment = ServiceReplyAttachment { kind }.encode();
         self.query
             .reply(self.reply_keyexpr.as_str(), payload.into_zbytes())
-            .attachment(attachment.to_vec())
+            .attachment(attachment)
             .await
             .map_err(|e| crate::error::Error::BackendError(e.to_string()))?;
         Ok(())
