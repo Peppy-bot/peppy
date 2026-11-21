@@ -2,14 +2,40 @@
 //! process nodes (`node_stack::run_steps`) and by core-node's node-add source
 //! resolution.
 
+use std::io::Read;
 use std::path::{Component, Path};
-use tar::Archive;
+use tar::{Archive, EntryType};
 use zstd::stream::read::Decoder;
 
+/// The most bytes that the archive of a node source unpacks to (the tar
+/// stream inside the zstd frame). A source bundle is far smaller, and a
+/// compressed archive of some kilobytes can unpack to terabytes.
+pub const MAX_NODE_SOURCE_UNPACKED_BYTES: u64 = 16 << 30;
+
+/// Where an archive comes from, which decides what it may hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveOrigin {
+    /// The archive that this machine built from a node (`built_nodes/`). It
+    /// holds what the build left, symbolic links to the host included (the
+    /// interpreter of a Python environment).
+    BuiltHere,
+    /// The archive of a node source that `peppy node add` reads: a local
+    /// `.tar.zst` or a download. It holds regular files, directories, and
+    /// symbolic links whose target is a relative path with no `..` (so the
+    /// link stays in the archive), and it unpacks to at most
+    /// [`MAX_NODE_SOURCE_UNPACKED_BYTES`].
+    NodeSource,
+}
+
 /// Extracts a `.tar.zst` archive into `destination` with path safety checks.
-/// Rejects entries containing `..`, root, or prefix path components.
+/// Rejects entries containing `..`, root, or prefix path components, and
+/// the entries that `origin` does not allow.
 /// Directories are applied last to avoid permission interference during extraction.
-pub fn extract_tar_zst(archive_path: &Path, destination: &Path) -> Result<(), String> {
+pub fn extract_tar_zst(
+    archive_path: &Path,
+    destination: &Path,
+    origin: ArchiveOrigin,
+) -> Result<(), String> {
     let file = std::fs::File::open(archive_path)
         .map_err(|e| format!("Failed to open archive {}: {}", archive_path.display(), e))?;
 
@@ -20,7 +46,15 @@ pub fn extract_tar_zst(archive_path: &Path, destination: &Path) -> Result<(), St
             e
         )
     })?;
-    let mut archive = Archive::new(decoder);
+    let max_unpacked_bytes = match origin {
+        ArchiveOrigin::BuiltHere => u64::MAX,
+        ArchiveOrigin::NodeSource => MAX_NODE_SOURCE_UNPACKED_BYTES,
+    };
+    let mut archive = Archive::new(BoundedReader {
+        inner: decoder,
+        read_bytes: 0,
+        max_bytes: max_unpacked_bytes,
+    });
 
     let entries = archive.entries().map_err(|e| {
         format!(
@@ -59,6 +93,9 @@ pub fn extract_tar_zst(archive_path: &Path, destination: &Path) -> Result<(), St
         }) {
             return Err(unsafe_path_error(archive_path, &entry_path));
         }
+        if origin == ArchiveOrigin::NodeSource {
+            refuse_a_foreign_entry(&entry, &entry_path, archive_path)?;
+        }
 
         if entry.header().entry_type().is_dir() {
             directories.push((entry_path, entry));
@@ -80,7 +117,7 @@ pub fn extract_tar_zst(archive_path: &Path, destination: &Path) -> Result<(), St
 /// Unpacks `entry`, whose path is `entry_path`, under `destination`.
 /// `unpack_in` refuses an entry whose path would leave `destination`, which
 /// is an unsafe path too.
-fn unpack_entry<R: std::io::Read>(
+fn unpack_entry<R: Read>(
     mut entry: tar::Entry<'_, R>,
     entry_path: &Path,
     destination: &Path,
@@ -98,6 +135,68 @@ fn unpack_entry<R: std::io::Read>(
         return Err(unsafe_path_error(archive_path, entry_path));
     }
     Ok(())
+}
+
+/// Refuses an entry that the archive of a node source cannot hold: a hard
+/// link, a device, a FIFO, or a symbolic link whose target can leave the
+/// archive (an absolute path, or a path with a `..`).
+fn refuse_a_foreign_entry<R: Read>(
+    entry: &tar::Entry<'_, R>,
+    entry_path: &Path,
+    archive_path: &Path,
+) -> Result<(), String> {
+    let refuse = |what: String| {
+        Err(format!(
+            "Archive {} holds {what} at {}: the archive of a node source holds files, \
+             directories, and symbolic links to a relative path in it with no `..`",
+            archive_path.display(),
+            entry_path.display()
+        ))
+    };
+    match entry.header().entry_type() {
+        EntryType::Regular | EntryType::Continuous | EntryType::Directory => Ok(()),
+        EntryType::Symlink => {
+            let target = entry
+                .link_name()
+                .map_err(|e| format!("Failed to read a link of {}: {e}", archive_path.display()))?
+                .unwrap_or_default();
+            let stays_in_the_archive = target.is_relative()
+                && target
+                    .components()
+                    .all(|component| matches!(component, Component::Normal(_) | Component::CurDir));
+            if stays_in_the_archive {
+                Ok(())
+            } else {
+                refuse(format!("a symbolic link to {}", target.display()))
+            }
+        }
+        EntryType::Link => refuse("a hard link".to_owned()),
+        EntryType::Char | EntryType::Block => refuse("a device".to_owned()),
+        EntryType::Fifo => refuse("a FIFO".to_owned()),
+        other => refuse(format!("an entry of type {other:?}")),
+    }
+}
+
+/// The decompressed stream of an archive, which fails once it gives more
+/// than `max_bytes`.
+struct BoundedReader<R> {
+    inner: R,
+    read_bytes: u64,
+    max_bytes: u64,
+}
+
+impl<R: Read> Read for BoundedReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        self.read_bytes = self.read_bytes.saturating_add(read as u64);
+        if self.read_bytes > self.max_bytes {
+            return Err(std::io::Error::other(format!(
+                "the archive unpacks to more than {} bytes",
+                self.max_bytes
+            )));
+        }
+        Ok(read)
+    }
 }
 
 fn unsafe_path_error(archive_path: &Path, entry_path: &Path) -> String {
@@ -166,7 +265,8 @@ mod tests {
         let dest = tmp.path().join("dest");
         std::fs::create_dir(&dest).expect("mkdir dest");
 
-        let err = extract_tar_zst(&archive, &dest).expect_err("traversal must be rejected");
+        let err = extract_tar_zst(&archive, &dest, ArchiveOrigin::NodeSource)
+            .expect_err("traversal must be rejected");
         assert!(
             err.contains("unsafe path"),
             "expected an unsafe-path rejection, got: {err}"
@@ -186,7 +286,8 @@ mod tests {
         let dest = tmp.path().join("dest");
         std::fs::create_dir(&dest).expect("mkdir dest");
 
-        let err = extract_tar_zst(&archive, &dest).expect_err("absolute path must be rejected");
+        let err = extract_tar_zst(&archive, &dest, ArchiveOrigin::NodeSource)
+            .expect_err("absolute path must be rejected");
         assert!(
             err.contains("unsafe path"),
             "expected an unsafe-path rejection, got: {err}"
@@ -199,7 +300,7 @@ mod tests {
     fn extracts_a_directory_entry_and_its_file() {
         let mut builder = tar::Builder::new(Vec::new());
         let mut dir_header = tar::Header::new_gnu();
-        dir_header.set_entry_type(tar::EntryType::Directory);
+        dir_header.set_entry_type(EntryType::Directory);
         dir_header.set_mode(0o755);
         dir_header.set_size(0);
         builder
@@ -219,7 +320,8 @@ mod tests {
         let dest = tmp.path().join("dest");
         std::fs::create_dir(&dest).expect("mkdir dest");
 
-        extract_tar_zst(&archive, &dest).expect("a safe archive should extract");
+        extract_tar_zst(&archive, &dest, ArchiveOrigin::NodeSource)
+            .expect("a safe archive should extract");
         assert!(
             dest.join("sub").is_dir(),
             "the directory entry is a directory"
@@ -231,6 +333,126 @@ mod tests {
         );
     }
 
+    /// A `.tar.zst` at `<tmp>/archive.tar.zst` with one entry of `kind` at
+    /// `path` (a link to `target` for a link), and an empty `<tmp>/dest`.
+    fn archive_with_one_entry(
+        tmp: &Path,
+        kind: EntryType,
+        path: &str,
+        target: Option<&str>,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(kind);
+        header.set_mode(0o644);
+        header.set_size(0);
+        match target {
+            Some(target) => builder
+                .append_link(&mut header, path, target)
+                .expect("append the link"),
+            None => builder
+                .append_data(&mut header, path, std::io::empty())
+                .expect("append the entry"),
+        }
+        let archive = tmp.join("archive.tar.zst");
+        write_archive(&archive, &builder.into_inner().expect("finish the tar"));
+        let dest = tmp.join("dest");
+        std::fs::create_dir(&dest).expect("mkdir dest");
+        (archive, dest)
+    }
+
+    #[test]
+    fn a_node_source_refuses_a_link_that_can_leave_it_or_a_special_file() {
+        for (kind, path, target) in [
+            (
+                EntryType::Symlink,
+                "peppy.json5",
+                Some("/home/user/.peppy/conf/credentials.json5"),
+            ),
+            (EntryType::Symlink, "data", Some("../../outside")),
+            (EntryType::Symlink, "sub/data", Some("../sub2/file")),
+            (EntryType::Link, "peppy.json5", Some("other.json5")),
+            (EntryType::Fifo, "pipe", None),
+            (EntryType::Char, "tty", None),
+            (EntryType::Block, "disk", None),
+        ] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let (archive, dest) = archive_with_one_entry(tmp.path(), kind, path, target);
+
+            let error = extract_tar_zst(&archive, &dest, ArchiveOrigin::NodeSource)
+                .expect_err("the entry is refused");
+
+            assert!(
+                error.contains("the archive of a node source holds"),
+                "{kind:?}: {error}"
+            );
+            assert!(
+                std::fs::symlink_metadata(dest.join(path)).is_err(),
+                "{kind:?}: the entry is not written"
+            );
+        }
+    }
+
+    #[test]
+    fn a_node_source_keeps_a_link_down_inside_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (archive, dest) = archive_with_one_entry(
+            tmp.path(),
+            EntryType::Symlink,
+            "lib.so",
+            Some("./sub/lib.so.1"),
+        );
+
+        extract_tar_zst(&archive, &dest, ArchiveOrigin::NodeSource).expect("a link inside");
+
+        assert_eq!(
+            std::fs::read_link(dest.join("lib.so")).expect("a link"),
+            Path::new("./sub/lib.so.1")
+        );
+    }
+
+    /// The archive that this machine built keeps the links of its build,
+    /// such as the interpreter of a Python environment.
+    #[test]
+    fn an_archive_built_here_keeps_a_link_to_the_host() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (archive, dest) = archive_with_one_entry(
+            tmp.path(),
+            EntryType::Symlink,
+            "python",
+            Some("/usr/bin/python3"),
+        );
+
+        extract_tar_zst(&archive, &dest, ArchiveOrigin::BuiltHere).expect("a built archive");
+
+        assert_eq!(
+            std::fs::read_link(dest.join("python")).expect("a link"),
+            Path::new("/usr/bin/python3")
+        );
+    }
+
+    #[test]
+    fn a_stream_longer_than_its_bound_fails() {
+        let mut bounded = BoundedReader {
+            inner: &[7u8; 100][..],
+            read_bytes: 0,
+            max_bytes: 64,
+        };
+        let error = bounded
+            .read_to_end(&mut Vec::new())
+            .expect_err("more than the bound");
+        assert!(error.to_string().contains("more than 64 bytes"), "{error}");
+
+        let mut exact = BoundedReader {
+            inner: &[7u8; 64][..],
+            read_bytes: 0,
+            max_bytes: 64,
+        };
+        let mut read = Vec::new();
+        exact.read_to_end(&mut read).expect("the bound itself");
+        assert_eq!(read.len(), 64);
+    }
+
     #[test]
     fn extracts_safe_nested_entry() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -239,7 +461,8 @@ mod tests {
         let dest = tmp.path().join("dest");
         std::fs::create_dir(&dest).expect("mkdir dest");
 
-        extract_tar_zst(&archive, &dest).expect("a safe archive should extract");
+        extract_tar_zst(&archive, &dest, ArchiveOrigin::NodeSource)
+            .expect("a safe archive should extract");
         let extracted = dest.join("sub").join("dir").join("file.txt");
         assert_eq!(
             std::fs::read_to_string(&extracted).expect("read extracted file"),

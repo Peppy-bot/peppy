@@ -1349,15 +1349,21 @@ impl NodeEntity {
 
         // ---- Phase 2: prepare instance dir ----
         // A container's working directory starts empty, and so does a
-        // built-in node's: it has no archive to extract.
-        let instance_dir = match &artifact {
-            Artifact::Built(archive) if !is_container => {
-                extract_node_archive(archive, instance_id_str, ctx.peppy_dirs)
-            }
-            Artifact::Built(_) | Artifact::Pulled(_) | Artifact::BuiltIn(_) => {
-                create_instance_dir(instance_id_str, ctx.peppy_dirs)
-            }
-        }
+        // built-in node's: it has no archive to extract. The extraction
+        // writes the whole node to the disk, so it runs off the async
+        // workers.
+        let archive_to_extract = match &artifact {
+            Artifact::Built(archive) if !is_container => Some(archive.clone()),
+            Artifact::Built(_) | Artifact::Pulled(_) | Artifact::BuiltIn(_) => None,
+        };
+        let instance_id_owned = instance_id_str.to_owned();
+        let peppy_dirs = ctx.peppy_dirs.clone();
+        let instance_dir = tokio::task::spawn_blocking(move || match archive_to_extract {
+            Some(archive) => extract_node_archive(&archive, &instance_id_owned, &peppy_dirs),
+            None => create_instance_dir(&instance_id_owned, &peppy_dirs),
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("the instance directory task failed: {e}")))
         .map_err(|reason| {
             Self::undo_start(handle, ctx.instance_id);
             Error::StartFailed {
