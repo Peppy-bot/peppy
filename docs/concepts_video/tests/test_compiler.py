@@ -129,3 +129,25 @@ def test_a_composition_of_an_act_shows_its_act_and_the_map_of_the_video(transcri
     for other in transcript.acts:
         assert f'id="{opens_an_act.id}-map-act-{other.id}"' in composition
         assert all(chapter.title in composition for chapter in other.chapters)
+
+
+def test_compiled_compositions_have_no_blank_lines(transcript: Transcript, tmp_path: Path) -> None:
+    compiled_root(transcript, tmp_path / "project")
+
+    for file in (tmp_path / "project" / "compositions").glob("*.html"):
+        lines = file.read_text(encoding="utf-8").splitlines()
+        assert all(line.strip() for line in lines), f"{file.name} has blank lines"
+
+
+def test_bundling_the_robot_view_ignores_parent_tsconfig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> None:
+        commands.append(command)
+
+    monkeypatch.setattr(compiler.subprocess, "run", fake_run)
+
+    compiler._bundle_robot_view(tmp_path / "robot_view.js")
+
+    assert len(commands) == 1
+    assert "--tsconfig-raw={}" in commands[0]

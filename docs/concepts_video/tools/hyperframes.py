@@ -44,6 +44,13 @@ class MissingProgram(Exception):
     """The pixi environment does not have a program that HyperFrames runs."""
 
 
+def available_processors() -> int:
+    """The count of processors that this process can run on."""
+    if hasattr(os, "sched_getaffinity"):
+        return max(1, len(os.sched_getaffinity(0)))
+    return max(1, os.cpu_count() or 1)
+
+
 def headless_environment() -> dict[str, str]:
     """The environment of the process without display and Vulkan driver variables."""
     return {name: value for name, value in os.environ.items() if name not in HEADLESS_OMITTED_VARIABLES}

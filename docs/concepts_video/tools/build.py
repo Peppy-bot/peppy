@@ -15,6 +15,7 @@ video, into `build/<name>.preview.mp4`.
 """
 
 import argparse
+import os
 from pathlib import Path
 import subprocess
 
@@ -26,13 +27,18 @@ from tools.voice_durations import RecordedDuration, read_voice_durations, write_
 # The render settings that change the file. `delivery` is the quality of
 # HyperFrames for a final file. Chrome draws with its software renderer, so a
 # machine with a graphics card and a machine with none give the same frames.
-# The count of the workers is a part of the settings: each worker captures
-# one part of the frames, and the bytes of the video change with the count.
-# With no count, HyperFrames takes one from the processors of the machine and
-# from the speed that it measures. The render stops on a lint error. The lint
-# of the project, which runs on the compiled project before the render, also
-# stops on each warning that is a fault of a composition.
-RENDER_OPTIONS = ["--quality", "delivery", "--no-browser-gpu", "--workers", "4", "--strict"]
+# The render stops on any lint error or warning.
+RENDER_OPTIONS = ["--quality", "delivery", "--no-browser-gpu", "--strict-all"]
+# HyperFrames caps explicit workers at 24 and budgets 1536 MB of RAM per
+# Chrome worker and 1024 + 320 * workers MB of V8 heap. Each worker uses
+# roughly two processors alongside the live FFmpeg encoder, so half the
+# available processors saturates the CPU without starving the encoder.
+MAX_RENDER_WORKERS = 24
+CORES_PER_WORKER = 2
+MEMORY_MB_PER_WORKER = 1536
+NODE_DEFAULT_HEAP_MB = 4096
+NODE_HEAP_RESERVED_MB = 1024
+NODE_HEAP_MB_PER_WORKER = 320
 # The video has 3840 x 2160 pixels and 60 frames in one second. The page of
 # the video has 1920 x 1080 pixels, so Chrome draws two pixels across each
 # pixel of the page. The timeline has 30 frames in one second, so each frame
@@ -93,9 +99,41 @@ def video_file(part_id: str | None, is_preview: bool) -> Path:
     return paths.BUILD / (f"{name}.preview.mp4" if is_preview else f"{name}.mp4")
 
 
+def total_memory_mb() -> int:
+    """Total physical memory of this machine in MiB."""
+    pages = os.sysconf("SC_PHYS_PAGES")
+    page_size = os.sysconf("SC_PAGE_SIZE")
+    return (pages * page_size) // (1024 * 1024)
+
+
+def render_workers(processors: int | None = None, memory_mb: int | None = None) -> int:
+    """How many parallel Chrome workers to run for the render.
+
+    Uses half the available processors so Chrome workers and the live FFmpeg
+    encoder saturate all cores without oversubscribing them, bounded by half
+    of total memory and by the HyperFrames maximum.
+    """
+    cpu_count = hyperframes.available_processors() if processors is None else processors
+    ram_mb = total_memory_mb() if memory_mb is None else memory_mb
+    by_cpu = cpu_count // CORES_PER_WORKER
+    by_memory = (ram_mb // 2) // MEMORY_MB_PER_WORKER
+    return max(1, min(MAX_RENDER_WORKERS, by_cpu, by_memory))
+
+
+def node_options_for_workers(workers: int, existing: str | None = None) -> str | None:
+    """`NODE_OPTIONS` with a V8 heap limit large enough for `workers`, or `existing` unchanged."""
+    required_mb = NODE_HEAP_RESERVED_MB + workers * NODE_HEAP_MB_PER_WORKER
+    if required_mb <= NODE_DEFAULT_HEAP_MB:
+        return existing
+    if existing and "--max-old-space-size" in existing:
+        return existing
+    flag = f"--max-old-space-size={required_mb}"
+    return f"{existing} {flag}".strip() if existing else flag
+
+
 def _install_node_packages() -> None:
     """Install HyperFrames and GSAP at the versions of package-lock.json."""
-    subprocess.run(["npm", "ci"], cwd=paths.PROJECT_ROOT, check=True)
+    subprocess.run(["npm", "ci", "--no-fund"], cwd=paths.PROJECT_ROOT, check=True)
 
 
 def _compile_and_render(
@@ -109,9 +147,23 @@ def _compile_and_render(
 ) -> Timeline:
     """Compile the video of `transcript` into one project, and render it into `output` in `render_format`."""
     timeline = project.compile_with_media(transcript, record, voices, footage_list, paths.COMPILED_PROJECT)
+    workers = render_workers()
+    extra_environment = {"PRODUCER_HEADLESS_SHELL_PATH": str(chrome)}
+    node_options = node_options_for_workers(workers, os.environ.get("NODE_OPTIONS"))
+    if node_options:
+        extra_environment["NODE_OPTIONS"] = node_options
     hyperframes.run(
-        ["render", str(paths.COMPILED_PROJECT), *RENDER_OPTIONS, *render_format, "--output", str(output)],
-        extra_environment={"PRODUCER_HEADLESS_SHELL_PATH": str(chrome)},
+        [
+            "render",
+            str(paths.COMPILED_PROJECT),
+            *RENDER_OPTIONS,
+            "--workers",
+            str(workers),
+            *render_format,
+            "--output",
+            str(output),
+        ],
+        extra_environment=extra_environment,
     )
     return timeline
 
